@@ -80,9 +80,10 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
 
 - Credentials: `Authorization: Bearer hbr_…` is a host app's API key (`api_key`). People sign in with a Cloudflare
   Access token in `Cf-Access-Jwt-Assertion` (`cloudflare_access`) or an OIDC token as a non-`hbr_` bearer (`oidc`),
-  whichever providers the deployment configures. The Access header is read first when an Access provider is
-  configured; then an `hbr_` bearer is a key; any other bearer goes to the OIDC provider (with several, the one whose
-  issuer the token's unverified `iss` names). A bearer token with no provider to verify it is `invalid`.
+  whichever providers the deployment configures. The order is: an `hbr_` bearer is a key (a host app behind Access
+  may carry an Access service token too, and its key decides); then the Access header, when an Access provider is
+  configured; then any other bearer goes to the OIDC provider (with several, the one whose issuer the token's
+  unverified `iss` names). A bearer token with no provider to verify it is `invalid`.
 - A verified token becomes an `ExternalIdentity`, and `signIn` (as `system`) finds the user; a `forbidden` from it
   is `invalid`. The person names the organisation they act in with the `Harbour-Organisation` header
   (`ORGANISATION_HEADER`), which must be one of theirs; without it, they must have exactly one. Anything else is
@@ -116,9 +117,11 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
   default to RS256, ES256 and EdDSA; `none` and HMAC are refused at creation. The email is verified only when
   `email_verified` is `true` (or `"true"`).
 - Keys are cached for 10 minutes. A token naming an unknown `kid` (the provider rotated its keys) refetches them once,
-  at most once every 30 seconds by the clock.
+  at most once every 30 seconds by the clock. A failed fetch is remembered for those 30 seconds too, so tokens arriving
+  while the provider is down never fetch more often, and fetches time out after 5 seconds.
 - A token that does not verify is `invalid`, with a generic message that never holds the token. Keys or discovery
-  that cannot be fetched or read, or discovery naming another issuer, are `unavailable` (not 401): the provider is at
+  that cannot be fetched or read, a published key that will not import, or discovery naming another issuer, are
+  `unavailable` (not 401): the provider is at
   fault, not the caller.
 
 ### The mock IdP for tests

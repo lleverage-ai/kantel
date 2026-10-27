@@ -75,26 +75,38 @@ async function fetchJson(fetchImpl: Fetch, url: string, what: string): Promise<u
 
 /**
  * Keys from a JWKS endpoint, cached for `JWKS_CACHE_MILLISECONDS`. A token naming a key the set lacks (the provider
- * rotated its keys) refetches once, unless the last fetch was under `JWKS_COOLDOWN_MILLISECONDS` ago.
+ * rotated its keys) refetches once, unless the last fetch was under `JWKS_COOLDOWN_MILLISECONDS` ago. A failed fetch
+ * is remembered for the cooldown too, so tokens arriving while the provider is down never fetch more than once per
+ * cooldown, with or without cached keys. Loads are single-flight.
  */
 function cachedJwks(jwksUri: () => Promise<string>, fetchImpl: Fetch, clock: Clock): KeyResolver {
-	let cached: { readonly keys: ReturnType<typeof createLocalJWKSet>; readonly fetchedAt: number } | undefined;
+	type KeySet = ReturnType<typeof createLocalJWKSet>;
+	let cached: { readonly keys: KeySet; readonly fetchedAt: number } | undefined;
 	let lastFetchAt = Number.NEGATIVE_INFINITY;
-	let pending: Promise<ReturnType<typeof createLocalJWKSet>> | undefined;
+	let failure: { readonly error: HarbourError; readonly until: number } | undefined;
+	let pending: Promise<KeySet> | undefined;
 
-	function load(): Promise<ReturnType<typeof createLocalJWKSet>> {
+	function load(): Promise<KeySet> {
+		if (failure !== undefined && clock.now() < failure.until) return Promise.reject(failure.error);
 		pending ??= (async () => {
 			try {
 				lastFetchAt = clock.now();
 				const body = await fetchJson(fetchImpl, await jwksUri(), "keys");
-				let keys: ReturnType<typeof createLocalJWKSet>;
+				let keys: KeySet;
 				try {
 					keys = createLocalJWKSet(body as Parameters<typeof createLocalJWKSet>[0]);
 				} catch {
 					throw unavailable("The sign-in provider's keys are malformed");
 				}
 				cached = { keys, fetchedAt: clock.now() };
+				failure = undefined;
 				return keys;
+			} catch (error) {
+				const remembered = isHarbourError(error, "unavailable")
+					? error
+					: unavailable("The sign-in provider's keys could not be loaded");
+				failure = { error: remembered, until: lastFetchAt + JWKS_COOLDOWN_MILLISECONDS };
+				throw remembered;
 			} finally {
 				pending = undefined;
 			}
@@ -102,15 +114,25 @@ function cachedJwks(jwksUri: () => Promise<string>, fetchImpl: Fetch, clock: Clo
 		return pending;
 	}
 
+	/** The key for `header` from `keys`. Selection failures stay jose's (a bad token); a key that will not import is the provider's fault. */
+	async function select(keys: KeySet, header: JWSHeaderParameters): Promise<CryptoKey> {
+		try {
+			return await keys(header);
+		} catch (error) {
+			if (error instanceof errors.JWKSNoMatchingKey || error instanceof errors.JWKSMultipleMatchingKeys) throw error;
+			throw unavailable("The sign-in provider's key could not be read");
+		}
+	}
+
 	return async (header) => {
 		const fresh = cached !== undefined && clock.now() - cached.fetchedAt < JWKS_CACHE_MILLISECONDS;
 		const keys = fresh && cached !== undefined ? cached.keys : await load();
 		try {
-			return await keys(header);
+			return await select(keys, header);
 		} catch (error) {
 			if (!(error instanceof errors.JWKSNoMatchingKey)) throw error;
 			if (clock.now() - lastFetchAt < JWKS_COOLDOWN_MILLISECONDS) throw error;
-			return (await load())(header);
+			return select(await load(), header);
 		}
 	};
 }

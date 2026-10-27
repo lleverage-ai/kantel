@@ -249,6 +249,61 @@ describe("oidcProvider", () => {
 		}
 	});
 
+	it("fetches at most once per cooldown while the provider is down, cold or stale, and recovers after it", async () => {
+		const clock = new ManualClock();
+		const idp = createMockIdp({ issuer: ISSUER, audience: AUDIENCE, clock });
+		let up = false;
+		const network = counting(async (input, init) =>
+			up ? idp.fetch(input, init) : new Response("Bad gateway", { status: 502 }),
+		);
+		const provider = oidcProvider({ issuer: ISSUER, audience: AUDIENCE, fetch: network.fetch, clock });
+		const token = await idp.sign({}, { expiresInSeconds: 3600 });
+
+		// Cold: nothing cached, discovery down.
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			expect(await rejection(provider.verify(token), token)).toEqual({ failure: undefined, unavailable: true });
+		}
+		const concurrent = await Promise.all(Array.from({ length: 5 }, () => rejection(provider.verify(token), token)));
+		expect(concurrent.every((result) => result.unavailable)).toBe(true);
+		expect(network.paths).toHaveLength(1);
+
+		clock.advance(30_000);
+		up = true;
+		expect((await provider.verify(token)).subject).toBe("user-1");
+		const afterRecovery = network.paths.length;
+
+		// Stale: keys expire while the provider is down.
+		up = false;
+		clock.advance(10 * 60 * 1000);
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			expect(await rejection(provider.verify(token), token)).toEqual({ failure: undefined, unavailable: true });
+		}
+		expect(network.paths.length).toBe(afterRecovery + 1);
+		clock.advance(30_000);
+		up = true;
+		expect((await provider.verify(token)).subject).toBe("user-1");
+	});
+
+	it("treats a published key that will not import as unavailable, not a bad token", async () => {
+		const clock = new ManualClock();
+		const idp = createMockIdp({ issuer: ISSUER, audience: AUDIENCE, clock });
+		const token = await idp.sign();
+		const broken = oidcProvider({
+			issuer: ISSUER,
+			audience: AUDIENCE,
+			jwksUri: `${ISSUER}/.well-known/jwks.json`,
+			clock,
+			fetch: async () =>
+				Response.json({
+					keys: idp.jwks().keys.map((key) => {
+						const { n: _n, ...rest } = key as { n?: string };
+						return rest;
+					}),
+				}),
+		});
+		expect(await rejection(broken.verify(token), token)).toEqual({ failure: undefined, unavailable: true });
+	});
+
 	it("uses jwksUri without discovery when given", async () => {
 		const { idp, clock } = oidcSetup();
 		const network = counting(idp.fetch);
