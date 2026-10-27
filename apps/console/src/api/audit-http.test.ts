@@ -10,7 +10,7 @@ import {
 } from "@harbour/contracts";
 import { readAll, toQuery } from "@harbour/ui";
 import { describe, expect, it } from "vitest";
-import { auditApiSource } from "./audit-http.ts";
+import { apiAudit, auditApiSource } from "./audit-http.ts";
 
 const NOW = Date.UTC(2026, 9, 27, 12);
 
@@ -83,6 +83,20 @@ describe("the audit log over the audit query API", () => {
 		const page = await source.query(toQuery({ range: "all", kind: "all", organisationId: "org_b" }, NOW));
 		expect(page.items).toHaveLength(20);
 		expect(page.items.every((event) => event.organisationId === "org_b")).toBe(true);
+	});
+
+	it("is the console's audit seam on the api source, with no names or choices until identity has an API", async () => {
+		const { fetcher } = await served();
+		const audit = apiAudit({
+			baseUrl: "https://harbour.test",
+			fetch: fetcher,
+			headers: () => ({ authorization: "Bearer tom" }),
+		});
+		expect(audit.choices).toEqual({});
+		expect(audit.links).toEqual({});
+		const page = await audit.source.query(toQuery({ range: "all", kind: "all" }, NOW), { limit: 5 });
+		expect(page.items).toHaveLength(5);
+		expect(page.nextCursor).toBeDefined();
 	});
 
 	it("passes the server's refusal through for an organisation the caller isn't in", async () => {
