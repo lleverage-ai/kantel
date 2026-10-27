@@ -4,13 +4,14 @@
  * It holds a working copy of one workspace in /workspace: a workspace version plus the changes commands have made
  * since, which stay here until the sandbox commits them (on lease release, or before an isolate command). Every call
  * carries a sync from the version the container holds to the current head; paths the container has changed are not
- * overwritten by it, so the container's own changes win. `/changes` returns those changes; `/ack` says they are
- * committed as a new version. The container never talks to object storage and has no credentials: all its network
+ * overwritten by it, so the container's own changes win. `/changes` rescans and returns those changes with a stamp;
+ * `/ack` says the changes up to that stamp are committed as a new version, so a change made after `/changes` (by a
+ * later command, or a background job) stays pending. The container never talks to object storage and has no credentials: all its network
  * traffic goes through the vault.
  */
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, normalize } from "node:path";
+import { join, normalize } from "node:path";
 
 const ROOT = "/workspace";
 /** Not synced: dependency trees and git metadata stay local to the container (see README, "Workspace"). */
@@ -25,8 +26,10 @@ type Sync = { from: number | null; to: number; put: Put[]; remove: string[] };
 let version: number | null = null;
 /** What each file looked like at the last scan, to find what a command changed. */
 let index = new Map<string, FileState>();
-/** Paths changed since `version` and not yet committed. */
-let dirty = new Map<string, "put" | "delete">();
+/** Paths changed since `version` and not yet committed, each with the scan that last saw it change. */
+let dirty = new Map<string, { op: "put" | "delete"; stamp: number }>();
+/** Counts scans; `/changes` hands it out and `/ack` takes it back. */
+let stamp = 0;
 let execs = 0;
 
 async function walk(dir: string, prefix: string, out: Map<string, { mode: number; size: number; mtimeMs: number }>) {
@@ -56,40 +59,82 @@ function forget() {
 	dirty = new Map();
 }
 
+/** True when `path` or anything under it has uncommitted changes. */
+function dirtyAtOrUnder(path: string): boolean {
+	if (dirty.has(path)) return true;
+	for (const candidate of dirty.keys()) if (candidate.startsWith(`${path}/`)) return true;
+	return false;
+}
+
+/**
+ * Makes the parent directories of `path` real directories, without following a symlink. Returns false, changing
+ * nothing, when a parent is a symlink or a file the container has changed: the container's own state wins, and a
+ * symlink is never written through (it could point outside /workspace).
+ */
+async function prepareParents(path: string): Promise<boolean> {
+	const parts = path.split("/");
+	for (let i = 1; i < parts.length; i++) {
+		const parent = parts.slice(0, i).join("/");
+		const stat = await lstat(join(ROOT, parent)).catch(() => null);
+		if (stat === null) {
+			await mkdir(join(ROOT, parent));
+			continue;
+		}
+		if (stat.isDirectory()) continue;
+		if (stat.isSymbolicLink() || dirty.has(parent)) return false;
+		// A stale file where the head now has a directory.
+		await rm(join(ROOT, parent), { force: true });
+		index.delete(parent);
+		await mkdir(join(ROOT, parent));
+	}
+	return true;
+}
+
+/** True when some parent directory of `path` is a symlink: such a path is never touched. */
+async function underSymlink(path: string): Promise<boolean> {
+	const parts = path.split("/");
+	for (let i = 1; i < parts.length; i++) {
+		const stat = await lstat(join(ROOT, parts.slice(0, i).join("/"))).catch(() => null);
+		if (stat === null) return false;
+		if (stat.isSymbolicLink()) return true;
+	}
+	return false;
+}
+
+/**
+ * Re-bases the working copy from `version` to `body.to`. A path the container has changed, or one whose parent is a
+ * symlink or a changed file, is left as the container has it and not indexed. Applying a sync again is harmless, so
+ * a failure leaves `version` where it was and the next call repeats the sync; the working copy is never wiped here.
+ */
 async function applySync(body: Sync): Promise<boolean> {
 	if (body.from !== version) return false;
-	try {
-		for (const path of body.remove) {
-			if (dirty.has(path)) continue;
-			await rm(join(ROOT, path), { force: true, recursive: true });
-			index.delete(path);
-		}
-		for (const file of body.put) {
-			if (dirty.has(file.path)) continue;
-			const absolute = join(ROOT, file.path);
-			// A directory replaced by a file (the removes above leave the emptied directory behind).
-			const existing = await lstat(absolute).catch(() => null);
-			if (existing?.isDirectory()) await rm(absolute, { recursive: true, force: true });
-			await mkdir(dirname(absolute), { recursive: true });
-			const bytes = Buffer.from(file.content, "base64");
-			await writeFile(absolute, bytes);
-			await chmod(absolute, file.mode);
-			const stat = await lstat(absolute);
-			index.set(file.path, { hash: sha256(bytes), mode: file.mode, size: stat.size, mtimeMs: stat.mtimeMs });
-		}
-	} catch (error) {
-		// A half-applied sync: forget the working copy so the next call starts from a full sync.
-		await rm(ROOT, { recursive: true, force: true });
-		await mkdir(ROOT, { recursive: true });
-		forget();
-		throw error;
+	for (const path of body.remove) {
+		if (dirtyAtOrUnder(path) || (await underSymlink(path))) continue;
+		const existing = await lstat(join(ROOT, path)).catch(() => null);
+		// Only a file (or a symlink, unlinked, never followed); a directory here is the container's own.
+		if (existing !== null && !existing.isDirectory()) await rm(join(ROOT, path), { force: true });
+		index.delete(path);
+	}
+	for (const file of body.put) {
+		if (dirtyAtOrUnder(file.path)) continue;
+		if (!(await prepareParents(file.path))) continue;
+		const absolute = join(ROOT, file.path);
+		const existing = await lstat(absolute).catch(() => null);
+		// A directory replaced by a file (nothing under it is dirty), or a symlink: remove it, never write through it.
+		if (existing !== null && !existing.isFile()) await rm(absolute, { recursive: true, force: true });
+		const bytes = Buffer.from(file.content, "base64");
+		await writeFile(absolute, bytes);
+		await chmod(absolute, file.mode);
+		const stat = await lstat(absolute);
+		index.set(file.path, { hash: sha256(bytes), mode: file.mode, size: stat.size, mtimeMs: stat.mtimeMs });
 	}
 	version = body.to;
 	return true;
 }
 
-/** Marks what the last command changed as dirty. */
+/** Marks what changed since the last scan as dirty. */
 async function scan() {
+	stamp += 1;
 	const seen = new Map<string, { mode: number; size: number; mtimeMs: number }>();
 	await walk(ROOT, "", seen);
 	const next = new Map<string, FileState>();
@@ -102,16 +147,16 @@ async function scan() {
 		const hash = sha256(await readFile(join(ROOT, path)));
 		next.set(path, { hash, ...stat });
 		if (known !== undefined && known.hash === hash && known.mode === stat.mode) continue;
-		dirty.set(path, "put");
+		dirty.set(path, { op: "put", stamp });
 	}
-	for (const path of index.keys()) if (!seen.has(path)) dirty.set(path, "delete");
+	for (const path of index.keys()) if (!seen.has(path)) dirty.set(path, { op: "delete", stamp });
 	index = next;
 }
 
 async function pendingChanges() {
 	const put: Put[] = [];
 	const remove: string[] = [];
-	for (const [path, op] of dirty) {
+	for (const [path, { op }] of dirty) {
 		if (op === "delete") {
 			remove.push(path);
 			continue;
@@ -124,7 +169,7 @@ async function pendingChanges() {
 		}
 		put.push({ path, mode: stat.mode & 0o777, content: (await readFile(absolute)).toString("base64") });
 	}
-	return { put, remove };
+	return { put, remove, stamp };
 }
 
 const EGRESS_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
@@ -272,15 +317,19 @@ Bun.serve({
 		if (url.pathname === "/changes" && request.method === "POST") {
 			const body = (await request.json()) as { sync: Sync };
 			if (!(await applySync(body.sync))) return json({ error: "version_mismatch", have: version }, 409);
+			// Rescan: a background job may have written since the last command returned.
+			await scan();
 			return json(await pendingChanges());
 		}
 
 		if (url.pathname === "/ack" && request.method === "POST") {
-			// The changes are committed as `version`: the working copy is that version, with nothing pending.
-			const body = (await request.json()) as { version: number };
-			version = body.version;
-			dirty = new Map();
-			return json({ ok: true, version });
+			// The changes `/changes` returned with `stamp` are committed as `version`. Anything changed after that
+			// stays pending; a working copy already re-based past `version` stays where it is.
+			const body = (await request.json()) as { version: number; stamp: number };
+			for (const [path, entry] of [...dirty]) if (entry.stamp <= body.stamp) dirty.delete(path);
+			// After a reset (version null) there is nothing to acknowledge: the next call does a full sync.
+			if (version !== null) version = Math.max(version, body.version);
+			return json({ ok: true, version, dirty: dirty.size });
 		}
 
 		if (url.pathname === "/reset" && request.method === "POST") {

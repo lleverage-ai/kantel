@@ -2,7 +2,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { AuditEventInput, EgressDecision, HttpMethod, SandboxTier, Vault } from "@harbour/contracts";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { SPIKE_ORGANISATION, SPIKE_OWNER, serviceContext } from "./identity.ts";
-import { containsSecret, REDACTED, redactText } from "./redact.ts";
+import { containsSecret, injectHeader, REDACTED, redactText } from "./redact.ts";
 
 export { REDACTED };
 
@@ -87,7 +87,14 @@ export async function vaultFetch(env: Env, request: Request, caller: VaultCaller
 
 	const headers = new Headers(request.headers);
 	const secret = decision.inject.value;
-	headers.set(decision.inject.header, secret);
+	// Redaction looks for the value as stored: refuse one the headers would change. Fail closed; never echo the value.
+	if (!injectHeader(headers, decision.inject.header, secret)) {
+		await vault.record({ ...base, decision: "denied", status: 500, reason: "vault item is not a valid header value" });
+		return new Response("harbour vault: the vault item is not a valid header value.\n", {
+			status: 500,
+			headers: { "content-type": "text/plain", "x-harbour-vault": "denied" },
+		});
+	}
 	// Manual redirects: a redirect to another host comes back through the vault and its policy, never with the header.
 	const upstream = await fetch(url.toString(), {
 		method: request.method,

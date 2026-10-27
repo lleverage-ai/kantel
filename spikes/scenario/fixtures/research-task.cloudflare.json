@@ -1,6 +1,6 @@
 {
 	"format": "harbour-m0-session-fixture/2",
-	"recordedAt": "2026-10-27T11:31:39.183Z",
+	"recordedAt": "2026-10-27T12:38:05.186Z",
 	"scenario": "research-task",
 	"entries": [
 		{
@@ -13,7 +13,7 @@
 							"text": "Done: the title of example.com is \"Example Domain\"; notes are in notes/x.md and committed in the container's git repository."
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -31,7 +31,7 @@
 						}
 					},
 					"stopReason": "stop",
-					"timestamp": 1793100698367,
+					"timestamp": 1793104684629,
 					"durationMs": 0
 				}
 			],
@@ -53,8 +53,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 313,
-					"timestamp": 1793100698367
+					"durationMs": 328,
+					"timestamp": 1793104684629
 				}
 			],
 			"data": {
@@ -79,7 +79,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -97,7 +97,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100698054,
+					"timestamp": 1793104684301,
 					"durationMs": 0
 				}
 			],
@@ -115,12 +115,12 @@
 					"content": [
 						{
 							"type": "text",
-							"text": "0c6d38a research notes\n1\n"
+							"text": "4abe66c research notes\n1\n"
 						}
 					],
 					"isError": false,
-					"durationMs": 1222,
-					"timestamp": 1793100698054
+					"durationMs": 1343,
+					"timestamp": 1793104684301
 				}
 			],
 			"data": {
@@ -145,7 +145,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -163,7 +163,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100696832,
+					"timestamp": 1793104682958,
 					"durationMs": 0
 				}
 			],
@@ -185,8 +185,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 2014,
-					"timestamp": 1793100696832
+					"durationMs": 1108,
+					"timestamp": 1793104682958
 				}
 			],
 			"data": {
@@ -211,7 +211,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -229,7 +229,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100694818,
+					"timestamp": 1793104681850,
 					"durationMs": 0
 				}
 			],
@@ -247,12 +247,12 @@
 					"content": [
 						{
 							"type": "text",
-							"text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\n0c6d38a research notes\n0\n"
+							"text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\n4abe66c research notes\n0\n"
 						}
 					],
 					"isError": false,
-					"durationMs": 13467,
-					"timestamp": 1793100694818
+					"durationMs": 2326,
+					"timestamp": 1793104681850
 				}
 			],
 			"data": {
@@ -277,7 +277,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -295,7 +295,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100681351,
+					"timestamp": 1793104679524,
 					"durationMs": 0
 				}
 			],
@@ -317,8 +317,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 676,
-					"timestamp": 1793100681351
+					"durationMs": 727,
+					"timestamp": 1793104679524
 				}
 			],
 			"data": {
@@ -344,7 +344,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -362,7 +362,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100680675,
+					"timestamp": 1793104678797,
 					"durationMs": 0
 				}
 			],
@@ -384,8 +384,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 211,
-					"timestamp": 1793100680675
+					"durationMs": 126,
+					"timestamp": 1793104678797
 				}
 			],
 			"data": {
@@ -410,7 +410,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -428,7 +428,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100680464,
+					"timestamp": 1793104678671,
 					"durationMs": 0
 				}
 			],
@@ -450,8 +450,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 460,
-					"timestamp": 1793100680464
+					"durationMs": 496,
+					"timestamp": 1793104678671
 				}
 			],
 			"data": {
@@ -476,7 +476,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -494,7 +494,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100680004,
+					"timestamp": 1793104678175,
 					"durationMs": 0
 				}
 			],
@@ -516,8 +516,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 1194,
-					"timestamp": 1793100680004
+					"durationMs": 2101,
+					"timestamp": 1793104678175
 				}
 			],
 			"data": {
@@ -542,7 +542,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -560,7 +560,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100678810,
+					"timestamp": 1793104676074,
 					"durationMs": 0
 				}
 			],
@@ -582,8 +582,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 717,
-					"timestamp": 1793100678810
+					"durationMs": 660,
+					"timestamp": 1793104676074
 				}
 			],
 			"data": {
@@ -608,7 +608,7 @@
 							}
 						}
 					],
-					"api": "faux:1793100677940:5yz7ww5ofbi",
+					"api": "faux:1793104674869:q75zc84tn9p",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -626,7 +626,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793100678093,
+					"timestamp": 1793104675414,
 					"durationMs": 0
 				}
 			],
@@ -735,7 +735,7 @@
 							}
 						}
 					],
-					"timestamp": 1793100678093
+					"timestamp": 1793104675414
 				}
 			],
 			"kind": "pi.system",
@@ -748,7 +748,7 @@
 				{
 					"role": "user",
 					"content": "Run the research task in brief.txt.",
-					"timestamp": 1793100678093
+					"timestamp": 1793104675414
 				}
 			],
 			"kind": "pi.user",
@@ -761,205 +761,205 @@
 			"command": "ls -1 /workspace && cat brief.txt",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4",
+			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
 			"base": 1,
 			"version": 1,
 			"timings": {
-				"isolate.manifest": 213,
-				"isolate.exec": 210,
+				"isolate.manifest": 229,
+				"isolate.exec": 181,
 				"isolate.scan": 0,
-				"isolate.call": 580,
-				"isolate.total": 580
+				"isolate.call": 505,
+				"isolate.total": 505
 			}
 		},
 		{
 			"command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4",
+			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
 			"base": 1,
 			"version": 2,
 			"timings": {
 				"isolate.manifest": 0,
-				"isolate.exec": 524,
+				"isolate.exec": 1333,
 				"isolate.scan": 0,
-				"isolate.call": 524,
-				"isolate.commit": 596,
-				"isolate.total": 1120
+				"isolate.call": 1333,
+				"isolate.commit": 694,
+				"isolate.total": 2027
 			}
 		},
 		{
 			"command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4",
+			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
 			"base": 2,
 			"version": 2,
 			"timings": {
-				"isolate.manifest": 132,
-				"isolate.exec": 204,
+				"isolate.manifest": 177,
+				"isolate.exec": 175,
 				"isolate.scan": 0,
-				"isolate.call": 348,
-				"isolate.total": 348
+				"isolate.call": 352,
+				"isolate.total": 352
 			}
 		},
 		{
 			"command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4",
+			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
 			"base": 2,
 			"version": 2,
 			"timings": {
 				"isolate.manifest": 0,
-				"isolate.exec": 148,
+				"isolate.exec": 47,
 				"isolate.scan": 0,
-				"isolate.call": 148,
-				"isolate.total": 148
+				"isolate.call": 47,
+				"isolate.total": 47
 			}
 		},
 		{
 			"command": "git init -q && cat notes/x.md && grep -c 'Example Domain' research/example.html && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true",
 			"tier": "container",
 			"exitCode": 0,
-			"leaseId": "lease_c5201646-53ad-414f-888a-3e38ee72a69d",
+			"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
 			"base": 3,
 			"version": 3,
 			"timings": {
-				"container.start": 11721,
-				"container.ready": 441,
-				"container.request": 674,
-				"container.sync": 7.1,
-				"container.exec": 165.4,
-				"container.scan": 8.8,
-				"container.call": 13340,
-				"container.total": 13340
+				"container.start": 554,
+				"container.ready": 507,
+				"container.request": 594,
+				"container.sync": 12.1,
+				"container.exec": 317.8,
+				"container.scan": 2,
+				"container.call": 2191,
+				"container.total": 2191
 			}
 		},
 		{
 			"command": "git --version > /dev/null && curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
 			"tier": "container",
 			"exitCode": 0,
-			"leaseId": "lease_c5201646-53ad-414f-888a-3e38ee72a69d",
+			"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
 			"base": 3,
 			"version": 3,
 			"timings": {
-				"container.request": 1072,
+				"container.request": 983,
 				"container.sync": 0.2,
-				"container.exec": 1062.6,
-				"container.scan": 1,
-				"container.call": 1945,
-				"container.total": 1945
+				"container.exec": 972.1,
+				"container.scan": 0.8,
+				"container.call": 1018,
+				"container.total": 1018
 			}
 		},
 		{
 			"command": "cat git-log.txt && wc -l < git-log.txt",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4",
+			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
 			"base": 4,
 			"version": 4,
 			"timings": {
-				"isolate.manifest": 121,
-				"isolate.exec": 119,
+				"isolate.manifest": 130,
+				"isolate.exec": 266,
 				"isolate.scan": 0,
-				"isolate.call": 240,
-				"isolate.total": 240
+				"isolate.call": 396,
+				"isolate.total": 396
 			}
 		}
 	],
 	"events": [],
 	"leases": [
 		{
-			"id": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4",
-			"sessionId": "research-task-mvqlugce",
-			"workspaceId": "ws-research-task-mvqlugce",
+			"id": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
+			"sessionId": "research-task-mvqo84hp",
+			"workspaceId": "ws-research-task-mvqo84hp",
 			"tier": "isolate",
 			"baseVersion": 1,
-			"acquiredAt": 1793100678174,
-			"expiresAt": 1793101578174,
-			"endedAt": 1793100698367,
+			"acquiredAt": 1793104675488,
+			"expiresAt": 1793105575488,
+			"endedAt": 1793104684629,
 			"endReason": "released"
 		},
 		{
-			"id": "lease_c5201646-53ad-414f-888a-3e38ee72a69d",
-			"sessionId": "research-task-mvqlugce",
-			"workspaceId": "ws-research-task-mvqlugce",
+			"id": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
+			"sessionId": "research-task-mvqo84hp",
+			"workspaceId": "ws-research-task-mvqo84hp",
 			"tier": "container",
 			"baseVersion": 3,
-			"acquiredAt": 1793100681419,
-			"expiresAt": 1793101581419,
-			"endedAt": 1793100698486,
+			"acquiredAt": 1793104679603,
+			"expiresAt": 1793105579603,
+			"endedAt": 1793104685070,
 			"endReason": "released"
 		}
 	],
 	"audit": [
 		{
-			"at": 1793100678174,
+			"at": 1793104675488,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4:acquired",
+			"id": "sandbox:lease:lease_a4863d37-c260-4842-9170-b816fbb52ebb:acquired",
 			"type": "sandbox.lease.acquired",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4"
+				"id": "lease_a4863d37-c260-4842-9170-b816fbb52ebb"
 			},
 			"data": {
 				"tier": "isolate",
-				"workspaceId": "ws-research-task-mvqlugce",
+				"workspaceId": "ws-research-task-mvqo84hp",
 				"baseVersion": 1,
-				"expiresAt": 1793101578174
+				"expiresAt": 1793105575488
 			}
 		},
 		{
-			"at": 1793100680004,
+			"at": 1793104678175,
 			"source": "workspace",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
 			"subject": {
 				"kind": "workspace",
-				"id": "ws-research-task-mvqlugce"
+				"id": "ws-research-task-mvqo84hp"
 			},
-			"id": "workspace:commit:ws-research-task-mvqlugce:2",
+			"id": "workspace:commit:ws-research-task-mvqo84hp:2",
 			"type": "workspace.committed",
 			"data": {
 				"version": 2,
 				"changed": ["research/example.html"],
-				"leaseId": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4"
+				"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb"
 			}
 		},
 		{
-			"at": 1793100681351,
+			"at": 1793104679524,
 			"source": "workspace",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
 			"subject": {
 				"kind": "workspace",
-				"id": "ws-research-task-mvqlugce"
+				"id": "ws-research-task-mvqo84hp"
 			},
-			"id": "workspace:commit:ws-research-task-mvqlugce:3",
+			"id": "workspace:commit:ws-research-task-mvqo84hp:3",
 			"type": "workspace.committed",
 			"data": {
 				"version": 3,
@@ -967,140 +967,140 @@
 			}
 		},
 		{
-			"at": 1793100681419,
+			"at": 1793104679603,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_c5201646-53ad-414f-888a-3e38ee72a69d:acquired",
+			"id": "sandbox:lease:lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613:acquired",
 			"type": "sandbox.lease.acquired",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_c5201646-53ad-414f-888a-3e38ee72a69d"
+				"id": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613"
 			},
 			"data": {
 				"tier": "container",
-				"workspaceId": "ws-research-task-mvqlugce",
+				"workspaceId": "ws-research-task-mvqo84hp",
 				"baseVersion": 3,
-				"expiresAt": 1793101581419
+				"expiresAt": 1793105579603
 			}
 		},
 		{
-			"at": 1793100681419,
+			"at": 1793104679603,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:escalated:org-harbour-m0:research-task-mvqlugce",
+			"id": "sandbox:escalated:org-harbour-m0:research-task-mvqo84hp",
 			"type": "sandbox.escalated",
 			"subject": {
 				"kind": "session",
-				"id": "research-task-mvqlugce"
+				"id": "research-task-mvqo84hp"
 			},
 			"data": {
 				"tool": "bash",
-				"leaseId": "lease_c5201646-53ad-414f-888a-3e38ee72a69d",
-				"workspaceId": "ws-research-task-mvqlugce"
+				"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
+				"workspaceId": "ws-research-task-mvqo84hp"
 			}
 		},
 		{
-			"at": 1793100697695,
+			"at": 1793104683775,
 			"source": "workspace",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
 			"subject": {
 				"kind": "workspace",
-				"id": "ws-research-task-mvqlugce"
+				"id": "ws-research-task-mvqo84hp"
 			},
-			"id": "workspace:commit:ws-research-task-mvqlugce:4",
+			"id": "workspace:commit:ws-research-task-mvqo84hp:4",
 			"type": "workspace.committed",
 			"data": {
 				"version": 4,
 				"changed": ["git-log.txt"],
-				"leaseId": "lease_c5201646-53ad-414f-888a-3e38ee72a69d"
+				"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613"
 			}
 		},
 		{
-			"at": 1793100698367,
+			"at": 1793104684629,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4:released",
+			"id": "sandbox:lease:lease_a4863d37-c260-4842-9170-b816fbb52ebb:released",
 			"type": "sandbox.lease.released",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_372f195a-d186-4ff7-8c4e-aacdca9bc3f4"
+				"id": "lease_a4863d37-c260-4842-9170-b816fbb52ebb"
 			},
 			"data": {
 				"tier": "isolate",
 				"reason": "released",
-				"heldMs": 20193,
-				"busyMs": 2436
+				"heldMs": 9141,
+				"busyMs": 3327
 			}
 		},
 		{
-			"at": 1793100698535,
+			"at": 1793104685099,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqlugce"
+				"sessionId": "research-task-mvqo84hp"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqlugce",
+			"sessionId": "research-task-mvqo84hp",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_c5201646-53ad-414f-888a-3e38ee72a69d:released",
+			"id": "sandbox:lease:lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613:released",
 			"type": "sandbox.lease.released",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_c5201646-53ad-414f-888a-3e38ee72a69d"
+				"id": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613"
 			},
 			"data": {
 				"tier": "container",
 				"reason": "released",
-				"heldMs": 17067,
-				"busyMs": 15285
+				"heldMs": 5467,
+				"busyMs": 3209
 			}
 		}
 	],
 	"vault": [
 		{
-			"at": 1793100679364,
-			"useId": "use_79d2a5cb-db15-472f-a817-ef975a130467",
-			"sessionId": "research-task-mvqlugce",
+			"at": 1793104676900,
+			"useId": "use_49bbf880-e224-4023-8369-54561a2c5fd3",
+			"sessionId": "research-task-mvqo84hp",
 			"tier": "isolate",
 			"method": "GET",
 			"host": "example.com",
 			"path": "/",
-			"reason": "Allowed by policy policy_610c3ab9-62d4-489a-ad6b-4f5f5aa46856",
-			"policyId": "policy_610c3ab9-62d4-489a-ad6b-4f5f5aa46856",
+			"reason": "Allowed by policy policy_c08115f4-65d0-4c11-9b18-dcbc0191e57f",
+			"policyId": "policy_c08115f4-65d0-4c11-9b18-dcbc0191e57f",
 			"decision": "allowed",
 			"status": 200,
 			"redactions": 0,
@@ -1110,15 +1110,15 @@
 			}
 		},
 		{
-			"at": 1793100680316,
-			"useId": "use_3236ae72-1042-4e6b-860d-8c05fe1565cb",
-			"sessionId": "research-task-mvqlugce",
+			"at": 1793104678536,
+			"useId": "use_6e3c5e1d-b35b-4615-aeac-ef67a02576ec",
+			"sessionId": "research-task-mvqo84hp",
 			"tier": "isolate",
 			"method": "GET",
 			"host": "postman-echo.com",
 			"path": "/headers",
-			"reason": "Allowed by policy policy_ca27f55e-1214-45e6-99bf-d03cfceda476",
-			"policyId": "policy_ca27f55e-1214-45e6-99bf-d03cfceda476",
+			"reason": "Allowed by policy policy_6955e253-399f-4531-861b-ff80d0eab920",
+			"policyId": "policy_6955e253-399f-4531-861b-ff80d0eab920",
 			"decision": "allowed",
 			"status": 200,
 			"redactions": 1,
@@ -1128,9 +1128,9 @@
 			}
 		},
 		{
-			"at": 1793100680631,
-			"useId": "use_90db7c83-12cf-4702-9dbd-32a0fceb4614",
-			"sessionId": "research-task-mvqlugce",
+			"at": 1793104678780,
+			"useId": "use_8f5301ff-df28-4a5a-ada4-1559e5e94dce",
+			"sessionId": "research-task-mvqo84hp",
 			"tier": "isolate",
 			"method": "GET",
 			"host": "api.github.com",
@@ -1140,15 +1140,15 @@
 			"status": 403
 		},
 		{
-			"at": 1793100696426,
-			"useId": "use_566842a6-8c89-40a9-a2f4-396d5f6279b5",
-			"sessionId": "research-task-mvqlugce",
+			"at": 1793104682605,
+			"useId": "use_a59a032c-bc76-4b02-a098-286c889fe1b4",
+			"sessionId": "research-task-mvqo84hp",
 			"tier": "container",
 			"method": "GET",
 			"host": "postman-echo.com",
 			"path": "/headers",
-			"reason": "Allowed by policy policy_b368ae9e-5037-46b3-a3b5-b38c106aeef4",
-			"policyId": "policy_b368ae9e-5037-46b3-a3b5-b38c106aeef4",
+			"reason": "Allowed by policy policy_6955e253-399f-4531-861b-ff80d0eab920",
+			"policyId": "policy_6955e253-399f-4531-861b-ff80d0eab920",
 			"decision": "allowed",
 			"status": 200,
 			"redactions": 1,
@@ -1158,9 +1158,9 @@
 			}
 		},
 		{
-			"at": 1793100696768,
-			"useId": "use_d9812bf5-c9cb-4cbb-be0f-a41d65de457f",
-			"sessionId": "research-task-mvqlugce",
+			"at": 1793104682926,
+			"useId": "use_cc51422c-212f-4e79-9c73-08fbb40ce907",
+			"sessionId": "research-task-mvqo84hp",
 			"tier": "container",
 			"method": "GET",
 			"host": "api.github.com",

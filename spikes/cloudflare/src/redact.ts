@@ -5,6 +5,22 @@
  */
 export const REDACTED = "[vault:redacted]";
 
+/**
+ * Sets `name: value` on `headers` only if it will go out exactly as `value`. Headers trim surrounding whitespace and
+ * reject some characters, and redaction looks for the value as stored, so a value the headers would change must not be
+ * sent at all. Returns false (and leaves the header unset) in that case.
+ */
+export function injectHeader(headers: Headers, name: string, value: string): boolean {
+	try {
+		headers.set(name, value);
+	} catch {
+		return false;
+	}
+	if (headers.get(name) === value) return true;
+	headers.delete(name);
+	return false;
+}
+
 export function secretForms(secret: string): string[] {
 	const bytes = new TextEncoder().encode(secret);
 	let binary = "";

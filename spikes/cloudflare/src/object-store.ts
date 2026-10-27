@@ -1,6 +1,6 @@
 /**
- * An in-memory `ObjectStore` with R2's conditional-put semantics (etag match, `etagDoesNotMatch: "*"` for create),
- * for the conformance tests. The deployed spike passes its R2 bucket instead.
+ * An in-memory `ObjectStore` with R2's conditional-put semantics (`etagMatches`; `etagDoesNotMatch`, with `"*"` for
+ * create-only), for the conformance tests. The deployed spike passes its R2 bucket instead.
  */
 import type { Conditional, ObjectStore, StoredObject } from "./workspace.ts";
 
@@ -31,7 +31,9 @@ export class MemoryObjectStore implements ObjectStore {
 		this.puts++;
 		const existing = this.#objects.get(key);
 		const onlyIf = options?.onlyIf;
-		if (onlyIf?.etagDoesNotMatch === "*" && existing !== undefined) return null;
+		const notMatch = onlyIf?.etagDoesNotMatch;
+		if (notMatch !== undefined && existing !== undefined && (notMatch === "*" || notMatch === existing.etag))
+			return null;
 		if (onlyIf?.etagMatches !== undefined && existing?.etag !== onlyIf.etagMatches) return null;
 		const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value.slice();
 		const etag = `e${++this.#next}`;

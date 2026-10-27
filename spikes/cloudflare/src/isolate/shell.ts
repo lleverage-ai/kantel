@@ -6,10 +6,12 @@
  * the paths it touched are compared with the version it started from, and the differences come back as changes for
  * the caller to commit (the isolate commits them at once; the container simulator in the tests keeps them).
  *
- * Mounts are read-only: a write under a mount point fails with `Read-only file system` and is never collected.
+ * Mounts are read-only: each mount is its own filesystem under just-bash's MountableFs, and every write method on it
+ * fails with `Read-only file system`, however the write is reached (directly, or inside a recursive `cp` or `mv`).
+ * Nothing under a mount is ever collected.
  */
 import type { FileEntry, Mount } from "@harbour/contracts";
-import { Bash, type CustomCommand, InMemoryFs } from "just-bash/browser";
+import { Bash, type CustomCommand, type IFileSystem, InMemoryFs, MountableFs } from "just-bash/browser";
 import type { ModedChange, ModedFileEntry } from "../workspace.ts";
 
 export const ROOT = "/workspace";
@@ -78,6 +80,24 @@ export interface ShellOptions {
 
 const WRITE_FIRST_ARG = new Set(["writeFile", "appendFile", "mkdir", "rm", "chmod", "createExclusive", "utimes", "mv"]);
 const WRITE_SECOND_ARG = new Set(["cp", "mv", "link", "symlink"]);
+const MOUNT_WRITES = new Set([...WRITE_FIRST_ARG, ...WRITE_SECOND_ARG]);
+
+/** A mount's filesystem: reads pass through; every write method fails, naming the absolute path. */
+function readOnlyMount(inner: InMemoryFs, point: string): IFileSystem {
+	return new Proxy(inner, {
+		get(target, property, receiver) {
+			const value = Reflect.get(target, property, receiver);
+			if (typeof value !== "function") return value;
+			if (MOUNT_WRITES.has(String(property))) {
+				return (...args: unknown[]) => {
+					const path = typeof args[0] === "string" ? args[0] : "/";
+					return Promise.reject(new ReadOnlyError(path === "/" ? point : `${point}${path}`));
+				};
+			}
+			return (value as (...a: unknown[]) => unknown).bind(target);
+		},
+	}) as unknown as IFileSystem;
+}
 
 class ReadOnlyError extends Error {
 	readonly code = "EROFS";
@@ -104,6 +124,7 @@ export async function runShell(
 	const base = new Map(entries.filter((entry) => entry.kind === "file").map((entry) => [entry.path, entry]));
 	mark("isolate.manifest");
 
+	// The workspace and everything outside the mounts; each mount gets its own read-only filesystem below.
 	const fs = new InMemoryFs({});
 	await fs.mkdir(ROOT, { recursive: true });
 	const blob = async (digest: string) => {
@@ -122,18 +143,22 @@ export async function runShell(
 		if (change !== null) await fs.writeFile(`${ROOT}/${path}`, change.content, { mode: change.mode } as never);
 	}
 	const mountPoints = request.mounts.map((mount) => mount.path);
+	const mounts: { mountPoint: string; filesystem: IFileSystem }[] = [];
 	for (const point of mountPoints) {
-		await fs.mkdir(point, { recursive: true });
+		const inner = new InMemoryFs({});
 		for (const entry of await port.mountEntries(point)) {
-			if (entry.kind === "directory") await fs.mkdir(entry.path, { recursive: true });
-			else fs.writeFileLazy(entry.path, () => port.readMount(entry.path), { mode: 0o444 });
+			const inside = entry.path.slice(point.length) || "/";
+			if (entry.kind === "directory") await inner.mkdir(inside, { recursive: true });
+			else inner.writeFileLazy(inside, () => port.readMount(entry.path), { mode: 0o444 });
 		}
+		mounts.push({ mountPoint: point, filesystem: readOnlyMount(inner, point) });
 	}
+	const view: IFileSystem = mounts.length === 0 ? fs : new MountableFs({ base: fs, mounts });
 	const underMount = (path: unknown) =>
 		typeof path === "string" && mountPoints.some((point) => path === point || path.startsWith(`${point}/`));
 
 	const touched = new Set<string>([...overlay.keys()].map((path) => `${ROOT}/${path}`));
-	const tracked = new Proxy(fs, {
+	const tracked = new Proxy(view, {
 		get(target, property, receiver) {
 			const value = Reflect.get(target, property, receiver);
 			if (typeof value !== "function") return value;
@@ -152,7 +177,7 @@ export async function runShell(
 	});
 	const cwd = request.cwd === undefined || request.cwd === "" ? ROOT : `${ROOT}/${request.cwd}`;
 	const bash = new Bash({
-		fs: tracked as unknown as InMemoryFs,
+		fs: tracked,
 		cwd,
 		env: { HOME: ROOT, USER: "harbour", ...request.env },
 		// just-bash's own allow-list is off on purpose: the vault (globalOutbound) is the policy point, and the

@@ -16,12 +16,19 @@ import {
 } from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { AuditEventInput, AuditSink, CallContext, SandboxTier } from "@harbour/contracts";
+import {
+	type AuditEventInput,
+	type AuditSink,
+	type CallContext,
+	HarbourError,
+	type SandboxLease,
+	type SandboxTier,
+} from "@harbour/contracts";
 import { type ExecRecord, HarbourEnv } from "./env.ts";
 import { SPIKE_OWNER, sessionContext } from "./identity.ts";
 import { r2Store } from "./r2.ts";
 import { CloudflareSandboxes, type LeaseRow, type LeaseStore } from "./sandbox.ts";
-import { ContainerDOBackend, DynamicWorkerIsolate } from "./tiers.ts";
+import { ContainerDOBackend, DynamicWorkerIsolate, stopContainer } from "./tiers.ts";
 import { ObjectStoreWorkspaces } from "./workspace.ts";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -74,6 +81,8 @@ export class SessionDO extends DurableObject<Env> {
 		);
 		sql.exec("CREATE TABLE IF NOT EXISTS harbour_leases (id TEXT PRIMARY KEY, body TEXT NOT NULL)");
 		sql.exec("CREATE TABLE IF NOT EXISTS harbour_escalated (key TEXT PRIMARY KEY)");
+		// Which container Durable Object holds each container lease, so commit and release reach the right one.
+		sql.exec("CREATE TABLE IF NOT EXISTS harbour_lease_container (lease_id TEXT PRIMARY KEY, name TEXT NOT NULL)");
 		sql.exec(
 			"CREATE TABLE IF NOT EXISTS harbour_audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL)",
 		);
@@ -134,10 +143,30 @@ export class SessionDO extends DurableObject<Env> {
 		return new CloudflareSandboxes({
 			workspaces,
 			isolate: new DynamicWorkerIsolate(this.env, this.ctx.exports, meta.sessionId, generation),
-			container: new ContainerDOBackend(this.env, overrides.containerName ?? meta.sessionId),
+			container: new ContainerDOBackend(this.env, (lease) => this.#containerFor(lease, meta, overrides.containerName)),
 			leases: this.#leases,
 			audit: this.#audit,
 		});
+	}
+
+	/**
+	 * The container a lease is bound to: chosen on its first use (the session ID, or the name a measurement route asks
+	 * for) and fixed after that. Asking for another name while the lease lives is refused.
+	 */
+	#containerFor(lease: SandboxLease, meta: Meta, wanted: string | undefined): string {
+		const sql = this.ctx.storage.sql;
+		const bound = sql
+			.exec<{ name: string }>("SELECT name FROM harbour_lease_container WHERE lease_id = ?", lease.id)
+			.toArray()[0]?.name;
+		if (bound !== undefined) {
+			if (wanted !== undefined && wanted !== bound) {
+				throw new HarbourError("conflict", `lease ${lease.id} is bound to container ${bound}`, { leaseId: lease.id });
+			}
+			return bound;
+		}
+		const name = wanted ?? meta.sessionId;
+		sql.exec("INSERT INTO harbour_lease_container (lease_id, name) VALUES (?, ?)", lease.id, name);
+		return name;
 	}
 
 	// ---- harness -------------------------------------------------------------------------------------------------------
@@ -286,8 +315,9 @@ export class SessionDO extends DurableObject<Env> {
 				case "POST release": {
 					const body = (await request.json().catch(() => ({}))) as { containerName?: string };
 					const meta = this.#requireMeta();
-					await this.#sandboxes(meta, body).releaseSession(this.#ctx(meta), meta.sessionId, "released");
-					await new ContainerDOBackend(this.env, body.containerName ?? meta.sessionId).stop();
+					// Release commits each lease through the container it is bound to; then stop the one named.
+					await this.#sandboxes(meta).releaseSession(this.#ctx(meta), meta.sessionId, "released");
+					await stopContainer(this.env, body.containerName ?? meta.sessionId);
 					return json({ ok: true });
 				}
 				default:

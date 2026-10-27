@@ -70,12 +70,23 @@ export interface IsolateBackend {
 export interface ContainerBackend {
 	/** Runs a command on the lease's working copy, re-based on `record.head`. Changes stay in the container. */
 	exec(input: BackendExec): Promise<BackendOutput>;
-	/** Re-bases the working copy on `record.head` and returns its uncommitted changes relative to it. */
-	pending(input: Omit<BackendExec, "request">): Promise<readonly ModedChange[]>;
-	/** The changes `pending` returned are committed as `version`: the working copy now matches it. */
-	committed(lease: SandboxLease, version: number): Promise<void>;
+	/**
+	 * Re-bases the working copy on `record.head` and returns its uncommitted changes relative to it, with a stamp that
+	 * names exactly this set of changes.
+	 */
+	pending(input: Omit<BackendExec, "request">): Promise<PendingChanges>;
+	/**
+	 * The changes `pending` returned with `stamp` are committed as `version`. Changes the container made after that
+	 * `pending` (a command that ran meanwhile) stay pending.
+	 */
+	committed(lease: SandboxLease, version: number, stamp: number): Promise<void>;
 	/** The lease ended. `discard` drops uncommitted changes (an expired lease is never committed). */
 	ended(lease: SandboxLease, options: { readonly discard: boolean }): Promise<void>;
+}
+
+export interface PendingChanges {
+	readonly changes: readonly ModedChange[];
+	readonly stamp: number;
 }
 
 /** What the store keeps per lease. */
@@ -337,17 +348,16 @@ export class CloudflareSandboxes implements Sandboxes {
 		const { lease } = row;
 		for (let attempt = 1; ; attempt++) {
 			const record = await this.#workspaces.get(ctx, lease.workspaceId);
-			const pending = await this.#container.pending({ ctx, lease, record });
+			const { changes: pending, stamp } = await this.#container.pending({ ctx, lease, record });
 			if (pending.length === 0) return undefined;
-			// A delete of a path the head no longer has is already done.
 			const present = new Set(
-				(await listAll(this.#workspaces, ctx, lease.workspaceId))
+				(await listAll(this.#workspaces, ctx, lease.workspaceId, { version: record.head }))
 					.filter((entry) => entry.kind === "file")
 					.map((entry) => entry.path),
 			);
-			const changes = pending.filter((change) => change.op === "put" || present.has(change.path));
+			const changes = containerWins(pending, present);
 			if (changes.length === 0) {
-				await this.#container.committed(lease, record.head);
+				await this.#container.committed(lease, record.head, stamp);
 				return undefined;
 			}
 			try {
@@ -357,7 +367,7 @@ export class CloudflareSandboxes implements Sandboxes {
 					writer: { sessionId: lease.sessionId, leaseId: lease.id },
 					message: `container lease ${lease.id}`,
 				});
-				await this.#container.committed(lease, result.version);
+				await this.#container.committed(lease, result.version, stamp);
 				return result.version;
 			} catch (error) {
 				// Another writer moved the head between the re-base and the commit: re-base again.
@@ -508,4 +518,26 @@ export class CloudflareSandboxes implements Sandboxes {
 
 function round(ms: number): number {
 	return Math.round(ms * 10) / 10;
+}
+
+/**
+ * A container's changes as a commit on a head with `present` files, the container's tree winning: a delete of a path
+ * the head no longer has is dropped (already done), and where the container put a file under what the head has as a
+ * file, or put a file where the head has a directory, the head's side is deleted in the same commit.
+ */
+export function containerWins(pending: readonly ModedChange[], present: ReadonlySet<string>): ModedChange[] {
+	const changes = pending.filter((change) => change.op === "put" || present.has(change.path));
+	const puts = new Set(changes.filter((change) => change.op === "put").map((change) => change.path));
+	const deletes = new Set(changes.filter((change) => change.op === "delete").map((change) => change.path));
+	const extra = new Set<string>();
+	for (const path of puts) {
+		const parts = path.split("/");
+		for (let i = 1; i < parts.length; i++) {
+			const parent = parts.slice(0, i).join("/");
+			if (present.has(parent) && !puts.has(parent)) extra.add(parent);
+		}
+		for (const file of present) if (file.startsWith(`${path}/`)) extra.add(file);
+	}
+	for (const path of extra) if (!deletes.has(path)) changes.push({ op: "delete", path });
+	return changes;
 }

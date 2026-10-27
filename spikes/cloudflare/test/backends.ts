@@ -12,7 +12,7 @@ import type { SandboxLease } from "@harbour/contracts";
 import { defineCommand } from "just-bash/browser";
 import { BlobCache, type Overlay, runShell } from "../src/isolate/shell.ts";
 import { workspacePort } from "../src/port.ts";
-import type { BackendExec, BackendOutput, ContainerBackend, IsolateBackend } from "../src/sandbox.ts";
+import type { BackendExec, BackendOutput, ContainerBackend, IsolateBackend, PendingChanges } from "../src/sandbox.ts";
 import type { ModedChange, ObjectStoreWorkspaces } from "../src/workspace.ts";
 
 export function inProcessIsolate(workspaces: ObjectStoreWorkspaces): IsolateBackend {
@@ -33,6 +33,9 @@ const git = defineCommand("git", async (args) =>
 
 export class SimulatedContainer implements ContainerBackend {
 	readonly #overlays = new Map<string, Map<string, { content: Uint8Array; mode: number } | null>>();
+	/** Per lease, the exec that last changed each overlay path, as the agent stamps its dirty paths. */
+	readonly #stamps = new Map<string, Map<string, number>>();
+	#stamp = 0;
 	readonly #cache = new BlobCache();
 
 	constructor(private readonly workspaces: ObjectStoreWorkspaces) {}
@@ -45,26 +48,49 @@ export class SimulatedContainer implements ContainerBackend {
 			{ ...request, baseVersion: record.head, mounts: record.mounts },
 			{ cache: this.#cache, overlay, commands: [git] },
 		);
-		this.#overlays.set(lease.id, toOverlay(outcome.changes));
+		const next = toOverlay(outcome.changes);
+		const stamps = this.#stamps.get(lease.id) ?? new Map<string, number>();
+		this.#stamp += 1;
+		for (const [path, entry] of next) if (!sameEntry(overlay.get(path), entry)) stamps.set(path, this.#stamp);
+		for (const path of overlay.keys()) if (!next.has(path)) stamps.delete(path);
+		this.#overlays.set(lease.id, next);
+		this.#stamps.set(lease.id, stamps);
 		const { changes: _kept, ...output } = outcome;
 		return output;
 	}
 
-	async pending({ lease }: { lease: SandboxLease }): Promise<readonly ModedChange[]> {
-		return fromOverlay(this.#overlay(lease));
+	async pending({ lease }: Omit<BackendExec, "request">): Promise<PendingChanges> {
+		return { changes: fromOverlay(this.#overlay(lease)), stamp: this.#stamp };
 	}
 
-	async committed(lease: SandboxLease): Promise<void> {
-		this.#overlays.set(lease.id, new Map());
+	async committed(lease: SandboxLease, _version: number, stamp: number): Promise<void> {
+		const overlay = new Map(this.#overlays.get(lease.id) ?? []);
+		const stamps = this.#stamps.get(lease.id) ?? new Map<string, number>();
+		for (const [path, at] of [...stamps]) {
+			if (at > stamp) continue;
+			overlay.delete(path);
+			stamps.delete(path);
+		}
+		this.#overlays.set(lease.id, overlay);
 	}
 
 	async ended(lease: SandboxLease): Promise<void> {
 		this.#overlays.delete(lease.id);
+		this.#stamps.delete(lease.id);
 	}
 
 	#overlay(lease: SandboxLease): Overlay {
 		return this.#overlays.get(lease.id) ?? new Map();
 	}
+}
+
+function sameEntry(
+	left: { content: Uint8Array; mode: number } | null | undefined,
+	right: { content: Uint8Array; mode: number } | null,
+): boolean {
+	if (left === undefined) return false;
+	if (left === null || right === null) return left === right;
+	return left.mode === right.mode && Buffer.from(left.content).equals(Buffer.from(right.content));
 }
 
 function toOverlay(changes: readonly ModedChange[]) {

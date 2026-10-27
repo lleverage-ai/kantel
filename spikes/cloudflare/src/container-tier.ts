@@ -22,7 +22,10 @@ type ContainerExecBody = {
 	timings: Record<string, number>;
 	container: { bootedAt: number; execs: number };
 };
-type Owner = { leaseId: string; workspaceId: string };
+type Owner = { leaseId: string; sessionId: string; workspaceId: string };
+
+/** A container's uncommitted changes, with the stamp that acknowledges exactly these and nothing later. */
+export type ContainerPending = { readonly changes: ModedChange[]; readonly stamp: number };
 
 const PORT = 8080;
 const INACTIVITY_MS = 3 * 60_000;
@@ -90,30 +93,42 @@ export class HarbourContainer extends DurableObject<Env> {
 	}
 
 	/** Re-bases on the head and returns the container's uncommitted changes, for the sandbox to commit. */
-	async pending(call: ContainerCall): Promise<ModedChange[]> {
+	async pending(call: ContainerCall): Promise<ContainerPending> {
 		return this.#serial(async () => {
 			const owner = await this.ctx.storage.get<Owner>("owner");
-			if (owner?.leaseId !== call.leaseId || !this.#container().running) return [];
+			if (owner?.leaseId !== call.leaseId || !this.#container().running) {
+				if (owner?.leaseId === call.leaseId) {
+					// The container stopped while this lease held it: whatever it had not committed is gone.
+					console.error(JSON.stringify({ message: "container gone; uncommitted changes lost", leaseId: call.leaseId }));
+				}
+				return { changes: [], stamp: 0 };
+			}
 			const body = (await this.#withSync(call, "/changes", (sync) => ({ sync }))) as {
 				put: Put[];
 				remove: string[];
+				stamp: number;
 			};
-			return [
-				...body.put.map(
-					(file): ModedChange => ({ op: "put", path: file.path, content: fromBase64(file.content), mode: file.mode }),
-				),
-				...body.remove.map((path): ModedChange => ({ op: "delete", path })),
-			];
+			return {
+				changes: [
+					...body.put.map(
+						(file): ModedChange => ({ op: "put", path: file.path, content: fromBase64(file.content), mode: file.mode }),
+					),
+					...body.remove.map((path): ModedChange => ({ op: "delete", path })),
+				],
+				stamp: body.stamp,
+			};
 		});
 	}
 
-	/** The pending changes are committed as `version`: the working copy now matches it. */
-	async committed(args: { leaseId: string; version: number }): Promise<void> {
+	/** The changes `pending` returned with `stamp` are committed as `version`; later changes stay pending. */
+	async committed(args: { leaseId: string; version: number; stamp: number }): Promise<void> {
 		return this.#serial(async () => {
 			const owner = await this.ctx.storage.get<Owner>("owner");
 			if (owner?.leaseId !== args.leaseId || !this.#container().running) return;
-			await this.#post("/ack", { version: args.version });
-			this.#held = args.version;
+			const response = await this.#post("/ack", { version: args.version, stamp: args.stamp });
+			if (!response.ok) throw new Error(`container /ack failed: ${response.status}`);
+			const { version } = (await response.json()) as { version: number | null };
+			this.#held = version;
 		});
 	}
 
@@ -145,15 +160,19 @@ export class HarbourContainer extends DurableObject<Env> {
 	/** Starts the container if needed and makes `call.leaseId` its owner. */
 	async #claim(call: ContainerCall): Promise<Record<string, number>> {
 		const owner = await this.ctx.storage.get<Owner>("owner");
-		const claim: Owner = { leaseId: call.leaseId, workspaceId: call.workspaceId };
+		const claim: Owner = { leaseId: call.leaseId, sessionId: call.sessionId, workspaceId: call.workspaceId };
+		if (owner !== undefined && owner.leaseId !== "" && owner.leaseId !== call.leaseId && this.#container().running) {
+			throw new Error("this container is in use by another lease");
+		}
+		if (this.#container().running && owner?.sessionId !== call.sessionId) {
+			// Egress interception is bound to the session that started the container: another session gets a new one.
+			await this.#container().destroy();
+		}
 		if (!this.#container().running) {
 			this.#held = null;
 			// Claimed before starting, so a call that interleaves with the start sees the right owner.
 			await this.ctx.storage.put("owner", claim);
 			return this.#start(call.sessionId);
-		}
-		if (owner !== undefined && owner.leaseId !== "" && owner.leaseId !== call.leaseId) {
-			throw new Error("this container is in use by another lease");
 		}
 		if (owner === undefined || owner.workspaceId !== call.workspaceId) {
 			// A warm container that last held another workspace starts from an empty working copy.

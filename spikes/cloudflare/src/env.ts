@@ -167,14 +167,17 @@ export class HarbourEnv implements ExecutionEnv {
 
 	// ---- writes ------------------------------------------------------------------------------------------------------
 
-	/** Commits `changes` on the head, re-reading it if another writer moved it first. */
-	async #commit(changes: ModedChange[], message: string): Promise<void> {
+	/**
+	 * Commits the changes `build` derives from the head. If another writer moved the head first, `build` runs again on
+	 * the new head, so a change computed from what it read (an append) never overwrites a write it did not see.
+	 */
+	async #commit(build: (head: number) => Promise<ModedChange[]> | ModedChange[], message: string): Promise<void> {
 		for (let attempt = 1; ; attempt++) {
 			const { head } = await this.workspaces.get(this.ctx, this.workspaceId);
 			try {
 				await this.workspaces.commit(this.ctx, this.workspaceId, {
 					baseVersion: head,
-					changes,
+					changes: await build(head),
 					writer: { sessionId: this.sessionId },
 					message,
 				});
@@ -190,7 +193,8 @@ export class HarbourEnv implements ExecutionEnv {
 		if (!relative.ok) return relative;
 		if (relative.value === "") return err(new FileError("is_directory", "cannot write the workspace root", path));
 		try {
-			await this.#commit([{ op: "put", path: relative.value, content }], `write ${relative.value}`);
+			// A whole-file write replaces whatever the head has, as on a local disk: last writer wins.
+			await this.#commit(() => [{ op: "put", path: relative.value, content }], `write ${relative.value}`);
 			return ok(undefined);
 		} catch (error) {
 			return err(fileError(error, path));
@@ -198,14 +202,28 @@ export class HarbourEnv implements ExecutionEnv {
 	}
 
 	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
-		const existing = await this.#bytes(path);
+		const relative = this.#relative(path);
+		if (!relative.ok) return relative;
+		if (relative.value === "") return err(new FileError("is_directory", "cannot write the workspace root", path));
 		const add = typeof content === "string" ? new TextEncoder().encode(content) : content;
-		if (!existing.ok && existing.error.code !== "not_found") return existing;
-		const before = existing.ok ? existing.value : new Uint8Array();
-		const joined = new Uint8Array(before.byteLength + add.byteLength);
-		joined.set(before);
-		joined.set(add, before.byteLength);
-		return this.writeFile(path, joined);
+		try {
+			await this.#commit(async (head) => {
+				// Read at the version the commit is based on, so the append applies to exactly what it read.
+				let before: Uint8Array = new Uint8Array();
+				try {
+					before = (await this.workspaces.read(this.ctx, this.workspaceId, relative.value, { version: head })).content;
+				} catch (error) {
+					if (!isHarbourError(error, "not_found")) throw error;
+				}
+				const joined = new Uint8Array(before.byteLength + add.byteLength);
+				joined.set(before);
+				joined.set(add, before.byteLength);
+				return [{ op: "put", path: relative.value, content: joined }];
+			}, `append ${relative.value}`);
+			return ok(undefined);
+		} catch (error) {
+			return err(fileError(error, path));
+		}
 	}
 
 	async remove(
@@ -233,7 +251,7 @@ export class HarbourEnv implements ExecutionEnv {
 					.map((candidate) => candidate.path);
 			}
 			await this.#commit(
-				doomed.map((doomedPath): ModedChange => ({ op: "delete", path: doomedPath })),
+				() => doomed.map((doomedPath): ModedChange => ({ op: "delete", path: doomedPath })),
 				`remove ${relative.value}`,
 			);
 			return ok(undefined);

@@ -5,8 +5,7 @@ import type { SandboxLease } from "@harbour/contracts";
 import ISOLATE_BUNDLE from "../dist/isolate.bundle.txt";
 import type { ContainerCall } from "./container-tier.ts";
 import type { ShellOutcome, ShellRequest } from "./isolate/shell.ts";
-import type { BackendExec, BackendOutput, ContainerBackend, IsolateBackend } from "./sandbox.ts";
-import type { ModedChange } from "./workspace.ts";
+import type { BackendExec, BackendOutput, ContainerBackend, IsolateBackend, PendingChanges } from "./sandbox.ts";
 
 type IsolateStub = {
 	exec(request: ShellRequest): Promise<ShellOutcome & { isolate: { bootedAt: number; calls: number } }>;
@@ -50,15 +49,19 @@ export class DynamicWorkerIsolate implements IsolateBackend {
 	}
 }
 
-/** Container tier: one Container Durable Object per session (by default), `durable_object` scheduling policy. */
+/**
+ * Container tier: one Container Durable Object per lease's bound name (the session ID unless the measurement routes
+ * pick another), `durable_object` scheduling policy. `nameFor` must return the same name for every call on a lease, so
+ * a lease's commit and release reach the container that holds its changes.
+ */
 export class ContainerDOBackend implements ContainerBackend {
 	constructor(
 		private readonly env: Env,
-		private readonly containerName: string,
+		private readonly nameFor: (lease: SandboxLease) => string,
 	) {}
 
-	#stub() {
-		return this.env.CONTAINER.getByName(this.containerName);
+	#stub(lease: SandboxLease) {
+		return this.env.CONTAINER.getByName(this.nameFor(lease));
 	}
 
 	#call(lease: SandboxLease, ctx: BackendExec["ctx"], head: number): ContainerCall {
@@ -77,26 +80,26 @@ export class ContainerDOBackend implements ContainerBackend {
 
 	async exec({ ctx, lease, record, request }: BackendExec): Promise<BackendOutput> {
 		const started = performance.now();
-		const result = await this.#stub().exec({ ...this.#call(lease, ctx, record.head), request });
+		const result = await this.#stub(lease).exec({ ...this.#call(lease, ctx, record.head), request });
 		return { ...result, timings: { ...result.timings, "container.call": round(performance.now() - started) } };
 	}
 
-	async pending({ ctx, lease, record }: Omit<BackendExec, "request">): Promise<readonly ModedChange[]> {
-		return this.#stub().pending(this.#call(lease, ctx, record.head));
+	async pending({ ctx, lease, record }: Omit<BackendExec, "request">): Promise<PendingChanges> {
+		return this.#stub(lease).pending(this.#call(lease, ctx, record.head));
 	}
 
-	async committed(lease: SandboxLease, version: number): Promise<void> {
-		await this.#stub().committed({ leaseId: lease.id, version });
+	async committed(lease: SandboxLease, version: number, stamp: number): Promise<void> {
+		await this.#stub(lease).committed({ leaseId: lease.id, version, stamp });
 	}
 
 	async ended(lease: SandboxLease, options: { readonly discard: boolean }): Promise<void> {
-		await this.#stub().ended({ leaseId: lease.id, discard: options.discard });
+		await this.#stub(lease).ended({ leaseId: lease.id, discard: options.discard });
 	}
+}
 
-	/** Stops the container now, as the cold-start harness needs. */
-	async stop(): Promise<void> {
-		await this.#stub().stop();
-	}
+/** Stops the named container now, as the cold-start harness needs. */
+export async function stopContainer(env: Env, name: string): Promise<void> {
+	await env.CONTAINER.getByName(name).stop();
 }
 
 /** Changes whenever the bundle changes, so a deploy never reuses an isolate with old code. */

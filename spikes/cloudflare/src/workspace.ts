@@ -172,7 +172,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		};
 		let headKey = await this.#putManifest(id, empty);
 		if (seedFiles.size > 0) {
-			const files: Record<string, StoredEntry> = {};
+			const files = fileTable();
 			for (const [path, content] of seedFiles) {
 				const bytes = toBytes(content);
 				files[path] = { digest: await this.#putBlob(id, bytes), size: bytes.byteLength, version: 1 };
@@ -309,7 +309,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 
 		const version = record.head + 1;
 		const parent = await this.#manifest(id, document.manifest);
-		const files: Record<string, StoredEntry> = { ...parent.files };
+		const files = fileTable(parent.files);
 		for (const change of prepared) {
 			if (change.op === "delete") {
 				if (files[change.path] === undefined) {
@@ -366,24 +366,18 @@ export class ObjectStoreWorkspaces implements Workspaces {
 	async history(ctx: CallContext, id: WorkspaceId, page: PageRequest = {}): Promise<Page<WorkspaceVersionInfo>> {
 		const { document } = await this.#head(ctx, id);
 		const limit = pageLimit(page.limit);
+		// The cursor names the next manifest to read, so a page costs `limit` manifest reads wherever it starts.
 		const after = decodeCursor(page.cursor);
-		let below = document.record.head + 1;
-		if (after !== undefined) {
-			below = Number(after);
-			if (!Number.isInteger(below)) throw new HarbourError("invalid", "bad cursor");
-		}
+		if (after !== undefined && !MANIFEST_KEY.test(after)) throw new HarbourError("invalid", "bad cursor");
 		const items: WorkspaceVersionInfo[] = [];
-		let key: string | null = document.manifest;
+		let key: string | null = after ?? document.manifest;
 		while (key !== null && items.length < limit) {
 			const manifest: Manifest = await this.#manifest(id, key);
 			this.#rememberVersion(id, manifest.version, key);
-			if (manifest.version < below) items.push(manifest.info);
+			items.push(manifest.info);
 			key = manifest.parent;
 		}
-		const last = items.at(-1);
-		return last !== undefined && last.version > 0
-			? { items, nextCursor: encodeCursor(String(last.version)) }
-			: { items };
+		return key !== null && items.length > 0 ? { items, nextCursor: encodeCursor(key) } : { items };
 	}
 
 	async remount(ctx: CallContext, id: WorkspaceId, request: MountRequest): Promise<WorkspaceRecord> {
@@ -470,11 +464,19 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		return manifest;
 	}
 
+	/** Writes a manifest under a fresh key. Create-only, so a racing writer can never replace a published manifest. */
 	async #putManifest(id: WorkspaceId, manifest: Manifest): Promise<string> {
-		const key = `${manifest.version}-${nonce()}`;
-		await this.#store.put(`ws/${id}/versions/${key}.json`, JSON.stringify(manifest));
-		this.#manifests.set(`${id}/${key}`, manifest);
-		return key;
+		const body = JSON.stringify(manifest);
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const key = `${manifest.version}-${nonce()}`;
+			const put = await this.#store.put(`ws/${id}/versions/${key}.json`, body, {
+				onlyIf: { etagDoesNotMatch: "*" },
+			});
+			if (put === null) continue;
+			this.#manifests.set(`${id}/${key}`, manifest);
+			return key;
+		}
+		throw new HarbourError("unavailable", "could not write a manifest under a fresh key");
 	}
 
 	async #putBlob(id: WorkspaceId, bytes: Uint8Array, digest?: string): Promise<string> {
@@ -529,10 +531,22 @@ function headPath(id: WorkspaceId): string {
 	return `ws/${id}/head`;
 }
 
+const MANIFEST_KEY = /^\d+-[0-9a-f]{8,32}$/;
+
 function nonce(): string {
 	let hex = "";
-	for (const byte of crypto.getRandomValues(new Uint8Array(4))) hex += byte.toString(16).padStart(2, "0");
+	for (const byte of crypto.getRandomValues(new Uint8Array(16))) hex += byte.toString(16).padStart(2, "0");
 	return hex;
+}
+
+/**
+ * A manifest's path table. No prototype, so a file named `__proto__` or `constructor` is an ordinary own key that
+ * survives `JSON.stringify` and never matches an inherited property.
+ */
+function fileTable(from?: { readonly [path: string]: StoredEntry }): Record<string, StoredEntry> {
+	const table = Object.create(null) as Record<string, StoredEntry>;
+	if (from !== undefined) for (const [path, entry] of Object.entries(from)) table[path] = entry;
+	return table;
 }
 
 function toTree(manifest: Manifest): Tree {

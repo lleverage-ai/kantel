@@ -26,6 +26,7 @@ async function call(session: string, action: string, body?: unknown) {
 }
 
 type Exec = {
+	leaseId: string;
 	exitCode: number;
 	stdout: string;
 	stderr: string;
@@ -88,7 +89,35 @@ await call(b, "setup", {
 r = await exec(b, "cat dir/file.txt", "container", a);
 check("container refuses another session", r.status >= 400 || r.body.exitCode !== 0 || r.body.stdout !== "two", r);
 
+// 5. A background write after a command returns is not lost when the next isolate command commits the container.
+const c = `${run}-c`;
+await call(c, "setup", {
+	workspaceId: `ws-${c}`,
+	scenario: { name: "none", steps: [], finalAnswer: "ok", seed: { "base.txt": "base\n" } },
+});
+// The spike's alarm handler ends the session's leases whenever the harness settles (setup wakes it once), so warm the
+// container and let that alarm pass first: this check is about a write inside one lease.
+r = await exec(c, "git --version > /dev/null", "container");
+await new Promise((resolve) => setTimeout(resolve, 5000));
+r = await exec(c, "git --version > first.txt; (sleep 3; echo late > late.txt) >/dev/null 2>&1 &", "container");
+check("container command with a background writer", r.body.exitCode === 0, r);
+const writerLease = r.body.leaseId;
+r = await exec(c, "cat first.txt", "isolate");
+check("the isolate sees the container's committed write", r.body.stdout.startsWith("git version"), r);
+await new Promise((resolve) => setTimeout(resolve, 5000));
+r = await exec(c, "cat late.txt", "isolate");
+check("the late background write is committed by the next flush", r.body.stdout === "late\n", r);
+r = await exec(c, "git --version >/dev/null", "container");
+check("all of it on one container lease", r.body.leaseId === writerLease, { writerLease, now: r.body.leaseId });
+
+// 6. A container directory where the head now has a file, and the reverse, commit with the container winning.
+r = await exec(c, "git --version >/dev/null; rm base.txt; mkdir base.txt; printf x > base.txt/inner", "container");
+check("container replaces a file with a directory", r.body.exitCode === 0, r);
+r = await exec(c, "cat base.txt/inner && test -d base.txt", "isolate");
+check("the replacement commits", r.body.exitCode === 0 && r.body.stdout === "x", r);
+
 await call(a, "release", {});
 await call(b, "release", {});
+await call(c, "release", {});
 console.log(failures === 0 ? "all regressions pass" : `${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);
