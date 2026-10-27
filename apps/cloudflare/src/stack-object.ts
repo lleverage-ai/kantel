@@ -3,20 +3,21 @@
  *
  * - the identity directory and the audit store in D1 (`DB`);
  * - workspaces in R2 (`WORKSPACES`);
- * - the session runtime's directory, profiles and each session's Pi storage in this object's own SQLite;
+ * - the session runtime (`SessionRuntimeDurableObjectCore` from `@harbour/runtime-cloudflare`): its directory,
+ *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation.
  *
  * One object serves every session for now; a SessionDO per session is the next step.
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
 import { d1Driver } from "@harbour/sql/sqlite";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
+import { startOnce } from "./start.ts";
 import type { VaultVars } from "./vault.ts";
 
 export { STACK_NAME } from "./route.ts";
@@ -36,7 +37,16 @@ const BOOTSTRAP_KEY = "harbour.bootstrap";
 const WORKSPACE_PREFIX = "workspaces";
 
 export abstract class HarbourStackBase extends DurableObject<Env> {
-	#ready: Promise<{ stack: Stack; gateway: Gateway }> | undefined;
+	/** Starts the stack once; see `startOnce` for what a failed configuration or start does. */
+	readonly #ready = startOnce({
+		configure: () => gatewayConfig(this.env),
+		start: async (config) => {
+			const stack = await createStack({ ...this.stackOptions(), config, storage: this.stackStorage() });
+			return { stack, gateway: createGateway(stack) };
+		},
+		reset: (reason) => this.ctx.abort(reason),
+		onStartError: (error) => console.error("harbour: the stack did not start; resetting the object", error),
+	});
 
 	/** How the stack is built; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
@@ -48,7 +58,14 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		const storage = this.ctx.storage;
 		return {
 			sql: d1Driver(this.env.DB),
-			sessions: new DurableObjectSqliteDatabase(storage),
+			// The runtime lane's session core: its transactions go through the object's async `transaction`, and its
+			// alarm resumes a session this object left mid-run when it was evicted.
+			sessions: {
+				sql: storage.sql,
+				transaction: (work) => storage.transaction(() => work()),
+				setAlarm: (at) => storage.setAlarm(at),
+				getAlarm: () => storage.getAlarm(),
+			},
 			workspaces: createR2WorkspaceStore({ bucket: this.env.WORKSPACES, prefix: WORKSPACE_PREFIX }),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
@@ -58,19 +75,13 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 	}
 
 	protected ready(): Promise<{ stack: Stack; gateway: Gateway }> {
-		this.#ready ??= (async () => {
-			const stack = await createStack({
-				...this.stackOptions(),
-				config: gatewayConfig(this.env),
-				storage: this.stackStorage(),
-			});
-			return { stack, gateway: createGateway(stack) };
-		})();
-		// A failed start is retried by the next request rather than remembered.
-		this.#ready.catch(() => {
-			this.#ready = undefined;
-		});
-		return this.#ready;
+		return this.#ready();
+	}
+
+	/** Resumes every session whose wake is due (a run cut off by eviction, a retry backoff), then arms the next. */
+	override async alarm(): Promise<void> {
+		const { stack } = await this.ready();
+		await stack.alarm();
 	}
 
 	override async fetch(request: Request): Promise<Response> {

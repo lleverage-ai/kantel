@@ -22,7 +22,7 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | Identity directory | D1 `DB` | `@harbour/identity/sql` |
 | Audit store | D1 `DB` | `@harbour/audit/sql` |
 | Workspaces | R2 `WORKSPACES`, under `workspaces/` | `@harbour/cloudflare-workspace` |
-| Session directory, profiles, each session's Pi storage | `HarbourStack`'s own SQLite | `@harbour/runtime/sql` |
+| Session directory, profiles, host registrations, each session's Pi storage; the alarm that resumes a run an eviction cut off | `HarbourStack`'s own SQLite and alarm | `SessionRuntimeDurableObjectCore` (`@harbour/runtime-cloudflare`) |
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
