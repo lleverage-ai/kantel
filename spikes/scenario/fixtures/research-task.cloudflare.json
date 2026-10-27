@@ -1,0 +1,946 @@
+{
+  "format": "harbour-m0-session-fixture/1",
+  "recordedAt": "2026-10-27T09:48:33.561Z",
+  "scenario": "research-task",
+  "entries": [
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done: the title of example.com is \"Example Domain\"; notes are in notes/x.md and committed in the container's git repository."
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 35,
+            "output": 31,
+            "cacheRead": 1114,
+            "cacheWrite": 35,
+            "totalTokens": 1215,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1793094512802,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 48,
+      "conversationId": 2,
+      "byTaskId": 47
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-8-try-0",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 119,
+          "timestamp": 1793094512802
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 46,
+      "conversationId": 2,
+      "byTaskId": 45
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-8-try-0",
+              "name": "read",
+              "arguments": {
+                "path": "/workspace/notes/x.md"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 28,
+            "output": 10,
+            "cacheRead": 1086,
+            "cacheWrite": 28,
+            "totalTokens": 1152,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094512683,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 44,
+      "conversationId": 2,
+      "byTaskId": 43
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-7-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "b6e7b1b research notes\n1\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 981,
+          "timestamp": 1793094512683
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 42,
+      "conversationId": 2,
+      "byTaskId": 41
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-7-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "cat git-log.txt && wc -l < git-log.txt"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 61,
+            "output": 15,
+            "cacheRead": 1025,
+            "cacheWrite": 62,
+            "totalTokens": 1163,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094511702,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 40,
+      "conversationId": 2,
+      "byTaskId": 39
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-6-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "[vault:redacted]\n403\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 756,
+          "timestamp": 1793094511702
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 38,
+      "conversationId": 2,
+      "byTaskId": 37
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-6-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "# harbour:container\ncurl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 102,
+            "output": 49,
+            "cacheRead": 923,
+            "cacheWrite": 102,
+            "totalTokens": 1176,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094510946,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 36,
+      "conversationId": 2,
+      "byTaskId": 35
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-5-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\nb6e7b1b research notes\n0\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 2407,
+          "timestamp": 1793094510946
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 34,
+      "conversationId": 2,
+      "byTaskId": 33
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-5-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "cat notes/x.md && grep -c 'Example Domain' research/example.html && git init -q && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 50,
+            "output": 70,
+            "cacheRead": 873,
+            "cacheWrite": 51,
+            "totalTokens": 1044,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094508539,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 32,
+      "conversationId": 2,
+      "byTaskId": 31
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-4-try-0",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote to /workspace/notes/x.md"
+            }
+          ],
+          "isError": false,
+          "durationMs": 1894,
+          "timestamp": 1793094508539
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 30,
+      "conversationId": 2,
+      "byTaskId": 29
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-4-try-0",
+              "name": "write",
+              "arguments": {
+                "path": "/workspace/notes/x.md",
+                "content": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 31,
+            "output": 32,
+            "cacheRead": 842,
+            "cacheWrite": 31,
+            "totalTokens": 936,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094506645,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 28,
+      "conversationId": 2,
+      "byTaskId": 27
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-3-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "403\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 62,
+          "timestamp": 1793094506645
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 26,
+      "conversationId": 2,
+      "byTaskId": 25
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-3-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 36,
+            "output": 22,
+            "cacheRead": 806,
+            "cacheWrite": 37,
+            "totalTokens": 901,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094506583,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 24,
+      "conversationId": 2,
+      "byTaskId": 23
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-2-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "[vault:redacted]\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 285,
+          "timestamp": 1793094506583
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 22,
+      "conversationId": 2,
+      "byTaskId": 21
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-2-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 53,
+            "output": 25,
+            "cacheRead": 753,
+            "cacheWrite": 53,
+            "totalTokens": 884,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094506298,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 20,
+      "conversationId": 2,
+      "byTaskId": 19
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-1-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "<title>Example Domain</title>\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 1097,
+          "timestamp": 1793094506298
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 18,
+      "conversationId": 2,
+      "byTaskId": 17
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-1-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 42,
+            "output": 38,
+            "cacheRead": 711,
+            "cacheWrite": 42,
+            "totalTokens": 833,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094505201,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 16,
+      "conversationId": 2,
+      "byTaskId": 15
+    },
+    {
+      "model": [
+        {
+          "role": "toolResult",
+          "toolCallId": "step-0-try-0",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "README.md\nbrief.txt\nFind the title of https://example.com and note it in notes/x.md.\n"
+            }
+          ],
+          "isError": false,
+          "durationMs": 384,
+          "timestamp": 1793094505201
+        }
+      ],
+      "data": {
+        "diagnostics": []
+      },
+      "kind": "pi.tool-result",
+      "id": 14,
+      "conversationId": 2,
+      "byTaskId": 13
+    },
+    {
+      "model": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "step-0-try-0",
+              "name": "bash",
+              "arguments": {
+                "command": "ls -1 /workspace && cat brief.txt"
+              }
+            }
+          ],
+          "api": "faux:1793094504649:21pfi49cp2i",
+          "provider": "harbour-script",
+          "model": "scripted",
+          "usage": {
+            "input": 711,
+            "output": 13,
+            "cacheRead": 0,
+            "cacheWrite": 711,
+            "totalTokens": 1435,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1793094504817,
+          "durationMs": 0
+        }
+      ],
+      "kind": "pi.assistant",
+      "id": 12,
+      "conversationId": 2,
+      "byTaskId": 10
+    },
+    {
+      "model": [
+        {
+          "role": "system",
+          "content": "",
+          "sections": {
+            "preamble": "You are a Harbour spike agent working in /workspace."
+          },
+          "toolsAdded": [
+            {
+              "name": "bash",
+              "description": "Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "command"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "Bash command to execute"
+                  },
+                  "timeout": {
+                    "type": "number",
+                    "description": "Timeout in seconds (optional, no default timeout)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "read",
+              "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to the file to read (relative or absolute)"
+                  },
+                  "offset": {
+                    "type": "number",
+                    "description": "Line number to start reading from (1-indexed)"
+                  },
+                  "limit": {
+                    "type": "number",
+                    "description": "Maximum number of lines to read"
+                  }
+                }
+              }
+            },
+            {
+              "name": "write",
+              "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "content"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to the file to write (relative or absolute)"
+                  },
+                  "content": {
+                    "type": "string",
+                    "description": "Content to write to the file"
+                  }
+                }
+              }
+            },
+            {
+              "name": "edit",
+              "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "edits"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to the file to edit (relative or absolute)"
+                  },
+                  "edits": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "oldText",
+                        "newText"
+                      ],
+                      "properties": {
+                        "oldText": {
+                          "type": "string",
+                          "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+                        },
+                        "newText": {
+                          "type": "string",
+                          "description": "Replacement text for this targeted edit."
+                        }
+                      }
+                    },
+                    "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+                  }
+                }
+              }
+            }
+          ],
+          "timestamp": 1793094504817
+        }
+      ],
+      "kind": "pi.system",
+      "id": 11,
+      "conversationId": 2,
+      "byTaskId": 10
+    },
+    {
+      "model": [
+        {
+          "role": "user",
+          "content": "Run the research task in brief.txt.",
+          "timestamp": 1793094504817
+        }
+      ],
+      "kind": "pi.user",
+      "id": 8,
+      "conversationId": 2
+    }
+  ],
+  "execs": [
+    {
+      "command": "ls -1 /workspace && cat brief.txt",
+      "tier": "isolate",
+      "exitCode": 0,
+      "base": "v1",
+      "version": "v1",
+      "timings": {
+        "isolate.manifest": 178,
+        "isolate.exec": 94,
+        "isolate.commit": 0,
+        "isolate.total": 272,
+        "isolate.call": 384
+      }
+    },
+    {
+      "command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html",
+      "tier": "isolate",
+      "exitCode": 0,
+      "base": "v1",
+      "version": "v2.82ea90",
+      "timings": {
+        "isolate.manifest": 0,
+        "isolate.exec": 303,
+        "isolate.commit": 763,
+        "isolate.total": 1066,
+        "isolate.call": 1097
+      }
+    },
+    {
+      "command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'",
+      "tier": "isolate",
+      "exitCode": 0,
+      "base": "v2.82ea90",
+      "version": "v2.82ea90",
+      "timings": {
+        "isolate.manifest": 109,
+        "isolate.exec": 157,
+        "isolate.commit": 0,
+        "isolate.total": 266,
+        "isolate.call": 285
+      }
+    },
+    {
+      "command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
+      "tier": "isolate",
+      "exitCode": 0,
+      "base": "v2.82ea90",
+      "version": "v2.82ea90",
+      "timings": {
+        "isolate.manifest": 0,
+        "isolate.exec": 44,
+        "isolate.commit": 0,
+        "isolate.total": 44,
+        "isolate.call": 62
+      }
+    },
+    {
+      "command": "cat notes/x.md && grep -c 'Example Domain' research/example.html && git init -q && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true",
+      "tier": "container",
+      "exitCode": 0,
+      "base": "v3.de6fe4",
+      "version": "v4.9a8c6f",
+      "timings": {
+        "container.start": 256,
+        "container.ready": 343,
+        "container.diff": 275,
+        "container.request": 300,
+        "container.commit": 738,
+        "container.sync": 52,
+        "container.exec": 224.1,
+        "container.scan": 3,
+        "container.call": 2407
+      }
+    },
+    {
+      "command": "# harbour:container\ncurl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
+      "tier": "container",
+      "exitCode": 0,
+      "base": "v4.9a8c6f",
+      "version": "v4.9a8c6f",
+      "timings": {
+        "container.diff": 0,
+        "container.request": 713,
+        "container.commit": 0,
+        "container.sync": 0.2,
+        "container.exec": 704.2,
+        "container.scan": 0.7,
+        "container.call": 756
+      }
+    },
+    {
+      "command": "cat git-log.txt && wc -l < git-log.txt",
+      "tier": "isolate",
+      "exitCode": 0,
+      "base": "v4.9a8c6f",
+      "version": "v4.9a8c6f",
+      "timings": {
+        "isolate.manifest": 123,
+        "isolate.exec": 105,
+        "isolate.commit": 0,
+        "isolate.total": 228,
+        "isolate.call": 981
+      }
+    }
+  ],
+  "events": [],
+  "vault": [
+    {
+      "at": 1793094505232,
+      "sessionId": "research-task-mvqi645n",
+      "tier": "isolate",
+      "method": "GET",
+      "host": "example.com",
+      "path": "/",
+      "decision": "allowed",
+      "status": 200,
+      "redactions": 0,
+      "injected": {
+        "header": "X-Harbour-Vault",
+        "item": "research-canary"
+      }
+    },
+    {
+      "at": 1793094506426,
+      "sessionId": "research-task-mvqi645n",
+      "tier": "isolate",
+      "method": "GET",
+      "host": "postman-echo.com",
+      "path": "/headers",
+      "decision": "allowed",
+      "status": 200,
+      "redactions": 1,
+      "injected": {
+        "header": "X-Harbour-Vault",
+        "item": "research-canary"
+      }
+    },
+    {
+      "at": 1793094506601,
+      "sessionId": "research-task-mvqi645n",
+      "tier": "isolate",
+      "method": "GET",
+      "host": "api.github.com",
+      "path": "/zen",
+      "decision": "denied",
+      "status": 403
+    },
+    {
+      "at": 1793094511270,
+      "sessionId": "research-task-mvqi645n",
+      "tier": "container",
+      "method": "GET",
+      "host": "postman-echo.com",
+      "path": "/headers",
+      "decision": "allowed",
+      "status": 200,
+      "redactions": 1,
+      "injected": {
+        "header": "X-Harbour-Vault",
+        "item": "research-canary"
+      }
+    },
+    {
+      "at": 1793094511665,
+      "sessionId": "research-task-mvqi645n",
+      "tier": "container",
+      "method": "GET",
+      "host": "api.github.com",
+      "path": "/zen",
+      "decision": "denied",
+      "status": 403
+    }
+  ]
+}
