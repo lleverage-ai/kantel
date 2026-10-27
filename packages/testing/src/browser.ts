@@ -3,22 +3,28 @@
  * context is chosen by a supervisor or a human and never by an agent. An agent in the parent session may only pass on,
  * no wider, a context it already holds. Every target registers it with a provider that builds a fresh broker on the
  * suite's clock and audit sink, wires `parentOf` to `setParent`, reports which provider sessions are still live, and
- * can make the provider fail releases or hold an open.
+ * can make the provider fail releases or hold an open. With `projectAccess`, the broker must also check every call
+ * through `deps.access` (settled question 7).
  */
 import type {
 	Actor,
 	Browser,
 	BrowserContext,
 	BrowserGrant,
+	BrowserRequest,
+	BrowserSession,
 	CallContext,
 	GrantBrowserInput,
+	SessionEndReason,
 	SessionId,
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
@@ -63,6 +69,32 @@ const parentAgent = contextFor(actors.agent(PARENT_AGENT, PARENT_SESSION), ORG, 
 const grandchildAgent = contextFor(actors.agent(GRANDCHILD_AGENT, GRANDCHILD_SESSION), ORG, PROJECT);
 const unrelatedAgent = contextFor(actors.agent("agent-unrelated", UNRELATED_SESSION), ORG, PROJECT);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
+
+/** Another project in the same organisation, with an operator and an agent session of its own. */
+const OTHER_PROJECT = "proj-b";
+const OTHER_SESSION = "session-other-project";
+const OTHER_AGENT = "agent-other-project";
+const otherOperator = contextFor(actors.human("operator-b"), ORG, OTHER_PROJECT);
+const otherAgent = contextFor(actors.agent(OTHER_AGENT, OTHER_SESSION), ORG, OTHER_PROJECT);
+/** An operator across the whole organisation, who may create organisation-owned contexts. */
+const orgOperator = contextFor(actors.human("org-operator-1"), ORG);
+
+/**
+ * Seeds `deps.tenancy` with the roles and agent sessions the cases act with: the human and service are operators on
+ * the project, and the directory knows every agent session, with the child and grandchild under their parents.
+ */
+function seedTenancy({ tenancy }: ConformanceDeps): void {
+	tenancy.bind(human.actor, ORG, "operator", PROJECT);
+	tenancy.bind(service.actor, ORG, "operator", PROJECT);
+	tenancy.bind(orgOperator.actor, ORG, "operator");
+	tenancy.bind(otherOperator.actor, ORG, "operator", OTHER_PROJECT);
+	const inProject = { organisationId: ORG, projectId: PROJECT };
+	tenancy.session({ ...inProject, id: PARENT_SESSION, agentId: PARENT_AGENT });
+	tenancy.session({ ...inProject, id: SESSION, agentId: AGENT, parentSessionId: PARENT_SESSION });
+	tenancy.session({ ...inProject, id: GRANDCHILD_SESSION, agentId: GRANDCHILD_AGENT, parentSessionId: SESSION });
+	tenancy.session({ ...inProject, id: UNRELATED_SESSION, agentId: "agent-unrelated" });
+	tenancy.session({ id: OTHER_SESSION, organisationId: ORG, projectId: OTHER_PROJECT, agentId: OTHER_AGENT });
+}
 
 function putContext(browser: Browser, name = "sal", providerContextId = PROVIDER_CONTEXT_ID): Promise<BrowserContext> {
 	return browser.putContext(human, {
@@ -112,9 +144,24 @@ function sameActor(actual: Actor, expected: Actor): boolean {
 	return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+/** What session `SESSION` holds for the teardown cases, beside an unrelated session's grant, browser and request. */
+interface TeardownHoldings {
+	readonly context: BrowserContext;
+	/** The session's two grants, then the one its agent passed on to the grandchild session. */
+	readonly grants: readonly BrowserGrant[];
+	/** One open browser under each of `grants`. */
+	readonly browsers: readonly BrowserSession[];
+	readonly request: BrowserRequest;
+	readonly unrelatedGrant: BrowserGrant;
+	readonly unrelatedBrowser: BrowserSession;
+	readonly unrelatedRequest: BrowserRequest;
+}
+
 export function createBrowserConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: BrowserConformanceProvider;
+	/** Adds the `project access:` cases; see `ConformanceOptions`. */
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (
@@ -124,9 +171,108 @@ export function createBrowserConformance(options: {
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject, deps));
 		},
 	});
+
+	async function holdForTeardown(subject: BrowserSubject): Promise<TeardownHoldings> {
+		const { browser } = subject;
+		subject.setParent(GRANDCHILD_SESSION, SESSION);
+		const context = await putContext(browser);
+		const persisting = await browser.grant(human, grantInput(context.id, { persist: true }));
+		const second = await browser.grant(human, grantInput(context.id));
+		const passedOn = await browser.grant(
+			agent,
+			grantInput(context.id, { sessionId: GRANDCHILD_SESSION, agentId: GRANDCHILD_AGENT }),
+		);
+		const unrelatedGrant = await browser.grant(
+			human,
+			grantInput(context.id, { sessionId: UNRELATED_SESSION, agentId: "agent-unrelated" }),
+		);
+		const browsers = [
+			await browser.open(agent, { grantId: persisting.id }),
+			await browser.open(agent, { grantId: second.id }),
+			await browser.open(grandchildAgent, { grantId: passedOn.id }),
+		];
+		return {
+			context,
+			grants: [persisting, second, passedOn],
+			browsers,
+			request: await browser.request(agent, { reason: "Check the PR", sites: ["github.com"] }),
+			unrelatedGrant,
+			unrelatedBrowser: await browser.open(unrelatedAgent, { grantId: unrelatedGrant.id }),
+			unrelatedRequest: await browser.request(unrelatedAgent, { reason: "Read the docs", sites: ["github.com"] }),
+		};
+	}
+
+	/**
+	 * Asserts that `endSession(SESSION, reason)` ended everything `held` names for the session, once each, left the
+	 * unrelated session alone, and that running the teardown again (with every reason in `again`) changes and audits
+	 * nothing.
+	 */
+	async function assertTornDown(
+		subject: BrowserSubject,
+		deps: ConformanceDeps,
+		held: TeardownHoldings,
+		reason: SessionEndReason,
+		again: readonly SessionEndReason[],
+	): Promise<void> {
+		const { browser } = subject;
+		const ids = (values: readonly { readonly id: string }[]) => values.map((value) => value.id).sort();
+		for (const opened of held.browsers) {
+			const read = await browser.get(human, opened.id);
+			assert.strictEqual(read.status, "closed", "the session's browsers are closed");
+			assert.strictEqual(read.endReason, reason, "with the teardown's reason");
+		}
+		const listed = await browser.listGrants(human, {});
+		for (const grant of held.grants) {
+			assert.strictEqual(listed.find((each) => each.id === grant.id)?.status, "ended", "its grants have ended");
+		}
+		await assert.rejectsWithCode(browser.open(agent, { grantId: held.grants[0]!.id }), "expired");
+		await assert.rejectsWithCode(browser.open(grandchildAgent, { grantId: held.grants[2]!.id }), "expired");
+		assert.strictEqual(
+			(await browser.checkSite(agent, held.browsers[0]!.id, "https://github.com/")).allow,
+			false,
+			"a closed browser visits nothing",
+		);
+		assert.strictEqual(subject.providerLive().length, 1, "only the unrelated browser is live at the provider");
+		assert.strictEqual(
+			(await browser.get(human, held.unrelatedBrowser.id)).status,
+			"open",
+			"another session's browser",
+		);
+		assert.strictEqual(
+			listed.find((each) => each.id === held.unrelatedGrant.id)?.status,
+			"active",
+			"another session's grant",
+		);
+		const closed = deps.audit.ofType("browser.session.closed");
+		assert.deepEqual(
+			closed.map((event) => event.subject?.id).sort(),
+			ids(held.browsers),
+			"each browser's close is audited once",
+		);
+		assert.ok(
+			closed.every((event) => event.data?.endReason === reason),
+			"each close audit names the reason",
+		);
+		assert.deepEqual(
+			deps.audit
+				.ofType("browser.grant.ended")
+				.map((event) => event.subject?.id)
+				.sort(),
+			ids(held.grants),
+			"each grant's end is audited once",
+		);
+		const audited = deps.audit.events.length;
+		for (const repeat of again) await browser.endSession(SESSION, repeat);
+		assert.strictEqual(deps.audit.events.length, audited, "a second teardown audits nothing");
+		assert.strictEqual(subject.providerLive().length, 1, "a second teardown releases nothing more");
+		for (const opened of held.browsers) {
+			assert.strictEqual((await browser.get(human, opened.id)).endReason, reason, "a second teardown changes nothing");
+		}
+	}
 
 	/**
 	 * Asserts that `ctx` granting `input` is refused, audited with the actor (and `reason`, if given), and adds no
@@ -180,6 +326,216 @@ export function createBrowserConformance(options: {
 		);
 		const next = await browser.open(unrelatedAgent, { grantId: fresh.id });
 		assert.strictEqual(next.persisting, true, "the context's persisting slot is free");
+	}
+
+	/**
+	 * A context, a grant of it to `SESSION` and an open browser under it, all in `PROJECT`, and an organisation-owned
+	 * context, whose grants only the session's project limits.
+	 */
+	async function projectHoldings(browser: Browser) {
+		const { context, grant } = await grantFresh(browser);
+		const opened = await browser.open(agent, { grantId: grant.id });
+		const shared = await browser.putContext(orgOperator, {
+			owner: { kind: "organisation", organisationId: ORG },
+			name: "shared",
+			providerContextId: "brwsr-ctx-shared",
+		});
+		return { context, shared, grant, opened };
+	}
+
+	/** Asserts that the project's grant and browser are as `projectHoldings` left them, and nothing was added. */
+	async function assertProjectUnchanged(
+		subject: BrowserSubject,
+		deps: ConformanceDeps,
+		held: Awaited<ReturnType<typeof projectHoldings>>,
+	): Promise<void> {
+		const { browser } = subject;
+		assert.deepEqual(
+			(await browser.listGrants(human, {})).map((grant) => [grant.id, grant.status]),
+			[[held.grant.id, "active"]],
+			"no grant was added, revoked or ended",
+		);
+		assert.strictEqual((await browser.get(human, held.opened.id)).status, "open", "the browser is still open");
+		assert.strictEqual(subject.providerLive().length, 1, "nothing more opened or released at the provider");
+		assert.strictEqual(deps.audit.ofType("browser.context.created").length, 2, "no context was added");
+		assert.strictEqual(deps.audit.ofType("browser.request.created").length, 0, "no request was added");
+	}
+
+	function projectAccessCases(): readonly ConformanceCase[] {
+		return [
+			test("project access: refuses an operator outside the project every change and read of its records", async (subject, deps) => {
+				const { browser } = subject;
+				const held = await projectHoldings(browser);
+				const denied = (call: Promise<unknown>, operation: string, message: string) =>
+					assertAccessDenied(assert, deps, call, { operation, message });
+				await denied(
+					browser.putContext(otherOperator, {
+						owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+						name: "theirs",
+						providerContextId: "brwsr-ctx-theirs",
+					}),
+					"browser.putContext",
+					"a context for another project",
+				);
+				await denied(
+					browser.putContext(otherOperator, {
+						owner: { kind: "organisation", organisationId: ORG },
+						name: "everyone's",
+						providerContextId: "brwsr-ctx-everyone",
+					}),
+					"browser.putContext",
+					"an organisation's context, by an operator on one project",
+				);
+				await denied(
+					browser.grant(otherOperator, grantInput(held.shared.id)),
+					"browser.grant",
+					"a grant to another project's session",
+				);
+				await denied(
+					browser.grant(otherOperator, grantInput(held.shared.id, { projectId: OTHER_PROJECT })),
+					"browser.grant",
+					"a grant naming its own project for a session outside it",
+				);
+				await denied(
+					browser.grant(
+						otherOperator,
+						grantInput(held.context.id, { projectId: OTHER_PROJECT, sessionId: OTHER_SESSION, agentId: OTHER_AGENT }),
+					),
+					"browser.grant",
+					"a grant of another project's context to its own session",
+				);
+				await denied(browser.revokeGrant(otherOperator, held.grant.id), "browser.revokeGrant", "a revoke");
+				await denied(
+					browser.listGrants(otherOperator, { sessionId: SESSION }),
+					"browser.listGrants",
+					"listing another project's session's grants",
+				);
+				await denied(browser.get(otherOperator, held.opened.id), "browser.get", "reading a browser session");
+				await denied(
+					browser.checkSite(otherOperator, held.opened.id, "https://github.com/"),
+					"browser.checkSite",
+					"checking a site",
+				);
+				await denied(browser.close(otherOperator, held.opened.id), "browser.close", "closing a browser");
+				await assertProjectUnchanged(subject, deps, held);
+			}),
+
+			test("project access: refuses an agent whose session belongs to another project", async (subject, deps) => {
+				const { browser } = subject;
+				const held = await projectHoldings(browser);
+				await assertAccessDenied(assert, deps, browser.grant(otherAgent, grantInput(held.context.id)), {
+					operation: "browser.grant",
+					message: "a grant to this project's session",
+				});
+				// Even with a parent-session lookup that names it the supervisor, the session is outside its project.
+				subject.setParent(SESSION, OTHER_SESSION);
+				await assertAccessDenied(
+					assert,
+					deps,
+					browser.grant(otherAgent, grantInput(held.shared.id, { projectId: OTHER_PROJECT })),
+					{ operation: "browser.grant", message: "a grant naming its own project for this project's session" },
+				);
+				await assertAccessDenied(assert, deps, browser.revokeGrant(otherAgent, held.grant.id), {
+					operation: "browser.revokeGrant",
+					message: "revoking this project's grant",
+				});
+				assert.strictEqual(
+					(await browser.listGrants(otherAgent, { sessionId: SESSION })).length,
+					0,
+					"it lists none of this project's grants",
+				);
+				await assert.rejectsWithCode(browser.open(otherAgent, { grantId: held.grant.id }), "not_found");
+				await assert.rejectsWithCode(browser.get(otherAgent, held.opened.id), "not_found");
+				await assert.rejectsWithCode(browser.close(otherAgent, held.opened.id), "not_found");
+				await assertProjectUnchanged(subject, deps, held);
+			}),
+
+			test("project access: refuses an agent whose session was closed", async (subject, deps) => {
+				const { browser } = subject;
+				const held = await projectHoldings(browser);
+				subject.setParent(SESSION, PARENT_SESSION);
+				const parentGrant = await grantToParent(browser, held.context.id);
+				deps.tenancy.close(SESSION);
+				deps.tenancy.close(PARENT_SESSION);
+				const denied = (call: Promise<unknown>, operation: string) =>
+					assertAccessDenied(assert, deps, call, { operation, message: `${operation} from a closed session` });
+				await denied(browser.request(agent, { reason: "Check the PR", sites: ["github.com"] }), "browser.request");
+				await denied(browser.open(agent, { grantId: held.grant.id }), "browser.open");
+				await denied(browser.get(agent, held.opened.id), "browser.get");
+				await denied(browser.checkSite(agent, held.opened.id, "https://github.com/"), "browser.checkSite");
+				await denied(browser.close(agent, held.opened.id), "browser.close");
+				await denied(browser.listGrants(agent, { sessionId: SESSION }), "browser.listGrants");
+				await denied(browser.grant(parentAgent, grantInput(held.context.id)), "browser.grant");
+				await denied(browser.open(parentAgent, { grantId: parentGrant.id }), "browser.open");
+				assert.strictEqual((await browser.listGrants(agent, {})).length, 0, "its unfiltered list is empty");
+				assert.strictEqual((await browser.get(human, held.opened.id)).status, "open", "the browser is untouched");
+				assert.strictEqual(subject.providerLive().length, 1, "nothing more opened at the provider");
+				assert.strictEqual((await browser.listGrants(human, {})).length, 2, "no grant was added");
+				assert.strictEqual(deps.audit.ofType("browser.request.created").length, 0, "no request was added");
+			}),
+
+			test("project access: leaves another project's contexts and grants out of an operator's lists", async ({
+				browser,
+			}, deps) => {
+				const ours = await putContext(browser);
+				const shared = await browser.putContext(orgOperator, {
+					owner: { kind: "organisation", organisationId: ORG },
+					name: "shared",
+					providerContextId: "brwsr-ctx-shared",
+				});
+				const theirs = await browser.putContext(otherOperator, {
+					owner: { kind: "project", organisationId: ORG, projectId: OTHER_PROJECT },
+					name: "theirs",
+					providerContextId: "brwsr-ctx-theirs",
+				});
+				const ourGrant = await browser.grant(human, grantInput(ours.id));
+				const theirGrant = await browser.grant(
+					otherOperator,
+					grantInput(theirs.id, { projectId: OTHER_PROJECT, sessionId: OTHER_SESSION, agentId: OTHER_AGENT }),
+				);
+				const ids = (values: readonly { readonly id: string }[]) => values.map((value) => value.id).sort();
+				assert.deepEqual(
+					ids((await browser.listContexts(otherOperator)).items),
+					ids([shared, theirs]),
+					"the other project's operator sees its own and the organisation's contexts",
+				);
+				assert.deepEqual(
+					ids((await browser.listContexts(human)).items),
+					ids([ours, shared]),
+					"this project's operator sees its own and the organisation's contexts",
+				);
+				assert.deepEqual(ids(await browser.listGrants(otherOperator, {})), [theirGrant.id], "its own grants only");
+				assert.deepEqual(ids(await browser.listGrants(human, {})), [ourGrant.id], "this project's grants only");
+				assert.deepEqual(ids(await browser.listGrants(otherAgent, {})), [theirGrant.id], "an agent sees its own");
+				assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "filtering a list is not a refusal");
+			}),
+
+			test("project access: lets an operator on the project and an agent in its own session act", async (subject, deps) => {
+				const { browser } = subject;
+				const context = await putContext(browser);
+				const shared = await browser.putContext(orgOperator, {
+					owner: { kind: "organisation", organisationId: ORG },
+					name: "shared",
+					providerContextId: "brwsr-ctx-shared",
+				});
+				const request = await browser.request(agent, { reason: "Check the PR", sites: ["github.com"] });
+				const grant = await browser.grant(human, grantInput(context.id, { requestId: request.id }));
+				const opened = await browser.open(agent, { grantId: grant.id });
+				assert.strictEqual((await browser.get(agent, opened.id)).status, "open");
+				assert.strictEqual((await browser.checkSite(agent, opened.id, "https://github.com/")).allow, true);
+				assert.strictEqual((await browser.close(agent, opened.id)).status, "closed");
+				assert.strictEqual((await browser.listGrants(agent, { sessionId: SESSION })).length, 1);
+				subject.setParent(SESSION, PARENT_SESSION);
+				await grantToParent(browser, shared.id);
+				const passedOn = await browser.grant(parentAgent, grantInput(shared.id));
+				assert.strictEqual((await browser.open(agent, { grantId: passedOn.id })).status, "open");
+				const byService = await browser.grant(service, grantInput(context.id));
+				assert.strictEqual((await browser.revokeGrant(human, byService.id)).status, "revoked");
+				assert.strictEqual((await browser.listGrants(human, { sessionId: SESSION })).length, 3);
+				assert.strictEqual((await browser.listContexts(service)).items.length, 2);
+				assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
+			}),
+		];
 	}
 
 	return [
@@ -739,6 +1095,46 @@ export function createBrowserConformance(options: {
 			assert.strictEqual(closedView.endReason, "closed");
 			assert.strictEqual(subject.providerLive().length, 0, "close releases at the provider");
 		}),
+
+		test("session end: closes the session's browsers, ends its grants and those passed on, declines its requests, once", async (subject, deps) => {
+			const { browser } = subject;
+			const held = await holdForTeardown(subject);
+			await browser.endSession(SESSION, "session_ended");
+			await assertTornDown(subject, deps, held, "session_ended", ["session_ended", "aborted"]);
+			await assert.rejectsWithCode(
+				browser.grant(human, grantInput(held.context.id, { requestId: held.request.id })),
+				"conflict",
+				"the session's pending request was declined",
+			);
+			const answered = await browser.grant(
+				human,
+				grantInput(held.context.id, {
+					sessionId: UNRELATED_SESSION,
+					agentId: "agent-unrelated",
+					requestId: held.unrelatedRequest.id,
+				}),
+			);
+			assert.strictEqual(answered.requestId, held.unrelatedRequest.id, "another session's request is still pending");
+		}),
+
+		test("session end: an abort closes the session's browsers and ends its grants once, keeps its requests and leaves it usable", async (subject, deps) => {
+			const { browser } = subject;
+			const held = await holdForTeardown(subject);
+			await browser.endSession(SESSION, "aborted");
+			await assertTornDown(subject, deps, held, "aborted", ["aborted"]);
+			const answered = await browser.grant(
+				human,
+				grantInput(held.context.id, { persist: true, requestId: held.request.id }),
+			);
+			assert.strictEqual(answered.requestId, held.request.id, "the session's request is still pending after an abort");
+			const reopened = await browser.open(agent, { grantId: answered.id });
+			assert.strictEqual(reopened.status, "open", "the aborted session opens a browser again");
+			assert.strictEqual(reopened.persisting, true, "the context's persisting slot was freed");
+			const later = await browser.request(agent, { reason: "One more", sites: ["github.com"] });
+			assert.strictEqual(later.status, "pending", "the aborted session asks again");
+		}),
+
+		...(options.projectAccess === true ? projectAccessCases() : []),
 	];
 }
 
@@ -746,10 +1142,15 @@ export function registerBrowserConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: BrowserConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
 	registerCases(
 		runner,
 		name,
-		createBrowserConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+		createBrowserConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
 	);
 }

@@ -19,12 +19,48 @@ confirmed agent supervisors on 27 Oct 2026 ("Yes, as built").
   supervisor granted it; it ends when that one does.
 - **Request**: an agent asking for a browser, with a reason and sites, never a context.
 - **Browser session**: one open browser under a grant: `cdpUrl`, `persisting`, `expiresAt`, and an `endReason` of
-  `closed`, `timeout`, `session_ended` or `revoked`. It never carries the provider context ID.
+  `closed`, `timeout`, `session_ended`, `aborted` or `revoked`. It never carries the provider context ID.
 
 ## Key operations
 
 `putContext` and `listContexts` (humans and services) → `request` (agent) → `grant` (supervisor, optionally answering a
-request) → `open` (agent) → `checkSite` → `close`. `revokeGrant` (supervisor) and `endSession` (runtime) end things.
+request) → `open` (agent) → `checkSite` → `close`. `revokeGrant` (supervisor) and `endSession` (the session-end
+teardown) end things.
+
+## Project access (settled 27 Oct 2026, question 7)
+
+A context owned by a project belongs to it; a grant, a request and a browser session belong to their agent session's
+project (and a grant to its `projectId`). With `access`, every call checks the caller through `ProjectAccess` after the
+organisation lookup (another organisation's record stays `not_found`) and after the existing agent rules (agents stay
+`forbidden` from contexts, humans from `request` and `open`). Refusals are `forbidden`, audited `access.denied`:
+
+| Operation | Checks |
+| --- | --- |
+| `browser.putContext` | operator on the owner project; organisation-wide operator for an organisation-owned context |
+| `browser.listContexts` | per record: viewer on a project-owned context's project; others list as before |
+| `browser.request` | operator on the agent's own session |
+| `browser.grant` | operator on `{ projectId, sessionId }` of the input, and on a project-owned context's project |
+| `browser.revokeGrant` | operator on the grant's session and project |
+| `browser.listGrants` | viewer on the filter's session, or per record |
+| `browser.open`, `browser.close` | operator on the browser session's (or grant's) agent session |
+| `browser.checkSite`, `browser.get` | viewer on the browser session's agent session |
+
+`grant` checks an agent on `input.projectId` first, so an agent of another project is `forbidden`, while one in the
+project that does not supervise the session (or grants to its own) still gets the supervisor rule's `refused`; then
+everyone on the session as well. Cases: "project access: refuses an operator outside the project every change and read
+of its records", "project access: refuses an agent whose session belongs to another project", "project access: refuses
+an agent whose session was closed", "project access: leaves another project's contexts and grants out of an operator's
+lists", "project access: lets an operator on the project and an agent in its own session act".
+
+## Session end (settled 27 Oct 2026, question 8)
+
+`endSession(sessionId, reason)` is the broker's teardown, registered as `browser` with the session-end hook. For
+`session_ended` or `aborted` it closes the session's open browser sessions with that end reason and ends its grants,
+and the grants passed on from them (closing their browsers with the same reason). Only `session_ended` declines pending
+requests; after `aborted` they stay pending and the session can be granted and open browsers again. A second run
+changes and audits nothing. Cases: "session end: closes the session's browsers, ends its grants and those passed on,
+declines its requests, once", "session end: an abort closes the session's browsers and ends its grants once, keeps its
+requests and leaves it usable".
 
 ## Rules and the suite cases that enforce them
 
@@ -77,16 +113,17 @@ request) → `open` (agent) → `checkSite` → `close`. `revokeGrant` (supervis
 
 ## The in-memory implementation
 
-`createMemoryBrowser({ clock?, audit?, provider?, parentOf? })` keeps everything in maps. `parentOf` defaults to "no
-parent", so only humans and services can grant. `createFakeBrowserProvider()` opens nothing real; its CDP URLs are
-`wss://browser.invalid/<providerSessionId>` and `live()` lists unreleased sessions. Every call first sweeps sessions
-past `expiresAt` (by the clock) and releases them. `open` reserves the persisting slot before awaiting the provider
-and re-checks the grant afterwards, so a revoke or session end during the open releases the new browser. Ending a
-session also declines its pending requests. Releases run independently; failed ones wait in a retry set that every
-call's sweep retries. When an agent supervisor holds more than one active grant on the context, the first one the new
-grant is no wider than becomes its parent. The fake provider's `failReleases(times)` and `holdNextOpen()` drive the
-release and in-flight cases. It leaves out durable storage, role checks beyond "not an agent", and site enforcement inside the browser itself (`checkSite` is the decision; the
-egress layer must apply it).
+`createMemoryBrowser({ clock?, audit?, provider?, parentOf?, access?, sessionEnd? })` keeps everything in maps. Without
+`access` it checks only the organisation; with `sessionEnd` it registers `endSession` as `browser`, ignoring the hook's
+context. `parentOf` defaults to "no parent", so only humans and services can grant. `createFakeBrowserProvider()` opens
+nothing real; its CDP URLs are `wss://browser.invalid/<providerSessionId>` and `live()` lists unreleased sessions. Every
+call first sweeps sessions past `expiresAt` (by the clock) and releases them. `open` reserves the persisting slot before
+awaiting the provider and re-checks the grant afterwards, so a revoke or session end during the open releases the new
+browser. Releases run independently; failed ones wait in a retry set that every call's sweep retries. When an agent
+supervisor holds more than one active grant on the context, the first one the new grant is no wider than becomes its
+parent. The fake provider's `failReleases(times)` and `holdNextOpen()` drive the release and in-flight cases. It leaves
+out durable storage and site enforcement inside the browser itself (`checkSite` is the decision; the egress layer must
+apply it).
 
 ## Open questions
 

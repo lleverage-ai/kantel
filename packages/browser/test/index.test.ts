@@ -1,6 +1,6 @@
 import { assertValidSite, isSupervisor, siteAllowed, siteCovered } from "@harbour/browser";
 import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import { isHarbourError } from "@harbour/contracts";
+import { isHarbourError, type SessionEndHook, type SessionTeardown } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 
 describe("siteAllowed", () => {
@@ -138,6 +138,51 @@ describe("createMemoryBrowser", () => {
 		expect(fake.opened().map(({ providerContextId, persist }) => ({ providerContextId, persist }))).toEqual([
 			{ providerContextId: "brwsr-1", persist: true },
 		]);
+	});
+	it("registers its teardown with the session-end hook once, as browser, and the teardown ends the session's holdings", async () => {
+		const registered: { readonly name: string; readonly teardown: SessionTeardown }[] = [];
+		const sessionEnd: SessionEndHook = {
+			register(name, teardown) {
+				registered.push({ name, teardown });
+				return { close: async () => undefined };
+			},
+		};
+		const fake = createFakeBrowserProvider();
+		const browser = createMemoryBrowser({ provider: fake.provider, sessionEnd });
+		expect(registered.map(({ name }) => name)).toEqual(["browser"]);
+		const human = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
+		const context = await browser.putContext(human, {
+			owner: { kind: "organisation", organisationId: "org" },
+			name: "sal",
+			providerContextId: "brwsr-1",
+		});
+		const grant = await browser.grant(human, {
+			sessionId: "s",
+			projectId: "p",
+			agentId: "a",
+			contextId: context.id,
+			persist: false,
+			timeoutMs: 5000,
+			allowedSites: ["github.com"],
+		});
+		const agent = { actor: { kind: "agent", agentId: "a", sessionId: "s" }, organisationId: "org" } as const;
+		const opened = await browser.open(agent, { grantId: grant.id });
+		await registered[0]!.teardown(
+			{ actor: { kind: "system", component: "session" }, organisationId: "org" },
+			{
+				sessionId: "s",
+				organisationId: "org",
+				projectId: "p",
+				agentId: "a",
+				reason: "aborted",
+				endedBy: human.actor,
+				at: 0,
+			},
+		);
+		expect(await browser.get(human, opened.id)).toMatchObject({ status: "closed", endReason: "aborted" });
+		expect((await browser.listGrants(human, {})).map(({ status }) => status)).toEqual(["ended"]);
+		expect(fake.live()).toEqual([]);
+		expect(registered).toHaveLength(1);
 	});
 	it("rejects grants with a bad timeout or site as invalid", async () => {
 		const browser = createMemoryBrowser();
