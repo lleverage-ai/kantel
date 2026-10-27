@@ -1,6 +1,14 @@
 // Session leases on Postgres: the self-hosted stand-in for a Durable Object's
 // "exactly one live owner". All times come from Postgres's clock (now()), so
 // hosts with skewed clocks still agree on who owns what.
+//
+// A lease is free when it has expired, or when its owner is dead: every host
+// incarnation holds a session-level advisory lock on its own connection, which
+// Postgres drops the moment that connection closes (a crashed or killed
+// process). So a crash moves sessions in about one takeover poll, and the TTL
+// only matters when the owner is alive but cut off. Either way the fence goes
+// up and every durable write checks it, so a slow or partitioned old owner
+// cannot commit after it has been replaced.
 
 import type pg from "pg";
 import type { Lease, LeaseFence, SessionLeases } from "../../../spike/contracts/index.ts";
@@ -14,6 +22,19 @@ export class LeaseLost extends Error {
 
 type Queryable = Pick<pg.ClientBase, "query">;
 
+/** First key of the two-key advisory lock that marks a live host incarnation. */
+export const LIVENESS_CLASS = 4242;
+
+/** SQL: true when the owner of lease alias `l` still holds its liveness lock. */
+const OWNER_ALIVE = `EXISTS (SELECT 1 FROM pg_locks k WHERE k.locktype = 'advisory' AND k.classid = ${LIVENESS_CLASS}
+	AND k.objsubid = 2 AND k.granted AND k.objid::bigint = (hashtext(l.owner)::bigint & 4294967295))`;
+const LEASE_FREE = `(l.expires_at <= now() OR NOT ${OWNER_ALIVE})`;
+
+/** Hold the liveness lock for `owner` on a dedicated connection for as long as it is open. */
+export async function holdLiveness(client: pg.Client, owner: string): Promise<void> {
+	await client.query(`SELECT pg_advisory_lock(${LIVENESS_CLASS}, hashtext($1))`, [owner]);
+}
+
 const row = (r: any): Lease => ({
 	sessionId: r.session_id,
 	owner: r.owner,
@@ -25,7 +46,7 @@ const row = (r: any): Lease => ({
 export class PostgresLeases implements SessionLeases {
 	constructor(private readonly db: Queryable) {}
 
-	/** Take the lease if it is free or expired. A takeover increments the fence. */
+	/** Take the lease if it is free (expired, or its owner is dead). A takeover increments the fence. */
 	async acquire(sessionId: string, owner: string, ownerUrl: string, ttlMs: number): Promise<Lease | undefined> {
 		const result = await this.db.query(
 			`INSERT INTO harbour.session_leases AS l (session_id, owner, owner_url, fence, expires_at, acquired_at)
@@ -33,7 +54,7 @@ export class PostgresLeases implements SessionLeases {
 			 ON CONFLICT (session_id) DO UPDATE
 			   SET owner = EXCLUDED.owner, owner_url = EXCLUDED.owner_url, fence = l.fence + 1,
 			       expires_at = EXCLUDED.expires_at, acquired_at = now()
-			   WHERE l.expires_at <= now()
+			   WHERE ${LEASE_FREE}
 			 RETURNING session_id, owner, owner_url, fence, expires_at`,
 			[sessionId, owner, ownerUrl, ttlMs],
 		);
@@ -61,8 +82,8 @@ export class PostgresLeases implements SessionLeases {
 
 	async current(sessionId: string): Promise<Lease | undefined> {
 		const result = await this.db.query(
-			`SELECT session_id, owner, owner_url, fence, expires_at FROM harbour.session_leases
-			 WHERE session_id = $1 AND expires_at > now()`,
+			`SELECT session_id, owner, owner_url, fence, expires_at FROM harbour.session_leases l
+			 WHERE session_id = $1 AND NOT ${LEASE_FREE}`,
 			[sessionId],
 		);
 		return result.rows[0] === undefined ? undefined : row(result.rows[0]);
@@ -83,13 +104,19 @@ export class PostgresLeases implements SessionLeases {
 		if (result.rowCount === 0) throw new LeaseLost(lease);
 	}
 
+	/** Whether a host incarnation still holds its liveness lock. */
+	async ownerAlive(owner: string): Promise<boolean> {
+		const result = await this.db.query(`SELECT ${OWNER_ALIVE} AS alive FROM (SELECT $1::text AS owner) l`, [owner]);
+		return result.rows[0]?.alive === true;
+	}
+
 	/** Sessions with work to do whose lease is free: the takeover scan. */
 	async orphans(limit = 20): Promise<string[]> {
 		const result = await this.db.query(
 			`SELECT s.id FROM harbour.sessions s
 			 LEFT JOIN harbour.session_leases l ON l.session_id = s.id
 			 WHERE (s.status = 'active' OR s.wake_at <= now())
-			   AND (l.session_id IS NULL OR l.expires_at <= now())
+			   AND (l.session_id IS NULL OR ${LEASE_FREE})
 			 ORDER BY s.updated_at LIMIT $1`,
 			[limit],
 		);

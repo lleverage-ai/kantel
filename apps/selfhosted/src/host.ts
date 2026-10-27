@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, type Storage, type Wake } from "@earendil-works/pi-durable";
-import type pg from "pg";
+import pg from "pg";
 import type {
 	CreateSessionResponse,
 	Lease,
@@ -18,7 +18,7 @@ import type {
 	ToolCallSummary,
 } from "../../../spike/contracts/index.ts";
 import type { Audit } from "./audit.ts";
-import { LeaseLost, type PostgresLeases } from "./lease.ts";
+import { holdLiveness, LeaseLost, type PostgresLeases } from "./lease.ts";
 import { openPostgresStorage, piSchemaFor } from "./pi-postgres.ts";
 import { scriptedResponse } from "./scenario-model.ts";
 import type { ContainerRunner } from "./sandbox/container.ts";
@@ -30,6 +30,8 @@ export interface HostOptions {
 	hostUrl: string;
 	databaseUrl: string;
 	leaseTtlMs: number;
+	/** How often to look for sessions whose owner died. */
+	takeoverPollMs: number;
 }
 
 interface OpenSession {
@@ -51,8 +53,19 @@ export class SessionHost {
 	readonly #opening = new Map<string, Promise<OpenSession | undefined>>();
 	#takeoverTimer: ReturnType<typeof setTimeout> | undefined;
 	#stopped = false;
+	#liveness: pg.Client | undefined;
+	/** This incarnation's lease owner name: host ID plus a boot ID, so a restarted host is a new owner. */
+	readonly owner: string;
 	/** Takeovers this host performed: session, time the lease was free, time resumed. */
-	readonly takeovers: { sessionId: string; previousOwner?: string; fence: number; resumedAt: number }[] = [];
+	readonly takeovers: {
+		sessionId: string;
+		previousOwner?: string;
+		fence: number;
+		/** When the previous lease would have expired (its last renewal plus the TTL). */
+		previousExpiresAt?: number;
+		acquiredAt: number;
+		resumedAt: number;
+	}[] = [];
 
 	constructor(
 		readonly options: HostOptions,
@@ -62,11 +75,31 @@ export class SessionHost {
 		private readonly isolate: SandboxTierRunner,
 		private readonly container: ContainerRunner,
 		private readonly audit: Audit,
-	) {}
+	) {
+		this.owner = `${options.hostId}/${crypto.randomUUID().slice(0, 8)}`;
+		container.owner = this.owner;
+	}
+
+	/** Hold this incarnation's liveness lock. Losing that connection means losing every lease. */
+	async start(): Promise<void> {
+		const client = new pg.Client({ connectionString: this.options.databaseUrl });
+		await client.connect();
+		await holdLiveness(client, this.owner);
+		const lost = (why: string) => {
+			if (this.#stopped) return;
+			console.error(`[${this.owner}] liveness connection ${why}; dropping every session`);
+			for (const session of [...this.#open.values()]) void this.#close(session, "liveness lost");
+			process.exit(1);
+		};
+		client.on("error", () => lost("failed"));
+		client.on("end", () => lost("ended"));
+		this.#liveness = client;
+		this.startTakeoverLoop();
+	}
 
 	// ---------------------------------------------------------------- lifecycle
 
-	async create(sessionId = crypto.randomUUID()): Promise<CreateSessionResponse> {
+	async create(sessionId: string = crypto.randomUUID()): Promise<CreateSessionResponse> {
 		const workspaceId = `ws-${sessionId}`;
 		await this.workspace.create(workspaceId);
 		await this.pool.query(
@@ -93,11 +126,15 @@ export class SessionHost {
 		const row = (await this.pool.query(`SELECT workspace_id, pi_schema FROM harbour.sessions WHERE id = $1`, [sessionId]))
 			.rows[0];
 		if (row === undefined) throw new NotFound(`unknown session ${sessionId}`);
-		const before = await this.pool.query(`SELECT owner, fence FROM harbour.session_leases WHERE session_id = $1`, [sessionId]);
-		const lease = await this.leases.acquire(sessionId, this.options.hostId, this.options.hostUrl, this.options.leaseTtlMs);
+		const before = await this.pool.query(`SELECT owner, fence, expires_at FROM harbour.session_leases WHERE session_id = $1`, [
+			sessionId,
+		]);
+		const lease = await this.leases.acquire(sessionId, this.owner, this.options.hostUrl, this.options.leaseTtlMs);
 		if (lease === undefined) return undefined;
 		const takeover = lease.fence > 1;
 		const previousOwner = before.rows[0]?.owner as string | undefined;
+		const previousExpiresAt = before.rows[0] ? new Date(before.rows[0].expires_at).getTime() : undefined;
+		const acquiredAt = Date.now();
 		await this.audit.record(sessionId, "lease", takeover ? "takeover" : "acquire", {
 			fence: lease.fence,
 			previousOwner: takeover ? previousOwner : undefined,
@@ -156,7 +193,7 @@ export class SessionHost {
 		await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		harness.resume();
 		if (takeover) {
-			this.takeovers.push({ sessionId, previousOwner, fence: lease.fence, resumedAt: Date.now() });
+			this.takeovers.push({ sessionId, previousOwner, fence: lease.fence, previousExpiresAt, acquiredAt, resumedAt: Date.now() });
 			console.log(`[${this.options.hostId}] took over ${sessionId} at fence ${lease.fence} from ${previousOwner}`);
 		}
 		return session;
@@ -203,16 +240,23 @@ export class SessionHost {
 
 	/** Take over active sessions whose owner stopped renewing. */
 	startTakeoverLoop() {
+		let ticks = 0;
 		const tick = async () => {
 			if (this.#stopped) return;
 			let delay = this.options.leaseTtlMs;
 			try {
+				// About every 10 s: sandbox containers whose host died.
+				if (ticks++ % 20 === 0) {
+					const reaped = await this.container.reapDeadOwners((owner) => this.leases.ownerAlive(owner));
+					if (reaped > 0) await this.audit.record(null, "sandbox", "reap-dead-owner", { containers: reaped });
+				}
 				for (const sessionId of await this.leases.orphans()) {
 					if (!this.#open.has(sessionId)) await this.#ensureOpen(sessionId).catch((e) => console.error(e));
 				}
 				const next = await this.leases.nextExpiryMs();
-				// Wake just after the next lease could expire, so a dead owner's
-				// session moves within one TTL of its last renewal.
+				// Poll often enough to notice a dead owner's dropped liveness lock,
+				// and wake just after the next lease could expire.
+				delay = Math.min(delay, this.options.takeoverPollMs);
 				if (next !== undefined) delay = Math.min(delay, next + 25);
 			} catch (error) {
 				console.error("takeover scan failed", error);
@@ -227,6 +271,7 @@ export class SessionHost {
 		this.#stopped = true;
 		clearTimeout(this.#takeoverTimer);
 		for (const session of [...this.#open.values()]) await this.#close(session, "shutdown", true);
+		await this.#liveness?.end().catch(() => undefined);
 	}
 
 	// ---------------------------------------------------------------- API
@@ -236,7 +281,7 @@ export class SessionHost {
 		const session = await this.#ensureOpen(sessionId);
 		if (session !== undefined) return { session };
 		const lease = await this.leases.current(sessionId);
-		if (lease !== undefined && lease.owner !== this.options.hostId) return { forward: lease.ownerUrl };
+		if (lease !== undefined && lease.owner !== this.owner) return { forward: lease.ownerUrl };
 		// The lease expired between the two reads: try once more.
 		const retry = await this.#ensureOpen(sessionId);
 		if (retry !== undefined) return { session: retry };

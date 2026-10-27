@@ -51,6 +51,9 @@ function demux(bytes: Uint8Array): { stdout: string; stderr: string } {
 export class ContainerRunner implements SandboxTierRunner {
 	readonly tier = "container" as const;
 
+	/** The host incarnation that starts containers, for the dead-owner janitor. */
+	owner = "unknown";
+
 	constructor(
 		private readonly options: ContainerRunnerOptions,
 		private readonly workspace: MinioWorkspace,
@@ -68,6 +71,27 @@ export class ContainerRunner implements SandboxTierRunner {
 			throw new Error(`docker ${init.method ?? "GET"} ${path}: ${response.status} ${await response.text()}`);
 		}
 		return response;
+	}
+
+	/**
+	 * Remove sandbox containers whose owning host incarnation is dead (its
+	 * liveness lock is gone), whatever session they were for. Catches what a
+	 * killed host left between `create` and its own cleanup.
+	 */
+	async reapDeadOwners(isAlive: (owner: string) => Promise<boolean>): Promise<number> {
+		const filters = encodeURIComponent(JSON.stringify({ label: ["harbour.owner"] }));
+		const list = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as {
+			Id: string;
+			Labels: Record<string, string>;
+		}[];
+		let removed = 0;
+		for (const container of list) {
+			const owner = container.Labels["harbour.owner"];
+			if (owner === undefined || (await isAlive(owner))) continue;
+			await this.docker(`/containers/${container.Id}?force=1`, { method: "DELETE" }).catch(() => undefined);
+			removed++;
+		}
+		return removed;
 	}
 
 	/** Remove containers a dead owner left behind for this session. */
@@ -130,7 +154,7 @@ export class ContainerRunner implements SandboxTierRunner {
 						"HOME=/workspace",
 						...Object.entries(request.env ?? {}).map(([k, v]) => `${k}=${v}`),
 					],
-					Labels: { "harbour.session": request.sessionId, "harbour.tier": "container" },
+					Labels: { "harbour.session": request.sessionId, "harbour.owner": this.owner, "harbour.tier": "container" },
 					HostConfig: {
 						NetworkMode: this.options.network,
 						Runtime: this.options.runtime,
@@ -147,7 +171,7 @@ export class ContainerRunner implements SandboxTierRunner {
 		try {
 			await this.docker(`/containers/${id}/archive?path=/`, {
 				method: "PUT",
-				body: archive,
+				body: archive as Uint8Array<ArrayBuffer>,
 				headers: { "content-type": "application/x-tar" },
 			});
 			mark("copyInMs");

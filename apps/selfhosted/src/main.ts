@@ -29,6 +29,7 @@ export function config() {
 		port: Number(env("PORT", "8080")),
 		databaseUrl: env("HARBOUR_DATABASE_URL", "postgres://harbour:harbour@127.0.0.1:55432/harbour"),
 		leaseTtlMs: Number(env("HARBOUR_LEASE_TTL_MS", "10000")),
+		takeoverPollMs: Number(env("HARBOUR_TAKEOVER_POLL_MS", "500")),
 		s3: {
 			endpoint: env("S3_ENDPOINT", "http://127.0.0.1:59000"),
 			bucket: env("S3_BUCKET", "harbour"),
@@ -72,7 +73,13 @@ export async function build(cfg = config()) {
 	const container = new ContainerRunner(cfg.container, workspace, pool);
 	const audit = new Audit(pool, cfg.hostId);
 	const host = new SessionHost(
-		{ hostId: cfg.hostId, hostUrl: cfg.hostUrl, databaseUrl: cfg.databaseUrl, leaseTtlMs: cfg.leaseTtlMs },
+		{
+			hostId: cfg.hostId,
+			hostUrl: cfg.hostUrl,
+			databaseUrl: cfg.databaseUrl,
+			leaseTtlMs: cfg.leaseTtlMs,
+			takeoverPollMs: cfg.takeoverPollMs,
+		},
 		pool,
 		leases,
 		workspace,
@@ -88,18 +95,26 @@ const json = (value: unknown, status = 200) =>
 
 async function forward(request: Request, base: string, body: string | undefined): Promise<Response> {
 	const url = new URL(request.url);
-	const response = await fetch(`${base}${url.pathname}${url.search}`, {
-		method: request.method,
-		headers: { "content-type": "application/json", "x-harbour-forwarded": "1" },
-		body,
-	});
+	let response: Response;
+	try {
+		response = await fetch(`${base}${url.pathname}${url.search}`, {
+			method: request.method,
+			headers: { "content-type": "application/json", "x-harbour-forwarded": "1" },
+			body,
+			signal: AbortSignal.timeout(30_000),
+		});
+	} catch {
+		// The owner is down but its lease has not expired yet: the session moves
+		// when it does. Retryable.
+		return json({ error: `owner ${base} unreachable; retry after the lease expires` }, 503);
+	}
 	return new Response(response.body, { status: response.status, headers: { ...Object.fromEntries(response.headers), "x-harbour-forwarded-to": base } });
 }
 
 async function serve() {
 	const app = await build();
 	const { host, cfg, pool } = app;
-	host.startTakeoverLoop();
+	await host.start();
 
 	const server = Bun.serve({
 		port: cfg.port,
@@ -109,7 +124,9 @@ async function serve() {
 			const parts = url.pathname.split("/").filter(Boolean);
 			try {
 				if (url.pathname === "/healthz") return json({ ok: true, host: cfg.hostId, sessions: host.ownedSessions().length });
-				if (url.pathname === "/v0/target") return json({ target: "selfhosted", host: cfg.hostId, leaseTtlMs: cfg.leaseTtlMs });
+				if (url.pathname === "/v0/target") {
+					return json({ target: "selfhosted", host: cfg.hostId, owner: host.owner, leaseTtlMs: cfg.leaseTtlMs });
+				}
 				if (url.pathname === "/v0/takeovers") return json({ host: cfg.hostId, takeovers: host.takeovers });
 				if (parts[0] !== "v0" || parts[1] !== "sessions") return json({ error: "not found" }, 404);
 				if (parts.length === 2 && request.method === "POST") {

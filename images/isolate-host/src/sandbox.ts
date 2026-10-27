@@ -161,8 +161,14 @@ export default class Sandbox extends WorkerEntrypoint<Env> {
 		for (const full of fs.getAllPaths()) {
 			const path = rel(full);
 			if (path === undefined || path === "") continue;
-			const stat = await fs.lstat(full);
 			const before = request.manifest[path];
+			// An untouched file keeps its entry without a stat: stat on a lazy file
+			// loads its body, which would read the whole workspace on every commit.
+			if (before?.kind === "file" && !isDirty(full)) {
+				next[path] = before;
+				continue;
+			}
+			const stat = await fs.lstat(full);
 			if (stat.isSymbolicLink) {
 				const target = await fs.readlink(full);
 				next[path] = { kind: "symlink", target };
@@ -170,8 +176,6 @@ export default class Sandbox extends WorkerEntrypoint<Env> {
 			} else if (stat.isDirectory) {
 				next[path] = { kind: "dir" };
 				if (before?.kind !== "dir") changed.push(path);
-			} else if (before?.kind === "file" && !isDirty(full) && (stat.mode & 0o777) === before.mode) {
-				next[path] = before;
 			} else {
 				const bytes = await fs.readFileBuffer(full);
 				const sha = await sha256(bytes);

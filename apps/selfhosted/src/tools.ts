@@ -127,7 +127,7 @@ export function createHarbourTools(deps: ToolDeps) {
 			if (sha !== sha256Hex(bytes)) throw new Error("blob hash mismatch");
 			const before = manifest[path];
 			if (before?.kind === "file" && before.sha === sha) {
-				return { output: [{ type: "text", text: `${path} unchanged` }], details: { tier: "host", version: head.version } };
+				return { output: [{ type: "text", text: `${path} unchanged` }], details: { tier: "host", version: head.version, seq: head.seq } };
 			}
 			manifest[path] = { kind: "file", sha, size: bytes.length, mode: 0o644 };
 			const next = await deps.workspace.commit(

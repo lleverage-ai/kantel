@@ -24,6 +24,10 @@ const { values: args } = parseArgs({
 		canary: { type: "string", default: process.env.HARBOUR_CANARY_SECRET ?? "harbour-canary-0000" },
 		crash: { type: "boolean", default: false },
 		"kill-cmd": { type: "string" },
+		/** Run once the task settles, e.g. to unpause a paused owner. */
+		"after-cmd": { type: "string" },
+		/** Allowed kill-to-takeover time; defaults to the target's lease TTL. */
+		"takeover-budget-ms": { type: "string" },
 		json: { type: "string" },
 		timeout: { type: "string", default: "180000" },
 	},
@@ -50,6 +54,7 @@ console.log(`target ${target.target}, session ${session.sessionId} on ${session.
 
 let killedAt: number | undefined;
 let killedOwner: string | undefined;
+let killCmdMs: number | undefined;
 const onState = async (state: SessionState) => {
 	if (!args.crash || killedAt !== undefined) return;
 	// Steps 1-4 done means step 5 (the long container call) is running.
@@ -59,6 +64,7 @@ const onState = async (state: SessionState) => {
 		killedAt = Date.now();
 		console.log(`killing ${killedOwner} mid tool call: ${args["kill-cmd"]}`);
 		const kill = Bun.spawnSync(["sh", "-c", args["kill-cmd"]!], { stdout: "inherit", stderr: "inherit" });
+		killCmdMs = Date.now() - killedAt;
 		if (kill.exitCode !== 0) throw new Error("kill command failed");
 		if (args.fallback) client.base = args.fallback;
 	}
@@ -66,6 +72,7 @@ const onState = async (state: SessionState) => {
 
 const settled = await client.settle(session.sessionId, { timeoutMs: Number(args.timeout), onState });
 const totalMs = performance.now() - t0;
+if (args["after-cmd"]) Bun.spawnSync(["sh", "-c", args["after-cmd"]], { stdout: "inherit", stderr: "inherit" });
 const { state, result } = settled;
 check("task finished (DONE)", settled.done, settled.done ? undefined : state.answer?.slice(0, 500));
 
@@ -88,6 +95,7 @@ check(
 check("canary absent from the transcript", !JSON.stringify(state).includes(args.canary!));
 
 let takeoverMs: number | undefined;
+let takeoverDetail: Record<string, number | undefined> | undefined;
 if (args.crash) {
 	const interrupted = step(4);
 	check(
@@ -98,14 +106,25 @@ if (args.crash) {
 	check("session moved to another owner", state.owner !== null && state.owner !== killedOwner, `${killedOwner} -> ${state.owner}, fence ${state.fence}`);
 	if (args.fallback) {
 		const takeovers = (await (await fetch(`${args.fallback}/v0/takeovers`)).json()) as {
-			takeovers: { sessionId: string; resumedAt: number }[];
+			takeovers: { sessionId: string; resumedAt: number; acquiredAt?: number; previousExpiresAt?: number }[];
 		};
 		const mine = takeovers.takeovers.find((t) => t.sessionId === session.sessionId);
-		if (mine && killedAt) takeoverMs = mine.resumedAt - killedAt;
-		const ttl = Number(target.leaseTtlMs ?? Number.NaN);
+		if (mine && killedAt) {
+			takeoverMs = mine.resumedAt - killedAt;
+			// Target-specific detail when the target reports it.
+			if (mine.acquiredAt !== undefined) {
+				takeoverDetail = {
+					killToAcquireMs: mine.acquiredAt - killedAt,
+					acquireToResumeMs: mine.resumedAt - mine.acquiredAt,
+					...(mine.previousExpiresAt === undefined ? {} : { acquireMinusOldExpiryMs: mine.acquiredAt - mine.previousExpiresAt }),
+					killCmdMs,
+				};
+			}
+		}
+		const budget = Number(args["takeover-budget-ms"] ?? target.leaseTtlMs ?? Number.NaN);
 		check(
-			"taken over within one lease TTL of the kill",
-			takeoverMs !== undefined && (Number.isNaN(ttl) || takeoverMs <= ttl),
+			`taken over within ${budget} ms of the kill`,
+			takeoverMs !== undefined && (Number.isNaN(budget) || takeoverMs <= budget),
 			`${takeoverMs} ms, TTL ${target.leaseTtlMs} ms`,
 		);
 	}
@@ -119,6 +138,7 @@ const summary = {
 	createMs: Math.round(createMs),
 	totalMs: Math.round(totalMs),
 	takeoverMs,
+	takeoverDetail,
 	steps: result?.steps,
 	tiers: results.map((r) => r.tier ?? r.name),
 	checks,

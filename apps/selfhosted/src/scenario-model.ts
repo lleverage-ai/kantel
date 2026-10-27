@@ -96,7 +96,7 @@ export function scriptedResponse(context: TranscriptContext): AssistantMessage {
 		const errors = results.map((r) => (r as { isError?: boolean }).isError === true);
 		return fauxAssistantMessage(fauxText(`DONE ${JSON.stringify({ steps: results.length, outputs, errors })}`));
 	}
-	return fauxAssistantMessage(fauxToolCall(next.tool, next.args, { id: `step-${start}-${results.length}` }), {
+	return fauxAssistantMessage(fauxToolCall(next.tool, next.args as Parameters<typeof fauxToolCall>[1], { id: `step-${start}-${results.length}` }), {
 		stopReason: "toolUse",
 	});
 }

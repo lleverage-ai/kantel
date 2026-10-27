@@ -35,7 +35,7 @@ export class SpikeClient {
 		return this.#call<CreateSessionResponse>("POST", "/v0/sessions", sessionId ? { sessionId } : {});
 	}
 
-	prompt(sessionId: string, spec: ScenarioSpec, requestId = crypto.randomUUID()) {
+	prompt(sessionId: string, spec: ScenarioSpec, requestId: string = crypto.randomUUID()) {
 		return this.#call<{ submissionId: number }>("POST", `/v0/sessions/${sessionId}/prompt`, {
 			text: `${SCENARIO_PREFIX}${JSON.stringify(spec)}`,
 			requestId,
