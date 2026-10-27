@@ -1,0 +1,17 @@
+/* Story-only frames for the session components. The transcript is virtualised and fills its parent, so its stories
+   give it a fixed-height frame, as a host's session screen would. */
+
+.hb-story-transcript-frame {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: calc(var(--hb-space-11) * 12);
+	overflow: hidden;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-canvas);
+}
+
+.hb-story-transcript-frame-tall {
+	height: calc(var(--hb-space-11) * 15);
+}

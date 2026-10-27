@@ -1,0 +1,102 @@
+/* Messages. The user's bubble after T3 Code's: right-aligned, 80% at most, rounded-2xl on the message surface. The
+   assistant's answer has no box at all. The streaming caret and the working dots are the only things that move. */
+
+.hb-user-message {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-user-message-via {
+	padding: 0 var(--hb-space-2);
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-user-message-bubble {
+	max-width: 80%;
+	padding: var(--hb-space-5) var(--hb-space-6);
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-user-message);
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.hb-assistant-message {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+	padding: var(--hb-space-1) 0;
+}
+
+.hb-assistant-message-thought {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* The streaming caret: a soft block after the last word. It sits inside the last inline-bearing element, so it
+   follows the text, not a new line: the last paragraph or heading, a list's last item, a code block's code. */
+.hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, table, blockquote, hr):last-child::after,
+.hb-assistant-message-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
+.hb-assistant-message-streaming .hb-markdown > pre:last-child > code::after,
+.hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after {
+	content: "";
+	display: inline-block;
+	width: var(--hb-space-3);
+	height: 1em;
+	margin-left: var(--hb-space-1);
+	vertical-align: -0.15em;
+	border-radius: var(--hb-radius-xs);
+	background: var(--hb-accent-text);
+	opacity: 0.6;
+	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
+}
+
+/* Three dots while the agent works before its first word. */
+.hb-working {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-2);
+	height: calc(var(--hb-text-md) * var(--hb-leading-prose));
+}
+
+.hb-working-dot {
+	width: var(--hb-dot);
+	height: var(--hb-dot);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-text-faint);
+	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
+}
+
+.hb-working-dot:nth-child(2) {
+	animation-delay: calc(var(--hb-duration-pulse) / 6);
+}
+
+.hb-working-dot:nth-child(3) {
+	animation-delay: calc(var(--hb-duration-pulse) / 3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, table, blockquote, hr):last-child::after,
+	.hb-assistant-message-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
+	.hb-assistant-message-streaming .hb-markdown > pre:last-child > code::after,
+	.hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after,
+	.hb-working-dot {
+		animation: none;
+	}
+}
+
+.hb-notice-row {
+	min-width: 0;
+	padding: var(--hb-space-2) 0;
+}

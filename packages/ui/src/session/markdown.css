@@ -1,0 +1,165 @@
+/* Rendered Markdown in the transcript: prose at the body size, compact headings (none larger than --hb-text-lg),
+   code in the mono font on --hb-code with its own horizontal scroll, tables that scroll rather than squeeze. */
+
+.hb-markdown {
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading-prose);
+	overflow-wrap: anywhere;
+}
+
+.hb-markdown > :first-child {
+	margin-top: 0;
+}
+
+.hb-markdown > :last-child,
+.hb-markdown > :last-child > :last-child {
+	margin-bottom: 0;
+}
+
+.hb-markdown p,
+.hb-markdown ul,
+.hb-markdown ol,
+.hb-markdown pre,
+.hb-markdown table,
+.hb-markdown blockquote {
+	margin: 0 0 var(--hb-space-6);
+}
+
+.hb-markdown h1,
+.hb-markdown h2,
+.hb-markdown h3,
+.hb-markdown h4,
+.hb-markdown h5,
+.hb-markdown h6 {
+	margin: var(--hb-space-8) 0 var(--hb-space-4);
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-markdown h1,
+.hb-markdown h2 {
+	font-size: var(--hb-text-lg);
+}
+
+.hb-markdown h5,
+.hb-markdown h6 {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-markdown ul,
+.hb-markdown ol {
+	padding-left: calc(var(--hb-space-7) + var(--hb-space-2));
+}
+
+.hb-markdown li + li {
+	margin-top: var(--hb-space-1);
+}
+
+.hb-markdown li > p {
+	margin: 0;
+}
+
+.hb-markdown li > ul,
+.hb-markdown li > ol {
+	margin: var(--hb-space-1) 0 0;
+}
+
+.hb-markdown li::marker {
+	color: var(--hb-text-faint);
+}
+
+.hb-markdown strong {
+	font-weight: var(--hb-weight-strong);
+}
+
+.hb-markdown a {
+	color: var(--hb-accent-text);
+	text-decoration: underline;
+	text-decoration-color: var(--hb-accent-soft);
+	text-underline-offset: var(--hb-space-1);
+	border-radius: var(--hb-radius-xs);
+}
+
+.hb-markdown a:hover {
+	text-decoration-color: currentColor;
+}
+
+.hb-markdown code {
+	padding: var(--hb-space-1) var(--hb-space-2);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-xs);
+	background: var(--hb-code);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+}
+
+.hb-markdown pre {
+	max-width: 100%;
+	padding: var(--hb-space-5) var(--hb-space-6);
+	overflow-x: auto;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-code);
+	-webkit-overflow-scrolling: touch;
+}
+
+.hb-markdown pre code {
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	background: none;
+	font-size: var(--hb-text-code);
+	line-height: var(--hb-leading);
+	white-space: pre;
+	overflow-wrap: normal;
+}
+
+.hb-markdown table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+	border-collapse: collapse;
+	font-size: var(--hb-text-sm);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-markdown th,
+.hb-markdown td {
+	padding: var(--hb-space-3) var(--hb-space-5);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+	text-align: left;
+	white-space: nowrap;
+	overflow-wrap: normal;
+}
+
+.hb-markdown th {
+	color: var(--hb-text-muted);
+	font-weight: var(--hb-weight-medium);
+	border-bottom-color: var(--hb-border-strong);
+}
+
+.hb-markdown blockquote {
+	padding-left: var(--hb-space-6);
+	border-left: var(--hb-ring) solid var(--hb-border-strong);
+	color: var(--hb-text-muted);
+}
+
+.hb-markdown hr {
+	margin: var(--hb-space-8) 0;
+	border: 0;
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-markdown img {
+	max-width: 100%;
+}
+
+.hb-markdown input[type="checkbox"] {
+	margin: 0 var(--hb-space-3) 0 0;
+	vertical-align: middle;
+}
