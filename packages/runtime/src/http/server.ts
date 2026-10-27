@@ -74,8 +74,10 @@ export interface SessionApi {
 
 interface Registration {
 	readonly subscription: Subscription;
-	/** Who registered it; only they may remove it. */
+	/** The credential that registered it; only it may remove it. */
 	readonly owner: string;
+	/** Names this registration, so a stale subscription cannot remove its replacement. */
+	readonly registration: string;
 }
 
 const SESSION_STATUSES = new Set<SessionStatus>(["idle", "running", "waiting", "done", "failed", "cancelled"]);
@@ -86,7 +88,8 @@ function actorKey(ctx: CallContext): string {
 		case "human":
 			return `human:${actor.userId}`;
 		case "service":
-			return `service:${actor.serviceId}`;
+			// Bound to the API key too: another key of the same service may hold other projects or a weaker role.
+			return `service:${actor.serviceId}:${actor.keyId ?? ""}`;
 		case "agent":
 			return `agent:${actor.agentId}:${actor.sessionId}`;
 		case "system":
@@ -218,7 +221,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				await runtime.close(ctx, sessionId);
 				return new Response(null, { status: 204 });
 			case "GET result":
-				return result(ctx, url, sessionId);
+				return result(ctx, request, url, sessionId);
 			case "GET events":
 				return events(ctx, request, url, sessionId);
 		}
@@ -226,19 +229,22 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	};
 
 	/** Waits for a run's result up to a bound; a run still going answers 202 with `status: "pending"`. */
-	const result = async (ctx: CallContext, url: URL, sessionId: string): Promise<Response> => {
+	const result = async (ctx: CallContext, request: Request, url: URL, sessionId: string): Promise<Response> => {
 		const submissionId = url.searchParams.get("submission");
 		if (submissionId === null || submissionId === "") throw new HarbourError("invalid", "Name the submission");
 		const asked = url.searchParams.get("timeoutMs");
 		if (asked !== null && !/^\d{1,7}$/.test(asked)) throw new HarbourError("invalid", "timeoutMs must be a number");
 		const timeoutMs = Math.min(asked === null ? resultWaitMs : Number(asked), maxResultWaitMs);
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		const deadline = new AbortController();
+		const timer = setTimeout(() => deadline.abort(), timeoutMs);
+		// A caller that goes away stops its wait (never the run); the deadline answers 202.
+		const signal = AbortSignal.any([deadline.signal, request.signal]);
 		try {
-			const run = await runtime.wait({ ...ctx, signal: controller.signal }, sessionId, submissionId);
+			const run = await runtime.wait({ ...ctx, signal }, sessionId, submissionId);
 			return json(run);
 		} catch (error) {
-			if (!controller.signal.aborted) throw error;
+			if (request.signal.aborted) throw new HarbourError("aborted", "The caller went away");
+			if (!deadline.signal.aborted) throw error;
 			const pending: PendingResult = { status: "pending", sessionId, submissionId };
 			return json(pending, 202);
 		} finally {
@@ -281,6 +287,8 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		};
 		streams.add(stop);
 		request.signal.addEventListener("abort", stop, { once: true });
+		// A caller that went away while the watch was being set up has missed the event.
+		if (request.signal.aborted) stop();
 		const body = new ReadableStream<Uint8Array>({
 			start(started) {
 				controller = started;
@@ -299,7 +307,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		});
 	};
 
-	const hostRoutes = async (ctx: CallContext, request: Request, hostId: string, rest: readonly string[]) => {
+	const hostRoutes = async (ctx: CallContext, request: Request, url: URL, hostId: string, rest: readonly string[]) => {
 		const key = `${ctx.organisationId}\u0000${hostId}`;
 		const route = `${request.method} ${rest.join("/")}`;
 		switch (route) {
@@ -342,9 +350,11 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				const scoped: CallContext = body.projectId === undefined ? ctx : { ...ctx, projectId: body.projectId };
 				const subscription = await hostTools.register(scoped, hostId, tools, handler);
 				// The bridge replaced any earlier registration; closing that one now would change nothing.
-				registrations.set(key, { subscription, owner: actorKey(ctx) });
+				const registration = randomSecret();
+				registrations.set(key, { subscription, owner: actorKey(ctx), registration });
 				const response: RegisterHostResponse = {
 					hostId,
+					registration,
 					tools,
 					...(generated === undefined ? {} : { secret: generated }),
 				};
@@ -354,7 +364,11 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				return json({ items: await hostTools.list(ctx, hostId) });
 			case "DELETE ": {
 				const registration = registrations.get(key);
-				if (registration === undefined) throw new HarbourError("not_found", `No host ${hostId}`);
+				const named = url.searchParams.get("registration");
+				// A stale subscription (one since replaced) finds nothing of its own to remove.
+				if (registration === undefined || (named !== null && named !== registration.registration)) {
+					throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+				}
 				if (registration.owner !== actorKey(ctx)) {
 					throw new HarbourError("forbidden", "Only whoever registered a host may remove it");
 				}
@@ -396,7 +410,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			return sessionRoutes(ctx, request, url, id, rest);
 		}
 		if (area === "profiles") return profileRoutes(ctx, request, url, id === undefined ? [] : [id, ...rest]);
-		if (area === "hosts" && id !== undefined) return hostRoutes(ctx, request, id, rest);
+		if (area === "hosts" && id !== undefined) return hostRoutes(ctx, request, url, id, rest);
 		throw NOT_FOUND;
 	};
 
@@ -420,6 +434,8 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				// Harbour's own components call the runtime directly, never over HTTP.
 				if (authentication.actor.kind === "system") return unauthenticated();
 				const requestId = request.headers.get(HEADERS.requestId);
+				// The request's signal is not the call's: a run admitted by a prompt must outlive the request that sent
+				// it. Only the result wait and the event stream end with their request.
 				const ctx: CallContext = {
 					actor: authentication.actor,
 					organisationId: authentication.organisationId,

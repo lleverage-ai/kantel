@@ -1,12 +1,20 @@
 // The HTTP layer's own rules, beyond the conformance suite: authentication, error mapping, the event stream's wire
 // format and resume, result polling, callback registration and signatures.
-import { type AgentProfile, type Authentication, HarbourError, type HostToolCall } from "@harbour/contracts";
+import {
+	type AgentProfile,
+	type Authentication,
+	HarbourError,
+	type HostToolCall,
+	type SessionRuntime,
+} from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
 import {
 	apiKeyAuthenticator,
+	bearer,
 	callbackHostToolHandler,
 	createHostToolEndpoint,
 	createSessionApi,
+	createSessionApiClient,
 	HEADERS,
 	readSse,
 	signHostToolCall,
@@ -22,6 +30,10 @@ const PROJECT = "proj-http";
 const supervisor: Authentication = { actor: { kind: "service", serviceId: "sal-supervisor" }, organisationId: ORG };
 const other: Authentication = { actor: { kind: "service", serviceId: "someone-else" }, organisationId: ORG };
 const system: Authentication = { actor: { kind: "system", component: "sneaky" }, organisationId: ORG };
+/** Two API keys of one service. */
+const keyOne: Authentication = { actor: { kind: "service", serviceId: "sal", keyId: "k1" }, organisationId: ORG };
+const keyTwo: Authentication = { actor: { kind: "service", serviceId: "sal", keyId: "k2" }, organisationId: ORG };
+const TOOLS = [{ name: "review", description: "Waits", inputSchema: { type: "object" }, replay: "unsafe" as const }];
 
 const profile: AgentProfile = {
 	id: "worker",
@@ -49,7 +61,7 @@ function setUp(outbound?: typeof fetch) {
 		directory: memory.directory,
 		profiles: memory.profiles,
 		hostTools: memory.hostTools,
-		authenticate: staticTokenAuthenticator({ supervisor, other, system }),
+		authenticate: staticTokenAuthenticator({ supervisor, other, system, keyOne, keyTwo }),
 		keepAliveMs: 60_000,
 		...(outbound === undefined ? {} : { fetch: outbound }),
 	});
@@ -279,6 +291,160 @@ describe("session API over HTTP", () => {
 		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(204);
 		expect(await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()).toEqual({ items: [] });
 		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(404);
+	});
+});
+
+describe("host registrations", () => {
+	const register = (request: ReturnType<typeof setUp>["request"], token: string) =>
+		request("PUT", "/hosts/sal", { token, body: { tools: TOOLS, callback: { url: "https://sal.test/tools" } } });
+	const toolCount = async (request: ReturnType<typeof setUp>["request"]) =>
+		((await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()) as { items: unknown[] }).items
+			.length;
+
+	it("lets only the API key that registered a host remove it, not another key of the same service", async () => {
+		const { request } = setUp();
+		expect((await register(request, "keyOne")).status).toBe(200);
+		expect((await request("DELETE", "/hosts/sal", { token: "keyTwo" })).status).toBe(403);
+		expect(await toolCount(request)).toBe(1);
+		expect((await request("DELETE", "/hosts/sal", { token: "keyOne" })).status).toBe(204);
+		expect(await toolCount(request)).toBe(0);
+	});
+
+	it("does not let a replaced registration remove the one that replaced it", async () => {
+		const { request } = setUp();
+		const first = (await (await register(request, "supervisor")).json()) as { registration: string };
+		const second = (await (await register(request, "supervisor")).json()) as { registration: string };
+		expect(first.registration).not.toBe(second.registration);
+		const stale = await request("DELETE", `/hosts/sal?registration=${first.registration}`, { token: "supervisor" });
+		expect(stale.status).toBe(404);
+		expect(await toolCount(request)).toBe(1);
+		const current = await request("DELETE", `/hosts/sal?registration=${second.registration}`, { token: "supervisor" });
+		expect(current.status).toBe(204);
+		expect(await toolCount(request)).toBe(0);
+	});
+
+	it("keeps a second client's registration when the first client's subscription closes", async () => {
+		const { api, memory } = setUp();
+		const served: string[] = [];
+		const clientFor = (name: string) =>
+			createSessionApiClient({
+				baseUrl: "https://harbour.test/v1",
+				credentials: bearer("supervisor"),
+				fetch: async (input, init) => api.fetch(new Request(input, init)),
+				hostCallbacks: {
+					url: () => "https://sal.test/tools",
+					serve: (_hostId, endpoint) => {
+						served.push(`${name}:${endpoint === undefined ? "off" : "on"}`);
+					},
+				},
+			});
+		const ctx = { actor: supervisor.actor, organisationId: ORG };
+		const first = await clientFor("a").hostTools.register(ctx, "sal", TOOLS, async () => ({ output: "a" }));
+		await clientFor("b").hostTools.register(ctx, "sal", TOOLS, async () => ({ output: "b" }));
+		await first.close();
+		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(1);
+		expect(served).toEqual(["a:on", "b:on", "a:off"]);
+	});
+});
+
+describe("requests that go away", () => {
+	const stubApi = (runtime: Partial<SessionRuntime>) =>
+		createSessionApi({
+			runtime: runtime as SessionRuntime,
+			directory: {} as never,
+			profiles: {} as never,
+			hostTools: {} as never,
+			authenticate: staticTokenAuthenticator({ supervisor }),
+			keepAliveMs: 5,
+		});
+
+	it("closes the watch when the caller goes away while it is being set up", async () => {
+		let resolveWatch: (subscription: { close(): Promise<void> }) => void = () => {};
+		let closed = 0;
+		const api = stubApi({
+			watch: () =>
+				new Promise((resolve) => {
+					resolveWatch = resolve;
+				}),
+		});
+		const controller = new AbortController();
+		const responding = api.fetch(
+			new Request("https://harbour.test/v1/sessions/s-1/events", {
+				headers: { authorization: "Bearer supervisor" },
+				signal: controller.signal,
+			}),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		controller.abort();
+		resolveWatch({
+			close: async () => {
+				closed += 1;
+			},
+		});
+		const response = await responding;
+		expect(closed).toBe(1);
+		// The stream is already closed, so no keep-alive is left running to write to it.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(await response.text()).not.toContain("keep-alive");
+		await api.close();
+		expect(closed).toBe(1);
+	});
+
+	it("stops a result wait when its caller goes away, without stopping the run", async () => {
+		let seen: AbortSignal | undefined;
+		const api = stubApi({
+			wait: (ctx) => {
+				seen = ctx.signal;
+				return new Promise((_resolve, reject) =>
+					ctx.signal?.addEventListener("abort", () => reject(new HarbourError("aborted", "stopped"))),
+				);
+			},
+		});
+		const controller = new AbortController();
+		const responding = api.fetch(
+			new Request("https://harbour.test/v1/sessions/s-1/result?submission=s-1%2F1&timeoutMs=60000", {
+				headers: { authorization: "Bearer supervisor" },
+				signal: controller.signal,
+			}),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(seen?.aborted).toBe(false);
+		controller.abort();
+		const response = await responding;
+		expect(seen?.aborted).toBe(true);
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: { code: "aborted" } });
+	});
+
+	it("does not tie a prompt's run to the request that sent it", async () => {
+		const { api, script, request } = setUp();
+		const sessionId = await createSession(request);
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		script.reply(async () => {
+			await gate;
+			return { text: "Still answered" };
+		});
+		const controller = new AbortController();
+		const prompted = await api.fetch(
+			new Request(`https://harbour.test/v1/sessions/${sessionId}/prompt`, {
+				method: "POST",
+				headers: { authorization: "Bearer supervisor", "content-type": "application/json" },
+				body: JSON.stringify({ text: "Go" }),
+				signal: controller.signal,
+			}),
+		);
+		const submission = (await prompted.json()) as { id: string };
+		controller.abort();
+		release();
+		const result = await request(
+			"GET",
+			`/sessions/${sessionId}/result?submission=${encodeURIComponent(submission.id)}`,
+			{ token: "supervisor" },
+		);
+		expect(await result.json()).toMatchObject({ status: "answered", answer: "Still answered" });
 	});
 });
 

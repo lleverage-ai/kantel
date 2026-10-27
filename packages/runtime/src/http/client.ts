@@ -228,8 +228,9 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 				tools,
 				callback: { url: callbacks.url(hostId), secret },
 			};
+			let registered: RegisterHostResponse;
 			try {
-				await call<RegisterHostResponse>(ctx, "PUT", `/hosts/${segment(hostId)}`, body);
+				registered = await call<RegisterHostResponse>(ctx, "PUT", `/hosts/${segment(hostId)}`, body);
 			} catch (error) {
 				if (serving.get(hostId) === endpoint) {
 					if (previous === undefined) serving.delete(hostId);
@@ -244,7 +245,8 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 					if (closed) return;
 					closed = true;
 					if (serving.get(hostId) !== endpoint) return;
-					await call<void>(ctx, "DELETE", `/hosts/${segment(hostId)}`).catch((error: unknown) => {
+					const path = `/hosts/${segment(hostId)}?registration=${segment(registered.registration)}`;
+					await call<void>(ctx, "DELETE", path).catch((error: unknown) => {
 						// Already gone, or replaced by someone else: nothing of ours is left to remove.
 						if (!(error instanceof HarbourError) || (error.code !== "not_found" && error.code !== "forbidden")) {
 							throw error;

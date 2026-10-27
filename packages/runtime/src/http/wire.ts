@@ -131,6 +131,8 @@ export interface RegisterHostBody {
 
 export interface RegisterHostResponse {
 	readonly hostId: string;
+	/** Names this registration: `DELETE …?registration=` removes it only while it is the current one. */
+	readonly registration: string;
 	readonly tools: readonly HostToolDefinition[];
 	/** Present only when the server generated the secret. */
 	readonly secret?: string;
