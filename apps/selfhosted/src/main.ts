@@ -37,6 +37,8 @@ export function config() {
 			secretAccessKey: env("S3_SECRET_KEY", "harbour-dev-secret"),
 		},
 		isolateUrl: env("HARBOUR_ISOLATE_URL", "http://127.0.0.1:58080"),
+		/** When set, every route but /healthz needs `Authorization: Bearer <token>`. */
+		spikeToken: process.env.HARBOUR_SPIKE_TOKEN || undefined,
 		container: {
 			socket: env("DOCKER_SOCKET", "/var/run/docker.sock"),
 			image: env("HARBOUR_SANDBOX_IMAGE", "harbour-sandbox:dev"),
@@ -96,10 +98,13 @@ const json = (value: unknown, status = 200) =>
 async function forward(request: Request, base: string, body: string | undefined): Promise<Response> {
 	const url = new URL(request.url);
 	let response: Response;
+	const headers: Record<string, string> = { "content-type": "application/json", "x-harbour-forwarded": "1" };
+	const authorization = request.headers.get("authorization");
+	if (authorization !== null) headers.authorization = authorization;
 	try {
 		response = await fetch(`${base}${url.pathname}${url.search}`, {
 			method: request.method,
-			headers: { "content-type": "application/json", "x-harbour-forwarded": "1" },
+			headers,
 			body,
 			signal: AbortSignal.timeout(30_000),
 		});
@@ -124,6 +129,10 @@ async function serve() {
 			const parts = url.pathname.split("/").filter(Boolean);
 			try {
 				if (url.pathname === "/healthz") return json({ ok: true, host: cfg.hostId, sessions: host.ownedSessions().length });
+				if (cfg.spikeToken !== undefined && request.headers.get("authorization") !== `Bearer ${cfg.spikeToken}`) {
+					return json({ error: "unauthorised" }, 401);
+				}
+				if (parts[0] === "sessions" && parts[1] !== undefined) return await sharedSurface(request, url, parts[1], parts[2]);
 				if (url.pathname === "/v0/target") {
 					return json({ target: "selfhosted", host: cfg.hostId, owner: host.owner, leaseTtlMs: cfg.leaseTtlMs });
 				}
@@ -171,6 +180,48 @@ async function serve() {
 			}
 		},
 	});
+	/**
+	 * The shared scenario surface (M0-CF1's spikes/scenario/README.md):
+	 * /sessions/:id/{setup,prompt,state,kill,exec,vault,fixture,file}.
+	 */
+	async function sharedSurface(request: Request, url: URL, sessionId: string, action: string | undefined): Promise<Response> {
+		const body = request.method === "POST" ? await request.text() : undefined;
+		const input = JSON.parse(body || "{}") as Record<string, any>;
+		const known = (await pool.query(`SELECT 1 FROM harbour.sessions WHERE id = $1`, [sessionId])).rowCount === 1;
+		if (action === "setup" && request.method === "POST" && !known) {
+			return json(await host.setup(sessionId, input.scenario, input.workspaceId));
+		}
+		if (!known) return json({ error: `unknown session ${sessionId}` }, 404);
+		const routed = await host.route(sessionId);
+		if ("forward" in routed) {
+			if (request.headers.get("x-harbour-forwarded")) return json({ error: "owner moved; retry" }, 503);
+			return await forward(request, routed.forward, body);
+		}
+		const session = routed.session;
+		switch (`${request.method} ${action}`) {
+			case "POST setup":
+				return json(await host.setup(sessionId, input.scenario, input.workspaceId));
+			case "POST prompt":
+				return json(await host.prompt(session, String(input.content ?? input.text ?? ""), String(input.requestId ?? crypto.randomUUID())));
+			case "GET state":
+				return json(await host.scenarioState(session, url.searchParams.get("submission") ?? undefined));
+			case "POST kill":
+				return json(host.armKill(session, Number(input.afterExec ?? 1)));
+			case "POST exec":
+				return json(await host.exec(session, String(input.command), input.tier));
+			case "GET vault":
+				return json(await host.vaultUses(sessionId));
+			case "GET fixture":
+				return json(await host.fixture(session));
+			case "GET file": {
+				const file = await host.file(session, url.searchParams.get("path") ?? "");
+				if (file === undefined) return json({ error: "not found" }, 404);
+				return new Response(file.bytes as Uint8Array<ArrayBuffer>, { headers: { "x-harbour-version": file.version } });
+			}
+		}
+		return json({ error: "not found" }, 404);
+	}
+
 	console.log(`[${cfg.hostId}] listening on ${server.port}, lease TTL ${cfg.leaseTtlMs} ms`);
 	const shutdown = async () => {
 		await host.stop();

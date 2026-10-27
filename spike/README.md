@@ -1,5 +1,25 @@
 # M0 spike: shared contracts, scenario and conformance
 
+**The shared scenario.** M0-CF1 (#3, PR #40) wrote the scenario both
+targets run: `spikes/scenario/run.ts` and `research-task.json`, over the HTTP
+surface in its `spikes/scenario/README.md`. The self-hosted session hosts
+serve that surface too (`/sessions/:id/{setup,prompt,state,kill,exec,vault,fixture,file}`
+in `apps/selfhosted/src/main.ts`), and CF1's `run.ts` passes against them
+unchanged, normal and `--kill-after-exec 2`:
+
+```bash
+HARBOUR_SPIKE_TOKEN=unused HARBOUR_CANARY=harbour-canary-0000 \
+  bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 [--kill-after-exec 2]
+```
+
+On self-hosted, `kill` makes the owning host process exit right after the
+n-th command commits; another host takes the session over (event `reopen`)
+and Docker restarts the killed one. CI runs it once #40 is on main.
+
+What follows in this folder came first: this stream's own scenario, which
+also measures takeover against the lease TTL and kills the host from outside
+(`docker kill` or `docker pause`), and a conformance suite.
+
 Shared by both targets (M0-CF1 Cloudflare, M0-SH1 self-hosted). Nothing here
 imports a target or a package: only `fetch` against the spike HTTP API.
 

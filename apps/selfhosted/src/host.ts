@@ -8,11 +8,14 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, type Storage, type Wake } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, type Storage, type SubmissionId, type Wake } from "@earendil-works/pi-durable";
+import type { AssistantMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import pg from "pg";
 import type {
 	CreateSessionResponse,
 	Lease,
+	Manifest,
+	SandboxTier,
 	SandboxTierRunner,
 	SessionState,
 	ToolCallSummary,
@@ -20,10 +23,10 @@ import type {
 import type { Audit } from "./audit.ts";
 import { holdLiveness, LeaseLost, type PostgresLeases } from "./lease.ts";
 import { openPostgresStorage, piSchemaFor } from "./pi-postgres.ts";
-import { scriptedResponse } from "./scenario-model.ts";
+import { isSpecPrompt, type StepsScenario, scriptedResponse, stepsResponse } from "./scenario-model.ts";
 import type { ContainerRunner } from "./sandbox/container.ts";
-import { createHarbourTools } from "./tools.ts";
-import type { MinioWorkspace } from "./workspace.ts";
+import { createHarbourTools, type ExecRecord, runCommand, type ToolDeps } from "./tools.ts";
+import { type MinioWorkspace, sha256Hex } from "./workspace.ts";
 
 export interface HostOptions {
 	hostId: string;
@@ -44,6 +47,12 @@ interface OpenSession {
 	faux: ReturnType<typeof fauxProvider>;
 	openedAt: number;
 	takeover: boolean;
+	/** A scripted scenario in the shared format, if the session was set up with one. */
+	scenario?: StepsScenario;
+	/** Crash this host after this many more commands have committed (the scenario's kill switch). */
+	killAfterExec?: number;
+	respond: (context: TranscriptContext) => AssistantMessage;
+	tools: ToolDeps;
 }
 
 const FAUX_STEPS = 200;
@@ -99,9 +108,10 @@ export class SessionHost {
 
 	// ---------------------------------------------------------------- lifecycle
 
-	async create(sessionId: string = crypto.randomUUID()): Promise<CreateSessionResponse> {
-		const workspaceId = `ws-${sessionId}`;
-		await this.workspace.create(workspaceId);
+	async create(sessionId: string = crypto.randomUUID(), workspaceId = `ws-${sessionId}`): Promise<CreateSessionResponse> {
+		const existing = (await this.pool.query(`SELECT workspace_id FROM harbour.sessions WHERE id = $1`, [sessionId])).rows[0];
+		if (existing !== undefined) workspaceId = existing.workspace_id;
+		else await this.workspace.create(workspaceId);
 		await this.pool.query(
 			`INSERT INTO harbour.sessions (id, workspace_id, pi_schema) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
 			[sessionId, workspaceId, piSchemaFor(sessionId)],
@@ -123,8 +133,9 @@ export class SessionHost {
 	}
 
 	async #doOpen(sessionId: string): Promise<OpenSession | undefined> {
-		const row = (await this.pool.query(`SELECT workspace_id, pi_schema FROM harbour.sessions WHERE id = $1`, [sessionId]))
-			.rows[0];
+		const row = (
+			await this.pool.query(`SELECT workspace_id, pi_schema, scenario FROM harbour.sessions WHERE id = $1`, [sessionId])
+		).rows[0];
 		if (row === undefined) throw new NotFound(`unknown session ${sessionId}`);
 		const before = await this.pool.query(`SELECT owner, fence, expires_at FROM harbour.session_leases WHERE session_id = $1`, [
 			sessionId,
@@ -139,6 +150,7 @@ export class SessionHost {
 			fence: lease.fence,
 			previousOwner: takeover ? previousOwner : undefined,
 		});
+		if (takeover) await this.audit.record(sessionId, "session", "reopen", { owner: this.owner, fence: lease.fence, previousOwner });
 		// Containers a dead owner left behind for this session: their writes were
 		// never committed (a command commits only when it finishes), so remove them.
 		const reaped = await this.container.reap(sessionId);
@@ -150,21 +162,23 @@ export class SessionHost {
 			schema: row.pi_schema,
 			fence: (client) => this.leases.check(fence, client),
 		});
+		const session = { scenario: row.scenario ?? undefined } as OpenSession;
+		session.respond = (ctx) =>
+			session.scenario !== undefined && !isSpecPrompt(ctx) ? stepsResponse(session.scenario, ctx) : scriptedResponse(ctx);
 		const faux = fauxProvider();
-		faux.setResponses(Array(FAUX_STEPS).fill(scriptedResponse));
+		faux.setResponses(Array(FAUX_STEPS).fill(session.respond));
 		const models = createModels();
 		models.setProvider(faux.provider);
 		const registry = createRegistry();
-		const session = {} as OpenSession;
-		registry.install(
-			createHarbourTools({
-				workspace: this.workspace,
-				isolate: this.isolate,
-				container: this.container,
-				audit: this.audit,
-				session: () => ({ sessionId, workspaceId: row.workspace_id, fence: () => fence }),
-			}),
-		);
+		session.tools = {
+			workspace: this.workspace,
+			isolate: this.isolate,
+			container: this.container,
+			audit: this.audit,
+			session: () => ({ sessionId, workspaceId: row.workspace_id, fence: () => fence }),
+			afterExec: (record) => this.#afterExec(session, record),
+		};
+		registry.install(createHarbourTools(session.tools));
 		const harness = await Harness.open(
 			storage,
 			{
@@ -206,12 +220,28 @@ export class SessionHost {
 			if (renewed === undefined) throw new LeaseLost(session.lease);
 			session.lease = renewed;
 			if (session.faux.getPendingResponseCount() < FAUX_STEPS / 2) {
-				session.faux.appendResponses(Array(FAUX_STEPS).fill(scriptedResponse));
+				session.faux.appendResponses(Array(FAUX_STEPS).fill(session.respond));
 			}
 		} catch (error) {
 			console.error(`[${this.options.hostId}] lost ${session.sessionId}:`, error);
 			await this.#close(session, "lease lost");
 		}
+	}
+
+	/**
+	 * The scenario's crash switch: die like a killed process right after a
+	 * command has committed and before its tool result is recorded. Exit, not
+	 * a signal: as PID 1 in its container this process would ignore SIGKILL.
+	 * No lease is released and no session is closed; Postgres drops the
+	 * liveness lock with the connection, and Docker restarts the container.
+	 */
+	async #afterExec(session: OpenSession, record: ExecRecord): Promise<void> {
+		if (session.killAfterExec === undefined) return;
+		session.killAfterExec -= 1;
+		if (session.killAfterExec > 0) return;
+		await this.audit.record(session.sessionId, "session", "kill", { owner: this.owner, command: record.command.slice(0, 200) });
+		console.error(`[${this.owner}] scenario kill switch: exiting after "${record.command.slice(0, 60)}" committed`);
+		process.exit(137);
 	}
 
 	async #onWake(sessionId: string, wake: Wake): Promise<void> {
@@ -362,6 +392,179 @@ export class SessionHost {
 
 	ownedSessions(): string[] {
 		return [...this.#open.keys()];
+	}
+
+	// ------------------------------------------- the shared scenario surface
+	// The HTTP surface M0-CF1 defined in spikes/scenario/README.md, so its
+	// run.ts drives this target unchanged.
+
+	/** Create the session and its workspace if needed, seeded from the scenario, and attach the scenario. */
+	async setup(sessionId: string, scenario: StepsScenario | undefined, workspaceId?: string) {
+		const t0 = performance.now();
+		const created = await this.create(sessionId, workspaceId);
+		const createMs = performance.now() - t0;
+		const routed = await this.route(sessionId);
+		if (!("session" in routed)) throw new Error(`session ${sessionId} is owned by another host`);
+		const session = routed.session;
+		if (scenario !== undefined) {
+			await this.pool.query(`UPDATE harbour.sessions SET scenario = $2 WHERE id = $1`, [sessionId, JSON.stringify(scenario)]);
+			session.scenario = scenario;
+		}
+		let head = await this.workspace.head(created.workspaceId);
+		const seed = Object.entries(scenario?.seed ?? {});
+		if (seed.length > 0 && Object.keys(await this.workspace.manifest(created.workspaceId, head.version)).length === 0) {
+			const manifest: Manifest = {};
+			for (const [rawPath, content] of seed) {
+				const path = rawPath.replace(/^\/?workspace\/?/, "");
+				const parts = path.split("/");
+				for (let i = 1; i < parts.length; i++) manifest[parts.slice(0, i).join("/")] = { kind: "dir" };
+				const bytes = new TextEncoder().encode(content);
+				const sha = await this.workspace.putBlob(created.workspaceId, bytes);
+				if (sha !== sha256Hex(bytes)) throw new Error("blob hash mismatch");
+				manifest[path] = { kind: "file", sha, size: bytes.length, mode: 0o644 };
+			}
+			head = await this.workspace.commit(
+				created.workspaceId,
+				{ base: head.version, manifest, tier: "host", changed: Object.keys(manifest) },
+				{ sessionId, owner: session.lease.owner, fence: session.lease.fence },
+			);
+		}
+		const root = await session.harness.root(context);
+		return {
+			sessionId,
+			workspaceId: created.workspaceId,
+			conversationId: String(root.id),
+			head: head.version,
+			owner: this.owner,
+			timings: { createMs: Math.round(createMs), setupMs: Math.round(performance.now() - t0) },
+		};
+	}
+
+	armKill(session: OpenSession, afterExec: number) {
+		session.killAfterExec = afterExec;
+		return { armed: afterExec, owner: this.owner };
+	}
+
+	/** One sandbox command outside the model loop (measurements). */
+	async exec(session: OpenSession, command: string, tier?: SandboxTier) {
+		const run = await runCommand(session.tools, session.tools.session(), command, { tier });
+		return { ...run.record, stdout: run.stdout, stderr: run.stderr };
+	}
+
+	async #entries(session: OpenSession): Promise<any[]> {
+		const root = await session.harness.root(context);
+		const view = await root.viewState(context);
+		const entries = (view.value as any).entries as any[];
+		view.dispose?.();
+		return entries;
+	}
+
+	async #execs(sessionId: string): Promise<ExecRecord[]> {
+		return (await this.pool.query(`SELECT body FROM harbour.execs WHERE session_id = $1 ORDER BY id`, [sessionId])).rows.map(
+			(row) => row.body,
+		);
+	}
+
+	async #events(sessionId: string) {
+		const rows = await this.pool.query(
+			`SELECT at, kind, detail FROM harbour.audit_events
+			 WHERE session_id = $1 AND actor LIKE 'session:%' AND kind IN ('kill', 'reopen') ORDER BY id`,
+			[sessionId],
+		);
+		return rows.rows.map((row) => ({ at: new Date(row.at).getTime(), type: row.kind, ...row.detail }));
+	}
+
+	/** The vault's decisions for this session, in the shared shape. Header names only, never values. */
+	async vaultUses(sessionId: string) {
+		const rows = await this.pool.query(
+			`SELECT at, actor, kind, detail FROM harbour.audit_events
+			 WHERE session_id = $1 AND actor LIKE 'vault:%' ORDER BY id`,
+			[sessionId],
+		);
+		const decisions: Record<string, string> = { "vault.allow": "allowed", "vault.deny": "denied", "vault.error": "error", "vault.tunnel": "tunnelled" };
+		return rows.rows.map((row) => {
+			const d = row.detail as Record<string, unknown>;
+			return {
+				at: new Date(row.at).getTime(),
+				tier: String(row.actor).split(":")[1],
+				decision: decisions[row.kind] ?? row.kind,
+				method: d.method,
+				host: d.host,
+				path: d.path,
+				...(d.status === undefined ? {} : { status: d.status }),
+				...(d.route === undefined ? {} : { route: d.route }),
+				...(d.reason === undefined ? {} : { reason: d.reason }),
+				...(typeof d.injected === "string" ? { injected: { header: d.injected } } : {}),
+				...(typeof d.redactions === "number" ? { redactions: d.redactions } : {}),
+			};
+		});
+	}
+
+	async scenarioState(session: OpenSession, submissionId?: string) {
+		const entries = await this.#entries(session);
+		const timed: { at: number; toolCallId: string; toolName: string; isError: boolean; text: string }[] = [];
+		for (const entry of entries) {
+			for (const message of entry.model ?? []) {
+				if (message.role !== "toolResult") continue;
+				timed.push({
+					at: message.timestamp ?? 0,
+					toolCallId: message.toolCallId,
+					toolName: message.toolName,
+					isError: message.isError === true,
+					text: (message.content ?? []).map((c: any) => (c.type === "text" ? c.text : "")).join(""),
+				});
+			}
+		}
+		const toolResults = timed.sort((a, b) => a.at - b.at).map(({ at: _, ...result }) => result);
+		let submission: { id: string; status: string; reason?: string } | undefined;
+		let answer: string | undefined;
+		if (submissionId !== undefined) {
+			const handle = await session.harness.submission(Number(submissionId) as SubmissionId, context);
+			const record = (await handle?.status(context)) as any;
+			if (record !== undefined) {
+				submission = { id: submissionId, status: record.status, ...(record.reason ? { reason: String(record.reason) } : {}) };
+				if (record.status === "done") {
+					answer = entries
+						.find((entry) => entry.id === record.answer)
+						?.model?.flatMap((m: any) => (m.role === "assistant" ? m.content : []))
+						.map((c: any) => (c.type === "text" ? c.text : ""))
+						.join("");
+				}
+			}
+		}
+		const head = await this.workspace.head(session.workspaceId);
+		return {
+			sessionId: session.sessionId,
+			...(submission === undefined ? {} : { submission }),
+			toolResults,
+			...(answer === undefined ? {} : { answer }),
+			workspace: { id: session.workspaceId, head: head.version },
+			execs: await this.#execs(session.sessionId),
+			events: await this.#events(session.sessionId),
+			process: { owner: this.owner, fence: session.lease.fence, openedAt: session.openedAt, takeover: session.takeover },
+		};
+	}
+
+	async fixture(session: OpenSession) {
+		return {
+			format: "harbour-m0-session-fixture/1",
+			recordedAt: new Date().toISOString(),
+			target: "selfhosted",
+			scenario: session.scenario?.name,
+			entries: await this.#entries(session),
+			execs: await this.#execs(session.sessionId),
+			events: await this.#events(session.sessionId),
+			vault: await this.vaultUses(session.sessionId),
+		};
+	}
+
+	/** One file at the current head, or undefined. */
+	async file(session: OpenSession, rawPath: string): Promise<{ bytes: Uint8Array; version: string } | undefined> {
+		const path = rawPath.replace(/^\/?workspace\/?/, "").replace(/^\/+/, "");
+		const head = await this.workspace.head(session.workspaceId);
+		const entry = (await this.workspace.manifest(session.workspaceId, head.version))[path];
+		if (entry?.kind !== "file") return undefined;
+		return { bytes: await this.workspace.readBlob(session.workspaceId, entry.sha), version: head.version };
 	}
 }
 

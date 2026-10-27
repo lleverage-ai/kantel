@@ -11,8 +11,8 @@ production numbers (`deploy/compose/README.md`).
 
 | Step (plan Table 6) | Target p50 / p95 | Measured p50 / p95 | min–max |
 |---|---|---|---|
-| Isolate session ready, workspace listed | 100 ms / 300 ms | **141 ms / 159 ms** | 122–192 ms |
-| Container on the same workspace version, warm image | 3 s / 8 s | **1.57 s / 2.75 s** | 0.96–3.20 s |
+| Isolate session ready, workspace listed | 100 ms / 300 ms | **134 ms / 161 ms** | 119–375 ms |
+| Container on the same workspace version, warm image | 3 s / 8 s | **0.90 s / 1.15 s** | 0.79–1.25 s |
 | Small repo worktree off a warm mirror | 1 s / 3 s | not measured here: M0-BE2 (#5) | |
 | Large monorepo checkout ready | 10 s / 25 s | not measured here: M0-BE2 (#5) | |
 | Dependencies ready from a cached layer | 15 s / 40 s | not measured here: M0-BE2 (#5) | |
@@ -21,15 +21,24 @@ Reference rows (same runs):
 
 | Step | p50 / p95 |
 |---|---|
-| New session's first command (`ls -R \| wc -l`, 381 entries) | 194 ms / 213 ms |
-| A further command in the same, loaded isolate | 38 ms / 43 ms |
-| Session open: lease, Pi schema and migrations, Harness open | 149 ms / 281 ms |
+| New session's first command (`ls -R \| wc -l`, 381 entries) | 188 ms / 209 ms |
+| A further command in the same, loaded isolate | 39 ms / 43 ms |
+| Session open: lease, Pi schema and migrations, Harness open | 136 ms / 155 ms |
+
+The isolate-ready p50 misses the 100 ms target by about a third. Most of it
+is loading a new Dynamic Worker for a session that has never run (the
+workerLoader compiles the just-bash bundle); a pool of pre-loaded isolates,
+or one isolate per workspace rather than per session, are the obvious next
+steps. The first command after it reads no file bodies (lazy reads: 0).
 
 Container phases (p50, cumulative from the start of the call): tar of the
-workspace 75 ms, `create` 229 ms, copy-in 401 ms, `start` 762 ms, command
-finished 1,217 ms, workspace read back 1,401 ms. `start` and the wait for a
-trivial command are about half; copy-in and copy-out of a 1.2 MB workspace
-about a third.
+workspace 65 ms, `create` 129 ms, copy-in 268 ms, `start` 496 ms, command
+finished 664 ms, workspace read back 793 ms. `start` and copy-in/copy-out of
+the 1.2 MB workspace are most of it.
+
+The same rows from an earlier 50-run sample the same day, under heavier load
+on the shared machine: isolate ready 141/159 ms, container 1.57/2.75 s. The
+container row is sensitive to host load; the isolate row is not.
 
 ## Takeover after the owner dies mid tool call
 
@@ -61,3 +70,7 @@ container, which is most of the 0.35–2.15 s spread.
   owner's `resumedAt` (both clocks on this machine).
 - Raw numbers: `raw/cold-start-2026-10-27.json`, `raw/takeover-kill-2026-10-27.jsonl`,
   `raw/takeover-pause-2026-10-27.jsonl`.
+- M0-CF1's shared scenario (`spikes/scenario/run.ts`) against this stack:
+  `raw/cf1-scenario-2026-10-27.json` (17/17 checks, 4.4 s) and
+  `raw/cf1-scenario-kill-after-exec-2-2026-10-27.json` (20/20 checks, 4.3 s;
+  `reopen` on host-b 110 ms after the `kill` event).

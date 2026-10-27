@@ -11,6 +11,24 @@
         "template": "Bearer {secret}",
         "secretEnv": "HARBOUR_CANARY_SECRET"
       }
+    },
+    {
+      "id": "example",
+      "host": "example.com",
+      "ports": [443],
+      "methods": ["GET", "HEAD"]
+    },
+    {
+      "id": "echo",
+      "host": "postman-echo.com",
+      "ports": [443],
+      "methods": ["GET"],
+      "pathPrefix": "/headers",
+      "inject": {
+        "header": "x-harbour-vault",
+        "template": "{secret}",
+        "secretEnv": "HARBOUR_CANARY_SECRET"
+      }
     }
   ]
 }

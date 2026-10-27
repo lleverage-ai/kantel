@@ -4,7 +4,7 @@
 
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { LeaseFence, Manifest, SandboxTierRunner } from "../../../spike/contracts/index.ts";
+import type { LeaseFence, Manifest, SandboxTier, SandboxTierRunner } from "../../../spike/contracts/index.ts";
 import type { Audit } from "./audit.ts";
 import { tierFor } from "./sandbox/router.ts";
 import { type MinioWorkspace, sha256Hex } from "./workspace.ts";
@@ -22,6 +22,83 @@ export interface ToolDeps {
 	audit: Audit;
 	/** Session for a Pi conversation. One Harness per session, so this is the open session. */
 	session(): ToolHostSession;
+	/** Called after each command has run and committed, before its result is recorded. */
+	afterExec?(record: ExecRecord): Promise<void>;
+}
+
+/** One sandbox command, as the scenario surface reports it. */
+export interface ExecRecord {
+	command: string;
+	tier: SandboxTier;
+	exitCode: number;
+	base: string;
+	version: string;
+	changed: number;
+	timings: Record<string, number>;
+}
+
+export interface CommandResult {
+	record: ExecRecord;
+	stdout: string;
+	stderr: string;
+	seq: number;
+	changed: string[];
+}
+
+/**
+ * Run one command on the session's workspace head in the tier the command
+ * needs, commit what it changed under the session lease, and log it.
+ */
+export async function runCommand(
+	deps: ToolDeps,
+	session: ToolHostSession,
+	command: string,
+	options: { timeoutMs?: number; signal?: AbortSignal; tier?: SandboxTier } = {},
+): Promise<CommandResult> {
+	const tier = options.tier ?? tierFor(command);
+	const head = await deps.workspace.head(session.workspaceId);
+	const manifest = await deps.workspace.manifest(session.workspaceId, head.version);
+	const runner = tier === "container" ? deps.container : deps.isolate;
+	if (tier === "container") {
+		await deps.audit.record(session.sessionId, "sandbox", "escalate", {
+			to: "container",
+			version: head.version,
+			program: command.split(/\s+/)[0],
+		});
+	}
+	const started = performance.now();
+	const result = await runner.exec(
+		{
+			sessionId: session.sessionId,
+			workspaceId: session.workspaceId,
+			version: head.version,
+			command,
+			timeoutMs: options.timeoutMs,
+		},
+		manifest,
+		options.signal,
+	);
+	const execMs = performance.now() - started;
+	let version = head;
+	if (result.changed.length > 0) {
+		version = await deps.workspace.commit(
+			session.workspaceId,
+			{ base: head.version, manifest: result.manifest, tier, changed: result.changed },
+			session.fence(),
+		);
+	}
+	const record: ExecRecord = {
+		command,
+		tier,
+		exitCode: result.exitCode,
+		base: head.version,
+		version: version.version,
+		changed: result.changed.length,
+		timings: { ...result.timings, execMs: Math.round(execMs) },
+	};
+	await deps.audit.exec(session.sessionId, record);
+	await deps.afterExec?.(record);
+	return { record, stdout: result.stdout, stderr: result.stderr, seq: version.seq, changed: result.changed };
 }
 
 const encoder = new TextEncoder();
@@ -62,50 +139,20 @@ export function createHarbourTools(deps: ToolDeps) {
 		replay: "unsafe",
 		execute: async (args, api, context) => {
 			const session = deps.session();
-			const tier = tierFor(args.command);
-			const head = await deps.workspace.head(session.workspaceId);
-			const manifest = await deps.workspace.manifest(session.workspaceId, head.version);
-			const runner = tier === "container" ? deps.container : deps.isolate;
-			if (tier === "container") {
-				await deps.audit.record(session.sessionId, "sandbox", "escalate", {
-					to: "container",
-					version: head.version,
-					program: args.command.split(/\s+/)[0],
-				});
-			}
-			const started = performance.now();
-			const result = await runner.exec(
-				{
-					sessionId: session.sessionId,
-					workspaceId: session.workspaceId,
-					version: head.version,
-					command: args.command,
-					timeoutMs: args.timeoutMs,
-				},
-				manifest,
-				context.abortSignal,
-			);
-			const execMs = performance.now() - started;
-			let version = head;
-			if (result.changed.length > 0) {
-				version = await deps.workspace.commit(
-					session.workspaceId,
-					{ base: head.version, manifest: result.manifest, tier, changed: result.changed },
-					session.fence(),
-				);
-			}
-			const output = [result.stdout, result.stderr].filter(Boolean).join(result.stdout && result.stderr ? "\n" : "");
+			const run = await runCommand(deps, session, args.command, { timeoutMs: args.timeoutMs, signal: context.abortSignal });
+			const { record } = run;
+			const output = [run.stdout, run.stderr].filter(Boolean).join(run.stdout && run.stderr ? "\n" : "");
 			return {
-				output: [{ type: "text", text: output === "" ? `(exit ${result.exitCode}, no output)` : output }],
-				isError: result.exitCode !== 0,
+				output: [{ type: "text", text: output === "" ? `(exit ${record.exitCode}, no output)` : output }],
+				isError: record.exitCode !== 0,
 				details: {
-					tier,
-					exitCode: result.exitCode,
-					base: head.version,
-					version: version.version,
-					seq: version.seq,
-					changed: result.changed.slice(0, 50),
-					timings: { ...result.timings, execMs: Math.round(execMs) },
+					tier: record.tier,
+					exitCode: record.exitCode,
+					base: record.base,
+					version: record.version,
+					seq: run.seq,
+					changed: run.changed.slice(0, 50),
+					timings: record.timings,
 				},
 			};
 		},
@@ -142,5 +189,23 @@ export function createHarbourTools(deps: ToolDeps) {
 		},
 	});
 
-	return defineExtension({ name: "harbour", tools: [bash, write] });
+	const read = defineTool({
+		name: "read",
+		description: "Read a text file from the workspace at its current version.",
+		parameters: Type.Object({ path: Type.String() }),
+		replay: "safe",
+		execute: async (args) => {
+			const session = deps.session();
+			const path = cleanPath(args.path);
+			const head = await deps.workspace.head(session.workspaceId);
+			const entry = (await deps.workspace.manifest(session.workspaceId, head.version))[path];
+			if (entry?.kind !== "file") {
+				return { output: [{ type: "text", text: `${path}: no such file` }], isError: true, details: { tier: "host", version: head.version } };
+			}
+			const text = new TextDecoder().decode(await deps.workspace.readBlob(session.workspaceId, entry.sha));
+			return { output: [{ type: "text", text }], details: { tier: "host", version: head.version } };
+		},
+	});
+
+	return defineExtension({ name: "harbour", tools: [bash, write, read] });
 }

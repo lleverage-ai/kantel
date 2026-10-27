@@ -15,6 +15,9 @@ bun spike/scenario/run.ts --crash \
   --kill-cmd "docker compose -f deploy/compose/compose.yaml kill host-a" \
   --fallback http://127.0.0.1:58082                        # kill the owner mid tool call
 deploy/compose/scripts/check-canary.sh                     # canary in no log, row or object
+# The scenario shared with Cloudflare (M0-CF1's spikes/scenario), needs internet:
+HARBOUR_SPIKE_TOKEN=unused HARBOUR_CANARY=harbour-canary-0000 \
+  bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 --kill-after-exec 2
 docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all state
 ```
 
@@ -26,7 +29,7 @@ docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all
 |---|---|---|
 | `host-a`, `host-b` | Session hosts (Bun). Pi Durable 1.4.0 on Postgres, one Harness per session, Postgres session leases. Each also serves the spike API and forwards requests for sessions it does not own. | 58081, 58082 |
 | `isolate-host` | workerd from npm with a `workerLoader` binding: one Dynamic Worker per session running just-bash over the lazy MinIO workspace. Its `globalOutbound` is the vault. | 58080 |
-| `vault-proxy` | Stub vault: default-deny forward proxy, injects one header for one route (`vault-policy.json`), audits every decision. | none |
+| `vault-proxy` | Stub vault: default-deny forward proxy. Injects a header per route (`vault-policy.json`), redacts the secret from responses, audits every decision. Intercepts container HTTPS with its own CA. | none |
 | `postgres` | Session directory, leases, workspace heads and history, audit, and one schema per session for Pi Durable. | 55432 |
 | `minio` | Content-addressed workspace blobs and manifests. | 59000 |
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
@@ -80,10 +83,16 @@ API for every sandbox container. The cold-start numbers in
   small runner with a narrow API (or use Kubernetes with a RuntimeClass).
 - Secrets are fixed development values in `compose.yaml`; the canary is
   overridable with `HARBOUR_CANARY_SECRET` and is random per run in CI.
-- The vault cannot inject into HTTPS from a container (CONNECT is a tunnel);
-  it refuses CONNECT unless a route sets `tunnel: true`. The isolate's HTTPS
-  requests reach the vault in proxy form (the full `https://` URL), so the
-  vault makes the TLS connection and can inject there; the M0 fixture is plain
-  HTTP, so only refusal of HTTPS is tested.
+- HTTPS: the isolate's requests reach the vault in proxy form (the full
+  `https://` URL), so the vault makes the TLS connection itself. A
+  container's HTTPS arrives as CONNECT; the vault answers it, terminates TLS
+  with a certificate from its own CA (made on first start, kept in the
+  `vaultca` volume, served at `http://vault-proxy:3128/ca.crt`), and applies
+  the same per-request policy inside. The session host copies that CA into
+  each container and points `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+  `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS` and `REQUESTS_CA_BUNDLE` at it. A
+  client that pins certificates needs a `tunnel: true` route (raw TLS, no
+  injection). The CA key never leaves the vault container; production wants
+  it in a KMS or HSM and short-lived.
 - Your umask must let Docker read the build context (`077` breaks the image
   builds with EACCES; `chmod -R go+rX` the checkout).

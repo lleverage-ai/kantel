@@ -49,6 +49,7 @@ x-host: &host
     HARBOUR_SANDBOX_RUNTIME: ${HARBOUR_SANDBOX_RUNTIME:-runc}
     HARBOUR_SANDBOX_NETWORK: harbour-sandbox
     HARBOUR_VAULT_PROXY_URL: http://vault-proxy:3128
+    HARBOUR_SPIKE_TOKEN: ${HARBOUR_SPIKE_TOKEN:-}
 
 services:
   postgres:
@@ -122,6 +123,9 @@ services:
       HARBOUR_CANARY_SECRET: ${HARBOUR_CANARY_SECRET:-harbour-canary-0000}
     volumes:
       - ./vault-policy.json:/etc/harbour/vault-policy.json:ro
+      # The CA the vault intercepts sandbox HTTPS with; kept so sandboxes
+      # trust the same CA across vault restarts. Only the vault mounts it.
+      - vaultca:/var/lib/harbour-vault
     networks:
       control: {}
       upstream: {}
@@ -191,3 +195,4 @@ networks:
 volumes:
   pgdata: {}
   miniodata: {}
+  vaultca: {}

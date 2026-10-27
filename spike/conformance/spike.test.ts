@@ -71,8 +71,8 @@ describe(`spike conformance (${base})`, () => {
 		async () => {
 			const { results } = await run([
 				bash(`curl -sS -f ${research} | grep -c 'Tides of the Harbour'`),
-				bash("curl -sS -f http://example.com/"),
-				bash("curl -sS -f https://example.com/"),
+				bash("curl -sS -f http://api.github.com/zen"),
+				bash("curl -sS -f https://api.github.com/zen"),
 			]);
 			expect(results[0]?.isError).toBe(false);
 			expect(results[0]?.output?.trim()).toBe("1");
@@ -87,8 +87,8 @@ describe(`spike conformance (${base})`, () => {
 		async () => {
 			const { results } = await run([
 				bash(`git --version >/dev/null && curl -sS -f ${research} | grep -c 'Tides of the Harbour'`),
-				bash("git --version >/dev/null && curl -sS -f --max-time 10 http://example.com/"),
-				bash("git --version >/dev/null && curl -sS -f --max-time 10 https://example.com/"),
+				bash("git --version >/dev/null && curl -sS -f --max-time 10 http://api.github.com/zen"),
+				bash("git --version >/dev/null && curl -sS -f --max-time 10 https://api.github.com/zen"),
 				// Bypassing the proxy must not work either: no route out.
 				bash("git --version >/dev/null && curl -sS -f --max-time 5 --noproxy '*' http://1.1.1.1/"),
 			]);

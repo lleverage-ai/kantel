@@ -8,6 +8,8 @@
 //   vault resolves to the session; the token is not a credential for anything.
 // - Workspace: copied in and out through Docker's archive API, so no host path
 //   is shared with the sandbox.
+// - TLS: the vault intercepts HTTPS, so the vault's CA goes in with the
+//   workspace and every TLS client is pointed at it.
 
 import type pg from "pg";
 import type {
@@ -31,6 +33,7 @@ export interface ContainerRunnerOptions {
 }
 
 const decoder = new TextDecoder();
+const CA_PATH = "/etc/harbour/ca.crt";
 
 /** Docker's multiplexed log stream: 8-byte frame headers, stream 1 stdout, 2 stderr. */
 function demux(bytes: Uint8Array): { stdout: string; stderr: string } {
@@ -102,8 +105,27 @@ export class ContainerRunner implements SandboxTierRunner {
 		return list.length;
 	}
 
+	#ca: { pem: Uint8Array; at: number } | undefined;
+
+	/**
+	 * The vault's CA certificate. The vault intercepts the sandbox's HTTPS to
+	 * apply policy and inject credentials, so this is the only CA a sandbox
+	 * needs: it has no route out except through the vault.
+	 */
+	async #vaultCa(): Promise<Uint8Array> {
+		if (this.#ca !== undefined && Date.now() - this.#ca.at < 60_000) return this.#ca.pem;
+		const response = await fetch(`${this.options.proxyUrl}/ca.crt`, { signal: AbortSignal.timeout(5000) });
+		if (!response.ok) throw new Error(`vault CA: ${response.status}`);
+		this.#ca = { pem: new Uint8Array(await response.arrayBuffer()), at: Date.now() };
+		return this.#ca.pem;
+	}
+
 	async #tarOf(workspaceId: string, manifest: Manifest): Promise<Uint8Array> {
-		const entries: TarEntry[] = [{ type: "dir", path: "workspace", mode: 0o755 }];
+		const entries: TarEntry[] = [
+			{ type: "dir", path: "etc/harbour", mode: 0o755 },
+			{ type: "file", path: CA_PATH.slice(1), mode: 0o644, data: await this.#vaultCa() },
+			{ type: "dir", path: "workspace", mode: 0o755 },
+		];
 		const paths = Object.keys(manifest).sort();
 		const blobs = await Promise.all(
 			paths.map(async (path) => {
@@ -152,6 +174,9 @@ export class ContainerRunner implements SandboxTierRunner {
 						`https_proxy=${proxy}`,
 						"NO_PROXY=",
 						"HOME=/workspace",
+						...["SSL_CERT_FILE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE"].map(
+							(name) => `${name}=${CA_PATH}`,
+						),
 						...Object.entries(request.env ?? {}).map(([k, v]) => `${k}=${v}`),
 					],
 					Labels: { "harbour.session": request.sessionId, "harbour.owner": this.owner, "harbour.tier": "container" },

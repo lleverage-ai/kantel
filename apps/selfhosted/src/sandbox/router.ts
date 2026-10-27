@@ -24,7 +24,12 @@ export const CONTAINER_PROGRAMS = new Set([
 	"uv",
 	"apk",
 	"apt-get",
+	"python",
+	"python3",
 ]);
+
+/** A command can ask for the container explicitly with a leading `# harbour:container` line. */
+const CONTAINER_DIRECTIVE = /^\s*#\s*harbour:container\b/;
 
 /** The first word of every simple command in a pipeline or list, skipping env assignments. */
 export function commandWords(command: string): string[] {
@@ -40,5 +45,6 @@ export function commandWords(command: string): string[] {
 }
 
 export function tierFor(command: string): SandboxTier {
+	if (CONTAINER_DIRECTIVE.test(command)) return "container";
 	return commandWords(command).some((word) => CONTAINER_PROGRAMS.has(word)) ? "container" : "isolate";
 }

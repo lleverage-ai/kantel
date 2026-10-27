@@ -66,6 +66,56 @@ const text = (message: { content: unknown }) =>
 			? message.content.map((part: any) => (part.type === "text" ? part.text : "")).join("")
 			: "";
 
+/**
+ * A scenario file in the shared format (M0-CF1's spikes/scenario/research-task.json):
+ * seed files, a list of tool calls, and the final answer.
+ */
+export interface StepsScenario {
+	name: string;
+	seed?: Record<string, string>;
+	steps: { label?: string; tool: string; args: Record<string, unknown> }[];
+	finalAnswer: string;
+}
+
+const isInterrupted = (message: any) =>
+	message.role === "toolResult" && message.isError === true && /interrupt/i.test(text(message));
+
+/**
+ * The shared scenario's model, as M0-CF1 defines it: the next step is the
+ * number of completed tool results since the last user message. An
+ * interrupted call does not count, so after a crash the script reissues the
+ * call that was cut off (the "may have partially run" path, decided by the
+ * script rather than by replay).
+ */
+export function stepsResponse(scenario: StepsScenario, context: TranscriptContext): AssistantMessage {
+	const messages = context.messages;
+	let lastUser = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i]!.role === "user") {
+			lastUser = i;
+			break;
+		}
+	}
+	const results = messages.slice(lastUser + 1).filter((m) => m.role === "toolResult");
+	const completed = results.filter((m) => !isInterrupted(m)).length;
+	const step = scenario.steps[completed];
+	if (step === undefined) return fauxAssistantMessage(fauxText(scenario.finalAnswer));
+	const retry = results.length - completed;
+	return fauxAssistantMessage(
+		fauxToolCall(step.tool, step.args as Parameters<typeof fauxToolCall>[1], { id: `step-${completed}-try-${retry}` }),
+		{ stopReason: "toolUse" },
+	);
+}
+
+/** The last user message starts the Harbour scenario (this repo's `ScenarioSpec`). */
+export function isSpecPrompt(context: TranscriptContext): boolean {
+	for (let i = context.messages.length - 1; i >= 0; i--) {
+		const message = context.messages[i]!;
+		if (message.role === "user") return text(message).startsWith(SCENARIO_PREFIX);
+	}
+	return false;
+}
+
 /** The faux response factory. Install it many times over: one call consumes one step. */
 export function scriptedResponse(context: TranscriptContext): AssistantMessage {
 	const messages = context.messages;

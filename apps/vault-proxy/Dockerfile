@@ -7,6 +7,8 @@ COPY apps/vault-proxy/package.json apps/vault-proxy/bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 FROM node:24-alpine
+# openssl makes the vault's CA and the per-host certificates for intercepted HTTPS.
+RUN apk add --no-cache openssl && install -d -o node -g node -m 700 /var/lib/harbour-vault
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY apps/vault-proxy/package.json ./

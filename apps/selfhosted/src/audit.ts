@@ -15,4 +15,9 @@ export class Audit {
 			[sessionId, `${source}:${this.actor}`, kind, JSON.stringify(detail)],
 		);
 	}
+
+	/** The per-session command log the scenario surface reports as `execs`. */
+	async exec(sessionId: string, record: object): Promise<void> {
+		await this.pool.query(`INSERT INTO harbour.execs (session_id, body) VALUES ($1, $2)`, [sessionId, JSON.stringify(record)]);
+	}
 }
