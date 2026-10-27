@@ -292,7 +292,7 @@ export class SessionDO extends DurableObject<Env> {
 		const sandboxes = this.#sandboxes(meta);
 		// A prompted run has settled: commit and end the session's leases (a container's changes land in the workspace
 		// here). A wake with no run (setup's, a retention timer) leaves the leases alone, so it cannot release a lease
-		// that a direct /exec is using. The flag is in storage, so a run that crashed still ends its leases on resume.
+		// that a direct /exec is using. The counters are in storage, so a run that crashed still ends its leases on resume.
 		const target = this.#meta()?.promptedRuns ?? 0;
 		if (target > (this.#meta()?.settledRuns ?? 0)) {
 			await sandboxes.releaseSession(this.#ctx(meta), meta.sessionId, "released");
