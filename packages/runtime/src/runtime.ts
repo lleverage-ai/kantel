@@ -81,9 +81,12 @@ export interface SessionRuntimeOptions {
 	readonly storage: (session: SessionRecord) => Storage | Promise<Storage>;
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
-	/** The Pi model collection sessions run on. */
-	readonly models: Models;
-	/** Maps a profile's model route to a Pi model. Default: the first model of the first provider. */
+	/**
+	 * The Pi model collection sessions run on: one for every session, or a function giving each session its own when it
+	 * opens, such as `harbourModels` from `@harbour/runtime/models`. A function needs `resolveModel`.
+	 */
+	readonly models: Models | ((session: SessionRecord) => Models | Promise<Models>);
+	/** Maps a profile's model route to a Pi model. Default: the first model of the first provider of a shared `models`. */
 	readonly resolveModel?: (choice: ModelChoice) => ResolvedModel;
 	/**
 	 * Role bindings. When given, the runtime checks project access on every call, through `createProjectAccess` over
@@ -236,6 +239,17 @@ function framesIn(generation: string, frame: ServerFrame): ServerFrame {
 	}
 }
 
+/** The default `resolveModel`: the first model of the first provider. Per-session models have no default. */
+function firstModelOf(models: SessionRuntimeOptions["models"]): (choice: ModelChoice) => ResolvedModel {
+	if (typeof models === "function") throw new HarbourError("invalid", "Per-session models need resolveModel");
+	return () => {
+		const provider = models.getProviders()[0];
+		const model = provider === undefined ? undefined : models.getModels(provider.id)[0];
+		if (provider === undefined || model === undefined) throw new HarbourError("unavailable", "No model is configured");
+		return { provider: provider.id, modelId: model.id };
+	};
+}
+
 export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntimeService {
 	const { store, models } = options;
 	const clock = options.clock ?? systemClock;
@@ -245,15 +259,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const localHandlers = new Map<string, HostToolHandler>();
 	let closed = false;
 
-	const resolveModel =
-		options.resolveModel ??
-		((): ResolvedModel => {
-			const provider = models.getProviders()[0];
-			const model = provider === undefined ? undefined : models.getModels(provider.id)[0];
-			if (provider === undefined || model === undefined)
-				throw new HarbourError("unavailable", "No model is configured");
-			return { provider: provider.id, modelId: model.id };
-		});
+	const resolveModel = options.resolveModel ?? firstModelOf(models);
 
 	const audit = async (events: readonly AuditEventInput[]) => {
 		if (options.audit !== undefined) await options.audit.append(systemContext("session"), events);
@@ -534,12 +540,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		// No tools yet: they are installed once the session is open, where a registration change also reaches it.
 		registry.install(extensionFor({ profile }, []));
 		const context = BACKGROUND_CONTEXT;
+		const sessionModels = typeof models === "function" ? await models(record) : models;
 		const storage = await options.storage(record);
 		// Wakes go to the session once it exists; the first (from open) is read with `harness.wake()` below.
 		let onWake: (wake: Wake) => void = () => {};
 		const harness = await Harness.open(
 			storage,
-			{ models, registry, now: () => clock.now(), onWake: (wake) => onWake(wake) },
+			{ models: sessionModels, registry, now: () => clock.now(), onWake: (wake) => onWake(wake) },
 			context,
 		);
 		let conversation: Conversation;
