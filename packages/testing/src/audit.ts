@@ -16,10 +16,12 @@ import type {
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	CANARY_SECRET,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
@@ -80,6 +82,32 @@ const system = contextFor(actors.system("audit-retention"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 
+const PROJECT = "proj-1";
+const OTHER_PROJECT = "proj-2";
+/** An operator on another project of the same organisation. */
+const stranger = contextFor(actors.human("stranger-1"), ORG, OTHER_PROJECT);
+/** A viewer on the project. */
+const projectViewer = contextFor(actors.human("viewer-1"), ORG, PROJECT);
+/** An admin on the project only, not across the organisation. */
+const projectAdmin = contextFor(actors.human("project-admin-1"), ORG, PROJECT);
+/** A viewer across the organisation. */
+const auditor = contextFor(actors.human("auditor-1"), ORG);
+/** An agent whose session belongs to another project. */
+const strayAgent = contextFor(actors.agent("agent-2", "session-2"), ORG, OTHER_PROJECT);
+
+/** Records the roles and sessions the cases use, so every call passes `deps.access` where it should. */
+function seedTenancy(deps: ConformanceDeps): void {
+	deps.tenancy.bind(admin.actor, ORG, "admin");
+	deps.tenancy.bind(service.actor, ORG, "admin");
+	deps.tenancy.bind(outsider.actor, OTHER_ORG, "admin");
+	deps.tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
+	deps.tenancy.bind(projectViewer.actor, ORG, "viewer", PROJECT);
+	deps.tenancy.bind(projectAdmin.actor, ORG, "admin", PROJECT);
+	deps.tenancy.bind(auditor.actor, ORG, "viewer");
+	deps.tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	deps.tenancy.session({ id: "session-2", organisationId: ORG, projectId: OTHER_PROJECT, agentId: "agent-2" });
+}
+
 type EventFields = Omit<Partial<AuditEventInput>, "id">;
 
 function auditEvent(id: string, at: number, fields: EventFields = {}): AuditEventInput {
@@ -93,6 +121,18 @@ function auditEvent(id: string, at: number, fields: EventFields = {}): AuditEven
 		...fields,
 	};
 }
+
+/** Rows of two projects and of the organisation, interleaved in `seq` order. */
+const projectRows: readonly AuditEventInput[] = [
+	auditEvent("p1-a", 1, { projectId: PROJECT, sessionId: "session-1" }),
+	auditEvent("p2-a", 2, { projectId: OTHER_PROJECT }),
+	auditEvent("org-a", 3),
+	auditEvent("p1-b", 4, { projectId: PROJECT }),
+	auditEvent("p2-b", 5, { projectId: OTHER_PROJECT }),
+	auditEvent("org-b", 6),
+	auditEvent("p1-c", 7, { projectId: PROJECT }),
+];
+const PROJECT_ROW_IDS = projectRows.map((row) => row.id);
 
 function ids(page: Page<AuditEvent>): string[] {
 	return page.items.map((event) => event.id);
@@ -108,12 +148,13 @@ async function allPages(
 	query: AuditQuery,
 	limit: number,
 	between: (pageIndex: number) => Promise<void> = async () => {},
+	ctx: CallContext = admin,
 ): Promise<{ readonly events: AuditEvent[]; readonly pageSizes: number[] }> {
 	const events: AuditEvent[] = [];
 	const pageSizes: number[] = [];
 	let cursor: string | undefined;
 	for (let index = 0; index < 100; index += 1) {
-		const page = await store.query(admin, query, cursor === undefined ? { limit } : { limit, cursor });
+		const page = await store.query(ctx, query, cursor === undefined ? { limit } : { limit, cursor });
 		events.push(...page.items);
 		pageSizes.push(page.items.length);
 		if (page.nextCursor === undefined) return { events, pageSizes };
@@ -136,6 +177,7 @@ function withoutField(event: AuditEventInput, field: keyof AuditEventInput): Aud
 export function createAuditConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: AuditConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (
@@ -145,11 +187,12 @@ export function createAuditConformance(options: {
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject, deps));
 		},
 	});
 
-	return [
+	const cases: ConformanceCase[] = [
 		test("keeps one row with its first data and seq when the same event id is appended twice", async ({
 			store,
 		}, deps) => {
@@ -584,12 +627,102 @@ export function createAuditConformance(options: {
 			assert.strictEqual(findSecret(await store.get(admin, nested.id)), true, "the store keeps data as given");
 		}),
 	];
+	if (options.projectAccess !== true) return cases;
+
+	return [
+		...cases,
+		test("project access: refuses an operator outside the project its rows, and non-admins retention, changing nothing", async ({
+			store,
+		}, deps) => {
+			await store.append(projectRows);
+			const denied = (call: Promise<unknown>, operation: string, message: string) =>
+				assertAccessDenied(assert, deps, call, { operation, message });
+			await denied(store.query(stranger, { projectId: PROJECT }), "audit.query", "querying the project");
+			await denied(store.query(stranger, { sessionId: "session-1" }), "audit.query", "querying its session");
+			await denied(
+				store.query(stranger, { projectId: OTHER_PROJECT, sessionId: "session-1" }),
+				"audit.query",
+				"naming its session under the caller's own project",
+			);
+			await denied(store.get(stranger, "p1-a"), "audit.get", "reading a project row");
+			await denied(store.get(stranger, "org-a"), "audit.get", "reading an organisation row");
+			await denied(store.setRetention(stranger, DAY), "audit.setRetention", "retention by a project operator");
+			await denied(store.setRetention(projectAdmin, DAY), "audit.setRetention", "retention by a project admin");
+			await denied(store.setRetention(auditor, DAY), "audit.setRetention", "retention by an organisation viewer");
+			deps.clock.advance(30 * DAY);
+			assert.strictEqual(await store.applyRetention(), 0, "no refused retention took effect");
+			assert.deepEqual(await queryIds(store, {}), PROJECT_ROW_IDS, "every row is still there");
+		}),
+
+		test("project access: refuses an agent before any project check, whichever project its session is in", async ({
+			store,
+		}, deps) => {
+			await store.append(projectRows);
+			await assert.rejectsWithCode(store.query(strayAgent, { projectId: PROJECT }), "forbidden");
+			await assert.rejectsWithCode(store.query(strayAgent, { sessionId: "session-2" }), "forbidden", "its own");
+			await assert.rejectsWithCode(store.get(strayAgent, "p1-a"), "forbidden");
+			await assert.rejectsWithCode(store.query(agent, { projectId: PROJECT }), "forbidden", "in its own project");
+			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "the agent rule refuses first");
+			assert.deepEqual(await queryIds(store, {}), PROJECT_ROW_IDS);
+		}),
+
+		test("project access: a query without a project or session returns only rows the caller may see, paging stably", async ({
+			store,
+		}, deps) => {
+			await store.append(projectRows);
+			assert.deepEqual(await queryIds(store, {}, stranger), ["p2-a", "p2-b"], "an operator outside sees its own");
+			assert.deepEqual(await queryIds(store, {}, projectViewer), ["p1-a", "p1-b", "p1-c"], "no organisation rows");
+			assert.deepEqual(await queryIds(store, {}, auditor), PROJECT_ROW_IDS, "an organisation viewer sees all");
+			assert.deepEqual(
+				await queryIds(store, { type: "session.created", newestFirst: true }, projectViewer),
+				["p1-c", "p1-b", "p1-a"],
+				"other fields still narrow and order",
+			);
+			const forward = await allPages(store, {}, 2, async () => {}, projectViewer);
+			assert.deepEqual(forward.pageSizes, [2, 1], "pages are cut from visible rows only");
+			assert.deepEqual(
+				forward.events.map((event) => event.id),
+				["p1-a", "p1-b", "p1-c"],
+			);
+			const backward = await allPages(store, { newestFirst: true }, 2, async () => {}, projectViewer);
+			assert.deepEqual(backward.pageSizes, [2, 1]);
+			assert.deepEqual(
+				backward.events.map((event) => event.id),
+				["p1-c", "p1-b", "p1-a"],
+			);
+			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "filtering a list audits no refusal");
+		}),
+
+		test("project access: lets a viewer on the project query and read its rows, and an organisation viewer the rest", async ({
+			store,
+		}, deps) => {
+			await store.append(projectRows);
+			assert.deepEqual(await queryIds(store, { projectId: PROJECT }, projectViewer), ["p1-a", "p1-b", "p1-c"]);
+			assert.deepEqual(await queryIds(store, { sessionId: "session-1" }, projectViewer), ["p1-a"]);
+			assert.strictEqual((await store.get(projectViewer, "p1-b")).projectId, PROJECT);
+			await assertAccessDenied(assert, deps, store.get(projectViewer, "org-a"), {
+				operation: "audit.get",
+				message: "a row without a project needs an organisation-wide role",
+			});
+			assert.strictEqual((await store.get(auditor, "org-a")).id, "org-a");
+			assert.deepEqual(await queryIds(store, { projectId: OTHER_PROJECT }, auditor), ["p2-a", "p2-b"]);
+		}),
+	];
 }
 
 export function registerAuditConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: AuditConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
-	registerCases(runner, name, createAuditConformance({ assertions: createExpectAssertions(runner.expect), provider }));
+	registerCases(
+		runner,
+		name,
+		createAuditConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			projectAccess: options?.projectAccess === true,
+		}),
+	);
 }

@@ -51,17 +51,29 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
   does not backfill paused time on resume".
 - Input is validated: "rejects an invalid time zone, a bad HH:MM, or both or neither of at and repeat as invalid".
 - Organisation isolation: "hides another organisation's schedules as not found".
+- Project access (settled question 7): a schedule owned by `{ kind: "project" }` is checked against its `projectId`
+  through `ProjectAccess.require`, after the organisation lookup (another organisation's schedule stays `not_found`) and
+  after the agent rule (agents stay `forbidden` on changes, unaudited). `create`, `update`, `pause`, `resume` and `end`
+  need `operator`; `get`, `preview` and `listOccurrences` need `viewer`. Operations are `schedules.<method>`, with
+  subject `{ kind: "schedules.schedule", id }` once the schedule exists. `list` keeps a project's schedules only when
+  the caller `allows` viewer on that project, before the page is cut. Organisation- and user-owned schedules have no
+  project check. `tick`, `claim`, `complete` and `reportCheck` take no context and are unchanged. Cases: "project
+  access: refuses an operator outside the project every change and read of its schedule, changing nothing", "project
+  access: refuses an agent whose session belongs to another project, changing nothing", "project access: refuses an
+  agent whose session was closed", "project access: lists leave out another project's schedules, and pages hold only
+  visible ones", "project access: lets an operator on the project and an agent in its own session use the project's
+  schedule".
 
 ## The in-memory implementation
 
-`createMemorySchedules({ clock?, audit? })` keeps schedules and occurrences in maps. `tick` and `claim` change state
+`createMemorySchedules({ clock?, audit?, access? })` keeps schedules and occurrences in maps. `tick` and `claim` change state
 with no await, so concurrent calls cannot materialise or claim one occurrence twice. `tick` walks at most 10,000
 missed due times per schedule; past that it counts 10,000 and jumps `nextDueAt` past now. `create` and `resume`
 compute `nextDueAt` as the first due time at or after now. `create` and `update` copy only `ScheduleInput`'s fields, so
 a caller can never set the id, status, counts or timestamps ("update ignores fields outside ScheduleInput and is
 audited"). It audits `schedules.schedule.created`, `.updated`, `.paused`, `.resumed` and `.ended` by their actor, and
-`schedules.finding.raised` (actor `system:schedules`), with stable IDs. It leaves out durable storage, a scheduler
-loop and role checks beyond "not an agent".
+`schedules.finding.raised` (actor `system:schedules`), with stable IDs. Without `access` it checks only the
+organisation. It leaves out durable storage and a scheduler loop.
 
 ## Open questions
 

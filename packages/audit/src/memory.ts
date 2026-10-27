@@ -11,6 +11,8 @@ import {
 	type OrganisationId,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
+	type ProjectId,
 	systemClock,
 } from "@harbour/contracts";
 import { assertValidAuditEvent, matchesQuery } from "./index.ts";
@@ -19,6 +21,12 @@ export interface MemoryAuditStoreOptions {
 	readonly clock?: Clock;
 	/** Retention for organisations that have not set their own. Default: keep rows forever. */
 	readonly retentionMs?: number;
+	/**
+	 * Checks access on every read and on `setRetention` (`audit.<method>`): viewer on a row's project, or an
+	 * organisation-wide role for rows without one and for retention. Without it the store checks only the organisation;
+	 * every target and every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
 }
 
 /** The most events `drain` hands a sink in one `append`. */
@@ -53,6 +61,7 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 	const clock = options.clock ?? systemClock;
 	if (options.retentionMs !== undefined) assertRetention(options.retentionMs);
 	const defaultRetentionMs = options.retentionMs;
+	const access = options.access;
 
 	let rows: AuditEvent[] = [];
 	/** Rows by organisation and id: one organisation's event can never shadow another's that reuses an id. */
@@ -78,13 +87,39 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			forbidAgent(ctx, "read the audit log");
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
+			const scoped = query.projectId !== undefined || query.sessionId !== undefined;
+			if (access !== undefined && scoped) {
+				await access.require(ctx, {
+					...(query.projectId === undefined ? {} : { projectId: query.projectId }),
+					...(query.sessionId === undefined ? {} : { sessionId: query.sessionId }),
+					needed: "viewer",
+					operation: "audit.query",
+				});
+			}
 			const newestFirst = query.newestFirst === true;
-			const matching = rows.filter(
+			let matching = rows.filter(
 				(row) =>
 					row.organisationId === ctx.organisationId &&
 					matchesQuery(row, query) &&
 					(after === undefined || (newestFirst ? row.seq < after : row.seq > after)),
 			);
+			// Without a project or session filter, keep only the rows the caller may see, before the page is cut.
+			if (access !== undefined && !scoped) {
+				const viewable = new Map<ProjectId | undefined, Promise<boolean>>();
+				const visible: AuditEvent[] = [];
+				for (const row of matching) {
+					let allowed = viewable.get(row.projectId);
+					if (allowed === undefined) {
+						allowed = access.allows(
+							ctx,
+							row.projectId === undefined ? { needed: "viewer" } : { projectId: row.projectId, needed: "viewer" },
+						);
+						viewable.set(row.projectId, allowed);
+					}
+					if (await allowed) visible.push(row);
+				}
+				matching = visible;
+			}
 			if (newestFirst) matching.reverse();
 			const items = matching.slice(0, limit).map((row) => structuredClone(row));
 			const last = items.at(-1);
@@ -97,11 +132,22 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			if (row === undefined) {
 				throw new HarbourError("not_found", `No audit event ${eventId}`);
 			}
+			if (access !== undefined) {
+				await access.require(ctx, {
+					...(row.projectId === undefined ? {} : { projectId: row.projectId }),
+					needed: "viewer",
+					operation: "audit.get",
+					subject: { kind: "audit.event", id: row.id },
+				});
+			}
 			return structuredClone(row);
 		},
 
 		async setRetention(ctx: CallContext, retentionMs: number): Promise<void> {
 			forbidAgent(ctx, "set audit retention");
+			if (access !== undefined) {
+				await access.require(ctx, { needed: "admin", operation: "audit.setRetention" });
+			}
 			assertRetention(retentionMs);
 			retention.set(ctx.organisationId, retentionMs);
 		},
