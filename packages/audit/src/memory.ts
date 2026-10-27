@@ -127,12 +127,14 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 
 /**
  * The reference `AuditOutbox`: a queue in memory. `drain` sends batches of at most `OUTBOX_BATCH_SIZE` in order and
- * removes a batch only once the sink has taken it. Drains run one at a time. An event id already queued is queued
- * once; events are validated on the way in so one malformed event cannot block the queue.
+ * removes a batch only once the sink has taken it. Drains run one at a time. An event already queued (same organisation
+ * and id) is queued once; events are validated on the way in so one malformed event cannot block the queue.
  */
 export function createMemoryAuditOutbox(): AuditOutbox {
 	let queue: AuditEventInput[] = [];
+	/** Queued events by organisation and id, as the store keys them. */
 	const queuedIds = new Set<string>();
+	const queueKey = (event: AuditEventInput) => `${event.organisationId}\u0000${event.id}`;
 	let draining: Promise<unknown> = Promise.resolve();
 
 	async function drainNow(sink: AuditSink): Promise<number> {
@@ -142,7 +144,7 @@ export function createMemoryAuditOutbox(): AuditOutbox {
 			await sink.append(batch);
 			const delivered = new Set(batch);
 			queue = queue.filter((event) => !delivered.has(event));
-			for (const event of batch) queuedIds.delete(event.id);
+			for (const event of batch) queuedIds.delete(queueKey(event));
 			sent += batch.length;
 		}
 		return sent;
@@ -152,8 +154,8 @@ export function createMemoryAuditOutbox(): AuditOutbox {
 		async append(events: readonly AuditEventInput[]): Promise<void> {
 			for (const event of events) assertValidAuditEvent(event);
 			for (const event of events) {
-				if (queuedIds.has(event.id)) continue;
-				queuedIds.add(event.id);
+				if (queuedIds.has(queueKey(event))) continue;
+				queuedIds.add(queueKey(event));
 				queue.push(structuredClone(event));
 			}
 		},

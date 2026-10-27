@@ -473,6 +473,48 @@ export function createSchedulesConformance(options: {
 			const ended = await schedules.end(service, schedule.id);
 			assert.strictEqual(ended.status, "ended");
 			await assert.rejectsWithCode(schedules.resume(service, schedule.id), "conflict", "an ended schedule stays ended");
+			for (const change of ["paused", "resumed", "ended"]) {
+				const events = deps.audit.ofType(`schedules.schedule.${change}`);
+				assert.strictEqual(events.length, 1, `one schedules.schedule.${change} event`);
+				assert.partialDeepEqual(events[0], { actor: service.actor, subject: { id: schedule.id } });
+			}
+		}),
+
+		test("update ignores fields outside ScheduleInput and is audited", async (schedules, deps) => {
+			const schedule = await schedules.create(human, hourly(deps));
+			deps.clock.advance(HOUR);
+			await schedules.tick();
+			const before = await schedules.get(human, schedule.id);
+			const sneaky = {
+				title: "Renamed",
+				id: "schedule_someone-elses",
+				createdBy: actors.human("intruder"),
+				occurrences: 0,
+				status: "ended",
+				nextDueAt: 1,
+				createdAt: 1,
+			} as unknown as Parameters<Schedules["update"]>[2];
+			const updated = await schedules.update(human, schedule.id, sneaky);
+			assert.strictEqual(updated.title, "Renamed", "input fields are applied");
+			assert.strictEqual(updated.id, schedule.id);
+			assert.deepEqual(updated.createdBy, schedule.createdBy);
+			assert.strictEqual(updated.createdAt, schedule.createdAt);
+			assert.strictEqual(updated.occurrences, before.occurrences);
+			assert.strictEqual(updated.status, "active");
+			assert.greaterThan(updated.nextDueAt ?? 0, deps.clock.now() - 1, "nextDueAt is the store's, not the caller's");
+			assert.strictEqual((await schedules.list(outsider)).items.length, 0, "the other organisation sees nothing");
+			const created = await schedules.create(human, {
+				...hourly(deps),
+				id: "chosen",
+				occurrences: 99,
+				status: "ended",
+			} as unknown as ScheduleInput);
+			assert.ok(created.id !== "chosen", "create ignores them too");
+			assert.strictEqual(created.occurrences, 0);
+			assert.strictEqual(created.status, "active");
+			assert.partialDeepEqual(deps.audit.ofType("schedules.schedule.updated"), [
+				{ actor: human.actor, subject: { id: schedule.id } },
+			]);
 		}),
 
 		test("rejects an invalid time zone, a bad HH:MM, or both or neither of at and repeat as invalid", async (schedules, deps) => {

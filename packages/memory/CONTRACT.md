@@ -51,8 +51,8 @@ statement) and an `index.md` of active concepts.
 
 `createMemoryMemory({ clock?, audit? })` keeps spaces, concepts and proposals in maps. Applies on a space run through
 a promise chain; inside it the proposal and the concept's version are checked again, then changed without an await,
-so racing applies or an apply racing a reject settle once. It audits `memory.proposal.created`, `.applied` and
-`.rejected` with stable IDs (`memory:proposal:<id>:<event>`). Portable logic (`tokenize`, `bm25`, `similarity` with
+so racing applies or an apply racing a reject settle once. It audits `memory.space.created`,
+`memory.proposal.created`, `.applied` and `.rejected` with stable IDs (`memory:proposal:<id>:<event>`). Portable logic (`tokenize`, `bm25`, `similarity` with
 `DEFAULT_SIMILARITY_THRESHOLD` 0.6, `conceptBytes`, `renderConcept`, `validateConceptId`) lives in `src/index.ts`. It
 leaves out durable storage, publishing to a `MemorySource`, rebuilding from a bundle, embeddings and role checks beyond
 "not an agent".

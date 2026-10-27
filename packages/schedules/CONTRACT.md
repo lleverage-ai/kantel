@@ -57,9 +57,11 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
 `createMemorySchedules({ clock?, audit? })` keeps schedules and occurrences in maps. `tick` and `claim` change state
 with no await, so concurrent calls cannot materialise or claim one occurrence twice. `tick` walks at most 10,000
 missed due times per schedule; past that it counts 10,000 and jumps `nextDueAt` past now. `create` and `resume`
-compute `nextDueAt` as the first due time at or after now. It audits `schedules.schedule.created` and
+compute `nextDueAt` as the first due time at or after now. `create` and `update` copy only `ScheduleInput`'s fields, so
+a caller can never set the id, status, counts or timestamps ("update ignores fields outside ScheduleInput and is
+audited"). It audits `schedules.schedule.created`, `.updated`, `.paused`, `.resumed` and `.ended` by their actor, and
 `schedules.finding.raised` (actor `system:schedules`), with stable IDs. It leaves out durable storage, a scheduler
-loop, role checks beyond "not an agent", and auditing of updates, pauses, resumes and ends.
+loop and role checks beyond "not an agent".
 
 ## Open questions
 

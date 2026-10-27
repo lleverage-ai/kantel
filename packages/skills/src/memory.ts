@@ -215,7 +215,9 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		});
 		stored.revisions.push(revision);
 		stored.contents.set(revision.revision, new Map(input.files.map((file) => [file.path, file.content])));
-		const { draftDigest: _draftDigest, ...pkg } = stored.pkg;
+		// An open draft survives an import, so `get` and `readDraft` agree; only publishing it closes it.
+		const { draftDigest: _draftDigest, ...withoutDraft } = stored.pkg;
+		const pkg = stored.draft === undefined ? withoutDraft : stored.pkg;
 		stored.pkg = {
 			...pkg,
 			description: input.description,
@@ -224,6 +226,32 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			updatedAt: now,
 		};
 		return revision;
+	}
+
+	/** Audits a change to a package by its actor. Data holds names, digests and counts, never file contents. */
+	async function auditChange(
+		ctx: CallContext,
+		event: {
+			readonly id: string;
+			readonly type: string;
+			readonly subjectId: string;
+			readonly data: { readonly [key: string]: JsonValue };
+		},
+	): Promise<void> {
+		if (audit === undefined) return;
+		await audit.append([
+			{
+				id: event.id,
+				at: clock.now(),
+				source: "skills",
+				type: event.type,
+				actor: ctx.actor,
+				organisationId: ctx.organisationId,
+				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+				subject: { kind: "skills.skill", id: event.subjectId },
+				data: event.data,
+			},
+		]);
 	}
 
 	async function auditPublished(ctx: CallContext, revision: SkillRevision): Promise<void> {
@@ -287,7 +315,14 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			assertMayOwn(ctx, input.owner);
 			validateSkillName(input.name);
 			assertDescription(input.description);
-			return { ...createPackage(input.owner, input.name, input.description).pkg };
+			const pkg = { ...createPackage(input.owner, input.name, input.description).pkg };
+			await auditChange(ctx, {
+				id: `skills:package:${pkg.id}:created`,
+				type: "skills.package.created",
+				subjectId: pkg.id,
+				data: { name: pkg.name, owner: pkg.owner.kind },
+			});
+			return pkg;
 		},
 
 		async get(ctx, skillId) {
@@ -306,6 +341,12 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			const description = input.description ?? parseSkillFrontmatter(skillMd).description ?? stored.pkg.description;
 			stored.draft = { files, digest, description };
 			stored.pkg = { ...stored.pkg, draftDigest: digest, updatedAt: clock.now() };
+			await auditChange(ctx, {
+				id: `skills:draft:${skillId}:${digest}`,
+				type: "skills.draft.saved",
+				subjectId: skillId,
+				data: { name: stored.pkg.name, digest, files: files.length },
+			});
 			return { digest };
 		},
 
@@ -384,6 +425,21 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 				})),
 			);
 			pins.set(key, pinned);
+			if (audit !== undefined) {
+				await audit.append([
+					{
+						id: `skills:session:${ctx.organisationId}:${sessionId}:pinned`,
+						at: pinnedAt,
+						source: "skills",
+						type: "skills.session.pinned",
+						actor: ctx.actor,
+						organisationId: ctx.organisationId,
+						...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+						sessionId,
+						data: { pins: pinned.map((pin) => ({ skillId: pin.skillId, revision: pin.revision })) },
+					},
+				]);
+			}
 			return pinned;
 		},
 

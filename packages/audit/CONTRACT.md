@@ -4,7 +4,7 @@
 
 One append-only record of what happened, for every organisation. Components never write to it directly: each puts
 events in an outbox inside its own transaction, and a relay drains the outbox to the store with retries. The store is
-idempotent by event id, so a retry never adds a row. Humans, services and the system read it by actor, organisation,
+idempotent by organisation and event id, so a retry never adds a row. Humans, services and the system read it by actor, organisation,
 project, session, subject and time; agents cannot.
 
 ## Records

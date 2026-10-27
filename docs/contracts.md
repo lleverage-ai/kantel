@@ -28,7 +28,8 @@ registerVaultConformance({ describe, expect, it }, "D1 vault", async (deps, use)
 Errors are `HarbourError`s with a code (`invalid`, `not_found`, `forbidden`, `conflict`, `expired`, `refused`,
 `aborted`, `unavailable`). Records from another organisation are `not_found`, never `forbidden`, so that IDs leak
 nothing. Every call takes a `CallContext` that names the actor (`human`, `agent`, `service` or `system`) and the
-organisation. Every mutation is audited through an `AuditSink`, with its actor. No audit event contains a secret
+organisation. Every change made on a caller's behalf is audited through an `AuditSink`, with its actor. The scheduler's own
+bookkeeping (materialising and claiming occurrences) lives on the occurrence records instead. No audit event contains a secret
 value; each suite plants `CANARY_SECRET` and checks for it.
 
 ## The contracts
@@ -41,12 +42,12 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (15) | [workspace](../packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (14) | [sandbox](../packages/sandbox/CONTRACT.md) |
 | Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (41) | [vault](../packages/vault/CONTRACT.md) |
-| Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (16) | [codemode](../packages/codemode/CONTRACT.md) |
-| Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (17) | [browser](../packages/browser/CONTRACT.md) |
-| Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (14) | [skills](../packages/skills/CONTRACT.md) |
+| Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (17) | [codemode](../packages/codemode/CONTRACT.md) |
+| Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (24) | [browser](../packages/browser/CONTRACT.md) |
+| Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (15) | [skills](../packages/skills/CONTRACT.md) |
 | Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (19) | [memory](../packages/memory/CONTRACT.md) |
-| Schedules | `Schedules` | `@harbour/schedules/memory` | `registerSchedulesConformance` (22) | [schedules](../packages/schedules/CONTRACT.md) |
-| Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (16) | [audit](../packages/audit/CONTRACT.md) |
+| Schedules | `Schedules` | `@harbour/schedules/memory` | `registerSchedulesConformance` (23) | [schedules](../packages/schedules/CONTRACT.md) |
+| Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (17) | [audit](../packages/audit/CONTRACT.md) |
 
 The capability registry lives in `@harbour/codemode`, where the plan's layout puts code mode, because direct tools,
 code-mode scripts and saved programs all call the same registry.
@@ -64,7 +65,9 @@ These come from the plan and cannot be changed by a target.
   the in-memory runtime and sandbox do not check that yet (open question 7).
 - **Browser contexts are chosen by a supervisor or a human.** Only a human, a service, or an agent acting in the
   parent session may grant a context to a session. An agent granting to its own session, or to an unrelated one, is
-  `refused` and audited. An agent cannot list or create contexts. It asks with a request that names no context, and
+  `refused` and audited. A parent-session agent may only pass on a context it already holds through an active grant,
+  never wider (persistence, timeout and sites), and the passed-on grant ends when its own does. Whether parent agents
+  should grant at all is open question 10. An agent cannot list or create contexts. It asks with a request that names no context, and
   opening with a context its grant does not hold is `refused`. It receives only a session-scoped CDP URL, never the
   provider's context ID. Only one persisting browser session may be open per context, and ending the agent session
   closes every browser and ends its grants.
@@ -126,7 +129,7 @@ batch.
 
 Components never write to the store directly. They append to an `AuditOutbox`, which a relay drains to the
 `AuditStore`. A failed drain keeps its events queued, and a retried one delivers each event once, in order, because
-the store is idempotent by id. The store is append-only. It can be queried by project, session, agent, actor, source,
+the store and the outbox are idempotent by organisation and id. The store is append-only. It can be queried by project, session, agent, actor, source,
 type prefix, subject and time, with paging by sequence that stays stable while rows are appended. Only an
 organisation's retention removes rows; deleting a session leaves them. Every row has an actor, and agents cannot
 query the store. Each component's suite also checks the events that component emits, and that the canary secret
@@ -180,3 +183,6 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
    other calls belong in M1-BE1, behind one session-end hook.
 9. **Reading browser requests.** The browser contract has no read for an agent's requests, so "granted" is visible only
    through audit. `getRequest` and `listRequests` are the likely additions, with a way to decline.
+10. **Agent supervisors and browsers.** Tom's rule names "a supervisor or a human". Here an agent in the parent
+    session counts as a supervisor, capped at what it holds. If supervisors are meant to be humans and services only,
+    `isSupervisor` drops the agent case and the suite's "parent can pass on" case flips to a refusal.

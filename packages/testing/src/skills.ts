@@ -146,7 +146,7 @@ export function createSkillsConformance(options: {
 			assert.ok((await skills.readFile(human, pkg.id, 1, "SKILL.md")).includes("Changed after review."));
 		}),
 
-		test("An agent may save a draft but may not create, publish or import a skill", async (skills) => {
+		test("An agent may save a draft but may not create, publish or import a skill", async (skills, deps) => {
 			await assert.rejectsWithCode(
 				skills.create(agent, { owner: project, name: "agent-made", description: "No" }),
 				"forbidden",
@@ -170,6 +170,12 @@ export function createSkillsConformance(options: {
 			assert.strictEqual((await skills.listRevisions(human, pkg.id)).items.length, 0, "the agent published nothing");
 			const revision = await skills.publish(human, pkg.id, { expectedDigest: digest });
 			assert.strictEqual(revision.revision, 1, "a human publishes what the agent proposed");
+			assert.partialDeepEqual(deps.audit.ofType("skills.package.created"), [
+				{ actor: human.actor, subject: { kind: "skills.skill", id: pkg.id } },
+			]);
+			const saved = deps.audit.ofType("skills.draft.saved");
+			assert.partialDeepEqual(saved, [{ actor: agent.actor, subject: { id: pkg.id }, data: { digest } }]);
+			assert.ok(!JSON.stringify(saved).includes("Proposed by an agent."), "audit never holds file contents");
 		}),
 
 		test("Publishing a draft identical to the latest revision creates no new revision", async (skills, deps) => {
@@ -294,6 +300,28 @@ export function createSkillsConformance(options: {
 				"a new session pins the latest revisions",
 			);
 			assert.deepEqual(await skills.pinForSession(outsider, "session-1", {}), [], "pins are per organisation");
+			const pinEvents = deps.audit.ofType("skills.session.pinned");
+			assert.strictEqual(pinEvents.length, 3, "each session's first pin is audited once");
+			assert.partialDeepEqual(pinEvents[0], { actor: agent.actor, sessionId: "session-1" });
+		}),
+
+		test("An import leaves an open draft open", async (skills) => {
+			const pkg = await skills.create(human, { owner: project, name: "release", description: "Cut a release" });
+			const { digest } = await skills.saveDraft(human, pkg.id, { files: skillFiles("release", "Draft in review.") });
+			const imported = await skills.importRevision(service, {
+				owner: project,
+				name: "release",
+				description: "Cut a release",
+				files: skillFiles("release", "From commit abc."),
+				source: { sourceId: "sal-git", ref: "abc" },
+			});
+			assert.strictEqual(imported.skillId, pkg.id);
+			const after = await skills.get(human, pkg.id);
+			assert.strictEqual(after.draftDigest, digest, "get still shows the open draft");
+			assert.ok((await skills.readDraft(human, pkg.id)).some((file) => file.content.includes("Draft in review.")));
+			const published = await skills.publish(human, pkg.id, { expectedDigest: digest });
+			assert.strictEqual(published.revision, 2, "publishing the draft makes the next revision");
+			assert.strictEqual((await skills.get(human, pkg.id)).draftDigest, undefined, "publishing closes the draft");
 		}),
 
 		test("An agent may pin skills only for its own session", async (skills) => {

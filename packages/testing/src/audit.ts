@@ -261,6 +261,16 @@ export function createAuditConformance(options: {
 			assert.strictEqual(await outbox.pending(), 2);
 		}),
 
+		test("queues the same id once per organisation", async ({ store, outbox }) => {
+			await outbox.append([auditEvent("shared-id", 1)]);
+			await outbox.append([auditEvent("shared-id", 2, { organisationId: OTHER_ORG })]);
+			assert.strictEqual(await outbox.pending(), 2, "each organisation's event is queued");
+			await outbox.drain(store);
+			assert.strictEqual(await outbox.pending(), 0);
+			assert.deepEqual(await queryIds(store, {}), ["shared-id"]);
+			assert.deepEqual(await queryIds(store, {}, outsider), ["shared-id"]);
+		}),
+
 		test("returns rows in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time", async ({
 			store,
 		}) => {

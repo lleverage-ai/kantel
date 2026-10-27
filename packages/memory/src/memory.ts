@@ -344,6 +344,15 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				concepts: new Map(),
 				writer: Promise.resolve(),
 			});
+			await emit({
+				id: `memory:space:${space.id}:created`,
+				type: "memory.space.created",
+				actor: ctx.actor,
+				organisationId: ctx.organisationId,
+				...(owner.kind === "project" ? { projectId: owner.projectId } : {}),
+				subject: { kind: "memory.space", id: space.id },
+				data: { name: space.name, owner: owner.kind },
+			});
 			return space;
 		},
 

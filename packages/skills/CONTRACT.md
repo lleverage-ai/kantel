@@ -48,7 +48,11 @@ creates the package if needed and publishes, idempotent by source and ref.
   `invalid`: "Another organisation's skills are not found and never listed".
 - Revisions record publisher and time, `skills.revision.published` is audited once per revision (id
   `skills:revision:<skillId>:<n>`), and revisions page newest first: "Revisions record who published them and when,
-  and listRevisions pages newest first".
+  and listRevisions pages newest first". `skills.package.created`, `skills.draft.saved` (digest and file count, never
+  contents) and `skills.session.pinned` are audited by their actor: "An agent may save a draft but may not create,
+  publish or import a skill" and "Pins are fixed per session".
+- An import leaves an open draft open, so `get` and `readDraft` agree; only publishing the draft closes it: "An import
+  leaves an open draft open".
 - A revision and a listing carry only their documented keys: "A skill grants nothing: a revision and its listing
   expose only their documented keys".
 
@@ -73,4 +77,5 @@ package name.
   narrowed. Is that intended?
 - An import with a new ref but unchanged files still makes a new revision, so each ref maps to exactly one revision.
   Should it reuse the latest instead, like `publish`?
-- An import leaves any open draft in place. Should it close it?
+- An import leaves any open draft open, and publishing that draft later replaces the imported content as the next
+  revision. Should the console warn when a draft is older than the latest import?

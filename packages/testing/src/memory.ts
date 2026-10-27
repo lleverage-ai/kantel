@@ -99,6 +99,10 @@ export function createMemoryConformance(options: {
 			assert.strictEqual(byHuman.name, "Team memory");
 			assert.strictEqual(byHuman.createdAt, deps.clock.now());
 			assert.ok(byHuman.id !== byService.id, "spaces get distinct IDs");
+			assert.partialDeepEqual(deps.audit.ofType("memory.space.created"), [
+				{ actor: human.actor, subject: { kind: "memory.space", id: byHuman.id } },
+				{ actor: service.actor, subject: { kind: "memory.space", id: byService.id } },
+			]);
 		}),
 
 		test("keeps a proposed fact out of memory until a human applies it", async (memory, deps) => {

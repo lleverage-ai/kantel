@@ -40,6 +40,30 @@ interface StoredSchedule {
 	failuresInRow: number;
 	/** When each finding key was last raised, and its value then. */
 	readonly raised: Map<string, { readonly at: Timestamp; readonly value?: number }>;
+	/** Changes made to the schedule, numbering its lifecycle audit events. */
+	changes: number;
+}
+
+/** The fields a caller may set: `ScheduleInput`'s, and nothing the store owns (id, status, counts, timestamps). */
+const INPUT_FIELDS = [
+	"owner",
+	"kind",
+	"title",
+	"timezone",
+	"at",
+	"repeat",
+	"until",
+	"count",
+	"payload",
+	"check",
+] as const;
+
+function inputFields(input: Partial<ScheduleInput>): Partial<ScheduleInput> {
+	const picked: Record<string, unknown> = {};
+	for (const field of INPUT_FIELDS) {
+		if (Object.hasOwn(input, field)) picked[field] = structuredClone(input[field]);
+	}
+	return picked as Partial<ScheduleInput>;
 }
 
 function forbidAgent(ctx: CallContext, what: string): void {
@@ -115,6 +139,25 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 	async function emit(events: readonly AuditEventInput[]): Promise<void> {
 		if (audit === undefined || events.length === 0) return;
 		await audit.append(events);
+	}
+
+	/** Audits a lifecycle change (`updated`, `paused`, `resumed`, `ended`) by its actor. */
+	async function emitChange(ctx: CallContext, stored: StoredSchedule, change: string): Promise<void> {
+		stored.changes += 1;
+		const owner = stored.schedule.owner;
+		await emit([
+			{
+				id: `schedules:schedule:${stored.schedule.id}:${change}:${stored.changes}`,
+				at: clock.now(),
+				source: "schedules",
+				type: `schedules.schedule.${change}`,
+				actor: ctx.actor,
+				organisationId: stored.organisationId,
+				...(owner.kind === "project" ? { projectId: owner.projectId } : {}),
+				subject: { kind: "schedules.schedule", id: stored.schedule.id },
+				data: { status: stored.schedule.status, nextDueAt: stored.schedule.nextDueAt ?? null },
+			},
+		]);
 	}
 
 	function storedFor(organisationId: OrganisationId, scheduleId: string): StoredSchedule {
@@ -222,7 +265,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			assertValidInput(ctx, input);
 			const now = clock.now();
 			const draft: Schedule = {
-				...structuredClone(input),
+				...(inputFields(input) as ScheduleInput),
 				id: `schedule_${crypto.randomUUID()}`,
 				status: "active",
 				occurrences: 0,
@@ -232,7 +275,13 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			};
 			const schedule = rescheduled(draft, now);
 			if (schedule.status === "ended") throw new HarbourError("invalid", "The schedule would never be due");
-			schedules.set(schedule.id, { organisationId: ctx.organisationId, schedule, failuresInRow: 0, raised: new Map() });
+			schedules.set(schedule.id, {
+				organisationId: ctx.organisationId,
+				schedule,
+				failuresInRow: 0,
+				raised: new Map(),
+				changes: 0,
+			});
 			await emit([
 				{
 					id: `schedules:schedule:${schedule.id}:created`,
@@ -259,12 +308,14 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			const stored = storedFor(ctx.organisationId, scheduleId);
 			const current = stored.schedule;
 			if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${scheduleId} has ended`);
-			const merged: Schedule = { ...current, ...structuredClone(input), owner: current.owner, kind: current.kind };
+			const merged: Schedule = { ...current, ...inputFields(input), owner: current.owner, kind: current.kind };
 			assertValidInput(ctx, merged);
 			const now = clock.now();
 			stored.schedule =
 				merged.status === "paused" ? { ...withoutNextDue(merged), updatedAt: now } : rescheduled(merged, now);
-			return stored.schedule;
+			const updated = stored.schedule;
+			await emitChange(ctx, stored, "updated");
+			return updated;
 		},
 
 		async pause(ctx, scheduleId) {
@@ -274,7 +325,9 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${scheduleId} has ended`);
 			if (current.status === "paused") return current;
 			stored.schedule = { ...withoutNextDue(current), status: "paused", updatedAt: clock.now() };
-			return stored.schedule;
+			const paused = stored.schedule;
+			await emitChange(ctx, stored, "paused");
+			return paused;
 		},
 
 		async resume(ctx, scheduleId) {
@@ -284,7 +337,9 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${scheduleId} has ended`);
 			if (current.status === "active") return current;
 			stored.schedule = rescheduled(current, clock.now());
-			return stored.schedule;
+			const resumed = stored.schedule;
+			await emitChange(ctx, stored, "resumed");
+			return resumed;
 		},
 
 		async end(ctx, scheduleId) {
@@ -293,7 +348,9 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			const current = stored.schedule;
 			if (current.status === "ended") return current;
 			stored.schedule = { ...withoutNextDue(current), status: "ended", updatedAt: clock.now() };
-			return stored.schedule;
+			const ended = stored.schedule;
+			await emitChange(ctx, stored, "ended");
+			return ended;
 		},
 
 		async get(ctx, scheduleId) {
