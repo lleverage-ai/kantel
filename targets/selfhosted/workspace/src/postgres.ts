@@ -134,13 +134,10 @@ export function createPostgresWorkspaceStore(options: PostgresWorkspaceStoreOpti
 		current: LoadedHead,
 		next: StoredHead,
 		version?: StoredVersion,
-		signal?: AbortSignal,
+		check?: () => void,
 	): Promise<boolean> {
 		if (next.record.id !== current.record.id) throw new HarbourError("invalid", "a head cannot change its ID");
-		const requireLive = () => {
-			if (signal?.aborted === true) throw new HarbourError("aborted", "the commit was cancelled before the head moved");
-		};
-		requireLive();
+		check?.();
 		return db.transaction(async (client) => {
 			const updated = await client.query(
 				`UPDATE ${s}.workspace_heads SET record = $3::jsonb, tree_key = $4, revision = revision + 1
@@ -149,8 +146,8 @@ export function createPostgresWorkspaceStore(options: PostgresWorkspaceStoreOpti
 			);
 			if (updated.rowCount !== 1) return false;
 			if (version !== undefined) await insertVersions(client, current.record.id, [version]);
-			// Still inside the transaction: a commit cancelled meanwhile rolls back and moves nothing.
-			requireLive();
+			// Still inside the transaction: a commit stopped meanwhile rolls back and moves nothing.
+			check?.();
 			return true;
 		});
 	}
@@ -184,7 +181,7 @@ export function createPostgresWorkspaceStore(options: PostgresWorkspaceStoreOpti
 			});
 		},
 
-		advance: (current, next, version, options) => swap(current, next, version, options?.signal),
+		advance: (current, next, version, options) => swap(current, next, version, options?.check),
 		update: (current, next) => swap(current, next),
 
 		async treeAt(current, version) {

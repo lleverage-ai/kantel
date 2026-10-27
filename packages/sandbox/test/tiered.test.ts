@@ -489,18 +489,55 @@ describe("tiered sandboxes: cancellation", () => {
 		const { sandboxes, acquire, head, clock, workspaces, workspaceId } = await setUp({
 			store: pausingTreeWrites(paused, armed),
 		});
-		const lease = await acquire("isolate", 50);
+		const lease = await acquire("isolate", 60_000);
 		const before = await head();
 		armed.on = true;
 		const running = sandboxes.exec(ctx, lease.id, { command: "printf t > t.txt" });
 		await paused.reached;
-		// The fence's timer runs on real time; the manual clock says the TTL has passed when it fires.
-		clock.advance(100);
-		await new Promise((resolve) => setTimeout(resolve, 120));
+		// Only the injected clock moves: the guard reads it as the head would move.
+		clock.advance(60_001);
 		paused.open();
 		await expect(running).rejects.toMatchObject({ code: "expired" });
 		expect(await head()).toBe(before);
 		await expect(workspaces.read(ctx, workspaceId, "t.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("commits nothing when a renewal shortens the lease and it lapses while its commit writes its objects", async () => {
+		const paused = gate();
+		const armed = { on: false };
+		const { sandboxes, acquire, head, clock, workspaces, workspaceId } = await setUp({
+			store: pausingTreeWrites(paused, armed),
+		});
+		const lease = await acquire("isolate", 60_000);
+		const before = await head();
+		armed.on = true;
+		const running = sandboxes.exec(ctx, lease.id, { command: "printf r > r.txt" });
+		await paused.reached;
+		await sandboxes.renew(ctx, lease.id, 100);
+		clock.advance(200);
+		paused.open();
+		await expect(running).rejects.toMatchObject({ code: "expired" });
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "r.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("commits when a renewal extends the lease past the original TTL while its commit writes its objects", async () => {
+		const paused = gate();
+		const armed = { on: false };
+		const { sandboxes, acquire, head, clock, text } = await setUp({
+			store: pausingTreeWrites(paused, armed),
+		});
+		const lease = await acquire("isolate", 1_000);
+		const before = await head();
+		armed.on = true;
+		const running = sandboxes.exec(ctx, lease.id, { command: "printf x > x.txt" });
+		await paused.reached;
+		await sandboxes.renew(ctx, lease.id, 60_000);
+		clock.advance(2_000);
+		paused.open();
+		await expect(running).resolves.toMatchObject({ exitCode: 0 });
+		expect(await head()).toBe(before + 1);
+		expect(await text("x.txt")).toBe("x");
 	});
 
 	it("commits nothing for an isolate command whose caller cancelled as the backend returned", async () => {

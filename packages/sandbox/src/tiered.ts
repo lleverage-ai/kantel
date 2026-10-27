@@ -29,7 +29,6 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
-	type CommitRequest,
 	type CommitResult,
 	DEFAULT_TIER_ROUTES,
 	type ExecRequest,
@@ -55,7 +54,7 @@ import {
 	type WorkspaceVersion,
 } from "@harbour/contracts";
 import { normalizeWorkspacePath } from "@harbour/workspace";
-import { listAll, type ModedChange, type StoredWorkspaces } from "@harbour/workspace/stored";
+import { listAll, type ModedChange, type StoredCommitRequest, type StoredWorkspaces } from "@harbour/workspace/stored";
 import { routeTool } from "./index.ts";
 
 const DEFAULT_TTL_MS = 15 * 60_000;
@@ -767,36 +766,18 @@ class Tiered implements TieredSandboxes {
 	 * head moves, so a lease that ends (or a caller that cancels) while the commit writes its objects commits nothing:
 	 * `expired` when the lease ended, `aborted` when the caller cancelled.
 	 */
-	async #commit(
-		ctx: CallContext,
-		row: LeaseRow,
-		request: Omit<CommitRequest, "changes"> & { readonly changes: readonly ModedChange[] },
-	): Promise<CommitResult> {
+	async #commit(ctx: CallContext, row: LeaseRow, request: Omit<StoredCommitRequest, "guard">): Promise<CommitResult> {
 		const id = row.lease.id;
 		const fence = this.#fence(id).signal;
-		// The TTL passing mid-commit stops it too, even before a sweep notices: a timer on the host clock, re-armed when
-		// the lease was renewed meanwhile.
-		const ttl = new AbortController();
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const arm = () => {
+		// Checked by the store just before the head moves, on this clock and the lease as it is then (a renewal meanwhile
+		// counts, shorter or longer): a lease that has started to end or passed its TTL commits nothing.
+		const guard = () => {
 			const current = this.#leases.get(id) ?? row;
-			const left = current.lease.expiresAt - this.#clock.now();
-			if (left <= 0) ttl.abort();
-			else timer = setTimeout(arm, left);
-		};
-		arm();
-		const signals = [fence, ttl.signal, ...(ctx.signal === undefined ? [] : [ctx.signal])];
-		const signal = AbortSignal.any(signals);
-		try {
-			return await this.#workspaces.commit({ ...ctx, signal }, row.lease.workspaceId, request);
-		} catch (error) {
-			if (isHarbourError(error, "aborted") && (fence.aborted || ttl.signal.aborted)) {
+			if (fence.aborted || current.lease.endedAt !== undefined || this.#clock.now() >= current.lease.expiresAt) {
 				throw new HarbourError("expired", `lease ${id} ended before its changes were committed`);
 			}
-			throw error;
-		} finally {
-			if (timer !== undefined) clearTimeout(timer);
-		}
+		};
+		return this.#workspaces.commit(ctx, row.lease.workspaceId, { ...request, guard });
 	}
 
 	#pastTtl(row: LeaseRow): boolean {
