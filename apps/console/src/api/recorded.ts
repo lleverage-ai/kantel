@@ -13,10 +13,12 @@ import {
 } from "@harbour/protocol";
 import type { SessionSummary } from "@harbour/ui";
 import type { Catalogue, RecordedSession } from "../recorded/catalogue.ts";
+import { recordedWorkspace } from "../recorded/workspace.ts";
 import { FixtureHost, type HostOptions } from "../server-sim/fixture-host.ts";
 import { needsOf } from "../state/needs.ts";
 import type { Connection, Transport } from "../state/session-client.ts";
 import type { ConsoleActor, ConsoleClient, SessionControl, SessionListState } from "./client.ts";
+import { ApiError } from "./http.ts";
 
 export const RECORDED_REASON = "This is a recorded session, so it can't be steered.";
 
@@ -43,6 +45,8 @@ export type RecordedClientOptions = HostOptions & {
 	openDelayMs?: number;
 	/** Called just before an opened session's live part starts playing; the profiler takes its baseline here. */
 	onPlay?: (sessionId: string) => void;
+	/** How long each read of a recorded workspace takes. Default 120 ms. */
+	workspaceDelayMs?: number;
 };
 
 export type RecordedClient = ConsoleClient & {
@@ -240,6 +244,15 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 				if (count > 0) open.set(sessionId, count);
 				else open.delete(sessionId);
 			};
+		},
+
+		async workspace(sessionId) {
+			const entry = entries.get(sessionId);
+			if (entry === undefined) throw new ApiError("not_found", "There's no such session.");
+			if (entry.recorded.noWorkspace === true) return undefined;
+			return recordedWorkspace(`ws-${sessionId}`, {
+				...(options.workspaceDelayMs === undefined ? {} : { delayMs: options.workspaceDelayMs }),
+			});
 		},
 
 		hostFor: (sessionId) => entries.get(sessionId)?.host,

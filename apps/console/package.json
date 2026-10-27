@@ -32,6 +32,8 @@
 	},
 	"devDependencies": {
 		"@harbour/runtime": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
+		"@harbour/workspace": "workspace:*",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",
 		"@types/react-dom": "19.3.0",

@@ -1,9 +1,10 @@
 // The console's one seam to a Harbour host. Everything the screens need goes through `ConsoleClient`: who is signed
-// in, the projects, a project's sessions, the live connection to one session, and the controls. Two implementations:
+// in, the projects, a project's sessions, the live connection to one session, the controls, and a session's workspace
+// files, read-only. Two implementations:
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
-import type { SessionSummary } from "@harbour/ui";
+import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
 /** Who the console acts as. Stubbed for recorded sessions; the API client is whoever Access signed in. */
@@ -40,6 +41,32 @@ export type SendOptions = {
 	readonly requestId?: string;
 };
 
+/** A directory's entries, sorted or not, and whether there were more than the console reads. */
+export type WorkspaceListing = {
+	readonly entries: readonly WorkspaceEntry[];
+	readonly truncated: boolean;
+};
+
+/** One file as the workspace read API serves it: its bytes, never run or rendered as HTML. */
+export type WorkspaceFile = {
+	readonly content: Uint8Array;
+	readonly contentType: string;
+	/** The workspace version that last changed it, or a mount's pinned version. */
+	readonly version: number | string;
+};
+
+/**
+ * One session's workspace, read-only, over the workspace read API's GET routes. There is nothing here that writes, runs
+ * a command or acquires a sandbox, so browsing files never starts one. Errors are `ApiError`s; a file larger than the
+ * API serves is refused with the code `too_large`.
+ */
+export interface WorkspaceFiles {
+	readonly id: string;
+	/** A directory's entries; `""` is the root and `/project` a mount. Every page, up to a cap. */
+	list(path: string, signal?: AbortSignal): Promise<WorkspaceListing>;
+	read(path: string, signal?: AbortSignal): Promise<WorkspaceFile>;
+}
+
 export interface ConsoleClient {
 	readonly actor: ConsoleActor;
 	projects(): Promise<readonly ProjectSummary[]>;
@@ -63,4 +90,6 @@ export interface ConsoleClient {
 	 * returned function when it leaves the screen.
 	 */
 	markRead(sessionId: string): () => void;
+	/** The session's workspace, read-only, or undefined when it has none. Rejects when there's no such session. */
+	workspace(sessionId: string): Promise<WorkspaceFiles | undefined>;
 }
