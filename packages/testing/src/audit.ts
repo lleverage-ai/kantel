@@ -696,16 +696,23 @@ export function createAuditConformance(options: {
 		test("project access: lets a viewer on the project query and read its rows, and an organisation viewer the rest", async ({
 			store,
 		}, deps) => {
-			await store.append(projectRows);
+			await store.append([
+				...projectRows,
+				auditEvent("stray", 9, { projectId: OTHER_PROJECT, sessionId: "session-1" }),
+			]);
 			assert.deepEqual(await queryIds(store, { projectId: PROJECT }, projectViewer), ["p1-a", "p1-b", "p1-c"]);
-			assert.deepEqual(await queryIds(store, { sessionId: "session-1" }, projectViewer), ["p1-a"]);
+			assert.deepEqual(
+				await queryIds(store, { sessionId: "session-1" }, projectViewer),
+				["p1-a"],
+				"a row naming the session but another project is left out",
+			);
 			assert.strictEqual((await store.get(projectViewer, "p1-b")).projectId, PROJECT);
 			await assertAccessDenied(assert, deps, store.get(projectViewer, "org-a"), {
 				operation: "audit.get",
 				message: "a row without a project needs an organisation-wide role",
 			});
 			assert.strictEqual((await store.get(auditor, "org-a")).id, "org-a");
-			assert.deepEqual(await queryIds(store, { projectId: OTHER_PROJECT }, auditor), ["p2-a", "p2-b"]);
+			assert.deepEqual(await queryIds(store, { projectId: OTHER_PROJECT }, auditor), ["p2-a", "p2-b", "stray"]);
 		}),
 	];
 }

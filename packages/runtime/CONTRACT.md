@@ -28,8 +28,8 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
   organisation and refuses one for another organisation".
 - A created session is idle, keeps its labels, and lists newest first with project, label and paging filters — "lists a
   created session in its organisation with its labels, idle, and filters by project and labels".
-- An unknown agent profile or parent is `not_found` — "refuses to create a session with an unknown agent profile as
-  not_found".
+- An unknown agent profile or parent is `not_found`, and a project's profile runs only in that project (`invalid`
+  elsewhere) — "refuses to create a session with an unknown agent profile as not_found".
 - A prompt runs the profile's model with its prompt layers joined in order; `wait` gives the answer; the snapshot
   shows the user and assistant items and status idle — "answers a prompt with the scripted text and shows the user and
   assistant items".
@@ -65,6 +65,10 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - A failing teardown does not stop the others or fail the close; it is audited as `session.teardown.failed` with its
   name and error code, never its message — "session end: a failing teardown does not stop the others or fail the
   close, and is audited with its name and code but not its message".
+- Closing a parent does not end a child it already closed — "session end: closing a parent does not end an already
+  closed child again".
+- One session's failure (an audit sink that is down, say) does not keep its siblings or parent from running their
+  teardowns; the first failure is rethrown afterwards (unit test in `packages/runtime/test/session-end.test.ts`).
 - A name registers once (`conflict` otherwise), and closing the registration removes it — "session end: a teardown
   name is registered once, and closing its registration removes it".
 
@@ -72,7 +76,10 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 
 Every call checks `ProjectAccess` before it acts. Reads (`get`, `list`, `children`, `wait`, `watch`, `snapshot`) need
 `viewer`; `create`, `prompt`, `steer`, `followUp`, `abort`, `close`, `profiles.put` and `hostTools.register` need
-`operator`. A project's profile is read with `viewer` on it; lists leave out what the caller may not see.
+`operator`. A project's profile is read with `viewer` on it, and replacing it needs `operator` on its project too. A
+host registers for the project its call names (or across the organisation); replacing a host registered elsewhere
+needs `operator` there too, and listing a project's host needs `viewer` on it. Lists leave out what the caller may not
+see.
 
 - "project access: refuses an operator outside the project every call on its sessions and profiles, and changes
   nothing".

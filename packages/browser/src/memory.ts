@@ -760,7 +760,14 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		},
 
 		async endSession(sessionId: SessionId, reason: SessionEndReason) {
-			await sweep();
+			// A failing sweep (its audit, say) must not keep this session's browsers and grants alive: end them first,
+			// then report the sweep's failure.
+			let sweepFailure: { readonly error: unknown } | undefined;
+			try {
+				await sweep();
+			} catch (error) {
+				sweepFailure = { error };
+			}
 			const work: (() => Promise<void>)[] = [];
 			for (const stored of sessions.values()) {
 				if (stored.session.sessionId === sessionId && stored.session.status === "open") {
@@ -781,6 +788,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				}
 			}
 			await runAll(work);
+			if (sweepFailure !== undefined) throw sweepFailure.error;
 		},
 
 		async get(ctx, browserSessionId) {

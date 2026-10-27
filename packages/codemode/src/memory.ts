@@ -353,8 +353,10 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		},
 
 		async discover(ctx) {
+			// An agent's grants are selected by `ctx.projectId` too, so its session must be in that project.
 			await requireAccess(ctx, {
 				...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId } : {}),
+				...(ctx.actor.kind === "agent" && ctx.projectId !== undefined ? { projectId: ctx.projectId } : {}),
 				needed: "viewer",
 				operation: "capability.discover",
 			});

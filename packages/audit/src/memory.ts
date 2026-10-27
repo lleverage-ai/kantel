@@ -88,19 +88,22 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
 			const scoped = query.projectId !== undefined || query.sessionId !== undefined;
+			// The project the check resolved; rows naming another project are left out, even when they name the session.
+			let checkedProject: ProjectId | undefined;
 			if (access !== undefined && scoped) {
-				await access.require(ctx, {
+				({ projectId: checkedProject } = await access.require(ctx, {
 					...(query.projectId === undefined ? {} : { projectId: query.projectId }),
 					...(query.sessionId === undefined ? {} : { sessionId: query.sessionId }),
 					needed: "viewer",
 					operation: "audit.query",
-				});
+				}));
 			}
 			const newestFirst = query.newestFirst === true;
 			let matching = rows.filter(
 				(row) =>
 					row.organisationId === ctx.organisationId &&
 					matchesQuery(row, query) &&
+					(checkedProject === undefined || row.projectId === undefined || row.projectId === checkedProject) &&
 					(after === undefined || (newestFirst ? row.seq < after : row.seq > after)),
 			);
 			// Without a project or session filter, keep only the rows the caller may see, before the page is cut.

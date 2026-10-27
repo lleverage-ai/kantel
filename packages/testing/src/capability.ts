@@ -374,6 +374,7 @@ export function createCapabilityConformance(options: {
 					"capability.endSession",
 					"ending this project's session from its own project",
 				);
+				await denied(registry.discover(strangerAgent), "capability.discover", "discovering this project's grants");
 				assert.strictEqual(handler.calls.length, 1, "the handler never ran for it");
 				await assert.rejectsWithCode(
 					registry.journal(operator, "call-2"),
@@ -594,8 +595,11 @@ export function createCapabilityConformance(options: {
 				["a.agent", "a.everyone", "a.exact", "a.session"],
 				"agent-2 in session-2 and proj-a",
 			);
-			const inOtherProject = contextFor(actors.agent("agent-1", "session-1"), ORG, OTHER_PROJECT);
-			assert.deepEqual(names(await registry.discover(inOtherProject)), ["a.everyone", "a.project"]);
+			assert.deepEqual(
+				names(await registry.discover(strangerAgentAtHome)),
+				["a.everyone", "a.project"],
+				"agent-9 in session-9 and proj-b",
+			);
 			for (const capability of ["a.session", "a.agent", "a.project", "a.exact"]) {
 				await assert.rejectsWithCode(
 					registry.invoke(agent, { callId: `call-${capability}`, capability, args: {} }),

@@ -105,8 +105,8 @@ of arguments and results, and timeouts.
 ## Open questions
 
 - Settled by question 7: system actors pass every project-access check, and humans and services need the roles above.
-- `discover` checks an agent's own session only, so an agent naming another project in `ctx.projectId` still sees the
-  names of that project's selected grants (it cannot invoke them). Should discovery check `ctx.projectId` too?
+- `discover` checks that an agent's session is in the project its call names (`ctx.projectId`), so it never sees the
+  names of another project's grants.
 - Agents see only grants that apply to them in `listGrants`, and only their own session's journal. Is that the intended
   reading?
 - Reusing a call ID from another session is `conflict`, so one session never receives another's result.

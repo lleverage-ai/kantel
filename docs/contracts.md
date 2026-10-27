@@ -41,7 +41,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Contract | Interface | Reference implementation | Suite (cases) | Notes |
 | --- | --- | --- | --- | --- |
 | Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@harbour/identity/memory`, `createProjectAccess` | `registerIdentityConformance` (18) | [identity](../packages/identity/CONTRACT.md) |
-| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (22) | [runtime](../packages/runtime/CONTRACT.md) |
+| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (23) | [runtime](../packages/runtime/CONTRACT.md) |
 | Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
 | Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (22) | [workspace](../packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (20) | [sandbox](../packages/sandbox/CONTRACT.md) |
