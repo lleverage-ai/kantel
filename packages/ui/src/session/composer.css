@@ -188,7 +188,7 @@
 /* A line inside the surface: a file turned away, or a model that can't read the image in the draft. */
 .hb-composer-note {
 	display: flex;
-	align-items: flex-start;
+	align-items: baseline;
 	gap: var(--hb-space-3);
 	min-width: 0;
 	margin: 0 0 var(--hb-space-4);
@@ -197,8 +197,10 @@
 	overflow-wrap: anywhere;
 }
 
+/* The icon sits on the first line's baseline, then moves up onto the middle of its capitals, as Notice's does. */
 .hb-composer-note > .hb-icon {
-	margin-top: calc((var(--hb-text-sm) * var(--hb-leading) - var(--hb-icon-sm)) / 2);
+	flex: none;
+	translate: 0 var(--hb-on-cap);
 }
 
 .hb-composer-note-error {
@@ -340,6 +342,18 @@
 
 .hb-composer-chip-icon {
 	color: var(--hb-accent-text);
+}
+
+/*
+ * The name and size are trimmed to their capitals, as a Button's label is, so centring them in the chip centres the
+ * letters (and the icon and buttons, centred too, share that centre). The even padding keeps descenders unclipped.
+ */
+.hb-composer-chip-name,
+.hb-composer-chip-meta,
+.hb-composer-progress-text,
+.hb-composer-rest-more {
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
 }
 
 .hb-composer-chip-name {

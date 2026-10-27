@@ -174,9 +174,7 @@ export function SessionView({
 								state={composerState(control, state.status, actions.sending)}
 								disabledReason={control.live ? undefined : control.reason}
 								label="Message"
-								banner={
-									actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>
-								}
+								banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
 								onSend={actions.onSend}
 								onSteer={actions.onSteer}
 								onStop={actions.onStop}

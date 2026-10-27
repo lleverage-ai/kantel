@@ -337,13 +337,11 @@ function ModelOption({
 			// Keep focus in the search field while choosing with the pointer.
 			onMouseDown={(event) => event.preventDefault()}
 		>
-			<span className="hb-model-option-text">
-				<span className="hb-model-option-label">
-					{model.label}
-					{model.default ? <span className="hb-model-option-default">Default</span> : null}
-				</span>
-				{detail === undefined ? null : <span className="hb-model-option-detail">{detail}</span>}
+			<span className="hb-model-option-label">
+				<span className="hb-model-option-name">{model.label}</span>
+				{model.default ? <span className="hb-model-option-default">Default</span> : null}
 			</span>
+			{detail === undefined ? null : <span className="hb-model-option-detail">{detail}</span>}
 			{model.capabilities?.images === true ? (
 				<ImageIcon size="sm" className="hb-model-option-cap" label="Reads images" />
 			) : null}

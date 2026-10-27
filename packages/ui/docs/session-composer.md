@@ -179,6 +179,13 @@ Focus in the field shows as a one-hairline accent edge on the whole surface (the
 `data-focus-surface`), not a ring round the box you are typing in; every button has the library's focus ring.
 Rejections and attachment changes are announced through a polite live region.
 
+**Alignment:** the composer follows the library's two rules (see components.md). Words in a fixed-height box (the
+model picker's button, each model's name, the attachment chips' names and sizes, the resting "+2") are trimmed to
+their capitals with `text-box: trim-both cap alphabetic` and centred, as `Button`'s label is; icons beside a line of
+words (the notes' icons, the search field's magnifier) sit on its baseline and move up by `--hb-on-cap`, as
+`Notice`'s do. A model row's image icon and tick centre on the model's name, not the row, so a description below
+doesn't pull them down. `loop/gates.ts` fails any of these more than 1px off, at 1280px and 420px.
+
 **Cost:** with `field-sizing` support, none per keystroke beyond React's; otherwise one layout effect per change of
 the draft (one reflow). One `matchMedia` listener for the pointer type and one `ResizeObserver` for the composer's
 width. Uploads re-render only when a shown percentage changes. No timers, and no animation except spinners.
