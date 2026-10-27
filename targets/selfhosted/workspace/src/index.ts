@@ -5,6 +5,7 @@
 import { createStoredWorkspaces, type StoredWorkspaces, type StoredWorkspacesOptions } from "@harbour/workspace/stored";
 import { createPostgresWorkspaceStore, type ObjectBucket, type SqlDatabase } from "./postgres.ts";
 
+export * from "./export-directory.ts";
 export * from "./postgres.ts";
 export * from "./s3.ts";
 

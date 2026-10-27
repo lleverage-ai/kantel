@@ -18,6 +18,12 @@ const workspaces = createSelfHostedWorkspaces({ db, objects, schema: "harbour", 
 The store keeps a `revision` on each head row as its compare-and-set token: a commit writes its blobs and tree, then
 updates the head where the revision is still the one it read, in one transaction with the version's row.
 
+Git seeds are fetched by the host's fetcher, passed through as `seeders: { git }` (such as
+`createGitHubTarballFetcher({ fetch: vaultEgressFetch })` from `@harbour/workspace/git-tarball`). To hand `notes/` back,
+`syncExport(ctx, workspaces, id, { prefixes: ["notes/"], sink: createDirectoryExportSink(taskDir), previous })` writes
+changed files into `taskDir` atomically, removes the ones it wrote that are gone, and refuses any path through a
+symlink.
+
 ## Tests
 
 `pnpm test` runs the workspace conformance suite (with project access and the keyed `ensure` cases, and again with
