@@ -12,7 +12,7 @@ import {
 	pgDatabase,
 	type SqlDatabase,
 } from "../src/index.ts";
-import { stackEnv } from "./stack.ts";
+import { deletePrefix, dropSchemas, stackEnv } from "./stack.ts";
 import { laneSchema, pgliteDatabase } from "./support.ts";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -20,8 +20,14 @@ const owner = { kind: "organisation", organisationId: "org-1" } as const;
 const FILES = 10_000;
 
 /** Seeds a 10,000-file workspace, then lists it from a fresh instance, counting object reads by kind. */
-async function listLarge(db: SqlDatabase, objects: ObjectBucket, reads: () => { blobs: number; trees: number }) {
+async function listLarge(
+	db: SqlDatabase,
+	objects: ObjectBucket,
+	reads: () => { blobs: number; trees: number },
+	schemas = new Set<string>(),
+) {
 	const schema = laneSchema();
+	schemas.add(schema);
 	await migrateWorkspaceStore(db, schema);
 	const files: Record<string, string> = {};
 	for (let index = 0; index < FILES; index++)
@@ -67,13 +73,17 @@ describe("a 10,000-file workspace", () => {
 			}
 			return fetch(request);
 		};
+		const prefix = `m1-be23/${crypto.randomUUID()}`;
+		const schemas = new Set<string>();
 		try {
-			const objects = createS3Objects({ ...env!.s3, prefix: `m1-be23/${crypto.randomUUID()}`, fetch: counting });
+			const objects = createS3Objects({ ...env!.s3, prefix, fetch: counting });
 			await objects.ensureBucket();
-			const result = await listLarge(pgDatabase(pool), objects, () => ({ ...counts }));
+			const result = await listLarge(pgDatabase(pool), objects, () => ({ ...counts }), schemas);
 			console.info(`10,000-file listing on Postgres + S3: ${JSON.stringify(result)}`);
 			expect(result).toMatchObject({ files: FILES, blobReads: 0, treeReads: 1 });
 		} finally {
+			await dropSchemas(pgDatabase(pool), schemas);
+			await deletePrefix(env!.s3, prefix);
 			await pool.end();
 		}
 	});

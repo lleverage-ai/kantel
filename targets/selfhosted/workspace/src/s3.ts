@@ -25,12 +25,12 @@ export interface S3Objects extends ObjectBucket {
 }
 
 export function createS3Objects(options: S3ObjectsOptions): S3Objects {
+	const region = options.region ?? "us-east-1";
 	const client = new AwsClient({
 		accessKeyId: options.accessKeyId,
 		secretAccessKey: options.secretAccessKey,
 		service: "s3",
-		region: options.region ?? "us-east-1",
-		retries: 2,
+		region,
 	});
 	const send = options.fetch ?? fetch;
 	const base = `${options.endpoint.replace(/\/+$/, "")}/${encodeURIComponent(options.bucket)}`;
@@ -39,7 +39,9 @@ export function createS3Objects(options: S3ObjectsOptions): S3Objects {
 		`${base}/${[...(prefix === "" ? [] : prefix.split("/")), ...key.split("/")].map(encodeURIComponent).join("/")}`;
 
 	async function request(target: string, init: RequestInit): Promise<Response> {
-		const signed = await client.sign(target, { ...init, aws: { singleEncode: true } });
+		// For s3, aws4fetch decodes the path and encodes it once for the canonical request, which is what S3 signs
+		// (`singleEncode` would skip that encoding and break keys with `%` or spaces).
+		const signed = await client.sign(target, init);
 		return send(signed);
 	}
 
@@ -71,12 +73,38 @@ export function createS3Objects(options: S3ObjectsOptions): S3Objects {
 			await response.body?.cancel();
 		},
 		async ensureBucket() {
-			const head = await request(base, { method: "HEAD" });
-			if (head.ok) return;
-			const created = await request(base, { method: "PUT" });
-			// Another process may have created it meanwhile.
-			if (!created.ok && created.status !== 409) return failure(created, "create bucket");
-			await created.body?.cancel();
+			const exists = async () => {
+				const head = await request(base, { method: "HEAD" });
+				await head.body?.cancel();
+				if (head.ok) return true;
+				// 403 is someone else's bucket or bad credentials: creating would not help.
+				if (head.status !== 404) return failure(head, "HEAD bucket");
+				return false;
+			};
+			if (await exists()) return;
+			// Outside us-east-1, S3 needs the region named in the request body.
+			const body =
+				region === "us-east-1"
+					? undefined
+					: `<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>${region}</LocationConstraint></CreateBucketConfiguration>`;
+			const created = await request(base, {
+				method: "PUT",
+				...(body === undefined ? {} : { body, headers: { "content-type": "application/xml" } }),
+			});
+			if (created.ok) {
+				await created.body?.cancel();
+				return;
+			}
+			// A 409 is either another process creating it meanwhile (ours, so it now answers HEAD) or another account's.
+			if (created.status === 409) {
+				const conflict = await created.text().catch(() => "");
+				if (conflict.includes("BucketAlreadyOwnedByYou") || (await exists())) return;
+				throw new HarbourError("unavailable", `bucket ${options.bucket} belongs to someone else`, {
+					status: 409,
+					body: conflict.slice(0, 200),
+				});
+			}
+			return failure(created, "create bucket");
 		},
 	};
 }

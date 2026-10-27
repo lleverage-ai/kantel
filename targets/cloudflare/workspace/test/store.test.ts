@@ -63,6 +63,63 @@ describe("Cloudflare workspaces on R2", () => {
 		expect(text((await fresh.read(ctx, record.id, "a.txt", { version: 2 })).content)).toBe("v2");
 	});
 
+	it("keeps the archive and history the winner's when a stale writer resumes after the head moved twice", async () => {
+		const prefix = `m1-be23/${crypto.randomUUID()}`;
+		const workspaces = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "a.txt": "v1" } }] },
+		});
+		// The stale writer stops before its archive puts until the others have committed twice.
+		let resume: () => void = () => {};
+		const resumed = new Promise<void>((resolve) => {
+			resume = resolve;
+		});
+		let paused: () => void = () => {};
+		const pausedAt = new Promise<void>((resolve) => {
+			paused = resolve;
+		});
+		const stalling = {
+			get: r2.bucket.get.bind(r2.bucket),
+			async put(key: string, value: string | ArrayBuffer | Uint8Array, options?: Parameters<typeof r2.bucket.put>[2]) {
+				if (key.includes("/versions/")) {
+					paused();
+					await resumed;
+				}
+				return r2.bucket.put(key, value, options);
+			},
+		};
+		const stale = createCloudflareWorkspaces({ bucket: stalling, prefix }).commit(ctx, record.id, {
+			baseVersion: 1,
+			changes: [{ op: "put", path: "a.txt", content: "stale" }],
+		});
+		await pausedAt;
+		await workspaces.commit(ctx, record.id, { baseVersion: 1, changes: [{ op: "put", path: "a.txt", content: "v2" }] });
+		await workspaces.commit(ctx, record.id, { baseVersion: 2, changes: [{ op: "put", path: "a.txt", content: "v3" }] });
+		const archive = async () =>
+			Promise.all(
+				[0, 1, 2].map(async (version) =>
+					(await r2.bucket.get(`${prefix}/ws/${encodeURIComponent(record.id)}/versions/${version}.json`))!.text(),
+				),
+			);
+		const archived = await archive();
+		resume();
+		await expect(stale).rejects.toMatchObject({ code: "conflict" });
+
+		// The stale writer re-archived versions 0 and 1 from the head it read: the same bytes.
+		expect(await archive()).toEqual(archived);
+		const fresh = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+		expect((await fresh.get(ctx, record.id)).head).toBe(3);
+		expect((await fresh.history(ctx, record.id)).items.map((item) => item.version)).toEqual([3, 2, 1, 0]);
+		for (const [version, content] of [
+			[1, "v1"],
+			[2, "v2"],
+			[3, "v3"],
+		] as const) {
+			expect(text((await fresh.read(ctx, record.id, "a.txt", { version })).content)).toBe(content);
+		}
+	});
+
 	it("lets exactly one of two racing commits move the head", async () => {
 		const prefix = `m1-be23/${crypto.randomUUID()}`;
 		const store = createR2WorkspaceStore({ bucket: r2.bucket, prefix });

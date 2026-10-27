@@ -23,9 +23,14 @@ export function pgliteDatabase(db: PGlite): SqlDatabase {
 	};
 }
 
+/** Every schema `laneSchema` handed out in this process, for the stack tests to drop afterwards. */
+export const createdSchemas = new Set<string>();
+
 /** A fresh schema per case, named after the lane, so runs and cases never share rows. */
 export function laneSchema(): string {
-	return `m1be23_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+	const schema = `m1be23_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+	createdSchemas.add(schema);
+	return schema;
 }
 
 /**

@@ -31,4 +31,6 @@ pnpm --filter @harbour/selfhosted-workspace test
 ```
 
 Optional: `HARBOUR_TEST_S3_BUCKET` (default `harbour-m1-be23`), `HARBOUR_TEST_S3_ACCESS_KEY`, `HARBOUR_TEST_S3_SECRET_KEY`
-(the compose stack's MinIO credentials by default). Each case uses its own schema and key prefix.
+(the compose stack's MinIO credentials by default). Each case uses its own schema and key prefix, and the run drops its
+schemas and deletes its prefix's objects afterwards (never the bucket). The stack tests also race two connections on
+one head and round-trip organisation IDs and paths with `/`, `%`, spaces and non-ASCII through S3.
