@@ -12,10 +12,20 @@ host app ── API key ────────┘              │            
                                            └─ anything else ─► console (apps/console/dist, single-page app)
 ```
 
-Status: step 1 of #17. The gateway runs in `wrangler dev` over each package's in-memory implementation, hosted in one
-Durable Object (`HarbourStack`) so a deployment has one consistent state. Step 2 replaces it binding by binding:
-SessionDO over the runtime, R2 workspaces, D1 for the directory and audit, VaultDO, and the `vpc_services` binding to
-CLIProxyAPI. Until then sessions run on an echo model (`src/echo-model.ts`) and nothing survives the object restarting.
+Status: step 2 of #17, in part. The stack is durable and hosted in one Durable Object (`HarbourStack`):
+
+| Part | Where it lives | From |
+| --- | --- | --- |
+| Identity directory | D1 `DB` | `@harbour/identity/sql` |
+| Audit store | D1 `DB` | `@harbour/audit/sql` |
+| Workspaces | R2 `WORKSPACES`, under `workspaces/` | `@harbour/cloudflare-workspace` |
+| Session directory, profiles, each session's Pi storage | `HarbourStack`'s own SQLite | `@harbour/runtime/sql` |
+| The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
+
+Migrations run on every start of the object; each is idempotent. The bootstrap saves each step as it completes, so a
+restart finds the same organisation rather than making another. Still to come: a SessionDO per session, VaultDO, and
+the models binding to CLIProxyAPI (`MODELS`, already bound by the deploy); until then sessions run on an echo model
+(`src/echo-model.ts`).
 
 ## Who gets in
 
@@ -39,7 +49,8 @@ curl localhost:8787/__dev/access-token          # { header, token } from a mock 
 curl localhost:8787/__dev/api-key               # { secret, projectId }: an operator key for the default project
 ```
 
-`--env dev` runs `src/dev.ts`: the deployed Worker plus a mock Access issuer (its keys are local; the gateway still
+`wrangler dev` keeps D1, R2 and the object's SQLite in `.wrangler/state`, so local state survives a restart; delete
+that directory to start afresh. `--env dev` runs `src/dev.ts`: the deployed Worker plus a mock Access issuer (its keys are local; the gateway still
 verifies with the real provider) and the two `/__dev/` routes. It is never the deployed entry point, and
 `test/gateway.test.ts` checks that no other module imports it.
 
@@ -94,5 +105,7 @@ needed. Later steps of #17 may add more, such as Containers for the container ti
 `pnpm --filter @harbour/cloudflare test` runs the gateway over the in-memory stack in Node: Access tokens for the right
 team domain and AUD sign the invited person in; another AUD, another team domain, an expired token, a service token or
 an uninvited email are 401; API keys work on every API; and each API is mounted where its client expects it.
+`test/durable.test.ts` runs the stack over SQLite and an in-memory object store, restarts it, and finds the same
+organisation, sessions with their transcripts, workspaces and audit; and resumes a bootstrap that stopped half way.
 `test/deploy.test.ts` checks the deploy config (every variable to deploy, placeholders for a dry run, malformed
 values refused, the dev environment dropped) and the Access sign-in check.

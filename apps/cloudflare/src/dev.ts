@@ -28,7 +28,7 @@ export class HarbourStack extends HarbourStackBase {
 		return this.#access;
 	}
 
-	protected override stackOptions(): Omit<StackOptions, "config"> {
+	protected override stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		return { accessFetch: this.#mockAccess().fetch };
 	}
 

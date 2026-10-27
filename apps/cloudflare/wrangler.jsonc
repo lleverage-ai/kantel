@@ -23,7 +23,7 @@
 	},
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] }],
 	// Named but not given IDs: the first real deploy creates them (wrangler's automatic provisioning), later deploys find
-	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Step 2 of #17 uses them.
+	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces.
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour" }],
 	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces" }],
 	"vars": {
