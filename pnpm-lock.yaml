@@ -31,6 +31,10 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
 
   packages/protocol: {}
 
