@@ -2,7 +2,7 @@
 // serves the console's static build beside them.
 //
 //   /healthz                    liveness, no credentials
-//   /v1/deployment              which implementation backs each contract (credentials needed)
+//   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
 //   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
@@ -13,10 +13,13 @@ import { createAuthenticator, withAuthentication } from "@harbour/identity/authe
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import type { GatewayComponents } from "./components.ts";
+import type { MailDescription } from "./mail.ts";
 import { createStaticHandler } from "./static.ts";
 
 export interface GatewayOptions {
 	readonly components: GatewayComponents;
+	/** The mail configuration, without credentials, shown at `/v1/deployment`. */
+	readonly mail?: MailDescription;
 	/** Default: API keys through `createAuthenticator` over the components' identity directory. */
 	readonly authenticator?: Authenticator;
 	/** The console's build directory (`apps/console/dist`). Without it, non-API paths are 404. */
@@ -70,7 +73,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 	});
 
 	const deployment = withAuthentication(authenticator, async () =>
-		json({ target: "selfhosted", bindings: components.bindings }),
+		json({ target: "selfhosted", bindings: components.bindings, mail: options.mail ?? null }),
 	);
 
 	const consoleAssets = options.consoleDir === undefined ? undefined : createStaticHandler(options.consoleDir);
