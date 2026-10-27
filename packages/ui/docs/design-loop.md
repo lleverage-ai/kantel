@@ -4,10 +4,11 @@ How `@harbour/ui` components get better: a hill-climb on a scored fitness, one c
 iteration recorded. A variant replaces the current version (the champion) only if it passes every gate and beats
 it on the score without making anything measurably worse.
 
-This is a proposal built on the brief's suggestion (gates, measurements, a judged rubric). The changes from that
-suggestion are marked **Change**, with the reason. The static gates (`scripts/token-lint.ts`) and the browser gates
-(`loop/gates.ts`) are in place; the measurement harness and the per-component specs land with the loop's first
-results.
+It started from the brief's suggestion (gates, measurements, a judged rubric). The changes from that suggestion are
+marked **Change**, with the reason. Everything below is in place: the static gates (`scripts/token-lint.ts`), the
+browser and States gates (`loop/gates.ts`, `loop/specs.ts`), the measurement harness (`loop/harness/`,
+`loop/measure.ts`) and the score (`loop/score.ts`). Round 1 has run on five components; its results are in
+[loop-results.md](loop-results.md) and every number and verdict behind them is in `loop/history/`.
 
 ## Fitness
 
@@ -35,6 +36,11 @@ headless Chromium with the CPU throttled four times, five runs, median taken.
 | Wasted renders | Renders of a component instance whose output did not need to change | Transcript: renders of any row other than the streaming one. Session list: rows re-rendered when one row's status changes |
 | Interaction latency | Event to next paint (Event Timing API), median of 20 | Tool-call chip: expand. Composer: a keystroke. Vault card: pick a code |
 | Bundle cost | Minified and gzipped JS and CSS the component adds to a host app, excluding React | One entry per component, bundled with Vite |
+
+**Change:** a champion and its variants are measured interleaved (champion, variant 1, variant 2, then again, five
+rounds) rather than one tree after another. Round 1 ran on a shared host whose load moved between 1 and 20 over the
+hour; measured in sequence, that drift is larger than most of the effects. Interleaving gives each side the same
+conditions, and the median of the five runs is what is scored.
 
 **Change:** wasted renders are counted separately from render cost. Total milliseconds are noisy at this scale; a
 re-render count is exact and is what regresses when someone breaks memoisation.
@@ -74,21 +80,33 @@ For a variant V against the champion C:
 
 V replaces C when all gates pass, `S > 0.1`, and no single measure is more than 10% worse than C's (the
 measurement noise band). A variant that only moves the score inside the noise is not kept, so the loop does not
-wander.
+wander. `loop/score.ts` is this rule, tested.
+
+**Change:** each measure has a floor (1ms for times, one render, 64 bytes), and both sides are raised to it before
+the log ratio. Without it a composer that renders in 0.0ms either way scores `log2(0 / 0)`, and one wasted render
+against none is infinitely worse. Removing a cost still counts: five wasted renders down to none scores
+`log2(5 / 1)`.
+
+A performance-only variant is not judged. Its screenshots are compared with the champion's instead; when they
+differ by no more than sub-pixel offsets, it scores `J_V − J_C = 0` and stands on its measures.
 
 ### Iteration
 
 1. **Baseline:** score the component as it is (gates, measures, judges against references). That is round 0.
-2. **Generate:** propose three variants, each with one hypothesis, such as "group consecutive tool calls", "drop
+2. **Generate:** propose two or three variants (round 1 had two: one for performance, one for the look), each with
+   one hypothesis, such as "group consecutive tool calls", "drop
    the per-row interval", "tighten the header to 32px". Different hypotheses keep the variants apart.
 3. **Gate, measure, judge:** run the fitness on each.
-4. **Select:** keep the best variant that passes acceptance, or keep the champion.
-5. **Record:** append the round to `loop/history/<component>.json`: the hypotheses, the gate results, the
-   measures, the judges' scores and reasons, and the decision.
+4. **Select:** keep the best variant that passes acceptance, or keep the champion. A second accepted variant is
+   not stacked on the first in the same round, as the pair was never measured or judged together; it is carried
+   to the next round as a candidate against the new champion.
+5. **Record:** append the round to `loop/history/<scenario>.json`: the hypotheses, the gate results, the
+   measures, the judges' scores and reasons (with which side was the champion), and the decision.
 6. **Stop** after three rounds or the first round with no accepted variant.
 
 Variant generation and judging run as parallel subagents: one per variant to write it, three per comparison to
-judge it. The judges never see which version is the champion.
+judge it. The judges never see which version is the champion: A and B are assigned at random per judge, and the
+consistency contact sheet leaves out the component being judged, as its champion would give the answer away.
 
 ### Guarding against gaming
 
@@ -106,6 +124,10 @@ node packages/ui/loop/gates.ts            # gates on every story
 node packages/ui/loop/measure.ts          # measures for the loop's components
 node packages/ui/scripts/shoot.ts         # screenshots for the judges
 ```
+
+To compare trees (the champion and each variant in its own worktree), build each tree's harness once, then run
+`node loop/measure.ts --only <scenario> --runs 1 --no-build --json <file>` in each tree in turn, five times round,
+and score the medians with `loop/score.ts`.
 
 Results and history live in `loop/history/`; the latest summary is in `docs/loop-results.md`.
 

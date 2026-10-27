@@ -1,0 +1,138 @@
+{
+	"component": "Composer",
+	"scenario": "composer",
+	"rounds": [
+		{
+			"round": 1,
+			"champion": {
+				"gates": {
+					"typecheck": true,
+					"tests": true,
+					"lint": true,
+					"browser": {
+						"runs": 16,
+						"failed": []
+					},
+					"passed": true
+				},
+				"measures": {
+					"renderMs": 0,
+					"wasted": 0,
+					"latencyMedian": 18.600000143051147,
+					"latencyP95": 28.899999856948853,
+					"inputRenderMs": 49.99999928474426,
+					"bundleJs": 2214,
+					"bundleCss": 1364
+				},
+				"spread": {
+					"renderMs": [0, 0],
+					"latencyMedian": [18.09999990463257, 24.09999990463257]
+				},
+				"runs": 5
+			},
+			"variants": [
+				{
+					"variant": "composer-field-sizing",
+					"hypothesis": "Performance: let CSS field-sizing: content size the textarea where supported, skipping the forced layout of measuring it on every keystroke.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 16,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 0,
+						"wasted": 0,
+						"latencyMedian": 19.700000047683716,
+						"latencyP95": 28,
+						"inputRenderMs": 55.799999952316284,
+						"bundleJs": 2277,
+						"bundleCss": 1389
+					},
+					"spread": {
+						"renderMs": [0, 0],
+						"latencyMedian": [14.199999809265137, 27.299999952316284]
+					},
+					"judged": "pixel-identical, not judged",
+					"decision": {
+						"judged": 0,
+						"measured": -0.03746705903065971,
+						"score": -0.03746705903065971,
+						"worse": ["inputRenderMs"],
+						"accepted": false
+					}
+				},
+				{
+					"variant": "composer-resting-height",
+					"hypothesis": "Fidelity and affordance: rest the empty field at three lines (two on narrow screens), like T3 Code's composer, so it reads as a place to write a message.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 16,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 0,
+						"wasted": 0,
+						"latencyMedian": 17.299999952316284,
+						"latencyP95": 25.5,
+						"inputRenderMs": 42.89999961853027,
+						"bundleJs": 2214,
+						"bundleCss": 1390
+					},
+					"spread": {
+						"renderMs": [0, 0],
+						"latencyMedian": [15.700000047683716, 21.40000009536743]
+					},
+					"judged": {
+						"champion": 3.9375,
+						"variant": 3.8125,
+						"criteria": {
+							"champion": [4, 4, 3.5, 4, 4, 4, 4, 4],
+							"variant": [4, 3.5, 4, 4, 3.5, 4, 4, 3.5]
+						},
+						"prefer": ["variant", "champion", "champion"],
+						"verdicts": [
+							{
+								"judge": 1,
+								"championWas": "A",
+								"prefer": "B",
+								"reasons": "Only one thing differs between the two versions: how tall the empty composer sits. At 1280 in composer--default, A's field is about 93px with one line of space under the 'Ask anything' placeholder, and B's is about 124px with roughly three lines. B is close to T3's composer, which keeps generous empty space below its placeholder before the toolbar, so B gets the higher fidelity score. A is tighter, so it scores higher on density. B's extra height costs it in composer--error's 'Disabled with a reason, keeping a draft', where a large empty gap opens between the dimmed draft and the 'Offline…' reason, and in composer--with-question, where the composer stack below the question card gets taller. At 420 in composer--mobile, B's idle field rests at about two lines and A's at about one and a half. Both still fit the screen with a 36px button and lose no information, so they score the same on mobile. Everything else is identical in both: the long-content clip at about 208px, the red-ringed stop button with 'Start the agent again', the error banner, the question card, all copy, and the radius, border and button styles, which match Harbour's references."
+							},
+							{
+								"judge": 2,
+								"championWas": "B",
+								"prefer": "B",
+								"reasons": "The only difference between A and B is how tall the empty composer sits; long-content is byte-identical, and the question card, error banners, stop button and send button match. In default-1280 and streaming-1280, A leaves about three lines of empty field before the 'Enter to send' row. B leaves about one, which makes the box roughly 30px shorter and tighter, but less like T3's composer, which also leaves a generous empty area above its footer. That extra height costs A most in the 'Disabled with a reason, keeping a draft' part of error-1280: a large dead gap separates the greyed draft from the 'Offline. Your draft is kept…' line. B keeps the reason right under the draft, which reads calmer and clearer. On mobile-420 and default-420, B's idle and 'Agent running' composers sit about 10px (CSS) shorter, which leaves more room for the keyboard, and all the information and the 36px buttons stay intact. A's story text says the field 'rests at two lines, not three', but the screenshot looks no different from its default-420. B is denser and handles the disabled-with-draft state better, at a small cost in T3 fidelity, so B wins narrowly."
+							},
+							{
+								"judge": 3,
+								"championWas": "A",
+								"prefer": "A",
+								"reasons": "The only difference is how tall the empty composer sits; long-content is byte-identical and the copy, radius, borders, status colours and buttons are the same in both. In default-1280, A's empty field shows about two lines and the box is about 93px tall, while B's shows three and is about 124px tall. B is closer to T3's tall composer in t3.webp, so it scores higher on fidelity. That extra height shows up as empty space elsewhere, though. In with-question-1280, B's taller empty composer draws attention away from the indigo question card above it. In error-1280, B's 'Disabled with a reason, keeping a draft' box leaves a large gap between the dimmed draft and the 'Offline…' line, where A's stays compact. In mobile-420, B's caption says the empty field rests at two lines to leave room for the keyboard, yet B's idle and agent-running boxes are still taller than A's, so they take more of the screen above the keyboard. Both versions share the same faults: 'Enter to send' still shows at 420 although the caption says it is hidden, and 'Disabled, with a reason' repeats the 'didn't send' banner."
+							}
+						]
+					},
+					"decision": {
+						"judged": -0.125,
+						"measured": 0.06840171968722583,
+						"score": -0.05659828031277417,
+						"worse": [],
+						"accepted": false
+					}
+				}
+			],
+			"accepted": [],
+			"selected": null,
+			"carried": []
+		}
+	]
+}
