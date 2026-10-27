@@ -10,10 +10,12 @@ import type {
 	ProjectId,
 	Role,
 	ServiceIdentity,
+	SystemContext,
 	User,
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
@@ -565,6 +567,41 @@ export function createIdentityConformance(options: {
 					role: "viewer",
 				});
 				a.deepEqual(await ids((await identity.authenticateApiKey(WORKER, issued.secret)).actor), [third.id]);
+			}),
+		},
+		{
+			name: "worker calls: roleOf and authenticateApiKey refuse every caller but system",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const org = tenant.organisation.id;
+				const project = await identity.createProject(tenant.admin, { name: "Harbour" });
+				const service = await createService(identity, tenant);
+				const issued = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "operator",
+				});
+				const founder = actors.human(tenant.founder.id);
+				// The founder may do anything in the organisation, and still may not make a worker call.
+				const callers = [
+					{ label: "no caller", ctx: undefined as unknown as SystemContext },
+					{ label: "the organisation's admin", ctx: tenant.admin },
+					{ label: "a service", ctx: contextFor(actors.service(service.id), org, project.id) },
+					{ label: "an agent", ctx: contextFor(actors.agent("agent-1", "session-1"), org, project.id) },
+				];
+				for (const { label, ctx } of callers) {
+					for (const [operation, call] of [
+						["identity.roleOf", () => identity.roleOf(ctx, founder, org)],
+						["identity.authenticateApiKey", () => identity.authenticateApiKey(ctx, issued.secret)],
+					] as const) {
+						// Started after the audit is counted: the refusal may be audited before the call first awaits.
+						const deferred = Promise.resolve().then((): Promise<unknown> => call());
+						await assertAccessDenied(a, deps, deferred, { operation, message: `${operation} refuses ${label}` });
+					}
+				}
+				a.ok(!JSON.stringify(deps.audit.events).includes(issued.secret), "no refusal audits the key's secret");
+				a.strictEqual(await identity.roleOf(WORKER, founder, org), "admin");
+				a.strictEqual((await identity.authenticateApiKey(WORKER, issued.secret)).role, "operator");
 			}),
 		},
 	];

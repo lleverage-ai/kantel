@@ -368,7 +368,9 @@ export async function assertWorkerCallRefused(
 	agent?: { readonly agentId: AgentId; readonly sessionId: SessionId },
 ): Promise<void> {
 	for (const caller of nonSystemCallers(organisationId, agent)) {
-		await assertAccessDenied(a, deps, call(caller.ctx), {
+		// Started after `assertAccessDenied` counts the audit: a refusal may be audited before the call first awaits.
+		const deferred = Promise.resolve().then(() => call(caller.ctx));
+		await assertAccessDenied(a, deps, deferred, {
 			operation,
 			message: `${operation} refuses ${caller.label}`,
 		});

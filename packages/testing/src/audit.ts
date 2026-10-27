@@ -2,17 +2,19 @@
  * Conformance suite for `AuditStore` and `AuditOutbox` (packages/contracts/src/audit.ts). Every target registers it
  * with a provider that builds a fresh store on the suite's clock, a fresh outbox and a flaky sink in front of the store.
  */
-import type {
-	Actor,
-	AuditEvent,
-	AuditEventInput,
-	AuditOutbox,
-	AuditQuery,
-	AuditSink,
-	AuditStore,
-	CallContext,
-	JsonValue,
-	Page,
+import {
+	type Actor,
+	type AuditEvent,
+	type AuditEventInput,
+	type AuditOutbox,
+	type AuditQuery,
+	type AuditSink,
+	type AuditStore,
+	type CallContext,
+	type JsonValue,
+	type Page,
+	PLATFORM_ORGANISATION,
+	type SystemContext,
 } from "@harbour/contracts";
 import {
 	actors,
@@ -23,9 +25,11 @@ import {
 	type ConformanceDeps,
 	type ConformanceOptions,
 	type ConformanceRunner,
+	containsCanary,
 	contextFor,
 	createDeps,
 	createExpectAssertions,
+	nonSystemCallers,
 	registerCases,
 	WORKER,
 } from "./harness.ts";
@@ -714,6 +718,52 @@ export function createAuditConformance(options: {
 			});
 			assert.strictEqual((await store.get(auditor, "org-a")).id, "org-a");
 			assert.deepEqual(await queryIds(store, { projectId: OTHER_PROJECT }, auditor), ["p2-a", "p2-b", "stray"]);
+		}),
+
+		test("worker calls: append, retention, drain and pending refuse every caller but system, and change nothing", async ({
+			store,
+			outbox,
+		}, deps) => {
+			await store.append(WORKER, projectRows);
+			const forged = auditEvent("forged", 8, { data: { token: CANARY_SECRET } });
+			const callers = nonSystemCallers(ORG, { agentId: "agent-1", sessionId: "session-1" });
+			const storeCalls = [
+				["audit.append", (ctx: SystemContext) => store.append(ctx, [forged])],
+				["audit.applyRetention", (ctx: SystemContext) => store.applyRetention(ctx)],
+			] as const;
+			const outboxCalls = [
+				["audit.append", (ctx: SystemContext) => outbox.append(ctx, [forged])],
+				["audit.drain", (ctx: SystemContext) => outbox.drain(ctx, store)],
+				["audit.pending", (ctx: SystemContext) => outbox.pending(ctx)],
+			] as const;
+			await store.setRetention(admin, DAY);
+			deps.clock.advance(30 * DAY);
+			for (const { label, ctx } of callers) {
+				for (const [operation, call] of [...storeCalls, ...outboxCalls]) {
+					await assert.rejectsWithCode(call(ctx), "forbidden", `${operation} refuses ${label}`);
+				}
+			}
+			assert.deepEqual(await queryIds(store, { type: "session." }), PROJECT_ROW_IDS, "no row was forged or erased");
+			// Each refusal is audited where the call was made: the store's own rows, and the outbox's queue.
+			const refusals = async (organisationId: string) =>
+				(await store.query(contextFor(actors.system("audit-reader"), organisationId), { type: "access.denied" })).items;
+			const named = await refusals(ORG);
+			const unnamed = await refusals(PLATFORM_ORGANISATION);
+			assert.strictEqual(named.length, 6, "the store audits each refusal of a caller in the organisation once");
+			assert.strictEqual(unnamed.length, 2, "and each refusal of no caller under the platform");
+			assert.deepEqual(
+				unnamed.map((row) => [row.data?.operation, row.data?.caller]),
+				[
+					["audit.append", "missing"],
+					["audit.applyRetention", "missing"],
+				],
+			);
+			assert.ok(!containsCanary([...named, ...unnamed]), "no refusal holds the forged event's secret");
+			assert.strictEqual(await outbox.pending(WORKER), 12, "the outbox queued its own refusals and nothing forged");
+			await outbox.drain(WORKER, store);
+			assert.strictEqual((await refusals(ORG)).length + (await refusals(PLATFORM_ORGANISATION)).length, 20);
+			await assert.rejectsWithCode(store.get(admin, "forged"), "not_found", "the forged event never reached the store");
+			assert.strictEqual(await store.applyRetention(WORKER), PROJECT_ROW_IDS.length, "Harbour's own retention runs");
 		}),
 	];
 }

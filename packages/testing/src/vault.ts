@@ -16,6 +16,7 @@ import {
 import {
 	actors,
 	assertAccessDenied,
+	assertWorkerCallRefused,
 	CANARY_SECRET,
 	type ConformanceAssertions,
 	type ConformanceCase,
@@ -1269,6 +1270,21 @@ export function createVaultConformance(options: {
 				egress("GET", `https://${HOST}/repos/harbour`, { organisationId: OTHER_ORG }),
 			);
 			assert.strictEqual(crossed.allow, false, "another organisation's grant never applies");
+		}),
+		test("worker calls: decideEgress refuses every caller but the gateway's system one, and records no use", async (vault, deps) => {
+			await projectRecords(vault);
+			const uses = (await vault.listUses(human)).items.length;
+			const request = egress("GET", `https://${HOST}/repos/harbour`);
+			await assertWorkerCallRefused(
+				assert,
+				deps,
+				"vault.decideEgress",
+				(caller) => vault.decideEgress(caller, request),
+				ORG,
+				{ agentId: "agent-1", sessionId: "session-1" },
+			);
+			assert.strictEqual((await vault.listUses(human)).items.length, uses, "a refused call records no use");
+			assert.strictEqual((await vault.decideEgress(WORKER, request)).allow, true, "the gateway's own call still works");
 		}),
 	];
 	return [...cases, ...sessionEndCases, ...(options.projectAccess === true ? projectAccessCases : [])];

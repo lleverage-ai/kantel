@@ -16,6 +16,7 @@ import type {
 import {
 	actors,
 	assertAccessDenied,
+	assertWorkerCallRefused,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
@@ -642,6 +643,27 @@ export function createSandboxConformance(options: {
 				await subject.sandboxes.release(operatorCtx, lease.id);
 				await subject.sandboxes.releaseSession(operatorCtx, sessionId);
 				a.deepEqual(await subject.sandboxes.leases(ctx, { sessionId, live: true }), []);
+			}),
+		},
+		{
+			name: "worker calls: sweep refuses no caller, a human, a service and an agent, and releases nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaceId } = await setUp(subject);
+				const lease = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate", ttlMs: 1000 });
+				deps.clock.advance(2000);
+				await assertWorkerCallRefused(
+					a,
+					deps,
+					"sandbox.sweep",
+					(caller) => subject.sandboxes.sweep(caller),
+					SANDBOX_FIXTURE.organisationId,
+				);
+				const swept = await subject.sandboxes.sweep(WORKER);
+				a.deepEqual(
+					swept.map((ended) => ended.id),
+					[lease.id],
+					"the lease was still there for Harbour's own sweep",
+				);
 			}),
 		},
 	);

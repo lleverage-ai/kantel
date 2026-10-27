@@ -16,6 +16,7 @@ import type {
 import {
 	actors,
 	assertAccessDenied,
+	assertWorkerCallRefused,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
@@ -698,6 +699,28 @@ export function createSchedulesConformance(options: {
 				message: "a viewer may not change it",
 			});
 			assert.strictEqual((await schedules.end(human, schedule.id)).status, "ended");
+		}),
+		test("worker calls: tick, claim, complete and reportCheck refuse every caller but system, and change nothing", async (schedules, deps) => {
+			const inProject = { agentId: "agent-1", sessionId: "session-1" };
+			const refused = (operation: string, call: Parameters<typeof assertWorkerCallRefused>[3]) =>
+				assertWorkerCallRefused(assert, deps, operation, call, ORG, inProject);
+			await createCheck(schedules, deps);
+			deps.clock.advance(HOUR);
+			await refused("schedules.tick", (caller) => schedules.tick(caller));
+			const [due] = await schedules.tick(WORKER);
+			assert.ok(due, "no refused tick materialised the occurrence");
+			await refused("schedules.claim", (caller) => schedules.claim(caller, RUNNER, 10 * MINUTE));
+			const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
+			assert.strictEqual(claimed?.attempt, 1, "no refused claim took the occurrence");
+			await refused("schedules.complete", (caller) =>
+				schedules.complete(caller, claimed!.id, RUNNER, { status: "failed" }),
+			);
+			await refused("schedules.reportCheck", (caller) =>
+				schedules.reportCheck(caller, claimed!.id, RUNNER, { exitCode: 1 }),
+			);
+			await schedules.reportCheck(WORKER, claimed!.id, RUNNER, { exitCode: 0 });
+			const [finished] = (await schedules.listOccurrences(service, claimed!.scheduleId)).items;
+			assert.strictEqual(finished?.status, "succeeded", "the claim was still held for Harbour's own report");
 		}),
 	];
 }

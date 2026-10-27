@@ -21,6 +21,7 @@ import type {
 import {
 	actors,
 	assertAccessDenied,
+	assertWorkerCallRefused,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
@@ -535,6 +536,24 @@ export function createBrowserConformance(options: {
 				assert.strictEqual((await browser.listGrants(human, { sessionId: SESSION })).length, 3);
 				assert.strictEqual((await browser.listContexts(service)).items.length, 2);
 				assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
+			}),
+			test("worker calls: endSession refuses every caller but system, the session's own agent included, and ends nothing", async (subject, deps) => {
+				const { browser } = subject;
+				const { grant } = await grantFresh(browser);
+				const opened = await browser.open(agent, { grantId: grant.id });
+				await assertWorkerCallRefused(
+					assert,
+					deps,
+					"browser.endSession",
+					(caller) => browser.endSession(caller, SESSION, "session_ended"),
+					ORG,
+					{ agentId: AGENT, sessionId: SESSION },
+				);
+				assert.strictEqual((await browser.get(human, opened.id)).status, "open", "the browser is still open");
+				const [held] = await browser.listGrants(human, { sessionId: SESSION });
+				assert.strictEqual(held?.status, "active", "the grant is still active");
+				await browser.endSession(WORKER, SESSION, "session_ended");
+				assert.strictEqual((await browser.get(human, opened.id)).status, "closed", "Harbour's own call ends it");
 			}),
 		];
 	}

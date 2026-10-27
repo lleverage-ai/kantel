@@ -8,7 +8,7 @@ registerAuditConformance(
 	async (deps, use) => {
 		await use({
 			store: createMemoryAuditStore({ clock: deps.clock, access: deps.access }),
-			outbox: createMemoryAuditOutbox(),
+			outbox: createMemoryAuditOutbox({ clock: deps.clock }),
 			flakySink: flakyAuditSink,
 		});
 	},
