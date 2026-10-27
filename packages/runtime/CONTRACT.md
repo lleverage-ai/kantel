@@ -116,7 +116,9 @@ fences its storage (self-hosted) or has one owner by construction (a Durable Obj
 
 Sandbox leases expire by their TTL. With `sandboxes.sweep`, the runtime is their alarm: `resume()` sweeps first, and
 while its process holds a session open it sweeps every `leaseSweepMs` (default 60 s), as the `session` component.
-`sweepLeases()` sweeps on demand, and `onSweepError` hears of a failed sweep, which the next one retries. A child's
+`sweepLeases()` sweeps on demand, and `onSweepError` hears of a failed sweep, which the next one retries. Sweeps never
+overlap: every caller shares the one in progress. `resume()` waits at most `sweepWaitMs` (default 5 s) for its sweep
+before recovering sessions anyway. A child's
 leases are released when it ends: aborting or closing a parent runs the session-end hook, `sandbox` teardown included,
 for each child too.
 

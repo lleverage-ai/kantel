@@ -106,6 +106,8 @@ export interface SessionRuntimeOptions {
 	readonly leaseSweepMs?: number;
 	/** Told when a lease sweep failed; the next sweep tries again. Default: ignored. */
 	readonly onSweepError?: (error: unknown) => void;
+	/** How long `resume()` waits for its lease sweep before it recovers sessions anyway. Default 5 s. */
+	readonly sweepWaitMs?: number;
 	/**
 	 * Serves a durable registration's tools (one stored with a callback), such as `callbackHostToolHandler` over its URL
 	 * and secret. Without it only handlers registered in this process serve tools.
@@ -608,7 +610,6 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		};
 		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
-		armSweep();
 		const unsubscribe = view.subscribe(() => sync(session));
 		// The Harness closes itself after a failed storage call. Its timer goes with it; the session stays in `open`, so
 		// calls fail rather than racing a second opening against this one's queued writes and close.
@@ -637,6 +638,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			}
 			followWake(session, harness.wake());
 			await session.publishing;
+			armSweep();
 		} catch (error) {
 			open.delete(record.id);
 			session.stopWatching();
@@ -1037,16 +1039,34 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		(resumeTimer as { unref?: () => void }).unref?.();
 	};
 
-	/** Releases every sandbox lease past its TTL (`Sandboxes.sweep`); how many it released. */
-	const sweepLeases = async (): Promise<number> => {
-		if (sandboxes?.sweep === undefined || closed) return 0;
+	const reportSweepError = (error: unknown) => {
 		try {
-			return (await sandboxes.sweep(systemContext("session"))).length;
-		} catch (error) {
 			options.onSweepError?.(error);
-			return 0;
+		} catch {
+			// A reporter that throws must not take a sweep, recovery or the process down with it.
 		}
 	};
+
+	/** The sweep in progress: every caller (the timer, `resume()`, `sweepLeases()`) shares it, so sweeps never overlap. */
+	let sweeping: Promise<number> | undefined;
+	/** Releases every sandbox lease past its TTL (`Sandboxes.sweep`); how many it released. Never rejects. */
+	const sweepLeases = (): Promise<number> => {
+		const sweep = sandboxes?.sweep;
+		if (sweep === undefined || closed) return Promise.resolve(0);
+		sweeping ??= (async () => {
+			try {
+				return (await sweep(systemContext("session"))).length;
+			} catch (error) {
+				reportSweepError(error);
+				return 0;
+			} finally {
+				sweeping = undefined;
+			}
+		})();
+		return sweeping;
+	};
+
+	const sweepWaitMs = options.sweepWaitMs ?? 5_000;
 
 	/** This process's alarm for lease expiry: a sweep every `leaseSweepMs` while it holds a session open. */
 	const leaseSweepMs = options.leaseSweepMs ?? 60_000;
@@ -1057,14 +1077,32 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const armSweep = () => {
 		if (sandboxes?.sweep === undefined || closed || sweepTimer !== undefined || open.size === 0) return;
 		sweepTimer = setTimeout(() => {
-			sweepTimer = undefined;
-			void sweepLeases().finally(armSweep);
+			// Held (not undefined) until the sweep settles, so nothing arms a second timer meanwhile.
+			const done = open.size === 0 ? Promise.resolve(0) : sweepLeases();
+			void done.finally(() => {
+				sweepTimer = undefined;
+				armSweep();
+			});
 		}, leaseSweepMs);
 		(sweepTimer as { unref?: () => void }).unref?.();
 	};
 
 	const resume = async (): Promise<number> => {
-		await sweepLeases();
+		// A sweep that stalls (its sandbox host or audit sink hung) must not hold up recovering sessions.
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			sweepLeases(),
+			new Promise<void>((resolve) => {
+				bound = setTimeout(() => {
+					reportSweepError(
+						new HarbourError("unavailable", `The lease sweep took over ${sweepWaitMs} ms; resuming anyway`),
+					);
+					resolve();
+				}, sweepWaitMs);
+				(bound as { unref?: () => void }).unref?.();
+			}),
+		]);
+		clearTimeout(bound);
 		let resumed = 0;
 		const now = clock.now();
 		for (const stored of await store.wakeable(now)) {
