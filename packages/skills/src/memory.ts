@@ -41,6 +41,8 @@ interface StoredSkill {
 	readonly revisions: SkillRevision[];
 	/** File contents per revision, by path. */
 	readonly contents: Map<number, ReadonlyMap<string, string>>;
+	/** Drafts saved so far, numbering `skills.draft.saved` so a repeated digest is still audited. */
+	draftSaves: number;
 }
 
 /** Name clashes in a listing go to the most specific owner. */
@@ -182,6 +184,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			},
 			revisions: [],
 			contents: new Map(),
+			draftSaves: 0,
 		};
 		skills.set(stored.pkg.id, stored);
 		byOwnerName.set(key, stored.pkg.id);
@@ -341,8 +344,9 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			const description = input.description ?? parseSkillFrontmatter(skillMd).description ?? stored.pkg.description;
 			stored.draft = { files, digest, description };
 			stored.pkg = { ...stored.pkg, draftDigest: digest, updatedAt: clock.now() };
+			stored.draftSaves += 1;
 			await auditChange(ctx, {
-				id: `skills:draft:${skillId}:${digest}`,
+				id: `skills:draft:${skillId}:${stored.draftSaves}`,
 				type: "skills.draft.saved",
 				subjectId: skillId,
 				data: { name: stored.pkg.name, digest, files: files.length },

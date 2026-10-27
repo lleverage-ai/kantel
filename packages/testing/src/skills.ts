@@ -176,6 +176,15 @@ export function createSkillsConformance(options: {
 			const saved = deps.audit.ofType("skills.draft.saved");
 			assert.partialDeepEqual(saved, [{ actor: agent.actor, subject: { id: pkg.id }, data: { digest } }]);
 			assert.ok(!JSON.stringify(saved).includes("Proposed by an agent."), "audit never holds file contents");
+			const other = await skills.saveDraft(human, pkg.id, { files: skillFiles("triage", "Second thoughts.") });
+			await skills.saveDraft(agent, pkg.id, { files: skillFiles("triage", "Proposed by an agent.") });
+			const all = deps.audit.ofType("skills.draft.saved");
+			assert.strictEqual(all.length, 3, "going back to an earlier draft is audited again");
+			assert.partialDeepEqual(all, [
+				{ data: { digest } },
+				{ actor: human.actor, data: { digest: other.digest } },
+				{ actor: agent.actor, data: { digest } },
+			]);
 		}),
 
 		test("Publishing a draft identical to the latest revision creates no new revision", async (skills, deps) => {

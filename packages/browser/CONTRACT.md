@@ -91,9 +91,9 @@ egress layer must apply it).
 
 - Should an agent in the parent session be able to grant at all? Here it may only pass on, no wider, a context it
   already holds.
-- A provider release that keeps failing is retried on every call, for ever. Should it give up and alert after some
-  attempts?
-
+- A provider release that keeps failing is retried on every call, for ever, and each attempt is audited. Should it
+  give up and alert after some attempts? Retries also run inside whichever call sweeps next, in any organisation, so
+  a `release` that hangs delays that call. A durable broker should retry from a background loop with a timeout.
 - The contract has no read for requests, so "marked granted" is only visible through the `browser.request.granted`
   audit event. Should `Browser` gain `getRequest` or `listRequests`, and a way to decline?
 - Who may revoke: here any supervisor of the grant's session (`forbidden` otherwise, including the agent itself).

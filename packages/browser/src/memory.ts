@@ -212,6 +212,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		} catch {
 			pendingReleases.set(pending.providerSessionId, pending);
 		}
+		// Best effort: the session is still pending, so the next failed attempt is audited again.
 		await emit({
 			id: `browser:session:${pending.browserSessionId}:release_failed:${attempt}`,
 			type: "browser.session.release_failed",
@@ -222,7 +223,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			agentId: pending.agentId,
 			subject: { kind: "browser.session", id: pending.browserSessionId },
 			data: { attempt },
-		});
+		}).catch(() => undefined);
 	}
 
 	function grantFields(grant: BrowserGrant): Pick<AuditEventInput, "projectId" | "sessionId" | "agentId"> {
