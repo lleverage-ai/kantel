@@ -131,7 +131,10 @@ export interface ModelConnector {
 }
 
 export interface ModelRoute {
-	/** What `ModelChoice.route` names, such as `default`, `deep` or `fast`. */
+	/**
+	 * What `ModelChoice.route` names, such as `default`, `deep` or `fast`. Never contains `:`, which separates a route
+	 * from a model override on the wire (`putRoute` rejects it with `invalid`).
+	 */
 	readonly name: string;
 	readonly owner: RouteOwner;
 	readonly connectorId: string;
@@ -249,13 +252,17 @@ export interface ModelSessionTokens {
 		scope: ModelCallScope,
 		ttlMs?: number,
 	): Promise<{ readonly token: string; readonly expiresAt: Timestamp }>;
-	/** The token's scope. Rejects with `forbidden` for a token that isn't valid, and `expired` past its expiry. */
-	verify(token: string): Promise<ModelCallScope>;
+	/**
+	 * A worker call for the gateway: the token's scope. Rejects with `forbidden` for a token that isn't valid, and
+	 * `expired` past its expiry. Like every worker call, any caller but `system` is `forbidden`, audited as
+	 * `access.denied`.
+	 */
+	verify(ctx: SystemContext, token: string): Promise<ModelCallScope>;
 }
 
 /** One model in `GET /v1/config`, as pi-ai's `pi-messages` client reads it. */
 export interface ModelGatewayModel {
-	/** The route name. */
+	/** The route name, or `<route>:<modelId>` for an override (see `ModelGateway.config`). */
 	readonly id: string;
 	readonly name: string;
 	readonly reasoning: boolean;
@@ -275,7 +282,10 @@ export interface ModelGatewayConfig {
 
 /** The body of `POST /messages`, as pi-ai's `pi-messages` client sends it. */
 export interface ModelMessagesRequest {
-	/** A route name, or `<route>:<modelId>` for a model the route's connector allows the project. */
+	/**
+	 * A route name, or `<route>:<modelId>` for a model the route's connector allows the project, split at the first
+	 * `:` (upstream model IDs may contain colons). Always one of the IDs `config` listed.
+	 */
 	readonly model: string;
 	/** pi's `Context` (system prompt, messages, tools) as JSON. Passed to the upstream, never logged or audited. */
 	readonly context: JsonValue;
@@ -337,6 +347,10 @@ export type ModelStreamEvent =
 				readonly id: string;
 				readonly name: string;
 				readonly arguments: { readonly [key: string]: JsonValue };
+				/** Set when the model's arguments didn't parse; `arguments` is then empty and the call must not run. */
+				readonly argumentsError?: string;
+				readonly namespace?: string;
+				readonly thoughtSignature?: string;
 			};
 	  }
 	| {
@@ -344,6 +358,7 @@ export type ModelStreamEvent =
 			readonly reason: "stop" | "length" | "toolUse";
 			readonly usage: ModelUsage;
 			readonly responseId?: string;
+			readonly providerThinkingLevel?: string;
 	  }
 	| {
 			readonly type: "error";
@@ -352,6 +367,7 @@ export type ModelStreamEvent =
 			/** The upstream's error text, verbatim after redaction, so Durable can tell a retryable error. */
 			readonly errorMessage?: string;
 			readonly responseId?: string;
+			readonly providerThinkingLevel?: string;
 	  };
 
 /**
@@ -378,13 +394,20 @@ export interface ModelCallRecord {
  * with `ModelSessionTokens` and passes its claims here, never anything from the body.
  */
 export interface ModelGateway {
-	/** The session's routes as pi models, each with the metadata of the upstream model it is (or would be) pinned to. */
+	/**
+	 * The session's routes as pi models, each with the metadata of the upstream model it is (or would be) pinned to.
+	 * Overrides are listed too, as `<route>:<modelId>` with that model's own metadata, for each model the route's
+	 * connector offers from a finite list (its `catalogue.include`, or the project policy's `models`) that the project's
+	 * policy allows; a connector offering everything its upstream lists has no listed overrides. A model ID the runtime
+	 * sends must be one listed here.
+	 */
 	config(session: ModelCallScope, signal?: AbortSignal): Promise<ModelGatewayConfig>;
 	/**
 	 * Streams one call. Rejects before streaming with `not_found` for a route the session can't use and `refused` for
 	 * a model its project's policy excludes. Once streaming, every failure is a terminal `error` event: an upstream
 	 * error's text verbatim after redaction, one upstream attempt per call. Aborting `signal` cancels the upstream
-	 * request. Each call records one `ModelCallRecord`.
+	 * request. Each call that resolved a route (a connector and model chosen) records one `ModelCallRecord`; a call
+	 * rejected before that records none.
 	 */
 	messages(
 		session: ModelCallScope,
