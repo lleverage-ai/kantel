@@ -749,6 +749,8 @@ export type VaultPageProps = {
 	initial?: VaultRequestViewProps["initial"];
 	/** The viewer's active grants, each with Stop. */
 	grants: Omit<ActiveGrantListProps, "now">;
+	/** Inside a host page with its own main landmark, such as the console: the request isn't wrapped in another. */
+	embedded?: boolean;
 };
 
 /**
@@ -768,7 +770,9 @@ export function VaultPage({
 	onDecided,
 	initial,
 	grants,
+	embedded = false,
 }: VaultPageProps) {
+	const Main = embedded ? "div" : "main";
 	const stopGrant = grants.onStop;
 	const main = useMemo(() => {
 		if (error?.kind === "forbidden") {
@@ -828,7 +832,7 @@ export function VaultPage({
 				<span className="hb-vault-page-viewer">Signed in as {viewer.name}</span>
 			</header>
 			<div className="hb-vault-page-body">
-				<main className="hb-vault-page-main">{main}</main>
+				<Main className="hb-vault-page-main">{main}</Main>
 				<aside className="hb-vault-page-aside">
 					<ActiveGrantList {...grants} {...(now === undefined ? {} : { now })} />
 				</aside>

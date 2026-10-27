@@ -13,6 +13,8 @@
 		".": "./src/index.ts",
 		"./tokens.css": "./src/tokens/tokens.css",
 		"./tokens": "./src/tokens/tokens.ts",
+		"./vault/fixtures": "./src/vault/fixtures.ts",
+		"./audit/fixtures": "./src/audit/fixtures.ts",
 		"./token-lint": "./scripts/token-lint.ts"
 	},
 	"scripts": {

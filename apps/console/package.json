@@ -19,21 +19,24 @@
 		"typecheck": "tsc --noEmit -p tsconfig.json",
 		"pretest": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
 		"test": "vitest run",
-		"evidence": "node scripts/evidence.ts"
+		"evidence": "node scripts/evidence.ts",
+		"oversight:check": "node scripts/oversight-check.ts"
 	},
 	"dependencies": {
+		"@harbour/audit": "workspace:*",
+		"@harbour/contracts": "workspace:*",
 		"@harbour/protocol": "workspace:*",
 		"@harbour/ui": "workspace:*",
 		"react": "19.3.1",
 		"react-dom": "19.3.1"
 	},
 	"devDependencies": {
-		"@harbour/contracts": "workspace:*",
 		"@harbour/runtime": "workspace:*",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",
 		"@types/react-dom": "19.3.0",
 		"@vitejs/plugin-react": "6.1.2",
+		"axe-core": "4.11.0",
 		"playwright-core": "1.64.1",
 		"typescript": "7.0.2",
 		"vite": "8.3.5",
