@@ -1,6 +1,10 @@
 // The VaultDO's portable half in Node: `createVaultCore` over `node:sqlite` standing in for the object's SQLite, its
 // audit events in a SQL audit store standing in for D1, the egress decision API as the Worker routes it, and the
 // deploy's vault secrets.
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { createSqlAuditStore } from "@harbour/audit/sql";
@@ -12,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 import { deployConfig, deployValues } from "../scripts/deploy-config.ts";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
-import { routeRequest, STACK_NAME, VAULT_NAME } from "../src/route.ts";
+import { routeRequest, STACK_NAME, VAULT_BODY_LIMIT, VAULT_NAME } from "../src/route.ts";
 import {
 	COMPONENT_TOKENS,
 	componentKeys,
@@ -206,6 +210,45 @@ describe("routing", () => {
 		expect(isVaultPath("/v1/egress/decisions")).toBe(true);
 		expect(isVaultPath("/v1/egress/decisions/")).toBe(false);
 	});
+
+	it("hands the vault its body whole, and refuses one past the limit before the vault sees it", async () => {
+		const bodies: string[] = [];
+		const vault = {
+			idFromName: (name: string) => name,
+			get: () => ({
+				fetch: async (request: Request) => {
+					bodies.push(await request.text());
+					return new Response(null, { status: 204 });
+				},
+			}),
+		};
+		const unused = { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null) }) };
+		const env = { STACK: unused, VAULTS: vault, ASSETS: { fetch: async () => new Response(null) } };
+		const post = (body: BodyInit, headers: Record<string, string> = {}) =>
+			routeRequest(new Request(`${BASE}/v1/egress/decisions`, { method: "POST", body, headers }), env);
+
+		expect((await post('{"organisationId":"org-a"}')).status).toBe(204);
+		expect(bodies).toEqual(['{"organisationId":"org-a"}']);
+		expect((await post("x".repeat(VAULT_BODY_LIMIT))).status).toBe(204);
+		// A streamed body is counted as it arrives, whatever Content-Length says.
+		const chunk = new Uint8Array(16 * 1024);
+		let sent = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				sent += 1;
+				if (sent > 100) controller.close();
+				else controller.enqueue(chunk);
+			},
+		});
+		const streamed = await routeRequest(
+			new Request(`${BASE}/v1/egress/decisions`, { method: "POST", body: stream, duplex: "half" } as RequestInit),
+			env,
+		);
+		expect(streamed.status).toBe(413);
+		expect(sent).toBeLessThan(100);
+		expect((await post("x".repeat(VAULT_BODY_LIMIT + 1))).status).toBe(413);
+		expect(bodies).toHaveLength(2);
+	});
 });
 
 describe("the vault's deploy", () => {
@@ -252,5 +295,80 @@ describe("the vault's deploy", () => {
 		expect(() => vaultSecrets({ HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "short" })).toThrow(
 			/HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN must be at least 16/,
 		);
+		expect(vaultSecrets({ HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(16) })).toEqual({
+			HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(16),
+		});
+		expect(() => vaultSecrets({ HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(15) })).toThrow(/at least 16/);
+		// Fixed keys whose base64 has `+` and `/`, in every spelling the cipher accepts.
+		const bytes = new Uint8Array(32).fill(0xfb);
+		const standard = btoa(String.fromCharCode(...bytes));
+		expect(standard).toMatch(/[+/]/);
+		for (const spelling of [
+			standard,
+			standard.replace(/=+$/, ""),
+			standard.replace(/\+/g, "-").replace(/\//g, "_"),
+			standard.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+		]) {
+			expect(vaultSecrets({ HARBOUR_VAULT_KEY: spelling }), spelling).toEqual({ HARBOUR_VAULT_KEY: spelling });
+			expect(() =>
+				vaultOver(new DatabaseSync(":memory:"), new DatabaseSync(":memory:"), { HARBOUR_VAULT_KEY: spelling }),
+			).not.toThrow();
+		}
+	});
+
+	describe("the secrets file the workflow hands wrangler", () => {
+		const script = fileURLToPath(new URL("../scripts/vault-secrets.ts", import.meta.url));
+		const TOKEN = "model-gateway-token-for-the-cli-0001";
+
+		function run(env: Record<string, string>) {
+			const dir = mkdtempSync(join(tmpdir(), "vault-secrets-"));
+			const out = join(dir, "secrets.json");
+			const githubOutput = join(dir, "github-output");
+			writeFileSync(githubOutput, "");
+			const inherited = Object.fromEntries(
+				Object.entries(process.env).filter(([name]) => !name.startsWith("HARBOUR_VAULT_")),
+			);
+			const result = spawnSync(process.execPath, [script, "--out", out], {
+				env: { ...inherited, GITHUB_OUTPUT: githubOutput, ...env },
+				encoding: "utf8",
+			});
+			const printed = `${result.stdout}${result.stderr}`;
+			const file = existsSync(out) ? { text: readFileSync(out, "utf8"), mode: statSync(out).mode & 0o777 } : undefined;
+			const output = readFileSync(githubOutput, "utf8");
+			rmSync(dir, { recursive: true, force: true });
+			return { status: result.status, printed, file, output, out };
+		}
+
+		it("writes nothing and names no file when no vault secret is set, so the deploy runs without one", () => {
+			const result = run({});
+			expect(result.status).toBe(0);
+			expect(result.file).toBeUndefined();
+			expect(result.output).toBe("");
+		});
+
+		it("writes the set secrets to a private file, names it for the next step and prints no value", () => {
+			const result = run({ HARBOUR_VAULT_KEY: KEY, HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: TOKEN });
+			expect(result.status).toBe(0);
+			expect(JSON.parse(result.file!.text)).toEqual({
+				HARBOUR_VAULT_KEY: KEY,
+				HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: TOKEN,
+			});
+			expect(result.file!.mode).toBe(0o600);
+			expect(result.output).toBe(`file=${result.out}\n`);
+			expect(result.printed).toContain("HARBOUR_VAULT_MODEL_GATEWAY_TOKEN");
+			expect(result.printed).not.toContain(KEY);
+			expect(result.printed).not.toContain(TOKEN);
+		});
+
+		it("fails on a malformed secret, writing nothing and printing no value", () => {
+			const badKey = btoa("sixteen bytes!!!");
+			const result = run({ HARBOUR_VAULT_KEY: badKey, HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: TOKEN });
+			expect(result.status).not.toBe(0);
+			expect(result.file).toBeUndefined();
+			expect(result.output).toBe("");
+			expect(result.printed).toContain("HARBOUR_VAULT_KEY must be 32 random bytes");
+			expect(result.printed).not.toContain(badKey);
+			expect(result.printed).not.toContain(TOKEN);
+		});
 	});
 });

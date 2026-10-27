@@ -26,6 +26,42 @@ export interface NamedObjects<Id> {
 	get(id: Id): Answers;
 }
 
+/** The largest body the vault's API takes: an egress request or a key read is a few hundred bytes of JSON. */
+export const VAULT_BODY_LIMIT = 64 * 1024;
+
+const tooLarge = () =>
+	Response.json(
+		{ error: { code: "invalid", message: `The body is larger than ${VAULT_BODY_LIMIT} bytes` } },
+		{ status: 413, headers: { "cache-control": "no-store" } },
+	);
+
+/** The whole body, or `undefined` once it passes `limit` bytes. Counts what arrives, not what Content-Length claims. */
+async function readLimited(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | undefined> {
+	const declared = Number(request.headers.get("content-length") ?? "0");
+	if (declared > limit) return undefined;
+	if (request.body === null) return new Uint8Array();
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > limit) {
+			await reader.cancel();
+			return undefined;
+		}
+		chunks.push(value);
+	}
+	const body = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		body.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return body;
+}
+
 /** What routing needs from the Worker's bindings. */
 export interface RouteEnv<StackId = unknown, VaultId = unknown> {
 	readonly STACK: NamedObjects<StackId>;
@@ -41,8 +77,14 @@ export async function routeRequest<StackId, VaultId>(
 	if (path === "/healthz") return Response.json({ ok: true, service: "harbour" });
 	if (isVaultPath(path)) {
 		// The vault refuses an unknown caller before it reads the body, and workerd then reports the unread stream it was
-		// still sending the object as an uncaught error. Its bodies are small JSON, so they are read here first.
-		const body = request.method === "POST" ? await request.arrayBuffer() : null;
+		// still sending the object as an uncaught error. Its bodies are small JSON, so they are read here first, up to a
+		// limit, since anyone who reaches the Worker can send one before the vault checks who they are.
+		let body: Uint8Array<ArrayBuffer> | null = null;
+		if (request.method === "POST") {
+			const read = await readLimited(request, VAULT_BODY_LIMIT);
+			if (read === undefined) return tooLarge();
+			body = read;
+		}
 		const buffered = new Request(request.url, { method: request.method, headers: request.headers, body });
 		return env.VAULTS.get(env.VAULTS.idFromName(VAULT_NAME)).fetch(buffered);
 	}
