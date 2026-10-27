@@ -1,6 +1,6 @@
 import { type Decision, type DecisionInput, isHarbourError } from "@harbour/contracts";
 import { type GrantSummary, VaultPage, type VaultPageProps, type VaultRequest } from "@harbour/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleVault } from "../api/oversight.ts";
 
 /** Why a request didn't load, as the page shows it. */
@@ -71,11 +71,23 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 		};
 	}, [loadGrants]);
 
+	// A decision or stop that finishes after the screen moved to another request or vault, or went away, reloads nothing:
+	// its reads would be of what the screen no longer shows.
+	const scope = useMemo(() => ({ live: true, vault, proposalId }), [vault, proposalId]);
+	useEffect(() => {
+		// Set on every mount, as StrictMode mounts, cleans up and mounts again.
+		scope.live = true;
+		return () => {
+			scope.live = false;
+		};
+	}, [scope]);
+
 	const onDecide = useCallback((input: DecisionInput): Promise<Decision> => vault.decide(input), [vault]);
 	const onDecided = useCallback(() => {
+		if (!scope.live) return;
 		void loadRequest();
 		void loadGrants();
-	}, [loadRequest, loadGrants]);
+	}, [scope, loadRequest, loadGrants]);
 	const onStop = useCallback(
 		async (grantId: string) => {
 			await vault.stop(grantId);
