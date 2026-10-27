@@ -41,9 +41,10 @@
 	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
 }
 
+/* The dot sits on the words' baseline, then moves up onto the middle of their capitals (see --hb-on-cap). */
 .hb-status-label {
 	display: inline-flex;
-	align-items: center;
+	align-items: baseline;
 	gap: var(--hb-space-3);
 	min-width: 0;
 	color: var(--hb-status-current);
@@ -52,6 +53,11 @@
 	white-space: nowrap;
 }
 
+.hb-status-label > .hb-status-dot {
+	translate: 0 var(--hb-on-cap);
+}
+
+/* The words are trimmed to their capitals and centred in the pill, so they look centred in any font. */
 .hb-badge {
 	display: inline-flex;
 	flex: none;
@@ -63,6 +69,10 @@
 	font-weight: var(--hb-weight-medium);
 	line-height: 1;
 	white-space: nowrap;
+}
+
+.hb-badge-text {
+	text-box: trim-both cap alphabetic;
 }
 
 .hb-badge-neutral {

@@ -5,6 +5,22 @@ workbench (`pnpm --filter @harbour/ui dev`).
 
 ## Primitives
 
+### Centring on text
+
+Text looks centred on the middle of its capitals, not on its line box: in most UI fonts the descent is deeper than
+the space above the capitals, so a line box's middle sits a pixel or two below the letters'. `align-items: center`
+on a row of a dot and some words therefore puts the dot low. The primitives handle this two ways, and a new
+component should use one of them:
+
+- **Something beside text** (a dot, an icon): align it to the text's baseline, then move it up with
+  `translate: 0 var(--hb-on-cap)`. `StatusLabel`, `ListRow`'s leading slot and `Notice` do this. In a slot with no
+  text of its own, give the slot the text's size and line height and an invisible character for a baseline, as
+  `.hb-list-row-leading` does.
+- **Text inside a fixed-height box** (a button, a badge): trim the text to its capitals with
+  `text-box: trim-both cap alphabetic` and centre it. `Button` and `Badge` do this.
+
+`node loop/gates.ts` fails any icon, dot, badge or button label more than 1px off its text's centre.
+
 ### Button and IconButton
 
 **For** actions. Variants: `primary` (one per surface: Approve, Send, New session), `secondary` (the alternatives:

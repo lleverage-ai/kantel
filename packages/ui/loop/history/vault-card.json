@@ -1,0 +1,140 @@
+{
+	"component": "VaultApprovalCard",
+	"scenario": "vault-card",
+	"rounds": [
+		{
+			"round": 1,
+			"champion": {
+				"gates": {
+					"typecheck": true,
+					"tests": true,
+					"lint": true,
+					"browser": {
+						"runs": 30,
+						"failed": []
+					},
+					"passed": true
+				},
+				"measures": {
+					"renderMs": 17.799999952316284,
+					"wasted": 5,
+					"latencyMedian": 27.299999952316284,
+					"latencyP95": 35.19999980926514,
+					"inputRenderMs": 33.90000009536743,
+					"bundleJs": 4710,
+					"bundleCss": 2774
+				},
+				"spread": {
+					"renderMs": [15.600000143051147, 19.999999523162842],
+					"latencyMedian": [22.899999856948853, 31]
+				},
+				"runs": 5
+			},
+			"variants": [
+				{
+					"variant": "vault-countdown",
+					"hypothesis": "Performance: the per-second clock moves into a small countdown component; the card and its terms tick once a minute, so a tick re-renders the countdown alone.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 30,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 3.1000003814697266,
+						"wasted": 0,
+						"latencyMedian": 28.799999952316284,
+						"latencyP95": 38.59999990463257,
+						"inputRenderMs": 41,
+						"bundleJs": 4803,
+						"bundleCss": 2774
+					},
+					"spread": {
+						"renderMs": [2.0999996662139893, 6.6000001430511475],
+						"latencyMedian": [26.90000009536743, 33.60000014305115]
+					},
+					"judged": "pixel-identical, not judged",
+					"decision": {
+						"judged": 0,
+						"measured": 0.6186749099266261,
+						"score": 0.6186749099266261,
+						"worse": ["inputRenderMs"],
+						"missing": [],
+						"accepted": false
+					}
+				},
+				{
+					"variant": "vault-one-source",
+					"hypothesis": "Earns its cost: when every term has one source, say it once ('Proposed by the agent') instead of five identical amber Proposed badges; keep per-row badges when sources differ.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 30,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 16.000000476837158,
+						"wasted": 5,
+						"latencyMedian": 29.699999809265137,
+						"latencyP95": 38.700000047683716,
+						"inputRenderMs": 32.60000014305115,
+						"bundleJs": 4714,
+						"bundleCss": 2791
+					},
+					"spread": {
+						"renderMs": [15, 21.40000009536743],
+						"latencyMedian": [25.100000143051147, 37.799999952316284]
+					},
+					"judged": {
+						"champion": 3.375,
+						"variant": 3.875,
+						"criteria": {
+							"champion": [3.5, 3.5, 3, 3.5, 4, 3.5, 3.5, 2.5],
+							"variant": [4, 4, 3.5, 4, 4, 4, 4, 3.5]
+						},
+						"prefer": ["variant", "variant", "variant"],
+						"verdicts": [
+							{
+								"judge": 1,
+								"championWas": "A",
+								"prefer": "B",
+								"reasons": "The only real difference between A and B is how they mark the terms. A puts a filled amber 'Proposed' pill on every row (default, route-grant, approved-narrowed, long-content). B says it once with a 'Proposed by the agent' label above the rows. In A, the five amber pills pull the eye away from the amber 'Needs approval' status and the RIVER-48 binding code. They repeat one word five times and use a filled badge style that Harbour's session list doesn't use, since it shows status as a dot and text. At 420px (default-420 and mobile-420) the pill column takes width, so A wraps 'Authorization: Bearer {{secret}}' onto two lines while B fits it on one. In long-content, A's narrower value column also wraps the Path and Injection values more. Both versions share the same weaknesses. The expired story is pixel-identical. Button labels such as 'Open in vault' sit slightly off-centre at 1280. The approved-narrowed story shows '720h left' instead of a readable duration. The long-content approved row wraps awkwardly into a narrow column."
+							},
+							{
+								"judge": 2,
+								"championWas": "A",
+								"prefer": "B",
+								"reasons": "The one real difference is how the terms table is marked. A puts an amber 'Proposed' pill on every row (Host, Methods, Path, Injection, Lifetime). B says 'Proposed by the agent' once above the rows. In A's default, route-grant and approved-narrowed stories, those five amber pills fight the amber 'Needs approval' badge and the RIVER-48 binding code for attention. They also repeat one fact five times and use a filled-chip style, while Harbour's session list shows status as a dot and text. The pill column also takes width from the values. In A's 420px default and mobile shots, 'Authorization: Bearer {{secret}}' wraps onto two lines but fits on one line in B. In the long-content story, A's path and injection values wrap more tightly than B's. The expired story is pixel-identical in both. Both versions share the same remaining issues: a blue primary button next to the amber status, a progress bar plus '14:59 left' that repeats the 'Lifetime 15 minutes left' row, and an extra footer line. Those cap fidelity and cost for both."
+							},
+							{
+								"judge": 3,
+								"championWas": "A",
+								"prefer": "B",
+								"reasons": "The only visible difference is how the terms are marked as proposed. A puts a filled amber 'Proposed' chip on every term row (five per card in default, route-grant and approved-narrowed), and B has one quiet 'Proposed by the agent' label above the list. In A, ten-plus amber pills compete with the amber 'Needs approval' status and pull the eye away from the RIVER-48 binding code, which the card says is the one thing to check. B keeps amber for the status and the card border only, which matches the session list's restrained dot-and-text status style. In A the chip column also takes width: in default-420 and mobile-420 'Authorization: Bearer {{secret}}' wraps onto two lines, while B keeps it on one. In long-content, B's path and injection values wrap less. Both share the same remaining weaknesses: lifetime is shown twice ('15 minutes left' and '14:59 left'), approved-narrowed shows '720h left', and the expired and approved rows are identical."
+							}
+						]
+					},
+					"decision": {
+						"judged": 0.5,
+						"measured": -0.00830579426836279,
+						"score": 0.4916942057316372,
+						"worse": [],
+						"missing": [],
+						"accepted": true
+					}
+				}
+			],
+			"accepted": ["vault-one-source"],
+			"selected": "vault-one-source",
+			"carried": []
+		}
+	]
+}

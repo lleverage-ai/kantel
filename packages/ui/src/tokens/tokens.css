@@ -99,6 +99,14 @@
 	--hb-icon-sm: 14px;
 	--hb-icon-md: 16px;
 	--hb-dot: 6px;
+	/*
+	 * Text looks centred on its cap height, not on its line box: in most UI fonts the descent is deeper than the space
+	 * above the capitals, so a line box's middle sits below the letters'. An icon or dot aligned to the text's baseline
+	 * and moved by this lands on the middle of the capitals, whatever the font: `translate: 0 var(--hb-on-cap)`.
+	 */
+	--hb-on-cap: calc(50% - 0.5cap);
+	/* Room kept around cap-trimmed text (text-box: trim-both cap alphabetic) for descenders and accents. */
+	--hb-trim-room: var(--hb-space-2);
 	--hb-hairline: 1px;
 	--hb-ring: 2px;
 	--hb-content-width: 46rem; /* the transcript and composer column, as T3 Code's chat-content-max-width */

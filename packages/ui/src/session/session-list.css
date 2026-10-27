@@ -46,14 +46,58 @@
 }
 
 /*
- * The project and the branch side by side, separated by a gap, never a dot. The project keeps its width (it is the
- * short, recognisable part) up to 60%; the branch gives way first.
+ * The line above the title: where the session is on the left, its status at the right end. The status never shrinks;
+ * the project and branch truncate first, so the title below has the row's whole width to itself.
  */
 .hb-session-overline {
 	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+/*
+ * The project and the branch side by side, separated by a gap, never a dot. The project keeps its width (it is the
+ * short, recognisable part) up to 60%; the branch gives way first.
+ */
+.hb-session-where {
+	display: flex;
+	flex: 1 1 auto;
 	align-items: baseline;
 	gap: var(--hb-space-4);
 	min-width: 0;
+	overflow: hidden;
+}
+
+.hb-session-status {
+	display: inline-flex;
+	flex: none;
+	margin-left: auto;
+}
+
+/*
+ * A session row has no trailing column, so the actions ListRow swaps in on hover or focus would otherwise open one
+ * and squeeze the title. Instead they float at the overline's right end, over the status, which hides but keeps its
+ * width so the project and branch don't reflow. A static row shows its actions all the time, so it keeps them in
+ * the flow beside the text.
+ */
+.hb-list-row-comfortable:not(.hb-list-row-static):has(.hb-session-status) > .hb-list-row-side {
+	position: absolute;
+	top: calc(var(--hb-space-4) + (var(--hb-text-xs) * var(--hb-leading-tight) - var(--hb-control-xs)) / 2);
+	right: var(--hb-space-0);
+	padding-top: var(--hb-space-0);
+}
+
+.hb-list-row-has-actions:not(.hb-list-row-static):hover .hb-session-status,
+.hb-list-row-has-actions:not(.hb-list-row-static):focus-within .hb-session-status {
+	visibility: hidden;
+}
+
+/* Touch has no hover: the actions are always shown, so the status always gives way to them, as ListRow's trailing. */
+@media (pointer: coarse) {
+	.hb-list-row-has-actions:not(.hb-list-row-static) .hb-session-status {
+		visibility: hidden;
+	}
 }
 
 .hb-session-project,

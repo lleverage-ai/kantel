@@ -26,7 +26,7 @@ const routeGrant = vaultCard({
 export const Default: Story = () => (
 	<Sheet
 		title="Vault approval card"
-		intro="A pending request with the agent's proposed terms, each marked Proposed. The binding code is the one thing to compare with the vault page before approving."
+		intro="A pending request with the agent's proposed terms, said once above them. The binding code is the one thing to compare with the vault page before approving."
 	>
 		<Column>
 			<VaultApprovalCard card={vaultCard()} now={FIXTURE_NOW} />
@@ -64,7 +64,7 @@ export const Proposed: Story = () => (
 export const Approved: Story = () => (
 	<Sheet
 		title="Vault approval card: approved"
-		intro="Once approved, the card folds to one quiet row with the binding code. Terms shows what was approved, each marked Approved."
+		intro="Once approved, the card folds to one quiet row with the binding code. Terms shows what was approved, under one line saying so."
 	>
 		<Column>
 			<VaultApprovalCard

@@ -82,8 +82,8 @@ or browser (`GlobeIcon`); anything else, `FileIcon`.
 
 **Not for** cards that need a decision (approvals, questions), or a summary of many calls (`ToolCallGroup`).
 
-**States:** running (a spinner in place of the icon, the elapsed time ticking, "Output so far" in the detail);
-done; error (a red `XCircleIcon`, the label at full strength, the output in the error tone under "Error");
+**States:** running (a spinner in place of the icon, the label at full strength so the call happening now is read
+first, the elapsed time ticking, "Output so far" in the detail); done (the label muted); error (a red `XCircleIcon`, the label at full strength, the output in the error tone under "Error");
 interrupted (`MinusCircleIcon` in amber). Open, the detail shows the arguments (a lone `{ command }` as the command
 itself, under "Command"; anything else as indented JSON, under "Arguments"; nothing when there are none) and the
 output in selectable mono text, scrolling inside a block at most `--hb-tool-output-height` tall; "No output" when

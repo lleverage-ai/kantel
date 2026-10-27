@@ -1,9 +1,11 @@
 import { memo, type ReactNode, useCallback, useMemo } from "react";
 import { ListRow } from "../primitives/list-row.tsx";
+import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { Elapsed, RelativeTime } from "../primitives/time.tsx";
+import type { Status } from "../tokens/tokens.ts";
 import { attentionGroup, groupSessions, type SessionSummary, sessionStatus } from "./session-model.ts";
 import "./session-list.css";
 
@@ -18,21 +20,34 @@ export type SessionListItemProps = {
 	actions?: ReactNode;
 };
 
-/** The project and the branch, as separate facts: no dot between them, a gap. */
-function Overline({ project, branch }: { project?: string; branch?: string }) {
-	if (project === undefined && branch === undefined) return null;
+/**
+ * The line above the title: the project and the branch as separate facts (no dot between them, a gap), and the
+ * status at the right end. The status lives on this line rather than in a column beside the title so the title gets
+ * the row's full width; the project and branch truncate before the status does.
+ */
+function Overline({ project, branch, status }: { project?: string; branch?: string; status?: Status }) {
 	return (
 		<span className="hb-session-overline">
-			{project === undefined ? null : <span className="hb-session-project">{project}</span>}
-			{branch === undefined ? null : <span className="hb-session-branch">{branch}</span>}
+			{project === undefined && branch === undefined ? null : (
+				<span className="hb-session-where">
+					{project === undefined ? null : <span className="hb-session-project">{project}</span>}
+					{branch === undefined ? null : <span className="hb-session-branch">{branch}</span>}
+				</span>
+			)}
+			{status === undefined ? null : (
+				<span className="hb-session-status">
+					<StatusLabel status={status} />
+				</span>
+			)}
 		</span>
 	);
 }
 
 /**
  * One session in the list, after T3 Code's sidebar cards and slim rows. Sessions that need you or are working get
- * three lines (project and branch, title, elapsed time) and their status at the top right; settled ones are one quiet
- * line with their time, unless they finished unseen (an emerald Done) or failed. Memoised on its props.
+ * three lines: project and branch with the status at the right end, the title across the full width, and the elapsed
+ * time. Settled ones are one quiet line with their time, unless they finished unseen (an emerald Done) or failed.
+ * Memoised on its props.
  */
 export const SessionListItem = memo(function SessionListItem({
 	session,
@@ -42,6 +57,7 @@ export const SessionListItem = memo(function SessionListItem({
 	actions,
 }: SessionListItemProps) {
 	const { id } = session;
+	useRenderProbe("SessionListItem", id);
 	const select = useCallback(() => onSelect?.(id), [onSelect, id]);
 	const status = sessionStatus(session);
 	const group = attentionGroup(session);
@@ -60,9 +76,10 @@ export const SessionListItem = memo(function SessionListItem({
 	}
 
 	const overline =
-		session.project === undefined && session.branch === undefined ? undefined : (
-			<Overline project={session.project} branch={session.branch} />
+		session.project === undefined && session.branch === undefined && status === undefined ? undefined : (
+			<Overline project={session.project} branch={session.branch} status={status} />
 		);
+	// No trailing column: the status is in the overline, so nothing sits beside the title.
 	return (
 		<ListRow
 			{...main}
@@ -70,7 +87,6 @@ export const SessionListItem = memo(function SessionListItem({
 			overline={overline}
 			title={session.title}
 			meta={session.status === "running" ? <Elapsed since={session.startedAt} /> : undefined}
-			trailing={status === undefined ? undefined : <StatusLabel status={status} />}
 		/>
 	);
 });

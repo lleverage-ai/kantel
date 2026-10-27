@@ -3,6 +3,7 @@ import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo,
 import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
+import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
@@ -77,6 +78,7 @@ function rowBody(row: TranscriptRow, renderCard: RowProps["renderCard"]): ReactN
 const Row = memo(function Row({ row, first, turnStart, renderCard, report }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
+	useRenderProbe("TranscriptRow", row.id);
 	useEffect(() => {
 		mounted.current = true;
 	}, []);

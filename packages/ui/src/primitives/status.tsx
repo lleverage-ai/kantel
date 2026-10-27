@@ -36,5 +36,9 @@ export type BadgeTone = "neutral" | "accent" | Status;
  */
 export function Badge({ tone = "neutral", children }: { tone?: BadgeTone; children: ReactNode }) {
 	const toneClass = tone === "neutral" || tone === "accent" ? `hb-badge-${tone}` : `hb-status-${tone}`;
-	return <span className={`hb-badge ${toneClass}`}>{children}</span>;
+	return (
+		<span className={`hb-badge ${toneClass}`}>
+			<span className="hb-badge-text">{children}</span>
+		</span>
+	);
 }
