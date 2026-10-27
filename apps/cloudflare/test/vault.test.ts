@@ -230,7 +230,21 @@ describe("routing", () => {
 		expect((await post('{"organisationId":"org-a"}')).status).toBe(204);
 		expect(bodies).toEqual(['{"organisationId":"org-a"}']);
 		expect((await post("x".repeat(VAULT_BODY_LIMIT))).status).toBe(204);
-		// A streamed body is counted as it arrives, whatever Content-Length says.
+		// A body in several chunks reaches the vault whole and in order.
+		const parts = ['{"organisationId":', '"org-b",', '"method":"GET"}'];
+		const chunked = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const part of parts) controller.enqueue(new TextEncoder().encode(part));
+				controller.close();
+			},
+		});
+		const whole = await routeRequest(
+			new Request(`${BASE}/v1/egress/decisions`, { method: "POST", body: chunked, duplex: "half" } as RequestInit),
+			env,
+		);
+		expect(whole.status).toBe(204);
+		expect(bodies.at(-1)).toBe(parts.join(""));
+		// A streamed body with no Content-Length is counted as it arrives, and reading stops past the limit.
 		const chunk = new Uint8Array(16 * 1024);
 		let sent = 0;
 		const stream = new ReadableStream<Uint8Array>({
@@ -247,7 +261,7 @@ describe("routing", () => {
 		expect(streamed.status).toBe(413);
 		expect(sent).toBeLessThan(100);
 		expect((await post("x".repeat(VAULT_BODY_LIMIT + 1))).status).toBe(413);
-		expect(bodies).toHaveLength(2);
+		expect(bodies).toHaveLength(3);
 	});
 });
 
