@@ -158,6 +158,27 @@ describe("gitSkillSource", () => {
 		expect(reported.every((path) => path.split("/").length <= 3)).toBe(true);
 	});
 
+	it("bounds the paths links can fan out to, links to links included", async () => {
+		const repo = tempRepo();
+		cleanups.push(() => repo.remove());
+		// d0..d29 each hold two links to the next; only the last holds a file. 2^30 paths if followed to the end.
+		const files: Record<string, FixtureFile> = {
+			"real/SKILL.md": skillMd("deep", "Deep"),
+			"skills/entry": { link: "../fan/d0" },
+			"fan/d30/SKILL.md": { link: "../../real/SKILL.md" },
+		};
+		for (let depth = 0; depth < 30; depth++) {
+			files[`fan/d${depth}/l`] = { link: `../d${depth + 1}` };
+			files[`fan/d${depth}/r`] = { link: `../d${depth + 1}` };
+		}
+		const commit = repo.commit(files);
+		const source = gitSkillSource({ id: "fan", repo: repo.dir, paths: ["skills"] });
+		const started = Date.now();
+		await source.fetch(commit);
+		expect(Date.now() - started).toBeLessThan(20_000);
+		expect(source.last.problems.map((problem) => problem.reason)).toContain("more than 100000 paths through symlinks");
+	});
+
 	it("reads a hidden root and spells roots as given", async () => {
 		expect([".", "./", "./x/", ".pi/skills", "./.pi/skills", "x//"].map(rootPath)).toEqual([
 			"",
@@ -424,22 +445,46 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 			.skills.map((skill) => [skill.name, skill.description])
 			.sort();
 		const sources = [directorySkillSource({ id: "a", root: first }), directorySkillSource({ id: "b", root: second })];
-		const layered = await layerSalSources(sources.map((source) => ({ source, ref: source.pin() })));
-		const ours: string[][] = [];
-		const names = new Set<string>();
-		for (const { source, ref } of layered) {
-			for (const skill of await source.fetch(ref)) {
-				// syncSkillSources: the first of a name across sources wins.
-				if (names.has(skill.name)) continue;
-				names.add(skill.name);
-				ours.push([skill.name, skill.description]);
-			}
-		}
 		expect(expected).toEqual([
 			["a", "Shared"],
 			["b", "Second b"],
 			["own", "Own"],
 		]);
-		expect(ours.sort()).toEqual(expected);
+		expect(await layered(sources)).toEqual(expected);
 	});
+
+	it("lets a file whose first path lost on its name load through a later path, as Pi does", async () => {
+		const shared = tempDir("harbour-pi-shared-");
+		writeFixture(shared, { "SKILL.md": "---\ndescription: Shared\n---\n" });
+		const roots = [tempDir("harbour-pi-a-"), tempDir("harbour-pi-b-"), tempDir("harbour-pi-c-")];
+		writeFixture(roots[0]!, { "x/SKILL.md": skillMd("b", "Independent b") });
+		writeFixture(roots[1]!, { b: { link: shared } });
+		writeFixture(roots[2]!, { c: { link: shared } });
+		const pi = (await import(PI_SKILLS_JS)) as { loadSkills(options: object): { skills: PiSkill[] } };
+		const expected = pi
+			.loadSkills({ cwd: roots[0], agentDir: roots[0], skillPaths: roots, includeDefaults: false })
+			.skills.map((skill) => [skill.name, skill.description])
+			.sort();
+		expect(expected).toEqual([
+			["b", "Independent b"],
+			["c", "Shared"],
+		]);
+		const sources = roots.map((root, index) => directorySkillSource({ id: `s${index}`, root }));
+		expect(await layered(sources)).toEqual(expected);
+	});
+
+	/** What syncSkillSources would publish from the layered sources: the first of a name across sources wins. */
+	async function layered(sources: SalSkillSource[]): Promise<string[][]> {
+		const refs = await layerSalSources(sources.map((source) => ({ source, ref: source.pin() })));
+		const ours: string[][] = [];
+		const names = new Set<string>();
+		for (const { source, ref } of refs) {
+			for (const skill of await source.fetch(ref)) {
+				if (names.has(skill.name)) continue;
+				names.add(skill.name);
+				ours.push([skill.name, skill.description]);
+			}
+		}
+		return ours.sort();
+	}
 });

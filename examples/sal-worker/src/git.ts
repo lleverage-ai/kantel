@@ -71,8 +71,8 @@ function readBlobs(repo: string, objects: readonly string[]): Uint8Array[] {
 
 const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 const under = (path: string, root: string) => root === "" || path === root || path.startsWith(`${root}/`);
-/** More files than this through symlinks is not a skill source; the rest are left out and reported. */
-const MAX_LINKED_FILES = 100_000;
+/** More paths than this through symlinks (files and links alike) is not a skill source; the rest are left out. */
+const MAX_LINKED_PATHS = 100_000;
 
 /** A root path as given (`.`, `./x`, `x/`, `.pi/skills`) as a repository path: `""` for the whole tree. */
 export function rootPath(path: string): string {
@@ -150,9 +150,10 @@ export function readTree(
 		.map((path) => ({ virtual: path, real: path, chain: [] }));
 	const regularPaths = [...regular.keys()];
 	const linkPaths = [...links.keys()];
-	let linkedFiles = 0;
-	while (queue.length > 0) {
-		const { virtual: link, real, chain } = queue.shift()!;
+	// Every path a link adds counts, nested links included, so links to links to links cannot grow without bound.
+	let linkedPaths = 0;
+	for (let next = 0; next < queue.length; next++) {
+		const { virtual: link, real, chain } = queue[next]!;
 		const target = canonical(real, links);
 		if (target === undefined) {
 			problems.push({ path: link, reason: "a symlink that leaves the repository or loops" });
@@ -176,9 +177,9 @@ export function readTree(
 			problems.push({ path: link, reason: `a symlink to ${target}, which is not in the commit` });
 			continue;
 		}
-		linkedFiles += inside.length;
-		if (linkedFiles > MAX_LINKED_FILES) {
-			problems.push({ path: link, reason: `more than ${MAX_LINKED_FILES} files through symlinks` });
+		linkedPaths += inside.length + nested.length;
+		if (linkedPaths > MAX_LINKED_PATHS) {
+			problems.push({ path: link, reason: `more than ${MAX_LINKED_PATHS} paths through symlinks` });
 			break;
 		}
 		for (const path of inside) files.set(`${link}${path.slice(target.length)}`, path);
