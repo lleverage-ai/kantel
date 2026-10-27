@@ -1,0 +1,203 @@
+/* The composer's model picker, after T3 Code's ProviderModelPicker: a quiet toolbar button, a list that opens upward. */
+
+.hb-model-picker {
+	position: relative;
+	display: flex;
+	min-width: 0;
+}
+
+.hb-model-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	max-width: 100%;
+	height: var(--hb-control-sm);
+	padding: 0 var(--hb-space-4);
+	border: var(--hb-hairline) solid transparent;
+	border-radius: var(--hb-radius-control);
+	background: transparent;
+	color: var(--hb-text-muted);
+	font: inherit;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-medium);
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+	transition:
+		background-color var(--hb-duration-fast) var(--hb-ease),
+		color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-model-trigger:hover:not(:disabled),
+.hb-model-trigger[aria-expanded="true"] {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-model-trigger:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.hb-model-trigger-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hb-model-trigger-chevron {
+	color: var(--hb-text-faint);
+}
+
+.hb-model-picker-xs .hb-model-trigger {
+	gap: var(--hb-space-2);
+	height: var(--hb-control-xs);
+	padding: 0 var(--hb-space-3);
+	border-radius: var(--hb-radius-sm);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-model-popover {
+	position: absolute;
+	z-index: var(--hb-z-overlay);
+	bottom: calc(100% + var(--hb-space-3));
+	left: 0;
+	display: flex;
+	flex-direction: column;
+	width: min(var(--hb-popover-width), calc(100vw - var(--hb-space-10)));
+	overflow: hidden;
+	border-radius: var(--hb-radius);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-float);
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	cursor: default;
+}
+
+.hb-model-search {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	padding: var(--hb-space-4) var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius) var(--hb-radius) 0 0;
+	color: var(--hb-text-faint);
+}
+
+/* The search field's focus shows on its row: a quiet inset edge, as the composer's field does on its surface. */
+.hb-model-search:has(.hb-model-search-input:focus-visible) {
+	outline: var(--hb-hairline) solid var(--hb-focus);
+	outline-offset: calc(var(--hb-hairline) * -1);
+}
+
+.hb-model-search-input {
+	flex: 1;
+	min-width: 0;
+	height: var(--hb-control-xs);
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: var(--hb-text);
+	font: inherit;
+	font-size: var(--hb-text-md);
+	outline: none;
+}
+
+.hb-model-search-input::placeholder {
+	color: var(--hb-text-faint);
+}
+
+.hb-model-list {
+	max-height: var(--hb-popover-height);
+	padding: var(--hb-space-2);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+}
+
+.hb-model-group + .hb-model-group {
+	margin-top: var(--hb-space-2);
+}
+
+.hb-model-group-label {
+	padding: var(--hb-space-3) var(--hb-space-4) var(--hb-space-2);
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-model-option {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-md);
+	padding: var(--hb-space-3) var(--hb-space-4);
+	border-radius: var(--hb-radius-sm);
+	color: var(--hb-text);
+	cursor: pointer;
+}
+
+.hb-model-option[data-active] {
+	background: var(--hb-hover);
+}
+
+.hb-model-option[aria-disabled="true"] {
+	cursor: default;
+}
+
+.hb-model-option-text {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-model-option-label {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-model-option[aria-disabled="true"] .hb-model-option-label {
+	color: var(--hb-text-muted);
+}
+
+.hb-model-option-default {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-model-option-detail {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-model-option-cap {
+	color: var(--hb-text-faint);
+}
+
+.hb-model-option-check {
+	display: grid;
+	flex: none;
+	place-items: center;
+	width: var(--hb-icon-sm);
+	color: var(--hb-accent-text);
+}
+
+.hb-model-empty {
+	margin: 0;
+	padding: var(--hb-space-6);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}

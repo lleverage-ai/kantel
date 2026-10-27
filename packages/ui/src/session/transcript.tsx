@@ -1,5 +1,15 @@
 import type { Card, CardItem, TranscriptItem } from "@harbour/protocol";
-import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	type DragEvent,
+	memo,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
@@ -7,6 +17,8 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
+import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
+import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
@@ -139,8 +151,21 @@ export type TranscriptProps = {
 	 * and the design loop's wasted-render count. Never causes a render.
 	 */
 	onRowRender?: (id: string, phase: RowRenderPhase) => void;
+	/**
+	 * Docked over the transcript's foot, usually a Composer, as T3 Code's thread: the list scrolls under it and its
+	 * end makes room for it. A Composer here rests (folds to one line) while the reader scrolls back, comes back at
+	 * the end, and takes files dropped anywhere on the transcript.
+	 */
+	dock?: ReactNode;
 	className?: string;
 };
+
+/** Files dropped on a docked transcript: what the composer accepts, said plainly in the overlay. */
+type DropTarget = { handler: FileDropHandler; hint: string };
+
+function hasFiles(event: DragEvent): boolean {
+	return [...(event.dataTransfer?.types ?? [])].includes("Files");
+}
 
 /**
  * A session's transcript: user bubbles, assistant answers, grouped tool calls, notices and cards, in a virtualised
@@ -157,6 +182,7 @@ export function Transcript({
 	empty,
 	error,
 	onRowRender,
+	dock,
 	className,
 }: TranscriptProps) {
 	// Rows keep their identity across renders wherever their items are unchanged.
@@ -192,6 +218,8 @@ export function Transcript({
 	const frame = useRef<HTMLElement>(null);
 	const following = useRef(true);
 	const [showEnd, setShowEnd] = useState(false);
+	// A docked composer rests while the reader is away from the end; see the dock below.
+	const [resting, setResting] = useState(false);
 	const first = useRef<string | undefined>(undefined);
 	const count = useRef(0);
 	const showList = rows.length > 0;
@@ -238,8 +266,10 @@ export function Transcript({
 			if (handle === null) return;
 			const distance = handle.scrollSize - (offset + handle.viewportSize);
 			const atBottom = distance <= AT_BOTTOM_PX;
-			if (atBottom) following.current = true;
-			else if (offset < lastOffset.current) following.current = false;
+			if (atBottom) {
+				following.current = true;
+				setResting(false);
+			} else if (offset < lastOffset.current) following.current = false;
 			lastOffset.current = offset;
 			setShowEnd(!following.current);
 			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder) onLoadOlder?.();
@@ -250,8 +280,144 @@ export function Transcript({
 	const scrollToEnd = useCallback(() => {
 		following.current = true;
 		setShowEnd(false);
+		setResting(false);
 		toBottom();
 	}, [toBottom]);
+
+	// The dock. Its height becomes the room at the list's end, measured as it changes. While the composer rests the
+	// room stays as it was, so folding it doesn't move what the reader is looking at (T3 Code keeps the expanded
+	// inset too, MessagesTimeline.tsx).
+	const docked = dock !== undefined && dock !== null && dock !== false;
+	const root = useRef<HTMLDivElement>(null);
+	const dockElement = useRef<HTMLDivElement>(null);
+	const restingRef = useRef(resting);
+	restingRef.current = resting;
+	const inset = useRef(0);
+	useLayoutEffect(() => {
+		const element = dockElement.current;
+		const host = root.current;
+		if (!docked || element === null || host === null) return;
+		const apply = (height: number) => {
+			const next = restingRef.current ? Math.max(height, inset.current) : height;
+			if (next === inset.current) return;
+			inset.current = next;
+			host.style.setProperty("--hb-transcript-dock-height", `${next}px`);
+		};
+		apply(Math.ceil(element.getBoundingClientRect().height));
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(() => apply(Math.ceil(element.getBoundingClientRect().height)));
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [docked]);
+
+	// Resting: a wheel gesture of 24px or more, a Page Up or Home, or a finger dragging the list, while it can scroll
+	// that way (T3 Code's composerScrollGesture.ts). Scrolling down at the end never rests it; reaching the end wakes it.
+	useEffect(() => {
+		if (!docked || !showList) return;
+		const viewport = frame.current?.firstElementChild;
+		if (!(viewport instanceof HTMLElement)) return;
+		const gesture = restGesture();
+		const position = () => ({
+			top: viewport.scrollTop,
+			height: viewport.scrollHeight,
+			client: viewport.clientHeight,
+		});
+		const record = (now: number, deltaY: number, pixels: number) => {
+			const scroll = position();
+			const atEnd = atScrollEnd(scroll);
+			const up = deltaY < 0;
+			const rests = recordRestGesture(gesture, {
+				now,
+				pixels,
+				canScroll: up ? scroll.top > 0 : !atEnd,
+				downAtEnd: !up && atEnd,
+			});
+			if (!rests) return;
+			// The reader is leaving the end: stop following now, before the scroll event says so, or the re-render
+			// that rests the composer would pin the list back to its end.
+			if (up) following.current = false;
+			setResting(true);
+		};
+		const onWheel = (event: WheelEvent) => {
+			if (event.ctrlKey || event.deltaY === 0) return;
+			record(event.timeStamp, event.deltaY, wheelPixels(event.deltaY, event.deltaMode, viewport.clientHeight));
+		};
+		const onKey = (event: KeyboardEvent) => {
+			if (!restsForKey(event.key, position())) return;
+			if (event.key === "PageUp" || event.key === "Home") following.current = false;
+			setResting(true);
+		};
+		let lastY: number | undefined;
+		const onTouchStart = (event: TouchEvent) => {
+			lastY = event.touches[0]?.clientY;
+		};
+		const onTouchMove = (event: TouchEvent) => {
+			const y = event.touches[0]?.clientY;
+			if (y === undefined || lastY === undefined) return;
+			// A finger moving down scrolls the list up.
+			const deltaY = lastY - y;
+			lastY = y;
+			if (deltaY !== 0) record(event.timeStamp, deltaY, Math.abs(deltaY));
+		};
+		viewport.addEventListener("wheel", onWheel, { passive: true });
+		viewport.addEventListener("keydown", onKey);
+		viewport.addEventListener("touchstart", onTouchStart, { passive: true });
+		viewport.addEventListener("touchmove", onTouchMove, { passive: true });
+		return () => {
+			viewport.removeEventListener("wheel", onWheel);
+			viewport.removeEventListener("keydown", onKey);
+			viewport.removeEventListener("touchstart", onTouchStart);
+			viewport.removeEventListener("touchmove", onTouchMove);
+		};
+	}, [docked, showList]);
+
+	// Files dragged anywhere over a docked transcript go to the composer, while it takes files.
+	const dropTarget = useRef<DropTarget | null>(null);
+	const [dropHint, setDropHint] = useState<string | undefined>(undefined);
+	const [dragDepth, setDragDepth] = useState(0);
+	const dragging = dragDepth > 0 && dropHint !== undefined;
+	const wake = useCallback(() => setResting(false), []);
+	const acceptDrops = useCallback((handler: FileDropHandler, hint: string) => {
+		const target = { handler, hint };
+		dropTarget.current = target;
+		setDropHint(hint);
+		return () => {
+			if (dropTarget.current !== target) return;
+			dropTarget.current = null;
+			setDropHint(undefined);
+			setDragDepth(0);
+		};
+	}, []);
+	const dockContext = useMemo<ComposerDock>(
+		() => ({ resting, wake, dragging, acceptDrops }),
+		[resting, wake, dragging, acceptDrops],
+	);
+	// Attached whenever docked and checked per event, so a drag that starts the moment the composer registers counts.
+	const takesDrop = (event: DragEvent) => dropTarget.current !== null && hasFiles(event);
+	const dragHandlers = docked
+		? {
+				onDragEnter: (event: DragEvent<HTMLDivElement>) => {
+					if (!takesDrop(event)) return;
+					event.preventDefault();
+					setDragDepth((depth) => depth + 1);
+				},
+				onDragOver: (event: DragEvent<HTMLDivElement>) => {
+					if (!takesDrop(event)) return;
+					event.preventDefault();
+					event.dataTransfer.dropEffect = "copy";
+				},
+				onDragLeave: (event: DragEvent<HTMLDivElement>) => {
+					if (!hasFiles(event)) return;
+					setDragDepth((depth) => Math.max(0, depth - 1));
+				},
+				onDrop: (event: DragEvent<HTMLDivElement>) => {
+					if (!takesDrop(event)) return;
+					event.preventDefault();
+					setDragDepth(0);
+					dropTarget.current?.handler([...event.dataTransfer.files]);
+				},
+			}
+		: {};
 
 	let body: ReactNode;
 	if (showList) {
@@ -311,7 +477,12 @@ export function Transcript({
 	}
 
 	return (
-		<div className={`hb-transcript${className ? ` ${className}` : ""}`}>
+		// A file drop here is a pointer-only shortcut; the composer's paperclip is the keyboard's way.
+		<div
+			ref={root}
+			className={`hb-transcript${docked ? " hb-transcript-docked" : ""}${className ? ` ${className}` : ""}`}
+			{...dragHandlers}
+		>
 			{error ? (
 				<div className="hb-transcript-error">
 					<div className="hb-transcript-column">
@@ -320,6 +491,19 @@ export function Transcript({
 				</div>
 			) : null}
 			{body}
+			{docked ? (
+				<ComposerDockContext.Provider value={dockContext}>
+					<div className="hb-transcript-dock" ref={dockElement}>
+						<div className="hb-transcript-dock-lane">{dock}</div>
+					</div>
+				</ComposerDockContext.Provider>
+			) : null}
+			{dragging ? (
+				<div className="hb-transcript-drop" aria-hidden="true">
+					<span className="hb-transcript-drop-label">Drop files to attach</span>
+					{dropHint ? <span className="hb-transcript-drop-limits">{dropHint}</span> : null}
+				</div>
+			) : null}
 		</div>
 	);
 }

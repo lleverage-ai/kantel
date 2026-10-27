@@ -169,19 +169,21 @@ export function SessionView({
 						loading={state.freshness.state === "loading"}
 						error={state.error}
 						onRowRender={recordRow}
+						dock={
+							<Composer
+								state={composerState(control, state.status, actions.sending)}
+								disabledReason={control.live ? undefined : control.reason}
+								label="Message"
+								banner={
+									actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>
+								}
+								onSend={actions.onSend}
+								onSteer={actions.onSteer}
+								onStop={actions.onStop}
+							/>
+						}
 					/>
 				</Profiled>
-			</div>
-			<div className="console-composer">
-				<Composer
-					state={composerState(control, state.status, actions.sending)}
-					disabledReason={control.live ? undefined : control.reason}
-					label="Message"
-					banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
-					onSend={actions.onSend}
-					onSteer={actions.onSteer}
-					onStop={actions.onStop}
-				/>
 			</div>
 			{profiling ? <ProfilePanel client={client} /> : null}
 		</div>
