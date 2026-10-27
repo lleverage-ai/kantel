@@ -3,7 +3,8 @@
 //   wasted        re-renders of a probed row or part whose data did not change (src/primitives/probe.ts); a mount
 //                 (a row scrolled into view) is not waste
 //   latency       interaction to the end of the next frame (ms): median and p95 over the scenario's inputs
-//   work          interaction to the end of its dispatch, React's update included (ms): median over the inputs. Not
+//   work          interaction to the end of its dispatch (ms), React's update included when that event's handler makes
+//                 it (not for the composer's typing, which updates on `input`): median over the inputs. Not
 //                 scored; it explains latency, which moves in whole frames (see loop/harness/main.tsx)
 //   bundle        minified and gzipped JS and CSS of the component's module, React excluded
 // Headless Chromium with the CPU throttled 4x, five fresh pages per scenario after one warm-up page that is thrown
@@ -158,6 +159,12 @@ export async function measureOnce(page: Page, url: string, spec: ComponentSpec, 
 	const expected = await (interactions[spec.scenario] ?? (async () => undefined))(page);
 	await page.waitForTimeout(300);
 	const input = await page.evaluate(() => (window as HarnessWindow).__hb!.collect());
+	// A harness built before input work was added collects no `work`. Stop on the first page rather than measure a
+	// whole comparison and fail at the end, or score the missing measure as zero.
+	if (!Array.isArray(input.work))
+		throw new Error(
+			`The harness at ${url} predates input work: build both trees' harnesses with this version of loop/ (measure.ts, harness/main.tsx) before comparing them`,
+		);
 	// Per update where the scenario marks its steps, so a render is needed only in the update that changed its id.
 	const parts =
 		update.steps.length > 0

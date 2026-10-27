@@ -7,7 +7,7 @@
 //   collect()          what was counted since the last reset
 // Interactions (clicks, typing, wheel) come from Playwright as real input; their latency is measured here, from the
 // event's timestamp to the end of the next frame, and their work from the timestamp to the end of the event's
-// dispatch, which includes React's render and commit for it but not the wait for a frame.
+// dispatch, which leaves out the wait for a frame (see `work` below for when it includes React's update).
 
 import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { createRoot } from "react-dom/client";
@@ -31,8 +31,11 @@ export type Collected = {
 	/** Input latencies, ms: from the event's timestamp to the end of the next frame. */
 	latencies: number[];
 	/**
-	 * Input work, ms: from the event's timestamp to the end of its dispatch, after React has rendered and committed the
-	 * update (React flushes a discrete event's update in a microtask, which runs before the window's bubble listener).
+	 * Input work, ms: from the event's timestamp to the end of its dispatch. When that event's own handler updates state
+	 * (a click, or a key the component handles on keydown, such as the vault picker's arrows), this takes in React's
+	 * render and commit, as React flushes a discrete event's update in a microtask that runs before the window's bubble
+	 * listener. It does not when the update comes from a later event: typing in the composer updates on `input`, after
+	 * the keydown measured here, so its work is the keydown's handling only.
 	 * Latency waits for the next frame, so it moves in whole frames with where in the frame the input lands; work
 	 * does not, so it shows a difference in cost that latency's frame steps can hide.
 	 */

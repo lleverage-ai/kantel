@@ -40,7 +40,10 @@ update phase and again before its interactions, so a collection left over from e
 | Bundle cost | Minified and gzipped JS and CSS the component adds to a host app, excluding React | One entry per component, bundled with Vite |
 
 Also reported, not scored: **input work**, from the input event's timestamp to the end of its dispatch, which takes
-in the handlers and React's render and commit for it but not the wait for a frame. Latency waits for the next frame,
+in the handlers but not the wait for a frame. It includes React's render and commit only when that event's own
+handler changes state (a click, the vault picker's arrow keys); typing in the composer changes state on the later
+`input` event, so there it measures the keydown alone. Both trees' harnesses must have it: `loop/ab.ts` stops on the
+first page if one predates it. Latency waits for the next frame,
 so at four times throttling it moves in whole frames (about 16ms) with where in the frame an input lands; work does
 not, so it shows whether a change in latency comes from the component's cost or from frame timing.
 
