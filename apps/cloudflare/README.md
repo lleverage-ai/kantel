@@ -129,18 +129,20 @@ https://developers.cloudflare.com/workers-vpc/reference/pricing/), checked 27 Oc
 | Workers VPC (`MODELS`) | free during the open beta | | $0 |
 | Model tokens | | through CLIProxyAPI on Sal's host | not billed by Cloudflare |
 
-Estimate: **about $0 a month on top of the account's $5 Workers Paid minimum**; if the account already pays that,
-Harbour adds nothing at this scale. Access sign-in adds one seat
+Estimate: **about $0 a month on top of the account's $5 Workers Paid minimum**, as long as the account's other
+Workers leave enough of the included usage (it is per account, not per Worker). Access sign-in adds one seat
 to the account's existing Zero Trust organisation; whether that costs anything depends on that plan.
 
 What would move it:
 
 - **An open console.** It polls the session list every 3 s (`LIST_POLL_MS` in `apps/console/src/api/http.ts`), and
   an open event stream (`GET /v1/sessions/:id/events`) holds a request open, so `HarbourStack` stays active, billed at
-  128 MB, for as long as a console is open: about 324,000 GB-s and 0.9 M requests for one tab left open all month.
-  That alone fits the 400,000 GB-s and 1 M requests included; a second tab left open all month goes past both, at
-  about $4 per further 324,000 GB-s ($12.50 per million GB-s) and $0.15 per further million requests. A SessionDO per
-  session doesn't change this much: duration follows open consoles and streams.
+  128 MB, for as long as a console is open: about 324,000 GB-s and 0.9 M requests for one tab left open all month,
+  inside the 400,000 GB-s and 1 M requests included. Every tab reaches the same object, so a second tab adds
+  requests (another 0.9 M, about $0.11 past the allowance at $0.15 per million), not duration.
+- **A SessionDO per session.** Then each session with an open stream is its own active object, and duration adds up
+  per object: each one held open all month is about 324,000 GB-s, or about $4 at $12.50 per million GB-s once past
+  the allowance.
 - **The container tier**, when it lands: Containers bill per instance-second, so it will dominate. It gets its own
   line here with that step.
 - **Workers VPC** pricing after its beta.
