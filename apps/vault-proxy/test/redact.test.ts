@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { assertRedactable, REDACTED, Redactor } from "../src/redact.ts";
 
-const secret = "sk-live/abc+DEF=123:xyz";
+const secret = "sk-live/abc+DEF=123:x.y_z";
+
+const NAMED: Record<string, string[]> = {
+	".": ["period"],
+	"/": ["sol"],
+	":": ["colon"],
+	"+": ["plus"],
+	"=": ["equals"],
+	_: ["lowbar", "UnderBar"],
+};
 const redactor = new Redactor([secret]);
 
 /** Every way of writing one character that the redactor must see through. */
@@ -17,6 +26,9 @@ const spellings = (char: string): string[] => {
 		`%${h2.toUpperCase()}`,
 		`&#${code};`,
 		`&#x${code.toString(16)};`,
+		`&#X${code.toString(16).toUpperCase()};`,
+		`&#00${code};`,
+		...(NAMED[char] ?? []).map((name) => `&${name};`),
 	];
 	if (char === "/") all.push("\\/");
 	return all;
@@ -34,6 +46,8 @@ describe("vault redaction", () => {
 			`/?k=${secret.replace("/", "%2f")}`,
 			`<p>${secret}</p>`,
 			`<p>${[...secret].map((c) => `&#${c.charCodeAt(0)};`).join("")}</p>`,
+			`<p>${secret.replace("/", "&sol;").replace(":", "&colon;").replace("_", "&lowbar;")}</p>`,
+			`<p>${secret.replace("/", "&#47")}</p>`,
 		]) {
 			const { text, count } = redactor.text(echo);
 			expect(count, echo).toBe(1);
@@ -96,6 +110,10 @@ function decodeAll(text: string): string {
 		.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
 		.replace(/\\\//g, "/")
 		.replace(/%([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
-		.replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
-		.replace(/&#([0-9]+);/g, (_, d) => String.fromCharCode(Number(d)));
+		.replace(/&#[xX]([0-9a-fA-F]+);?/g, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
+		.replace(/&#([0-9]+);?/g, (_, d) => String.fromCharCode(Number(d)))
+		.replace(/&([A-Za-z]+);/g, (whole, name) => {
+			const entry = Object.entries(NAMED).find(([, names]) => names.includes(name));
+			return entry === undefined ? whole : entry[0];
+		});
 }

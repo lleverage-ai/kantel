@@ -5,9 +5,10 @@
 // rule is not to allow echoing upstreams with a secret on them outside tests.
 // What this does catch is every spelling the standard text encodings give a
 // secret, character by character and mixed: the character itself, a JSON
-// `\uXXXX` escape (and `\/`), a percent escape and an HTML character
-// reference, with hex digits in either case. Secrets are limited to the
-// characters API keys use, so no other common encoding changes them.
+// `\uXXXX` escape (and `\/`), a percent escape, and an HTML numeric (with or
+// without its `;`) or named character reference, with hex digits in either
+// case. Secrets are limited to the characters API keys use, so no other common
+// encoding changes them.
 
 export const REDACTED = "[vault:redacted]";
 
@@ -31,6 +32,16 @@ const hex = (value: number, width: number) =>
 		.map((digit) => (/[a-f]/.test(digit) ? `[${digit}${digit.toUpperCase()}]` : digit))
 		.join("");
 
+/** HTML named character references for the punctuation a secret may contain. */
+const NAMED: Record<string, string[]> = {
+	".": ["period"],
+	"/": ["sol"],
+	":": ["colon"],
+	"+": ["plus"],
+	"=": ["equals"],
+	_: ["lowbar", "UnderBar"],
+};
+
 /** Every encoded spelling of one ASCII character. */
 function charPattern(char: string): string {
 	const code = char.charCodeAt(0);
@@ -38,8 +49,9 @@ function charPattern(char: string): string {
 		escapeRegex(char),
 		`\\\\[uU]${hex(code, 4)}`, // JSON \u002f
 		`%${hex(code, 2)}`, // percent encoding, %2F or %2f
-		`&#0*${code};`, // HTML decimal reference
-		`&#[xX]0*${hex(code, 1)};`, // HTML hex reference
+		`&#0*${code};?`, // HTML decimal reference; browsers accept it without the `;`
+		`&#[xX]0*${hex(code, 1)};?`, // HTML hex reference
+		...(NAMED[char] ?? []).map((name) => `&${name};`),
 	];
 	if (char === "/") spellings.push("\\\\/"); // JSON \/
 	return `(?:${spellings.join("|")})`;

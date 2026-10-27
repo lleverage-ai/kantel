@@ -340,7 +340,12 @@ export class SessionHost {
 			// Closes only after idleCloseMs with no request routed to the session
 			// and no work started; a request in between pushes it back.
 			const idle = () => {
-				if (!live() || session.harness.wake().active) return;
+				if (!live()) return;
+				try {
+					if (session.harness.wake().active) return;
+				} catch {
+					return; // the harness is already failing or closing; harness.closed forgets it
+				}
 				const wait = (session.lastUsed ?? 0) + this.options.idleCloseMs - Date.now();
 				if (wait > 0) {
 					session.idleTimer = setTimeout(idle, wait);
@@ -385,7 +390,11 @@ export class SessionHost {
 
 	async #close(session: OpenSession, why: string, release = false) {
 		this.#forget(session, why);
+		// Closes of one session queue up, so the barrier a reopen waits on always
+		// covers every earlier close's lease release too.
+		const previous = this.#closing.get(session.sessionId) ?? Promise.resolve();
 		const done = (async () => {
+			await previous;
 			await session.harness.close(context).catch(() => undefined);
 			if (release) await this.leases.release(session.lease).catch(() => undefined);
 		})();
