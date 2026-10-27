@@ -10,5 +10,6 @@
 		"noImplicitOverride": true,
 		"types": ["bun"]
 	},
-	"include": ["src", "test", "../../spike/contracts", "../../spike/scenario", "../../spike/conformance"]
+	"include": ["src", "test", "../../spike/contracts", "../../spike/scenario", "../../spike/conformance"],
+	"exclude": ["src/gateway", "test/gateway"]
 }

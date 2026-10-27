@@ -2,23 +2,31 @@
 	"name": "@harbour/selfhosted",
 	"private": true,
 	"type": "module",
-	"description": "Harbour self-hosted gateway and session host (M0-SH1 spike)",
+	"description": "Harbour self-hosted gateway and session hosts",
 	"scripts": {
 		"host": "bun src/main.ts host",
-		"gateway": "bun src/main.ts gateway",
+		"gateway": "bun src/gateway/main.ts",
+		"test": "vitest run",
 		"test:stack": "bun test",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.gateway.json"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.4.0",
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
+		"@harbour/audit": "workspace:*",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/identity": "workspace:*",
+		"@harbour/runtime": "workspace:*",
+		"@harbour/workspace": "workspace:*",
 		"aws4fetch": "1.0.20",
 		"pg": "8.16.3"
 	},
 	"devDependencies": {
 		"@types/bun": "1.3.1",
+		"@types/node": "24.19.2",
 		"@types/pg": "8.15.5",
-		"typescript": "5.9.3"
+		"typescript": "5.9.3",
+		"vitest": "4.1.12"
 	}
 }

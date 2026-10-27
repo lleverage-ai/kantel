@@ -21,7 +21,53 @@ HARBOUR_SPIKE_TOKEN=unused HARBOUR_CANARY=harbour-canary-0000 \
 docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all state
 ```
 
-`apps/selfhosted/test` needs `bun install` in `apps/selfhosted` first.
+`apps/selfhosted/test` needs the workspace installed first (`pnpm install` at the repo root).
+
+## The M1 gateway and the console
+
+`gateway` serves the M1 APIs behind the API-key authenticator (`@harbour/identity/authenticator`), and the
+console's build (`apps/console`) on every other path:
+
+| Path | API |
+|---|---|
+| `/v1/sessions`, `/v1/profiles`, `/v1/hosts` | Session API (`@harbour/runtime/http`, see `packages/runtime/HTTP.md`) |
+| `/v1/workspaces/:id/...` | Workspace read API (`@harbour/workspace/read-api`) |
+| `/v1/audit/events`, `/v1/audit/event` | Audit query API (`@harbour/audit/http`) |
+| `/v1/deployment` | Which implementation backs each contract |
+| `/healthz` | Liveness, no credentials |
+| anything else | The console |
+
+Open the console at <http://127.0.0.1:58090/> (`HARBOUR_GATEWAY_PORT` moves it). On a remote machine, forward the
+port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console still shows its recorded sessions until it gets a
+client for the session API (M1-FE1).
+
+Every component behind the gateway is the in-memory implementation for now (the runtime answers with an `echo`
+model), so the gateway's state lasts as long as its container. On each start it creates an organisation, a project,
+an `echo` agent profile, a workspace with a README and an operator API key on the project, and writes their IDs and
+the key to `/var/lib/harbour/bootstrap.json` in the container:
+
+```bash
+docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
+bun apps/selfhosted/test/gateway/stack.ts     # the end-to-end test CI runs against the stack
+```
+
+## Running a second stack
+
+Other work may already be using a stack named `harbour` on the default ports. A second one on the same machine needs
+its own project name, ports, `control` subnet, vault container name, sandbox network prefix and image tag. Every
+`docker compose` command, and the scripts here, follow `COMPOSE_PROJECT_NAME`:
+
+```bash
+export COMPOSE_PROJECT_NAME=harbour-m1sh HARBOUR_IMAGE_TAG=m1sh \
+  HARBOUR_PG_PORT=56432 HARBOUR_S3_PORT=59100 HARBOUR_ISOLATE_PORT=58180 \
+  HARBOUR_HOST_A_PORT=58181 HARBOUR_HOST_B_PORT=58182 HARBOUR_GATEWAY_PORT=58190 \
+  HARBOUR_CONTROL_PREFIX=10.250.91 HARBOUR_VAULT_CONTAINER=harbour-m1sh-vault-proxy \
+  HARBOUR_SANDBOX_NETWORK=harbour-m1sh-sbx
+docker compose -f deploy/compose/compose.yaml up -d --build --wait
+```
+
+The tests take the matching URLs: `HARBOUR_DATABASE_URL`, `S3_ENDPOINT`, `--base` for the spike scripts and
+`--base-url` for the gateway test.
 
 ## What runs
 
@@ -34,6 +80,7 @@ docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all
 | `minio` | Content-addressed workspace blobs and manifests. | 59000 |
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
 | `sandbox-image` | Builds `harbour-sandbox:dev`, the container tier's warm image, and exits. | none |
+| `gateway` | The M1 gateway (Bun): session, workspace read and audit query APIs behind the API-key authenticator, and the console. | 58090 |
 
 Networks: `control` (everything but sandboxes and the fixture) and `upstream`
 (vault and fixture: the outside world). Each sandbox container gets its own
@@ -46,8 +93,8 @@ networks at once, which caps concurrent container commands on one daemon;
 widen `default-address-pools` in the daemon config to raise it.
 
 Ports are bound to 127.0.0.1 and can be moved with `HARBOUR_PG_PORT`,
-`HARBOUR_S3_PORT`, `HARBOUR_ISOLATE_PORT`, `HARBOUR_HOST_A_PORT` and
-`HARBOUR_HOST_B_PORT`.
+`HARBOUR_S3_PORT`, `HARBOUR_ISOLATE_PORT`, `HARBOUR_HOST_A_PORT`,
+`HARBOUR_HOST_B_PORT` and `HARBOUR_GATEWAY_PORT`.
 
 ## For M0-BE2 (seeding measurements)
 

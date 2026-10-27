@@ -25,6 +25,14 @@
 # on a new address, a host that isn't recreated with it keeps calling the old
 # one. Docker hands out the other addresses on `control` from .128 up, so they
 # can never take a fixed one.
+#
+# M1: `gateway` serves the M1 APIs (sessions, workspace reads, audit queries)
+# behind the API-key authenticator, and the console, on HARBOUR_GATEWAY_PORT
+# (default 58090). The M0 session hosts and their spike API are unchanged.
+#
+# A second stack beside this one (another lane's, or CI's) needs its own
+# project name, ports, control prefix, vault container name, sandbox network
+# prefix and image tag; see README.md, "Running a second stack".
 
 name: harbour
 
@@ -32,7 +40,7 @@ x-host: &host
   build:
     context: ../..
     dockerfile: apps/selfhosted/Dockerfile
-  image: harbour-selfhosted:dev
+  image: harbour-selfhosted:${HARBOUR_IMAGE_TAG:-dev}
   restart: unless-stopped
   depends_on:
     postgres: { condition: service_healthy }
@@ -60,13 +68,13 @@ x-host: &host
     S3_ACCESS_KEY: harbour
     S3_SECRET_KEY: harbour-dev-secret
     HARBOUR_ISOLATE_URL: http://isolate-host:8080
-    HARBOUR_SANDBOX_IMAGE: harbour-sandbox:dev
+    HARBOUR_SANDBOX_IMAGE: harbour-sandbox:${HARBOUR_IMAGE_TAG:-dev}
     HARBOUR_SANDBOX_RUNTIME: ${HARBOUR_SANDBOX_RUNTIME:-runc}
     # Recorded by src/measure.ts beside its numbers.
     HARBOUR_ISOLATE_RUNTIME: ${HARBOUR_ISOLATE_RUNTIME:-runc}
     # Name prefix of the per-command sandbox networks.
-    HARBOUR_SANDBOX_NETWORK: harbour-sbx
-    HARBOUR_VAULT_CONTAINER: harbour-vault-proxy
+    HARBOUR_SANDBOX_NETWORK: ${HARBOUR_SANDBOX_NETWORK:-harbour-sbx}
+    HARBOUR_VAULT_CONTAINER: ${HARBOUR_VAULT_CONTAINER:-harbour-vault-proxy}
     HARBOUR_VAULT_PROXY_URL: http://vault-proxy:3128
     HARBOUR_SPIKE_TOKEN: ${HARBOUR_SPIKE_TOKEN:-}
 
@@ -108,7 +116,7 @@ services:
     build:
       context: ../..
       dockerfile: images/isolate-host/Dockerfile
-    image: harbour-isolate-host:dev
+    image: harbour-isolate-host:${HARBOUR_IMAGE_TAG:-dev}
     runtime: ${HARBOUR_ISOLATE_RUNTIME:-runc}
     restart: unless-stopped
     environment:
@@ -143,9 +151,9 @@ services:
     build:
       context: ../..
       dockerfile: apps/vault-proxy/Dockerfile
-    image: harbour-vault-proxy:dev
+    image: harbour-vault-proxy:${HARBOUR_IMAGE_TAG:-dev}
     # Fixed, because session hosts connect it to each sandbox network by name.
-    container_name: harbour-vault-proxy
+    container_name: ${HARBOUR_VAULT_CONTAINER:-harbour-vault-proxy}
     restart: unless-stopped
     environment:
       HARBOUR_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
@@ -191,7 +199,7 @@ services:
   sandbox-image:
     build:
       context: ../../images/sandbox
-    image: harbour-sandbox:dev
+    image: harbour-sandbox:${HARBOUR_IMAGE_TAG:-dev}
     command: ["true"]
     restart: "no"
     network_mode: none
@@ -205,6 +213,28 @@ services:
       postgres: { condition: service_healthy }
     volumes: []
     healthcheck: { disable: true }
+
+  # The M1 gateway. Every component is in memory until its lane's real one
+  # lands, so it needs nothing else in the stack yet; it writes its bootstrap
+  # organisation, project, workspace and API key to HARBOUR_BOOTSTRAP_FILE.
+  gateway:
+    build:
+      context: ../..
+      dockerfile: apps/selfhosted/Dockerfile
+    image: harbour-selfhosted:${HARBOUR_IMAGE_TAG:-dev}
+    command: ["bun", "src/gateway/main.ts"]
+    restart: unless-stopped
+    environment:
+      HARBOUR_BOOTSTRAP_FILE: /var/lib/harbour/bootstrap.json
+      HARBOUR_CONSOLE_DIR: /harbour/apps/console/dist
+    ports: ["127.0.0.1:${HARBOUR_GATEWAY_PORT:-58090}:8080"]
+    networks: [control]
+    volumes: [gatewaystate:/var/lib/harbour]
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
 
   host-a:
     <<: *host
@@ -235,3 +265,4 @@ volumes:
   pgdata: {}
   miniodata: {}
   vaultca: {}
+  gatewaystate: {}
