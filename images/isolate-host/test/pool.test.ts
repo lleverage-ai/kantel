@@ -114,14 +114,21 @@ describe("Pool", () => {
 	});
 
 	it("refills only once nothing has been in flight for the quiet spell", async () => {
-		const { clock, pool, load, loaded } = fixture();
+		const { clock, pool } = fixture();
+		const loadedAt: number[] = [];
+		const load = async () => {
+			loadedAt.push(clock.now);
+		};
 		const a = call(pool, "a");
 		// In flight: the refill waits, and gives up after its patience.
 		await pool.refill(load, 2);
-		expect(loaded).toHaveLength(0);
+		expect(loadedAt).toHaveLength(0);
 		a.done(clock.now);
+		const ended = clock.now;
 		await pool.refill(load, 2);
-		expect(loaded).toHaveLength(2);
+		expect(loadedAt).toHaveLength(2);
+		// Not before 25 ms with nothing in flight.
+		expect(loadedAt[0]! - ended).toBeGreaterThanOrEqual(25);
 		expect(pool.stats().idle).toBe(2);
 	});
 
