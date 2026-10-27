@@ -8,13 +8,18 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
-		"./http": "./src/http.ts"
+		"./http": "./src/http.ts",
+		"./sql": "./src/sql.ts",
+		"./relay": "./src/relay.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*"
 	},
 	"devDependencies": {
 		"@harbour/testing": "workspace:*",
-		"@harbour/identity": "workspace:*"
+		"@harbour/identity": "workspace:*",
+		"@electric-sql/pglite": "0.5.12",
+		"@harbour/sql": "workspace:*"
 	}
 }

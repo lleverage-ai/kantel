@@ -93,9 +93,36 @@ server's `HarbourError` code.
 `createMemoryAuditStore({ clock?, retentionMs?, access? })` keeps rows in one array in `seq` order with an index by id;
 `retentionMs` is the default for organisations that set none; without `access` it checks only the organisation. Pages hold up to 500 rows (default 100).
 `createMemoryAuditOutbox()` keeps a queue, validates events as they arrive (so one malformed event cannot block it) and
-runs drains one at a time. It leaves out durability, a transactional outbox shared with a component's own records,
-scheduled retention, and a record of ids already removed by retention (a very late retry of such an id is stored again,
-and goes at the next retention run).
+runs drains one at a time. It leaves out durability, a transactional outbox shared with a component's own records
+(both in the durable implementation below), scheduled retention, and a record of ids already removed by retention (a
+very late retry of such an id is stored again, and goes at the next retention run; the durable store does the same).
+
+## The durable implementation (M1-BE8)
+
+`@harbour/audit/sql` runs on any `SqlDriver` from `@harbour/sql`: Postgres (`postgresPoolDriver(pool)` over `pg`) for
+the self-hosted target, and D1 (`d1Driver(env.DB)`) or another SQLite for Cloudflare. It passes the whole suite,
+with `projectAccess`, on PGlite, `node:sqlite`, D1 in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real
+Postgres.
+
+- `migrateAudit(driver)` creates the tables if they are missing; `auditSchema(dialect)` gives the statements for a
+  target's own migrations. Tables: `audit_events` (one row per organisation and id, `UNIQUE (organisation_id, id)`),
+  `audit_projects` (the projects each organisation's rows name), `audit_retention` and `audit_outbox`.
+- `createSqlAuditStore({ driver, clock?, retentionMs?, access? })` behaves as the in-memory store. An append is one
+  batch of `INSERT … ON CONFLICT DO NOTHING`, so a retried batch, or one the store took before the relay lost its
+  answer, adds no row ("stores each event once when the store took a batch but the relay never heard back"). On
+  Postgres each append takes an advisory lock first, so rows commit in `seq` order and a reader paging by cursor never
+  skips a row that commits late. Pages are cut in SQL on indexes that lead with the organisation; a query without a
+  project or session checks access once per project the organisation's rows name, then pages over those projects.
+  `sql.scale.test.ts` seeds 100,000 events and checks that the first page, a page near the end, a session's page,
+  newest-first and an access-filtered page each take under 100 ms and use an index (each takes under 10 ms locally).
+- `createSqlAuditOutbox({ driver, clock? })` keeps the queue in `audit_outbox`. A producer queues its events in its
+  own transaction with `auditOutboxStatements(events)`: in the same D1 or SQLite `batch` as its own writes, or on
+  Postgres through `postgresClientDriver(client)` over the client its transaction runs on. Its records and their
+  events then commit, or roll back, together. Drains from one outbox run one at a time; two processes draining at
+  once may both send a batch, and the store keeps one row.
+- `@harbour/audit/relay` has `startAuditRelay({ outbox, sink, intervalMs?, maxBackoffMs?, onError? })`, which drains
+  on a timer and doubles its wait while the sink fails. On Cloudflare, call `outbox.drain` from a Durable Object alarm
+  or a cron trigger instead. `applyRetention` is the deployment's to schedule.
 
 ## Open questions
 
