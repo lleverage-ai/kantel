@@ -4,7 +4,10 @@
  */
 import {
 	type CallContext,
+	type ConnectorCredentialRequest,
+	type ConnectorCredentials,
 	type DecisionInput,
+	type EgressDecision,
 	type EgressRequest,
 	type HttpMethod,
 	isHarbourError,
@@ -31,8 +34,11 @@ import {
 	WORKER,
 } from "./harness.ts";
 
+/** The vault every target builds: the `Vault` contract and the model gateway's connector credential read. */
+export type HarbourVaultUnderTest = Vault & ConnectorCredentials;
+
 export interface VaultSubject {
-	readonly vault: Vault;
+	readonly vault: HarbourVaultUnderTest;
 }
 
 export type VaultConformanceProvider = (
@@ -52,6 +58,43 @@ const otherAgent = contextFor(actors.agent("agent-2", "session-2"), ORG, PROJECT
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 /** The runtime's session-end hook calls the teardown with a system context in the session's organisation. */
 const sessionEnd = contextFor(actors.system("session-end"), ORG);
+/** Harbour's operator, the only caller that may create platform items. */
+const operator = contextFor(actors.system("operator"), ORG);
+/** The model gateway's call scope: agent-1's session in this project. */
+const MODEL_SCOPE = { organisationId: ORG, projectId: PROJECT, agentId: "agent-1", sessionId: "session-1" } as const;
+const MODEL_HOST = "llm.example.com";
+
+function connectorRequest(itemId: string, extra: Partial<ConnectorCredentialRequest> = {}): ConnectorCredentialRequest {
+	return {
+		connectorId: "org-litellm",
+		owner: { kind: "organisation", organisationId: ORG },
+		vaultItemId: itemId,
+		baseUrl: `https://${MODEL_HOST}/v1`,
+		scope: MODEL_SCOPE,
+		...extra,
+	};
+}
+
+/** A model key: owned by the platform when `ctx` is the operator, else by the organisation of `ctx`. */
+function putModelKey(
+	vault: Vault,
+	ctx: CallContext,
+	owner: "platform" | "organisation" | "project",
+	withValue = true,
+): Promise<VaultItem> {
+	return vault.putItem(ctx, {
+		owner:
+			owner === "platform"
+				? { kind: "platform" }
+				: owner === "project"
+					? { kind: "project", organisationId: ctx.organisationId, projectId: PROJECT }
+					: { kind: "organisation", organisationId: ctx.organisationId },
+		name: `${owner}-model-key`,
+		hosts: [MODEL_HOST],
+		injection: { header: "Authorization", template: "Bearer {key}" },
+		...(withValue ? { value: CANARY_SECRET } : {}),
+	});
+}
 
 // Project access (settled question 7). `human` is an organisation-wide admin; these hold roles on one project only.
 const OTHER_PROJECT = "proj-b";
@@ -170,7 +213,10 @@ export function createVaultConformance(options: {
 	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
-	const test = (name: string, body: (vault: Vault, deps: ConformanceDeps) => Promise<void>): ConformanceCase => ({
+	const test = (
+		name: string,
+		body: (vault: HarbourVaultUnderTest, deps: ConformanceDeps) => Promise<void>,
+	): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
@@ -1287,7 +1333,198 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.decideEgress(WORKER, request)).allow, true, "the gateway's own call still works");
 		}),
 	];
-	return [...cases, ...sessionEndCases, ...(options.projectAccess === true ? projectAccessCases : [])];
+	/** Asserts that a connector read is refused with `code`, recording one denied use audited as `vault.use.denied`. */
+	async function assertConnectorRefused(
+		vault: HarbourVaultUnderTest,
+		deps: ConformanceDeps,
+		request: ConnectorCredentialRequest,
+		code: "refused" | "invalid",
+		label: string,
+	): Promise<void> {
+		const uses = (await vault.listUses(human)).items.length;
+		const denied = deps.audit.ofType("vault.use.denied").length;
+		await assert.rejectsWithCode(vault.readConnectorCredential(WORKER, request), code, label);
+		const recorded = (await vault.listUses(human)).items;
+		assert.strictEqual(recorded.length, uses + 1, `${label}: a use is recorded`);
+		assert.partialDeepEqual(recorded.at(-1), { outcome: "denied", method: "POST", sessionId: "session-1" });
+		assert.ok(recorded.at(-1)?.reason !== undefined, `${label}: the denied use has a reason`);
+		assert.strictEqual(deps.audit.ofType("vault.use.denied").length, denied + 1, `${label}: audited as denied`);
+	}
+
+	const platformAndConnectorCases: ConformanceCase[] = [
+		test("platform items: only a system caller creates one, and no organisation's caller lists or reads it", async (vault, deps) => {
+			const platform = await putModelKey(vault, operator, "platform");
+			assert.partialDeepEqual(platform, { owner: { kind: "platform" }, hasValue: true });
+			for (const ctx of [human, projectAdmin, outsider]) {
+				const before = deps.audit.ofType("access.denied").length;
+				await assert.rejectsWithCode(putModelKey(vault, ctx, "platform"), "forbidden", "only the operator");
+				assert.strictEqual(deps.audit.ofType("access.denied").length, before + 1, "the refusal is audited");
+			}
+			await assert.rejectsWithCode(putModelKey(vault, agent, "platform"), "forbidden", "never an agent");
+			for (const ctx of [human, outsider, operator]) {
+				await assert.rejectsWithCode(vault.getItem(ctx, platform.id), "not_found", "no organisation reads it");
+				assert.strictEqual((await vault.listItems(ctx)).items.length, 0, "no organisation lists it");
+			}
+			await assert.rejectsWithCode(
+				vault.putPolicy(human, {
+					itemId: platform.id,
+					selector: { organisationId: ORG },
+					route: { host: MODEL_HOST, methods: ["POST"], pathPrefix: "/" },
+				}),
+				"not_found",
+				"no organisation's policy can use it",
+			);
+			await assert.rejectsWithCode(
+				vault.propose(agent, termsFor(platform.id, ["POST"], { maxUses: 1 })),
+				"not_found",
+				"and no proposal can name it",
+			);
+			assert.strictEqual(containsCanary(deps.audit.events), false, "the audit holds no value");
+		}),
+
+		test("connector credentials: refuses every caller but the model gateway's system one, and records no use", async (vault, deps) => {
+			const item = await putModelKey(vault, human, "organisation");
+			await assertWorkerCallRefused(
+				assert,
+				deps,
+				"vault.readConnectorCredential",
+				(caller) => vault.readConnectorCredential(caller, connectorRequest(item.id)),
+				ORG,
+				{ agentId: "agent-1", sessionId: "session-1" },
+			);
+			assert.strictEqual((await vault.listUses(human)).items.length, 0, "a refused call records no use");
+			assert.strictEqual(deps.audit.ofType("vault.use.denied").length, 0);
+			assert.strictEqual(
+				(await vault.readConnectorCredential(WORKER, connectorRequest(item.id))).value,
+				CANARY_SECRET,
+				"the gateway's own call still works",
+			);
+		}),
+
+		test("connector credentials: refuses an item that does not belong to the connector's owner", async (vault, deps) => {
+			const platform = await putModelKey(vault, operator, "platform");
+			const own = await putModelKey(vault, human, "organisation");
+			const theirs = await putModelKey(vault, outsider, "organisation");
+			const platformConnector = { connectorId: "platform-cpa", owner: { kind: "platform" } } as const;
+			for (const [request, label] of [
+				[connectorRequest(own.id, platformConnector), "an organisation's item for a platform connector"],
+				[connectorRequest(platform.id), "a platform item for an organisation's connector"],
+				[connectorRequest(theirs.id), "another organisation's item"],
+				[
+					connectorRequest(theirs.id, { owner: { kind: "organisation", organisationId: OTHER_ORG } }),
+					"another organisation's connector for this organisation's session",
+				],
+				[connectorRequest("item_missing"), "an item that does not exist"],
+			] as const) {
+				await assertConnectorRefused(vault, deps, request, "refused", label);
+			}
+			assert.strictEqual(
+				(await vault.readConnectorCredential(WORKER, connectorRequest(platform.id, platformConnector))).itemId,
+				platform.id,
+				"a platform connector reads a platform item",
+			);
+			const projectItem = await putModelKey(vault, human, "project");
+			assert.strictEqual(
+				(await vault.readConnectorCredential(WORKER, connectorRequest(projectItem.id))).itemId,
+				projectItem.id,
+				"an organisation's connector reads an item of one of its projects",
+			);
+		}),
+
+		test("connector credentials: refuses a base URL whose host the item is not bound to", async (vault, deps) => {
+			const item = await putModelKey(vault, human, "organisation");
+			for (const [baseUrl, code] of [
+				["https://evil.example/v1", "refused"],
+				[`https://${MODEL_HOST}.evil.example/v1`, "refused"],
+				[`ftp://${MODEL_HOST}/v1`, "invalid"],
+				["not a url", "invalid"],
+			] as const) {
+				await assertConnectorRefused(vault, deps, connectorRequest(item.id, { baseUrl }), code, baseUrl);
+			}
+		}),
+
+		test("connector credentials: refuses an item without a value", async (vault, deps) => {
+			const item = await putModelKey(vault, human, "organisation", false);
+			await assertConnectorRefused(vault, deps, connectorRequest(item.id), "refused", "an item without a value");
+		}),
+
+		test("connector credentials: reads the key, over http too, and records a use for the session", async (vault, deps) => {
+			const item = await putModelKey(vault, human, "organisation");
+			const credential = await vault.readConnectorCredential(WORKER, connectorRequest(item.id));
+			assert.deepEqual(credential, {
+				itemId: item.id,
+				valueVersion: item.valueVersion,
+				value: CANARY_SECRET,
+				useId: credential.useId,
+			});
+			const internal = await vault.readConnectorCredential(
+				WORKER,
+				connectorRequest(item.id, { baseUrl: `http://${MODEL_HOST}:8317/v1` }),
+			);
+			assert.strictEqual(internal.value, CANARY_SECRET, "plain http is allowed for a connector");
+			const recorded = (await vault.listUses(human, { sessionId: "session-1" })).items;
+			assert.partialDeepEqual(recorded, [
+				{
+					id: credential.useId,
+					organisationId: ORG,
+					sessionId: "session-1",
+					itemId: item.id,
+					method: "POST",
+					host: MODEL_HOST,
+					path: "/v1",
+					outcome: "injected",
+				},
+				{ id: internal.useId, outcome: "injected" },
+			]);
+			const injected = deps.audit.ofType("vault.use.injected");
+			assert.deepEqual(
+				injected.map((event) => event.subject?.id),
+				[credential.useId, internal.useId],
+				"each read is audited as vault.use.injected",
+			);
+			assert.partialDeepEqual(injected[0], { organisationId: ORG, projectId: PROJECT, sessionId: "session-1" });
+		}),
+
+		test("connector credentials: keep the canary out of every use and audit event, returning it only as the value", async (vault, deps) => {
+			const errors: unknown[] = [];
+			const item = await putModelKey(vault, human, "organisation");
+			const platform = await putModelKey(vault, operator, "platform");
+			const credentials = [
+				await vault.readConnectorCredential(WORKER, connectorRequest(item.id)),
+				await vault.readConnectorCredential(
+					WORKER,
+					connectorRequest(platform.id, { connectorId: "platform-cpa", owner: { kind: "platform" } }),
+				),
+			];
+			for (const request of [
+				connectorRequest(platform.id),
+				connectorRequest(item.id, { baseUrl: "https://evil.example/" }),
+			]) {
+				try {
+					await vault.readConnectorCredential(WORKER, request);
+				} catch (error) {
+					errors.push(isHarbourError(error) ? { message: error.message, details: error.details } : String(error));
+				}
+			}
+			for (const credential of credentials) {
+				assert.strictEqual(credential.value, CANARY_SECRET, "the value is returned");
+				assert.strictEqual(containsCanary({ ...credential, value: undefined }), false, "and nowhere else");
+			}
+			assert.strictEqual(errors.length, 2, "every refusal was captured");
+			assert.strictEqual(containsCanary(errors), false, "no error carries the value");
+			assert.strictEqual(containsCanary(await vault.listUses(human)), false, "no use carries the value");
+			assert.strictEqual(containsCanary(await vault.listItems(human)), false, "no item read carries the value");
+			assert.greaterThan(deps.audit.events.length, 0);
+			assert.strictEqual(containsCanary(deps.audit.events), false, "no audit event carries the value");
+		}),
+	];
+
+	return [
+		...cases,
+		...sessionEndCases,
+		...platformAndConnectorCases,
+		...(options.projectAccess === true ? projectAccessCases : []),
+	];
 }
 
 /** How many events the vault itself (not `ProjectAccess`) has audited. */
@@ -1308,6 +1545,396 @@ export function registerVaultConformance(
 			assertions: createExpectAssertions(runner.expect),
 			provider,
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
+	);
+}
+
+/**
+ * A durable target under the proofs of issue #13: one durable store per case, with as many vault instances over it as
+ * a case opens, each built as another process would build it (same store, same cipher key, the case's clock, audit sink
+ * and access).
+ */
+export interface VaultDurableSubject {
+	/** A new vault instance over the case's store. */
+	open(): HarbourVaultUnderTest;
+	/** Every row of every vault table, read raw from the database: what an operator with database access sees. */
+	rawRows(): Promise<readonly { readonly table: string; readonly row: unknown }[]>;
+	/**
+	 * Serves the egress decision API (`@harbour/vault/egress-api`) for `vault` over HTTP, and returns a client of it
+	 * authenticated as the egress gateway.
+	 */
+	serveEgressApi(vault: HarbourVaultUnderTest): Promise<{
+		readonly client: { decideEgress(request: EgressRequest): Promise<EgressDecision> };
+		close(): Promise<void>;
+	}>;
+}
+
+/** The proofs, named by the prefix of their case names. */
+export type VaultDurableProof = "canary" | "revocation" | "wrong code" | "lifecycle" | "durable waits" | "races";
+
+export type VaultDurableProvider = (
+	deps: ConformanceDeps,
+	use: (subject: VaultDurableSubject) => Promise<void>,
+) => Promise<void>;
+
+type ConsoleMethod = "log" | "error" | "warn" | "info" | "debug";
+
+/** Runs `body` with every console method recorded (and still printed); resolves what was written. */
+async function recordingConsole(body: () => Promise<void>): Promise<readonly string[]> {
+	const methods: readonly ConsoleMethod[] = ["log", "error", "warn", "info", "debug"];
+	const originals = methods.map((method) => [method, console[method]] as const);
+	const written: string[] = [];
+	for (const [method, original] of originals) {
+		console[method] = (...args: unknown[]) => {
+			written.push(
+				args
+					.map((arg) =>
+						arg instanceof Error
+							? `${arg.name}: ${arg.message}\n${arg.stack ?? ""}`
+							: (JSON.stringify(arg) ?? String(arg)),
+					)
+					.join(" "),
+			);
+			original.apply(console, args);
+		};
+	}
+	try {
+		await body();
+	} finally {
+		for (const [method, original] of originals) console[method] = original;
+	}
+	return written;
+}
+
+/** Times `check` until it holds, every 10 ms of real time, for at most `limitMs`; resolves the milliseconds taken. */
+async function timeUntil(check: () => Promise<boolean>, limitMs: number): Promise<number> {
+	const started = Date.now();
+	while (!(await check())) {
+		if (Date.now() - started > limitMs) return Date.now() - started;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return Date.now() - started;
+}
+
+/**
+ * The proofs from issue #13's definition of done, for a durable target: the canary never leaves the vault except in
+ * an allowed decision's `inject.value`; a revocation through one instance holds for another within 5 s; a wrong
+ * binding code changes nothing; and the whole lifecycle, each step followed by a decision over the egress API. Also the
+ * race rules and durable waits across two instances.
+ */
+export function createVaultDurableProofs(options: {
+	assertions: ConformanceAssertions;
+	provider: VaultDurableProvider;
+	/** Only these proofs; default all. */
+	only?: readonly VaultDurableProof[];
+}): readonly ConformanceCase[] {
+	const assert = options.assertions;
+	const proof = (
+		name: string,
+		body: (subject: VaultDurableSubject, deps: ConformanceDeps) => Promise<void>,
+	): ConformanceCase => ({
+		name,
+		timeoutMs: 20_000,
+		run: async () => {
+			const deps = createDeps();
+			seedTenancy(deps);
+			await options.provider(deps, (subject) => body(subject, deps));
+		},
+	});
+	const url = (path: string) => `https://${HOST}${path}`;
+
+	const proofs: ConformanceCase[] = [
+		proof(
+			"canary: the value appears only in an allowed decision's inject.value, never in a row, record, audit event, error or log",
+			async (subject, deps) => {
+				const seen: unknown[] = [];
+				const errors: unknown[] = [];
+				const injected: EgressDecision[] = [];
+				const capture = async (operation: Promise<unknown>) => {
+					try {
+						seen.push(await operation);
+					} catch (error) {
+						errors.push(
+							isHarbourError(error)
+								? { code: error.code, message: error.message, details: error.details ?? null }
+								: String(error),
+						);
+					}
+				};
+				const vault = subject.open();
+				const api = await subject.serveEgressApi(vault);
+				let placeholder = "";
+				const written = await recordingConsole(async () => {
+					try {
+						const item = await putGithubToken(vault);
+						placeholder = item.placeholder;
+						await vault.setCeiling(human, [
+							{ host: HOST, methods: ["GET", "POST"], pathPrefix: "/" },
+							{ host: "api.linear.app", methods: ["POST"], pathPrefix: "/" },
+						]);
+						// A write, approved with the right code after a wrong one, then used over the API.
+						const write = await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }, "/repos/harbour"));
+						seen.push(await vault.approvalView(human, write.id));
+						await capture(vault.decide(human, approval(write, { pickedCode: await wrongCode(vault, write) })));
+						await capture(vault.decide(human, approval(write)));
+						await capture(vault.waitForOutcome(agent, write.id));
+						const allowed = await api.client.decideEgress(egress("POST", url("/repos/harbour/issues")));
+						assert.strictEqual(allowed.allow, true, "the approved write goes out");
+						injected.push(allowed);
+						seen.push(await api.client.decideEgress(egress("POST", url("/repos/harbour/issues"))));
+						// Denied.
+						const denied = await vault.propose(agent, termsFor(item.id, ["GET"], { maxUses: 1 }, "/repos/denied"));
+						await capture(vault.decide(human, { proposalId: denied.id, outcome: "deny", note: "No" }));
+						await capture(vault.waitForOutcome(agent, denied.id));
+						seen.push(await api.client.decideEgress(egress("GET", url("/repos/denied"))));
+						// Expired.
+						const expiring = await vault.propose(agent, termsFor(item.id, ["GET"], { maxUses: 1 }, "/repos/expired"));
+						deps.clock.set(expiring.expiresAt + 1);
+						await capture(vault.decide(human, approval(expiring)));
+						await capture(vault.waitForOutcome(agent, expiring.id));
+						seen.push(await api.client.decideEgress(egress("GET", url("/repos/expired"))));
+						// Revoked.
+						const route = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos/revoked"));
+						const decision = await vault.decide(human, approval(route));
+						seen.push(decision);
+						const before = await api.client.decideEgress(egress("GET", url("/repos/revoked")));
+						assert.strictEqual(before.allow, true, "the route grant is used before it is revoked");
+						injected.push(before);
+						await capture(vault.revokeGrant(human, decision.grantId!, "Done"));
+						seen.push(await api.client.decideEgress(egress("GET", url("/repos/revoked"))));
+						// A secret pasted through a second instance, and a refusal that names the item.
+						const secret = await vault.propose(agent, secretTerms);
+						await capture(subject.open().decide(human, approval(secret, { secretValue: CANARY_SECRET })));
+						await capture(vault.propose(agent, { ...secretTerms, itemId: item.id }));
+						await capture(api.client.decideEgress({ ...egress("GET", url("/")), method: "BREW" as HttpMethod }));
+					} finally {
+						await api.close();
+					}
+				});
+				const records = [
+					await vault.listItems(human),
+					await vault.listPolicies(human),
+					await vault.listProposals(human),
+					await vault.listGrants(human),
+					await vault.listUses(human),
+					await subject.open().listProposals(human),
+				];
+				const rows = await subject.rawRows();
+
+				assert.greaterThan(rows.length, 0);
+				assert.strictEqual(injected.length, 2);
+				for (const decision of injected) {
+					assert.strictEqual(decision.inject?.value, `Bearer ${CANARY_SECRET}`, "the allowed decision injects it");
+					assert.strictEqual(containsCanary({ ...decision, inject: undefined }), false, "and nothing else in it does");
+				}
+				assert.ok(
+					rows.some((entry) => entry.table === "items"),
+					"the store holds the items",
+				);
+				assert.strictEqual(containsCanary(rows), false, "no stored row holds the value: values are sealed");
+				assert.strictEqual(containsCanary(deps.audit.events), false, "no audit event holds it");
+				assert.strictEqual(containsCanary(records), false, "no use, proposal, policy, grant or item record holds it");
+				assert.strictEqual(containsCanary(seen), false, "no decision, outcome or view holds it");
+				assert.strictEqual(errors.length, 4, "every refusal was captured");
+				assert.strictEqual(containsCanary(errors), false, "no error message holds it");
+				assert.strictEqual(containsCanary(written), false, "nothing written to the console holds it");
+				assert.ok(/^harbour:\/\/github-token\/[0-9a-f]{6}$/.test(placeholder), "the placeholder is random");
+				assert.strictEqual(containsCanary(placeholder), false, "the placeholder a sandbox holds is not the value");
+			},
+		),
+
+		proof("revocation: a grant revoked through one instance is refused by another within 5 s", async (subject) => {
+			const admin = subject.open();
+			const egressSide = subject.open();
+			const api = await subject.serveEgressApi(egressSide);
+			try {
+				const item = await putGithubToken(admin);
+				const grantId = await approvedGrant(admin, agent, termsFor(item.id, ["GET"], {}));
+				const request = egress("GET", url("/repos/harbour"));
+				assert.strictEqual((await api.client.decideEgress(request)).allow, true, "allowed under the active grant");
+				await admin.revokeGrant(human, grantId, "Revoked by the admin side");
+				let decisions = 0;
+				const elapsed = await timeUntil(async () => {
+					decisions += 1;
+					return !(await api.client.decideEgress(request)).allow;
+				}, 5_000);
+				assert.ok(elapsed < 5_000, `the egress side refused within 5 s (took ${elapsed} ms)`);
+				assert.strictEqual(decisions, 1, "the very next decision is refused: decisions read the store");
+				assert.strictEqual((await egressSide.getGrant(human, grantId)).status, "revoked");
+			} finally {
+				await api.close();
+			}
+		}),
+
+		proof(
+			"wrong code: approving a write, a route or a secret paste with a wrong code is refused, audited and changes nothing",
+			async (subject, deps) => {
+				const vault = subject.open();
+				const item = await putGithubToken(vault, false);
+				const proposals = [
+					await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 })),
+					await vault.propose(agent, termsFor(item.id, ["GET"], { ttlMs: 60_000 })),
+					await vault.propose(agent, secretTerms),
+				];
+				assert.deepEqual(
+					proposals.map((proposal) => proposal.kind),
+					["write", "route", "secret"],
+				);
+				const rowsBefore = await subject.rawRows();
+				for (const proposal of proposals) {
+					const before = deps.audit.ofType("vault.binding_code.mismatch").length;
+					const input = approval(proposal, {
+						pickedCode: await wrongCode(vault, proposal),
+						...(proposal.kind === "secret" ? { secretValue: CANARY_SECRET } : {}),
+					});
+					await assert.rejectsWithCode(vault.decide(human, input), "refused", `a wrong code on a ${proposal.kind}`);
+					const mismatches = deps.audit.ofType("vault.binding_code.mismatch");
+					assert.strictEqual(mismatches.length, before + 1, `the ${proposal.kind} mismatch is audited`);
+					assert.strictEqual(mismatches.at(-1)?.subject?.id, proposal.id);
+				}
+				// Read back through an instance that never saw the attempts: the store is as it was.
+				const fresh = subject.open();
+				for (const proposal of proposals) {
+					assert.strictEqual((await fresh.getProposal(human, proposal.id)).status, "pending", "still pending");
+				}
+				assert.strictEqual((await fresh.listGrants(human)).items.length, 0, "no grant");
+				assert.strictEqual((await fresh.getItem(human, item.id)).hasValue, false, "no value on the item");
+				assert.strictEqual((await fresh.listItems(human)).items.length, 1, "no item for the secret");
+				assert.deepEqual(await subject.rawRows(), rowsBefore, "no stored row changed");
+				assert.strictEqual(containsCanary(await subject.rawRows()), false);
+			},
+		),
+
+		proof(
+			"lifecycle: approve, narrow, deny, expire and revoke, each followed by a decision over the egress API",
+			async (subject, deps) => {
+				const vault = subject.open();
+				const api = await subject.serveEgressApi(subject.open());
+				const decide = (method: HttpMethod, path: string) => api.client.decideEgress(egress(method, url(path)));
+				try {
+					const item = await putGithubToken(vault);
+
+					const approved = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos/approved"));
+					assert.strictEqual((await decide("GET", "/repos/approved/x")).allow, false, "nothing before the approval");
+					await vault.decide(human, approval(approved));
+					assert.strictEqual((await vault.waitForOutcome(agent, approved.id)).status, "approved");
+					assert.strictEqual((await decide("GET", "/repos/approved/x")).allow, true, "approved: allowed");
+
+					const narrowed = await vault.propose(agent, termsFor(item.id, ["GET", "POST"], {}, "/repos/narrowed"));
+					await vault.decide(
+						human,
+						approval(narrowed, { narrowing: { methods: ["GET"], pathPrefix: "/repos/narrowed/only" } }),
+					);
+					const outcome = await vault.waitForOutcome(agent, narrowed.id);
+					assert.deepEqual(outcome.effectiveTerms?.route, {
+						host: HOST,
+						methods: ["GET"],
+						pathPrefix: "/repos/narrowed/only",
+					});
+					assert.strictEqual((await decide("GET", "/repos/narrowed/only/x")).allow, true, "narrowed: inside allowed");
+					assert.strictEqual((await decide("POST", "/repos/narrowed/only/x")).allow, false, "a narrowed-out method");
+					assert.strictEqual((await decide("GET", "/repos/narrowed/other")).allow, false, "a narrowed-out path");
+
+					const denied = await vault.propose(agent, termsFor(item.id, ["GET"], { maxUses: 1 }, "/repos/denied"));
+					await vault.decide(human, { proposalId: denied.id, outcome: "deny" });
+					assert.strictEqual((await vault.waitForOutcome(agent, denied.id)).status, "denied");
+					const deniedDecision = await decide("GET", "/repos/denied");
+					assert.strictEqual(deniedDecision.allow, false, "denied: refused");
+					assert.strictEqual(deniedDecision.fix?.action, "propose", "with a fix");
+
+					const expiring = await vault.propose(agent, termsFor(item.id, ["GET"], { maxUses: 1 }, "/repos/expired"));
+					deps.clock.set(expiring.expiresAt + 1);
+					assert.strictEqual((await vault.waitForOutcome(agent, expiring.id)).status, "expired");
+					await assert.rejectsWithCode(vault.decide(human, approval(expiring)), "expired");
+					assert.strictEqual((await decide("GET", "/repos/expired")).allow, false, "expired: refused");
+
+					const revoked = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos/revoked"));
+					const grantId = (await vault.decide(human, approval(revoked))).grantId!;
+					assert.strictEqual((await decide("GET", "/repos/revoked")).allow, true, "allowed before the revocation");
+					await vault.revokeGrant(human, grantId);
+					assert.strictEqual((await decide("GET", "/repos/revoked")).allow, false, "revoked: refused");
+
+					const uses = (await vault.listUses(human, { sessionId: "session-1" })).items;
+					assert.strictEqual(uses.length, 9, "every decision over the API recorded a use");
+					assert.deepEqual(
+						uses.map((use) => use.outcome),
+						["denied", "injected", "injected", "denied", "denied", "denied", "denied", "injected", "denied"],
+					);
+				} finally {
+					await api.close();
+				}
+			},
+		),
+
+		proof(
+			"durable waits: a vault opened after the proposal resolves its wait for a decision made through another",
+			async (subject) => {
+				const first = subject.open();
+				const item = await putGithubToken(first);
+				const proposal = await first.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }));
+				// The agent's process restarts: a new instance waits; another instance (the vault page) decides.
+				const restarted = subject.open();
+				const waiting = restarted.waitForOutcome(agent, proposal.id);
+				await subject.open().decide(human, approval(proposal));
+				const outcome = await Promise.race([
+					waiting,
+					new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5_000)),
+				]);
+				assert.strictEqual(outcome?.status, "approved", "the wait resolved from the store");
+				assert.strictEqual(outcome?.effectiveTerms?.itemId, item.id);
+				assert.ok(outcome?.message.includes("No request has run"), "and says no request has run");
+				assert.strictEqual((await subject.open().waitForOutcome(agent, proposal.id)).status, "approved", "again later");
+			},
+		),
+
+		proof("races: two instances settle a proposal once and never spend a grant past maxUses", async (subject) => {
+			const a = subject.open();
+			const b = subject.open();
+			const item = await putGithubToken(a);
+			const proposal = await a.propose(agent, termsFor(item.id, ["GET"], { maxUses: 3 }));
+			const results = await Promise.allSettled([
+				a.decide(human, approval(proposal)),
+				b.decide(human, approval(proposal)),
+				b.decide(human, { proposalId: proposal.id, outcome: "deny" }),
+				a.withdraw(agent, proposal.id),
+			]);
+			assert.strictEqual(results.filter((result) => result.status === "fulfilled").length, 1, "one decision wins");
+			for (const result of results) {
+				if (result.status === "rejected") {
+					assert.strictEqual((result.reason as { code?: string }).code, "conflict", "the others are conflicts");
+				}
+			}
+			const settled = await subject.open().getProposal(human, proposal.id);
+			const grants = (await b.listGrants(human)).items.length;
+			assert.strictEqual(grants, settled.status === "approved" ? 1 : 0, "a grant only for an approval");
+
+			const spending = await a.propose(otherAgent, termsFor(item.id, ["GET"], { maxUses: 3 }));
+			const grantId = (await b.decide(human, approval(spending))).grantId!;
+			const request = egress("GET", url("/repos/harbour"), { agentId: "agent-2", sessionId: "session-2" });
+			const decisions = await Promise.all(
+				Array.from({ length: 8 }, (_, index) => (index % 2 === 0 ? a : b).decideEgress(WORKER, request)),
+			);
+			assert.strictEqual(decisions.filter((decision) => decision.allow).length, 3, "exactly maxUses are allowed");
+			assert.partialDeepEqual(await a.getGrant(human, grantId), { uses: 3, status: "exhausted" });
+		}),
+	];
+	const only = options.only;
+	return only === undefined ? proofs : proofs.filter((entry) => only.some((id) => entry.name.startsWith(`${id}:`)));
+}
+
+export function registerVaultDurableProofs(
+	runner: ConformanceRunner,
+	name: string,
+	provider: VaultDurableProvider,
+	only?: readonly VaultDurableProof[],
+): void {
+	registerCases(
+		runner,
+		name,
+		createVaultDurableProofs({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(only === undefined ? {} : { only }),
 		}),
 	);
 }

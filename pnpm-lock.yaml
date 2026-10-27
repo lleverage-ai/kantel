@@ -441,6 +441,31 @@ importers:
         specifier: 4.153.0
         version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
 
+  targets/cloudflare/vault:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../../../packages/vault
+    devDependencies:
+      "@cloudflare/workers-types":
+        specifier: 5.20261027.1
+        version: 5.20261027.1
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
+
   targets/cloudflare/workspace:
     dependencies:
       "@harbour/contracts":
@@ -465,6 +490,37 @@ importers:
       wrangler:
         specifier: 4.153.0
         version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
+
+  targets/selfhosted/vault:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../../../packages/vault
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.11
+        version: 0.5.11
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      "@types/pg":
+        specifier: 8.15.5
+        version: 8.15.5
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
 
   targets/selfhosted/workspace:
     dependencies:
@@ -921,6 +977,10 @@ packages:
     resolution:
       { integrity: sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w== }
     engines: { node: ">=22.19.0" }
+
+  "@electric-sql/pglite@0.5.11":
+    resolution:
+      { integrity: sha512-SWuqsTjA4DDWqgZ05PC1RJaq8e00p5KACxbqaikDFQ8dIGA0SLRzuPniky7IW+q/c5RDNMdEXwv7mFBWIx9Hxw== }
 
   "@electric-sql/pglite@0.5.12":
     resolution:
@@ -5582,6 +5642,8 @@ snapshots:
       - zod
 
   "@earendil-works/pi-telemetry@1.4.0": {}
+
+  "@electric-sql/pglite@0.5.11": {}
 
   "@electric-sql/pglite@0.5.12": {}
 
