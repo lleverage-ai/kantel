@@ -61,26 +61,44 @@ on it with `--runtime "${HARBOUR_SANDBOX_RUNTIME:-runc}"` and the vault as
 `vault-policy.json`, so add a route (for example `github.com`, `tunnel: true`)
 for git over HTTPS.
 
-## Runtimes: runc today, gVisor when the host has it
+## Runtimes: runc or gVisor
 
 `HARBOUR_ISOLATE_RUNTIME` (the workerd container) and `HARBOUR_SANDBOX_RUNTIME`
 (sandbox containers) both default to `runc`. workerd is not a hardened
-sandbox, so production must run it under gVisor or in a microVM. The spike
-host has no `runsc`, and installing it is a host change this spike was not
-allowed to make. To switch, on the host:
+sandbox, so production must run it under gVisor or in a microVM. To switch,
+on the host:
 
 ```bash
-# 1. Install gVisor (https://gvisor.dev/docs/user_guide/install/), then register it:
+# 1. Install gVisor (https://gvisor.dev/docs/user_guide/install/). Since release
+#    20260831.0 it ships as one gvisor.tar.zstd: runsc and
+#    containerd-shim-runsc-v1, plus the sentry in a gvisor-bin/ directory
+#    beside them. Then register it:
 sudo runsc install            # adds "runsc" to /etc/docker/daemon.json
-sudo systemctl restart docker
+sudo systemctl reload docker  # or restart
 # 2. Start the stack on it:
 HARBOUR_ISOLATE_RUNTIME=runsc HARBOUR_SANDBOX_RUNTIME=runsc \
   docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
-Nothing else changes: the session host passes the runtime name to the Docker
-API for every sandbox container. The cold-start numbers in
-`docs/measurements/m0-sh1-selfhosted/` are on runc and need re-running on runsc.
+The session host passes the runtime name to the Docker API for every sandbox
+container. Keep both variables exported for every later `docker compose`
+command (including `up host-a` after a kill): compose recreates a service whose
+runtime differs, so a bare `up` quietly puts it back on runc. The cold-start
+numbers for both runtimes are in `docs/measurements/m0-sh1-selfhosted/`.
+
+Two things work differently under gVisor, and the stack allows for both:
+
+- **No Docker DNS.** runsc's network stack cannot reach Docker's embedded DNS
+  (127.0.0.11) on a user-defined network
+  (https://gvisor.dev/docs/user_guide/faq/). So `minio` and `vault-proxy` have
+  fixed addresses on `control` (`HARBOUR_CONTROL_PREFIX`, default
+  `10.250.89`, giving `10.250.89.0/24`; change it if that clashes with a
+  network you have), the isolate host gets them through `extra_hosts`, and
+  each sandbox gets the vault's address as an `/etc/hosts` entry. Anything new
+  that runs under runsc must find its peers the same way.
+- **Root filesystem writes stay in the sandbox** (`overlay2=root:self`), out
+  of reach of Docker's archive API. `/workspace` is an anonymous volume per
+  container, so the session host can read the command's changes back.
 
 ## Spike shortcuts (not the production shape)
 

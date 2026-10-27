@@ -12,6 +12,12 @@
 # runtime for the workerd isolate host and for sandbox containers. Both
 # default to runc; set them to runsc once gVisor is registered with the
 # Docker daemon (see README.md). Production must not run workerd on runc.
+#
+# gVisor cannot reach Docker's embedded DNS (127.0.0.11) on a user-defined
+# network (https://gvisor.dev/docs/user_guide/faq/), so anything that may run
+# on runsc finds its peers by address, not by name: minio and vault-proxy have
+# fixed addresses on `control` (HARBOUR_CONTROL_PREFIX, default 10.250.89),
+# and the isolate host gets them as /etc/hosts entries.
 
 name: harbour
 
@@ -49,6 +55,8 @@ x-host: &host
     HARBOUR_ISOLATE_URL: http://isolate-host:8080
     HARBOUR_SANDBOX_IMAGE: harbour-sandbox:dev
     HARBOUR_SANDBOX_RUNTIME: ${HARBOUR_SANDBOX_RUNTIME:-runc}
+    # Recorded by src/measure.ts beside its numbers.
+    HARBOUR_ISOLATE_RUNTIME: ${HARBOUR_ISOLATE_RUNTIME:-runc}
     # Name prefix of the per-command sandbox networks.
     HARBOUR_SANDBOX_NETWORK: harbour-sbx
     HARBOUR_VAULT_CONTAINER: harbour-vault-proxy
@@ -80,7 +88,8 @@ services:
       MINIO_ROOT_USER: harbour
       MINIO_ROOT_PASSWORD: harbour-dev-secret
     ports: ["127.0.0.1:${HARBOUR_S3_PORT:-59000}:9000"]
-    networks: [control]
+    networks:
+      control: { ipv4_address: "${HARBOUR_CONTROL_PREFIX:-10.250.89}.10" }
     volumes: [miniodata:/data]
     healthcheck:
       test: ["CMD", "/usr/bin/minio", "--version"]
@@ -103,6 +112,10 @@ services:
       VAULT_ISOLATE_KEY: ${HARBOUR_VAULT_ISOLATE_KEY:-dev-isolate-key}
     ports: ["127.0.0.1:${HARBOUR_ISOLATE_PORT:-58080}:8080"]
     networks: [control]
+    # By address: on runsc this container cannot use Docker's DNS.
+    extra_hosts:
+      - "minio:${HARBOUR_CONTROL_PREFIX:-10.250.89}.10"
+      - "vault-proxy:${HARBOUR_CONTROL_PREFIX:-10.250.89}.11"
     depends_on:
       minio: { condition: service_healthy }
     healthcheck:
@@ -138,7 +151,9 @@ services:
       # The CA the vault intercepts sandbox HTTPS with; kept so sandboxes
       # trust the same CA across vault restarts. Only the vault mounts it.
       - vaultca:/var/lib/harbour-vault
-    networks: [control, upstream]
+    networks:
+      control: { ipv4_address: "${HARBOUR_CONTROL_PREFIX:-10.250.89}.11" }
+      upstream: {}
     depends_on:
       postgres: { condition: service_healthy }
       host-migrate: { condition: service_completed_successfully }
@@ -200,7 +215,10 @@ services:
     ports: ["127.0.0.1:${HARBOUR_HOST_B_PORT:-58082}:8080"]
 
 networks:
-  control: {}
+  control:
+    ipam:
+      config:
+        - subnet: "${HARBOUR_CONTROL_PREFIX:-10.250.89}.0/24"
   upstream: {}
 
 volumes:
