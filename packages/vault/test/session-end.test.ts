@@ -1,4 +1,4 @@
-import type { CallContext, SessionEndHook, SessionTeardown } from "@harbour/contracts";
+import { type CallContext, type SessionEndHook, type SessionTeardown, systemContext } from "@harbour/contracts";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { describe, expect, it } from "vitest";
 
@@ -51,7 +51,7 @@ describe("createMemoryVault with a session-end hook", () => {
 			method: "GET",
 			url: "https://api.github.com/user",
 		} as const;
-		expect((await vault.decideEgress(request)).allow).toBe(true);
+		expect((await vault.decideEgress(systemContext("test"), request)).allow).toBe(true);
 
 		await registered[0]!.teardown(system, {
 			sessionId: "session-1",
@@ -64,7 +64,7 @@ describe("createMemoryVault with a session-end hook", () => {
 		});
 		expect((await vault.getGrant(human, decision.grantId!)).status).toBe("revoked");
 		expect((await vault.getProposal(human, pending.id)).status).toBe("withdrawn");
-		expect((await vault.decideEgress(request)).allow).toBe(false);
+		expect((await vault.decideEgress(systemContext("test"), request)).allow).toBe(false);
 		expect(registered).toHaveLength(1);
 	});
 });

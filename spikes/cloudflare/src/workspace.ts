@@ -34,6 +34,7 @@ import {
 	type SeedReadiness,
 	type SeedSpec,
 	systemClock,
+	systemContext,
 	type WorkspaceChange,
 	type WorkspaceId,
 	type WorkspaceRecord,
@@ -521,7 +522,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 	}
 
 	async #emit(event: AuditEventInput): Promise<void> {
-		await this.#audit?.append([event]);
+		await this.#audit?.append(systemContext("workspace"), [event]);
 	}
 }
 

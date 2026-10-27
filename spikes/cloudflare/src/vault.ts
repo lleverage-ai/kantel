@@ -1,5 +1,14 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import type { AuditEventInput, EgressDecision, HttpMethod, SandboxTier, Vault } from "@harbour/contracts";
+import {
+	type AuditEventInput,
+	type AuditSink,
+	type EgressDecision,
+	type HttpMethod,
+	type SandboxTier,
+	type SystemContext,
+	systemContext,
+	type Vault,
+} from "@harbour/contracts";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { SPIKE_ORGANISATION, SPIKE_OWNER, serviceContext } from "./identity.ts";
 import { containsSecret, injectHeader, REDACTED, redactText } from "./redact.ts";
@@ -166,7 +175,7 @@ export class VaultDO extends DurableObject<Env> {
 		ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, body TEXT NOT NULL)");
 		void ctx.blockConcurrencyWhile(async () => {
 			this.#vault = await seed(this.env, {
-				append: async (events: readonly AuditEventInput[]) => {
+				append: async (_ctx: SystemContext, events: readonly AuditEventInput[]) => {
 					for (const event of events) {
 						this.ctx.storage.sql.exec(
 							"INSERT OR IGNORE INTO audit (id, body) VALUES (?, ?)",
@@ -181,7 +190,7 @@ export class VaultDO extends DurableObject<Env> {
 
 	async decide(input: { sessionId: string; method: HttpMethod; url: string }): Promise<EgressDecision> {
 		if (this.#vault === undefined) throw new Error("vault not seeded");
-		return this.#vault.decideEgress({ organisationId: SPIKE_ORGANISATION, ...input });
+		return this.#vault.decideEgress(systemContext("egress"), { organisationId: SPIKE_ORGANISATION, ...input });
 	}
 
 	record(use: SpikeVaultUse): void {
@@ -198,7 +207,7 @@ export class VaultDO extends DurableObject<Env> {
 	}
 }
 
-async function seed(env: Env, audit: { append(events: readonly AuditEventInput[]): Promise<void> }): Promise<Vault> {
+async function seed(env: Env, audit: AuditSink): Promise<Vault> {
 	const vault = createMemoryVault({ audit });
 	const ctx = serviceContext();
 	const item = await vault.putItem(ctx, {

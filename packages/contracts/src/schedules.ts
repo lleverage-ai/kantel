@@ -8,7 +8,7 @@
  * Checks are scripts with no model: exit 0 is healthy, exit 3 is findings with stable keys, anything else is a failed
  * run; findings are raised again after `reraiseHours`, when a value grows by `risingFactor`, or after repeated failures.
  */
-import type { Actor, CallContext, JsonValue, OwnerRef, Page, PageRequest, Timestamp } from "./common.ts";
+import type { Actor, CallContext, JsonValue, OwnerRef, Page, PageRequest, SystemContext, Timestamp } from "./common.ts";
 
 export type ScheduleKind = "reminder" | "task" | "summary" | "check" | "heartbeat" | "program";
 
@@ -124,17 +124,26 @@ export interface Schedules {
 	 * Materialises due occurrences up to the clock's now. A schedule with an occurrence still `due` or `running` gets no
 	 * new one: its missed due times are coalesced into the next. Several missed due times become one occurrence at
 	 * the latest of them. Idempotent: ticking twice at the same time creates nothing new.
+	 *
+	 * `tick`, `claim`, `complete` and `reportCheck` are the scheduler's worker calls (settled question 13): each takes a
+	 * `SystemContext`, and any actor but `system` is `forbidden`, audited, and changes nothing.
 	 */
-	tick(): Promise<readonly Occurrence[]>;
+	tick(ctx: SystemContext): Promise<readonly Occurrence[]>;
 	/** Atomically claims the oldest claimable occurrence for `runner`, or returns undefined. */
-	claim(runner: string, leaseMs: number): Promise<Occurrence | undefined>;
+	claim(ctx: SystemContext, runner: string, leaseMs: number): Promise<Occurrence | undefined>;
 	/** Finishes a claim. The runner must hold it (`conflict` otherwise, including after its lease was taken over). */
 	complete(
+		ctx: SystemContext,
 		occurrenceId: string,
 		runner: string,
 		outcome: { readonly status: "succeeded" | "failed"; readonly result?: JsonValue },
 	): Promise<Occurrence>;
 	/** Finishes a check's claim from its exit code and returns the findings to raise now. */
-	reportCheck(occurrenceId: string, runner: string, report: CheckReport): Promise<readonly RaisedFinding[]>;
+	reportCheck(
+		ctx: SystemContext,
+		occurrenceId: string,
+		runner: string,
+		report: CheckReport,
+	): Promise<readonly RaisedFinding[]>;
 	listOccurrences(ctx: CallContext, scheduleId: string, page?: PageRequest): Promise<Page<Occurrence>>;
 }

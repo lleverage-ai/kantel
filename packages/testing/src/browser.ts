@@ -30,6 +30,7 @@ import {
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface BrowserSubject {
@@ -266,7 +267,7 @@ export function createBrowserConformance(options: {
 			"each grant's end is audited once",
 		);
 		const audited = deps.audit.events.length;
-		for (const repeat of again) await browser.endSession(SESSION, repeat);
+		for (const repeat of again) await browser.endSession(WORKER, SESSION, repeat);
 		assert.strictEqual(deps.audit.events.length, audited, "a second teardown audits nothing");
 		assert.strictEqual(subject.providerLive().length, 1, "a second teardown releases nothing more");
 		for (const opened of held.browsers) {
@@ -699,7 +700,7 @@ export function createBrowserConformance(options: {
 			assert.strictEqual(deps.audit.ofType("browser.grant.revoked").length, 3, "each revocation is audited");
 
 			const second = await passOn();
-			await browser.endSession(PARENT_SESSION, "session_ended");
+			await browser.endSession(WORKER, PARENT_SESSION, "session_ended");
 			for (const grant of second.passedOn) {
 				const read = (await browser.listGrants(human, {})).find((listed) => listed.id === grant.id);
 				assert.strictEqual(read?.status, "ended", "a grant passed on ends with its parent's session");
@@ -958,7 +959,7 @@ export function createBrowserConformance(options: {
 			const sessionB = await browser.open(agent, { grantId: second.id });
 			const kept = await browser.open(unrelatedAgent, { grantId: unrelated.id });
 			assert.strictEqual(subject.providerLive().length, 3);
-			await browser.endSession(SESSION, "session_ended");
+			await browser.endSession(WORKER, SESSION, "session_ended");
 			assert.strictEqual(subject.providerLive().length, 1, "only the unrelated session's browser is live");
 			for (const id of [sessionA.id, sessionB.id]) {
 				const read = await browser.get(human, id);
@@ -1015,7 +1016,7 @@ export function createBrowserConformance(options: {
 		}),
 
 		test("fails an open in flight when its session ends, releasing the browser and freeing the persisting slot", async (subject) => {
-			await assertOpenInFlightExpires(subject, (browser) => browser.endSession(SESSION, "session_ended"));
+			await assertOpenInFlightExpires(subject, (browser) => browser.endSession(WORKER, SESSION, "session_ended"));
 		}),
 
 		test("releases each browser independently when a provider release fails, and retries the failed one on the next call", async (subject, deps) => {
@@ -1028,7 +1029,7 @@ export function createBrowserConformance(options: {
 			];
 			assert.strictEqual(subject.providerLive().length, 3);
 			subject.failReleases(1);
-			await browser.endSession(SESSION, "session_ended");
+			await browser.endSession(WORKER, SESSION, "session_ended");
 			assert.strictEqual(subject.providerLive().length, 1, "the other two are released");
 			subject.failReleases(1);
 			const theirs = await browser.listContexts(outsider);
@@ -1099,7 +1100,7 @@ export function createBrowserConformance(options: {
 		test("session end: closes the session's browsers, ends its grants and those passed on, declines its requests, once", async (subject, deps) => {
 			const { browser } = subject;
 			const held = await holdForTeardown(subject);
-			await browser.endSession(SESSION, "session_ended");
+			await browser.endSession(WORKER, SESSION, "session_ended");
 			await assertTornDown(subject, deps, held, "session_ended", ["session_ended", "aborted"]);
 			await assert.rejectsWithCode(
 				browser.grant(human, grantInput(held.context.id, { requestId: held.request.id })),
@@ -1120,7 +1121,7 @@ export function createBrowserConformance(options: {
 		test("session end: an abort closes the session's browsers and ends its grants once, keeps its requests and leaves it usable", async (subject, deps) => {
 			const { browser } = subject;
 			const held = await holdForTeardown(subject);
-			await browser.endSession(SESSION, "aborted");
+			await browser.endSession(WORKER, SESSION, "aborted");
 			await assertTornDown(subject, deps, held, "aborted", ["aborted"]);
 			const answered = await browser.grant(
 				human,

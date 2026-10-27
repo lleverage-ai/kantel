@@ -25,6 +25,7 @@ import type {
 	PageRequest,
 	ProjectId,
 	SessionId,
+	SystemContext,
 	Timestamp,
 	UserId,
 } from "./common.ts";
@@ -365,7 +366,8 @@ export interface Vault {
 
 	/**
 	 * Decides one outbound request for the egress proxy: the first active grant or policy whose selector and route
-	 * match allows it and returns the header to inject; anything else is denied. Every call records a use.
+	 * match allows it and returns the header to inject; anything else is denied. Every call records a use. A worker call
+	 * (settled question 13): only the egress gateway, as `system`, may ask; anyone else is `forbidden` and records no use.
 	 */
-	decideEgress(request: EgressRequest): Promise<EgressDecision>;
+	decideEgress(ctx: SystemContext, request: EgressRequest): Promise<EgressDecision>;
 }

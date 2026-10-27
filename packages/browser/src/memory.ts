@@ -19,11 +19,18 @@ import {
 	type PageRequest,
 	type ProjectAccess,
 	type ProjectId,
+	requireSystem,
 	type SessionEndHook,
 	type SessionEndReason,
 	type SessionId,
+	type SystemContext,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
+
+/** The broker appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("browser");
+
 import { assertValidSite, isSupervisor, type ParentOf, siteAllowed, siteCovered } from "./index.ts";
 
 export interface MemoryBrowserOptions {
@@ -219,7 +226,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 
 	async function emit(event: Omit<AuditEventInput, "at" | "source">): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([{ ...event, at: clock.now(), source: "browser" }]);
+		await audit.append(AUDIT_CONTEXT, [{ ...event, at: clock.now(), source: "browser" }]);
 	}
 
 	/**
@@ -759,7 +766,8 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			return closed;
 		},
 
-		async endSession(sessionId: SessionId, reason: SessionEndReason) {
+		async endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason) {
+			await requireSystem(ctx, "browser.endSession", { ...(audit === undefined ? {} : { audit }), clock });
 			// A failing sweep (its audit, say) must not keep this session's browsers and grants alive: end them first,
 			// then report the sweep's failure.
 			let sweepFailure: { readonly error: unknown } | undefined;
@@ -799,8 +807,8 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		},
 	};
 	if (options.sessionEnd !== undefined) {
-		// The hook's context is a system one; `endSession` needs none.
-		options.sessionEnd.register("browser", (_ctx, end) => browser.endSession(end.sessionId, end.reason));
+		// The hook's context is a system one, which `endSession` requires.
+		options.sessionEnd.register("browser", (ctx, end) => browser.endSession(ctx, end.sessionId, end.reason));
 	}
 	return browser;
 }

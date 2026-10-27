@@ -19,6 +19,7 @@ import {
 	HarbourError,
 	type IdentityDirectory,
 	isHarbourError,
+	isSystemActor,
 	type OrganisationId,
 	type ProjectAccess,
 	type ProjectId,
@@ -27,6 +28,8 @@ import {
 	type SessionDirectory,
 	type SessionId,
 	type SessionRecord,
+	type SystemContext,
+	systemContext,
 	type Timestamp,
 } from "@harbour/contracts";
 
@@ -123,10 +126,15 @@ export class ManualClock implements Clock {
 	}
 }
 
-/** An `AuditSink` that keeps what it is given, idempotent by id, so suites can check what was audited. */
+/**
+ * An `AuditSink` that keeps what it is given, idempotent by id, so suites can check what was audited. Like every sink,
+ * it takes appends from Harbour's own components only (settled question 13): one without a system context throws, so
+ * a component that appends as its caller fails its suite.
+ */
 export class RecordingAuditSink implements AuditSink {
 	readonly #events = new Map<string, AuditEventInput>();
-	async append(events: readonly AuditEventInput[]): Promise<void> {
+	async append(ctx: SystemContext, events: readonly AuditEventInput[]): Promise<void> {
+		if (!isSystemActor(ctx?.actor)) throw new Error("An audit append needs a system context");
 		for (const event of events) if (!this.#events.has(event.id)) this.#events.set(event.id, event);
 	}
 	get events(): readonly AuditEventInput[] {
@@ -163,6 +171,21 @@ export class TenancyFixture {
 		this.#bindings.push({ organisationId, principal, role, ...(projectId === undefined ? {} : { projectId }) });
 	}
 
+	/** Removes `actor`'s binding on `projectId` (or its organisation-wide one), as `IdentityDirectory.revokeRole` does. */
+	unbind(actor: Actor, organisationId: OrganisationId, projectId?: ProjectId): void {
+		const principal = principalOf(actor);
+		for (let at = this.#bindings.length - 1; at >= 0; at--) {
+			const binding = this.#bindings[at]!;
+			if (
+				binding.organisationId === organisationId &&
+				binding.principal === principal &&
+				binding.projectId === projectId
+			) {
+				this.#bindings.splice(at, 1);
+			}
+		}
+	}
+
 	/** Records an open agent session in the directory and returns the agent actor acting in it. */
 	session(input: {
 		readonly id: SessionId;
@@ -194,7 +217,8 @@ export class TenancyFixture {
 	}
 
 	readonly identity: Pick<IdentityDirectory, "roleOf"> = {
-		roleOf: async (actor, organisationId, projectId) => {
+		roleOf: async (ctx, actor, organisationId, projectId) => {
+			if (!isSystemActor(ctx?.actor)) throw new HarbourError("forbidden", "roleOf is a worker call");
 			if (actor.kind === "system") return "admin";
 			const principal = principalOf(actor);
 			if (principal === undefined) return undefined;
@@ -307,6 +331,49 @@ export const actors = {
 	agent: (agentId: string, sessionId: string): Actor => ({ kind: "agent", agentId, sessionId }),
 	system: (component = "conformance"): Actor => ({ kind: "system", component }),
 };
+
+/** The context suites make worker calls with: Harbour's own, as `system`. */
+export const WORKER: SystemContext = systemContext("conformance.worker");
+
+/**
+ * The callers a worker call must refuse (settled question 13): no caller at all, and a human, a service and an agent,
+ * each with a full call context in `organisationId`. The agent's session is open in the tenancy fixture when the suite
+ * seeds one, so the refusal cannot come from a closed session.
+ */
+export function nonSystemCallers(
+	organisationId: OrganisationId,
+	agent: { readonly agentId: AgentId; readonly sessionId: SessionId } = {
+		agentId: "agent-worker-call",
+		sessionId: "sess-worker-call",
+	},
+): readonly { readonly label: string; readonly ctx: SystemContext }[] {
+	return [
+		{ label: "no caller", ctx: undefined as unknown as SystemContext },
+		{ label: "a human", ctx: contextFor(actors.human("user-worker-call"), organisationId) },
+		{ label: "a service", ctx: contextFor(actors.service("svc-worker-call"), organisationId) },
+		{ label: "an agent", ctx: contextFor(actors.agent(agent.agentId, agent.sessionId), organisationId) },
+	];
+}
+
+/**
+ * Asserts that a worker call refuses every caller `nonSystemCallers` lists: `forbidden`, no secret, and audited once as
+ * `access.denied` for `operation` (see `assertAccessDenied`). `call` makes the call with the given context.
+ */
+export async function assertWorkerCallRefused(
+	a: ConformanceAssertions,
+	deps: Pick<ConformanceDeps, "audit">,
+	operation: string,
+	call: (ctx: SystemContext) => Promise<unknown>,
+	organisationId: OrganisationId,
+	agent?: { readonly agentId: AgentId; readonly sessionId: SessionId },
+): Promise<void> {
+	for (const caller of nonSystemCallers(organisationId, agent)) {
+		await assertAccessDenied(a, deps, call(caller.ctx), {
+			operation,
+			message: `${operation} refuses ${caller.label}`,
+		});
+	}
+}
 
 /** Waits until `predicate` holds, polling with real time; for suites that watch asynchronous work. */
 export async function eventually(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000, label = "condition") {

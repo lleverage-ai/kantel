@@ -28,6 +28,7 @@ import {
 	type SeedSpec,
 	type SessionId,
 	systemClock,
+	systemContext,
 	type WorkspaceChange,
 	type WorkspaceId,
 	type WorkspaceRecord,
@@ -59,6 +60,9 @@ interface WorkspaceState {
 	record: WorkspaceRecord;
 	readonly versions: StoredVersion[];
 }
+
+/** Workspaces append their audit events as themselves. */
+const AUDIT_CONTEXT = systemContext("workspace");
 
 export interface MemoryWorkspacesOptions {
 	readonly clock?: Clock;
@@ -152,7 +156,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 	}
 
 	async function emit(event: AuditEventInput): Promise<void> {
-		await audit?.append([event]);
+		await audit?.append(AUDIT_CONTEXT, [event]);
 	}
 
 	function auditBase(ctx: CallContext, state: WorkspaceState) {

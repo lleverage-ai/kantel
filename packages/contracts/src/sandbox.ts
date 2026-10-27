@@ -11,7 +11,7 @@
  * - The only way out is the vault: sandboxes never hold credential values.
  * - Mounts are read-only: a command that writes under a mount point fails and the source is unchanged.
  */
-import type { CallContext, SessionId, Timestamp, WorkspaceId } from "./common.ts";
+import type { CallContext, SessionId, SystemContext, Timestamp, WorkspaceId } from "./common.ts";
 import type { WorkspaceVersion } from "./workspace.ts";
 
 export type SandboxTier = "isolate" | "container";
@@ -157,7 +157,10 @@ export interface Sandboxes {
 	 * holds no live lease it changes nothing and audits nothing, so running it again is a no-op.
 	 */
 	releaseSession(ctx: CallContext, sessionId: SessionId, reason?: LeaseEndReason): Promise<void>;
-	/** Releases every lease past its TTL as `expired`; returns them. Hosts call this from an alarm. */
-	sweep(): Promise<readonly SandboxLease[]>;
+	/**
+	 * Releases every lease past its TTL as `expired`; returns them. Hosts call this from an alarm. A worker call (settled
+	 * question 13): any actor but `system` is `forbidden` and releases nothing.
+	 */
+	sweep(ctx: SystemContext): Promise<readonly SandboxLease[]>;
 	usage(ctx: CallContext, sessionId: SessionId): Promise<readonly SandboxUsage[]>;
 }

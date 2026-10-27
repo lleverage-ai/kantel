@@ -27,8 +27,10 @@ import {
 	type ProposalOutcome,
 	type ProposalTerms,
 	type RouteScope,
+	requireSystem,
 	type SessionEndHook,
 	systemClock,
+	systemContext,
 	type Vault,
 	type VaultCeiling,
 	type VaultItem,
@@ -67,6 +69,8 @@ export interface MemoryVaultOptions {
 }
 
 const DEFAULT_PROPOSAL_TTL_MS = 15 * 60 * 1000;
+/** The vault appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("vault");
 const NO_REQUEST_HAS_RUN = "No request has run.";
 
 interface StoredItem {
@@ -213,7 +217,9 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 
 	async function emit(event: Omit<AuditEventInput, "id" | "at" | "source"> & { readonly id?: string }): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([{ ...event, id: event.id ?? `vault:${randomHex(16)}`, at: clock.now(), source: "vault" }]);
+		await audit.append(AUDIT_CONTEXT, [
+			{ ...event, id: event.id ?? `vault:${randomHex(16)}`, at: clock.now(), source: "vault" },
+		]);
 	}
 
 	function contextFields(ctx: CallContext): Pick<AuditEventInput, "projectId" | "sessionId" | "agentId"> {
@@ -1038,7 +1044,14 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			for (const event of afterwards) await emit(event);
 		},
 
-		async decideEgress(request) {
+		async decideEgress(ctx, request) {
+			// Only the egress gateway asks, as system; anyone else learns nothing and records no use (question 13).
+			const named: unknown = typeof request === "object" && request !== null ? request.organisationId : undefined;
+			await requireSystem(ctx, "vault.decideEgress", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				...(typeof named === "string" ? { organisationId: named } : {}),
+			});
 			const method: HttpMethod = request.method;
 			let url: URL;
 			try {

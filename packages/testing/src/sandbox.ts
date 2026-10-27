@@ -25,6 +25,7 @@ import {
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface SandboxSubject {
@@ -352,9 +353,9 @@ export function createSandboxConformance(options: {
 				const renewed = await subject.sandboxes.renew(ctx, lease.id, 1000);
 				a.strictEqual(renewed.expiresAt, deps.clock.now() + 1000);
 				deps.clock.advance(900);
-				a.deepEqual(await subject.sandboxes.sweep(), [], "a renewed lease is still live");
+				a.deepEqual(await subject.sandboxes.sweep(WORKER), [], "a renewed lease is still live");
 				deps.clock.advance(200);
-				const swept = await subject.sandboxes.sweep();
+				const swept = await subject.sandboxes.sweep(WORKER);
 				a.deepEqual(
 					swept.map((ended) => [ended.id, ended.endReason]),
 					[[lease.id, "expired"]],
@@ -362,7 +363,7 @@ export function createSandboxConformance(options: {
 				await a.rejectsWithCode(subject.sandboxes.exec(ctx, lease.id, { command: "true" }), "expired");
 				await a.rejectsWithCode(subject.sandboxes.renew(ctx, lease.id, 1000), "expired");
 				a.deepEqual(await subject.sandboxes.leases(ctx, { sessionId, live: true }), []);
-				a.deepEqual(await subject.sandboxes.sweep(), [], "a swept lease is not swept twice");
+				a.deepEqual(await subject.sandboxes.sweep(WORKER), [], "a swept lease is not swept twice");
 			}),
 		},
 		{

@@ -2,6 +2,9 @@
  * Audit events. Components never write to the audit store directly: each emits events through an outbox to an
  * `AuditSink`, which is idempotent by organisation and event id so outbox retries never duplicate a row. Event data never holds a
  * secret value.
+ *
+ * Appending, draining, `pending` and retention are worker calls (settled question 13): each takes a `SystemContext` and
+ * refuses any actor but `system` with `forbidden`, audited as `access.denied`, so no caller can write or erase a row.
  */
 import type {
 	Actor,
@@ -13,6 +16,7 @@ import type {
 	PageRequest,
 	ProjectId,
 	SessionId,
+	SystemContext,
 	Timestamp,
 } from "./common.ts";
 
@@ -100,9 +104,12 @@ export interface AuditEventInput {
 	readonly data?: { readonly [key: string]: JsonValue };
 }
 
-/** Where components send audit events. Implementations must be idempotent by `(organisationId, id)`. */
+/**
+ * Where components send audit events. Implementations must be idempotent by `(organisationId, id)`. Components append
+ * as themselves (`systemContext("vault")`), whoever made the call being audited; the event's `actor` names that caller.
+ */
 export interface AuditSink {
-	append(events: readonly AuditEventInput[]): Promise<void>;
+	append(ctx: SystemContext, events: readonly AuditEventInput[]): Promise<void>;
 }
 
 /** A stored event: the input plus the store's own order. */
@@ -141,7 +148,7 @@ export interface AuditStore extends AuditSink {
 	/** How long an organisation's rows are kept. System and humans or services only. */
 	setRetention(ctx: CallContext, retentionMs: number): Promise<void>;
 	/** Removes rows older than each organisation's retention, as of the clock. Returns how many were removed. */
-	applyRetention(): Promise<number>;
+	applyRetention(ctx: SystemContext): Promise<number>;
 }
 
 /**
@@ -150,6 +157,6 @@ export interface AuditStore extends AuditSink {
  */
 export interface AuditOutbox extends AuditSink {
 	/** Sends every pending event to `sink`; events stay pending if the sink throws. Returns how many were sent. */
-	drain(sink: AuditSink): Promise<number>;
-	pending(): Promise<number>;
+	drain(ctx: SystemContext, sink: AuditSink): Promise<number>;
+	pending(ctx: SystemContext): Promise<number>;
 }

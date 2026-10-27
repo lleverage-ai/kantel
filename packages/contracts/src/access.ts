@@ -15,6 +15,11 @@
  *
  * A refusal is `forbidden`, says the same thing whichever check failed, names no record beyond the project and holds no
  * secret, and is audited once as `access.denied`.
+ *
+ * Worker calls (settled 27 Oct 2026, open question 13) are the calls Harbour makes on its own behalf and no caller
+ * reaches: scheduler ticks and claims, audit appends and relays, retention, the egress gateway's decision, the sandbox
+ * sweep, the browser's session end, and identity's `roleOf` and `authenticateApiKey`. Each takes a `SystemContext` and
+ * calls `requireSystem` first, which refuses anything but a `system` actor (a missing caller included) the same way.
  */
 import type { AuditEventInput, AuditSink } from "./audit.ts";
 import {
@@ -22,9 +27,13 @@ import {
 	type CallContext,
 	type Clock,
 	HarbourError,
+	isSystemActor,
+	type OrganisationId,
 	type ProjectId,
 	type SessionId,
+	type SystemContext,
 	systemClock,
+	systemContext,
 } from "./common.ts";
 import { type IdentityDirectory, type Role, roleSatisfies } from "./identity.ts";
 import type { SessionDirectory, SessionRecord } from "./session.ts";
@@ -71,7 +80,70 @@ export interface ProjectAccessOptions {
 }
 
 const ACCESS_ACTOR: Actor = { kind: "system", component: "access" };
+const ACCESS_CONTEXT: SystemContext = systemContext("access");
 const REFUSAL = "The caller may not do this in this project";
+const WORKER_REFUSAL = "Only Harbour's own components may make this call";
+
+/**
+ * The organisation `access.denied` rows go under when a refused worker call names none, such as a scheduler tick with
+ * no caller. No organisation has this ID.
+ */
+export const PLATFORM_ORGANISATION: OrganisationId = "harbour:platform";
+
+export interface RequireSystemOptions {
+	/** Where the refusal is audited. A component passes its own sink; the audit store records into itself. */
+	readonly audit?: AuditSink;
+	readonly clock?: Clock;
+	/** The organisation the call concerns, when it names one (an egress request's). Else the context's, if any. */
+	readonly organisationId?: OrganisationId;
+}
+
+/**
+ * The check every worker call makes first (settled question 13). Resolves when `ctx` is a `system` actor's; otherwise
+ * audits `access.denied` once, with the operation and the caller's kind (`missing` when there is none), and rejects
+ * with `forbidden`. The refusal says the same thing whoever called, and holds nothing from the call's input.
+ */
+export async function requireSystem(
+	ctx: SystemContext | undefined,
+	operation: string,
+	options: RequireSystemOptions = {},
+): Promise<void> {
+	const actor: unknown = typeof ctx === "object" && ctx !== null ? ctx.actor : undefined;
+	if (isSystemActor(actor)) return;
+	if (options.audit !== undefined) {
+		const caller = describeCaller(actor);
+		const contextOrganisation = typeof ctx?.organisationId === "string" ? ctx.organisationId : undefined;
+		const event: AuditEventInput = {
+			id: `access:denied:${crypto.randomUUID()}`,
+			at: (options.clock ?? systemClock).now(),
+			source: "access",
+			type: "access.denied",
+			actor: caller.actor ?? ACCESS_ACTOR,
+			organisationId: options.organisationId ?? contextOrganisation ?? PLATFORM_ORGANISATION,
+			data: { operation, needed: "system", caller: caller.kind },
+		};
+		await options.audit.append(ACCESS_CONTEXT, [event]);
+	}
+	throw new HarbourError("forbidden", WORKER_REFUSAL, { operation });
+}
+
+/** The caller's kind for the audit row, and its actor when it is a well-formed one. */
+function describeCaller(actor: unknown): { readonly kind: string; readonly actor?: Actor } {
+	if (typeof actor !== "object" || actor === null) return { kind: "missing" };
+	const candidate = actor as Actor;
+	switch (candidate.kind) {
+		case "human":
+			return typeof candidate.userId === "string" ? { kind: "human", actor: candidate } : { kind: "malformed" };
+		case "service":
+			return typeof candidate.serviceId === "string" ? { kind: "service", actor: candidate } : { kind: "malformed" };
+		case "agent":
+			return typeof candidate.agentId === "string" && typeof candidate.sessionId === "string"
+				? { kind: "agent", actor: candidate }
+				: { kind: "malformed" };
+		default:
+			return { kind: "malformed" };
+	}
+}
 
 /**
  * The reference `ProjectAccess`, over any `IdentityDirectory` and `SessionDirectory`. It holds no state of its own, so
@@ -116,7 +188,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 			}
 			return result(true, projectId);
 		}
-		const held = await options.identity.roleOf(actor, ctx.organisationId, projectId);
+		const held = await options.identity.roleOf(ACCESS_CONTEXT, actor, ctx.organisationId, projectId);
 		return result(held !== undefined && roleSatisfies(held, check.needed), projectId);
 	};
 
@@ -141,7 +213,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 						...(check.sessionId === undefined ? {} : { targetSessionId: check.sessionId }),
 					},
 				};
-				await options.audit.append([event]);
+				await options.audit.append(ACCESS_CONTEXT, [event]);
 			}
 			throw new HarbourError("forbidden", REFUSAL, { operation: check.operation });
 		},

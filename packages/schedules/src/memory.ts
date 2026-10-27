@@ -15,10 +15,13 @@ import {
 	type ProjectId,
 	type RaisedFinding,
 	type Role,
+	requireSystem,
 	type Schedule,
 	type ScheduleInput,
 	type Schedules,
+	type SystemContext,
 	systemClock,
+	systemContext,
 	type Timestamp,
 } from "@harbour/contracts";
 import { assertValidRecurrence, assertValidTimeZone, nextDue, previewDue } from "./index.ts";
@@ -40,6 +43,8 @@ const DEFAULT_FAILURES_BEFORE_RAISE = 3;
 /** The most missed due times one tick walks through for a schedule. */
 const MAX_COALESCED = 10_000;
 const SCHEDULER: Actor = { kind: "system", component: "schedules" };
+/** The scheduler appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("schedules");
 
 interface StoredSchedule {
 	readonly organisationId: OrganisationId;
@@ -147,7 +152,12 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 
 	async function emit(events: readonly AuditEventInput[]): Promise<void> {
 		if (audit === undefined || events.length === 0) return;
-		await audit.append(events);
+		await audit.append(AUDIT_CONTEXT, events);
+	}
+
+	/** The scheduler's worker calls take a system caller and nothing else (settled question 13). */
+	async function requireWorker(ctx: SystemContext, operation: string): Promise<void> {
+		await requireSystem(ctx, operation, { ...(audit === undefined ? {} : { audit }), clock });
 	}
 
 	/** Audits a lifecycle change (`updated`, `paused`, `resumed`, `ended`) by its actor. */
@@ -432,7 +442,8 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			return previewDue(schedule, from, n);
 		},
 
-		async tick() {
+		async tick(ctx) {
+			await requireWorker(ctx, "schedules.tick");
 			const now = clock.now();
 			const created: Occurrence[] = [];
 			for (const stored of schedules.values()) {
@@ -470,7 +481,8 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			return created;
 		},
 
-		async claim(runner, leaseMs) {
+		async claim(ctx, runner, leaseMs) {
+			await requireWorker(ctx, "schedules.claim");
 			if (runner.length === 0) throw new HarbourError("invalid", "A claim needs a runner");
 			if (!(leaseMs > 0)) throw new HarbourError("invalid", "leaseMs must be positive");
 			const now = clock.now();
@@ -493,12 +505,14 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			return claimed;
 		},
 
-		async complete(occurrenceId, runner, outcome) {
+		async complete(ctx, occurrenceId, runner, outcome) {
+			await requireWorker(ctx, "schedules.complete");
 			const occurrence = heldClaim(occurrenceId, runner);
 			return finish(occurrence, outcome.status, outcome.result);
 		},
 
-		async reportCheck(occurrenceId, runner, report: CheckReport) {
+		async reportCheck(ctx, occurrenceId, runner, report: CheckReport) {
+			await requireWorker(ctx, "schedules.reportCheck");
 			const occurrence = heldClaim(occurrenceId, runner);
 			const stored = schedules.get(occurrence.scheduleId)!;
 			if (stored.schedule.kind !== "check") {

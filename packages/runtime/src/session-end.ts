@@ -16,6 +16,7 @@ import {
 	type SessionTeardown,
 	type Subscription,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
 
 export interface SessionEndRunner {
@@ -80,7 +81,7 @@ export function createSessionEndHook(
 				}
 			}
 			// Audited after every teardown has run, so a failing audit sink cannot stop one.
-			if (failures.length > 0) await options.audit?.append(failures);
+			if (failures.length > 0) await options.audit?.append(systemContext("session.end"), failures);
 		},
 		names: () => registrations.map((registration) => registration.name),
 	};

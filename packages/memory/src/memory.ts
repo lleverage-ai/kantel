@@ -19,7 +19,12 @@ import {
 	type RecallManifestEntry,
 	type Role,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
+
+/** Memory appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("memory");
+
 import {
 	bm25,
 	conceptBytes,
@@ -193,7 +198,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 	async function emit(event: Omit<AuditEventInput, "at" | "source">): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([{ ...event, at: clock.now(), source: "memory" }]);
+		await audit.append(AUDIT_CONTEXT, [{ ...event, at: clock.now(), source: "memory" }]);
 	}
 
 	function contextFields(ctx: CallContext): Pick<AuditEventInput, "projectId" | "sessionId" | "agentId"> {

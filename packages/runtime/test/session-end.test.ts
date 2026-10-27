@@ -83,11 +83,11 @@ describe("the runtime's session end when the audit sink fails", () => {
 		const memory = createMemoryRuntime({
 			models,
 			audit: {
-				append: async (events) => {
+				append: async (ctx, events) => {
 					if (events.some((event) => event.type === "session.aborted" && event.sessionId === failing)) {
 						throw new HarbourError("unavailable", "The audit sink is down");
 					}
-					await audit.append(events);
+					await audit.append(ctx, events);
 				},
 			},
 		});

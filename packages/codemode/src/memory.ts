@@ -26,7 +26,12 @@ import {
 	type SessionId,
 	type Subscription,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
+
+/** The registry appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("capability");
+
 import {
 	canonicalJson,
 	capabilityCovered,
@@ -166,7 +171,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 
 	async function emit(event: Omit<AuditEventInput, "at" | "source">): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([{ ...event, at: clock.now(), source: "capability" }]);
+		await audit.append(AUDIT_CONTEXT, [{ ...event, at: clock.now(), source: "capability" }]);
 	}
 
 	function grantView(stored: StoredGrant): CapabilityGrant {

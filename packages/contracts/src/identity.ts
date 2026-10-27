@@ -11,6 +11,7 @@ import type {
 	PageRequest,
 	ProjectId,
 	ServiceId,
+	SystemContext,
 	Timestamp,
 	UserId,
 } from "./common.ts";
@@ -142,12 +143,21 @@ export interface IdentityDirectory {
 
 	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
-	 * caller learns nothing about which keys exist).
+	 * caller learns nothing about which keys exist). A worker call (settled question 13): Harbour's gateway calls it as
+	 * `system` to learn who a request is from; any other actor is `forbidden`.
 	 */
-	authenticateApiKey(secret: string): Promise<Authentication>;
+	authenticateApiKey(ctx: SystemContext, secret: string): Promise<Authentication>;
 
-	/** The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or undefined. */
-	roleOf(actor: Actor, organisationId: OrganisationId, projectId?: ProjectId): Promise<Role | undefined>;
+	/**
+	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or undefined. A worker call
+	 * (settled question 13): `ProjectAccess` asks it as `system`; any other actor is `forbidden`.
+	 */
+	roleOf(
+		ctx: SystemContext,
+		actor: Actor,
+		organisationId: OrganisationId,
+		projectId?: ProjectId,
+	): Promise<Role | undefined>;
 
 	/**
 	 * Rejects with `forbidden` unless `ctx.actor` holds at least `needed` on `ctx.projectId` (or on the organisation

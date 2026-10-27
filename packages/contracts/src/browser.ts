@@ -21,6 +21,7 @@ import type {
 	PageRequest,
 	ProjectId,
 	SessionId,
+	SystemContext,
 	Timestamp,
 } from "./common.ts";
 import type { SessionEndReason } from "./session.ts";
@@ -145,8 +146,8 @@ export interface Browser {
 	 * The session-end teardown: closes every open browser session of an agent session (with `reason` as its end reason)
 	 * and ends its grants and the grants passed on from them. `session_ended` also declines its pending requests; after
 	 * `aborted` they stay pending and the session may acquire grants again. Idempotent: when the session holds nothing
-	 * more, it changes and audits nothing.
+	 * more, it changes and audits nothing. A worker call (settled question 13): any actor but `system` is `forbidden`.
 	 */
-	endSession(sessionId: SessionId, reason: SessionEndReason): Promise<void>;
+	endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason): Promise<void>;
 	get(ctx: CallContext, browserSessionId: string): Promise<BrowserSession>;
 }

@@ -49,6 +49,7 @@ import {
 	type SessionRuntime,
 	type Submission,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
 import {
@@ -152,7 +153,7 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		});
 
 	const audit = async (events: readonly AuditEventInput[]) => {
-		if (options.audit !== undefined) await options.audit.append(events);
+		if (options.audit !== undefined) await options.audit.append(systemContext("session"), events);
 	};
 
 	const ends = createSessionEndHook({ ...(options.audit === undefined ? {} : { audit: options.audit }), clock });

@@ -1,5 +1,11 @@
 import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import { type AuditEventInput, type CallContext, HarbourError } from "@harbour/contracts";
+import {
+	type AuditEventInput,
+	type CallContext,
+	HarbourError,
+	type SystemContext,
+	systemContext,
+} from "@harbour/contracts";
 import { ManualClock } from "@harbour/testing/harness";
 import { describe, expect, it } from "vitest";
 
@@ -23,7 +29,7 @@ describe("the in-memory browser's endSession", () => {
 			clock,
 			provider: fake.provider,
 			audit: {
-				append: async (events: readonly AuditEventInput[]) => {
+				append: async (_ctx: SystemContext, events: readonly AuditEventInput[]) => {
 					if (events.some((event) => event.type === "browser.session.closed" && event.sessionId === "sess-other")) {
 						throw new HarbourError("unavailable", "The audit sink is down");
 					}
@@ -51,7 +57,9 @@ describe("the in-memory browser's endSession", () => {
 		const opened = await browser.open(agentIn("sess-mine"), { grantId: mine.id });
 		clock.advance(5_000);
 
-		await expect(browser.endSession("sess-mine", "session_ended")).rejects.toMatchObject({ code: "unavailable" });
+		await expect(browser.endSession(systemContext("test"), "sess-mine", "session_ended")).rejects.toMatchObject({
+			code: "unavailable",
+		});
 
 		expect((await browser.get(human, opened.id)).status).toBe("closed");
 		const grants = await browser.listGrants(human, { sessionId: "sess-mine" });

@@ -27,6 +27,7 @@ import {
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface VaultSubject {
@@ -157,7 +158,7 @@ async function projectRecords(vault: Vault) {
 	});
 	const pending = await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }));
 	const grantId = await approvedGrant(vault, agent, termsFor(item.id, ["GET"], {}));
-	await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+	await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`));
 	return { item, policy, pending, grantId };
 }
 
@@ -204,7 +205,7 @@ export function createVaultConformance(options: {
 		assert.strictEqual((await vault.listItems(human)).items.length, 1, "no item was added");
 		assert.strictEqual((await vault.listProposals(human)).items.length, 2, "no proposal was added");
 		assert.strictEqual(
-			(await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow,
+			(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
 			true,
 			"egress under the grant still works",
 		);
@@ -369,8 +370,9 @@ export function createVaultConformance(options: {
 			const theirProposal = await vault.propose(foreignAgent, termsFor(theirs.id, ["GET"], {}));
 			assert.strictEqual(theirProposal.projectId, OTHER_PROJECT, "the proposal is in the agent's session's project");
 			const theirGrant = (await vault.decide(human, approval(theirProposal))).grantId!;
-			await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+			await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`));
 			const theirUse = await vault.decideEgress(
+				WORKER,
 				egress("GET", `https://${HOST}/repos/harbour`, {
 					projectId: OTHER_PROJECT,
 					agentId: "agent-3",
@@ -428,7 +430,10 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.getGrant(projectOperator, grantId)).status, "active");
 			assert.strictEqual((await vault.getGrant(agent, grantId)).status, "active");
 			assert.strictEqual((await vault.listGrants(projectOperator, { sessionId: "session-1" })).items.length, 1);
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, true);
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
+				true,
+			);
 			assert.strictEqual((await vault.listUses(agent, { sessionId: "session-1" })).items.length, 1);
 
 			const asked = await vault.propose(projectOperator, termsFor(item.id, ["POST"], { maxUses: 1 }));
@@ -453,7 +458,7 @@ export function createVaultConformance(options: {
 			const pending = await vault.propose(agent, termsFor(item.id, ["DELETE"], { maxUses: 1 }));
 			const theirPending = await vault.propose(otherAgent, termsFor(item.id, ["DELETE"], { maxUses: 1 }));
 			const waiting = vault.waitForOutcome(agent, pending.id);
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true, "allowed before");
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true, "allowed before");
 
 			await vault.endSession(sessionEnd, "session-1", "session_ended");
 			for (const grantId of [first, second]) {
@@ -466,8 +471,8 @@ export function createVaultConformance(options: {
 				"each grant's revocation is audited once",
 			);
 			for (const event of revoked) assert.strictEqual(event.data?.reason, "session_ended");
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false, "egress is denied after");
-			assert.strictEqual((await vault.decideEgress(egress("POST", url))).allow, false);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, false, "egress is denied after");
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("POST", url))).allow, false);
 			assert.strictEqual((await waiting).status, "withdrawn", "the waiting agent hears it was withdrawn");
 			assert.strictEqual((await vault.getProposal(human, pending.id)).status, "withdrawn");
 			const withdrawn = deps.audit.ofType("vault.proposal.withdrawn");
@@ -480,7 +485,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.getGrant(human, theirs)).status, "active", "another session's grant stays");
 			assert.strictEqual((await vault.getProposal(human, theirPending.id)).status, "pending");
 			const theirEgress = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
-			assert.strictEqual((await vault.decideEgress(theirEgress)).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, theirEgress)).allow, true);
 
 			const events = deps.audit.events.length;
 			const grants = await vault.listGrants(human);
@@ -513,10 +518,10 @@ export function createVaultConformance(options: {
 				[held],
 			);
 			assert.strictEqual(revoked[0]?.data?.reason, "aborted");
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false, "egress is denied after");
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, false, "egress is denied after");
 			assert.strictEqual((await vault.getGrant(human, theirs)).status, "active", "another session's grant stays");
 			const theirEgress = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
-			assert.strictEqual((await vault.decideEgress(theirEgress)).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, theirEgress)).allow, true);
 			assert.strictEqual((await vault.getProposal(human, pending.id)).status, "pending", "the proposal stays");
 			assert.strictEqual(deps.audit.ofType("vault.proposal.withdrawn").length, 0);
 			assert.strictEqual(settled, false, "the wait is still open");
@@ -532,7 +537,7 @@ export function createVaultConformance(options: {
 			const decision = await vault.decide(human, approval(pending));
 			assert.strictEqual((await waiting).status, "approved");
 			assert.strictEqual((await vault.getGrant(human, decision.grantId!)).status, "active");
-			assert.strictEqual((await vault.decideEgress(egress("POST", `${url}/issues`))).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("POST", `${url}/issues`))).allow, true);
 		}),
 	];
 
@@ -694,7 +699,7 @@ export function createVaultConformance(options: {
 				await vault.waitForOutcome(agent, proposal.id),
 			];
 			assert.strictEqual(containsCanary(reads), false, "the pasted value appears in no record");
-			const allowed = await vault.decideEgress(egress("POST", "https://api.linear.app/graphql"));
+			const allowed = await vault.decideEgress(WORKER, egress("POST", "https://api.linear.app/graphql"));
 			assert.strictEqual(allowed.inject?.value, `Bearer ${CANARY_SECRET}`);
 		}),
 
@@ -773,11 +778,11 @@ export function createVaultConformance(options: {
 				expiresAt: deps.clock.now() + 60_000,
 				maxUses: 3,
 			});
-			const denied = await vault.decideEgress(egress("POST", `https://${HOST}/repos/harbour/issues`));
+			const denied = await vault.decideEgress(WORKER, egress("POST", `https://${HOST}/repos/harbour/issues`));
 			assert.strictEqual(denied.allow, false, "a narrowed-out method is denied");
-			const outside = await vault.decideEgress(egress("GET", `https://${HOST}/repos/other`));
+			const outside = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/other`));
 			assert.strictEqual(outside.allow, false, "a narrowed-out path is denied");
-			const allowed = await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour/pulls`));
+			const allowed = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour/pulls`));
 			assert.strictEqual(allowed.allow, true);
 		}),
 
@@ -900,12 +905,12 @@ export function createVaultConformance(options: {
 
 		test("denies egress without a grant and offers a proposal as the fix", async (vault) => {
 			await putGithubToken(vault);
-			const decision = await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+			const decision = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`));
 			assert.strictEqual(decision.allow, false);
 			assert.strictEqual(decision.inject, undefined);
 			assert.strictEqual(decision.fix?.action, "propose");
 			assert.ok((decision.fix?.message.length ?? 0) > 0, "the fix says what to do");
-			const unknownHost = await vault.decideEgress(egress("GET", "https://api.unknown.example/x"));
+			const unknownHost = await vault.decideEgress(WORKER, egress("GET", "https://api.unknown.example/x"));
 			assert.strictEqual(unknownHost.fix?.action, "propose");
 			const recorded = await vault.listUses(human, { sessionId: "session-1" });
 			assert.strictEqual(recorded.items.length, 2, "every call records a use");
@@ -917,7 +922,7 @@ export function createVaultConformance(options: {
 			const item = await putGithubToken(vault);
 			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], {}));
 			const decision = await vault.decide(human, approval(proposal));
-			const allowed = await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour?page=2`));
+			const allowed = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour?page=2`));
 			assert.strictEqual(allowed.allow, true);
 			assert.strictEqual(allowed.grantId, decision.grantId);
 			assert.deepEqual(allowed.inject, { header: "Authorization", value: `Bearer ${CANARY_SECRET}` });
@@ -950,21 +955,30 @@ export function createVaultConformance(options: {
 				[egress("GET", `https://${HOST}/repos/harbour`, { sessionId: "session-2" }), "another session"],
 				[egress("GET", `https://${HOST}/repos/harbour`, { agentId: "agent-2" }), "another agent"],
 			] as const) {
-				const decision = await vault.decideEgress(request);
+				const decision = await vault.decideEgress(WORKER, request);
 				assert.strictEqual(decision.allow, false, `denied for ${label}`);
 				assert.strictEqual(decision.inject, undefined, `nothing injected for ${label}`);
 				assert.ok(decision.fix !== undefined, `a fix for ${label}`);
 			}
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, true);
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
+				true,
+			);
 		}),
 
 		test("matches a path prefix by whole segments", async (vault) => {
 			const item = await putGithubToken(vault);
 			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos"));
 			await vault.decide(human, approval(proposal));
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos`))).allow, true);
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, true);
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repositories`))).allow, false);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos`))).allow, true);
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
+				true,
+			);
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repositories`))).allow,
+				false,
+			);
 		}),
 
 		test("denies egress once a grant's uses are spent", async (vault) => {
@@ -972,9 +986,9 @@ export function createVaultConformance(options: {
 			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], { maxUses: 2 }));
 			const decision = await vault.decide(human, approval(proposal));
 			const url = `https://${HOST}/repos/harbour`;
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true);
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true);
-			const spent = await vault.decideEgress(egress("GET", url));
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true);
+			const spent = await vault.decideEgress(WORKER, egress("GET", url));
 			assert.strictEqual(spent.allow, false);
 			assert.strictEqual(spent.fix?.action, "propose");
 			assert.partialDeepEqual(await vault.getGrant(human, decision.grantId!), { status: "exhausted", uses: 2 });
@@ -985,9 +999,9 @@ export function createVaultConformance(options: {
 			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], { ttlMs: 60_000 }));
 			const decision = await vault.decide(human, approval(proposal));
 			const url = `https://${HOST}/repos/harbour`;
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true);
 			deps.clock.advance(60_000);
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, false);
 			assert.strictEqual((await vault.getGrant(human, decision.grantId!)).status, "expired");
 		}),
 
@@ -998,7 +1012,10 @@ export function createVaultConformance(options: {
 			const revoked = await vault.revokeGrant(human, decision.grantId!, "No longer needed");
 			assert.strictEqual(revoked.status, "revoked");
 			assert.strictEqual(deps.audit.ofType("vault.grant.revoked").length, 1);
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, false);
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
+				false,
+			);
 			assert.strictEqual((await vault.listGrants(human, { status: "revoked" })).items.length, 1);
 		}),
 
@@ -1006,7 +1023,7 @@ export function createVaultConformance(options: {
 			const item = await putGithubToken(vault, false);
 			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], {}));
 			await vault.decide(human, approval(proposal));
-			const decision = await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+			const decision = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`));
 			assert.strictEqual(decision.allow, false);
 			assert.strictEqual(decision.fix?.action, "propose");
 		}),
@@ -1054,17 +1071,23 @@ export function createVaultConformance(options: {
 				route: { host: HOST, methods: ["GET"], pathPrefix: "/repos/" },
 			});
 			assert.strictEqual(deps.audit.ofType("vault.policy.created").length, 1);
-			const allowed = await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+			const allowed = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`));
 			assert.strictEqual(allowed.allow, true);
 			assert.strictEqual(allowed.policyId, policy.id);
 			assert.strictEqual(allowed.inject?.value, `Bearer ${CANARY_SECRET}`);
-			const otherProject = await vault.decideEgress(egress("GET", `https://${HOST}/repos/x`, { projectId: "proj-b" }));
+			const otherProject = await vault.decideEgress(
+				WORKER,
+				egress("GET", `https://${HOST}/repos/x`, { projectId: "proj-b" }),
+			);
 			assert.strictEqual(otherProject.allow, false, "the selector's project must match");
-			const outside = await vault.decideEgress(egress("POST", `https://${HOST}/repos/harbour`));
+			const outside = await vault.decideEgress(WORKER, egress("POST", `https://${HOST}/repos/harbour`));
 			assert.strictEqual(outside.allow, false);
 			assert.strictEqual(outside.fix?.action, "none", "nothing can allow a request outside the ceiling");
 			await vault.revokePolicy(human, policy.id);
-			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, false);
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
+				false,
+			);
 		}),
 
 		test("expires and exhausts policies with a lifetime like grants", async (vault, deps) => {
@@ -1076,17 +1099,21 @@ export function createVaultConformance(options: {
 				route: { host: HOST, methods: ["GET"], pathPrefix: "/" },
 				lifetime: { maxUses: 1 },
 			});
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true);
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false, "a spent policy denies");
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, false, "a spent policy denies");
 			await vault.putPolicy(human, {
 				itemId: item.id,
 				selector: { organisationId: ORG },
 				route: { host: HOST, methods: ["GET"], pathPrefix: "/" },
 				lifetime: { expiresAt: deps.clock.now() + 1_000 },
 			});
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true);
 			deps.clock.advance(1_000);
-			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false, "an expired policy denies");
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", url))).allow,
+				false,
+				"an expired policy denies",
+			);
 		}),
 
 		test("refuses deciding a proposal twice", async (vault) => {
@@ -1180,17 +1207,17 @@ export function createVaultConformance(options: {
 			);
 			const secretDecision = await vault.decide(human, approval(secret, { secretValue: CANARY_SECRET }));
 			const injected = [
-				await vault.decideEgress(egress("POST", `https://${HOST}/repos/harbour/issues`)),
-				await vault.decideEgress(egress("GET", `https://${HOST}/user`, { sessionId: "session-9" })),
-				await vault.decideEgress(egress("POST", "https://api.linear.app/graphql")),
+				await vault.decideEgress(WORKER, egress("POST", `https://${HOST}/repos/harbour/issues`)),
+				await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/user`, { sessionId: "session-9" })),
+				await vault.decideEgress(WORKER, egress("POST", "https://api.linear.app/graphql")),
 			];
 			const denied = [
-				await vault.decideEgress(egress("DELETE", `https://${HOST}/repos/harbour`)),
-				await vault.decideEgress(egress("GET", "https://elsewhere.example/")),
+				await vault.decideEgress(WORKER, egress("DELETE", `https://${HOST}/repos/harbour`)),
+				await vault.decideEgress(WORKER, egress("GET", "https://elsewhere.example/")),
 			];
 			await vault.revokeGrant(human, routeDecision.grantId!);
 			await vault.revokePolicy(human, policy.id);
-			denied.push(await vault.decideEgress(egress("GET", `https://${HOST}/user`)));
+			denied.push(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/user`)));
 
 			for (const decision of injected) {
 				assert.strictEqual(decision.allow, true);
@@ -1238,6 +1265,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.listItems(outsider)).items.length, 0);
 			assert.strictEqual((await vault.listGrants(outsider)).items.length, 0);
 			const crossed = await vault.decideEgress(
+				WORKER,
 				egress("GET", `https://${HOST}/repos/harbour`, { organisationId: OTHER_ORG }),
 			);
 			assert.strictEqual(crossed.allow, false, "another organisation's grant never applies");

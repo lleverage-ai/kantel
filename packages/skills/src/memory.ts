@@ -17,8 +17,12 @@ import {
 	type Skills,
 	type SkillVisibility,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
 import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, validateSkillName } from "./index.ts";
+
+/** Skills appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("skills");
 
 export interface MemorySkillsOptions {
 	readonly clock?: Clock;
@@ -281,7 +285,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		},
 	): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([
+		await audit.append(AUDIT_CONTEXT, [
 			{
 				id: event.id,
 				at: clock.now(),
@@ -298,7 +302,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 
 	async function auditPublished(ctx: CallContext, revision: SkillRevision): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([
+		await audit.append(AUDIT_CONTEXT, [
 			{
 				id: `skills:revision:${revision.skillId}:${revision.revision}`,
 				at: revision.publishedAt,
@@ -496,7 +500,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			);
 			pins.set(key, pinned);
 			if (audit !== undefined) {
-				await audit.append([
+				await audit.append(AUDIT_CONTEXT, [
 					{
 						id: `skills:session:${ctx.organisationId}:${sessionId}:pinned`,
 						at: pinnedAt,

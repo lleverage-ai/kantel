@@ -25,6 +25,7 @@ import {
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface SchedulesSubject {
@@ -108,11 +109,11 @@ export function createSchedulesConformance(options: {
 
 	/** Ticks, claims and finishes one occurrence as RUNNER. */
 	async function runOnce(schedules: Schedules): Promise<Occurrence> {
-		const created = await schedules.tick();
+		const created = await schedules.tick(WORKER);
 		assert.strictEqual(created.length, 1, "the tick materialises one occurrence");
-		const claimed = await schedules.claim(RUNNER, 10 * MINUTE);
+		const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
 		assert.ok(claimed, "the occurrence can be claimed");
-		return schedules.complete(claimed!.id, RUNNER, { status: "succeeded" });
+		return schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded" });
 	}
 
 	/** Moves the clock to a check's next hourly run and reports it. */
@@ -122,11 +123,11 @@ export function createSchedulesConformance(options: {
 		report: CheckReport,
 	): Promise<readonly RaisedFinding[]> {
 		deps.clock.advance(HOUR);
-		const created = await schedules.tick();
+		const created = await schedules.tick(WORKER);
 		assert.strictEqual(created.length, 1, "each check run is one occurrence");
-		const claimed = await schedules.claim(RUNNER, 10 * MINUTE);
+		const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
 		assert.ok(claimed, "the check run can be claimed");
-		return schedules.reportCheck(claimed!.id, RUNNER, report);
+		return schedules.reportCheck(WORKER, claimed!.id, RUNNER, report);
 	}
 
 	function createCheck(schedules: Schedules, deps: ConformanceDeps, check: ScheduleInput["check"] = {}) {
@@ -146,7 +147,7 @@ export function createSchedulesConformance(options: {
 				utc("2026-10-26T09:00:00Z"),
 				utc("2026-10-27T09:00:00Z"),
 			]);
-			assert.strictEqual((await schedules.tick()).length, 0, "previewing materialises nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "previewing materialises nothing");
 		}),
 
 		test("runs a local time in the spring-forward gap once at the first valid instant after it", async (schedules, deps) => {
@@ -173,7 +174,7 @@ export function createSchedulesConformance(options: {
 			const first = await runOnce(schedules);
 			assert.strictEqual(first.dueAt, utc("2026-10-25T00:30:00Z"));
 			deps.clock.set(utc("2026-10-25T01:30:00Z"));
-			assert.strictEqual((await schedules.tick()).length, 0, "the second 01:30 of the night is not due");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "the second 01:30 of the night is not due");
 			assert.strictEqual((await schedules.get(human, schedule.id)).nextDueAt, utc("2026-10-26T01:30:00Z"));
 		}),
 
@@ -228,7 +229,7 @@ export function createSchedulesConformance(options: {
 		test("creates one occurrence when ticked twice at the same time", async (schedules, deps) => {
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			const [first, ...rest] = await schedules.tick();
+			const [first, ...rest] = await schedules.tick(WORKER);
 			assert.strictEqual(rest.length, 0);
 			assert.partialDeepEqual(first, {
 				id: `${schedule.id}@${schedule.nextDueAt}`,
@@ -238,7 +239,7 @@ export function createSchedulesConformance(options: {
 				status: "due",
 				attempt: 0,
 			});
-			assert.strictEqual((await schedules.tick()).length, 0, "the second tick creates nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "the second tick creates nothing");
 			assert.strictEqual((await schedules.listOccurrences(human, schedule.id)).items.length, 1);
 			assert.strictEqual((await schedules.get(human, schedule.id)).occurrences, 1);
 		}),
@@ -247,7 +248,7 @@ export function createSchedulesConformance(options: {
 			const start = deps.clock.now();
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(DAY);
-			const created = await schedules.tick();
+			const created = await schedules.tick(WORKER);
 			assert.strictEqual(created.length, 1);
 			assert.partialDeepEqual(created[0], { coalesced: 24, dueAt: start + DAY, id: `${schedule.id}@${start + DAY}` });
 			const after = await schedules.get(human, schedule.id);
@@ -259,14 +260,14 @@ export function createSchedulesConformance(options: {
 			const start = deps.clock.now();
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 1);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 1);
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 0, "nothing while one is due");
-			const claimed = await schedules.claim(RUNNER, DAY);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "nothing while one is due");
+			const claimed = await schedules.claim(WORKER, RUNNER, DAY);
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 0, "nothing while one is running");
-			await schedules.complete(claimed!.id, RUNNER, { status: "succeeded", result: { ok: true } });
-			const next = await schedules.tick();
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "nothing while one is running");
+			await schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded", result: { ok: true } });
+			const next = await schedules.tick(WORKER);
 			assert.strictEqual(next.length, 1, "one occurrence after it completes");
 			assert.partialDeepEqual(next[0], { coalesced: 2, dueAt: start + 3 * HOUR });
 			const listed = await schedules.listOccurrences(human, schedule.id);
@@ -282,48 +283,48 @@ export function createSchedulesConformance(options: {
 			deps.clock.advance(30 * MINUTE);
 			await schedules.create(human, hourly(deps));
 			deps.clock.advance(2 * HOUR);
-			assert.strictEqual((await schedules.tick()).length, 2);
-			const first = await schedules.claim(RUNNER, MINUTE);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 2);
+			const first = await schedules.claim(WORKER, RUNNER, MINUTE);
 			assert.strictEqual(first?.scheduleId, early.id);
-			const second = await schedules.claim("runner-2", MINUTE);
+			const second = await schedules.claim(WORKER, "runner-2", MINUTE);
 			assert.ok(second && second.scheduleId !== early.id, "the second claim takes the other occurrence");
-			assert.strictEqual(await schedules.claim("runner-3", MINUTE), undefined, "nothing is left to claim");
+			assert.strictEqual(await schedules.claim(WORKER, "runner-3", MINUTE), undefined, "nothing is left to claim");
 		}),
 
 		test("keeps a claim exclusive until its lease passes, then hands it over and refuses the first runner", async (schedules, deps) => {
 			await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			await schedules.tick();
-			const first = await schedules.claim(RUNNER, MINUTE);
+			await schedules.tick(WORKER);
+			const first = await schedules.claim(WORKER, RUNNER, MINUTE);
 			assert.partialDeepEqual(first, {
 				status: "running",
 				claimedBy: RUNNER,
 				attempt: 1,
 				leaseUntil: deps.clock.now() + MINUTE,
 			});
-			assert.strictEqual(await schedules.claim("runner-2", MINUTE), undefined, "a live claim is exclusive");
+			assert.strictEqual(await schedules.claim(WORKER, "runner-2", MINUTE), undefined, "a live claim is exclusive");
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, "runner-2", { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, "runner-2", { status: "succeeded" }),
 				"conflict",
 				"only the claimant completes",
 			);
 			deps.clock.advance(MINUTE);
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, RUNNER, { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, RUNNER, { status: "succeeded" }),
 				"conflict",
 				"a lapsed lease cannot complete",
 			);
-			const second = await schedules.claim("runner-2", MINUTE);
+			const second = await schedules.claim(WORKER, "runner-2", MINUTE);
 			assert.partialDeepEqual(second, { id: first!.id, claimedBy: "runner-2", attempt: 2 });
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, RUNNER, { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, RUNNER, { status: "succeeded" }),
 				"conflict",
 				"the first runner lost the claim",
 			);
-			const done = await schedules.complete(first!.id, "runner-2", { status: "failed" });
+			const done = await schedules.complete(WORKER, first!.id, "runner-2", { status: "failed" });
 			assert.strictEqual(done.status, "failed");
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, "runner-2", { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, "runner-2", { status: "succeeded" }),
 				"conflict",
 				"a finished occurrence cannot complete again",
 			);
@@ -338,14 +339,14 @@ export function createSchedulesConformance(options: {
 				counted.createdAt + 2 * HOUR,
 			]);
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 3);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 3);
 			assert.strictEqual((await schedules.get(human, oneOff.id)).status, "ended", "a one-off ends after it runs");
 			for (let index = 0; index < 3; index += 1) {
-				const claimed = await schedules.claim(RUNNER, MINUTE);
-				await schedules.complete(claimed!.id, RUNNER, { status: "succeeded" });
+				const claimed = await schedules.claim(WORKER, RUNNER, MINUTE);
+				await schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded" });
 			}
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 2);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 2);
 			for (const id of [counted.id, until.id]) {
 				const ended = await schedules.get(human, id);
 				assert.strictEqual(ended.status, "ended");
@@ -354,11 +355,11 @@ export function createSchedulesConformance(options: {
 				assert.deepEqual(await schedules.preview(human, id, 3), []);
 			}
 			for (let index = 0; index < 2; index += 1) {
-				const claimed = await schedules.claim(RUNNER, MINUTE);
-				await schedules.complete(claimed!.id, RUNNER, { status: "succeeded" });
+				const claimed = await schedules.claim(WORKER, RUNNER, MINUTE);
+				await schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded" });
 			}
 			deps.clock.advance(5 * HOUR);
-			assert.strictEqual((await schedules.tick()).length, 0, "ended schedules create nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "ended schedules create nothing");
 		}),
 
 		test("raises nothing for a check that exits 0", async (schedules, deps) => {
@@ -452,11 +453,11 @@ export function createSchedulesConformance(options: {
 		test("lets only the claimant report a check", async (schedules, deps) => {
 			await createCheck(schedules, deps);
 			deps.clock.advance(HOUR);
-			await schedules.tick();
-			const claimed = await schedules.claim(RUNNER, MINUTE);
-			await assert.rejectsWithCode(schedules.reportCheck(claimed!.id, "runner-2", { exitCode: 0 }), "conflict");
+			await schedules.tick(WORKER);
+			const claimed = await schedules.claim(WORKER, RUNNER, MINUTE);
+			await assert.rejectsWithCode(schedules.reportCheck(WORKER, claimed!.id, "runner-2", { exitCode: 0 }), "conflict");
 			deps.clock.advance(MINUTE);
-			await assert.rejectsWithCode(schedules.reportCheck(claimed!.id, RUNNER, { exitCode: 0 }), "conflict");
+			await assert.rejectsWithCode(schedules.reportCheck(WORKER, claimed!.id, RUNNER, { exitCode: 0 }), "conflict");
 		}),
 
 		test("refuses an agent creating, updating, pausing, resuming or ending a schedule", async (schedules, deps) => {
@@ -487,13 +488,13 @@ export function createSchedulesConformance(options: {
 			assert.strictEqual(paused.status, "paused");
 			assert.strictEqual(paused.nextDueAt, undefined);
 			deps.clock.advance(5 * HOUR + 30 * MINUTE);
-			assert.strictEqual((await schedules.tick()).length, 0, "paused schedules create nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "paused schedules create nothing");
 			const resumed = await schedules.resume(service, schedule.id);
 			assert.strictEqual(resumed.status, "active");
 			assert.strictEqual(resumed.nextDueAt, start + 6 * HOUR, "the next due time is after now");
-			assert.strictEqual((await schedules.tick()).length, 0, "no backfill on resume");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "no backfill on resume");
 			deps.clock.advance(30 * MINUTE);
-			const created = await schedules.tick();
+			const created = await schedules.tick(WORKER);
 			assert.partialDeepEqual(created, [{ coalesced: 1, dueAt: start + 6 * HOUR }]);
 			const ended = await schedules.end(service, schedule.id);
 			assert.strictEqual(ended.status, "ended");
@@ -508,7 +509,7 @@ export function createSchedulesConformance(options: {
 		test("update ignores fields outside ScheduleInput and is audited", async (schedules, deps) => {
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			await schedules.tick();
+			await schedules.tick(WORKER);
 			const before = await schedules.get(human, schedule.id);
 			const sneaky = {
 				title: "Renamed",

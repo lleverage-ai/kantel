@@ -25,14 +25,19 @@ import {
 	ROLES,
 	type Role,
 	type RoleBinding,
+	requireSystem,
 	roleSatisfies,
 	type ServiceId,
 	type ServiceIdentity,
 	systemClock,
+	systemContext,
 	type User,
 	type UserId,
 } from "@harbour/contracts";
 import { apiKeyPrefix, generateApiKeySecret, hashApiKeySecret, strongestRole } from "./index.ts";
+
+/** Identity appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("identity");
 
 export interface MemoryIdentityOptions {
 	readonly clock?: Clock;
@@ -174,7 +179,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		projectId?: ProjectId,
 	): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([
+		await audit.append(AUDIT_CONTEXT, [
 			{
 				id: `identity:${type}:${crypto.randomUUID()}`,
 				at: clock.now(),
@@ -464,7 +469,8 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			);
 		},
 
-		async authenticateApiKey(secret): Promise<Authentication> {
+		async authenticateApiKey(ctx, secret): Promise<Authentication> {
+			await requireSystem(ctx, "identity.authenticateApiKey", { ...(audit === undefined ? {} : { audit }), clock });
 			const keyId = typeof secret === "string" ? apiKeyIdsByHash.get(await hashApiKeySecret(secret)) : undefined;
 			const key = keyId === undefined ? undefined : apiKeys.get(keyId);
 			if (key === undefined || !keyIsLive(key)) throw forbidden("the API key is not valid");
@@ -476,7 +482,8 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			};
 		},
 
-		async roleOf(actor, organisationId, projectId) {
+		async roleOf(ctx, actor, organisationId, projectId) {
+			await requireSystem(ctx, "identity.roleOf", { ...(audit === undefined ? {} : { audit }), clock, organisationId });
 			return resolveRole(actor, organisationId, projectId);
 		},
 
