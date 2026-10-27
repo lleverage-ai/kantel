@@ -6,10 +6,14 @@
   "description": "Harbour's session console. M0 prototype: renders one recorded Pi Durable session with no backend.",
   "license": "Apache-2.0",
   "scripts": {
+    "predev": "node scripts/generate-fixture.ts",
     "dev": "vite",
+    "prebuild": "node scripts/generate-fixture.ts",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "build:profiling": "node scripts/generate-fixture.ts && vite build --mode profiling",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pretest": "node scripts/generate-fixture.ts",
     "test": "vitest run",
     "fixture": "node scripts/generate-fixture.ts",
     "evidence": "node scripts/evidence.ts"
