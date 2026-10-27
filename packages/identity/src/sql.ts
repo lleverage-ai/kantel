@@ -1103,6 +1103,36 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
 
+		async canSignIn(ctx, identity) {
+			await requireSystem(ctx, "identity.canSignIn", workerOptions);
+			const wellFormed =
+				typeof identity?.issuer === "string" &&
+				identity.issuer !== "" &&
+				typeof identity.subject === "string" &&
+				identity.subject !== "";
+			const externalSubject = wellFormed ? externalSubjectOf(identity.issuer, identity.subject) : "";
+			const email =
+				wellFormed && identity.emailVerified === true && typeof identity.email === "string"
+					? normaliseEmail(identity.email)
+					: "";
+			// The same statement whoever the identity names: both index lookups run every time, and the subject's match
+			// wins over any number of unlinked users with the email, as it does in `signIn`.
+			const [row] = await driver.query<{ by_subject: unknown; invited: unknown }>(
+				`SELECT
+					(SELECT COUNT(*) FROM identity_users WHERE external_subject = ?) AS by_subject,
+					(SELECT COUNT(*) FROM (
+						SELECT 1 AS one FROM identity_users
+						WHERE external_subject IS NULL AND email_normalised = ? AND email_normalised <> ''
+						LIMIT 2
+					) AS candidates) AS invited`,
+				[externalSubject, email],
+			);
+			if (!wellFormed || row === undefined) return false;
+			const bySubject = sqlNumber(row.by_subject);
+			if (bySubject > 0) return bySubject === 1;
+			return email !== "" && sqlNumber(row.invited) === 1;
+		},
+
 		async roleOf(ctx, actor, organisationId, projectId) {
 			await requireSystem(ctx, "identity.roleOf", { ...workerOptions, organisationId });
 			return resolveRole(actor, organisationId, projectId);

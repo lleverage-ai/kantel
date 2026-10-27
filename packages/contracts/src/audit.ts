@@ -73,6 +73,8 @@ export type KnownAuditEventType =
 	| "identity.role.granted"
 	| "identity.role.revoked"
 	| "identity.user.linked"
+	| "identity.session.started"
+	| "identity.session.ended"
 	| "capability.registered"
 	| "capability.grant.created"
 	| "capability.grant.revoked"
