@@ -1,0 +1,30 @@
+{
+	"name": "@harbour/cloudflare",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "M1-CF1: Harbour on Cloudflare. The gateway Worker (console, session, workspace and audit APIs behind Access) and its Durable Objects",
+	"license": "Apache-2.0",
+	"scripts": {
+		"build:console": "pnpm --filter @harbour/console build",
+		"dev": "pnpm build:console && wrangler dev --env dev",
+		"deploy:dry-run": "pnpm build:console && wrangler deploy --dry-run --outdir dist --env=\"\"",
+		"typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
+		"@harbour/audit": "workspace:*",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/identity": "workspace:*",
+		"@harbour/runtime": "workspace:*",
+		"@harbour/workspace": "workspace:*"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "5.20261027.1",
+		"@types/node": "24.19.2",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12",
+		"wrangler": "4.153.0"
+	}
+}
