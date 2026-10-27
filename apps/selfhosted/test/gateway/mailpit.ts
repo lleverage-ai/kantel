@@ -29,11 +29,19 @@ export async function sendPlainSmtp(options: {
 			if (/^\d{3} /.test(line)) waiters.shift()?.(line);
 		}
 	});
-	socket.on("error", (error) => {
-		for (const fail of failures.splice(0)) fail(error);
-	});
+	// Whatever ends the connection early (an error, or the server closing it cleanly) fails the reply being waited for,
+	// and any asked for afterwards.
+	let ended: Error | undefined;
+	const end = (error: Error) => {
+		ended ??= error;
+		waiters.length = 0;
+		for (const fail of failures.splice(0)) fail(ended);
+	};
+	socket.on("error", end);
+	socket.on("close", () => end(new Error("SMTP connection closed")));
 	const reply = (expect: string) =>
 		new Promise<void>((resolve, reject) => {
+			if (ended !== undefined) return reject(ended);
 			failures.push(reject);
 			waiters.push((line) => {
 				failures.shift();
@@ -76,20 +84,23 @@ export interface MailpitMessage {
 	readonly text: string;
 }
 
-/** The newest message to `to` in Mailpit, waiting up to `timeoutMs` for one to arrive. */
+/** The newest message to `to` in Mailpit, waiting up to `timeoutMs` in all (requests included) for one to arrive. */
 export async function latestMessageTo(
 	mailpitUrl: string,
 	to: string,
 	timeoutMs = 10_000,
 ): Promise<MailpitMessage | undefined> {
 	const deadline = Date.now() + timeoutMs;
+	const signal = AbortSignal.timeout(timeoutMs);
 	for (;;) {
-		const search = await fetch(`${mailpitUrl}/api/v1/search?query=${encodeURIComponent(`to:"${to}"`)}&limit=1`);
+		const search = await fetch(`${mailpitUrl}/api/v1/search?query=${encodeURIComponent(`to:"${to}"`)}&limit=1`, {
+			signal,
+		});
 		if (!search.ok) throw new Error(`Mailpit search answered ${search.status}`);
 		const found = (await search.json()) as { messages?: { ID: string }[] };
 		const id = found.messages?.[0]?.ID;
 		if (id !== undefined) {
-			const response = await fetch(`${mailpitUrl}/api/v1/message/${encodeURIComponent(id)}`);
+			const response = await fetch(`${mailpitUrl}/api/v1/message/${encodeURIComponent(id)}`, { signal });
 			if (!response.ok) throw new Error(`Mailpit message answered ${response.status}`);
 			const message = (await response.json()) as {
 				ID: string;
@@ -106,7 +117,8 @@ export async function latestMessageTo(
 				text: message.Text,
 			};
 		}
-		if (Date.now() >= deadline) return undefined;
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		const left = deadline - Date.now();
+		if (left <= 0) return undefined;
+		await new Promise((resolve) => setTimeout(resolve, Math.min(200, left)));
 	}
 }

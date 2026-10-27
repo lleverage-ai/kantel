@@ -22,6 +22,8 @@ describe("mail configuration", () => {
 		});
 		const described = tls && describeMail(tls);
 		expect(described).toMatchObject({ transport: "smtps", port: 465, authenticated: true });
+		const submission = mailConfig({ HARBOUR_SMTP_URL: "smtp://relay.example.com", HARBOUR_MAIL_FROM: "a@b.example" });
+		expect(submission && describeMail(submission).port).toBe(587);
 		expect(JSON.stringify(described)).not.toContain("secret-password");
 		expect(JSON.stringify(described)).not.toContain("user");
 	});
@@ -34,11 +36,53 @@ describe("mail configuration", () => {
 		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025", HARBOUR_MAIL_FROM: "Harbour" })).toThrow(
 			/address/,
 		);
+		for (const injected of [
+			"Harbour\r\nBcc: x@evil.example <harbour@example.com>",
+			"harbour@example.com\nBcc: x@y",
+			"a\u0000@b",
+		]) {
+			expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025", HARBOUR_MAIL_FROM: injected })).toThrow(
+				/address/,
+			);
+		}
 	});
 
 	it("does not echo a URL's credentials in its errors", () => {
 		expect(() => mailConfig({ HARBOUR_SMTP_URL: "http://user:secret-password@x", HARBOUR_MAIL_FROM: "a@b" })).toThrow(
 			expect.not.objectContaining({ message: expect.stringContaining("secret-password") }),
 		);
+	});
+});
+
+describe("the test SMTP client and Mailpit reader", () => {
+	it("fails, rather than hangs, when the server closes before its greeting or mid-dialogue", async () => {
+		const { createServer } = await import("node:net");
+		const { sendPlainSmtp } = await import("./mailpit.ts");
+		for (const behaviour of ["no greeting", "after EHLO"] as const) {
+			const server = createServer((socket) => {
+				if (behaviour === "no greeting") return socket.end();
+				socket.write("220 hi\r\n");
+				socket.once("data", () => socket.end());
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const port = (server.address() as { port: number }).port;
+			await expect(
+				sendPlainSmtp({ host: "127.0.0.1", port, from: "a@b", to: "c@d", subject: "s", text: "t", timeoutMs: 5000 }),
+			).rejects.toThrow(/closed/);
+			await new Promise((resolve) => server.close(resolve));
+		}
+	});
+
+	it("bounds a stalled Mailpit API by its timeout", async () => {
+		const { createServer } = await import("node:http");
+		const { latestMessageTo } = await import("./mailpit.ts");
+		const server = createServer(() => {});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as { port: number }).port;
+		const started = Date.now();
+		await expect(latestMessageTo(`http://127.0.0.1:${port}`, "a@b", 300)).rejects.toThrow();
+		expect(Date.now() - started).toBeLessThan(3000);
+		server.closeAllConnections();
+		await new Promise((resolve) => server.close(resolve));
 	});
 });

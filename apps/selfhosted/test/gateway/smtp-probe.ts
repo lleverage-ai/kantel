@@ -2,7 +2,7 @@
 // gateway's own HARBOUR_SMTP_URL and HARBOUR_MAIL_FROM, so the test proves the address the sign-in mailer will use.
 //
 //   bun test/gateway/smtp-probe.ts <recipient> <subject>
-import { mailConfig } from "../../src/gateway/mail.ts";
+import { mailConfig, smtpPort } from "../../src/gateway/mail.ts";
 import { sendPlainSmtp } from "./mailpit.ts";
 
 const [to, subject] = process.argv.slice(2);
@@ -21,7 +21,7 @@ if (config.smtpUrl.protocol !== "smtp:") {
 }
 await sendPlainSmtp({
 	host: config.smtpUrl.hostname,
-	port: Number(config.smtpUrl.port || "25"),
+	port: smtpPort(config.smtpUrl),
 	from: config.from,
 	to,
 	subject,

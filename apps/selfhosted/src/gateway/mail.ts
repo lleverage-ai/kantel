@@ -22,6 +22,9 @@ export interface MailDescription {
 const ADDRESS = /^[^\s@<>]+@[^\s@<>]+$/;
 
 function validFrom(from: string): boolean {
+	// A From value goes into a message header: no CR, LF or other control characters, anywhere in it.
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+	if (/[\u0000-\u001f\u007f]/.test(from)) return false;
 	const named = /^[^<>]*<([^<>]+)>$/.exec(from.trim());
 	return ADDRESS.test(named?.[1] ?? from.trim());
 }
@@ -46,12 +49,18 @@ export function mailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig | u
 	return { smtpUrl, from };
 }
 
+/** The port a URL without one means: 465 for smtps (implicit TLS), 587 for smtp (submission, STARTTLS). */
+export function smtpPort(url: URL): number {
+	if (url.port !== "") return Number(url.port);
+	return url.protocol === "smtps:" ? 465 : 587;
+}
+
 export function describeMail(config: MailConfig): MailDescription {
 	const smtps = config.smtpUrl.protocol === "smtps:";
 	return {
 		transport: smtps ? "smtps" : "smtp",
 		host: config.smtpUrl.hostname,
-		port: config.smtpUrl.port === "" ? (smtps ? 465 : 587) : Number(config.smtpUrl.port),
+		port: smtpPort(config.smtpUrl),
 		authenticated: config.smtpUrl.username !== "",
 		from: config.from,
 	};
