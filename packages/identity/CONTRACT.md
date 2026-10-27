@@ -72,7 +72,8 @@ creates the user, and sign-in never creates one.
 - The organisations — "signIn lists the organisations the user was created in or holds a role in".
 - A worker call: the authenticator makes it as `system` — "worker calls: signIn refuses every caller but system".
 - `canSignIn(ctx, identity)` says whether `signIn` would accept the identity now, without linking or auditing, and
-  does the same work whoever it names. Email one-time PIN sign-in asks it before sending a code — "canSignIn answers
+  does the same lookups whoever it names (not a constant-time promise; the public route keeps its own response
+  independent of the answer). Email one-time PIN sign-in asks it before sending a code — "canSignIn answers
   what signIn would, without linking or auditing anyone". A worker call too.
 
 ## Email one-time PIN (M1-BE7, self-hosted)

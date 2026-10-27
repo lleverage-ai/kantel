@@ -193,18 +193,27 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			return undefined;
 		}
 		const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
-		const bySubject = [...users.values()].filter((candidate) => candidate.user.externalSubject === externalSubject);
-		// Subjects are unique by construction; should two records ever share one, refuse rather than pick.
-		if (bySubject.length > 1) return undefined;
-		if (bySubject[0] !== undefined) return { stored: bySubject[0], link: false };
 		const email =
 			identity.emailVerified === true && typeof identity.email === "string"
 				? normalisedEmail(identity.email)
 				: undefined;
-		if (email === undefined || email === "") return undefined;
-		const invited = [...users.values()].filter(
-			(candidate) => candidate.user.externalSubject === undefined && normalisedEmail(candidate.user.email) === email,
-		);
+		// One pass collects both candidate sets whoever the identity names; the subject's match wins.
+		const bySubject: StoredUser[] = [];
+		const invited: StoredUser[] = [];
+		for (const candidate of users.values()) {
+			if (candidate.user.externalSubject === externalSubject) bySubject.push(candidate);
+			else if (
+				candidate.user.externalSubject === undefined &&
+				email !== undefined &&
+				email !== "" &&
+				normalisedEmail(candidate.user.email) === email
+			) {
+				invited.push(candidate);
+			}
+		}
+		// Subjects are unique by construction; should two records ever share one, refuse rather than pick.
+		if (bySubject.length > 1) return undefined;
+		if (bySubject[0] !== undefined) return { stored: bySubject[0], link: false };
 		return invited.length === 1 && invited[0] !== undefined ? { stored: invited[0], link: true } : undefined;
 	}
 

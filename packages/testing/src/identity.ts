@@ -718,6 +718,15 @@ export function createIdentityConformance(options: {
 				});
 				await identity.createUser(tenant.admin, { name: "Twin one", email: "twin@example.test" });
 				await identity.createUser(tenant.admin, { name: "Twin two", email: "TWIN@example.test" });
+				// Three unlinked users share the email a fourth is linked by.
+				for (const name of ["Shared one", "Shared two", "Shared three"]) {
+					await identity.createUser(tenant.admin, { name, email: "Shared@example.test" });
+				}
+				const sharedLinked = await identity.createUser(tenant.admin, {
+					name: "Shared, linked",
+					email: "shared@example.test",
+					externalSubject: externalSubjectOf(issuer, "shared@example.test"),
+				});
 				const auditedBefore = deps.audit.events.length;
 
 				a.strictEqual(await identity.canSignIn(WORKER, otp("ada@example.test")), true, "an invited email");
@@ -730,6 +739,11 @@ export function createIdentityConformance(options: {
 				);
 				a.strictEqual(await identity.canSignIn(WORKER, otp("twin@example.test")), false, "an email two users share");
 				a.strictEqual(
+					await identity.canSignIn(WORKER, otp("shared@example.test")),
+					true,
+					"a linked subject wins however many unlinked users share its email",
+				);
+				a.strictEqual(
 					await identity.canSignIn(WORKER, { issuer, subject: "ada@example.test", email: "ada@example.test" }),
 					false,
 					"an unverified email",
@@ -740,6 +754,11 @@ export function createIdentityConformance(options: {
 					(await identity.getUser(tenant.admin, invited.id)).externalSubject,
 					undefined,
 					"nobody was linked",
+				);
+				a.strictEqual(
+					(await identity.signIn(WORKER, otp("shared@example.test"))).user.id,
+					sharedLinked.id,
+					"signIn agrees",
 				);
 
 				await assertWorkerCallRefused(

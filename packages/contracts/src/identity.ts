@@ -282,9 +282,9 @@ export interface IdentityDirectory {
 
 	/**
 	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing. Email one-time PIN sign-in asks
-	 * it before sending a code, so only an invited user's inbox ever gets one. It does the same work whoever the identity
-	 * names, so its timing does not tell a known person from a stranger. Malformed identities are `false`. A worker call:
-	 * any actor but `system` is `forbidden`.
+	 * it before sending a code, so only an invited user's inbox ever gets one. It does the same lookups whoever the
+	 * identity names, but that is no constant-time promise: a public route that asks it must keep its own response
+	 * independent of the answer. Malformed identities are `false`. A worker call: any actor but `system` is `forbidden`.
 	 */
 	canSignIn(ctx: SystemContext, identity: ExternalIdentity): Promise<boolean>;
 

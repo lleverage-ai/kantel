@@ -1115,17 +1115,22 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				wellFormed && identity.emailVerified === true && typeof identity.email === "string"
 					? normaliseEmail(identity.email)
 					: "";
-			// One query whoever the identity names, so the answer's timing says nothing about who exists.
-			const rows = await driver.query<{ external_subject: unknown }>(
-				`SELECT external_subject FROM identity_users
-				WHERE external_subject = ? OR (external_subject IS NULL AND email_normalised = ? AND email_normalised <> '')
-				LIMIT 3`,
+			// The same statement whoever the identity names: both index lookups run every time, and the subject's match
+			// wins over any number of unlinked users with the email, as it does in `signIn`.
+			const [row] = await driver.query<{ by_subject: unknown; invited: unknown }>(
+				`SELECT
+					(SELECT COUNT(*) FROM identity_users WHERE external_subject = ?) AS by_subject,
+					(SELECT COUNT(*) FROM (
+						SELECT 1 AS one FROM identity_users
+						WHERE external_subject IS NULL AND email_normalised = ? AND email_normalised <> ''
+						LIMIT 2
+					) AS candidates) AS invited`,
 				[externalSubject, email],
 			);
-			if (!wellFormed) return false;
-			const bySubject = rows.filter((row) => row.external_subject === externalSubject);
-			if (bySubject.length > 0) return bySubject.length === 1;
-			return email !== "" && rows.length === 1;
+			if (!wellFormed || row === undefined) return false;
+			const bySubject = sqlNumber(row.by_subject);
+			if (bySubject > 0) return bySubject === 1;
+			return email !== "" && sqlNumber(row.invited) === 1;
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {
