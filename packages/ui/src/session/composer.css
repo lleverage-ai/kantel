@@ -1,0 +1,142 @@
+/* The composer: one raised surface in the transcript's column, after T3 Code's ComposerSurface.tsx. */
+
+.hb-composer {
+	/* The field grows from about 48px to about 208px, then scrolls (T3 Code's editor range). Local until promoted. */
+	--hb-composer-min-height: var(--hb-space-11);
+	--hb-composer-max-height: calc(var(--hb-space-11) * 4 + var(--hb-space-7));
+
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	width: 100%;
+	min-width: 0;
+	max-width: var(--hb-content-width);
+	margin: 0 auto;
+}
+
+.hb-composer-banner {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	min-width: 0;
+}
+
+.hb-composer-surface {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-composer);
+	transition: border-color var(--hb-duration-fast) var(--hb-ease);
+}
+
+/* The caret and a brighter hairline say where focus is; a ring round a box you are typing in is noise. */
+.hb-composer-surface:focus-within {
+	border-color: var(--hb-border-strong);
+}
+
+.hb-composer-input {
+	display: block;
+	width: 100%;
+	min-height: var(--hb-composer-min-height);
+	max-height: var(--hb-composer-max-height);
+	margin: 0;
+	padding: var(--hb-space-6) var(--hb-space-6) var(--hb-space-2);
+	border: 0;
+	border-radius: var(--hb-radius-bubble);
+	background: transparent;
+	color: var(--hb-text);
+	font: inherit;
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading);
+	overflow-y: auto;
+	resize: none;
+	outline: none;
+}
+
+.hb-composer-input::placeholder {
+	color: var(--hb-text-faint);
+}
+
+.hb-composer-input:disabled {
+	color: var(--hb-text-disabled);
+	cursor: not-allowed;
+}
+
+.hb-composer-input:disabled::placeholder {
+	color: var(--hb-text-disabled);
+}
+
+.hb-composer-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	padding: var(--hb-space-2) var(--hb-space-4) var(--hb-space-4) var(--hb-space-6);
+}
+
+.hb-composer-footer {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-composer-reason {
+	min-width: 0;
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	overflow-wrap: anywhere;
+}
+
+.hb-composer-hint {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-2);
+	white-space: nowrap;
+}
+
+/* Two classes, so the circle wins over the button's own radius whatever order the CSS loads in. */
+.hb-composer .hb-composer-action {
+	border-radius: var(--hb-radius-full);
+}
+
+.hb-composer-disabled .hb-composer-surface {
+	background: var(--hb-panel);
+	box-shadow: none;
+}
+
+@media (min-width: 640px) {
+	.hb-composer-input {
+		padding-right: var(--hb-space-7);
+		padding-left: var(--hb-space-7);
+	}
+
+	.hb-composer-bar {
+		padding-left: var(--hb-space-7);
+	}
+}
+
+@media (pointer: coarse) {
+	.hb-composer-input {
+		/* 16px stops iOS zooming into the field. */
+		font-size: var(--hb-text-lg);
+	}
+
+	.hb-composer .hb-composer-action {
+		width: var(--hb-control-lg);
+		height: var(--hb-control-lg);
+	}
+
+	/* Enter is a new line on a software keyboard, so "Enter to send" would be wrong. */
+	.hb-composer-hint {
+		display: none;
+	}
+}
