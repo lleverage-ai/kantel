@@ -110,6 +110,13 @@ It leaves out: persistence across restarts, skills, memory
 scopes, workspaces and sandbox routing beyond `releaseSession`, usage totals in snapshots, history paging through
 `watch`, and session titles changing after creation.
 
+## Over HTTP
+
+`@harbour/runtime/http` serves these contracts over HTTP as one portable fetch handler, with the caller taken from an
+injected authenticator, `watch` as server-sent events and host tools served by signed HTTPS callbacks; its client
+implements the same contracts, and the conformance suite runs through it. Routes and wire format are in
+[HTTP.md](HTTP.md).
+
 ## Open questions
 
 - Should `close` also close child sessions, or only abort them as it does now?

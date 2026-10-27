@@ -1,0 +1,401 @@
+// The HTTP layer's own rules, beyond the conformance suite: authentication, error mapping, the event stream's wire
+// format and resume, result polling, callback registration and signatures.
+import { type AgentProfile, type Authentication, HarbourError, type HostToolCall } from "@harbour/contracts";
+import type { ServerFrame } from "@harbour/protocol";
+import {
+	apiKeyAuthenticator,
+	callbackHostToolHandler,
+	createHostToolEndpoint,
+	createSessionApi,
+	HEADERS,
+	readSse,
+	signHostToolCall,
+	staticTokenAuthenticator,
+	verifyHostToolSignature,
+} from "@harbour/runtime/http";
+import { createMemoryRuntime } from "@harbour/runtime/memory";
+import { createScriptedModel } from "@harbour/runtime/testing";
+import { afterEach, describe, expect, it } from "vitest";
+
+const ORG = "org-http";
+const PROJECT = "proj-http";
+const supervisor: Authentication = { actor: { kind: "service", serviceId: "sal-supervisor" }, organisationId: ORG };
+const other: Authentication = { actor: { kind: "service", serviceId: "someone-else" }, organisationId: ORG };
+const system: Authentication = { actor: { kind: "system", component: "sneaky" }, organisationId: ORG };
+
+const profile: AgentProfile = {
+	id: "worker",
+	organisationId: ORG,
+	name: "Worker",
+	model: { route: "default" },
+	promptLayers: [],
+	tools: ["review"],
+	skills: [],
+	sandbox: { tiers: ["isolate"] },
+	memoryScopes: [],
+	hostId: "sal",
+};
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+function setUp(outbound?: typeof fetch) {
+	const { models, script } = createScriptedModel();
+	const memory = createMemoryRuntime({ models });
+	const api = createSessionApi({
+		runtime: memory.runtime,
+		directory: memory.directory,
+		profiles: memory.profiles,
+		hostTools: memory.hostTools,
+		authenticate: staticTokenAuthenticator({ supervisor, other, system }),
+		keepAliveMs: 60_000,
+		...(outbound === undefined ? {} : { fetch: outbound }),
+	});
+	cleanups.push(async () => {
+		await api.close();
+		await memory.close();
+	});
+	const request = (method: string, path: string, options: { token?: string; body?: unknown; headers?: object } = {}) =>
+		api.fetch(
+			new Request(`https://harbour.test/v1${path}`, {
+				method,
+				headers: {
+					...(options.token === undefined ? {} : { authorization: `Bearer ${options.token}` }),
+					...(options.body === undefined ? {} : { "content-type": "application/json" }),
+					...options.headers,
+				},
+				...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+			}),
+		);
+	return { api, memory, script, request };
+}
+
+async function createSession(request: ReturnType<typeof setUp>["request"]): Promise<string> {
+	expect((await request("PUT", "/profiles/worker", { token: "supervisor", body: profile })).status).toBe(200);
+	const created = await request("POST", "/sessions", {
+		token: "supervisor",
+		body: { projectId: PROJECT, agentId: "worker" },
+	});
+	expect(created.status).toBe(201);
+	return ((await created.json()) as { id: string }).id;
+}
+
+/** Reads events until `count` have arrived, then stops reading. */
+async function firstEvents(response: Response, count: number) {
+	const events: { event: string; data: string; id?: string }[] = [];
+	if (response.body === null) throw new Error("no body");
+	await readSse(response.body, (event) => {
+		events.push(event);
+		return events.length < count;
+	});
+	return events;
+}
+
+describe("session API over HTTP", () => {
+	it("answers 401 without a credential, with an unknown one, and for a system actor", async () => {
+		const { request } = setUp();
+		for (const token of [undefined, "nobody", "system"]) {
+			const response = await request("GET", "/sessions", token === undefined ? {} : { token });
+			expect(response.status).toBe(401);
+			expect(response.headers.get("www-authenticate")).toContain("Bearer");
+			expect(await response.json()).toMatchObject({ error: { code: "unauthenticated" } });
+		}
+	});
+
+	it("maps Harbour errors to statuses with their code, and hides any other error", async () => {
+		const { request } = setUp();
+		const missing = await request("GET", "/sessions/no-such-session", { token: "supervisor" });
+		expect(missing.status).toBe(404);
+		expect(await missing.json()).toMatchObject({ error: { code: "not_found" } });
+		expect((await request("GET", "/nowhere", { token: "supervisor" })).status).toBe(404);
+		const bad = await request("POST", "/sessions", { token: "supervisor", body: [] });
+		expect(bad.status).toBe(400);
+		const failing = createSessionApi({
+			...setUp().memory,
+			authenticate: async () => {
+				throw new Error("database password is hunter2");
+			},
+		});
+		const hidden = await failing.fetch(new Request("https://harbour.test/v1/sessions"));
+		expect(hidden.status).toBe(500);
+		expect(await hidden.text()).not.toContain("hunter2");
+	});
+
+	it("refuses a body over the limit", async () => {
+		const { request } = setUp();
+		const response = await request("POST", "/sessions", {
+			token: "supervisor",
+			body: { projectId: PROJECT, agentId: "worker", title: "x".repeat(1024 * 1024 + 1) },
+		});
+		expect(response.status).toBe(400);
+	});
+
+	it("authenticates API keys through the identity directory and treats a refused key as unauthenticated", async () => {
+		const asked: string[] = [];
+		const authenticate = apiKeyAuthenticator({
+			async authenticateApiKey(ctx, secret) {
+				expect(ctx.actor.kind).toBe("system");
+				asked.push(secret);
+				if (secret === "hk_good") return supervisor;
+				throw new HarbourError("forbidden", "The API key is not valid");
+			},
+		});
+		const withKey = (key: string) =>
+			new Request("https://harbour.test/v1/sessions", { headers: { authorization: `Bearer ${key}` } });
+		expect(await authenticate(withKey("hk_good"))).toEqual(supervisor);
+		expect(await authenticate(withKey("hk_bad"))).toBeUndefined();
+		expect(await authenticate(new Request("https://harbour.test/v1/sessions"))).toBeUndefined();
+		expect(asked).toEqual(["hk_good", "hk_bad"]);
+	});
+
+	it("streams hello, a snapshot with its cursor as the event ID and ready, then resumes from Last-Event-ID", async () => {
+		const { request, script } = setUp();
+		const sessionId = await createSession(request);
+		const first = await request("GET", `/sessions/${sessionId}/events`, { token: "supervisor" });
+		expect(first.status).toBe(200);
+		expect(first.headers.get("content-type")).toContain("text/event-stream");
+		const opening = await firstEvents(first, 3);
+		expect(opening.map((event) => event.event)).toEqual(["hello", "snapshot", "ready"]);
+		const snapshot = JSON.parse(opening[1]?.data ?? "{}") as Extract<ServerFrame, { type: "snapshot" }>;
+		expect(opening[1]?.id).toBe(snapshot.snapshot.cursor);
+
+		script.reply({ text: "Hello" });
+		const prompted = await request("POST", `/sessions/${sessionId}/prompt`, {
+			token: "supervisor",
+			body: { text: "Hi" },
+		});
+		expect(prompted.status).toBe(202);
+		const submission = (await prompted.json()) as { id: string };
+		const result = await request(
+			"GET",
+			`/sessions/${sessionId}/result?submission=${encodeURIComponent(submission.id)}`,
+			{
+				token: "supervisor",
+			},
+		);
+		expect(await result.json()).toMatchObject({ status: "answered", answer: "Hello" });
+
+		const resumed = await request("GET", `/sessions/${sessionId}/events`, {
+			token: "supervisor",
+			headers: { "last-event-id": snapshot.snapshot.cursor },
+		});
+		const events: { event: string; data: string; id?: string }[] = [];
+		if (resumed.body === null) throw new Error("no body");
+		await readSse(resumed.body, (event) => {
+			events.push(event);
+			return event.event !== "ready";
+		});
+		expect(events[0]?.event).toBe("hello");
+		expect(JSON.parse(events[0]?.data ?? "{}")).toMatchObject({ type: "hello", resumed: true });
+		const deltas = events.slice(1, -1);
+		expect(deltas.length).toBeGreaterThan(0);
+		expect(deltas.every((event) => event.event === "delta" && event.id !== undefined)).toBe(true);
+	});
+
+	it("refuses to stream a session the caller cannot see, as JSON rather than an event stream", async () => {
+		const { request } = setUp();
+		const response = await request("GET", "/sessions/no-such-session/events", { token: "supervisor" });
+		expect(response.status).toBe(404);
+		expect(response.headers.get("content-type")).toContain("application/json");
+	});
+
+	it("answers 202 pending while a run is still going, then the result", async () => {
+		const seen: HostToolCall[] = [];
+		let release = () => {};
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const host = createHostToolEndpoint(
+			async (call) => {
+				seen.push(call);
+				await released;
+				return { output: "Reviewed" };
+			},
+			{ secret: "s".repeat(32) },
+		);
+		const { request, script } = setUp(async (input, init) => host(new Request(input, init)));
+		const sessionId = await createSession(request);
+		const registered = await request("PUT", "/hosts/sal", {
+			token: "supervisor",
+			body: {
+				tools: [{ name: "review", description: "Waits", inputSchema: { type: "object" }, replay: "unsafe" }],
+				callback: { url: "https://sal.test/tools", secret: "s".repeat(32) },
+			},
+		});
+		expect(registered.status).toBe(200);
+		expect(await registered.json()).not.toHaveProperty("secret");
+		script.reply({ toolCalls: [{ name: "review", args: {} }] }, { text: "Done" });
+		const submission = (await (
+			await request("POST", `/sessions/${sessionId}/prompt`, { token: "supervisor", body: { text: "Go" } })
+		).json()) as { id: string };
+		const path = `/sessions/${sessionId}/result?submission=${encodeURIComponent(submission.id)}`;
+		const pending = await request("GET", `${path}&timeoutMs=20`, { token: "supervisor" });
+		expect(pending.status).toBe(202);
+		expect(await pending.json()).toMatchObject({ status: "pending", submissionId: submission.id });
+		release();
+		const done = await request("GET", path, { token: "supervisor" });
+		expect(done.status).toBe(200);
+		expect(await done.json()).toMatchObject({ status: "answered", answer: "Done" });
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({ hostId: "sal", sessionId, tool: "review", projectId: PROJECT });
+	});
+
+	it("registers only https callbacks with a long enough secret, and generates one when none is given", async () => {
+		const { request } = setUp();
+		const tools = [{ name: "review", description: "Waits", inputSchema: { type: "object" }, replay: "unsafe" }];
+		const plain = await request("PUT", "/hosts/sal", {
+			token: "supervisor",
+			body: { tools, callback: { url: "http://169.254.169.254/latest" } },
+		});
+		expect(plain.status).toBe(422);
+		expect(await plain.json()).toMatchObject({ error: { code: "refused" } });
+		const withUser = await request("PUT", "/hosts/sal", {
+			token: "supervisor",
+			body: { tools, callback: { url: "https://user:pass@sal.test/tools" } },
+		});
+		expect(withUser.status).toBe(422);
+		const short = await request("PUT", "/hosts/sal", {
+			token: "supervisor",
+			body: { tools, callback: { url: "https://sal.test/tools", secret: "short" } },
+		});
+		expect(short.status).toBe(400);
+		const badTool = await request("PUT", "/hosts/sal", {
+			token: "supervisor",
+			body: { tools: [{ name: "x" }], callback: { url: "https://sal.test/tools" } },
+		});
+		expect(badTool.status).toBe(400);
+		const generated = await request("PUT", "/hosts/sal", {
+			token: "supervisor",
+			body: { tools, callback: { url: "https://sal.test/tools" } },
+		});
+		expect(generated.status).toBe(200);
+		const body = (await generated.json()) as { secret?: string };
+		expect(body.secret?.length ?? 0).toBeGreaterThanOrEqual(32);
+		const listed = await request("GET", "/hosts/sal/tools", { token: "supervisor" });
+		expect(await listed.json()).toMatchObject({ items: [{ name: "review" }] });
+		expect((await request("DELETE", "/hosts/sal", { token: "other" })).status).toBe(403);
+		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(204);
+		expect(await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()).toEqual({ items: [] });
+		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(404);
+	});
+});
+
+describe("host-tool callbacks", () => {
+	const secret = "a-callback-secret-at-least-32-chars-long";
+	const call: HostToolCall = {
+		hostId: "sal",
+		sessionId: "s-1",
+		organisationId: ORG,
+		projectId: PROJECT,
+		agentId: "worker",
+		callId: "call-1",
+		tool: "lookup",
+		args: { key: "plan" },
+	};
+
+	it("signs each call so the host can check it, and refuses a changed body, another secret or an old signature", async () => {
+		const now = Date.UTC(2026, 9, 27, 12);
+		const header = await signHostToolCall(secret, "{}", now);
+		expect(await verifyHostToolSignature(secret, "{}", header, now)).toBe(true);
+		expect(await verifyHostToolSignature(secret, '{"a":1}', header, now)).toBe(false);
+		expect(await verifyHostToolSignature(`${secret}x`, "{}", header, now)).toBe(false);
+		expect(await verifyHostToolSignature(secret, "{}", header, now + 6 * 60 * 1000)).toBe(false);
+		expect(await verifyHostToolSignature(secret, "{}", null, now)).toBe(false);
+		expect(await verifyHostToolSignature(secret, "{}", "t=abc,v1=00", now)).toBe(false);
+	});
+
+	it("sends the call to the host endpoint, which runs the handler and returns its result", async () => {
+		const received: HostToolCall[] = [];
+		const endpoint = createHostToolEndpoint(
+			async (incoming) => {
+				received.push(incoming);
+				return { output: "Note plan is ready", structured: { key: "plan" } };
+			},
+			{ secret },
+		);
+		let headers: Headers | undefined;
+		const handler = callbackHostToolHandler({
+			url: "https://sal.test/tools/sal",
+			secret,
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				headers = request.headers;
+				expect(request.redirect).toBe("manual");
+				return endpoint(request);
+			},
+		});
+		const result = await handler(call, new AbortController().signal);
+		expect(result).toEqual({ output: "Note plan is ready", structured: { key: "plan" } });
+		expect(received).toEqual([call]);
+		expect(headers?.get(HEADERS.callId)).toBe("call-1");
+		expect(headers?.get(HEADERS.hostId)).toBe("sal");
+	});
+
+	it("rejects an unsigned call at the endpoint, and fails the tool call when the host refuses or is down", async () => {
+		const endpoint = createHostToolEndpoint(async () => ({ output: "never" }), { secret });
+		const unsigned = await endpoint(new Request("https://sal.test/tools/sal", { method: "POST", body: "{}" }));
+		expect(unsigned.status).toBe(401);
+		const wrongSecret = callbackHostToolHandler({
+			url: "https://sal.test/tools/sal",
+			secret: `${secret}-other`,
+			fetch: async (input, init) => endpoint(new Request(input, init)),
+		});
+		await expect(wrongSecret(call, new AbortController().signal)).rejects.toMatchObject({ code: "unavailable" });
+		const down = callbackHostToolHandler({
+			url: "https://sal.test/tools/sal",
+			secret,
+			fetch: async () => {
+				throw new TypeError("fetch failed");
+			},
+		});
+		await expect(down(call, new AbortController().signal)).rejects.toMatchObject({ code: "unavailable" });
+	});
+
+	it("aborts the host request, and the handler's signal, when the call is aborted", async () => {
+		let handlerSignal: AbortSignal | undefined;
+		const endpoint = createHostToolEndpoint(
+			(_incoming, signal) => {
+				handlerSignal = signal;
+				return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+			},
+			{ secret },
+		);
+		const handler = callbackHostToolHandler({
+			url: "https://sal.test/tools/sal",
+			secret,
+			fetch: async (input, init) => endpoint(new Request(input, init)),
+		});
+		const controller = new AbortController();
+		const running = handler(call, controller.signal);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		controller.abort();
+		// In process the endpoint answers 500 once its handler rejects; over a network the fetch itself rejects.
+		await expect(running).rejects.toBeInstanceOf(HarbourError);
+		expect(handlerSignal?.aborted).toBe(true);
+	});
+});
+
+describe("readSse", () => {
+	it("parses events split across chunks, with CRLF line ends, comments and multi-line data", async () => {
+		const text = ": hi\r\nid: c1\r\nevent: delta\r\ndata: a\r\ndata: b\r\n\r\nevent: ready\ndata: {}\n\n";
+		const encoder = new TextEncoder();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (let index = 0; index < text.length; index += 3)
+					controller.enqueue(encoder.encode(text.slice(index, index + 3)));
+				controller.close();
+			},
+		});
+		const events: unknown[] = [];
+		await readSse(body, (event) => {
+			events.push(event);
+			return true;
+		});
+		expect(events).toEqual([
+			{ event: "delta", data: "a\nb", id: "c1" },
+			{ event: "ready", data: "{}" },
+		]);
+	});
+});
