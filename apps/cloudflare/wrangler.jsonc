@@ -1,0 +1,57 @@
+{
+	// Harbour M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
+	// behind Cloudflare Access. The deploy workflow adds the custom domain and the account's IDs at deploy time; nothing
+	// here names an account, a zone or a hostname.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "harbour",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// Never reachable on workers.dev or a preview URL: those would bypass Access, which guards only the custom domain.
+	"workers_dev": false,
+	"preview_urls": false,
+	"observability": { "enabled": true },
+	"assets": {
+		"directory": "../console/dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		// The API and health check always reach the Worker; every other path is the console.
+		"run_worker_first": ["/v1/*", "/healthz"]
+	},
+	"durable_objects": {
+		"bindings": [{ "name": "STACK", "class_name": "HarbourStack" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] }],
+	"vars": {
+		// The Access team domain (such as harbour.cloudflareaccess.com) and the Access application's AUD tag. Empty means
+		// people cannot sign in; API keys still work. The deploy workflow fills both from repository variables.
+		"HARBOUR_ACCESS_TEAM_DOMAIN": "",
+		"HARBOUR_ACCESS_AUD": "",
+		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
+		"HARBOUR_ADMIN_EMAIL": ""
+	},
+	"env": {
+		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.
+		// It is a separate entry point, so none of it is in the deployed bundle.
+		"dev": {
+			"name": "harbour-dev",
+			"main": "src/dev.ts",
+			"workers_dev": false,
+			"preview_urls": false,
+			"assets": {
+				"directory": "../console/dist",
+				"binding": "ASSETS",
+				"not_found_handling": "single-page-application",
+				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*"]
+			},
+			"durable_objects": {
+				"bindings": [{ "name": "STACK", "class_name": "HarbourStack" }]
+			},
+			"vars": {
+				"HARBOUR_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
+				"HARBOUR_ACCESS_AUD": "harbour-dev-aud",
+				"HARBOUR_ADMIN_EMAIL": "dev@harbour.test"
+			}
+		}
+	}
+}
