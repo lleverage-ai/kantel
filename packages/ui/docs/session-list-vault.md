@@ -119,9 +119,13 @@ A settled approved card has one stop, Terms, a disclosure button with `aria-expa
 
 **Narrow:** under 480px the actions stack at full width and the code and host wrap.
 
-**Cost:** while pending, and only then, the card reads the shared one-second clock (`useNow`), so it turns urgent
-and folds to expired on time; approved, denied, expired, withdrawn and fixed-time cards cost no timer. Terms on a
-settled card are rendered only while open.
+**Cost:** the card is memoised and holds no clock: it re-renders when its props change and once more when a pending
+request runs out, from a single timeout set for `expiresAt` (cleared on unmount or when the expiry or status
+changes), which folds it to expired on time. Only the Lifetime term's value reads the shared one-second clock
+(`useNow`), and only while the card is pending and has no fixed `now`: that one span re-renders each second, so the
+wording and the amber under two minutes change on time, while the rest of the card and the terms list stay put.
+Approved, denied, expired, withdrawn and fixed-time cards cost no timer. Terms on a settled card are rendered only
+while open; on a live approved card their Lifetime reads the time they were opened.
 
 ### VaultApprovalCardSkeleton
 

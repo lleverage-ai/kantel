@@ -6,7 +6,8 @@
 //   reset()            zeroes the counters, before the interaction phase
 //   collect()          what was counted since the last reset
 // Interactions (clicks, typing, wheel) come from Playwright as real input; their latency is measured here, from the
-// event's timestamp to the end of the next frame.
+// event's timestamp to the end of the next frame, and their work from the timestamp to the end of the event's
+// dispatch, which leaves out the wait for a frame (see `work` below for when it includes React's update).
 
 import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { createRoot } from "react-dom/client";
@@ -27,8 +28,18 @@ export type Collected = {
 	steps: { changed: string[]; renders: Record<string, Record<string, number>> }[];
 	/** Mounts of probed instances: rows scrolled into view, parts that appeared. */
 	mounts: number;
-	/** Input latencies, ms. */
+	/** Input latencies, ms: from the event's timestamp to the end of the next frame. */
 	latencies: number[];
+	/**
+	 * Input work, ms: from the event's timestamp to the end of its dispatch. When that event's own handler updates state
+	 * (a click, or a key the component handles on keydown, such as the vault picker's arrows), this takes in React's
+	 * render and commit, as React flushes a discrete event's update in a microtask that runs before the window's bubble
+	 * listener. It does not when the update comes from a later event: typing in the composer updates on `input`, after
+	 * the keydown measured here, so its work is the keydown's handling only.
+	 * Latency waits for the next frame, so it moves in whole frames with where in the frame the input lands; work
+	 * does not, so it shows a difference in cost that latency's frame steps can hide.
+	 */
+	work: number[];
 };
 
 export type HarnessWindow = Window & {
@@ -43,9 +54,18 @@ export type HarnessWindow = Window & {
 };
 
 const win = window as HarnessWindow;
-let collected: Collected = { renderMs: 0, commits: 0, renders: {}, steps: [], mounts: 0, latencies: [] };
+const empty = (): Collected => ({
+	renderMs: 0,
+	commits: 0,
+	renders: {},
+	steps: [],
+	mounts: 0,
+	latencies: [],
+	work: [],
+});
+let collected = empty();
 const reset = () => {
-	collected = { renderMs: 0, commits: 0, renders: {}, steps: [], mounts: 0, latencies: [] };
+	collected = empty();
 };
 
 win.__hbStep = (changed) => {
@@ -75,17 +95,27 @@ const onRender: ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
 
 // One latency per input: the first of a keydown, click or wheel event in a frame, to the end of the next frame.
 let pending = false;
+let measured: Event | undefined;
 const measureInput = (event: Event) => {
 	if (pending) return;
 	pending = true;
+	measured = event;
 	const start = event.timeStamp;
 	void frame().then(() => {
 		collected.latencies.push(performance.now() - start);
 		pending = false;
 	});
 };
-for (const type of ["keydown", "click", "wheel"])
+// The last listener the event reaches (window, bubbling), so the page's own handlers and React's update have run.
+const measureWork = (event: Event) => {
+	if (event !== measured) return;
+	measured = undefined;
+	collected.work.push(performance.now() - event.timeStamp);
+};
+for (const type of ["keydown", "click", "wheel"]) {
 	addEventListener(type, measureInput, { capture: true, passive: true });
+	addEventListener(type, measureWork, { passive: true });
+}
 
 const name = new URLSearchParams(location.search).get("scenario") ?? "";
 const scenario = scenarios[name];

@@ -105,6 +105,17 @@ itself, under "Command"; anything else as indented JSON, under "Arguments"; noth
 output in selectable mono text, scrolling inside a block at most `--hb-tool-output-height` tall; "No output" when
 there is none, "Waiting for output" while running.
 
+**A deliberate difference from T3 Code: how a failed call looks.** T3 Code keeps a failed call's own tool icon,
+tinted a faint red (`failedToolIconClassName`, `text-tool-error-icon/40`), and leaves its label at the finished
+rows' strength; only when the tool brings its own image icon, which cannot be tinted, does it add a small `XIcon` at
+the row's end, and only a severe failure turns the icon and label fully red (pingdotgg/t3code at `1152e917`,
+`apps/web/src/components/chat/TimelineWorkEntryRow.tsx` lines 344 to 362 and 479 to 483;
+`TimelineToolActivityIcon.tsx` lines 30 to 34). Harbour puts a red `XCircleIcon` in the icon slot instead and keeps
+the label at full strength. Round 2 of the design loop tried T3's treatment (a red-tinted kind icon, the label
+muted, a small red X at the end); all three judges preferred Harbour's, because status then always sits in the icon
+slot, as an interrupted call's amber icon does, and a failure is plain at a glance. Tom chose to keep it on 27 Oct
+2026. Don't change it to match T3.
+
 **Keyboard:** the row is a button with `aria-expanded`: Enter or Space opens and closes it. The argument and output
 blocks are focusable, so a long output can be scrolled from the keyboard.
 
