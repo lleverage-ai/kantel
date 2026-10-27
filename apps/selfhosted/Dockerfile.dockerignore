@@ -1,0 +1,12 @@
+# The build context is the repo root (see Dockerfile). Leave out what the
+# image rebuilds or never needs.
+.git
+**/node_modules
+**/dist
+**/.wrangler
+**/coverage
+**/.harbour
+**/*.tsbuildinfo
+.env
+.env.*
+**/.dev.vars

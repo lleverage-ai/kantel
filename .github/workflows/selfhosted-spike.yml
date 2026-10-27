@@ -1,18 +1,18 @@
-name: self-hosted spike (M0-SH1)
+name: self-hosted (M0-SH1, M1-SH1)
 
 on:
   pull_request:
     paths:
       - "apps/selfhosted/**"
       - "apps/vault-proxy/**"
+      # The self-hosted image builds the console, and the M1 gateway mounts the packages' APIs.
+      - "apps/console/**"
       - "images/**"
       - "deploy/compose/**"
       - "spike/**"
       - "spikes/scenario/**"
-      - "packages/contracts/**"
-      - "packages/sandbox/**"
-      - "packages/workspace/**"
-      - "packages/testing/**"
+      - "packages/**"
+      - "fixtures/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/selfhosted-spike.yml"
   push:
@@ -53,8 +53,14 @@ jobs:
       - name: Bring up the stack
         run: docker compose -f deploy/compose/compose.yaml up -d --build --wait
 
+      # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)
         run: bun spike/conformance/run.ts --target=selfhosted
+
+      # The M1 gateway in the stack: sessions, workspace reads, audit queries and
+      # the console, over HTTP behind the API-key authenticator.
+      - name: M1 gateway end to end
+        run: bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58090
 
       - name: Scripted task
         run: bun spike/scenario/run.ts --base http://127.0.0.1:58081

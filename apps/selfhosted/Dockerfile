@@ -1,13 +1,21 @@
-# Harbour self-hosted session host (every host is also a gateway).
-FROM oven/bun:1.3.14-alpine
+# Harbour self-hosted image: the session hosts (`bun src/main.ts host`, every
+# host is also an M0 gateway), the M1 gateway (`bun src/gateway/main.ts`) and
+# the console's static build, which the M1 gateway serves.
+#
+# The workspace is installed with pnpm from the repo's lockfile, so the M1
+# packages (@harbour/runtime, identity, workspace, audit, contracts) resolve as
+# they do in CI; Bun then runs their TypeScript sources directly.
+FROM node:24-bookworm-slim AS build
+WORKDIR /harbour
+RUN npm install --global corepack@0.36.0 && corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm fetch
+COPY . .
+RUN pnpm install --offline --frozen-lockfile --filter "@harbour/selfhosted..." --filter "@harbour/console..."
+RUN pnpm --filter @harbour/console build
+
+FROM oven/bun:1.3.14-slim
+COPY --from=build /harbour /harbour
 WORKDIR /harbour/apps/selfhosted
-COPY apps/selfhosted/package.json apps/selfhosted/bun.lock ./
-RUN bun install --frozen-lockfile --production
-COPY spike/contracts /harbour/spike/contracts
-# M0-BE1's tier table and router (type imports are erased at runtime).
-COPY packages/contracts/src /harbour/packages/contracts/src
-COPY packages/sandbox/src /harbour/packages/sandbox/src
-COPY apps/selfhosted/sql ./sql
-COPY apps/selfhosted/src ./src
 EXPOSE 8080
 CMD ["bun", "src/main.ts", "host"]
