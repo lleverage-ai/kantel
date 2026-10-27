@@ -101,15 +101,78 @@ takes module source; this lane found no way to give it a V8 code cache and measu
 
 ## Recommendation
 
-**Self-hosted: the pre-loaded pool.** It meets the target with a wide margin: 7 / 11 ms against 100 / 300,
-and on gVisor the hand-out call would roughly double, to about 15 ms. It keeps one isolate per session.
+**Self-hosted: the pre-loaded pool, now built (next section).** It meets the target with a wide margin. In
+the model it was 7 / 11 ms, and as built it is 6.4 / 10 ms, against 100 / 300. On gVisor the hand-out call would
+roughly double. It keeps one isolate per session.
 
 One isolate per workspace is 3 ms faster, but it makes the workspace, not the session, the isolation unit, and
 it loses per-session egress. The pool's own security cost, host bookkeeping for the egress tag, is narrow and
 testable.
 
-Build it in `images/isolate-host` (the deployment lanes) with the refill after the response, trim just-bash
-for refill rate and the fallback, and run more than one workerd process if concurrent loads stall commands.
+Trim just-bash for refill rate and the fallback, and run more than one workerd process if concurrent loads
+stall commands.
+
+## Built: the self-hosted pool (`images/isolate-host`)
+
+The pool is on by default. `ISOLATE_POOL_SIZE` sets the number of idle isolates (default 4, at most 64), and `0`
+restores one Dynamic Worker loaded per session, as in M0. Any other value turns the pool off and logs a warning.
+The HTTP interface (`/list`, `/exec`, `/healthz`) is unchanged. It adds a `pool` object to `/healthz` and an
+`x-harbour-isolate` response header.
+
+- **One isolate per session.** A slot (`pool:<n>`) is loaded with no `WS` binding and no session. A session's
+  first call takes one, and it is never handed out again. After 30 minutes idle the session loses its slot, its
+  next call gets a fresh one, and the old slot's egress is refused. Calls carry no state between them, so this is
+  safe.
+- **Workspace per call.** Each call passes a `WorkspaceScope` (an `RpcTarget`) for the request's workspace, and
+  it is revoked when the call ends. `Workspace` and the scope both accept only 64-hex-digit SHA-256 blob names, so
+  the `../` gap noted above is closed in both modes.
+- **Egress.** `PooledEgress` has only the slot in its props. It looks up the session in the slot-to-session map,
+  which is written once at hand-out, and refuses anything sent before then with a 403. The headers the vault sees
+  are unchanged.
+- **Refill in quiet spells.** A refill loads one isolate at a time, and only once no `/list` or `/exec` has been
+  in flight for 25 ms. The first `/healthz` after start fills the pool.
+
+Measured as M0 measured, on 48 threads with load1 between 10 and 19 ([the pool as
+built](../measurements/m1-be1-isolate/README.md#the-pool-as-built-harnesspoolts-27-october-2026)):
+
+| | ready p50 / p95 | first command p50 |
+|---|---|---|
+| Pool, sessions arriving slower than the refill | **6.4–6.5 / 7.9–10.0 ms** | 74–76 ms |
+| Off (`ISOLATE_POOL_SIZE=0`) | 120.9–123.3 / 138.4–147.6 ms | 189–192 ms |
+| Pool, back-to-back burst | 122–124 / 137–141 ms (2 of 50 hits) | 187–189 ms |
+
+Self-hosted meets the target whenever new sessions arrive slower than one process can refill, which is about
+eight a second. A burst larger than the pool pays today's cost. gVisor, the cost of concurrent bursts and the
+memory held by idle isolates are still unmeasured.
+
+## What #18 needs to do on Cloudflare
+
+Nothing was deployed here.
+
+1. **Deploy a measurement Worker** that runs M0-CF1's loop (50 new sessions, workspace listed), with phase
+   timings and load recorded. Without it, every Cloudflare number here is an estimate.
+2. **Keep the manifest hot.** Keep the workspace head and manifest in Durable Object storage, and pass them to
+   the isolate with the call, so only blobs come from R2. This saves about 300 ms p50.
+3. **Pre-create SessionDOs.** Keep a pool of named objects that have already opened Pi Durable and created a
+   conversation, and hand one out as a new session's ID.
+   - This saves about 470 ms p50 (1.8 s p95) of first contact.
+   - Fill the pool steadily: M0 hit `SQLITE_NOMEM`.
+   - Measure the cost of waking a hibernated object.
+4. **Pre-load the isolate inside each pre-created SessionDO,** with the self-hosted slot model: a slot ID in
+   props, the scope passed per call, and the slot-to-session map kept as the object's state.
+
+Even with 2 and 3, the estimate is about 400 ms p50 (`Harness.open` plus an isolate load), which **misses the
+≤100 ms target**. Step 4 is the only part of this design that could close the gap, and only if Worker Loader
+keeps the isolate loaded where the object runs, which nobody has measured.
+
+The options for closing the gap, which are the plan owner's to choose:
+
+- **(a)** Measure step 4. If it holds, the hand-out is one call into a loaded isolate.
+- **(b)** Trim the just-bash bundle. It is about 90% of a load, so trimming cuts every miss.
+- **(c)** Redefine "ready". The SessionDO would return the listing from the manifest while the isolate loads in
+  parallel, and the first command would pay the load. That meets the target on both targets with today's
+  isolation, but ready would no longer mean the isolate is loaded. It is not built here.
+- **(d)** Accept a Cloudflare figure above 100 ms p50.
 
 **Cloudflare: hot manifest, then pre-created SessionDOs that each hold a pre-loaded isolate, measured in that
 order.** Removing R2 (about 300 ms) and creation (about 470 ms p50, 1.8 s p95) leaves roughly

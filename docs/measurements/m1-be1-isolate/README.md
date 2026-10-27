@@ -100,6 +100,57 @@ the raw file and in the table, marked.
   `raw/isolate-ready-2026-10-27T21-09-39.json` (the re-run of a, d and f). Every run, with its server phases,
   the load samples and the bundle sizes.
 
+## The pool as built (`harness/pool.ts`), 27 October 2026
+
+The pre-loaded pool is now in `images/isolate-host` (on unless `ISOLATE_POOL_SIZE=0`). `harness/pool.ts` builds
+the image's own `src/` and `config.capnp` unchanged, runs them on the image's workerd with a fake vault proxy, and
+measures as M0's `apps/selfhosted/src/measure.ts` does. Each run is: a new session's `/list` (isolate.ready),
+another new session's first `ls -R | wc -l` (isolate.first), then that session's second (isolate.warm). There is
+one warm-up, not recorded, then 50 runs. Load1 is read before every run, and the batch's minimum and maximum are
+below.
+
+It measures two cadences:
+
+- **Paced:** each new session arrives once the pool is full again, so arrivals are slower than the refill. That
+  is the normal case, because a model call sits between a session's start and its first command.
+- **Back-to-back:** every request follows the last at once, a burst with no quiet time. The pool refills only
+  in quiet spells (25 ms with no `/list` or `/exec` in flight), so here it empties after its four isolates.
+
+| Mode | Cadence | Round | ready p50 / p95 (min–max) | first p50 / p95 | warm p50 / p95 | pool hits | load1 (min–max) |
+|---|---|---|---|---|---|---|---|
+| off (`0`) | back-to-back | 1 | 123.3 / 147.6 ms (111.0–164.4) | 191.5 / 224.5 | 39.0 / 49.8 | | 16.55–18.38 |
+| | | 2 | 120.9 / 138.4 ms (113.3–189.6) | 189.3 / 209.0 | 37.5 / 45.3 | | 10.90–12.40 |
+| pool (4) | paced | 1 | **6.4 / 7.9 ms** (5.3–9.9) | 74.0 / 90.3 | 39.3 / 47.2 | 50 of 50 | 12.40–14.54 |
+| | | 2 | **6.5 / 10.0 ms** (5.6–12.5) | 76.3 / 134.2 | 40.9 / 58.0 | 50 of 50 | 10.15–10.84 |
+| pool (4) | back-to-back | 1 | 123.5 / 136.5 ms (6.0–146.0) | 189.0 / 204.6 | 39.6 / 45.0 | 2 of 50 | 14.54–16.55 |
+| | | 2 | 122.3 / 141.2 ms (6.7–145.8) | 186.9 / 207.0 | 40.5 / 46.0 | 2 of 50 | 10.65–11.31 |
+
+All times are in ms. None of the batches was flagged as skewed: load1 stayed below 36 (three quarters of the 48 threads) and moved by less than 6 within each batch. The two rounds agree, so nothing was re-run.
+
+What the numbers show:
+
+- **Paced, the target is met with room to spare:** 6.4–6.5 ms p50 and 7.9–10.0 ms p95, against 100 / 300 ms.
+  A new session's first command also gets faster, 74–76 ms against about 190 ms, because its isolate is
+  already loaded. Commands in a session that already has its isolate cost the same in both modes.
+- **Back-to-back, the pool is no worse than off.** The pool's first hand-outs hit, then it is empty and each
+  session loads its own isolate, as today. Every load still holds workerd's one thread for about 125 ms, so one
+  process sustains about eight new sessions a second, with or without a pool. A larger `ISOLATE_POOL_SIZE`
+  absorbs a bigger burst.
+- **Refilling in quiet spells was chosen after measuring.** An earlier build refilled 20 ms after each hand-out.
+  Back-to-back, it kept ready at 6 ms, but every command arriving during a refill load waited for it: warm rose
+  from 40 to 293 ms p50. That build wasn't committed, and its raw data wasn't kept.
+
+The behaviour checks run with `--check`, 22 of them, all passing in both modes:
+
+- listing;
+- lazy reads, and writes into the session's own workspace;
+- each session's own ID on egress to the vault;
+- a blob name that isn't a SHA-256 digest is refused;
+- the pool refills after a hand-out;
+- every value of the switch.
+
+Raw: `raw/pool-2026-10-27T22-02-49.json`.
+
 ## What can't be measured here
 
 - **Cloudflare.** Every Cloudflare number in the design doc comes from M0-CF1. SessionDO creation, R2 round

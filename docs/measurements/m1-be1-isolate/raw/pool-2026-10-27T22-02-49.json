@@ -1,0 +1,4811 @@
+{
+	"startedAt": "2026-10-27T22:02:49.067Z",
+	"finishedAt": "2026-10-27T22:04:50.713Z",
+	"host": {
+		"cpu": "AMD EPYC 7401P 24-Core Processor",
+		"nproc": 48,
+		"workerd": "workerd 2026-10-27",
+		"bun": "1.3.14"
+	},
+	"isolateRuntime": "workerd on the host, no container (runc or gVisor not involved)",
+	"source": "images/isolate-host/src and config.capnp, built as build.ts does",
+	"workspace": {
+		"files": 300,
+		"fileBytes": 4096,
+		"entries": 381
+	},
+	"minio": {
+		"prefix": "harbour/m1-be1-isolate/workspaces/pool-16bfe6b4-b230-4e89-a47e-c71c5b701a52-ws/",
+		"deletedAfter": 301
+	},
+	"batches": [
+		{
+			"mode": "off",
+			"cadence": "back-to-back",
+			"round": 1,
+			"poolSize": 0,
+			"load": {
+				"before": {
+					"load1": 18.38,
+					"load5": 18.12,
+					"load15": 19.95
+				},
+				"after": {
+					"load1": 16.55,
+					"load5": 17.72,
+					"load15": 19.79
+				},
+				"min": 16.55,
+				"max": 18.38,
+				"nproc": 48
+			},
+			"skewed": false,
+			"poolHits": {
+				"ready": 0,
+				"first": 0
+			},
+			"summary": {
+				"isolate.ready": {
+					"p50": 123.3,
+					"p95": 147.6,
+					"min": 111,
+					"max": 164.4
+				},
+				"isolate.first": {
+					"p50": 191.5,
+					"p95": 224.5,
+					"min": 171.5,
+					"max": 231.2
+				},
+				"isolate.warm": {
+					"p50": 39,
+					"p95": 49.8,
+					"min": 32.6,
+					"max": 54
+				}
+			},
+			"runs": [
+				{
+					"load1": 18.38,
+					"ready": 144.6,
+					"first": 224.5,
+					"warm": 45.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 5,
+						"totalMs": 143
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 134.7,
+					"first": 205,
+					"warm": 49.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 133
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 141.5,
+					"first": 231.2,
+					"warm": 37.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 140
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 137.3,
+					"first": 210.3,
+					"warm": 49.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 164.4,
+					"first": 218.7,
+					"warm": 42.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 163
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 147.6,
+					"first": 207.8,
+					"warm": 43.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 147
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 142.1,
+					"first": 203.7,
+					"warm": 46,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 141
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 130.2,
+					"first": 227.3,
+					"warm": 38.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 129
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 133.2,
+					"first": 178.9,
+					"warm": 42.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 132
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 130.9,
+					"first": 204,
+					"warm": 40.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 130
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 128.7,
+					"first": 194.7,
+					"warm": 40,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 18.38,
+					"ready": 121.9,
+					"first": 181.6,
+					"warm": 38.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 124.1,
+					"first": 181.9,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 115.5,
+					"first": 223.8,
+					"warm": 43.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 118.1,
+					"first": 189.7,
+					"warm": 36.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 121.3,
+					"first": 179.6,
+					"warm": 40.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 119.8,
+					"first": 203.8,
+					"warm": 36.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 120.9,
+					"first": 221.5,
+					"warm": 43.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 115.4,
+					"first": 178.1,
+					"warm": 39.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 123.3,
+					"first": 187.9,
+					"warm": 33.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 121.2,
+					"first": 198.4,
+					"warm": 42.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 120.7,
+					"first": 178.9,
+					"warm": 37.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 118.9,
+					"first": 183.5,
+					"warm": 37.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 127.3,
+					"first": 185.1,
+					"warm": 34.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 119.6,
+					"first": 187.1,
+					"warm": 39,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 17.39,
+					"ready": 120.1,
+					"first": 194.3,
+					"warm": 34.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 148.1,
+					"first": 197.1,
+					"warm": 38.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 147
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 127.2,
+					"first": 191.3,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 134.9,
+					"first": 198.4,
+					"warm": 34.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 133
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 126.4,
+					"first": 191.5,
+					"warm": 44.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 138.5,
+					"first": 202.2,
+					"warm": 40.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 132.8,
+					"first": 202.7,
+					"warm": 34.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 132
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 124.3,
+					"first": 187.2,
+					"warm": 36.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 111.9,
+					"first": 174.4,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 111
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 120,
+					"first": 187.2,
+					"warm": 38.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 115.3,
+					"first": 196.9,
+					"warm": 47.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 143.7,
+					"first": 224.3,
+					"warm": 54,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 142
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 128.1,
+					"first": 208.7,
+					"warm": 35.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 140.4,
+					"first": 201.6,
+					"warm": 39.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 139
+					}
+				},
+				{
+					"load1": 17.04,
+					"ready": 119.2,
+					"first": 183.7,
+					"warm": 32.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 124.8,
+					"first": 181.3,
+					"warm": 33.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 121.6,
+					"first": 192.2,
+					"warm": 40.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 114.3,
+					"first": 176.3,
+					"warm": 40.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 130.8,
+					"first": 184.4,
+					"warm": 50.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 129
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 117.2,
+					"first": 180.9,
+					"warm": 37.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 120.9,
+					"first": 187.2,
+					"warm": 38.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 120.1,
+					"first": 200.4,
+					"warm": 36.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 119.2,
+					"first": 177.3,
+					"warm": 38,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 111,
+					"first": 171.5,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 110
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 115.5,
+					"first": 179.1,
+					"warm": 42.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 115
+					}
+				}
+			]
+		},
+		{
+			"mode": "pool",
+			"cadence": "back-to-back",
+			"round": 1,
+			"poolSize": 4,
+			"load": {
+				"before": {
+					"load1": 16.55,
+					"load5": 17.72,
+					"load15": 19.79
+				},
+				"after": {
+					"load1": 14.54,
+					"load5": 17.18,
+					"load15": 19.57
+				},
+				"min": 14.54,
+				"max": 16.55,
+				"nproc": 48
+			},
+			"skewed": false,
+			"poolHits": {
+				"ready": 2,
+				"first": 1
+			},
+			"summary": {
+				"isolate.ready": {
+					"p50": 123.5,
+					"p95": 136.5,
+					"min": 6,
+					"max": 146
+				},
+				"isolate.first": {
+					"p50": 189,
+					"p95": 204.6,
+					"min": 74.9,
+					"max": 217.1
+				},
+				"isolate.warm": {
+					"p50": 39.6,
+					"p95": 45,
+					"min": 33.9,
+					"max": 52.8
+				}
+			},
+			"runs": [
+				{
+					"load1": 16.55,
+					"ready": 6.6,
+					"first": 74.9,
+					"warm": 35.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 16.55,
+					"ready": 6,
+					"first": 189,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 126.5,
+					"first": 190.5,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 125
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 121.5,
+					"first": 196.9,
+					"warm": 35.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 135.7,
+					"first": 208.5,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 135
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 114.6,
+					"first": 190.8,
+					"warm": 39.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 122.5,
+					"first": 191,
+					"warm": 36.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 123.7,
+					"first": 183,
+					"warm": 40.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 122.3,
+					"first": 198.5,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 123,
+					"first": 199.8,
+					"warm": 36.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 125.9,
+					"first": 179.7,
+					"warm": 39,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 125
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 115.5,
+					"first": 187.2,
+					"warm": 36.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 117.7,
+					"first": 199.9,
+					"warm": 35.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 146,
+					"first": 201.7,
+					"warm": 52.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 145
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 135.2,
+					"first": 184.5,
+					"warm": 45.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 134
+					}
+				},
+				{
+					"load1": 15.79,
+					"ready": 130.2,
+					"first": 217.1,
+					"warm": 37.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 129
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 122.3,
+					"first": 194.1,
+					"warm": 35.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 119.4,
+					"first": 192.8,
+					"warm": 42.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 130.5,
+					"first": 188.8,
+					"warm": 41.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 129
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 128.3,
+					"first": 193.5,
+					"warm": 36.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 128.8,
+					"first": 185.6,
+					"warm": 40.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 128
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 136.5,
+					"first": 204.6,
+					"warm": 35.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 135
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 120.4,
+					"first": 192.2,
+					"warm": 42.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 126,
+					"first": 187.1,
+					"warm": 43.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 125
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 132,
+					"first": 185.3,
+					"warm": 44,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 131
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 119.1,
+					"first": 192,
+					"warm": 44.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 124.2,
+					"first": 183.5,
+					"warm": 43,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 137.1,
+					"first": 188.6,
+					"warm": 36.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 125.3,
+					"first": 184.1,
+					"warm": 39.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 15.81,
+					"ready": 120.2,
+					"first": 181.3,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 125.8,
+					"first": 199.9,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 125
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 124.1,
+					"first": 193.7,
+					"warm": 39.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 127.5,
+					"first": 200.4,
+					"warm": 45,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 134.3,
+					"first": 198.4,
+					"warm": 36.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 134
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 123.5,
+					"first": 189.7,
+					"warm": 39,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 120.9,
+					"first": 180.8,
+					"warm": 43.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 123.4,
+					"first": 189.1,
+					"warm": 37.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 113.1,
+					"first": 182.7,
+					"warm": 41.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 123,
+					"first": 188.4,
+					"warm": 40.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 130.9,
+					"first": 194.4,
+					"warm": 40.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 130
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 128.9,
+					"first": 185.7,
+					"warm": 38.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 116.4,
+					"first": 183.4,
+					"warm": 41.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 115
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 120.7,
+					"first": 187.3,
+					"warm": 43.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 14.94,
+					"ready": 124.6,
+					"first": 178.3,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 122.9,
+					"first": 196.6,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 130.4,
+					"first": 188.7,
+					"warm": 36.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 130
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 120.4,
+					"first": 191.4,
+					"warm": 33.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 123.8,
+					"first": 185.3,
+					"warm": 40.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 122.8,
+					"first": 173.2,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 119.8,
+					"first": 178.6,
+					"warm": 37.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				}
+			]
+		},
+		{
+			"mode": "pool",
+			"cadence": "paced",
+			"round": 1,
+			"poolSize": 4,
+			"load": {
+				"before": {
+					"load1": 14.54,
+					"load5": 17.18,
+					"load15": 19.57
+				},
+				"after": {
+					"load1": 12.4,
+					"load5": 16.45,
+					"load15": 19.26
+				},
+				"min": 12.4,
+				"max": 14.54,
+				"nproc": 48
+			},
+			"skewed": false,
+			"poolHits": {
+				"ready": 50,
+				"first": 50
+			},
+			"summary": {
+				"isolate.ready": {
+					"p50": 6.4,
+					"p95": 7.9,
+					"min": 5.3,
+					"max": 9.9
+				},
+				"isolate.first": {
+					"p50": 74,
+					"p95": 90.3,
+					"min": 67.3,
+					"max": 101.4
+				},
+				"isolate.warm": {
+					"p50": 39.3,
+					"p95": 47.2,
+					"min": 31.3,
+					"max": 54.4
+				}
+			},
+			"runs": [
+				{
+					"load1": 14.54,
+					"ready": 7.9,
+					"first": 77.2,
+					"warm": 35.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 6.6,
+					"first": 71.4,
+					"warm": 39.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 5.9,
+					"first": 72.1,
+					"warm": 38.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 5.6,
+					"first": 68.8,
+					"warm": 39.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 14.54,
+					"ready": 5.7,
+					"first": 72.7,
+					"warm": 41.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 6.7,
+					"first": 73.3,
+					"warm": 47.2,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 5.7,
+					"first": 90,
+					"warm": 37.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 6.9,
+					"first": 75,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 6.9,
+					"first": 73.5,
+					"warm": 38.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 5.8,
+					"first": 72.5,
+					"warm": 41.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 7.9,
+					"first": 71.1,
+					"warm": 54.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 6,
+					"first": 74,
+					"warm": 42.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 5.3,
+					"first": 73.7,
+					"warm": 39.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 5.5,
+					"first": 79,
+					"warm": 45,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 6.5,
+					"first": 71,
+					"warm": 36.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.62,
+					"ready": 7.3,
+					"first": 67.3,
+					"warm": 37.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 5.5,
+					"first": 82.4,
+					"warm": 37.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 4
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 6.1,
+					"first": 82.5,
+					"warm": 37.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 6.1,
+					"first": 72.3,
+					"warm": 37.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 6.2,
+					"first": 72.8,
+					"warm": 42.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 6.4,
+					"first": 77.7,
+					"warm": 40.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 6.5,
+					"first": 101.4,
+					"warm": 40.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 7.4,
+					"first": 87.1,
+					"warm": 39.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 7.2,
+					"first": 68.2,
+					"warm": 40.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 6.4,
+					"first": 72.9,
+					"warm": 34.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 9.9,
+					"first": 73.6,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 6,
+						"totalMs": 9
+					}
+				},
+				{
+					"load1": 13.01,
+					"ready": 5.4,
+					"first": 69.6,
+					"warm": 42.2,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 4
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 6.8,
+					"first": 70.5,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 6,
+					"first": 78.6,
+					"warm": 45.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 7.4,
+					"first": 74.1,
+					"warm": 50,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 6.1,
+					"first": 78,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 7.9,
+					"first": 90.3,
+					"warm": 41,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 5.8,
+					"first": 77.3,
+					"warm": 38.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 6.5,
+					"first": 74,
+					"warm": 36.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 5.7,
+					"first": 72,
+					"warm": 42.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 6.7,
+					"first": 85.9,
+					"warm": 35.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 6.9,
+					"first": 74.3,
+					"warm": 35.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.85,
+					"ready": 5.9,
+					"first": 68,
+					"warm": 38.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 6.2,
+					"first": 70.6,
+					"warm": 40.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 7.6,
+					"first": 74.9,
+					"warm": 36.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 7.8,
+					"first": 86,
+					"warm": 37.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 6.7,
+					"first": 81.7,
+					"warm": 35.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 6.1,
+					"first": 78.3,
+					"warm": 33.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 6.7,
+					"first": 79.3,
+					"warm": 44.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 7.6,
+					"first": 80.1,
+					"warm": 46.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 6.6,
+					"first": 73.6,
+					"warm": 42.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 7.4,
+					"first": 73.1,
+					"warm": 35.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 5.7,
+					"first": 94.2,
+					"warm": 31.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 5.7,
+					"first": 72.6,
+					"warm": 44,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 12.7,
+					"ready": 6,
+					"first": 75.6,
+					"warm": 38.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				}
+			]
+		},
+		{
+			"mode": "off",
+			"cadence": "back-to-back",
+			"round": 2,
+			"poolSize": 0,
+			"load": {
+				"before": {
+					"load1": 12.4,
+					"load5": 16.45,
+					"load15": 19.26
+				},
+				"after": {
+					"load1": 10.9,
+					"load5": 15.92,
+					"load15": 19.04
+				},
+				"min": 10.9,
+				"max": 12.4,
+				"nproc": 48
+			},
+			"skewed": false,
+			"poolHits": {
+				"ready": 0,
+				"first": 0
+			},
+			"summary": {
+				"isolate.ready": {
+					"p50": 120.9,
+					"p95": 138.4,
+					"min": 113.3,
+					"max": 189.6
+				},
+				"isolate.first": {
+					"p50": 189.3,
+					"p95": 209,
+					"min": 173.3,
+					"max": 220.9
+				},
+				"isolate.warm": {
+					"p50": 37.5,
+					"p95": 45.3,
+					"min": 31.6,
+					"max": 50.8
+				}
+			},
+			"runs": [
+				{
+					"load1": 12.4,
+					"ready": 133.1,
+					"first": 189.2,
+					"warm": 40.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 132
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 129,
+					"first": 186.7,
+					"warm": 41.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 128
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 133.1,
+					"first": 196.3,
+					"warm": 43.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 132
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 134.1,
+					"first": 186.3,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 133
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 128.7,
+					"first": 187,
+					"warm": 34.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 123.7,
+					"first": 197.3,
+					"warm": 39.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 123.7,
+					"first": 184.4,
+					"warm": 37.9,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 137.6,
+					"first": 212.1,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 137
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 129.2,
+					"first": 186.6,
+					"warm": 35,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 128
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 113.3,
+					"first": 179.4,
+					"warm": 33.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 121,
+					"first": 180.7,
+					"warm": 34.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 12.4,
+					"ready": 117.9,
+					"first": 186.5,
+					"warm": 36.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 116.2,
+					"first": 173.3,
+					"warm": 50.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 115
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 113.6,
+					"first": 183.6,
+					"warm": 37.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 115.4,
+					"first": 186.5,
+					"warm": 33.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 115
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 129.3,
+					"first": 206.7,
+					"warm": 33.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 128
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 119.3,
+					"first": 199.2,
+					"warm": 36.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 117.5,
+					"first": 192.4,
+					"warm": 34.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 117.3,
+					"first": 187,
+					"warm": 34.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 120.8,
+					"first": 190.7,
+					"warm": 38.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 127.5,
+					"first": 193.7,
+					"warm": 33.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 123.5,
+					"first": 198.5,
+					"warm": 45.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 120.3,
+					"first": 207.6,
+					"warm": 35.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 117.3,
+					"first": 190.6,
+					"warm": 34,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 115.6,
+					"first": 192.1,
+					"warm": 36.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 11.73,
+					"ready": 119.4,
+					"first": 196.6,
+					"warm": 45.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 114.6,
+					"first": 194.1,
+					"warm": 39.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 117.8,
+					"first": 195.7,
+					"warm": 34.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 120.9,
+					"first": 209,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 119.4,
+					"first": 188.4,
+					"warm": 35.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 114,
+					"first": 179.8,
+					"warm": 36.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 117.3,
+					"first": 195.5,
+					"warm": 35.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 121.6,
+					"first": 192.7,
+					"warm": 34.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 120.3,
+					"first": 189.3,
+					"warm": 31.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 125.7,
+					"first": 202.3,
+					"warm": 35.1,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 121.2,
+					"first": 187.1,
+					"warm": 37.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 123.4,
+					"first": 179.2,
+					"warm": 43.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 123
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 138.4,
+					"first": 188.4,
+					"warm": 44.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 137
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 117.6,
+					"first": 188.5,
+					"warm": 39.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 11.59,
+					"ready": 139.5,
+					"first": 202.2,
+					"warm": 42.4,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 139
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 125.9,
+					"first": 203.1,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 125
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 125.2,
+					"first": 202.7,
+					"warm": 35.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 122.6,
+					"first": 185,
+					"warm": 40.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 114.8,
+					"first": 180.1,
+					"warm": 34.7,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 114.3,
+					"first": 182.2,
+					"warm": 36,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 118.9,
+					"first": 195.6,
+					"warm": 39.3,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 123.1,
+					"first": 193.9,
+					"warm": 40,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 117.5,
+					"first": 188.8,
+					"warm": 38.5,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 189.6,
+					"first": 186.6,
+					"warm": 50.8,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 188
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 125.8,
+					"first": 220.9,
+					"warm": 41.2,
+					"isolate": {
+						"ready": "per-session",
+						"first": "per-session",
+						"warm": "per-session"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 125
+					}
+				}
+			]
+		},
+		{
+			"mode": "pool",
+			"cadence": "back-to-back",
+			"round": 2,
+			"poolSize": 4,
+			"load": {
+				"before": {
+					"load1": 10.9,
+					"load5": 15.92,
+					"load15": 19.04
+				},
+				"after": {
+					"load1": 10.65,
+					"load5": 15.55,
+					"load15": 18.85
+				},
+				"min": 10.65,
+				"max": 11.31,
+				"nproc": 48
+			},
+			"skewed": false,
+			"poolHits": {
+				"ready": 2,
+				"first": 1
+			},
+			"summary": {
+				"isolate.ready": {
+					"p50": 122.3,
+					"p95": 141.2,
+					"min": 6.7,
+					"max": 145.8
+				},
+				"isolate.first": {
+					"p50": 186.9,
+					"p95": 207,
+					"min": 73.4,
+					"max": 252.4
+				},
+				"isolate.warm": {
+					"p50": 40.5,
+					"p95": 46,
+					"min": 33.2,
+					"max": 48.8
+				}
+			},
+			"runs": [
+				{
+					"load1": 10.9,
+					"ready": 6.7,
+					"first": 73.4,
+					"warm": 39,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.9,
+					"ready": 7.1,
+					"first": 207.2,
+					"warm": 38.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 127.8,
+					"first": 182.5,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 127
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 115.6,
+					"first": 189.5,
+					"warm": 38.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 122.7,
+					"first": 191.6,
+					"warm": 41.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 126.3,
+					"first": 179,
+					"warm": 40.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 125
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 113.4,
+					"first": 177.9,
+					"warm": 44.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 113
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 117.7,
+					"first": 193.6,
+					"warm": 36.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 115.1,
+					"first": 188.3,
+					"warm": 41.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 118.3,
+					"first": 200.3,
+					"warm": 33.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 115.3,
+					"first": 191.1,
+					"warm": 46,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 132.7,
+					"first": 181.3,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 132
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 118,
+					"first": 190.6,
+					"warm": 38,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 126.5,
+					"first": 178.5,
+					"warm": 37.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 113,
+					"first": 185.1,
+					"warm": 38.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 112
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 111.1,
+					"first": 178.6,
+					"warm": 39,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 110
+					}
+				},
+				{
+					"load1": 10.99,
+					"ready": 121.7,
+					"first": 184.2,
+					"warm": 41.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 126.8,
+					"first": 183.7,
+					"warm": 38.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 143,
+					"first": 187.3,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 142
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 114.5,
+					"first": 175.2,
+					"warm": 45.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 114
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 137.8,
+					"first": 181.3,
+					"warm": 40.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 116,
+					"first": 178.1,
+					"warm": 40.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 115
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 117.1,
+					"first": 176.7,
+					"warm": 36.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 116
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 145.8,
+					"first": 177.9,
+					"warm": 39.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 145
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 122.9,
+					"first": 174.9,
+					"warm": 42.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 121.6,
+					"first": 185.9,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 137.3,
+					"first": 188.5,
+					"warm": 39,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 115.8,
+					"first": 181.7,
+					"warm": 39.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 115
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 128.4,
+					"first": 194.8,
+					"warm": 44.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 141.2,
+					"first": 184.3,
+					"warm": 41.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 140
+					}
+				},
+				{
+					"load1": 11.31,
+					"ready": 121.9,
+					"first": 188.5,
+					"warm": 42.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 130.1,
+					"first": 194.1,
+					"warm": 42.6,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 129
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 124.5,
+					"first": 190.5,
+					"warm": 39.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 118.2,
+					"first": 186.9,
+					"warm": 35.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 117
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 118.9,
+					"first": 185,
+					"warm": 40.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 118
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 137.5,
+					"first": 186,
+					"warm": 43.3,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 124.9,
+					"first": 178.9,
+					"warm": 39.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 131.7,
+					"first": 184.3,
+					"warm": 48.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 130
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 127.2,
+					"first": 191,
+					"warm": 47.5,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 126
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 120.2,
+					"first": 187.4,
+					"warm": 39.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 119
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 124.4,
+					"first": 194.6,
+					"warm": 38.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 120.8,
+					"first": 187.3,
+					"warm": 41.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 120
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 122.2,
+					"first": 201.4,
+					"warm": 43.4,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 121
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 123,
+					"first": 191.9,
+					"warm": 35.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 122
+					}
+				},
+				{
+					"load1": 10.97,
+					"ready": 134.3,
+					"first": 207,
+					"warm": 40.8,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 133
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 125.3,
+					"first": 252.4,
+					"warm": 39.1,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 124
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 137,
+					"first": 192.8,
+					"warm": 38.7,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 136
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 130.7,
+					"first": 192.4,
+					"warm": 39.2,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 129
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 115.9,
+					"first": 182,
+					"warm": 41,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 115
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 122.3,
+					"first": 199,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-miss",
+						"first": "pool-miss",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 122
+					}
+				}
+			]
+		},
+		{
+			"mode": "pool",
+			"cadence": "paced",
+			"round": 2,
+			"poolSize": 4,
+			"load": {
+				"before": {
+					"load1": 10.65,
+					"load5": 15.55,
+					"load15": 18.85
+				},
+				"after": {
+					"load1": 10.22,
+					"load5": 15.05,
+					"load15": 18.6
+				},
+				"min": 10.15,
+				"max": 10.84,
+				"nproc": 48
+			},
+			"skewed": false,
+			"poolHits": {
+				"ready": 50,
+				"first": 50
+			},
+			"summary": {
+				"isolate.ready": {
+					"p50": 6.5,
+					"p95": 10,
+					"min": 5.6,
+					"max": 12.5
+				},
+				"isolate.first": {
+					"p50": 76.3,
+					"p95": 134.2,
+					"min": 68,
+					"max": 155.2
+				},
+				"isolate.warm": {
+					"p50": 40.9,
+					"p95": 58,
+					"min": 31.9,
+					"max": 68
+				}
+			},
+			"runs": [
+				{
+					"load1": 10.65,
+					"ready": 7.2,
+					"first": 155.2,
+					"warm": 59.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 11,
+					"first": 140.2,
+					"warm": 53,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 9
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 10,
+					"first": 84.7,
+					"warm": 46.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 8
+					}
+				},
+				{
+					"load1": 10.65,
+					"ready": 5.8,
+					"first": 88.5,
+					"warm": 44,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 6.3,
+					"first": 78.1,
+					"warm": 55.2,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 6.2,
+					"first": 79.7,
+					"warm": 38.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 6.6,
+					"first": 73.2,
+					"warm": 45.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 5.9,
+					"first": 93.5,
+					"warm": 37.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 6.5,
+					"first": 89.1,
+					"warm": 34.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 7.1,
+					"first": 73.3,
+					"warm": 42.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 7,
+					"first": 77.1,
+					"warm": 43.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 6.4,
+					"first": 75.6,
+					"warm": 43.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 8.5,
+					"first": 73.5,
+					"warm": 44.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 8
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 7.2,
+					"first": 68.5,
+					"warm": 38.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.84,
+					"ready": 6.3,
+					"first": 69.3,
+					"warm": 42.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6.1,
+					"first": 71.2,
+					"warm": 40.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 5.8,
+					"first": 76.3,
+					"warm": 44,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 9.8,
+					"first": 73.4,
+					"warm": 42.5,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 8
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 7.5,
+					"first": 86.5,
+					"warm": 40.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6.9,
+					"first": 75.1,
+					"warm": 36.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6.5,
+					"first": 71.3,
+					"warm": 44.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 5.6,
+					"first": 105.5,
+					"warm": 40,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6.4,
+					"first": 78.4,
+					"warm": 36.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6.5,
+					"first": 94.2,
+					"warm": 41.2,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6.9,
+					"first": 80.9,
+					"warm": 39.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.53,
+					"ready": 6,
+					"first": 75,
+					"warm": 37.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.6,
+					"first": 73.6,
+					"warm": 40.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 7.2,
+					"first": 78.2,
+					"warm": 39.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6,
+					"first": 72.1,
+					"warm": 34.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.3,
+					"first": 74.1,
+					"warm": 36,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.4,
+					"first": 69.6,
+					"warm": 58,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 8.7,
+					"first": 79.4,
+					"warm": 37.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 8
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.1,
+					"first": 72.2,
+					"warm": 43.6,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.2,
+					"first": 69.2,
+					"warm": 32.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 4,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.5,
+					"first": 73.3,
+					"warm": 39.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 7.9,
+					"first": 77.3,
+					"warm": 36.2,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.3,
+					"first": 78.4,
+					"warm": 37.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.17,
+					"ready": 6.6,
+					"first": 68,
+					"warm": 38.8,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 6.3,
+					"first": 74.8,
+					"warm": 37.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 8.2,
+					"first": 68.6,
+					"warm": 41.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 5.9,
+					"first": 74.4,
+					"warm": 31.9,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 6.1,
+					"first": 71,
+					"warm": 44.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 5.8,
+					"first": 134.2,
+					"warm": 68,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 7.3,
+					"first": 74,
+					"warm": 44.1,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 6.2,
+					"first": 100.3,
+					"warm": 36.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 6.7,
+					"first": 83.1,
+					"warm": 41.7,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 6
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 12.5,
+					"first": 106,
+					"warm": 48.3,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 5,
+						"totalMs": 10
+					}
+				},
+				{
+					"load1": 10.15,
+					"ready": 6.1,
+					"first": 79.9,
+					"warm": 40.2,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				},
+				{
+					"load1": 10.22,
+					"ready": 8.8,
+					"first": 99.2,
+					"warm": 53.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 3,
+						"totalMs": 7
+					}
+				},
+				{
+					"load1": 10.22,
+					"ready": 6.5,
+					"first": 88.4,
+					"warm": 51.4,
+					"isolate": {
+						"ready": "pool-hit",
+						"first": "pool-hit",
+						"warm": "pool-assigned"
+					},
+					"serverReady": {
+						"manifestMs": 2,
+						"totalMs": 5
+					}
+				}
+			]
+		}
+	]
+}
