@@ -73,8 +73,19 @@ other items is one group.
 ### ToolCallChip
 
 **For** one tool call, as a quiet work-log row (T3 Code's `WorkLog`): a 16px icon chosen from the tool's name, the
-host's label in plain words, and the duration once finished (`duration()`, hidden under a second) or the elapsed time
-while running. `ToolCallChip({ item, defaultOpen? })`.
+host's label in plain words and a chevron. `ToolCallChip({ item, defaultOpen? })`.
+
+What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
+`apps/web/src/components/chat/TimelineWorkEntryRow.tsx` and `TimelineRowParts.tsx`):
+
+- **Always:** the icon (or the spinner, or the failure icon), the label, the chevron.
+- **On hover or focus:** when the call started, by the clock (`ClockTime`: "16:38", "Yesterday at 16:38"), before
+  the chevron, with the full date and time as its title. Hidden, it is out of the flow, so it never costs the label
+  width. Focus anywhere in the call shows it, so it is there for the keyboard too.
+- **Open:** the arguments and the output.
+
+A call shows no duration of its own, running or finished: how long the work took is said once, by the group
+("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").
 
 Icons by name, checked in this order: vault (`VaultIcon`); read or view (`EyeIcon`); edit, write or patch
 (`PencilIcon`); bash, shell, exec or command (`TerminalIcon`); grep, glob, search or find (`SearchIcon`); fetch, web
@@ -83,7 +94,7 @@ or browser (`GlobeIcon`); anything else, `FileIcon`.
 **Not for** cards that need a decision (approvals, questions), or a summary of many calls (`ToolCallGroup`).
 
 **States:** running (a spinner in place of the icon, the label at full strength so the call happening now is read
-first, the elapsed time ticking, "Output so far" in the detail); done (the label muted); error (a red `XCircleIcon`, the label at full strength, the output in the error tone under "Error");
+first, "Output so far" in the detail); done (the label muted); error (a red `XCircleIcon`, the label at full strength, the output in the error tone under "Error");
 interrupted (`MinusCircleIcon` in amber). Open, the detail shows the arguments (a lone `{ command }` as the command
 itself, under "Command"; anything else as indented JSON, under "Arguments"; nothing when there are none) and the
 output in selectable mono text, scrolling inside a block at most `--hb-tool-output-height` tall; "No output" when
@@ -92,15 +103,17 @@ there is none, "Waiting for output" while running.
 **Keyboard:** the row is a button with `aria-expanded`: Enter or Space opens and closes it. The argument and output
 blocks are focusable, so a long output can be scrolled from the keyboard.
 
-**Cost:** memoised on `item`. The detail is rendered only while open. A running call's time uses `Elapsed`, on the
-page's one shared clock; a finished call has no timer. The spinner is the only animation.
+**Cost:** memoised on `item`. The detail is rendered only while open. No call has a timer, running or not: the start
+time is formatted once per render and never ticks. The spinner is the only animation.
 
 ### ToolCallGroup
 
 **For** consecutive tool calls in a turn. `ToolCallGroup({ items, live? })`. While any call is running, or the group
-is `live` (it is the last row and the turn may add to it), every call shows as a chip. Once all are finished and
-there are three or more, the group collapses to one disclosure, "Worked for 8s, 4 steps" (from the first call's
-start to the last call's end; "1 step" for one), which expands to the chips.
+is `live` (it is the last row and the turn may add to it), every call shows as a chip. Once all are finished,
+however few, the group collapses to one disclosure, "Worked for 8s, 4 steps" (from the first call's start to the
+last call's end; "1 step" for one), which expands to the chips. As in T3 Code, which folds a finished turn's work
+under "Worked for …" (`MessagesTimeline.logic.ts`), the calls carry no duration of their own, so this summary is
+the one place the time is told; collapsing only larger groups would leave a short one with no time at all.
 
 A failed or interrupted call stays visible while the group is collapsed: it is shown under the summary, so a failure
 is never hidden behind "Worked for". Expanded, it is in its place among the others.

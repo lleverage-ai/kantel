@@ -198,7 +198,7 @@ async function runSessionList() {
 	return { changed };
 }
 
-// Vault card: a pending card counting down for 5 ticks, beside the vault page's code picker.
+// Vault card: a pending card on the clock for five seconds, beside the vault page's code picker.
 const pending = vaultCard({ expiresAt: Date.now() + 14 * 60_000 + 30_000 });
 const codes = ["RIVER-48", "MAPLE-12", "STONE-73", "CEDAR-05"];
 
@@ -212,11 +212,12 @@ function VaultScenario() {
 	);
 }
 
-// Only the card's countdown changes each second; the terms' text ("14 minutes left") changes once a minute.
+// Five seconds of a pending card. The card says how long is left only in the Lifetime term ("15 minutes left"),
+// which changes once a minute, so nothing on it needs to change here: every render in these five seconds is waste.
 async function runVault() {
-	step([`VaultApprovalCard:${pending.proposalId}`]);
+	step([]);
 	await wait(5_000);
-	return { changed: [`VaultApprovalCard:${pending.proposalId}`] };
+	return { changed: [] };
 }
 
 export const scenarios: Record<string, Scenario> = {

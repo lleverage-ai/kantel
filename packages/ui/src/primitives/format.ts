@@ -24,6 +24,28 @@ export function duration(ms: number): string {
 	return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
 }
 
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+const dayMonth = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "numeric" });
+const dayMonthYear = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "numeric", year: "numeric" });
+const startOfDay = (time: number): number => {
+	const date = new Date(time);
+	return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+};
+
+/**
+ * When something happened, by the clock and aware of the day, after T3 Code's timeline timestamp: "16:38" today,
+ * "Yesterday at 16:38", "26/10 16:38" earlier this year and "26/10/2025 16:38" before that. Local time.
+ */
+export function clockTime(at: number, now: number): string {
+	const time = clock.format(at);
+	// Rounded, so a day either side of a clock change still counts as one day.
+	const days = Math.round((startOfDay(now) - startOfDay(at)) / DAY);
+	if (days <= 0) return time;
+	if (days === 1) return `Yesterday at ${time}`;
+	const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
+	return `${(sameYear ? dayMonth : dayMonthYear).format(at)} ${time}`;
+}
+
 /** "14:59 left", "2h 10m left", or "Expired". */
 export function timeLeft(expiresAt: number, now: number): string {
 	const left = expiresAt - now;

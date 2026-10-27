@@ -16,7 +16,7 @@ export {
 } from "./primitives/button.tsx";
 export { clockListenerCounts, useNow } from "./primitives/clock.ts";
 export { CopyButton, Disclosure, SegmentedControl, type SegmentOption, TextField } from "./primitives/controls.tsx";
-export { compactAge, duration, timeLeft } from "./primitives/format.ts";
+export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
 export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
@@ -30,7 +30,7 @@ export {
 	Panel,
 	type PanelTone,
 } from "./primitives/surface.tsx";
-export { Elapsed, RelativeTime } from "./primitives/time.tsx";
+export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
 
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";

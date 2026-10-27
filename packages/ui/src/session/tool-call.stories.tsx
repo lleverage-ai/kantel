@@ -7,7 +7,7 @@ import { ToolCallChip, ToolCallGroup } from "./tool-call.tsx";
 
 export default { title: "Session/Tool call" } satisfies StoryDefault;
 
-// Running calls start on the real clock, so their elapsed time reads as seconds.
+// Running calls start on the real clock, so their start time on hover reads as now.
 const running = (item: ToolItem, secondsAgo = 12): ToolItem => ({ ...item, at: Date.now() - secondsAgo * 1000 });
 
 const kinds: ToolItem[] = [
@@ -73,7 +73,7 @@ const statuses: ToolItem[] = [
 export const Default: Story = () => (
 	<Sheet
 		title="Tool call"
-		intro="Quiet work-log rows: an icon for the kind of call, the host's label, the duration. Select a row for its arguments and output."
+		intro="Quiet work-log rows: an icon for the kind of call, the host's label and a chevron. Hover or focus a row for when it started; select it for its arguments and output."
 	>
 		<Section title="Kinds">
 			<Column>
@@ -104,7 +104,7 @@ export const Default: Story = () => (
 export const Loading: Story = () => (
 	<Sheet
 		title="Tool call running"
-		intro="A call has no loading state of its own; the nearest is a call that is running: a spinner in place of its icon and the time ticking."
+		intro="A call has no loading state of its own; the nearest is a call that is running: a spinner in place of its icon and its label at full strength."
 	>
 		<Column>
 			<div>
@@ -271,7 +271,7 @@ const liveTools: ToolItem[] = [
 export const Group: Story = () => (
 	<Sheet
 		title="Tool call group"
-		intro="Consecutive calls. Finished groups of three or more collapse to how long the work took; a failed step stays visible under the summary. A live or running group shows every call."
+		intro="Consecutive calls. A finished group, however small, collapses to how long the work took (the calls carry no duration of their own); a failed step stays visible under the summary. A live or running group shows every call."
 	>
 		<Section title="Collapsed">
 			<Column>
@@ -293,9 +293,9 @@ export const Group: Story = () => (
 				<ToolCallGroup items={finishedTools} live />
 			</Column>
 		</Section>
-		<Section title="Two calls, never collapsed">
+		<Section title="One call, collapsed">
 			<Column>
-				<ToolCallGroup items={finishedTools.slice(0, 2)} />
+				<ToolCallGroup items={finishedTools.slice(0, 1)} />
 			</Column>
 		</Section>
 	</Sheet>

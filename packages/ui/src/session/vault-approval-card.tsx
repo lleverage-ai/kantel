@@ -1,9 +1,8 @@
 import type { VaultApprovalCard as VaultApprovalCardData } from "@harbour/protocol";
-import { type CSSProperties, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { CopyButton, Disclosure } from "../primitives/controls.tsx";
-import { timeLeft } from "../primitives/format.ts";
 import {
 	AlertIcon,
 	CheckCircleIcon,
@@ -16,7 +15,7 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Field, FieldList } from "../primitives/surface.tsx";
-import { countdownFraction, isRouteGrant, isUrgent, lifetimeText, methodText, vaultHost } from "./vault-model.ts";
+import { isRouteGrant, isUrgent, lifetimeText, methodText, vaultHost } from "./vault-model.ts";
 import "../primitives/button.css";
 import "./vault-approval-card.css";
 
@@ -33,7 +32,8 @@ export type VaultApprovalCardProps = {
 /**
  * The terms as label and value pairs, under one line that says who set them: the agent (proposed) or a person
  * (approved). The protocol gives one source for every term on a card, so it is said once rather than as a badge on
- * each row, where five identical amber marks read as five warnings and compete with the binding code.
+ * each row, where five identical amber marks read as five warnings and compete with the binding code. The Lifetime
+ * term is the only place the card says how long is left; under two minutes it turns amber.
  */
 function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: number; requester?: string }) {
 	useRenderProbe("VaultTerms", card.proposalId);
@@ -60,7 +60,11 @@ function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: num
 					)}
 				</Field>
 				<Field label="Lifetime">
-					<span className="hb-mono">{lifetimeText(card.expiresAt, now)}</span>
+					<span
+						className={`hb-mono${card.status === "pending" && isUrgent(card.expiresAt, now) ? " hb-vault-urgent" : ""}`}
+					>
+						{lifetimeText(card.expiresAt, now)}
+					</span>
 				</Field>
 				{requester === undefined ? null : <Field label="Requested by">{requester}</Field>}
 			</FieldList>
@@ -70,8 +74,9 @@ function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: num
 
 /**
  * The card a session shows when its agent asks the vault for a secret or a route. It says what is needed and why,
- * that the agent never sees the value, and the exact terms, marked once as the agent's proposal or as approved. The
- * binding code is always shown; the vault page shows the same one. Settled cards fold to one row.
+ * that the agent never sees the value, and the exact terms, marked once as the agent's proposal or as approved, with
+ * how long is left said once, in the Lifetime term. The binding code is always shown; the vault page shows the same
+ * one. Settled cards fold to one row.
  */
 export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApprovalCardProps) {
 	useRenderProbe("VaultApprovalCard", card.proposalId);
@@ -147,8 +152,6 @@ export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApp
 	}
 
 	const host = vaultHost(card.link);
-	const urgent = isUrgent(card.expiresAt, current);
-	const progress = { "--hb-vault-progress": String(countdownFraction(card.expiresAt, current)) } as CSSProperties;
 	return (
 		<section className="hb-vault-card hb-vault-card-pending" aria-labelledby={titleId}>
 			<header className="hb-vault-card-header">
@@ -190,13 +193,6 @@ export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApp
 					<span className="hb-sr-only">, opens in a new tab</span>
 				</a>
 				<CopyButton text={card.link} label="Copy link" />
-			</div>
-
-			<div className={`hb-vault-countdown${urgent ? " hb-vault-countdown-urgent" : ""}`}>
-				<span className="hb-vault-countdown-bar" aria-hidden="true">
-					<span className="hb-vault-countdown-fill" style={progress} />
-				</span>
-				<span className="hb-vault-countdown-text">{timeLeft(card.expiresAt, current)}</span>
 			</div>
 
 			<p className="hb-vault-card-closing">The agent carries on when you're done.</p>

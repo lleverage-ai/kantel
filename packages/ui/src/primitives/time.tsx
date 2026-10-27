@@ -1,5 +1,5 @@
 import { useNow } from "./clock.ts";
-import { compactAge, DAY, duration, MINUTE } from "./format.ts";
+import { clockTime, compactAge, DAY, duration, MINUTE } from "./format.ts";
 
 const absolute = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
@@ -12,6 +12,18 @@ export function RelativeTime({ at }: { at: number }) {
 	return (
 		<time className="hb-time" dateTime={new Date(at).toISOString()} title={absolute.format(at)}>
 			{compactAge(at, now)}
+		</time>
+	);
+}
+
+/**
+ * When something happened, by the clock ("16:38", "Yesterday at 16:38"), with the full date and time on hover. It
+ * never ticks: it reads the time once, when it renders. `now` fixes the day it is compared with, for stories.
+ */
+export function ClockTime({ at, now, className = "hb-time" }: { at: number; now?: number; className?: string }) {
+	return (
+		<time className={className} dateTime={new Date(at).toISOString()} title={absolute.format(at)}>
+			{clockTime(at, now ?? Date.now())}
 		</time>
 	);
 }

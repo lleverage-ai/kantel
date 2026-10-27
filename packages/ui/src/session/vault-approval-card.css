@@ -1,8 +1,7 @@
 /* The vault approval card. A pending card is the full request; a settled one folds to one quiet row. */
 
 .hb-vault-card {
-	/* Local sizes, candidates for tokens: the countdown bar's thickness and the code block's skeleton height. */
-	--hb-vault-bar: var(--hb-space-1);
+	/* A local size, a candidate for a token: the code block's skeleton height. */
 	--hb-vault-code-height: calc(var(--hb-text-display) * var(--hb-leading-tight) + var(--hb-space-6) * 2);
 
 	display: flex;
@@ -164,44 +163,8 @@
 	background: var(--hb-accent-hover);
 }
 
-/* The countdown: a slim bar scaled by --hb-vault-progress (1 to 0) and the time left, amber once urgent. */
-.hb-vault-countdown {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-5);
-	min-width: 0;
-}
-
-.hb-vault-countdown-bar {
-	flex: 1;
-	height: var(--hb-vault-bar);
-	overflow: hidden;
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-border-strong);
-}
-
-.hb-vault-countdown-fill {
-	display: block;
-	width: 100%;
-	height: 100%;
-	border-radius: inherit;
-	background: var(--hb-text-faint);
-	transform: scaleX(var(--hb-vault-progress, 1));
-	transform-origin: left center;
-}
-
-.hb-vault-countdown-text {
-	flex: none;
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-	font-variant-numeric: tabular-nums;
-}
-
-.hb-vault-countdown-urgent .hb-vault-countdown-fill {
-	background: var(--hb-status-approval);
-}
-
-.hb-vault-countdown-urgent .hb-vault-countdown-text {
+/* The Lifetime term with under two minutes left. */
+.hb-vault-urgent {
 	color: var(--hb-status-approval);
 }
 

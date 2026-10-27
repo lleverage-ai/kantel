@@ -1,5 +1,6 @@
 /* Tool calls as quiet work-log rows (T3 Code's WorkLog): 24px rows, 13px muted labels (full strength while running or
-   failed), a 16px icon, the duration at the end. The detail is a framed block of selectable mono text with a bounded height. */
+   failed), a 16px icon, a chevron at the end, and the start time only on hover or focus. The detail is a framed block
+   of selectable mono text with a bounded height. */
 
 .hb-tool {
 	/* The tallest an argument or output block grows before it scrolls. Candidate token: --hb-tool-output-height. */
@@ -9,6 +10,7 @@
 }
 
 .hb-tool-row {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: var(--hb-space-4);
@@ -43,44 +45,48 @@
 	color: var(--hb-text-faint);
 }
 
+/*
+ * The label (and the start time) are trimmed to their capitals, as a Button's label is, so the row centres the
+ * letters, not a line box whose space below them is deeper than above: the icon, the words and the chevron then share
+ * one centre. The even padding gives descenders room inside the clip.
+ */
 .hb-tool-label {
 	flex: 1;
 	min-width: 0;
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.hb-tool-time {
+/* When the call started, by the clock. As in T3 Code (TimelineRowTimestamp), it is out of the flow and transparent
+   until the call is hovered or holds focus, so the label keeps the row's width; then it takes its place before the
+   chevron, with the full date and time as its title. */
+.hb-tool-stamp {
+	position: absolute;
 	flex: none;
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
 	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	text-box: trim-both cap alphabetic;
+	opacity: 0;
+	pointer-events: none;
 }
 
-.hb-tool-time:empty {
-	display: none;
+.hb-tool:hover .hb-tool-stamp,
+.hb-tool:focus-within .hb-tool-stamp {
+	position: static;
+	opacity: 1;
+	pointer-events: auto;
 }
 
+/* Always there, as in T3 Code: the one hint that a row opens. */
 .hb-tool-chevron {
 	flex: none;
 	color: var(--hb-text-faint);
-	transition:
-		transform var(--hb-duration) var(--hb-ease),
-		opacity var(--hb-duration-fast) var(--hb-ease);
-}
-
-/* With a mouse, the chevron appears on hover or focus; on touch it is always there, as the only hint of more. */
-@media (hover: hover) {
-	.hb-tool-chevron {
-		opacity: 0;
-	}
-
-	.hb-tool-open .hb-tool-chevron,
-	.hb-tool-row:hover .hb-tool-chevron,
-	.hb-tool-row:focus-visible .hb-tool-chevron {
-		opacity: 1;
-	}
+	transition: transform var(--hb-duration) var(--hb-ease);
 }
 
 .hb-tool-open .hb-tool-chevron {
@@ -168,8 +174,8 @@
 	min-width: 0;
 }
 
-.hb-tool-group-words {
-	min-width: 0;
+/* The summary stays on one line. The clip is on the disclosure's text, whose trim room keeps descenders inside it. */
+.hb-tool-group-summary .hb-disclosure-text {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

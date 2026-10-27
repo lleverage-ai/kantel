@@ -37,7 +37,7 @@ export const Default: Story = () => (
 export const Proposed: Story = () => (
 	<Sheet
 		title="Vault approval card: proposed"
-		intro="Fresh proposals, every term still the agent's. A write (POST) and a read (GET) look the same here; on the vault page the write asks the approver to pick the matching code, the read only shows it."
+		intro="Fresh proposals, every term still the agent's. A write (POST) and a read (GET) look the same here; on the vault page the write asks the approver to pick the matching code, the read only shows it. With under two minutes left, the Lifetime term turns amber."
 	>
 		<Column>
 			<VaultApprovalCard card={vaultCard()} now={FIXTURE_NOW} requester="Billing agent" />
@@ -56,6 +56,21 @@ export const Proposed: Story = () => (
 				})}
 				now={FIXTURE_NOW}
 				requester="Release notes schedule"
+			/>
+			<VaultApprovalCard
+				card={vaultCard({
+					proposalId: "prop_L4st",
+					bindingCode: "STONE-73",
+					what: "A Sentry token to read the last day's errors",
+					why: "",
+					host: "sentry.io",
+					methods: ["GET"],
+					pathPrefix: "/api/0/projects/harbour",
+					injectionTemplate: "Authorization: Bearer {{secret}}",
+					link: "https://vault.harbour.dev/p/prop_L4st",
+					expiresAt: FIXTURE_NOW + 95_000,
+				})}
+				now={FIXTURE_NOW}
 			/>
 		</Column>
 	</Sheet>
@@ -171,14 +186,14 @@ export const Empty: Story = () => (
 
 const liveCard = () => vaultCard({ expiresAt: Date.now() + 125_000 });
 
-function LiveCountdown() {
+function LiveLifetime() {
 	const [card, setCard] = useState(liveCard);
 	return (
 		<Column>
 			<VaultApprovalCard card={card} onAskAgain={() => setCard(liveCard())} />
 			<Row>
 				<Button size="xs" onClick={() => setCard(liveCard())}>
-					Restart the countdown
+					Start again
 				</Button>
 			</Row>
 		</Column>
@@ -187,10 +202,10 @@ function LiveCountdown() {
 
 export const Streaming: Story = () => (
 	<Sheet
-		title="Vault approval card: live countdown"
-		intro="On the real clock, starting 2:05 before expiry: after five seconds the countdown turns amber, and at zero the card folds to its expired row. The card ticks on the page's shared one-second clock only while pending."
+		title="Vault approval card: live lifetime"
+		intro="On the real clock, starting 2:05 before expiry: after five seconds the Lifetime term turns amber, and at zero the card folds to its expired row. The lifetime is said once, in the terms. The card ticks on the page's shared one-second clock only while pending."
 	>
-		<LiveCountdown />
+		<LiveLifetime />
 	</Sheet>
 );
 

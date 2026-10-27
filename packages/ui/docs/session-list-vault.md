@@ -78,7 +78,9 @@ stable.
 **For** the card a session shows when its agent asks the vault for a secret or a route (Harbour issue #7). It names
 what is needed and why, says the agent never sees the value, shows the terms (host, methods, path prefix, injection
 template, lifetime) under one quiet line saying whose they are ("Proposed by the agent" or "Approved on the vault
-page"), the binding code, Open in vault and Copy link, a countdown, and that the agent carries on when you're done.
+page"), the binding code, Open in vault and Copy link, and that the agent carries on when you're done. How long is
+left is said once, in the Lifetime term ("15 minutes left"), which turns amber with under two minutes left; there is
+no separate countdown.
 The protocol gives one `termsSource` for every term on a card, so the source is said once rather than as a badge on
 each row: five identical amber badges read as five warnings and compete with the binding code.
 
@@ -98,7 +100,7 @@ Props: `card` (the protocol's `VaultApprovalCard`), `now` (a fixed time for stor
   the methods are empty or `*`.
 - Denied: one row in the error colour. Withdrawn: one quiet row.
 - Expired: one compact row, "This request expired before anyone approved it.", and "Ask for a new link" when
-  `onAskAgain` is given. A pending card whose countdown reaches zero shows this too, without waiting for the server.
+  `onAskAgain` is given. A pending card whose lifetime runs out shows this too, without waiting for the server.
 - Revoked is not a card state: revoking is something done to a grant on the vault page, after the card has settled
   as approved. The card stays as it was.
 
@@ -112,14 +114,14 @@ applies.
 secret's value: the protocol doesn't carry one.
 
 **Keyboard:** in a pending card, Tab reaches Copy code, Open in vault (a link, opening the vault page in a new tab),
-Copy link and nothing else; the countdown is not focusable and not a live region, so it doesn't talk every second.
+Copy link and nothing else; the Lifetime term is not a live region, so it doesn't talk as it changes.
 A settled approved card has one stop, Terms, a disclosure button with `aria-expanded`.
 
 **Narrow:** under 480px the actions stack at full width and the code and host wrap.
 
-**Cost:** while pending, and only then, the card reads the shared one-second clock (`useNow`) for its countdown;
-approved, denied, expired, withdrawn and fixed-time cards cost no timer. The countdown bar is a CSS transform set
-from a custom property, with no transition or animation. Terms on a settled card are rendered only while open.
+**Cost:** while pending, and only then, the card reads the shared one-second clock (`useNow`), so it turns urgent
+and folds to expired on time; approved, denied, expired, withdrawn and fixed-time cards cost no timer. Terms on a
+settled card are rendered only while open.
 
 ### VaultApprovalCardSkeleton
 
@@ -146,6 +148,5 @@ pick, Home and End go to the first and last.
 ### vault-model.ts
 
 Pure helpers: `vaultHost(link)`, `lifetimeText(expiresAt, now)` ("15 minutes left", "2h 10m left", "3 days left"),
-`isUrgent(expiresAt, now)` (under two minutes left), `countdownFraction(expiresAt, now, startedAt?)` (1 to 0, over a
-15-minute window when the start is unknown), `methodText(methods)` ("Any method" for an empty list or `*`),
+`isUrgent(expiresAt, now)` (under two minutes left), `methodText(methods)` ("Any method" for an empty list or `*`),
 `isRouteGrant(card)` and `mustPickCode(request)`.

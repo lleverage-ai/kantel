@@ -66,6 +66,7 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `Kbd` | A key or chord in text | |
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
+| `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
 | Icons | 16px line icons in currentColor | Decoration |
 
 Session components (the transcript, tool-call chip, composer, session header, session list and approval cards) are

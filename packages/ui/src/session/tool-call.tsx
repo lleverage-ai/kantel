@@ -17,13 +17,15 @@ import {
 } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
-import { Elapsed } from "../primitives/time.tsx";
+import { ClockTime } from "../primitives/time.tsx";
 import "./tool-call.css";
 
-// A tool call as one quiet work-log line, after T3 Code (WorkLog.tsx:53-90,134-164): an icon that says what kind of
-// call it was, the host's plain-words label ("Ran pnpm test", "Read src/billing/charge.ts") and how long it took.
-// The arguments and output are one tap away and rendered only while open; nothing about a call shouts while it runs,
-// though its label is at full strength (see tool-call.css) so the call happening now is read before the finished ones.
+// A tool call as one quiet work-log line, after T3 Code's work-log row (TimelineWorkEntryRow.tsx, WorkLog.tsx at
+// 1152e917): an icon that says what kind of call it was, the host's plain-words label ("Ran pnpm test", "Read
+// src/billing/charge.ts") and a chevron. Like T3, a call shows no duration of its own: when it started appears on
+// hover or focus, and how long the work took is said once for the group ("Worked for 8s"). The arguments and output
+// are one tap away and rendered only while open; nothing about a call shouts while it runs, though its label is at
+// full strength (see tool-call.css) so the call happening now is read before the finished ones.
 
 type IconComponent = (props: IconProps) => ReactNode;
 
@@ -79,14 +81,6 @@ function Leading({ item }: { item: ToolItem }) {
 	}
 }
 
-function Time({ item }: { item: ToolItem }) {
-	if (item.status === "running") return <Elapsed since={item.at} />;
-	if (item.endedAt === undefined) return null;
-	const ms = item.endedAt - item.at;
-	// Under a second, "0s" says nothing; the row stays quiet instead.
-	return ms < 1000 ? null : <span className="hb-time">{duration(ms)}</span>;
-}
-
 function Detail({ item, id }: { item: ToolItem; id: string }) {
 	const args = formatArgs(item.args);
 	const running = item.status === "running";
@@ -122,8 +116,9 @@ function Detail({ item, id }: { item: ToolItem; id: string }) {
 export type ToolCallChipProps = { item: ToolItem; defaultOpen?: boolean };
 
 /**
- * One tool call as a quiet row: icon, label, duration. A button with aria-expanded; the arguments and output render
- * only while it is open. Memoised on `item`, so a transcript re-renders only the call that changed.
+ * One tool call as a quiet row: icon, label, chevron, and when it started on hover or focus. A button with
+ * aria-expanded; the arguments and output render only while it is open. Memoised on `item`, so a transcript
+ * re-renders only the call that changed, and nothing in it ticks.
  */
 export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = false }: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
@@ -142,9 +137,7 @@ export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = fal
 					<Leading item={item} />
 				</span>
 				<span className="hb-tool-label">{item.label}</span>
-				<span className="hb-tool-time">
-					<Time item={item} />
-				</span>
+				<ClockTime at={item.at} className="hb-tool-stamp" />
 				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
 			</button>
 			{open ? <Detail item={item} id={id} /> : null}
@@ -164,20 +157,18 @@ export function workSummary(items: readonly ToolItem[]): string {
 	return items.length === 0 ? "No steps" : `Worked for ${duration(end - start)}, ${steps}`;
 }
 
-/** How many finished calls a group needs before it collapses to a summary. */
-const COLLAPSE_AT = 3;
-
 export type ToolCallGroupProps = { items: readonly ToolItem[]; live?: boolean };
 
 /**
  * Consecutive tool calls. While any call runs, or the group is live (the turn may add to it), every call shows.
- * Once all are finished and there are three or more, they collapse to one "Worked for 8s, 4 steps" disclosure.
+ * Once all are finished, however few, they collapse to one "Worked for 8s, 4 steps" disclosure: as in T3 Code, the
+ * calls carry no duration of their own, so the group's summary is the one place the time is told.
  * Failed and interrupted calls stay visible under the summary while it is collapsed, so a failure is never hidden.
  */
 export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false }: ToolCallGroupProps) {
 	const [open, setOpen] = useState(false);
 	const running = items.some((item) => item.status === "running");
-	if (live || running || items.length < COLLAPSE_AT) {
+	if (live || running || items.length === 0) {
 		return (
 			<div className="hb-tool-group">
 				{items.map((item) => (
@@ -189,12 +180,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false }
 	const failed = items.filter(isFailed);
 	return (
 		<div className="hb-tool-group hb-tool-group-collapsible">
-			<Disclosure
-				className="hb-tool-group-summary"
-				summary={<span className="hb-tool-group-words">{workSummary(items)}</span>}
-				open={open}
-				onOpenChange={setOpen}
-			>
+			<Disclosure className="hb-tool-group-summary" summary={workSummary(items)} open={open} onOpenChange={setOpen}>
 				{items.map((item) => (
 					<ToolCallChip key={item.id} item={item} />
 				))}

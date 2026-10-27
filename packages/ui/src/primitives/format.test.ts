@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactAge, duration, timeLeft } from "./format.ts";
+import { clockTime, compactAge, duration, timeLeft } from "./format.ts";
 
 const now = Date.UTC(2026, 9, 27, 12, 0, 0);
 
@@ -19,6 +19,20 @@ describe("time formatting", () => {
 		expect(duration(180_000)).toBe("3m");
 		expect(duration(3_900_000)).toBe("1h 5m");
 		expect(duration(-5)).toBe("0s");
+	});
+
+	it("says when by the clock, naming the day once it is not today", () => {
+		// Local times, so the test holds in any time zone.
+		const local = (month: number, day: number, hour: number, minute: number, year = 2026) =>
+			new Date(year, month, day, hour, minute).getTime();
+		const today = local(9, 27, 16, 40);
+		expect(clockTime(local(9, 27, 16, 38), today)).toBe("16:38");
+		expect(clockTime(local(9, 27, 0, 5), today)).toBe("00:05");
+		expect(clockTime(local(9, 26, 23, 59), today)).toBe("Yesterday at 23:59");
+		expect(clockTime(local(9, 3, 9, 15), today)).toBe("03/10 09:15");
+		expect(clockTime(local(11, 30, 9, 15, 2025), today)).toBe("30/12/2025 09:15");
+		// A clock a little ahead of the server still says today.
+		expect(clockTime(local(9, 27, 16, 41), today)).toBe("16:41");
 	});
 
 	it("counts down to an expiry", () => {
