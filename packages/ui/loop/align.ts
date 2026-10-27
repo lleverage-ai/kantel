@@ -9,7 +9,8 @@
 
 import type { Page } from "playwright-core";
 
-export type Misalignment = { check: string; where: string; offset: number };
+/** `offset` is null when an element that should be checked could not be measured, which also fails. */
+export type Misalignment = { check: string; where: string; offset: number | null };
 
 export const ALIGN_TOLERANCE = 1;
 
@@ -66,6 +67,10 @@ export function measureAlignment(): Misalignment[] {
 		if (a === undefined || b === undefined) return;
 		out.push({ check, where: describe(where), offset: Math.round((a - b) * 10) / 10 });
 	};
+	// Visible content the gate should check but can't find its parts for: a failure, never a silent skip.
+	const unmeasured = (check: string, where: Element) => {
+		out.push({ check, where: describe(where), offset: null });
+	};
 
 	// Buttons: the label's optical centre on the button's centre; an icon beside a label on the label's centre.
 	for (const button of root.querySelectorAll(".hb-button")) {
@@ -73,7 +78,9 @@ export function measureAlignment(): Misalignment[] {
 		const label = button.querySelector(".hb-button-label");
 		const line = label === null ? null : textLine(label);
 		if (line !== null) compare("button label", button, line.centre, centre(button));
-		const icon = button.querySelector(":scope > .hb-icon, :scope > svg");
+		else if ((button.textContent ?? "").trim() !== "") unmeasured("button label", button);
+		// A busy button's spinner stands in for its icon, so it is held to the same line.
+		const icon = button.querySelector(":scope > .hb-icon, :scope > svg, :scope > .hb-spinner");
 		if (icon !== null && visible(icon)) {
 			if (line !== null) compare("button icon", button, centre(icon), line.centre);
 			else compare("icon button", button, centre(icon), centre(button));
@@ -123,5 +130,5 @@ export function measureAlignment(): Misalignment[] {
 /** Every measured pair further apart than the tolerance. */
 export async function alignment(page: Page): Promise<Misalignment[]> {
 	const all = await page.evaluate(measureAlignment);
-	return all.filter((pair) => Math.abs(pair.offset) > ALIGN_TOLERANCE);
+	return all.filter((pair) => pair.offset === null || Math.abs(pair.offset) > ALIGN_TOLERANCE);
 }

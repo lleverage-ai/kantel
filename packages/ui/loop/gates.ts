@@ -202,7 +202,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		for (const label of result.keyboard.withoutRing) console.log(`      no focus ring: ${label}`);
 		for (const label of result.keyboard.unreached) console.log(`      not reached by Tab: ${label}`);
 		for (const pair of result.alignment)
-			console.log(`      off centre by ${pair.offset}px: ${pair.check}, ${pair.where}`);
+			console.log(
+				pair.offset === null
+					? `      could not measure: ${pair.check}, ${pair.where}`
+					: `      off centre by ${pair.offset}px: ${pair.check}, ${pair.where}`,
+			);
 	}
 	if (values.json !== undefined) writeFileSync(values.json, JSON.stringify(results, null, "\t"));
 	process.exitCode = missing.length === 0 && results.every(passed) ? 0 : 1;
