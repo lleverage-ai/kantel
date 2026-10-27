@@ -15,11 +15,14 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
+		"@earendil-works/chord": "1.4.0",
 		"@earendil-works/pi-ai": "1.4.0",
 		"@harbour/audit": "workspace:*",
+		"@harbour/cloudflare-workspace": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/identity": "workspace:*",
 		"@harbour/runtime": "workspace:*",
+		"@harbour/sql": "workspace:*",
 		"@harbour/workspace": "workspace:*"
 	},
 	"devDependencies": {
