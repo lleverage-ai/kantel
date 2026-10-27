@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# seed-prepare: build one repo's node-local seed cache inside a container, the same way
+# selfhosted/prepare.sh does on the host. Used to warm a Cloudflare container (with Internet)
+# that is then saved as the "cache" snapshot.
+#   seed-prepare <name> <github repo> <commit> "<install command>"
+set -euo pipefail
+name="$1"; gh="$2"; sha="$3"; install="$4"
+C=/cache; L=/tmp/lower/$name
+mkdir -p $C/mirrors $C/deps $C/sqsh /tmp/lower
+t0=$(date +%s)
+[[ -d $C/mirrors/$name.git ]] || git clone -q --bare "https://github.com/$gh.git" "$C/mirrors/$name.git"
+git -C "$C/mirrors/$name.git" cat-file -e "$sha^{commit}"
+t1=$(date +%s)
+git clone -q --shared --no-checkout "$C/mirrors/$name.git" "$L"
+git -C "$L" checkout -q --detach "$sha"
+lock=$(cd "$L" && ls bun.lock pnpm-lock.yaml 2>/dev/null | head -1 || true)
+key=$( (cat "$L/$lock"; echo "node24-bench-image") | sha256sum | cut -c1-16)
+(cd "$L" && export npm_config_store_dir=/tmp/pnpm-store CI=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 && $install >/tmp/install-$name.log 2>&1) || { tail -30 /tmp/install-$name.log; exit 1; }
+t2=$(date +%s)
+(cd "$L" && find . -name node_modules -type d -prune -print > /tmp/nm.list && tar -c -T /tmp/nm.list | zstd -q -T0 -3 -o "$C/deps/$name-$key.tar.zst")
+sleep 1.1; git -C "$L" status --porcelain >/dev/null
+mksquashfs "$L" "$C/sqsh/$name.sqsh" -comp zstd -quiet -no-progress >/dev/null
+rm -rf "$L" /tmp/pnpm-store
+echo "{\"name\":\"$name\",\"key\":\"$key\",\"mirror_s\":$((t1 - t0)),\"install_s\":$((t2 - t1)),\"total_s\":$(( $(date +%s) - t0 ))}"

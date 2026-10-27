@@ -1,0 +1,6 @@
+{
+	"image": "slim",
+	"internet": true,
+	"prep": " seed-prepare vite vitejs/vite 64e24670e49900c33a3d3e3c701a5ec4d76573f2 'pnpm install --frozen-lockfile' && seed-prepare n8n n8n-io/n8n 7ac6ff19b043054efc8acea23c37f281fc7a57d2 'pnpm install --frozen-lockfile' && du -sh /cache/*",
+	"snapshotName": "harbour-m0-seed-cache"
+}
