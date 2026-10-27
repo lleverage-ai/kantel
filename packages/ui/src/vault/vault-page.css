@@ -1,0 +1,387 @@
+/* The vault page: the request beside the viewer's active grants, stacked on a narrow screen. Reuses the card's code
+   block (vault-approval-card.css) so the binding code looks the same in both places. */
+
+.hb-vault-page {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-9);
+	width: 100%;
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-vault-page p {
+	margin: 0;
+}
+
+.hb-vault-page-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	min-width: 0;
+	padding-bottom: var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-page-mark {
+	flex: none;
+	color: var(--hb-text);
+}
+
+.hb-vault-page-name {
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+}
+
+.hb-vault-page-host {
+	font-family: var(--hb-font-mono);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-page-viewer {
+	margin-left: auto;
+}
+
+.hb-vault-page-body {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: var(--hb-space-10);
+	align-items: start;
+}
+
+/* The grants sit beside the request once there is room for both at their reading widths. */
+@media (min-width: 1040px) {
+	.hb-vault-page-body {
+		grid-template-columns: minmax(0, var(--hb-content-width)) minmax(0, var(--hb-sidebar-width));
+		justify-content: space-between;
+	}
+}
+
+.hb-vault-page-main,
+.hb-vault-page-aside {
+	min-width: 0;
+}
+
+.hb-vault-request {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-9);
+	min-width: 0;
+}
+
+.hb-vault-request-loading {
+	gap: var(--hb-space-6);
+}
+
+.hb-vault-request-head {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-vault-request-badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-3);
+}
+
+.hb-vault-request-title {
+	margin: 0;
+	font-size: var(--hb-text-lg);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-request-for {
+	color: var(--hb-text-muted);
+	font-weight: var(--hb-weight-regular);
+}
+
+.hb-vault-request-why {
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading-prose);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-request-note {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-request-note > .hb-icon {
+	flex: none;
+	color: var(--hb-text-faint);
+}
+
+.hb-vault-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	min-width: 0;
+	padding-top: var(--hb-space-7);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-vault-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-xs);
+}
+
+.hb-vault-section-title {
+	margin: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-vault-hint {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-link {
+	border-radius: var(--hb-radius-xs);
+	color: var(--hb-accent-text);
+	text-decoration: none;
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-link:hover {
+	text-decoration: underline;
+}
+
+/* Editable terms: a label with its Proposed or Narrowed tag over each control. */
+.hb-vault-terms-edit {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: var(--hb-space-7) var(--hb-space-9);
+	min-width: 0;
+}
+
+.hb-vault-term {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	min-width: 0;
+}
+
+.hb-vault-term-head {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-xs);
+}
+
+.hb-vault-term-label {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-term-value {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+/* The field's own label is the term's; it stays for screen readers. */
+.hb-vault-hidden-label > .hb-text-field-label {
+	position: absolute;
+	width: var(--hb-hairline);
+	height: var(--hb-hairline);
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.hb-vault-mono-field .hb-input {
+	width: 100%;
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+}
+
+.hb-vault-uses-field .hb-input {
+	width: calc(var(--hb-control-lg) * 4);
+	max-width: 100%;
+}
+
+.hb-vault-methods {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-3) var(--hb-space-7);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.hb-vault-check {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-height: var(--hb-control-sm);
+	cursor: pointer;
+}
+
+.hb-vault-check input {
+	width: var(--hb-icon-sm);
+	height: var(--hb-icon-sm);
+	margin: 0;
+	accent-color: var(--hb-accent);
+	cursor: pointer;
+}
+
+.hb-vault-check input:disabled,
+.hb-vault-check input:disabled + span {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.hb-vault-field-error {
+	color: var(--hb-status-error);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-preview {
+	padding: var(--hb-space-5) var(--hb-space-6);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-preview-label {
+	color: var(--hb-text-muted);
+}
+
+/* Approve and deny, with the reason Approve is disabled under them. */
+.hb-vault-decide {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	padding-top: var(--hb-space-7);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-vault-decide-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-4);
+}
+
+.hb-vault-decide-note {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-countdown-line {
+	color: var(--hb-text-faint);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-vault-countdown-line.hb-vault-countdown-urgent {
+	color: var(--hb-status-approval);
+}
+
+/* A settled request's outcome, one line at the top. */
+.hb-vault-outcome {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--hb-space-5);
+	min-width: 0;
+	padding: var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-panel);
+}
+
+.hb-vault-outcome-approved,
+.hb-vault-outcome-narrowed {
+	border-color: var(--hb-status-done-soft);
+}
+
+.hb-vault-outcome-denied {
+	border-color: var(--hb-status-error-line);
+}
+
+.hb-vault-outcome-icon {
+	display: inline-flex;
+	flex: none;
+	padding-top: var(--hb-space-1);
+}
+
+.hb-vault-outcome-text {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-vault-outcome-title {
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-vault-outcome-line {
+	color: var(--hb-text-muted);
+}
+
+.hb-vault-outcome-time {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-grant-status {
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-vault-grant-active {
+	color: var(--hb-status-done);
+}
+
+.hb-vault-grant-revoked,
+.hb-vault-grant-expired,
+.hb-vault-grant-exhausted {
+	color: var(--hb-text-muted);
+}
+
+.hb-vault-stop {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--hb-space-4);
+}
+
+@media (max-width: 560px) {
+	.hb-vault-terms-edit {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.hb-vault-decide-actions > .hb-button {
+		flex: 1 1 100%;
+		min-height: var(--hb-control-lg);
+	}
+
+	.hb-vault-page-viewer {
+		margin-left: 0;
+		flex-basis: 100%;
+	}
+}

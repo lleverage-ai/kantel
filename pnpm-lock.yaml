@@ -352,9 +352,15 @@ importers:
 
   packages/ui:
     dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
       "@harbour/protocol":
         specifier: workspace:*
         version: link:../protocol
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../vault
       react-markdown:
         specifier: 10.1.0
         version: 10.1.0(@types/react@19.3.0)(react@19.3.1)
@@ -365,6 +371,9 @@ importers:
         specifier: 0.53.6
         version: 0.53.6(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
     devDependencies:
+      "@harbour/audit":
+        specifier: workspace:*
+        version: link:../audit
       "@ladle/react":
         specifier: 5.1.1
         version: 5.1.1(@types/node@26.6.5)(@types/react@19.3.0)(lightningcss@1.33.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2)(yaml@2.9.1)
