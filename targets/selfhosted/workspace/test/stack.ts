@@ -40,14 +40,19 @@ export async function deletePrefix(s3: Omit<S3ObjectsOptions, "prefix">, prefix:
 	do {
 		const query = new URLSearchParams({ "list-type": "2", prefix: `${prefix}/` });
 		if (token !== undefined) query.set("continuation-token", token);
-		const listing = await (await client.fetch(`${bucket}?${query}`)).text();
+		const listed = await client.fetch(`${bucket}?${query}`);
+		const listing = await listed.text();
+		if (!listed.ok) throw new Error(`listing ${prefix} failed with ${listed.status}: ${listing.slice(0, 200)}`);
 		const keys = [...listing.matchAll(/<Key>([^<]+)<\/Key>/g)].map((match) => decodeXml(match[1]!));
+		const foreign = keys.find((key) => !key.startsWith(`${prefix}/`));
+		if (foreign !== undefined) throw new Error(`listing ${prefix} returned ${foreign}`);
 		for (let start = 0; start < keys.length; start += 32) {
 			await Promise.all(
 				keys.slice(start, start + 32).map(async (key) => {
 					const url = `${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`;
 					const response = await client.fetch(url, { method: "DELETE" });
 					await response.body?.cancel();
+					if (!response.ok) throw new Error(`deleting ${key} failed with ${response.status}`);
 				}),
 			);
 		}

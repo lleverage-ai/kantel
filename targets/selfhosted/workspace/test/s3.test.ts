@@ -71,6 +71,15 @@ describe("createS3Objects", () => {
 		]);
 		expect(await codeOf(createS3Objects({ ...base, fetch: theirs.fake }).ensureBucket())).toBe("unavailable");
 
+		// Another account's bucket that lets us list it is still not ours, so HEAD is not asked.
+		const readable = scripted([
+			{ status: 404 },
+			{ status: 409, body: "<Code>BucketAlreadyExists</Code>" },
+			{ status: 200 },
+		]);
+		expect(await codeOf(createS3Objects({ ...base, fetch: readable.fake }).ensureBucket())).toBe("unavailable");
+		expect(readable.sent).toHaveLength(2);
+
 		const forbidden = scripted([{ status: 403 }]);
 		expect(await codeOf(createS3Objects({ ...base, fetch: forbidden.fake }).ensureBucket())).toBe("unavailable");
 		expect(forbidden.sent).toHaveLength(1);

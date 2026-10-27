@@ -96,9 +96,11 @@ export function createS3Objects(options: S3ObjectsOptions): S3Objects {
 				return;
 			}
 			// A 409 is either another process creating it meanwhile (ours, so it now answers HEAD) or another account's.
+			// `BucketAlreadyExists` is always another account's: a HEAD that succeeds proves access, not ownership.
 			if (created.status === 409) {
 				const conflict = await created.text().catch(() => "");
-				if (conflict.includes("BucketAlreadyOwnedByYou") || (await exists())) return;
+				const theirs = conflict.includes("<Code>BucketAlreadyExists</Code>");
+				if (!theirs && (conflict.includes("BucketAlreadyOwnedByYou") || (await exists()))) return;
 				throw new HarbourError("unavailable", `bucket ${options.bucket} belongs to someone else`, {
 					status: 409,
 					body: conflict.slice(0, 200),
