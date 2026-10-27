@@ -35,15 +35,15 @@ export class SimulatedContainer implements ContainerBackend {
 	readonly #overlays = new Map<string, Map<string, { content: Uint8Array; mode: number } | null>>();
 	/** Per lease, the exec that last changed each overlay path, as the agent stamps its dirty paths. */
 	readonly #stamps = new Map<string, Map<string, number>>();
-	/** Leases whose release has taken its final snapshot, as the container DO fences them. */
-	readonly #closing = new Set<string>();
+	/** Leases whose release has taken its final snapshot, or that ended, as the container DO fences them. */
+	readonly #fenced = new Set<string>();
 	#stamp = 0;
 	readonly #cache = new BlobCache();
 
 	constructor(private readonly workspaces: ObjectStoreWorkspaces) {}
 
 	async exec({ ctx, lease, record, request }: BackendExec): Promise<BackendOutput> {
-		if (this.#closing.has(lease.id)) throw new Error(`lease ${lease.id} is being released`);
+		if (this.#fenced.has(lease.id)) throw new Error(`lease ${lease.id} is being released or has ended`);
 		const overlay = this.#overlay(lease);
 		const port = workspacePort(this.workspaces, ctx, lease.workspaceId);
 		const outcome = await runShell(
@@ -66,7 +66,7 @@ export class SimulatedContainer implements ContainerBackend {
 		{ lease }: Omit<BackendExec, "request">,
 		options: { readonly final?: boolean } = {},
 	): Promise<PendingChanges> {
-		if (options.final === true) this.#closing.add(lease.id);
+		if (options.final === true) this.#fenced.add(lease.id);
 		return { changes: fromOverlay(this.#overlay(lease)), stamp: this.#stamp };
 	}
 
@@ -84,7 +84,7 @@ export class SimulatedContainer implements ContainerBackend {
 	async ended(lease: SandboxLease): Promise<void> {
 		this.#overlays.delete(lease.id);
 		this.#stamps.delete(lease.id);
-		this.#closing.delete(lease.id);
+		this.#fenced.add(lease.id);
 	}
 
 	#overlay(lease: SandboxLease): Overlay {

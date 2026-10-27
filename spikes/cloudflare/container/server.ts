@@ -30,6 +30,37 @@ let index = new Map<string, FileState>();
 let dirty = new Map<string, { op: "put" | "delete"; stamp: number }>();
 /** Counts scans; `/changes` hands it out and `/ack` takes it back. */
 let stamp = 0;
+/** Process groups that commands started (setsid makes each command a group leader), still possibly running. */
+const groups = new Set<number>();
+
+/**
+ * Runs `reconcile` (scan, sync, scan) with every command's process group stopped, so a background job cannot write
+ * between the scan that would see its change and the sync that would otherwise overwrite it. A write in progress
+ * completes first (a signal is taken between system calls); a half-written file is seen as the container's change and
+ * kept. A process that left its group (its own setsid, a daemon) is not stopped: see README, "Gaps".
+ */
+async function quiesced<T>(reconcile: () => Promise<T>): Promise<T> {
+	const stopped: number[] = [];
+	for (const group of groups) {
+		try {
+			process.kill(-group, "SIGSTOP");
+			stopped.push(group);
+		} catch {
+			groups.delete(group); // the whole group has exited
+		}
+	}
+	try {
+		return await reconcile();
+	} finally {
+		for (const group of stopped) {
+			try {
+				process.kill(-group, "SIGCONT");
+			} catch {
+				groups.delete(group);
+			}
+		}
+	}
+}
 let execs = 0;
 
 async function walk(dir: string, prefix: string, out: Map<string, { mode: number; size: number; mtimeMs: number }>) {
@@ -222,6 +253,7 @@ async function run(
 		stdout: "pipe",
 		stderr: "pipe",
 	});
+	groups.add(child.pid);
 	let timedOut = false;
 	let abandon: ReturnType<typeof setTimeout> | undefined;
 	const readers = [child.stdout.getReader(), child.stderr.getReader()];
@@ -293,10 +325,13 @@ Bun.serve({
 				stdin?: string;
 				timeoutMs?: number;
 			};
-			// Scan before syncing: a background job may have written since the last command returned, and sync must
-			// see that write as the container's own change rather than overwrite it.
-			await scan();
-			if (!(await applySync(body.sync))) return json({ error: "version_mismatch", have: version }, 409);
+			// Scan before syncing, with background jobs stopped: a write since the last command returned is the
+			// container's own change, and sync must not overwrite it.
+			const synced = await quiesced(async () => {
+				await scan();
+				return applySync(body.sync);
+			});
+			if (!synced) return json({ error: "version_mismatch", have: version }, 409);
 			const syncMs = performance.now() - started;
 			execs += 1;
 			const result = await run(
@@ -323,10 +358,14 @@ Bun.serve({
 
 		if (url.pathname === "/changes" && request.method === "POST") {
 			const body = (await request.json()) as { sync: Sync };
-			// Scan before syncing (see /exec), and again after, for a write that landed while the sync ran.
-			await scan();
-			if (!(await applySync(body.sync))) return json({ error: "version_mismatch", have: version }, 409);
-			await scan();
+			// Scan, sync and scan again with background jobs stopped (see /exec), so the snapshot is consistent.
+			const synced = await quiesced(async () => {
+				await scan();
+				if (!(await applySync(body.sync))) return false;
+				await scan();
+				return true;
+			});
+			if (!synced) return json({ error: "version_mismatch", have: version }, 409);
 			return json(await pendingChanges());
 		}
 
@@ -341,7 +380,16 @@ Bun.serve({
 		}
 
 		if (url.pathname === "/reset" && request.method === "POST") {
-			// A discarded lease, or a container handed to another workspace: drop the working copy.
+			// A discarded lease, or a container handed to another workspace: end what its commands left running, then
+			// drop the working copy.
+			for (const group of groups) {
+				try {
+					process.kill(-group, "SIGKILL");
+				} catch {
+					// already gone
+				}
+			}
+			groups.clear();
 			await rm(ROOT, { recursive: true, force: true });
 			await mkdir(ROOT, { recursive: true });
 			forget();

@@ -51,6 +51,8 @@ type Meta = {
 	killAfterExec?: number;
 	/** Isolate generation: a new value loads a fresh Dynamic Worker. */
 	isolateGeneration?: string;
+	/** A prompted run is in progress: when the harness next settles, end the session's leases. */
+	settleOnIdle?: boolean;
 };
 
 type ToolResult = { toolCallId: string; toolName: string; isError: boolean; text: string };
@@ -282,10 +284,16 @@ export class SessionDO extends DurableObject<Env> {
 		const harness = await this.#open();
 		harness.resume();
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
-		// The run has settled: commit and end the session's leases (a container's changes land in the workspace here),
-		// and expire any lease past its TTL.
 		const sandboxes = this.#sandboxes(meta);
-		await sandboxes.releaseSession(this.#ctx(meta), meta.sessionId, "released");
+		// A prompted run has settled: commit and end the session's leases (a container's changes land in the workspace
+		// here). A wake with no run (setup's, a retention timer) leaves the leases alone, so it cannot release a lease
+		// that a direct /exec is using. The flag is in storage, so a run that crashed still ends its leases on resume.
+		const settled = this.#meta();
+		if (settled?.settleOnIdle === true) {
+			await sandboxes.releaseSession(this.#ctx(meta), meta.sessionId, "released");
+			this.#setMeta({ ...settled, settleOnIdle: false });
+		}
+		// Expire any lease past its TTL.
 		await sandboxes.sweep();
 	}
 
@@ -386,6 +394,7 @@ export class SessionDO extends DurableObject<Env> {
 			BACKGROUND_CONTEXT,
 		);
 		// Drive the run from the alarm handler, which keeps the object alive and is retried after a crash.
+		this.#setMeta({ ...this.#requireMeta(), settleOnIdle: true });
 		await this.ctx.storage.setAlarm(Date.now());
 		return { submissionId: submission.id };
 	}

@@ -161,6 +161,11 @@ describe("container commits", () => {
 		};
 		await sandboxes.release(ctx, lease.id);
 		expect(await late).toMatch(/being released/);
+		// A command the sandbox admitted before the release that only reaches the container after it is refused too.
+		const record = await workspaces.get(ctx, id);
+		await expect(container.exec({ ctx, lease, record, request: { command: "printf c > c" } })).rejects.toThrow(
+			/has ended/,
+		);
 		const files = await workspaces.list(ctx, id, { recursive: true });
 		expect(files.items.map((entry) => entry.path)).toEqual(["a"]);
 	});

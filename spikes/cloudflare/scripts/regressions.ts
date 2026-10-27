@@ -95,8 +95,8 @@ await call(c, "setup", {
 	workspaceId: `ws-${c}`,
 	scenario: { name: "none", steps: [], finalAnswer: "ok", seed: { "base.txt": "base\n" } },
 });
-// The spike's alarm handler ends the session's leases whenever the harness settles (setup wakes it once), so warm the
-// container and let that alarm pass first: this check is about a write inside one lease.
+// Warm the container and let setup's harness wake pass first (it no longer ends leases, but this check is about a
+// write inside one lease, which the last check below confirms).
 r = await exec(c, "git --version > /dev/null", "container");
 await new Promise((resolve) => setTimeout(resolve, 5000));
 r = await exec(c, "git --version > first.txt; (sleep 3; echo late > late.txt) >/dev/null 2>&1 &", "container");

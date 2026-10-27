@@ -22,8 +22,15 @@ type ContainerExecBody = {
 	timings: Record<string, number>;
 	container: { bootedAt: number; execs: number };
 };
-/** `closing`: the lease's release has taken its final snapshot; no more commands run on it. */
-type Owner = { leaseId: string; sessionId: string; workspaceId: string; closing?: boolean };
+type Owner = { leaseId: string; sessionId: string; workspaceId: string };
+
+/**
+ * Per lease, kept apart from the owner so it outlives the owner changing or the container stopping: `closing` once
+ * release has taken its final snapshot, `ended` once the lease is over. Either way the lease runs no more commands, even
+ * one the sandbox admitted before the release and that only reaches this object afterwards.
+ */
+type Fence = "closing" | "ended";
+const fenceKey = (leaseId: string) => `fence:${leaseId}`;
 
 /** A container's uncommitted changes, with the stamp that acknowledges exactly these and nothing later. */
 export type ContainerPending = { readonly changes: ModedChange[]; readonly stamp: number };
@@ -101,8 +108,9 @@ export class HarbourContainer extends DurableObject<Env> {
 	async pending(call: ContainerCall, options: { final?: boolean } = {}): Promise<ContainerPending> {
 		return this.#serial(async () => {
 			const owner = await this.ctx.storage.get<Owner>("owner");
-			if (options.final === true && owner?.leaseId === call.leaseId && owner.closing !== true) {
-				await this.ctx.storage.put("owner", { ...owner, closing: true });
+			// Fenced whether or not the lease ever claimed the container: a command of its still on the way is refused.
+			if (options.final === true && (await this.ctx.storage.get<Fence>(fenceKey(call.leaseId))) === undefined) {
+				await this.ctx.storage.put(fenceKey(call.leaseId), "closing" satisfies Fence);
 			}
 			if (owner?.leaseId !== call.leaseId || !this.#container().running) {
 				if (owner?.leaseId === call.leaseId) {
@@ -143,13 +151,14 @@ export class HarbourContainer extends DurableObject<Env> {
 	/** The lease ended. The container keeps running (warm) for the next lease; a discarded lease's changes are dropped. */
 	async ended(args: { leaseId: string; discard: boolean }): Promise<void> {
 		return this.#serial(async () => {
+			await this.ctx.storage.put(fenceKey(args.leaseId), "ended" satisfies Fence);
 			const owner = await this.ctx.storage.get<Owner>("owner");
 			if (owner?.leaseId !== args.leaseId) return;
 			if (args.discard && this.#container().running) {
 				await this.#post("/reset");
 				this.#held = null;
 			}
-			await this.ctx.storage.put("owner", { ...owner, leaseId: "", closing: false });
+			await this.ctx.storage.put("owner", { ...owner, leaseId: "" });
 		});
 	}
 
@@ -174,10 +183,11 @@ export class HarbourContainer extends DurableObject<Env> {
 
 	/** Starts the container if needed and makes `call.leaseId` its owner. */
 	async #claim(call: ContainerCall): Promise<Record<string, number>> {
-		const owner = await this.ctx.storage.get<Owner>("owner");
-		if (owner?.leaseId === call.leaseId && owner.closing === true) {
-			throw new Error(`lease ${call.leaseId} is being released`);
+		const fence = await this.ctx.storage.get<Fence>(fenceKey(call.leaseId));
+		if (fence !== undefined) {
+			throw new Error(`lease ${call.leaseId} ${fence === "closing" ? "is being released" : "has ended"}`);
 		}
+		const owner = await this.ctx.storage.get<Owner>("owner");
 		const claim: Owner = { leaseId: call.leaseId, sessionId: call.sessionId, workspaceId: call.workspaceId };
 		if (owner !== undefined && owner.leaseId !== "" && owner.leaseId !== call.leaseId && this.#container().running) {
 			throw new Error("this container is in use by another lease");
