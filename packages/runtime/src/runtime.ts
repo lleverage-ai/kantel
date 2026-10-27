@@ -203,6 +203,10 @@ interface OpenSession {
 	waking: Promise<unknown>;
 	/** Resumes the Harness when its earliest sleep falls due. */
 	sleepTimer?: ReturnType<typeof setTimeout>;
+	/** Pi submits and aborts in progress; while any is, the stored wake stays due. */
+	admissions: number;
+	/** The Harness has closed (by this runtime, or itself after a storage failure). */
+	harnessClosed: boolean;
 	/** The store records the session as closed. */
 	durablyClosed: boolean;
 	stopWatching(): void;
@@ -334,13 +338,21 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	};
 
 	/**
-	 * Marks the session as needing a process before input or an abort is admitted, so a process that dies between Pi's
-	 * commit and the Harness's next wake leaves the session where `resume()` finds it.
+	 * Runs `admit` (a Pi submit or abort) with the session marked as needing a process: the mark is stored first, and
+	 * no wake from the Harness lowers it until `admit` has settled, so a process that dies between Pi's commit and the
+	 * Harness's next wake leaves the session where `resume()` finds it. Then the stored wake follows the Harness again.
 	 */
-	const wakeBeforeWork = async (session: OpenSession) => {
-		const now = clock.now();
-		if (session.wakeAt !== undefined && session.wakeAt <= now) return session.waking;
-		return writeWake(session, now);
+	const admitting = async <T>(session: OpenSession, admit: () => Promise<T>): Promise<T> => {
+		session.admissions += 1;
+		try {
+			const now = clock.now();
+			const marked = session.wakeAt !== undefined && session.wakeAt <= now;
+			await (marked ? session.waking : writeWake(session, now));
+			return await admit();
+		} finally {
+			session.admissions -= 1;
+			if (session.admissions === 0 && !session.harnessClosed) followWake(session, session.harness.wake());
+		}
 	};
 
 	/**
@@ -353,12 +365,20 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const now = clock.now();
 		const known = session.wakeAt !== undefined && Number.isFinite(session.wakeAt) ? session.wakeAt : now;
 		const at = wake.active ? Math.min(known, now) : wake.at;
-		writeWake(session, at).catch((error: unknown) => options.onWakeError?.(session.record.id, error));
-		if (!wake.active && wake.at !== undefined && !session.closed && !closed) {
+		// While input is being admitted the mark stays; `admitting` brings the wake up to date once it is in.
+		if (session.admissions === 0 || (at !== undefined && at <= now)) {
+			writeWake(session, at).catch((error: unknown) => options.onWakeError?.(session.record.id, error));
+		}
+		if (!wake.active && wake.at !== undefined && !session.closed && !session.harnessClosed && !closed) {
 			session.sleepTimer = setTimeout(
 				() => {
 					session.sleepTimer = undefined;
-					if (!closed && open.get(session.record.id) === session) session.harness.resume();
+					if (closed || session.harnessClosed || open.get(session.record.id) !== session) return;
+					try {
+						session.harness.resume();
+					} catch (error) {
+						options.onWakeError?.(session.record.id, error);
+					}
 				},
 				Math.max(0, wake.at - clock.now()),
 			);
@@ -557,12 +577,22 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			stopWatching: () => {},
 			...(stored.wakeAt === undefined ? {} : { wakeAt: stored.wakeAt }),
 			waking: Promise.resolve(),
+			admissions: 0,
+			harnessClosed: false,
 		};
 		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
 		const unsubscribe = view.subscribe(() => sync(session));
+		// The Harness closes itself after a failed storage call: the session is then opened afresh on next use.
+		const unsubscribeClose = harness.subscribeClose(() => {
+			session.harnessClosed = true;
+			if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
+			session.sleepTimer = undefined;
+			if (open.get(record.id) === session) open.delete(record.id);
+		});
 		session.stopWatching = () => {
 			unsubscribe();
+			unsubscribeClose();
 			view.dispose();
 		};
 		try {
@@ -629,8 +659,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				failure ??= { error };
 			}
 		}
-		await wakeBeforeWork(session);
-		await session.conversation.abort(piContext(ctx));
+		await admitting(session, () => session.conversation.abort(piContext(ctx)));
 		await sync(session);
 		const run = session.aborts + 1;
 		session.aborts = run;
@@ -668,16 +697,17 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		if (input.text === "") throw new HarbourError("invalid", "A prompt needs text");
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
-		await wakeBeforeWork(session);
-		const pi = await session.conversation.submit(
-			{
-				type: "input",
-				content: input.text,
-				whenBusy: via === "steer" ? "steer" : "followUp",
-				entry: harbourUserEntry(via, input.requestId),
-				...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-			},
-			piContext(ctx),
+		const pi = await admitting(session, () =>
+			session.conversation.submit(
+				{
+					type: "input",
+					content: input.text,
+					whenBusy: via === "steer" ? "steer" : "followUp",
+					entry: harbourUserEntry(via, input.requestId),
+					...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+				},
+				piContext(ctx),
+			),
 		);
 		const id = `${sessionId}/${pi.id}`;
 		const existing = await store.submission(sessionId, id);
@@ -993,8 +1023,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				options.onResumeError?.(stored.record.id, error);
 			}
 		}
-		const next = await store.nextWake();
-		if (next !== undefined && next > now) armResume(next);
+		// The earliest still to come: a due wake (a session running now) must not hide a later sleeper's.
+		const next = await store.nextWake(now);
+		if (next !== undefined) armResume(next);
 		return resumed;
 	};
 

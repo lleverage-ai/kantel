@@ -99,7 +99,7 @@ describe.each(stores)("session store (%s)", (_name, open) => {
 		for (const id of ["w1", "w2", "w3", "w4"]) {
 			await store.createSession({ record: recordFor(id, 1), profile, aborts: 0, closed: false });
 		}
-		expect(await store.nextWake()).toBeUndefined();
+		expect(await store.nextWake(0)).toBeUndefined();
 		await store.setWake("w1", 300);
 		await store.setWake("w2", 100);
 		await store.setWake("w3", 50);
@@ -109,13 +109,15 @@ describe.each(stores)("session store (%s)", (_name, open) => {
 			["w2", 100],
 			["w4", 200],
 		]);
-		expect(await store.nextWake()).toBe(100);
+		expect(await store.nextWake(0)).toBe(100);
+		// Only wakes still to come.
+		expect(await store.nextWake(100)).toBe(200);
 		// Other updates keep the wake; clearing it takes the session out.
 		await store.updateSession("w2", { aborts: 1 });
 		expect((await store.session("w2"))?.wakeAt).toBe(100);
 		await store.setWake("w2", undefined);
 		expect((await store.session("w2"))?.wakeAt).toBeUndefined();
-		expect(await store.nextWake()).toBe(200);
+		expect(await store.nextWake(0)).toBe(200);
 		await close();
 	});
 

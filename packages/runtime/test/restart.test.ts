@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
+import { applySqliteMigrations } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
+import { MemoryStorage } from "@earendil-works/pi-durable";
 import type { AgentProfile, Authentication, HostToolHandler, ReplayPolicy, Role } from "@harbour/contracts";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
 import {
@@ -13,8 +15,8 @@ import {
 	createSessionApi,
 	staticTokenAuthenticator,
 } from "@harbour/runtime/http";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import type { SessionStore, StoredHost } from "@harbour/runtime/store";
+import { createSqlSessionStore, sqlPiStorage, sqlSessionStoreMigrations } from "@harbour/runtime/sql";
+import { createMemorySessionStore, type SessionStore, type StoredHost } from "@harbour/runtime/store";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -293,6 +295,69 @@ describe("a restart mid run", () => {
 		expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({
 			answer: "Answered on retry",
 		});
+	});
+
+	it("wakes a later sleeper even while another resumed session is running", async () => {
+		const store = createMemorySessionStore();
+		const now = Date.now();
+		const stored = async (id: string, wakeAt: number) => {
+			const record = {
+				id,
+				organisationId: ORG,
+				projectId: "proj",
+				agentId: "worker",
+				status: "idle" as const,
+				labels: {},
+				createdBy: ctx.actor,
+				createdAt: now,
+				updatedAt: now,
+			};
+			await store.createSession({ record, profile, aborts: 0, closed: false });
+			await store.setWake(id, wakeAt);
+		};
+		// One due now (its Harness keeps it due while it opens), one due in 300 ms.
+		await stored("00000000-0000-4000-8000-00000000000a", now - 1);
+		await stored("00000000-0000-4000-8000-00000000000b", now + 300);
+		const opened: string[] = [];
+		const { models } = createScriptedModel();
+		const service = createSessionRuntime({
+			store,
+			storage: (session) => {
+				opened.push(session.id.slice(-1));
+				return new MemoryStorage();
+			},
+			models,
+		});
+		cleanups.push(() => service.close());
+		// Hold the due session's wake at now, as a long run would.
+		const running = store.setWake;
+		store.setWake = async (sessionId, at) =>
+			running(sessionId, sessionId.endsWith("a") && at === undefined ? now - 1 : at);
+		expect(await service.resume()).toBe(1);
+		expect(opened).toEqual(["a"]);
+		await until(() => opened.length === 2, "the later sleeper to be woken");
+		expect(opened).toEqual(["a", "b"]);
+	});
+
+	it("makes every unclosed session from before wakes due once, after the upgrade", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		cleanups.push(() => db.close());
+		await applySqliteMigrations(db, sqlSessionStoreMigrations("harbour_").slice(0, 1), { table: "harbour_schema" });
+		const insert = (id: string, seq: number, closed: number) =>
+			db.run(
+				`INSERT INTO harbour_sessions (id, seq, organisation_id, project_id, agent_id, parent_session_id, created_at,
+				 closed, aborts, record, profile) VALUES (?, ?, ?, 'proj', 'worker', NULL, 1, ?, 0, ?, ?)`,
+				id,
+				seq,
+				ORG,
+				closed,
+				JSON.stringify({ id, organisationId: ORG, projectId: "proj", agentId: "worker", status: "running" }),
+				JSON.stringify(profile),
+			);
+		await insert("old-open", 1, 0);
+		await insert("old-closed", 2, 1);
+		const store = await createSqlSessionStore(db);
+		expect((await store.wakeable(Date.now())).map((session) => session.record.id)).toEqual(["old-open"]);
 	});
 
 	it("leaves idle and closed sessions alone on resume", async () => {

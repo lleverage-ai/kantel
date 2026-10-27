@@ -90,8 +90,8 @@ export interface SessionStore {
 	setWake(sessionId: SessionId, at: number | undefined): Promise<void>;
 	/** Sessions not closed whose wake is at or before `before`, earliest first. */
 	wakeable(before: number): Promise<readonly StoredSession[]>;
-	/** The earliest wake of any session not closed. */
-	nextWake(): Promise<number | undefined>;
+	/** The earliest wake after `after` of any session not closed. */
+	nextWake(after: number): Promise<number | undefined>;
 
 	submission(sessionId: SessionId, submissionId: string): Promise<StoredSubmission | undefined>;
 	/** Adds a submission; one already stored under its ID is kept. */
@@ -175,10 +175,10 @@ export function createMemorySessionStore(): SessionStore {
 				.filter((session) => !session.closed && session.wakeAt !== undefined && session.wakeAt <= before)
 				.sort((l, r) => (l.wakeAt as number) - (r.wakeAt as number) || l.sequence - r.sequence);
 		},
-		async nextWake() {
+		async nextWake(after) {
 			let next: number | undefined;
 			for (const session of sessions.values()) {
-				if (session.closed || session.wakeAt === undefined) continue;
+				if (session.closed || session.wakeAt === undefined || session.wakeAt <= after) continue;
 				if (next === undefined || session.wakeAt < next) next = session.wakeAt;
 			}
 			return next;

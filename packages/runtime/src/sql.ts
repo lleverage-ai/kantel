@@ -27,7 +27,8 @@ interface SessionRow {
 	readonly profile: string;
 }
 
-const migrations = (p: string) => [
+/** The store's migrations for table prefix `p`, in order; `createSqlSessionStore` applies them. Exported for tests. */
+export const sqlSessionStoreMigrations = (p: string) => [
 	{
 		version: 1,
 		statements: [
@@ -79,6 +80,8 @@ const migrations = (p: string) => [
 			// When the session next needs a process (`SessionStore.setWake`); null when it needs none.
 			`ALTER TABLE ${p}sessions ADD COLUMN wake_at INTEGER`,
 			`CREATE INDEX IF NOT EXISTS ${p}sessions_by_wake ON ${p}sessions (wake_at)`,
+			// Sessions from before wakes may have work cut off: each is due once, and opening it sets its real wake.
+			`UPDATE ${p}sessions SET wake_at = 0 WHERE closed = 0`,
 		],
 	},
 ];
@@ -106,7 +109,7 @@ export async function createSqlSessionStore(
 ): Promise<SessionStore> {
 	const p = options.prefix ?? "harbour_";
 	validateSqliteSchemaPrefix(p);
-	await applySqliteMigrations(db, migrations(p), { table: `${p}schema` });
+	await applySqliteMigrations(db, sqlSessionStoreMigrations(p), { table: `${p}schema` });
 
 	const readSession = async (tx: SqliteExecutor, sessionId: string) => {
 		const row = await tx.get<SessionRow>(`SELECT ${SESSION_COLUMNS} FROM ${p}sessions WHERE id = ?`, sessionId);
@@ -217,9 +220,10 @@ export async function createSqlSessionStore(
 			);
 			return rows.map(sessionOf);
 		},
-		async nextWake() {
+		async nextWake(after) {
 			const row = await db.get<{ at: number | null }>(
-				`SELECT MIN(wake_at) AS at FROM ${p}sessions WHERE closed = 0 AND wake_at IS NOT NULL`,
+				`SELECT MIN(wake_at) AS at FROM ${p}sessions WHERE closed = 0 AND wake_at > ?`,
+				after,
 			);
 			return row?.at === null || row?.at === undefined ? undefined : Number(row.at);
 		},
