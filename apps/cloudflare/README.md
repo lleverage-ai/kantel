@@ -46,8 +46,53 @@ verifies with the real provider) and the two `/__dev/` routes. It is never the d
 `pnpm --filter @harbour/cloudflare deploy:dry-run` builds the console and bundles the deployed Worker into `dist/`
 without contacting Cloudflare.
 
+## Deploy
+
+CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, on a push to main that touches the
+Worker, the console or a package, or a manual run from main. The account side (the token, the Access application, the
+VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
+
+| Name | Kind | What it is |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | secret | The deploy token, with the permissions below |
+| `CLOUDFLARE_ACCOUNT_ID` | variable | The account to deploy to |
+| `HARBOUR_HOSTNAME` | variable | The one hostname, `harbour.myslop.app`, attached as the Worker's custom domain |
+| `HARBOUR_ACCESS_TEAM_DOMAIN` | variable | The Access team domain, such as `<team>.cloudflareaccess.com` |
+| `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
+| `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
+| `HARBOUR_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
+
+Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
+--dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
+
+1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the custom domain, the Access vars, the admin
+   email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,
+   and a base config that could serve on workers.dev or a preview URL);
+2. runs the dry run, then `wrangler deploy`. On the first deploy wrangler creates the D1 database `harbour` and the
+   R2 bucket `harbour-workspaces` (its automatic provisioning, by name); later deploys find them by name;
+3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
+   `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
+
+The custom domain makes its own DNS record, and wrangler refuses to replace an existing one, so nothing else should
+create a DNS record for `HARBOUR_HOSTNAME`.
+
+### The deploy token's permissions
+
+| Scope | Permission | Why |
+| --- | --- | --- |
+| Account | Workers Scripts: Edit | Deploy the Worker, its Durable Objects and its static assets |
+| Account | D1: Edit | Create the `harbour` database on the first deploy and look it up by name after |
+| Account | Workers R2 Storage: Edit | Create the `harbour-workspaces` bucket on the first deploy and look it up by name after |
+| Account | Connectivity Directory: Bind | Bind the existing Workers VPC service (`MODELS`) |
+| Zone (myslop.app) | Workers Routes: Edit | Attach the custom domain `HARBOUR_HOSTNAME` |
+
+Cloudflare documents Workers Routes edit as what a custom domain needs; DNS edit isn't listed, so it shouldn't be
+needed. Later steps of #17 may add more, such as Containers for the container tier; each will be listed here.
+
 ## Checks
 
 `pnpm --filter @harbour/cloudflare test` runs the gateway over the in-memory stack in Node: Access tokens for the right
 team domain and AUD sign the invited person in; another AUD, another team domain, an expired token, a service token or
 an uninvited email are 401; API keys work on every API; and each API is mounted where its client expects it.
+`test/deploy.test.ts` checks the deploy config (every variable to deploy, placeholders for a dry run, malformed
+values refused, the dev environment dropped) and the Access sign-in check.

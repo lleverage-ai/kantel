@@ -9,6 +9,8 @@
 		"build:console": "pnpm --filter @harbour/console build",
 		"dev": "pnpm build:console && wrangler dev --env dev",
 		"deploy:dry-run": "pnpm build:console && wrangler deploy --dry-run --outdir dist --env=\"\"",
+		"deploy:config": "node scripts/deploy-config.ts",
+		"deploy:check-access": "node scripts/check-access.ts",
 		"typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
 		"test": "vitest run"
 	},

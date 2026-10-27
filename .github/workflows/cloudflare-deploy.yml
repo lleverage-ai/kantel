@@ -1,0 +1,155 @@
+name: Cloudflare deploy (M1-CF1)
+
+# Deploys apps/cloudflare (the `harbour` Worker: console and gateway on one hostname, behind Cloudflare Access) from
+# main, issue #17. It only deploys once Tom's setup runbook has created the secret and every variable below; until
+# then, and on every pull request, it builds the Worker and runs `wrangler deploy --dry-run`, which never contacts
+# Cloudflare.
+#
+# Read from the repository (#17, Account setup):
+#   secret   CLOUDFLARE_API_TOKEN
+#   vars     CLOUDFLARE_ACCOUNT_ID, HARBOUR_HOSTNAME, HARBOUR_ACCESS_TEAM_DOMAIN, HARBOUR_ACCESS_AUD,
+#            HARBOUR_MODELS_VPC_SERVICE_ID, HARBOUR_ADMIN_EMAIL (the first admin, invited by email)
+#
+# The token's permissions (apps/cloudflare/README.md explains each):
+#   Account  Workers Scripts: Edit            deploy the Worker, its Durable Objects and static assets
+#   Account  D1: Edit                         create the `harbour` database on the first deploy, find it after
+#   Account  Workers R2 Storage: Edit         create the `harbour-workspaces` bucket on the first deploy, find it after
+#   Account  Connectivity Directory: Bind     bind the Workers VPC service to CLIProxyAPI
+#   Zone     Workers Routes: Edit (myslop.app)  attach the custom domain HARBOUR_HOSTNAME
+#
+# The first real deploy creates the D1 database and R2 bucket if they're missing (wrangler's automatic provisioning,
+# by name); later deploys find them by name. A dry run creates nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/cloudflare/**"
+      - "apps/console/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/cloudflare-deploy.yml"
+  pull_request:
+    paths:
+      - "apps/cloudflare/**"
+      - "apps/console/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/cloudflare-deploy.yml"
+  workflow_dispatch: {}
+
+# One deploy at a time, never cancelled half way; superseded pull request runs are cancelled.
+concurrency:
+  group: cloudflare-deploy-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build, dry run, and deploy when set up
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      # Non-secret IDs. Empty until the runbook sets them.
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      HARBOUR_HOSTNAME: ${{ vars.HARBOUR_HOSTNAME }}
+      HARBOUR_ACCESS_TEAM_DOMAIN: ${{ vars.HARBOUR_ACCESS_TEAM_DOMAIN }}
+      HARBOUR_ACCESS_AUD: ${{ vars.HARBOUR_ACCESS_AUD }}
+      HARBOUR_MODELS_VPC_SERVICE_ID: ${{ vars.HARBOUR_MODELS_VPC_SERVICE_ID }}
+      HARBOUR_ADMIN_EMAIL: ${{ vars.HARBOUR_ADMIN_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deploy only from main (a push or a manual run), and only once the secret and every variable exist.
+      # The token itself reaches only the deploy step; this step learns whether it is set, nothing more.
+      - name: Deploy or dry run
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+        run: |
+          missing=()
+          [ "$HAS_TOKEN" = "true" ] || missing+=("CLOUDFLARE_API_TOKEN (secret)")
+          for name in CLOUDFLARE_ACCOUNT_ID HARBOUR_HOSTNAME HARBOUR_ACCESS_TEAM_DOMAIN HARBOUR_ACCESS_AUD \
+            HARBOUR_MODELS_VPC_SERVICE_ID HARBOUR_ADMIN_EMAIL; do
+            value="${!name}"
+            [ -n "${value//[[:space:]]/}" ] || missing+=("$name")
+          done
+          if [ "$EVENT" = "pull_request" ]; then
+            mode=dry-run; why="pull requests never deploy"
+          elif [ "$REF" != "refs/heads/main" ]; then
+            mode=dry-run; why="only main deploys"
+          elif [ "${#missing[@]}" -gt 0 ]; then
+            mode=dry-run; why="not set up yet, missing: ${missing[*]}"
+            # Some set but not all is most likely a runbook step that didn't finish.
+            if [ "${#missing[@]}" -lt 7 ]; then echo "::warning::Partly set up; still missing: ${missing[*]}"; fi
+          else
+            mode=deploy; why="the secret and every variable are set"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Mode: $mode ($why)"
+          echo "**Cloudflare deploy:** $mode ($why)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # pnpm comes from corepack at the version pinned in package.json's packageManager field, as in ci.yml.
+      - name: Enable corepack
+        run: |
+          npm install --global corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      - name: Locate the pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the console
+        run: pnpm --filter @harbour/cloudflare build:console
+
+      # Placeholders stand in for unset variables in a dry run; deploy mode refuses to write a config without them.
+      - name: Write the deploy config
+        working-directory: apps/cloudflare
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: node scripts/deploy-config.ts --mode "$MODE"
+
+      # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.
+      - name: wrangler deploy --dry-run
+        working-directory: apps/cloudflare
+        run: pnpm exec wrangler deploy --dry-run --config wrangler.deploy.json --outdir dist
+
+      - name: wrangler deploy
+        if: steps.mode.outputs.mode == 'deploy'
+        working-directory: apps/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm exec wrangler deploy --config wrangler.deploy.json
+
+      # An anonymous visitor must be sent to Access sign-in on every path, or the deploy fails.
+      - name: Anonymous requests go to Access sign-in
+        if: steps.mode.outputs.mode == 'deploy'
+        working-directory: apps/cloudflare
+        run: >
+          node scripts/check-access.ts
+          --host "$HARBOUR_HOSTNAME"
+          --team-domain "$HARBOUR_ACCESS_TEAM_DOMAIN"
+          --timeout 300
+
+      - name: Deployed
+        if: steps.mode.outputs.mode == 'deploy'
+        run: echo "Deployed to https://$HARBOUR_HOSTNAME" >> "$GITHUB_STEP_SUMMARY"

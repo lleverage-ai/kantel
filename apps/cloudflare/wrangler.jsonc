@@ -1,7 +1,7 @@
 {
 	// Harbour M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
-	// behind Cloudflare Access. The deploy workflow adds the custom domain and the account's IDs at deploy time; nothing
-	// here names an account, a zone or a hostname.
+	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the custom domain, the
+	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour",
 	"main": "src/index.ts",
@@ -22,6 +22,10 @@
 		"bindings": [{ "name": "STACK", "class_name": "HarbourStack" }]
 	},
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] }],
+	// Named but not given IDs: the first real deploy creates them (wrangler's automatic provisioning), later deploys find
+	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Step 2 of #17 uses them.
+	"d1_databases": [{ "binding": "DB", "database_name": "harbour" }],
+	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces" }],
 	"vars": {
 		// The Access team domain (such as harbour.cloudflareaccess.com) and the Access application's AUD tag. Empty means
 		// people cannot sign in; API keys still work. The deploy workflow fills both from repository variables.
@@ -47,6 +51,9 @@
 			"durable_objects": {
 				"bindings": [{ "name": "STACK", "class_name": "HarbourStack" }]
 			},
+			// Local only: wrangler dev simulates both.
+			"d1_databases": [{ "binding": "DB", "database_name": "harbour-dev" }],
+			"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-dev-workspaces" }],
 			"vars": {
 				"HARBOUR_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
 				"HARBOUR_ACCESS_AUD": "harbour-dev-aud",
