@@ -15,7 +15,7 @@ name: Cloudflare deploy (M1-CF1)
 #   Account  D1: Edit                         create the `harbour` database on the first deploy, find it after
 #   Account  Workers R2 Storage: Edit         create the `harbour-workspaces` bucket on the first deploy, find it after
 #   Account  Connectivity Directory: Bind     bind the Workers VPC service to CLIProxyAPI
-#   Zone     Workers Routes: Edit (myslop.app)  attach the custom domain HARBOUR_HOSTNAME
+#   Zone     Workers Routes: Edit (myslop.app)  add the zone route HARBOUR_HOSTNAME/*
 #
 # The first real deploy creates the D1 database and R2 bucket if they're missing (wrangler's automatic provisioning,
 # by name); later deploys find them by name. A dry run creates nothing.

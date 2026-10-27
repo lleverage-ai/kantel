@@ -3,7 +3,7 @@
  * the console, the gateway and the health check alike. Anything else (a 200, a 401 from the Worker itself, a redirect
  * to another host) means Access isn't in front of the Worker, and fails the deploy.
  *
- * A new custom domain can take a minute or two to get its certificate, so connection errors and 5xx answers are
+ * A new route or Worker version can take a minute or two to reach every edge, so connection errors and 5xx answers are
  * retried until `--timeout` seconds have passed. A wrong answer is not retried.
  *
  * Usage: node scripts/check-access.ts --host harbour.myslop.app --team-domain <team>.cloudflareaccess.com [--timeout 300]
@@ -45,7 +45,7 @@ export function accessVerdict(status: number, location: string | null, teamDomai
 async function checkOnce(url: string, teamDomain: string): Promise<AccessVerdict> {
 	const response = await fetch(url, { redirect: "manual", headers: { "user-agent": "harbour-deploy-check" } });
 	await response.body?.cancel();
-	// A new custom domain can answer 5xx (such as 522) until it is fully set up: retried like a connection error.
+	// A new route can answer 5xx (such as 522) until it has propagated: retried like a connection error.
 	if (response.status >= 500) throw new Error(`HTTP ${response.status}`);
 	return accessVerdict(response.status, response.headers.get("location"), teamDomain);
 }
