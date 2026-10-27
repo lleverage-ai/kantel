@@ -1,0 +1,401 @@
+/* The vault approval card. A pending card is the full request; a settled one folds to one quiet row. */
+
+.hb-vault-card {
+	/* Local sizes, candidates for tokens: the countdown bar's thickness and the code block's skeleton height. */
+	--hb-vault-bar: var(--hb-space-1);
+	--hb-vault-code-height: calc(var(--hb-text-display) * var(--hb-leading-tight) + var(--hb-space-6) * 2);
+
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	width: 100%;
+	max-width: var(--hb-card-width);
+	min-width: 0;
+	padding: var(--hb-space-7);
+	border: var(--hb-hairline) solid var(--hb-status-approval-line);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-vault-card p {
+	margin: 0;
+}
+
+.hb-vault-muted {
+	color: var(--hb-text-muted);
+}
+
+/* Header: the vault mark, what is asked, and which vault, at the right. */
+.hb-vault-card-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	min-width: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-card-mark {
+	flex: none;
+	color: var(--hb-status-approval);
+}
+
+.hb-vault-card-ask {
+	color: var(--hb-status-approval);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-vault-card-host {
+	min-width: 0;
+	margin-left: auto;
+	color: var(--hb-text-muted);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+	text-align: right;
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-card-intro {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	min-width: 0;
+}
+
+.hb-vault-card-title {
+	margin: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-card-why {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-card-note {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-card .hb-field-value code {
+	overflow-wrap: anywhere;
+}
+
+/* The binding code: the one thing to compare with the vault page. */
+.hb-vault-code {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+	padding: var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+}
+
+.hb-vault-code-label {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-vault-code-rule {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-code-row {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	margin-top: var(--hb-space-3);
+}
+
+.hb-vault-code-value {
+	min-width: 0;
+	color: var(--hb-text);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-display);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-card-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+}
+
+.hb-vault-open,
+.hb-vault-open:hover,
+.hb-vault-open:visited {
+	color: var(--hb-accent-fg);
+	text-decoration: none;
+}
+
+.hb-vault-open:hover {
+	background: var(--hb-accent-hover);
+}
+
+/* The countdown: a slim bar scaled by --hb-vault-progress (1 to 0) and the time left, amber once urgent. */
+.hb-vault-countdown {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-5);
+	min-width: 0;
+}
+
+.hb-vault-countdown-bar {
+	flex: 1;
+	height: var(--hb-vault-bar);
+	overflow: hidden;
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-border-strong);
+}
+
+.hb-vault-countdown-fill {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border-radius: inherit;
+	background: var(--hb-text-faint);
+	transform: scaleX(var(--hb-vault-progress, 1));
+	transform-origin: left center;
+}
+
+.hb-vault-countdown-text {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-vault-countdown-urgent .hb-vault-countdown-fill {
+	background: var(--hb-status-approval);
+}
+
+.hb-vault-countdown-urgent .hb-vault-countdown-text {
+	color: var(--hb-status-approval);
+}
+
+.hb-vault-card-closing {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+/* Settled: one quiet row. */
+.hb-vault-card-settled {
+	gap: 0;
+	padding: var(--hb-space-4) var(--hb-space-6);
+	border-color: var(--hb-border);
+}
+
+.hb-vault-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	min-width: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-vault-row-icon {
+	flex: none;
+}
+
+.hb-vault-tone-done {
+	color: var(--hb-status-done);
+}
+
+.hb-vault-tone-error {
+	color: var(--hb-status-error);
+}
+
+.hb-vault-tone-faint {
+	color: var(--hb-text-faint);
+}
+
+.hb-vault-row-text {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-row-line {
+	color: var(--hb-text-muted);
+}
+
+.hb-vault-row-detail {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-vault-row-code {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+}
+
+/* The Terms disclosure joins the row: its button sits at the end, its detail wraps onto a full-width line below. */
+.hb-vault-row > .hb-vault-terms {
+	display: contents;
+}
+
+.hb-vault-terms > .hb-disclosure-summary {
+	flex: none;
+	width: auto;
+	margin-left: 0;
+	font-size: var(--hb-text-xs);
+}
+
+.hb-vault-terms > .hb-disclosure-detail {
+	flex-basis: 100%;
+	min-width: 0;
+	padding: var(--hb-space-4) 0 var(--hb-space-2) calc(var(--hb-icon-md) + var(--hb-space-4));
+}
+
+/* Loading: the pending card's shape. */
+.hb-vault-card-loading {
+	gap: var(--hb-space-6);
+	border-color: var(--hb-border);
+}
+
+.hb-vault-skeleton-code {
+	display: block;
+	height: var(--hb-vault-code-height);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+}
+
+/* Narrow: the actions stack at full width and the code wraps. */
+@media (max-width: 480px) {
+	.hb-vault-card-pending {
+		padding: var(--hb-space-6);
+	}
+
+	.hb-vault-card-actions {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.hb-vault-card-actions > .hb-button {
+		width: 100%;
+	}
+
+	.hb-vault-code-row {
+		flex-wrap: wrap;
+	}
+
+	.hb-vault-card-host {
+		flex-basis: 100%;
+		margin-left: 0;
+		text-align: left;
+	}
+
+	.hb-vault-terms > .hb-disclosure-detail {
+		padding-left: 0;
+	}
+}
+
+/* The vault page's binding-code picker. */
+.hb-code-picker {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-code-picker-label {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-code-picker-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-code-option {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	min-height: calc(var(--hb-control-lg) + var(--hb-space-6));
+	padding: var(--hb-space-4) var(--hb-space-7) var(--hb-space-4) var(--hb-space-5);
+	border: var(--hb-hairline) solid var(--hb-border-strong);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-raised);
+	color: var(--hb-text);
+	font: inherit;
+	cursor: pointer;
+	transition:
+		background-color var(--hb-duration-fast) var(--hb-ease),
+		border-color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-code-option:hover:not(:disabled) {
+	background: var(--hb-active);
+}
+
+.hb-code-option[aria-checked="true"] {
+	border-color: var(--hb-accent);
+	background: var(--hb-accent-soft);
+}
+
+.hb-code-option:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.hb-code-picker-invalid .hb-code-option[aria-checked="true"] {
+	border-color: var(--hb-status-error-line);
+	background: var(--hb-status-error-soft);
+}
+
+/* Holds the tick's place so options don't shift when one is picked. */
+.hb-code-option-mark {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-icon-sm);
+	color: var(--hb-accent-text);
+}
+
+.hb-code-picker-invalid .hb-code-option-mark {
+	color: var(--hb-status-error);
+}
+
+.hb-code-option-value {
+	min-width: 0;
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-display);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	overflow-wrap: anywhere;
+}
+
+.hb-code-picker-error {
+	margin: 0;
+	color: var(--hb-status-error);
+	font-size: var(--hb-text-xs);
+}
