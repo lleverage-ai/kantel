@@ -22,8 +22,9 @@ describe("the workspace components", () => {
 		);
 	});
 
-	it.each(sources)("$name imports only React and the library itself", ({ text }) => {
-		for (const specifier of specifiers(text)) expect(specifier).toMatch(/^(react|\.\.?\/)/);
+	it.each(sources)("$name imports only React, the Markdown parser and the library itself", ({ text }) => {
+		for (const specifier of specifiers(text))
+			expect(specifier).toMatch(/^(react|react-markdown|remark-gfm|\.\.?\/[\w./-]+)$/);
 	});
 
 	it.each(sources)("$name makes no requests and never touches a sandbox", ({ text }) => {

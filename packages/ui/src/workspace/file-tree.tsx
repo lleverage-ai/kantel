@@ -5,6 +5,7 @@ import {
 	memo,
 	type ReactNode,
 	useCallback,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -12,7 +13,14 @@ import {
 import { ChevronRightIcon, FileIcon, XCircleIcon } from "../primitives/icons.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
-import { type DirectoryState, formatBytes, nextFocus, type TreeRow, visibleRows } from "./workspace-model.ts";
+import {
+	type DirectoryState,
+	focusAfterRemoval,
+	formatBytes,
+	nextFocus,
+	type TreeRow,
+	visibleRows,
+} from "./workspace-model.ts";
 import "./file-tree.css";
 
 export type FileTreeProps = {
@@ -282,6 +290,26 @@ export function FileTree({
 		const path = event.currentTarget.dataset.path;
 		if (path !== undefined) setFocusedPath(path);
 	}, []);
+
+	// When the focused row goes, as a "Loading" row does once its listing arrives, focus moves to the row that takes its
+	// place, so the arrow keys keep working. Only when the tree had focus: it never takes focus from anything else.
+	// Whether it had focus is read before the rows change, since a removed element's focus falls to the body.
+	const hadFocus = useRef(false);
+	const previousRows = useRef(rows);
+	if (previousRows.current !== rows) {
+		const active = typeof document === "undefined" ? null : document.activeElement;
+		hadFocus.current = active !== null && treeRef.current?.contains(active) === true;
+	}
+	useLayoutEffect(() => {
+		const previous = previousRows.current;
+		previousRows.current = rows;
+		if (previous === rows || focusedPath === undefined || paths.has(focusedPath)) return;
+		const replacement = focusAfterRemoval(previous, rows, focusedPath);
+		const active = document.activeElement;
+		const lost = active === null || active === document.body;
+		if (replacement !== undefined && hadFocus.current && lost) focusPath(replacement);
+		else setFocusedPath(replacement);
+	}, [rows, paths, focusedPath, focusPath]);
 
 	const rootState = directories.get(root);
 	if (rootState === undefined || rootState.status === "loading") return <TreeSkeleton />;

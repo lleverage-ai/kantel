@@ -3,13 +3,13 @@ import {
 	type DirectoryState,
 	entryName,
 	fileKind,
+	focusAfterRemoval,
 	formatBytes,
 	isNote,
 	nextFocus,
 	noteTitle,
 	parentPath,
 	placeholderPath,
-	plainTaskMarks,
 	sortEntries,
 	type TreeRow,
 	textLines,
@@ -307,19 +307,27 @@ describe("textLines", () => {
 	});
 });
 
-describe("plainTaskMarks", () => {
-	it("turns task boxes into marks, outside code only", () => {
-		const note = ["- [x] Staging", "  * [ ] Half", "1. [X] One", "```", "- [ ] in code", "```", "- [link](x)"].join(
-			"\n",
-		);
-		expect(plainTaskMarks(note).split("\n")).toEqual([
-			"- ☑ Staging",
-			"  * ☐ Half",
-			"1. ☑ One",
-			"```",
-			"- [ ] in code",
-			"```",
-			"- [link](x)",
-		]);
+describe("focusAfterRemoval", () => {
+	const open = new Set(["docs"]);
+	const loading = new Map(tree).set("docs", { status: "loading" });
+	const before = visibleRows(loading, open);
+	const placeholder = placeholderPath("docs", "loading");
+
+	it("moves from a Loading row to the first file that arrives", () => {
+		expect(focusAfterRemoval(before, visibleRows(tree, open), placeholder)).toBe("docs/runbook.md");
+	});
+
+	it("moves to the directory when its listing failed or came back empty", () => {
+		const failed = new Map(tree).set("docs", { status: "error", message: "No access" });
+		expect(focusAfterRemoval(before, visibleRows(failed, open), placeholder)).toBe(placeholderPath("docs", "error"));
+		const empty = new Map(tree).set("docs", ready());
+		expect(focusAfterRemoval(before, visibleRows(empty, open), placeholder)).toBe(placeholderPath("docs", "empty"));
+		expect(focusAfterRemoval(before, visibleRows(tree, new Set()), placeholder)).toBe("docs");
+	});
+
+	it("takes the row now in a root row's place", () => {
+		const rows = visibleRows(tree, new Set());
+		const without = new Map(tree).set("", ready(file("README.md", 2048), dir("src"), file("package.json")));
+		expect(focusAfterRemoval(rows, visibleRows(without, new Set()), "docs")).toBe("src");
 	});
 });

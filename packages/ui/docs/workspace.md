@@ -139,9 +139,11 @@ No timers; Copy holds a 1.5 second timer only after a copy.
 
 **For** a Markdown note in the workspace: release notes, runbooks, what the agent wrote down. A header with the
 note's name without its extension, its folder and "Updated" with a `RelativeTime` when `updatedAt` is given, an
-optional Back button and an `actions` slot; then the note rendered by the transcript's `Markdown` component (GitHub
-flavoured, raw HTML skipped, links open in a new tab) at the transcript's reading measure (`--hb-content-width`),
-scrolling within the viewer.
+optional Back button and an `actions` slot; then the note, in the transcript's Markdown styles (GitHub flavoured,
+raw HTML skipped, links open in a new tab), at the transcript's reading measure (`--hb-content-width`), scrolling
+within the viewer. It is rendered by `note-markdown.tsx`, which parses the note as one document: the transcript's
+`Markdown` splits at blank lines so streaming re-parses only the last block, which would leave a reference link
+defined further down unresolved in a stored note.
 
 Props: `path`, `state` (`NoteViewState`), `onBack`, `actions`.
 
@@ -152,10 +154,9 @@ empty", for a note that is blank or only whitespace).
 
 **Keyboard and accessibility:** the viewer is an `article` named by the title. The note's body is a region and one
 Tab stop, for scrolling; links and code blocks inside it are reachable by Tab as in the transcript. Two things
-differ from the transcript's `Markdown`, to pass the accessibility gates without changing it: a task list's boxes
-(`- [ ]`, `- [x]`) show as the marks ☐ and ☑ (`plainTaskMarks`), because `Markdown` renders them as unlabelled
-checkboxes; and a wide table scrolls with the note, which takes focus, rather than in a box of its own that a
-keyboard can't reach. Both would be better fixed in `Markdown` itself.
+differ from the transcript: a task's box is a disabled checkbox named "Done" or "Not done", where the transcript's
+is unnamed; and a wide table scrolls with the note, which takes focus, rather than in a box of its own that a
+keyboard can't reach. The transcript's `Markdown` has both gaps.
 
-**Cost:** `Markdown` parses the note once per text, block by block. `RelativeTime` reads the page's shared clock
+**Cost:** the note is parsed once per text, as one document. `RelativeTime` reads the page's shared clock
 once a minute, only while the note was updated under a day ago.

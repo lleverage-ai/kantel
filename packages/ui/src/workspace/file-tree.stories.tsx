@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../primitives/surface.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
@@ -128,6 +128,57 @@ export const InlineLoading: Story = () => (
 	>
 		<div className="hb-story-tree-frame">
 			<TreeDemo directories={projectWithLoadingDirectory} open={["src"]} />
+		</div>
+	</Sheet>
+);
+
+/** A host that lists each directory the first time it opens, a second later, as the read API would answer. */
+function ListingDemo() {
+	const [directories, setDirectories] = useState<ReadonlyMap<string, DirectoryState>>(
+		() => new Map([["", projectDirectories.get("") ?? { status: "loading" }]]),
+	);
+	const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+	const [selected, setSelected] = useState<string>();
+	const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+	useEffect(() => () => timers.current.forEach(clearTimeout), []);
+	const toggle = useCallback((path: string) => {
+		setExpanded((current) => {
+			const next = new Set(current);
+			if (next.has(path)) next.delete(path);
+			else next.add(path);
+			return next;
+		});
+		setDirectories((current) => {
+			if (current.has(path)) return current;
+			timers.current.push(
+				setTimeout(() => {
+					setDirectories((now) =>
+						new Map(now).set(path, projectDirectories.get(path) ?? { status: "ready", entries: [] }),
+					);
+				}, 1000),
+			);
+			return new Map(current).set(path, { status: "loading" });
+		});
+	}, []);
+	return (
+		<FileTree
+			label="Files"
+			directories={directories}
+			expanded={expanded}
+			selectedPath={selected}
+			onToggle={toggle}
+			onSelect={setSelected}
+		/>
+	);
+}
+
+export const ListingOnOpen: Story = () => (
+	<Sheet
+		title="File tree: listing as you open"
+		intro="Each directory is listed the first time it opens, a second later. Focus a Loading row with the arrow keys: when the files arrive, focus moves to the first of them."
+	>
+		<div className="hb-story-tree-frame">
+			<ListingDemo />
 		</div>
 	</Sheet>
 );

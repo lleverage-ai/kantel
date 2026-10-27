@@ -248,6 +248,30 @@ export function nextFocus(
 	}
 }
 
+/**
+ * Where focus goes when the focused row is gone, such as a "Loading" row once its listing arrives: the first child of
+ * the directory it was under, if that is open with rows, or else the directory itself; for a row at the root, the
+ * row now in its place. `previous` is the rows the path was in.
+ */
+export function focusAfterRemoval(
+	previous: readonly TreeRow[],
+	next: readonly TreeRow[],
+	path: string,
+): string | undefined {
+	const index = previous.findIndex((row) => row.path === path);
+	const gone = previous[index];
+	if (gone === undefined) return next[0]?.path;
+	for (let at = index - 1; at >= 0; at--) {
+		const parent = previous[at];
+		if (parent === undefined || parent.depth >= gone.depth) continue;
+		const found = next.findIndex((row) => row.path === parent.path);
+		if (found === -1) break;
+		const child = next[found + 1];
+		return child !== undefined && child.depth > parent.depth ? child.path : parent.path;
+	}
+	return (next[Math.min(index, next.length - 1)] ?? next[0])?.path;
+}
+
 /** How a file is best shown: rendered as a note, as text, as an image, or not at all. */
 export type WorkspaceFileKind = "markdown" | "text" | "image" | "binary";
 
@@ -360,29 +384,4 @@ export function textLines(text: string): string[] {
 	const lines = text.split(/\r\n|\r|\n/);
 	if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
 	return lines;
-}
-
-/**
- * A note's Markdown with its task-list boxes as plain marks ("☐", "☑") rather than checkboxes. The Markdown
- * component renders GitHub's `- [ ]` as an unlabelled, disabled checkbox, which a screen reader announces as an
- * unnamed form control; in a read-only note a mark says the same thing. Fenced code is left as it is.
- */
-export function plainTaskMarks(markdown: string): string {
-	let fence: string | undefined;
-	return markdown
-		.split("\n")
-		.map((line) => {
-			const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-			if (marker !== undefined) {
-				if (fence === undefined) fence = marker;
-				else if (marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = undefined;
-				return line;
-			}
-			if (fence !== undefined) return line;
-			return line.replace(
-				/^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\](?=\s)/,
-				(_match, lead: string, mark: string) => `${lead}${mark === " " ? "☐" : "☑"}`,
-			);
-		})
-		.join("\n");
 }

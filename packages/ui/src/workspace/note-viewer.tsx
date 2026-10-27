@@ -2,9 +2,9 @@ import { type ReactNode, useId } from "react";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { RelativeTime } from "../primitives/time.tsx";
-import { Markdown } from "../session/markdown.tsx";
+import { NoteMarkdown } from "./note-markdown.tsx";
 import { ViewerHeader, ViewerScroll } from "./viewer-header.tsx";
-import { noteTitle, plainTaskMarks } from "./workspace-model.ts";
+import { noteTitle } from "./workspace-model.ts";
 import "./note-viewer.css";
 
 /** What the host has for the note: its Markdown, or why there is none to show. */
@@ -52,7 +52,7 @@ function NoteBody({ title, state }: { title: string; state: NoteViewState }) {
 			) : (
 				<ViewerScroll label={`Contents of ${title}`} className="hb-note-viewer-scroll">
 					<div className="hb-note-viewer-measure">
-						<Markdown text={plainTaskMarks(state.markdown)} />
+						<NoteMarkdown text={state.markdown} />
 					</div>
 				</ViewerScroll>
 			);
