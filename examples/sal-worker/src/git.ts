@@ -73,6 +73,23 @@ const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? 
 const under = (path: string, root: string) => root === "" || path === root || path.startsWith(`${root}/`);
 /** More paths than this through symlinks (files and links alike) is not a skill source; the rest are left out. */
 const MAX_LINKED_PATHS = 100_000;
+/** Linux's limit on symlinks followed in one path lookup (`MAXSYMLINKS`): past it a checkout's file cannot be opened. */
+const MAX_LINKS_ON_A_PATH = 40;
+
+/** The paths of `sorted` below directory `dir`, found by binary search. */
+function below(sorted: readonly string[], dir: string): string[] {
+	const prefix = `${dir}/`;
+	let low = 0;
+	let high = sorted.length;
+	while (low < high) {
+		const mid = (low + high) >>> 1;
+		if (sorted[mid]! < prefix) low = mid + 1;
+		else high = mid;
+	}
+	const out: string[] = [];
+	for (let index = low; index < sorted.length && sorted[index]!.startsWith(prefix); index++) out.push(sorted[index]!);
+	return out;
+}
 
 /** A root path as given (`.`, `./x`, `x/`, `.pi/skills`) as a repository path: `""` for the whole tree. */
 export function rootPath(path: string): string {
@@ -144,19 +161,25 @@ export function readTree(
 	for (const path of regular.keys()) if (inScope(path)) files.set(path, path);
 	// Each queued link carries the links followed to reach it, by their place in the tree. A target holding one of them
 	// would reach it again, endlessly: that is a loop, however the path to it was spelt.
-	const queue: { virtual: string; real: string; chain: readonly string[] }[] = linkEntries
+	const queue: ({ virtual: string; real: string; chain: readonly string[] } | undefined)[] = linkEntries
 		.map((entry) => entry.path)
 		.filter(inScope)
 		.map((path) => ({ virtual: path, real: path, chain: [] }));
-	const regularPaths = [...regular.keys()];
-	const linkPaths = [...links.keys()];
+	const regularPaths = [...regular.keys()].sort();
+	const linkPaths = [...links.keys()].sort();
 	// Every path a link adds counts, nested links included, so links to links to links cannot grow without bound.
 	let linkedPaths = 0;
 	for (let next = 0; next < queue.length; next++) {
 		const { virtual: link, real, chain } = queue[next]!;
+		queue[next] = undefined;
 		const target = canonical(real, links);
 		if (target === undefined) {
 			problems.push({ path: link, reason: "a symlink that leaves the repository or loops" });
+			continue;
+		}
+		if (chain.length >= MAX_LINKS_ON_A_PATH) {
+			// A checkout could not open the file either: the system follows no more links in one path.
+			problems.push({ path: link, reason: `more than ${MAX_LINKS_ON_A_PATH} symlinks on the way` });
 			continue;
 		}
 		const followed = [...chain, real];
@@ -171,8 +194,8 @@ export function readTree(
 			files.set(link, target);
 			continue;
 		}
-		const inside = regularPaths.filter((path) => path.startsWith(`${target}/`));
-		const nested = linkPaths.filter((path) => path.startsWith(`${target}/`));
+		const inside = below(regularPaths, target);
+		const nested = below(linkPaths, target);
 		if (inside.length === 0 && nested.length === 0) {
 			problems.push({ path: link, reason: `a symlink to ${target}, which is not in the commit` });
 			continue;
