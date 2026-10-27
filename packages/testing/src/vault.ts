@@ -15,10 +15,12 @@ import {
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	CANARY_SECRET,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	containsCanary,
 	contextFor,
@@ -46,6 +48,45 @@ const human = contextFor(actors.human("approver-1"), ORG, PROJECT);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG, PROJECT);
 const otherAgent = contextFor(actors.agent("agent-2", "session-2"), ORG, PROJECT);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
+/** The runtime's session-end hook calls the teardown with a system context in the session's organisation. */
+const sessionEnd = contextFor(actors.system("session-end"), ORG);
+
+// Project access (settled question 7). `human` is an organisation-wide admin; these hold roles on one project only.
+const OTHER_PROJECT = "proj-b";
+const projectOperator = contextFor(actors.human("operator-a"), ORG, PROJECT);
+const projectAdmin = contextFor(actors.human("admin-a"), ORG, PROJECT);
+/** Claims this project in its context but holds operator on the other project only. */
+const outsideOperator = contextFor(actors.human("operator-b"), ORG, PROJECT);
+/** Claims this project in its context but holds admin on the other project only. */
+const outsideAdmin = contextFor(actors.human("admin-b"), ORG, PROJECT);
+/** An agent whose session belongs to the other project, claiming this one. */
+const foreignAgent = contextFor(actors.agent("agent-3", "session-3"), ORG, PROJECT);
+/** An agent in this project whose session the project-access case closes. */
+const closingAgent = contextFor(actors.agent("agent-4", "session-4"), ORG, PROJECT);
+/** An agent in a child session of `agent`'s session. */
+const childAgent = contextFor(actors.agent("agent-5", "session-5"), ORG, PROJECT);
+
+/** Gives every actor the cases use its role, and records every agent session, in `deps.tenancy`. */
+function seedTenancy(deps: ConformanceDeps): void {
+	const tenancy = deps.tenancy;
+	tenancy.bind(human.actor, ORG, "admin");
+	tenancy.bind(outsider.actor, OTHER_ORG, "admin");
+	tenancy.bind(projectOperator.actor, ORG, "operator", PROJECT);
+	tenancy.bind(projectAdmin.actor, ORG, "admin", PROJECT);
+	tenancy.bind(outsideOperator.actor, ORG, "operator", OTHER_PROJECT);
+	tenancy.bind(outsideAdmin.actor, ORG, "admin", OTHER_PROJECT);
+	tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	tenancy.session({ id: "session-2", organisationId: ORG, projectId: PROJECT, agentId: "agent-2" });
+	tenancy.session({ id: "session-3", organisationId: ORG, projectId: OTHER_PROJECT, agentId: "agent-3" });
+	tenancy.session({ id: "session-4", organisationId: ORG, projectId: PROJECT, agentId: "agent-4" });
+	tenancy.session({
+		id: "session-5",
+		organisationId: ORG,
+		projectId: PROJECT,
+		agentId: "agent-5",
+		parentSessionId: "session-1",
+	});
+}
 
 function putGithubToken(vault: Vault, withValue = true): Promise<VaultItem> {
 	return vault.putItem(human, {
@@ -100,18 +141,400 @@ async function grantCount(vault: Vault, ctx: CallContext = human): Promise<numbe
 	return (await vault.listGrants(ctx)).items.length;
 }
 
+/** Proposes as `ctx` and has `human` approve it; returns the grant's ID. */
+async function approvedGrant(vault: Vault, ctx: CallContext, terms: ProposalTerms): Promise<string> {
+	const proposal = await vault.propose(ctx, terms);
+	return (await vault.decide(human, approval(proposal))).grantId!;
+}
+
+/** This project's records: an item, a policy, a pending proposal, an active grant and a use, all for session-1. */
+async function projectRecords(vault: Vault) {
+	const item = await putGithubToken(vault);
+	const policy = await vault.putPolicy(human, {
+		itemId: item.id,
+		selector: { organisationId: ORG, projectId: PROJECT },
+		route: { host: HOST, methods: ["GET"], pathPrefix: "/user" },
+	});
+	const pending = await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }));
+	const grantId = await approvedGrant(vault, agent, termsFor(item.id, ["GET"], {}));
+	await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+	return { item, policy, pending, grantId };
+}
+
 export function createVaultConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: VaultConformanceProvider;
+	/** Adds the `project access:` cases; see `ConformanceOptions.projectAccess`. */
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (name: string, body: (vault: Vault, deps: ConformanceDeps) => Promise<void>): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject.vault, deps));
 		},
 	});
+
+	/** Runs each call in turn and asserts that project access refuses it, audited once under its operation. */
+	async function assertEachDenied(
+		deps: ConformanceDeps,
+		calls: readonly (readonly [operation: string, call: () => Promise<unknown>])[],
+		label: string,
+	): Promise<void> {
+		for (const [operation, call] of calls) {
+			await assertAccessDenied(assert, deps, call(), { operation, message: `${operation} by ${label} is refused` });
+		}
+	}
+
+	/** Asserts that `projectRecords` are as they were and that the vault audited nothing since `vaultEvents`. */
+	async function assertUnchanged(
+		vault: Vault,
+		deps: ConformanceDeps,
+		records: Awaited<ReturnType<typeof projectRecords>>,
+		vaultEvents: number,
+	): Promise<void> {
+		assert.strictEqual(vaultAudits(deps), vaultEvents, "the vault audited no change");
+		assert.strictEqual((await vault.getProposal(human, records.pending.id)).status, "pending", "still pending");
+		assert.strictEqual((await vault.getGrant(human, records.grantId)).status, "active", "the grant is active");
+		const policies = (await vault.listPolicies(human)).items;
+		assert.strictEqual(policies.length, 1, "no policy was added");
+		assert.strictEqual(policies[0]?.revokedAt, undefined, "the policy is not revoked");
+		assert.strictEqual((await vault.listItems(human)).items.length, 1, "no item was added");
+		assert.strictEqual((await vault.listProposals(human)).items.length, 2, "no proposal was added");
+		assert.strictEqual(
+			(await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow,
+			true,
+			"egress under the grant still works",
+		);
+	}
+
+	const projectAccessCases: ConformanceCase[] = [
+		test("project access: refuses an operator outside the project every change and read, and changes nothing", async (vault, deps) => {
+			const records = await projectRecords(vault);
+			const { item, policy, pending, grantId } = records;
+			const before = vaultAudits(deps);
+			const ctx = outsideOperator;
+			await assertEachDenied(
+				deps,
+				[
+					["vault.getItem", () => vault.getItem(ctx, item.id)],
+					["vault.propose", () => vault.propose(ctx, termsFor(item.id, ["GET"], { maxUses: 1 }))],
+					["vault.propose", () => vault.propose(ctx, secretTerms)],
+					["vault.getProposal", () => vault.getProposal(ctx, pending.id)],
+					["vault.listProposals", () => vault.listProposals(ctx, { sessionId: "session-1" })],
+					["vault.approvalView", () => vault.approvalView(ctx, pending.id)],
+					["vault.decide", () => vault.decide(ctx, approval(pending))],
+					["vault.decide", () => vault.decide(ctx, { proposalId: pending.id, outcome: "deny" })],
+					["vault.withdraw", () => vault.withdraw(ctx, pending.id)],
+					["vault.waitForOutcome", () => vault.waitForOutcome(ctx, pending.id)],
+					["vault.getGrant", () => vault.getGrant(ctx, grantId)],
+					["vault.listGrants", () => vault.listGrants(ctx, { sessionId: "session-1" })],
+					["vault.revokeGrant", () => vault.revokeGrant(ctx, grantId)],
+					["vault.listUses", () => vault.listUses(ctx, { sessionId: "session-1" })],
+					["vault.endSession", () => vault.endSession(ctx, "session-1", "session_ended")],
+					["vault.getCeiling", () => vault.getCeiling(ctx)],
+				],
+				"an operator outside the project",
+			);
+			await assertEachDenied(
+				deps,
+				[
+					[
+						"vault.putItem",
+						() =>
+							vault.putItem(outsideAdmin, {
+								owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+								name: "planted",
+								hosts: [HOST],
+								injection: { header: "Authorization", template: "Bearer {key}" },
+								value: CANARY_SECRET,
+							}),
+					],
+					[
+						"vault.putItem",
+						() =>
+							vault.putItem(outsideAdmin, {
+								owner: { kind: "organisation", organisationId: ORG },
+								name: "planted",
+								hosts: [HOST],
+								injection: { header: "Authorization", template: "Bearer {key}" },
+							}),
+					],
+					[
+						"vault.putPolicy",
+						() =>
+							vault.putPolicy(outsideAdmin, {
+								itemId: item.id,
+								selector: { organisationId: ORG, projectId: OTHER_PROJECT },
+								route: { host: HOST, methods: ["GET"], pathPrefix: "/" },
+							}),
+					],
+					["vault.revokePolicy", () => vault.revokePolicy(outsideAdmin, policy.id)],
+					[
+						"vault.setCeiling",
+						() => vault.setCeiling(outsideAdmin, [{ host: HOST, methods: ["GET"], pathPrefix: "/" }]),
+					],
+				],
+				"an admin of another project",
+			);
+			await assertUnchanged(vault, deps, records, before);
+		}),
+
+		test("project access: refuses an agent whose session belongs to another project, and changes nothing", async (vault, deps) => {
+			const records = await projectRecords(vault);
+			const { item, pending, grantId } = records;
+			const before = vaultAudits(deps);
+			const ctx = foreignAgent;
+			await assertEachDenied(
+				deps,
+				[
+					["vault.propose", () => vault.propose(ctx, termsFor(item.id, ["GET"], { maxUses: 1 }))],
+					["vault.getItem", () => vault.getItem(ctx, item.id)],
+					["vault.getProposal", () => vault.getProposal(ctx, pending.id)],
+					["vault.waitForOutcome", () => vault.waitForOutcome(ctx, pending.id)],
+					["vault.listProposals", () => vault.listProposals(ctx, { sessionId: "session-1" })],
+					["vault.getGrant", () => vault.getGrant(ctx, grantId)],
+					["vault.listGrants", () => vault.listGrants(ctx, { sessionId: "session-1" })],
+					["vault.listUses", () => vault.listUses(ctx, { sessionId: "session-1" })],
+					["vault.endSession", () => vault.endSession(ctx, "session-1", "aborted")],
+				],
+				"an agent of another project",
+			);
+			await assertEachDenied(
+				deps,
+				[
+					["vault.getProposal", () => vault.getProposal(otherAgent, pending.id)],
+					["vault.listProposals", () => vault.listProposals(otherAgent, { sessionId: "session-1" })],
+					["vault.getGrant", () => vault.getGrant(otherAgent, grantId)],
+				],
+				"an agent of another session in the project",
+			);
+			// The rules that refuse every agent still answer first.
+			await assert.rejectsWithCode(vault.withdraw(ctx, pending.id), "forbidden");
+			await assert.rejectsWithCode(vault.revokeGrant(ctx, grantId), "forbidden");
+			await assert.rejectsWithCode(vault.decide(ctx, approval(pending)), "forbidden");
+			await assertUnchanged(vault, deps, records, before);
+		}),
+
+		test("project access: refuses an agent whose session was closed", async (vault, deps) => {
+			const item = await putGithubToken(vault);
+			const proposal = await vault.propose(closingAgent, termsFor(item.id, ["GET"], {}));
+			assert.strictEqual(proposal.projectId, PROJECT);
+			deps.tenancy.close("session-4");
+			const before = vaultAudits(deps);
+			await assertEachDenied(
+				deps,
+				[
+					["vault.propose", () => vault.propose(closingAgent, termsFor(item.id, ["GET"], { maxUses: 1 }))],
+					["vault.propose", () => vault.propose(closingAgent, secretTerms)],
+					["vault.getProposal", () => vault.getProposal(closingAgent, proposal.id)],
+					["vault.waitForOutcome", () => vault.waitForOutcome(closingAgent, proposal.id)],
+					["vault.withdraw", () => vault.withdraw(closingAgent, proposal.id)],
+					["vault.listProposals", () => vault.listProposals(closingAgent, { sessionId: "session-4" })],
+				],
+				"an agent of a closed session",
+			);
+			assert.strictEqual(vaultAudits(deps), before, "the vault audited no change");
+			assert.strictEqual((await vault.getProposal(human, proposal.id)).status, "pending");
+			assert.strictEqual((await vault.listProposals(human)).items.length, 1);
+		}),
+
+		test("project access: lists leave out another project's records for an operator outside it", async (vault) => {
+			const ours = await putGithubToken(vault);
+			const theirs = await vault.putItem(human, {
+				owner: { kind: "project", organisationId: ORG, projectId: OTHER_PROJECT },
+				name: "github-token-b",
+				hosts: [HOST],
+				injection: { header: "Authorization", template: "Bearer {key}" },
+				value: "another-value",
+			});
+			const shared = await vault.putItem(human, {
+				owner: { kind: "organisation", organisationId: ORG },
+				name: "uploads-token",
+				hosts: ["uploads.github.com"],
+				injection: { header: "Authorization", template: "Bearer {key}" },
+			});
+			const policyFor = (item: VaultItem, projectId?: string) =>
+				vault.putPolicy(human, {
+					itemId: item.id,
+					selector: { organisationId: ORG, ...(projectId === undefined ? {} : { projectId }) },
+					route: { host: item.hosts[0]!, methods: ["GET"], pathPrefix: "/user" },
+				});
+			await policyFor(ours, PROJECT);
+			const theirPolicy = await policyFor(theirs, OTHER_PROJECT);
+			const sharedPolicy = await policyFor(shared);
+			const ourGrant = await approvedGrant(vault, agent, termsFor(ours.id, ["GET"], {}));
+			const theirProposal = await vault.propose(foreignAgent, termsFor(theirs.id, ["GET"], {}));
+			assert.strictEqual(theirProposal.projectId, OTHER_PROJECT, "the proposal is in the agent's session's project");
+			const theirGrant = (await vault.decide(human, approval(theirProposal))).grantId!;
+			await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`));
+			const theirUse = await vault.decideEgress(
+				egress("GET", `https://${HOST}/repos/harbour`, {
+					projectId: OTHER_PROJECT,
+					agentId: "agent-3",
+					sessionId: "session-3",
+				}),
+			);
+			const ids = (page: { readonly items: readonly { readonly id: string }[] }) =>
+				page.items.map((record) => record.id);
+
+			assert.deepEqual(ids(await vault.listItems(outsideOperator)), [theirs.id, shared.id], "items");
+			assert.deepEqual(ids(await vault.listPolicies(outsideOperator)), [theirPolicy.id, sharedPolicy.id], "policies");
+			assert.deepEqual(ids(await vault.listProposals(outsideOperator)), [theirProposal.id], "proposals");
+			assert.deepEqual(ids(await vault.listGrants(outsideOperator)), [theirGrant], "grants");
+			assert.deepEqual(ids(await vault.listUses(outsideOperator)), [theirUse.useId], "uses");
+			assert.deepEqual(ids(await vault.listProposals(agent)), [(await vault.getGrant(human, ourGrant)).proposalId]);
+			assert.deepEqual(ids(await vault.listGrants(agent)), [ourGrant], "an agent lists its own session's grants");
+			assert.strictEqual((await vault.listItems(human)).items.length, 3, "an organisation admin sees every item");
+			assert.strictEqual((await vault.listGrants(human)).items.length, 2, "and every grant");
+		}),
+
+		test("project access: lets an operator on the project and an agent in its own session through", async (vault, deps) => {
+			const item = await vault.putItem(projectAdmin, {
+				owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+				name: "github-token",
+				hosts: [HOST],
+				injection: { header: "Authorization", template: "Bearer {key}" },
+				value: CANARY_SECRET,
+			});
+			const policy = await vault.putPolicy(projectAdmin, {
+				itemId: item.id,
+				selector: { organisationId: ORG, projectId: PROJECT },
+				route: { host: HOST, methods: ["GET"], pathPrefix: "/user" },
+			});
+			await vault.revokePolicy(projectAdmin, policy.id);
+			assert.strictEqual((await vault.getItem(projectOperator, item.id)).id, item.id);
+			assert.strictEqual((await vault.listItems(projectOperator)).items.length, 1);
+			assert.strictEqual((await vault.listPolicies(projectOperator)).items.length, 1);
+
+			// The proposal's project is the agent's session's, whatever its context claims.
+			const claiming = contextFor(agent.actor, ORG, OTHER_PROJECT);
+			const proposal = await vault.propose(claiming, termsFor(item.id, ["GET"], {}));
+			assert.strictEqual(proposal.projectId, PROJECT);
+			assert.strictEqual((await vault.getProposal(agent, proposal.id)).id, proposal.id);
+			assert.strictEqual((await vault.listProposals(agent, { sessionId: "session-1" })).items.length, 1);
+			const child = await vault.propose(childAgent, termsFor(item.id, ["GET"], { maxUses: 1 }));
+			assert.strictEqual((await vault.getProposal(agent, child.id)).id, child.id, "a supervisor sees its child's");
+			await vault.withdraw(childAgent, child.id);
+
+			const view = await vault.approvalView(projectOperator, proposal.id);
+			assert.strictEqual(view.proposal.id, proposal.id);
+			const waiting = vault.waitForOutcome(agent, proposal.id);
+			const decision = await vault.decide(projectOperator, approval(proposal));
+			assert.strictEqual((await waiting).status, "approved");
+			const grantId = decision.grantId!;
+			assert.strictEqual((await vault.getGrant(projectOperator, grantId)).status, "active");
+			assert.strictEqual((await vault.getGrant(agent, grantId)).status, "active");
+			assert.strictEqual((await vault.listGrants(projectOperator, { sessionId: "session-1" })).items.length, 1);
+			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, true);
+			assert.strictEqual((await vault.listUses(agent, { sessionId: "session-1" })).items.length, 1);
+
+			const asked = await vault.propose(projectOperator, termsFor(item.id, ["POST"], { maxUses: 1 }));
+			assert.strictEqual(asked.projectId, PROJECT, "an operator's proposal is in the item's project");
+			assert.strictEqual((await vault.withdraw(projectOperator, asked.id)).status, "withdrawn");
+			const own = await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }));
+			assert.strictEqual((await vault.withdraw(agent, own.id)).status, "withdrawn");
+			assert.strictEqual((await vault.revokeGrant(projectOperator, grantId)).status, "revoked");
+			await vault.endSession(projectOperator, "session-1", "aborted");
+			await vault.endSession(agent, "session-1", "session_ended");
+			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
+		}),
+	];
+
+	const sessionEndCases: ConformanceCase[] = [
+		test("ends a session's grants and withdraws its pending proposals when the session ends", async (vault, deps) => {
+			const item = await putGithubToken(vault);
+			const url = `https://${HOST}/repos/harbour`;
+			const first = await approvedGrant(vault, agent, termsFor(item.id, ["GET"], {}));
+			const second = await approvedGrant(vault, agent, termsFor(item.id, ["POST"], { maxUses: 5 }));
+			const theirs = await approvedGrant(vault, otherAgent, termsFor(item.id, ["GET"], {}));
+			const pending = await vault.propose(agent, termsFor(item.id, ["DELETE"], { maxUses: 1 }));
+			const theirPending = await vault.propose(otherAgent, termsFor(item.id, ["DELETE"], { maxUses: 1 }));
+			const waiting = vault.waitForOutcome(agent, pending.id);
+			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, true, "allowed before");
+
+			await vault.endSession(sessionEnd, "session-1", "session_ended");
+			for (const grantId of [first, second]) {
+				assert.partialDeepEqual(await vault.getGrant(human, grantId), { status: "revoked", endReason: "revoked" });
+			}
+			const revoked = deps.audit.ofType("vault.grant.revoked");
+			assert.deepEqual(
+				revoked.map((event) => event.subject?.id),
+				[first, second],
+				"each grant's revocation is audited once",
+			);
+			for (const event of revoked) assert.strictEqual(event.data?.reason, "session_ended");
+			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false, "egress is denied after");
+			assert.strictEqual((await vault.decideEgress(egress("POST", url))).allow, false);
+			assert.strictEqual((await waiting).status, "withdrawn", "the waiting agent hears it was withdrawn");
+			assert.strictEqual((await vault.getProposal(human, pending.id)).status, "withdrawn");
+			const withdrawn = deps.audit.ofType("vault.proposal.withdrawn");
+			assert.deepEqual(
+				withdrawn.map((event) => event.subject?.id),
+				[pending.id],
+			);
+			assert.strictEqual(withdrawn[0]?.data?.reason, "session_ended");
+
+			assert.strictEqual((await vault.getGrant(human, theirs)).status, "active", "another session's grant stays");
+			assert.strictEqual((await vault.getProposal(human, theirPending.id)).status, "pending");
+			const theirEgress = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
+			assert.strictEqual((await vault.decideEgress(theirEgress)).allow, true);
+
+			const events = deps.audit.events.length;
+			const grants = await vault.listGrants(human);
+			const proposals = await vault.listProposals(human);
+			deps.clock.advance(1_000);
+			await vault.endSession(sessionEnd, "session-1", "session_ended");
+			await vault.endSession(sessionEnd, "session-1", "aborted");
+			assert.strictEqual(deps.audit.events.length, events, "a second teardown audits nothing");
+			assert.deepEqual(await vault.listGrants(human), grants, "and changes no grant");
+			assert.deepEqual(await vault.listProposals(human), proposals, "or proposal");
+		}),
+
+		test("ends a session's grants on abort and leaves its pending proposals and later grants working", async (vault, deps) => {
+			const item = await putGithubToken(vault);
+			const url = `https://${HOST}/repos/harbour`;
+			const held = await approvedGrant(vault, agent, termsFor(item.id, ["GET"], {}));
+			const theirs = await approvedGrant(vault, otherAgent, termsFor(item.id, ["GET"], {}));
+			const pending = await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }));
+			let settled = false;
+			const waiting = vault.waitForOutcome(agent, pending.id).then((outcome) => {
+				settled = true;
+				return outcome;
+			});
+
+			await vault.endSession(sessionEnd, "session-1", "aborted");
+			assert.strictEqual((await vault.getGrant(human, held)).status, "revoked");
+			const revoked = deps.audit.ofType("vault.grant.revoked");
+			assert.deepEqual(
+				revoked.map((event) => event.subject?.id),
+				[held],
+			);
+			assert.strictEqual(revoked[0]?.data?.reason, "aborted");
+			assert.strictEqual((await vault.decideEgress(egress("GET", url))).allow, false, "egress is denied after");
+			assert.strictEqual((await vault.getGrant(human, theirs)).status, "active", "another session's grant stays");
+			const theirEgress = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
+			assert.strictEqual((await vault.decideEgress(theirEgress)).allow, true);
+			assert.strictEqual((await vault.getProposal(human, pending.id)).status, "pending", "the proposal stays");
+			assert.strictEqual(deps.audit.ofType("vault.proposal.withdrawn").length, 0);
+			assert.strictEqual(settled, false, "the wait is still open");
+
+			const events = deps.audit.events.length;
+			const grants = await vault.listGrants(human);
+			deps.clock.advance(1_000);
+			await vault.endSession(sessionEnd, "session-1", "aborted");
+			assert.strictEqual(deps.audit.events.length, events, "a second teardown audits nothing");
+			assert.deepEqual(await vault.listGrants(human), grants, "and changes no grant");
+
+			// The session stays usable: what it is granted after the abort works.
+			const decision = await vault.decide(human, approval(pending));
+			assert.strictEqual((await waiting).status, "approved");
+			assert.strictEqual((await vault.getGrant(human, decision.grantId!)).status, "active");
+			assert.strictEqual((await vault.decideEgress(egress("POST", `${url}/issues`))).allow, true);
+		}),
+	];
 
 	/** Asserts that an approval is refused for its binding code, audited, and leaves the proposal pending. */
 	async function assertCodeRefused(vault: Vault, deps: ConformanceDeps, proposal: Proposal, input: DecisionInput) {
@@ -126,7 +549,7 @@ export function createVaultConformance(options: {
 		assert.strictEqual(await grantCount(vault), 0, "no grant exists");
 	}
 
-	return [
+	const cases: ConformanceCase[] = [
 		test("never returns an item's value from getItem or listItems", async (vault) => {
 			const item = await putGithubToken(vault);
 			assert.strictEqual(item.hasValue, true);
@@ -820,12 +1243,27 @@ export function createVaultConformance(options: {
 			assert.strictEqual(crossed.allow, false, "another organisation's grant never applies");
 		}),
 	];
+	return [...cases, ...sessionEndCases, ...(options.projectAccess === true ? projectAccessCases : [])];
+}
+
+/** How many events the vault itself (not `ProjectAccess`) has audited. */
+function vaultAudits(deps: ConformanceDeps): number {
+	return deps.audit.events.filter((event) => event.source === "vault").length;
 }
 
 export function registerVaultConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: VaultConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
-	registerCases(runner, name, createVaultConformance({ assertions: createExpectAssertions(runner.expect), provider }));
+	registerCases(
+		runner,
+		name,
+		createVaultConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
+	);
 }

@@ -20,7 +20,8 @@ Agents ask for access with proposals; only a human (or a service acting for one)
 
 `propose` → `approvalView` (the real code among decoys) → `decide` → `waitForOutcome` (effective terms and "No request
 has run"). `decideEgress` matches the first active grant, then policy, and returns the header to inject or a denial with
-a `fix`. `putItem`, `putPolicy`, `setCeiling`, `revokeGrant`, `revokePolicy` for admins.
+a `fix`. `putItem`, `putPolicy`, `setCeiling`, `revokeGrant`, `revokePolicy` for admins. `endSession` is the vault's
+session-end teardown.
 
 ## Rules and the suite cases that enforce them
 
@@ -63,15 +64,38 @@ a `fix`. `putItem`, `putPolicy`, `setCeiling`, `revokeGrant`, `revokePolicy` for
   proposal or policy for a host the item is not bound to", "refuses a policy outside the ceiling and lets egress through
   under one inside it" (outside the ceiling the fix is `none`).
 - Organisation isolation: "hides another organisation's records as not found".
+- Project access (settled question 7), checked through `ProjectAccess` after the organisation lookup, as
+  `vault.<method>`. An item is in a project when its owner is one; a proposal by its `projectId` and requester session;
+  a grant or policy by its selector's `projectId` and `sessionId`. Records in neither are the organisation's: reads and
+  lists show them as before, and changes to them need an organisation-wide role. `putItem`, `putPolicy`,
+  `revokePolicy` need admin on the item's project, and `setCeiling` organisation-wide admin; `getItem`, `listItems`,
+  `listPolicies` need viewer, and `getCeiling` organisation-wide viewer. `propose` needs operator: an agent in its own
+  session, which must be in a project-owned item's project (the proposal's `projectId` is the session's, never
+  `ctx.projectId`); a human or service on the item's project or `ctx.projectId`. `getProposal`, `listProposals`,
+  `waitForOutcome` need viewer and `withdraw` operator on the proposal's project and session; `approvalView` and
+  `decide` operator on its project (agents are still `forbidden` first). `getGrant`, `listGrants`, `listUses` need
+  viewer and `revokeGrant` operator on the grant's selector. A list filtered by session checks that session; otherwise
+  it keeps what the caller may view. `decideEgress` has no caller and is unchanged. Cases: "project access: refuses an
+  operator outside the project every change and read, and changes nothing", "project access: refuses an agent whose
+  session belongs to another project, and changes nothing", "project access: refuses an agent whose session was
+  closed", "project access: lists leave out another project's records for an operator outside it", "project access:
+  lets an operator on the project and an agent in its own session through".
+- Session end (settled question 8): `endSession(ctx, sessionId, reason)` (operator on the session; the hook's system
+  actor passes) revokes the session's active grants, each audited `vault.grant.revoked` once with `data.reason`, so
+  its egress is denied. `session_ended` also withdraws its pending proposals (a waiting agent hears `withdrawn`);
+  `aborted` leaves them pending and later grants work. A second run changes and audits nothing: "ends a session's
+  grants and withdraws its pending proposals when the session ends", "ends a session's grants on abort and leaves its
+  pending proposals and later grants working".
 
 ## The in-memory implementation
 
-`createMemoryVault({ clock?, audit?, proposalTtlMs?, linkBase?, expiryPollMs? })` keeps everything in maps per organisation, values in
-a private map. Expiry is read from the clock whenever a proposal or grant is read, and each pending wait checks the
+`createMemoryVault({ clock?, audit?, proposalTtlMs?, linkBase?, expiryPollMs?, access?, sessionEnd? })` keeps
+everything in maps per organisation, values in a private map. Expiry is read from the clock whenever a proposal or grant is read, and each pending wait checks the
 clock every `expiryPollMs` (default 25 ms), so a waiting agent hears of expiry on its own. Decisions on one proposal are
 serialised: a second `decide` or a `withdraw` while one is in flight is `conflict`, and `decide` makes every state
-change before its first await, so an expiry cannot land between them. It leaves out
-encryption at rest, durable waits, role checks beyond "not an agent", and value rotation.
+change before its first await, so an expiry cannot land between them; a call that awaits the access check reads its
+record again afterwards. Without `access` it checks only the organisation (and "not an agent"); with `sessionEnd` it
+registers `endSession` as `vault`. It leaves out encryption at rest, durable waits and value rotation.
 
 ## Open questions
 
@@ -81,5 +105,9 @@ encryption at rest, durable waits, role checks beyond "not an agent", and value 
   port?
 - A secret proposal may name an existing valueless item by `itemId`; pasting then sets its value. Is that the intended
   reading of "the item to create"?
-- Who may withdraw: the requesting agent, or any non-agent actor. Who may revoke grants: any non-agent actor; role
-  checks belong with identity.
+- Settled 27 Oct 2026 (question 7): who may withdraw and revoke. The requesting agent, or an operator on the
+  proposal's or grant's project (see Project access above).
+- An item owned by a user is treated like the organisation's: changing it needs an organisation-wide admin, and it is
+  readable as before. Should a user's own items be theirs to manage?
+- `getCeiling` is organisation-wide, so it needs an organisation-wide viewer and an agent cannot read it. Should agents
+  see the ceiling their proposals are bound by?
