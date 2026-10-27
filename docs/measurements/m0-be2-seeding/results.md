@@ -100,6 +100,9 @@ The SeedSpec changes that follow are in [seed-spec.proposal.ts](seed-spec.propos
 
 ## All rows
 
+`node harness/summarise.mjs raw/selfhosted-docker-runc.jsonl raw/cloudflare-container-standard-4.jsonl`
+(the isolate rows are in the table above).
+
 | Target | Repo | Method | n | Ready p50 | Ready p95 | Start+ready p50 | Start+ready p95 | Phases (p50) |
 |---|---|---|---:|---:|---:|---:|---:|---|
 | cloudflare-container-standard-4 | sal | cache-start | 50 | 35 ms | 50 ms | 1.82 s | 4.42 s | start 1.78 s |
