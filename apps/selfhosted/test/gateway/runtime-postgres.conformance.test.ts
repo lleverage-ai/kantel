@@ -30,11 +30,13 @@ registerRuntimeConformance(
 	async (deps, use) => {
 		const schema = `m1sh_runtime_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
 		const { models, script } = createScriptedModel();
-		const db = await PostgresSqliteDatabase.open({ connectionString: url, schema });
+		let db: PostgresSqliteDatabase | undefined;
 		try {
+			const opened = await PostgresSqliteDatabase.open({ connectionString: url, schema });
+			db = opened;
 			const service = createSessionRuntime({
-				store: await createSqlSessionStore(db),
-				storage: (session) => sqlPiStorage(db, session.id),
+				store: await createSqlSessionStore(opened),
+				storage: (session) => sqlPiStorage(opened, session.id),
 				clock: deps.clock,
 				audit: deps.audit,
 				models,
@@ -59,7 +61,7 @@ registerRuntimeConformance(
 				await service.close();
 			}
 		} finally {
-			await db.close();
+			await db?.close();
 			await dropSchema(schema);
 		}
 	},

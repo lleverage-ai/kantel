@@ -121,9 +121,15 @@ export class PostgresSqliteDatabase implements SqliteDatabase {
 	static async open(options: PostgresDatabaseOptions): Promise<PostgresSqliteDatabase> {
 		if (!/^[a-z_][a-z0-9_]*$/.test(options.schema)) throw new Error(`invalid schema ${options.schema}`);
 		const client = new pg.Client({ connectionString: options.connectionString });
-		await client.connect();
-		await client.query(`CREATE SCHEMA IF NOT EXISTS ${options.schema}`);
-		await client.query(`SET search_path TO ${options.schema}`);
+		try {
+			await client.connect();
+			await client.query(`CREATE SCHEMA IF NOT EXISTS ${options.schema}`);
+			await client.query(`SET search_path TO ${options.schema}`);
+		} catch (error) {
+			// Nothing else holds the client yet: end it, or a failed open leaks a connection.
+			await client.end().catch(() => {});
+			throw error;
+		}
 		return new PostgresSqliteDatabase(client, options.fence);
 	}
 

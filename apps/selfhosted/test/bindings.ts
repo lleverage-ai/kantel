@@ -152,9 +152,17 @@ try {
 		const failed = count("failed");
 		// Tests `-t` left out never reach the blocks counted here, so a skip is one the suite chose.
 		const skipped = tests.length - passed - failed;
+		// Vitest also fails a run for an unhandled error, which its JSON report leaves out; and a timeout can stop it
+		// after the report is written. So the process must have succeeded too.
+		const processFailed = run.error !== undefined || run.signal !== null || run.status !== 0;
 		const failures = [
 			...tests.filter((test) => test.status === "failed").map((test) => test.fullName),
-			...(report === undefined ? [`vitest wrote no report (exit ${run.status}): ${run.stderr.slice(-2000)}`] : []),
+			...(report === undefined ? ["vitest wrote no report"] : []),
+			...(processFailed
+				? [
+						`vitest ${run.error ? `could not run: ${run.error.message}` : run.signal ? `was stopped by ${run.signal}` : `exited ${run.status}`}: ${(run.stderr ?? "").slice(-2000)}`,
+					]
+				: []),
 			// A file that failed to load has no assertion results, only a message.
 			...(report?.testResults ?? []).flatMap((file) => (file.message ? [`${file.name}: ${file.message}`] : [])),
 		];
