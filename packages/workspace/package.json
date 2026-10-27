@@ -9,7 +9,9 @@
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
 		"./read-api": "./src/read-api.ts",
-		"./mounts": "./src/mounts.ts"
+		"./mounts": "./src/mounts.ts",
+		"./stored": "./src/stored.ts",
+		"./tree": "./src/tree.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*"

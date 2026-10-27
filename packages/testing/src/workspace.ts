@@ -30,6 +30,16 @@ export interface WorkspaceSubject {
 	readonly projectFiles: MountSource;
 }
 
+/** Workspaces that also create under a caller-chosen ID, as `@harbour/workspace`'s `KeyedWorkspaces` do. */
+export interface KeyedWorkspacesLike extends Workspaces {
+	ensure(ctx: CallContext, id: string, input: Parameters<Workspaces["create"]>[1]): Promise<WorkspaceRecord>;
+}
+
+export interface WorkspaceConformanceOptions extends ConformanceOptions {
+	/** Runs the keyed cases: `subject.workspaces` must implement `ensure`. */
+	readonly keyed?: boolean;
+}
+
 export type WorkspaceConformanceProvider = (
 	deps: ConformanceDeps,
 	use: (subject: WorkspaceSubject) => Promise<void>,
@@ -126,7 +136,109 @@ export function createWorkspaceConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: WorkspaceConformanceProvider;
 	projectAccess?: boolean;
+	keyed?: boolean;
 }): readonly ConformanceCase[] {
+	return [...baseCases(options), ...(options.keyed === true ? keyedCases(options) : [])];
+}
+
+/** `ensure`: one workspace per ID, the first creation wins, and the loser is checked against the winner. */
+function keyedCases(options: {
+	assertions: ConformanceAssertions;
+	provider: WorkspaceConformanceProvider;
+	projectAccess?: boolean;
+}): ConformanceCase[] {
+	const a = options.assertions;
+	const withKeyed = (run: (workspaces: KeyedWorkspacesLike, deps: ConformanceDeps) => Promise<void>) => async () => {
+		const deps = createDeps();
+		seedTenancy(deps);
+		await options.provider(deps, async ({ workspaces }) => {
+			const keyed = workspaces as Partial<KeyedWorkspacesLike>;
+			a.strictEqual(typeof keyed.ensure, "function", "keyed workspaces implement ensure");
+			await run(workspaces as KeyedWorkspacesLike, deps);
+		});
+	};
+	const seed = (who: string) => ({ name: who, sources: [{ kind: "files" as const, files: { "who.md": who } }] });
+	const cases: ConformanceCase[] = [
+		{
+			name: "keyed: ensure creates once under the given ID and returns the same record after",
+			run: withKeyed(async (workspaces) => {
+				const first = await workspaces.ensure(ctx, "pf_conformance", { owner, seed: seed("first") });
+				a.strictEqual(first.id, "pf_conformance");
+				a.strictEqual(first.head, 1);
+				const again = await workspaces.ensure(ctx, "pf_conformance", { owner, seed: seed("second") });
+				a.deepEqual(again, first);
+				a.strictEqual(text((await workspaces.read(ctx, first.id, "who.md")).content), "first");
+			}),
+		},
+		{
+			name: "keyed: concurrent ensures of one ID create one workspace and all return it",
+			run: withKeyed(async (workspaces) => {
+				const records = await Promise.all(
+					["a", "b", "c", "d"].map((who) => workspaces.ensure(ctx, "pf_race", { owner, seed: seed(who) })),
+				);
+				for (const record of records) a.deepEqual(record, records[0]);
+				const winner = text((await workspaces.read(ctx, "pf_race", "who.md")).content);
+				a.ok(["a", "b", "c", "d"].includes(winner), "one seed won");
+				a.strictEqual((await workspaces.history(ctx, "pf_race")).items.length, 2);
+			}),
+		},
+		{
+			name: "keyed: refuses an ID another organisation holds as conflict, and a malformed ID as invalid",
+			run: withKeyed(async (workspaces) => {
+				const system = (organisationId: string): CallContext => ({ actor: actors.system(), organisationId });
+				const ownerIn = (organisationId: string): OwnerRef => ({ kind: "organisation", organisationId });
+				const { organisationId, otherOrganisationId } = WORKSPACE_FIXTURE;
+				await workspaces.ensure(system(organisationId), "pf_shared", { owner: ownerIn(organisationId) });
+				await a.rejectsWithCode(
+					workspaces.ensure(system(otherOrganisationId), "pf_shared", { owner: ownerIn(otherOrganisationId) }),
+					"conflict",
+				);
+				await a.rejectsWithCode(
+					workspaces.ensure(system(organisationId), "../escape", { owner: ownerIn(organisationId) }),
+					"invalid",
+				);
+			}),
+		},
+	];
+	if (options.projectAccess !== true) return cases;
+	const elsewhere: OwnerRef = {
+		kind: "project",
+		organisationId: WORKSPACE_FIXTURE.organisationId,
+		projectId: WORKSPACE_FIXTURE.otherProjectId,
+	};
+	cases.push(
+		{
+			name: "keyed project access: an existing ID is returned only to a caller who may see it",
+			run: withKeyed(async (workspaces) => {
+				await workspaces.ensure(ctx, "pf_owned", { owner });
+				await a.rejectsWithCode(workspaces.ensure(outsiderCtx, "pf_owned", { owner: elsewhere }), "forbidden");
+				a.strictEqual((await workspaces.ensure(viewerCtx, "pf_owned", { owner })).id, "pf_owned");
+			}),
+		},
+		{
+			name: "keyed project access: the loser of an ensure race is checked against the record that won",
+			run: withKeyed(async (workspaces) => {
+				const results = await Promise.allSettled([
+					workspaces.ensure(ctx, "pf_contested", { owner, seed: seed("alice") }),
+					// Oscar operates only the other project, so he may not see the project's workspace if Alice's wins.
+					workspaces.ensure(outsiderCtx, "pf_contested", { owner: elsewhere, seed: seed("oscar") }),
+				]);
+				const won = results.filter((result) => result.status === "fulfilled");
+				const lost = results.filter((result) => result.status === "rejected");
+				a.strictEqual(won.length, 1, "one ensure wins");
+				a.strictEqual(lost.length, 1, "the other is refused");
+				await a.rejectsWithCode(Promise.reject((lost[0] as PromiseRejectedResult).reason), "forbidden");
+			}),
+		},
+	);
+	return cases;
+}
+
+function baseCases(options: {
+	assertions: ConformanceAssertions;
+	provider: WorkspaceConformanceProvider;
+	projectAccess?: boolean;
+}): ConformanceCase[] {
 	const a = options.assertions;
 	const withSubject = (run: (subject: WorkspaceSubject, deps: ConformanceDeps) => Promise<void>) => async () => {
 		const deps = createDeps();
@@ -846,7 +958,7 @@ export function registerWorkspaceConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: WorkspaceConformanceProvider,
-	options?: ConformanceOptions,
+	options?: WorkspaceConformanceOptions,
 ): void {
 	registerCases(
 		runner,
@@ -855,6 +967,7 @@ export function registerWorkspaceConformance(
 			assertions: createExpectAssertions(runner.expect),
 			provider,
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+			...(options?.keyed === undefined ? {} : { keyed: options.keyed }),
 		}),
 	);
 }

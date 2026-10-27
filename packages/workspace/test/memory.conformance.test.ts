@@ -15,5 +15,5 @@ registerWorkspaceConformance(
 		});
 		await use({ workspaces, projectFiles });
 	},
-	{ projectAccess: true },
+	{ projectAccess: true, keyed: true },
 );
