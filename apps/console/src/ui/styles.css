@@ -353,6 +353,11 @@ body {
 	overflow-y: auto;
 }
 
+.files-retry {
+	display: flex;
+	padding: var(--hb-space-4) var(--hb-space-3);
+}
+
 .files-viewer {
 	min-width: 0;
 	min-height: 0;

@@ -164,6 +164,9 @@ export function FilesScreen({
 
 	const fileOpen = path !== undefined;
 	const pane = narrow ? (fileOpen ? "file" : "tree") : "both";
+	// On a phone the open file's viewer has its own Back, to the tree; until it is on screen the header is the way out.
+	const header = !(pane === "file" && files !== undefined);
+	const rootFailed = directories.get("")?.status === "error";
 
 	let body: ReactNode;
 	if (workspace.status === "loading") {
@@ -200,6 +203,13 @@ export function FilesScreen({
 							onSelect={onSelect}
 							hrefFor={hrefFor}
 						/>
+						{rootFailed ? (
+							<div className="files-retry">
+								<Button size="sm" onClick={() => list("")}>
+									Try again
+								</Button>
+							</div>
+						) : null}
 					</div>
 				)}
 				{pane === "tree" ? null : (
@@ -221,7 +231,7 @@ export function FilesScreen({
 
 	return (
 		<div className="files" data-pane={pane}>
-			{pane === "file" ? (
+			{!header ? (
 				<h1 className="hb-sr-only">Files</h1>
 			) : (
 				<div className="files-header">
