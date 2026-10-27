@@ -84,6 +84,13 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const listedProjects = new Set<string>();
 	/** Sessions on screen, with how many screens show each. */
 	const open = new Map<string, number>();
+	/** Sessions just left, whose updatedAt at the time is still being read; never unread meanwhile. */
+	const leaving = new Map<string, number>();
+	const count = (counts: Map<string, number>, sessionId: string, by: 1 | -1) => {
+		const next = (counts.get(sessionId) ?? 0) + by;
+		if (next > 0) counts.set(sessionId, next);
+		else counts.delete(sessionId);
+	};
 
 	const call = async (path: string, init: RequestInit = {}): Promise<Response> => {
 		const headers = new Headers(init.headers);
@@ -129,6 +136,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		latest.set(record.id, record.updatedAt);
 		if (open.has(record.id)) seen.set(record.id, record.updatedAt);
 		else if (!seen.has(record.id)) seen.set(record.id, firstListing ? record.updatedAt : record.createdAt);
+		if (leaving.has(record.id)) return false;
 		return !active(record.status) && record.updatedAt > (seen.get(record.id) ?? record.updatedAt);
 	};
 
@@ -265,31 +273,24 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
 
 		markRead(sessionId) {
-			open.set(sessionId, (open.get(sessionId) ?? 0) + 1);
-			const read = () => {
-				const updated = latest.get(sessionId);
-				if (updated !== undefined) seen.set(sessionId, updated);
+			count(open, sessionId, 1);
+			const markSeen = (updatedAt: number | undefined) => {
+				if (updatedAt !== undefined) seen.set(sessionId, Math.max(seen.get(sessionId) ?? 0, updatedAt));
 			};
-			read();
+			markSeen(latest.get(sessionId));
 			let released = false;
-			const close = () => {
-				const count = (open.get(sessionId) ?? 1) - 1;
-				if (count > 0) open.set(sessionId, count);
-				else open.delete(sessionId);
-			};
 			return () => {
 				if (released) return;
 				released = true;
-				read();
+				count(open, sessionId, -1);
+				markSeen(latest.get(sessionId));
 				// It was on screen until now, so whatever it did meanwhile has been seen, though the list may not have
-				// caught up: the session's own updatedAt, read now, is the mark. It counts as open until then.
+				// caught up. The session's own updatedAt, read now, is the mark; anything after it is unread.
+				count(leaving, sessionId, 1);
 				getJson<SessionRecord>(sessionUrl(sessionId))
-					.then((record) => {
-						latest.set(sessionId, Math.max(latest.get(sessionId) ?? 0, record.updatedAt));
-						read();
-					})
+					.then((record) => markSeen(record.updatedAt))
 					.catch(() => {})
-					.finally(close);
+					.finally(() => count(leaving, sessionId, -1));
 			};
 		},
 	};

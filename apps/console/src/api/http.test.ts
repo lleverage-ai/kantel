@@ -176,6 +176,42 @@ describe("the console on the session API", () => {
 		expect(states.at(-1)?.sessions[0]?.unread).toBeUndefined();
 	});
 
+	it("marks a session unread when it finishes just after you leave, even while its leaving is still being read", async () => {
+		const { apiFetch, client, create, script } = await setUp();
+		const id = await create("proj-a", "Left running");
+		const answer = gate();
+		const leaving = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				const response = await apiFetch(request);
+				// The lookup on leaving is answered late: after the session has finished.
+				if (new URL(request.url).pathname === `/v1/sessions/${id}`) await answer.opened;
+				return response;
+			},
+			listPollMs: 20,
+		});
+		const states: { sessions: readonly { id: string; status: string; unread?: boolean }[] }[] = [];
+		cleanups.push(leaving.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.length > 0, "the first list");
+		const release = leaving.markRead(id);
+		const run = gate();
+		script.reply(async () => {
+			await run.opened;
+			return { text: "Finished" };
+		});
+		await client.prompt(id, "Go");
+		const latest = () => states.at(-1)?.sessions[0];
+		await eventually(() => latest()?.status === "running", "the run");
+		release();
+		run.open();
+		await eventually(() => latest()?.status === "done", "the finish, listed");
+		expect(latest()?.unread).toBeUndefined();
+		answer.open();
+		await eventually(() => latest()?.unread === true, "unread once the lookup is in");
+	});
+
 	it("lists every page of sessions, and finds a linked session the list hasn't shown", async () => {
 		const { apiFetch, client, create } = await setUp();
 		const first = await create("proj-old");
