@@ -105,36 +105,64 @@ describe("the stack over durable storage", () => {
 		const content = await second.call(`/v1/workspaces/${workspace.id}/content?path=notes/kept.md`);
 		expect(await content.text()).toBe("# Kept");
 
-		// One bootstrap: one organisation and one project created, however many starts.
+		// One bootstrap: one organisation, one user and one project, however many starts.
+		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
 		const audit = await second.call("/v1/audit/events?type=identity.project.created");
 		expect(((await audit.json()) as { items: unknown[] }).items).toHaveLength(1);
 	});
 
-	it("resumes a bootstrap that stopped half way instead of making a second organisation", async () => {
-		let saved: BootstrapRecord = {};
-		let failSaves = 0;
-		const bootstrap: BootstrapStore = {
-			load: async () => saved,
-			async save(record) {
-				saved = record;
-				// The start fails right after the organisation is made and saved.
-				if (record.organisationId !== undefined && record.projectId === undefined && failSaves++ === 0) {
-					throw new Error("the object restarted");
-				}
-			},
-		};
-		const storage = await durableStorage(bootstrap);
-		await expect(start(storage)).rejects.toThrow("the object restarted");
-		const organisationId = saved.organisationId;
-		expect(organisationId).toBeDefined();
+	// Identity commits each step before the bootstrap saves it, so a start can fail with a step committed but unsaved.
+	for (const step of ["userId", "organisationId", "projectId"] as const) {
+		it(`reuses the committed ${step.replace("Id", "")} when a start fails before saving it`, async () => {
+			let saved: BootstrapRecord = {};
+			let failed = false;
+			const bootstrap: BootstrapStore = {
+				load: async () => saved,
+				async save(record) {
+					if (!failed && record[step] !== undefined) {
+						failed = true;
+						throw new Error("the object restarted");
+					}
+					saved = record;
+				},
+			};
+			const storage = await durableStorage(bootstrap);
+			await expect(start(storage)).rejects.toThrow("the object restarted");
+			expect(saved[step]).toBeUndefined();
 
-		const { stack } = await start(storage);
-		expect(stack.organisation.id).toBe(organisationId);
-		expect(stack.admin.actor).toMatchObject({ kind: "human" });
-		expect(saved).toEqual({
-			userId: (stack.admin.actor as { userId: string }).userId,
-			organisationId,
-			projectId: stack.project.id,
+			const { stack, call } = await start(storage);
+			expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
+			expect(saved).toEqual({
+				userId: (stack.admin.actor as { userId: string }).userId,
+				organisationId: stack.organisation.id,
+				projectId: stack.project.id,
+			});
+			// The invited admin signs in: there is one user with the email, not two that identity can't tell apart.
+			expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
 		});
+	}
+
+	it("bootstraps again when the saved record names an organisation the directory no longer has", async () => {
+		const bootstrap = createMemoryBootstrapStore();
+		const first = await start(await durableStorage(bootstrap));
+		// The object's storage survives; D1 is a new, empty database.
+		const storage = await durableStorage(bootstrap);
+		const { stack, call } = await start(storage);
+		expect(stack.organisation.id).not.toBe(first.stack.organisation.id);
+		expect(await bootstrap.load()).toMatchObject({ organisationId: stack.organisation.id });
+		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
+		expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
 	});
 });
+
+async function counts(storage: StackStorage) {
+	const count = async (table: string) => {
+		const [row] = await storage.sql!.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`);
+		return Number(row?.n);
+	};
+	return {
+		organisations: await count("identity_organisations"),
+		users: await count("identity_users"),
+		projects: await count("identity_projects"),
+	};
+}

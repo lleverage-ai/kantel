@@ -38,13 +38,14 @@ import type { SqlDriver } from "@harbour/sql";
 import type { KeyedWorkspaces } from "@harbour/workspace";
 import { createMemoryWorkspaces } from "@harbour/workspace/memory";
 import { createStoredWorkspaces, type WorkspaceStore } from "@harbour/workspace/stored";
+import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
 	actor: { kind: "system", component: "cloudflare.bootstrap" },
-	organisationId: "bootstrap",
+	organisationId: BOOTSTRAP_ORGANISATION,
 };
 
 /** The agent every new deployment has, so a session can be created before any host registers its own profiles. */
@@ -60,6 +61,18 @@ export interface BootstrapRecord {
 export interface BootstrapStore {
 	load(): Promise<BootstrapRecord>;
 	save(record: BootstrapRecord): Promise<void>;
+}
+
+/**
+ * Finds what an unfinished bootstrap committed but never saved: the admin's user by email, the organisation that user
+ * administers, and that organisation's first project. Durable identity has one (`sqlBootstrapFinder`).
+ */
+export interface BootstrapFinder {
+	user(email: string): Promise<string | undefined>;
+	organisation(userId: string): Promise<string | undefined>;
+	project(organisationId: string): Promise<string | undefined>;
+	/** Whether the directory still has the organisation a saved record names (it may have been reset). */
+	organisationExists(organisationId: string): Promise<boolean>;
 }
 
 export function createMemoryBootstrapStore(): BootstrapStore {
@@ -161,11 +174,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	}
 	const authenticator = createAuthenticator({ identity, providers });
 
-	const { organisation, project, admin } = await bootstrap(
+	const { organisation, project, admin } = await bootstrap({
 		identity,
-		storage.bootstrap ?? createMemoryBootstrapStore(),
-		options.config.adminEmail,
-	);
+		store: storage.bootstrap ?? createMemoryBootstrapStore(),
+		...(driver === undefined ? {} : { finder: sqlBootstrapFinder(driver) }),
+		adminEmail: options.config.adminEmail,
+	});
 	const profile: AgentProfile = {
 		id: DEFAULT_AGENT_ID,
 		organisationId: organisation.id,
@@ -185,44 +199,70 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 
 /**
  * The deployment's one organisation, its first admin and its default project: made on the first start, and found again
- * on every later one. Each step is saved as it completes, so a start that fails half way resumes rather than making a
- * second organisation. The admin is invited by email when the config names one; changing the email later does not
- * change who was invited.
+ * on every later one. Each step is saved as it completes. A step identity committed but the record never saved (the
+ * start failed in between) is found by the finder rather than made twice, and a record naming an organisation that
+ * no longer exists (the directory was reset) is dropped and the bootstrap run again. The admin is invited
+ * by email when the config names one; changing the email later does not change who was invited.
  */
-async function bootstrap(
-	identity: IdentityDirectory,
-	store: BootstrapStore,
-	adminEmail: string | undefined,
+async function bootstrap(options: {
+	readonly identity: IdentityDirectory;
+	readonly store: BootstrapStore;
+	readonly finder?: BootstrapFinder;
+	readonly adminEmail: string | undefined;
+}): Promise<{ organisation: Organisation; project: Project; admin: CallContext }> {
+	const { store, finder } = options;
+	let saved = await store.load();
+	if (
+		finder !== undefined &&
+		saved.organisationId !== undefined &&
+		!(await finder.organisationExists(saved.organisationId))
+	) {
+		console.warn("harbour: the saved bootstrap names an organisation identity no longer has; bootstrapping again");
+		saved = {};
+		await store.save(saved);
+	}
+	return bootstrapOnce(options, saved);
+}
+
+async function bootstrapOnce(
+	options: {
+		readonly identity: IdentityDirectory;
+		readonly store: BootstrapStore;
+		readonly finder?: BootstrapFinder;
+		readonly adminEmail: string | undefined;
+	},
+	saved: BootstrapRecord,
 ): Promise<{ organisation: Organisation; project: Project; admin: CallContext }> {
-	let record = await store.load();
+	const { identity, store, finder, adminEmail } = options;
+	let record = saved;
 	const remember = async (step: BootstrapRecord): Promise<void> => {
 		record = { ...record, ...step };
 		await store.save(record);
 	};
 
-	let userId = record.userId;
+	let userId = record.userId ?? (adminEmail === undefined ? undefined : await finder?.user(adminEmail));
 	if (userId === undefined) {
 		const user = await identity.createUser(BOOTSTRAP, {
 			name: adminEmail ?? "Bootstrap admin",
 			...(adminEmail === undefined ? {} : { email: adminEmail }),
 		});
 		userId = user.id;
-		await remember({ userId });
 	}
+	if (record.userId !== userId) await remember({ userId });
 
-	let organisationId = record.organisationId;
+	let organisationId = record.organisationId ?? (await finder?.organisation(userId));
 	if (organisationId === undefined) {
 		const created = await identity.createOrganisation(BOOTSTRAP, { name: "Harbour", admin: { kind: "user", userId } });
 		organisationId = created.id;
-		await remember({ organisationId });
 	}
+	if (record.organisationId !== organisationId) await remember({ organisationId });
 
 	const admin: CallContext = { actor: { kind: "human", userId }, organisationId };
-	let projectId = record.projectId;
+	let projectId = record.projectId ?? (await finder?.project(organisationId));
 	if (projectId === undefined) {
 		projectId = (await identity.createProject(admin, { name: "Default" })).id;
-		await remember({ projectId });
 	}
+	if (record.projectId !== projectId) await remember({ projectId });
 
 	const organisation = await identity.getOrganisation(admin, organisationId);
 	const project = await identity.getProject(admin, projectId);
