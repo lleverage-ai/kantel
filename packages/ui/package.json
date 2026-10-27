@@ -1,0 +1,41 @@
+{
+	"name": "@harbour/ui",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Harbour's shared React component library: tokens, primitives and session components, in T3 Code's style",
+	"license": "Apache-2.0",
+	"sideEffects": [
+		"**/*.css"
+	],
+	"exports": {
+		".": "./src/index.ts",
+		"./tokens.css": "./src/tokens/tokens.css",
+		"./tokens": "./src/tokens/tokens.ts"
+	},
+	"scripts": {
+		"dev": "ladle serve",
+		"build:workbench": "ladle build",
+		"preview:workbench": "ladle preview",
+		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"test": "vitest run",
+		"lint:tokens": "node scripts/token-lint.ts",
+		"shoot": "node scripts/shoot.ts"
+	},
+	"peerDependencies": {
+		"react": ">=19.0.0",
+		"react-dom": ">=19.0.0"
+	},
+	"devDependencies": {
+		"@ladle/react": "5.1.1",
+		"@types/node": "26.6.5",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"axe-core": "4.11.0",
+		"playwright-core": "1.64.1",
+		"react": "19.3.1",
+		"react-dom": "19.3.1",
+		"typescript": "7.0.2",
+		"vitest": "5.0.5"
+	}
+}

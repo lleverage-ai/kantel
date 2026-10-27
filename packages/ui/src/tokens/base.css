@@ -1,0 +1,82 @@
+/* The base a host app opts into with the `hb-app` class on its root (or on <body>). Components never style anything
+   outside their own `hb-` classes, so a host can mount them inside a page it styles itself. */
+
+.hb-app {
+	min-height: 100%;
+	background: var(--hb-canvas);
+	color: var(--hb-text);
+	font-family: var(--hb-font-sans);
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading);
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+.hb-app *,
+.hb-app *::before,
+.hb-app *::after {
+	box-sizing: border-box;
+}
+
+/* One focus treatment for every interactive element in the library: a 2px ring in the accent, only for keyboard
+   focus. Components add `hb-focusable` rather than drawing their own. */
+.hb-focusable:focus-visible {
+	outline: var(--hb-ring) solid var(--hb-focus);
+	outline-offset: var(--hb-hairline);
+}
+
+.hb-focusable:focus:not(:focus-visible) {
+	outline: none;
+}
+
+.hb-sr-only {
+	position: absolute;
+	width: var(--hb-hairline);
+	height: var(--hb-hairline);
+	margin: calc(var(--hb-hairline) * -1);
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.hb-mono {
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+}
+
+.hb-selectable {
+	user-select: text;
+}
+
+@keyframes hb-pulse {
+	50% {
+		opacity: 0.5;
+	}
+}
+
+@keyframes hb-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@keyframes hb-shimmer {
+	50% {
+		opacity: 0.55;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-app *,
+	.hb-app *::before,
+	.hb-app *::after {
+		/* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every component's animation. */
+		animation-duration: 0.01ms !important;
+		/* biome-ignore lint/complexity/noImportantStyles: as above. */
+		animation-iteration-count: 1 !important;
+		/* biome-ignore lint/complexity/noImportantStyles: as above. */
+		transition-duration: 0.01ms !important;
+	}
+}

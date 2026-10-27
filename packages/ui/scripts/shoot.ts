@@ -1,0 +1,49 @@
+// Screenshots every workbench story (or those matching --only) at 1280px and 420px with a headless Chromium.
+//   pnpm build:workbench && node scripts/shoot.ts [--only workbench--overview,primitives--buttons] [--out shots]
+// Writes <out>/<story>-1280.png and <out>/<story>-420.png, full page.
+
+import { mkdirSync, readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
+import { chromium } from "playwright-core";
+import { serve } from "./workbench-server.ts";
+
+const { values } = parseArgs({
+	options: {
+		only: { type: "string" },
+		out: { type: "string", default: new URL("../loop/out/shots/", import.meta.url).pathname },
+		build: { type: "string", default: new URL("../build/", import.meta.url).pathname },
+		chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" },
+		widths: { type: "string", default: "1280,420" },
+	},
+});
+
+const meta = JSON.parse(readFileSync(`${values.build}meta.json`, "utf8")) as { stories: Record<string, unknown> };
+const wanted = values.only?.split(",");
+const stories = Object.keys(meta.stories).filter((id) => wanted === undefined || wanted.includes(id));
+mkdirSync(values.out, { recursive: true });
+
+const server = await serve(values.build);
+const browser = await chromium.launch({ executablePath: values.chromium, args: ["--no-sandbox"] });
+try {
+	for (const width of values.widths.split(",").map(Number)) {
+		const page = await browser.newPage({
+			viewport: { width, height: width < 600 ? 860 : 900 },
+			deviceScaleFactor: width < 600 ? 2 : 1,
+			colorScheme: "dark",
+			reducedMotion: "reduce",
+		});
+		for (const id of stories) {
+			await page.goto(`${server.url}?story=${id}&mode=preview`);
+			await page.waitForSelector(".hb-app");
+			await page.evaluate(() => document.fonts.ready);
+			await page.waitForTimeout(300);
+			const path = `${values.out}${id}-${width}.png`;
+			await page.screenshot({ path, fullPage: true });
+			console.log(path);
+		}
+		await page.close();
+	}
+} finally {
+	await browser.close();
+	await server.close();
+}

@@ -1,0 +1,13 @@
+.hb-icon {
+	flex: none;
+}
+
+.hb-icon-sm {
+	width: var(--hb-icon-sm);
+	height: var(--hb-icon-sm);
+}
+
+.hb-icon-md {
+	width: var(--hb-icon-md);
+	height: var(--hb-icon-md);
+}

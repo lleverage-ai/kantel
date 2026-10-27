@@ -1,0 +1,86 @@
+.hb-status-working {
+	--hb-status-current: var(--hb-status-working);
+	--hb-status-current-soft: var(--hb-status-working-soft);
+}
+
+.hb-status-waiting {
+	--hb-status-current: var(--hb-status-waiting);
+	--hb-status-current-soft: var(--hb-status-waiting-soft);
+}
+
+.hb-status-approval {
+	--hb-status-current: var(--hb-status-approval);
+	--hb-status-current-soft: var(--hb-status-approval-soft);
+}
+
+.hb-status-done {
+	--hb-status-current: var(--hb-status-done);
+	--hb-status-current-soft: var(--hb-status-done-soft);
+}
+
+.hb-status-error {
+	--hb-status-current: var(--hb-status-error);
+	--hb-status-current-soft: var(--hb-status-error-soft);
+}
+
+.hb-status-idle {
+	--hb-status-current: var(--hb-status-idle);
+	--hb-status-current-soft: var(--hb-hover);
+}
+
+.hb-status-dot {
+	display: inline-block;
+	flex: none;
+	width: var(--hb-dot);
+	height: var(--hb-dot);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-status-current);
+}
+
+.hb-status-dot.hb-status-working {
+	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
+}
+
+.hb-status-label {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	color: var(--hb-status-current);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+	white-space: nowrap;
+}
+
+.hb-badge {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	height: calc(var(--hb-control-xs) - var(--hb-space-3));
+	padding: 0 var(--hb-space-3);
+	border-radius: var(--hb-radius-xs);
+	font-size: var(--hb-text-2xs);
+	font-weight: var(--hb-weight-medium);
+	line-height: 1;
+	white-space: nowrap;
+}
+
+.hb-badge-neutral {
+	background: var(--hb-active);
+	color: var(--hb-text-muted);
+}
+
+.hb-badge-accent {
+	background: var(--hb-accent-soft);
+	color: var(--hb-accent-text);
+}
+
+.hb-badge.hb-status-working,
+.hb-badge.hb-status-waiting,
+.hb-badge.hb-status-approval,
+.hb-badge.hb-status-done,
+.hb-badge.hb-status-error,
+.hb-badge.hb-status-idle {
+	background: var(--hb-status-current-soft);
+	color: var(--hb-status-current);
+}
