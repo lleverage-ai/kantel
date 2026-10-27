@@ -2,18 +2,20 @@
  * Identity and tenancy. Organisations own projects; users and service identities hold a role per project (or across
  * the organisation); host apps call with API keys scoped to projects. Every call resolves to an `Actor`.
  */
-import type {
-	Actor,
-	ApiKeyId,
-	CallContext,
-	OrganisationId,
-	Page,
-	PageRequest,
-	ProjectId,
-	ServiceId,
-	SystemContext,
-	Timestamp,
-	UserId,
+import {
+	type Actor,
+	type ApiKeyId,
+	type CallContext,
+	HarbourError,
+	isHarbourError,
+	type OrganisationId,
+	type Page,
+	type PageRequest,
+	type ProjectId,
+	type ServiceId,
+	type SystemContext,
+	type Timestamp,
+	type UserId,
 } from "./common.ts";
 
 /** Roles, weakest first. Each includes what the ones before it may do. */
@@ -96,6 +98,83 @@ export interface Authentication {
 	/** For an API key, its projects; for a user, absent (roles decide per project). */
 	readonly projectIds?: readonly ProjectId[];
 	readonly role?: Role;
+}
+
+/** How a caller proved who it is. */
+export type AuthenticationMethod =
+	/** A host app's API key: `Authorization: Bearer hbr_…`. */
+	| "api_key"
+	/** A Cloudflare Access application token: the `Cf-Access-Jwt-Assertion` header. */
+	| "cloudflare_access"
+	/** An OIDC provider's token: `Authorization: Bearer <JWT>`. */
+	| "oidc";
+
+/** An authenticated caller: an `Authentication` and the method that proved it. */
+export interface AuthenticatedCaller extends Authentication {
+	readonly method: AuthenticationMethod;
+}
+
+/**
+ * What an authenticator reads from a request: only its headers. A Fetch `Request` fits, so does a Hono context's
+ * `req.raw`, a Durable Object's request or a Node adapter's.
+ */
+export interface AuthenticatorRequest {
+	readonly headers: { get(name: string): string | null };
+}
+
+/** The header a human names the organisation they act in with. A key's organisation comes from the key. */
+export const ORGANISATION_HEADER = "harbour-organisation";
+/** The header Cloudflare Access puts its signed application token in. */
+export const CLOUDFLARE_ACCESS_HEADER = "cf-access-jwt-assertion";
+
+/**
+ * Why authentication failed, carried as `details.authentication` on the `forbidden` error an authenticator throws:
+ * - `missing`: no credential at all (HTTP 401).
+ * - `invalid`: a credential that does not verify: a bad signature, issuer, audience or time; an unknown, revoked or
+ *   expired API key; a signed-in person no user record matches (HTTP 401).
+ * - `organisation`: the human named an organisation they hold no role in, or named none and hold roles in more than
+ *   one (HTTP 403). A key's organisation is the key's, so a key never fails this way.
+ */
+export type AuthenticationFailure = "missing" | "invalid" | "organisation";
+
+/** The `AuthenticationFailure` an authenticator's error carries, or undefined for any other error. */
+export function authenticationFailureOf(error: unknown): AuthenticationFailure | undefined {
+	if (!isHarbourError(error, "forbidden")) return undefined;
+	const failure = error.details?.authentication;
+	return failure === "missing" || failure === "invalid" || failure === "organisation" ? failure : undefined;
+}
+
+/** The error an authenticator throws: `forbidden`, with the failure in `details.authentication`. */
+export function authenticationError(failure: AuthenticationFailure, message: string): HarbourError {
+	return new HarbourError("forbidden", message, { authentication: failure });
+}
+
+/**
+ * The middleware every Harbour API takes (M1-BE7). It turns a request's credentials into an `AuthenticatedCaller`:
+ * a host app's service from an API key, or a human from a Cloudflare Access or OIDC token, whichever the deployment
+ * configures. An API builds each call's `CallContext` from it with `callContextFor`.
+ *
+ * It authenticates and never authorises: what the caller may do in a project is `ProjectAccess`'s decision, which
+ * honours a key's projects and role through `IdentityDirectory.roleOf` (the actor carries the key's ID). A failure
+ * rejects with `forbidden` and an `AuthenticationFailure` in `details.authentication`, says nothing about which keys
+ * or users exist, and never echoes a credential.
+ */
+export interface Authenticator {
+	authenticate(request: AuthenticatorRequest): Promise<AuthenticatedCaller>;
+}
+
+/** The `CallContext` for one call by an authenticated caller, in `projectId` when the call names one. */
+export function callContextFor(
+	caller: Authentication,
+	input: { readonly projectId?: ProjectId; readonly requestId?: string; readonly signal?: AbortSignal } = {},
+): CallContext {
+	return {
+		actor: caller.actor,
+		organisationId: caller.organisationId,
+		...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+		...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+		...(input.signal === undefined ? {} : { signal: input.signal }),
+	};
 }
 
 export interface IdentityDirectory {

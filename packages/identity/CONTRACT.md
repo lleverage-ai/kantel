@@ -54,6 +54,27 @@ organisation. Host apps call with API keys scoped to projects.
   or no caller is `forbidden` and audited once as `access.denied`, never with the key's secret — "worker calls:
   roleOf and authenticateApiKey refuse every caller but system".
 
+## The authenticator (M1-BE7)
+
+`Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Harbour API takes. It turns a
+request's headers into an `AuthenticatedCaller` (an `Authentication` plus its `method`), and an API builds each
+call's `CallContext` from it with `callContextFor(caller, { projectId, requestId, signal })`.
+
+- Credentials: `Authorization: Bearer hbr_…` is a host app's API key (`api_key`). Human sign-in, a Cloudflare
+  Access token in `Cf-Access-Jwt-Assertion` (`cloudflare_access`) or an OIDC token as a non-`hbr_` bearer (`oidc`),
+  is configured per deployment and lands in a later change. A human names the organisation they act in with the
+  `Harbour-Organisation` header (`ORGANISATION_HEADER`); a key's organisation is the key's.
+- It authenticates and never authorises. A key's caller is `{ kind: "service", serviceId, keyId }`, so
+  `ProjectAccess` (through `roleOf`) limits it to the key's projects and role, whatever its service's bindings.
+- Failures reject with `forbidden` and `details.authentication` (`AuthenticationFailure`): `missing` and `invalid`
+  (HTTP 401) or `organisation` (HTTP 403). `authenticationFailureOf(error)` reads it. A failure says nothing about
+  which keys or users exist and never echoes the credential. Other errors (a directory that is down) propagate.
+- `@harbour/identity/authenticator` has the implementation: `createAuthenticator({ identity })`,
+  `withAuthentication(authenticator, handler)` for Fetch-style handlers (401 with `WWW-Authenticate: Bearer`, or 403,
+  with a JSON `{ error: { code, failure, message } }` body), and `authenticationFailureResponse(error)` for routers
+  that call `authenticate` themselves. Build tests against it with the in-memory directory: issue a key, send it as a
+  bearer.
+
 ## The in-memory implementation
 
 `createMemoryIdentity({ clock?, audit? })` from `@harbour/identity/memory` keeps everything in maps for the life of the
