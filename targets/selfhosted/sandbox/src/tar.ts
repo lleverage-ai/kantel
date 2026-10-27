@@ -4,9 +4,10 @@
  *
  * - The writer emits ustar entries for regular files and directories, with a PAX header when a name (or a size) does not
  *   fit the ustar fields. Ownership is per entry, the sandbox user (1000:1000) by default.
+ * - The writer refuses a path that is absolute or has an empty or `..` segment.
  * - The reader returns regular files (with their mode bits and contents) and directories, and skips every other kind
- *   (symlinks, hard links, devices, FIFOs): none of them is part of a workspace. It understands PAX (`x`, `g`) and GNU
- *   long-name (`L`, `K`) records.
+ *   (symlinks, hard links, devices, FIFOs): none of them is part of a workspace. It also skips any entry whose path is
+ *   absolute or has a `..` segment. It understands PAX (`x`, `g`) and GNU long-name (`L`, `K`) records.
  */
 
 export type TarEntry =
@@ -104,13 +105,22 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 	return out;
 }
 
-/** A tar archive of `entries`, in order. Directory paths may be given with or without a trailing slash. */
+/** Whether `path` (without a trailing slash) has a segment that could leave or skip within the extraction directory. */
+function unsafeSegments(path: string): boolean {
+	return path.split("/").some((segment) => segment === "" || segment === "..");
+}
+
+/**
+ * A tar archive of `entries`, in order. Directory paths may be given with or without a trailing slash; a path that is
+ * absolute or has an empty or `..` segment is refused.
+ */
 export function writeTar(entries: readonly TarEntry[], options: TarWriteOptions = {}): Uint8Array {
 	const mtime = options.mtime ?? Math.floor(Date.now() / 1000);
 	const parts: Uint8Array[] = [];
 	for (const entry of entries) {
 		const bare = entry.path.replace(/\/+$/, "");
-		if (bare === "" || bare.startsWith("/")) throw new Error(`tar entry path must be relative: ${entry.path}`);
+		if (bare.startsWith("/")) throw new Error(`tar entry path must be relative: ${entry.path}`);
+		if (unsafeSegments(bare)) throw new Error(`tar entry path has an empty or .. segment: ${entry.path}`);
 		const name = entry.type === "dir" ? `${bare}/` : bare;
 		const size = entry.type === "file" ? entry.data.length : 0;
 		const records: Record<string, string> = {};
@@ -164,7 +174,10 @@ function parsePax(body: Uint8Array): Record<string, string> {
 	return records;
 }
 
-/** The regular files and directories of a tar archive, in order; every other kind is skipped. */
+/**
+ * The regular files and directories of a tar archive, in order; every other kind is skipped, as is any entry whose path
+ * is absolute or has a `..` segment.
+ */
 export function readTar(archive: Uint8Array): TarEntry[] {
 	const entries: TarEntry[] = [];
 	let offset = 0;
@@ -201,6 +214,7 @@ export function readTar(archive: Uint8Array): TarEntry[] {
 		const gid = numeric(block, 116, 8, 0);
 		next = {};
 		if (path === "" || path === ".") continue;
+		if (path.startsWith("/") || path.split("/").includes("..")) continue;
 		if (type === "0" || type === "7") entries.push({ type: "file", path, mode, data: data.slice(), uid, gid });
 		else if (type === "5") entries.push({ type: "dir", path, mode, uid, gid });
 		// Symlinks, hard links, devices and FIFOs are not part of a workspace.

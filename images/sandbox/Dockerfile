@@ -22,6 +22,9 @@ ARG GH_SHA256_ARM64=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306
 ARG LINEAR_CLI_VERSION=0.3.28
 ARG LINEAR_CLI_SHA256_AMD64=5af0cac71903dd31f155553e4892280dbd4f0f347536095a963bfa1aeb7c26a3
 ARG LINEAR_CLI_SHA256_ARM64=621e29d4be1a70f70bb3157265b43c7b4cec0ed1aa0499a6b6b348b37cbc78a0
+# pnpm's npm tarball (architecture-independent), installed from the checked file rather than by name.
+ARG PNPM_VERSION=10.34.9
+ARG PNPM_SHA256=7e8a946108e7baab119e51d27c24d6178b46545422643dbc91e34e2f1ee32e0f
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates curl \
 	&& rm -rf /var/lib/apt/lists/*
@@ -39,21 +42,25 @@ RUN set -eu; \
 	curl -fsSLo linear-cli.tar.gz "https://github.com/nesszer/linear-cli/releases/download/v${LINEAR_CLI_VERSION}/linear-cli-${lc_arch}-unknown-linux-gnu.tar.gz"; \
 	echo "${lc_sum}  linear-cli.tar.gz" | sha256sum -c -; \
 	tar -xzf linear-cli.tar.gz; \
-	install -m 0755 linear-cli /out/linear-cli
+	install -m 0755 linear-cli /out/linear-cli; \
+	curl -fsSLo pnpm.tgz "https://registry.npmjs.org/pnpm/-/pnpm-${PNPM_VERSION}.tgz"; \
+	echo "${PNPM_SHA256}  pnpm.tgz" | sha256sum -c -; \
+	install -m 0644 pnpm.tgz /out/pnpm.tgz
 
 FROM ${NODE_IMAGE}
-ARG PNPM_VERSION=10.34.9
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		bash ca-certificates coreutils curl findutils git grep jq less libdbus-1-3 openssh-client procps python3 ripgrep sed \
 	&& rm -rf /var/lib/apt/lists/*
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=fetch /out/gh /out/linear-cli /usr/local/bin/
+COPY --from=fetch /out/pnpm.tgz /tmp/pnpm.tgz
 # The node image's uid 1000 user becomes `sandbox`, the user the container tier runs commands as, with its home in
 # the workspace so tools that write dotfiles write them where the tier can see them.
 RUN set -eu; \
 	ln -s /usr/local/bin/bun /usr/local/bin/bunx; \
-	npm install -g "pnpm@${PNPM_VERSION}" --no-fund --no-audit; \
+	npm install -g /tmp/pnpm.tgz --no-fund --no-audit; \
+	rm -f /tmp/pnpm.tgz; \
 	npm cache clean --force; \
 	usermod -l sandbox -d /workspace node; \
 	groupmod -n sandbox node; \

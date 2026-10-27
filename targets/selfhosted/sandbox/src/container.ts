@@ -8,7 +8,8 @@
  * - Workspace: copied in and out, no host path shared. /workspace is an anonymous volume, because gVisor keeps root
  *   filesystem writes inside the sandbox (`overlay2=root:self`) where the archive API cannot see them, but writes a
  *   volume through to the host (docs/measurements/m0-sh1-selfhosted). Files go in through the archive API (PUT), into
- *   the volume, which gVisor serves to the sandbox with its shared file access for mounts.
+ *   a root-owned staging volume, which gVisor serves to the sandbox with its shared file access for mounts, and the
+ *   sandbox user copies them from there into /workspace (see `STAGE_DIR`).
  * - Re-base: before every command (and every `pending`) the working copy is re-based on the workspace head, as the
  *   Cloudflare spike's container agent does (spikes/cloudflare/container/server.ts): the diff between the version the
  *   container last synced and the head is applied, except for paths the container itself changed since (the container
@@ -32,7 +33,7 @@ import {
 import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@harbour/sandbox/tiered";
 import { normalizeWorkspacePath } from "@harbour/workspace";
 import { listAll, type ModedChange, type StoredWorkspaces } from "@harbour/workspace/stored";
-import { DockerClient } from "./docker.ts";
+import { DockerClient, type ExecOutput } from "./docker.ts";
 import { readTar, SANDBOX_GID, SANDBOX_UID, type TarEntry, writeTar } from "./tar.ts";
 
 export interface DockerContainerBackendOptions {
@@ -62,7 +63,8 @@ export interface DockerContainerBackendOptions {
 export interface DockerContainerBackend extends ContainerBackend {
 	/**
 	 * Removes containers (and mount volumes) whose `<prefix>.expires-at` label is at or before `now` (default: the
-	 * clock's now) and whose lease this backend is not serving: the orphan janitor after a host restart. Returns how many
+	 * clock's now) and whose lease this backend is neither serving nor creating a container for: the orphan janitor after
+	 * a host restart. Returns how many
 	 * containers it removed. A renewed lease keeps the expiry it had when its container was created, so a live lease of
 	 * this backend is never reaped.
 	 */
@@ -74,6 +76,27 @@ export interface DockerContainerBackend extends ContainerBackend {
 const WORKSPACE = "/workspace";
 /** A volume for each command's stdin and output files, outside /workspace so it is never synced or collected. */
 const IO_DIR = "/var/harbour";
+/**
+ * Why maintenance never runs as root on /workspace. The scan, the collection and the re-base all run as the sandbox user
+ * (never root), from `/`, with Python in isolated mode (`PYTHON`), so nothing under /workspace is ever imported or run
+ * by them. Background processes a command started keep running between calls and can swap a directory for a symlink at
+ * any moment, so whatever the host checked before using a path (the scan's view, the re-base's plan) may be stale when
+ * it is used; as the sandbox user, following such a symlink reaches only what the user could already reach. The one
+ * step that needs more is getting the head's files in: the Docker daemon extracts archives as root and resolves symlinks
+ * on the way, so it never extracts into /workspace. It extracts into a fresh directory of STAGE_DIR, a volume owned by
+ * root (0755) that the user can read but not write, and so cannot plant a symlink in; APPLY_SCRIPT then copies the
+ * files into place as the user, and root removes the stage (in which the user can have changed nothing) afterwards.
+ * What the sandbox user cannot read (a file or directory it made unreadable) is skipped by the scan, reported on its
+ * stderr, and taken as unchanged.
+ */
+const STAGE_DIR = "/var/harbour-stage";
+/** The working directory of every maintenance exec: never /workspace, whose contents the user controls. */
+const MAINTENANCE_CWD = "/";
+/**
+ * Python for maintenance scripts: `-I` (isolated: neither the working directory nor the user site directory is on
+ * `sys.path`, and every PYTHON* variable is ignored) and `-S` (no `site` import), then `-c` and the script.
+ */
+const PYTHON: readonly string[] = ["python3", "-I", "-S", "-c"];
 const SANDBOX_USER = `${SANDBOX_UID}:${SANDBOX_GID}`;
 const ROOT_USER = "0:0";
 const CA_PATH = "/etc/harbour/ca.crt";
@@ -107,12 +130,13 @@ const MOUNT_FILE_MODE = 0o644;
 const MOUNT_DIR_MODE = 0o755;
 
 /**
- * Change detection: a Python script run (as root, so a file the user made unreadable is still seen) inside the
- * container walks /workspace without following symlinks and prints one JSON array of entries: `["f", path, mode,
- * sha256]` for a regular file, `["d", path, mode]` for a directory, `["l", ...]` for a symlink, `["o", ...]` for any
- * other kind, and `["u", path, mode]` for a file it could not read. The host compares the files with what it last synced
- * or saw (path -> digest and mode); the digests are the workspace's own (hex SHA-256 of the content), so a file synced
- * from the head compares equal without the host reading it back.
+ * Change detection: a Python script run as the sandbox user inside the container walks /workspace without following
+ * symlinks and prints one JSON array of entries: `["f", path, mode, sha256]` for a regular file, `["d", path, mode]` for
+ * a directory, `["l", ...]` for a symlink, `["o", ...]` for any other kind, `["u", path, mode]` for a file it could not
+ * read and `["s", path]` for a path it could not list or stat (`""` for /workspace itself). It reports each of the last
+ * two on stderr and goes on: the host takes what it knew at and under such a path as unchanged. The host compares the
+ * files with what it last synced or saw (path -> digest and mode); the digests are the workspace's own (hex SHA-256 of
+ * the content), so a file synced from the head compares equal without the host reading it back.
  *
  * Why this and not the alternatives: a GET of /workspace's archive would move every byte of the working copy over the
  * socket twice per command, where hashing in place moves only digests; `find | xargs sha256sum` needs a pass per
@@ -126,11 +150,15 @@ const SCAN_SCRIPT = [
 	'root = b"/workspace"',
 	"entries = []",
 	'stack = [b""]',
+	"def report(path, error):",
+	'    sys.stderr.write("skipped %s: %s\\n" % (path.decode("utf-8", "replace") or ".", error))',
 	"while stack:",
 	"    rel = stack.pop()",
 	"    try:",
 	'        listing = list(os.scandir(root + b"/" + rel if rel else root))',
-	"    except OSError:",
+	"    except OSError as error:",
+	"        report(rel, error)",
+	'        entries.append(["s", rel.decode("utf-8")])',
 	"        continue",
 	"    for item in listing:",
 	"        if item.name in skip:",
@@ -142,7 +170,9 @@ const SCAN_SCRIPT = [
 	"            continue",
 	"        try:",
 	"            info = item.stat(follow_symlinks=False)",
-	"        except OSError:",
+	"        except OSError as error:",
+	"            report(path, error)",
+	'            entries.append(["s", name])',
 	"            continue",
 	"        mode = stat.S_IMODE(info.st_mode)",
 	"        if stat.S_ISDIR(info.st_mode):",
@@ -165,7 +195,8 @@ const SCAN_SCRIPT = [
 	"                        if not block:",
 	"                            break",
 	"                        digest.update(block)",
-	"            except OSError:",
+	"            except OSError as error:",
+	"                report(path, error)",
 	'                entries.append(["u", name, mode])',
 	"                continue",
 	'            entries.append(["f", name, mode, digest.hexdigest()])',
@@ -199,6 +230,63 @@ const COLLECT_SCRIPT = [
 	"    out.addfile(member, io.BytesIO(data))",
 	"out.close()",
 ].join("\n");
+
+/**
+ * Applies a re-base inside the container, as the sandbox user (see `STAGE_DIR`): removes paths, creates directories,
+ * and copies each staged file into place with its mode (replacing whatever is there, never writing through a symlink).
+ * Its argument is the stage directory, holding `plan.json` (`{"remove": [path, ...], "dirs": [path, ...], "writes":
+ * [[path, staged name, mode], ...]}`) and the staged files. A path it cannot apply (one the user made unwritable, say)
+ * is reported on stderr and in the JSON array of paths it prints, and the rest goes on.
+ */
+const APPLY_SCRIPT = [
+	"import json, os, shutil, stat, sys",
+	"stage = sys.argv[1]",
+	'with open(os.path.join(stage, "plan.json"), "rb") as handle:',
+	"    plan = json.load(handle)",
+	'root = "/workspace"',
+	"failed = []",
+	"def report(path, error):",
+	"    failed.append(path)",
+	'    sys.stderr.write("could not apply %s: %s\\n" % (path, error))',
+	'for path in plan["remove"]:',
+	"    target = os.path.join(root, path)",
+	"    try:",
+	"        if stat.S_ISDIR(os.lstat(target).st_mode):",
+	"            shutil.rmtree(target)",
+	"        else:",
+	"            os.unlink(target)",
+	"    except FileNotFoundError:",
+	"        pass",
+	"    except OSError as error:",
+	"        report(path, error)",
+	'for path in plan["dirs"]:',
+	"    try:",
+	"        os.makedirs(os.path.join(root, path), 0o755, exist_ok=True)",
+	"    except OSError as error:",
+	"        report(path, error)",
+	'for path, name, mode in plan["writes"]:',
+	"    target = os.path.join(root, path)",
+	"    try:",
+	"        os.makedirs(os.path.dirname(target), 0o755, exist_ok=True)",
+	"        try:",
+	"            os.unlink(target)",
+	"        except FileNotFoundError:",
+	"            pass",
+	"        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)",
+	'        with os.fdopen(fd, "wb") as out, open(os.path.join(stage, name), "rb") as source:',
+	"            shutil.copyfileobj(source, out, 1 << 20)",
+	"            os.fchmod(out.fileno(), mode)",
+	"    except OSError as error:",
+	"        report(path, error)",
+	"json.dump(failed, sys.stdout)",
+].join("\n");
+
+/**
+ * Kills every process of the sandbox user: `kill -1` signals every process the caller may signal except itself and the
+ * container's init (PID 1, the keep-alive loop, which just starts another sleep). Twice, for a child forked while the
+ * first went round.
+ */
+const KILL_ALL_SCRIPT = "kill -KILL -1 2>/dev/null; kill -KILL -1 2>/dev/null; true";
 
 /**
  * Wraps every command: enters its working directory, feeds it its stdin file (or /dev/null), sends its output to files
@@ -273,6 +361,8 @@ class DockerContainerTier implements DockerContainerBackend {
 	readonly #execTimeoutMs: number;
 	readonly #maxOutputBytes: number;
 	readonly #states = new Map<string, LeaseState>();
+	/** Leases whose container is being created: served, though not in `#states` yet, so the janitor leaves them alone. */
+	readonly #creating = new Set<string>();
 	readonly #fences = new Map<string, Fence>();
 	readonly #queues = new Map<string, Promise<void>>();
 	/** Counts scans across all leases; `pending` hands it out and `committed` takes it back. */
@@ -338,6 +428,9 @@ class DockerContainerTier implements DockerContainerBackend {
 			const state = this.#states.get(lease.id);
 			if (state === undefined) return { changes: [], stamp: this.#stamp };
 			return this.#guard(state, async () => {
+				// The final snapshot is final only once nothing can change the working copy after it: every process the
+				// sandbox user still runs (background jobs of earlier commands) is killed first.
+				if (options.final === true) await this.#killAll(state);
 				if (!(await this.#rebase(ctx, state, record.head))) await this.#scan(state);
 				const stamp = this.#stamp;
 				const puts: string[] = [];
@@ -395,7 +488,7 @@ class DockerContainerTier implements DockerContainerBackend {
 			const expiresAt = Number(labels?.[expiryKey]);
 			if (!Number.isFinite(expiresAt) || expiresAt > now) return false;
 			const leaseId = labels?.[leaseKey];
-			return leaseId === undefined || !this.#states.has(leaseId);
+			return leaseId === undefined || !(this.#states.has(leaseId) || this.#creating.has(leaseId));
 		};
 		let removed = 0;
 		for (const container of await this.#docker.listContainers([expiryKey])) {
@@ -422,6 +515,17 @@ class DockerContainerTier implements DockerContainerBackend {
 	 * uncommitted changes are lost, as when a container dies).
 	 */
 	async #create(ctx: CallContext, lease: SandboxLease, record: WorkspaceRecord): Promise<LeaseState> {
+		// Served from before its first labelled resource exists until it is in `#states` (or creation failed), so the
+		// janitor never removes what is being created, whatever the expiry on its labels.
+		this.#creating.add(lease.id);
+		try {
+			return await this.#createContainer(ctx, lease, record);
+		} finally {
+			this.#creating.delete(lease.id);
+		}
+	}
+
+	async #createContainer(ctx: CallContext, lease: SandboxLease, record: WorkspaceRecord): Promise<LeaseState> {
 		await this.#removeLease(lease.id);
 		const labels: Record<string, string> = {
 			[this.#label("lease")]: lease.id,
@@ -448,6 +552,7 @@ class DockerContainerTier implements DockerContainerBackend {
 					Mounts: [
 						{ Type: "volume", Target: WORKSPACE, VolumeOptions: { NoCopy: true } },
 						{ Type: "volume", Target: IO_DIR, VolumeOptions: { NoCopy: true } },
+						{ Type: "volume", Target: STAGE_DIR, VolumeOptions: { NoCopy: true } },
 						...mounts,
 					],
 					...(this.#memoryBytes === undefined ? {} : { Memory: this.#memoryBytes }),
@@ -456,10 +561,12 @@ class DockerContainerTier implements DockerContainerBackend {
 					CapDrop: ["NET_RAW", "MKNOD", "AUDIT_WRITE"],
 				},
 			});
-			// Before start, so the volumes' roots belong to the sandbox user and the CA is in the image's layer.
+			// Before start, so the volumes' roots belong to the sandbox user (the stage's to root) and the CA is in the
+			// image's layer.
 			const setup: TarEntry[] = [
 				{ type: "dir", path: WORKSPACE.slice(1), mode: 0o755 },
 				{ type: "dir", path: IO_DIR.slice(1), mode: 0o700 },
+				{ type: "dir", path: STAGE_DIR.slice(1), mode: 0o755, uid: 0, gid: 0 },
 			];
 			if (network.ca !== undefined) {
 				setup.push(
@@ -508,7 +615,7 @@ class DockerContainerTier implements DockerContainerBackend {
 	): Promise<object[]> {
 		if (record.mounts.length === 0) return [];
 		for (const mount of record.mounts) {
-			for (const reserved of [WORKSPACE, IO_DIR]) {
+			for (const reserved of [WORKSPACE, IO_DIR, STAGE_DIR]) {
 				if (overlaps(mount.path, reserved)) {
 					throw new HarbourError("invalid", `mount ${mount.path} overlaps ${reserved} in the container`, {
 						path: mount.path,
@@ -656,6 +763,8 @@ class DockerContainerTier implements DockerContainerBackend {
 		}
 		await this.#scan(state);
 		const { kinds, index } = state;
+		// The index before planning, for a removal the container then refuses.
+		const previous = new Map(index);
 		const remove = new Set<string>();
 		const directories = new Set<string>();
 		const writes: [string, FileState][] = [];
@@ -680,9 +789,14 @@ class DockerContainerTier implements DockerContainerBackend {
 			kinds.set(path, "f");
 			writes.push([path, file]);
 		}
-		await this.#removePaths(state, [...remove]);
-		await this.#writeFiles(ctx, state, head, [...directories].sort(), writes);
-		for (const [path, file] of writes) index.set(path, file);
+		const failed = await this.#apply(ctx, state, head, [...remove], [...directories].sort(), writes);
+		// A path the sandbox user could not change (it made it unwritable) keeps what the index knew of it, so the next
+		// scan finds it unchanged: the working copy misses that part of the head, and never reverts it in a commit.
+		for (const [path, file] of writes) if (!failed.has(path)) index.set(path, file);
+		for (const path of remove) {
+			const known = previous.get(path);
+			if (failed.has(path) && known !== undefined) index.set(path, known);
+		}
 		state.version = head;
 		return true;
 	}
@@ -727,33 +841,83 @@ class DockerContainerTier implements DockerContainerBackend {
 		return files;
 	}
 
-	async #removePaths(state: LeaseState, paths: readonly string[]): Promise<void> {
-		for (const chunk of chunkArguments(paths.map((path) => `${WORKSPACE}/${path}`))) {
-			const result = await this.#docker.exec(state.containerId, {
-				cmd: ["rm", "-rf", "--", ...chunk],
-				user: ROOT_USER,
-				timeoutMs: this.#execTimeoutMs,
-			});
-			if (result.exitCode !== 0) {
-				throw new HarbourError("unavailable", `re-base could not remove files: ${decoder.decode(result.stderr)}`);
-			}
-		}
-	}
-
-	/** Writes `writes` (from the head at `version`) and creates `directories`, owned by the sandbox user. */
-	async #writeFiles(
+	/**
+	 * Removes `remove`, creates `directories` and writes `writes` (from the head at `version`), all as the sandbox user:
+	 * the files go into a stage of STAGE_DIR (see there) with a plan, and APPLY_SCRIPT moves them into place. In runs of
+	 * up to ARCHIVE_BUDGET file bytes, the first carrying the removals and directories. Returns the paths the container
+	 * could not change.
+	 */
+	async #apply(
 		ctx: CallContext,
 		state: LeaseState,
 		version: number,
+		remove: readonly string[],
 		directories: readonly string[],
 		writes: readonly [string, FileState][],
-	): Promise<void> {
-		let entries: TarEntry[] = directories.map((path) => ({ type: "dir", path, mode: 0o755 }));
+	): Promise<Set<string>> {
+		const failed = new Set<string>();
+		const owner = { uid: 0, gid: 0 };
+		let stage = crypto.randomUUID();
+		let plan: { remove: string[]; dirs: string[]; writes: [string, string, number][] } = {
+			remove: [...remove],
+			dirs: [...directories],
+			writes: [],
+		};
+		let files: TarEntry[] = [];
 		let bytes = 0;
 		const flush = async () => {
-			if (entries.length === 0) return;
-			await this.#docker.putArchive(state.containerId, WORKSPACE, writeTar(entries));
-			entries = [];
+			if (plan.remove.length === 0 && plan.dirs.length === 0 && plan.writes.length === 0) return;
+			// Root-owned and world-readable, in a directory only root can write: the sandbox user reads the files, and
+			// APPLY_SCRIPT gives each its mode as it copies it.
+			const archive = writeTar([
+				{ type: "dir", path: stage, mode: 0o755, ...owner },
+				{
+					type: "file",
+					path: `${stage}/plan.json`,
+					mode: 0o644,
+					data: encoder.encode(JSON.stringify(plan)),
+					...owner,
+				},
+				...files,
+			]);
+			const directory = `${STAGE_DIR}/${stage}`;
+			let result: ExecOutput;
+			try {
+				await this.#docker.putArchive(state.containerId, STAGE_DIR, archive);
+				result = await this.#docker.exec(state.containerId, {
+					cmd: [...PYTHON, APPLY_SCRIPT, directory],
+					user: SANDBOX_USER,
+					workingDir: MAINTENANCE_CWD,
+					timeoutMs: this.#execTimeoutMs,
+				});
+			} finally {
+				// As root, safely: the user can write nothing in STAGE_DIR. A stage left behind (the container gone, say) is
+				// outside /workspace, never synced, and goes with the container.
+				await this.#docker
+					.exec(state.containerId, {
+						cmd: ["rm", "-rf", "--", directory],
+						user: ROOT_USER,
+						workingDir: MAINTENANCE_CWD,
+						timeoutMs: this.#execTimeoutMs,
+					})
+					.catch(() => undefined);
+			}
+			if (result.exitCode !== 0) {
+				throw new HarbourError(
+					"unavailable",
+					`re-base could not apply the head's files (${result.exitCode}): ${decoder.decode(result.stderr).slice(0, 500)}`,
+				);
+			}
+			let refused: unknown;
+			try {
+				refused = JSON.parse(decoder.decode(result.stdout));
+			} catch {
+				throw new HarbourError("unavailable", "applying the re-base returned malformed output");
+			}
+			if (Array.isArray(refused)) for (const path of refused) if (typeof path === "string") failed.add(path);
+			stage = crypto.randomUUID();
+			plan = { remove: [], dirs: [], writes: [] };
+			files = [];
 			bytes = 0;
 		};
 		for (let start = 0; start < writes.length; start += BLOB_BATCH) {
@@ -763,19 +927,36 @@ class DockerContainerTier implements DockerContainerBackend {
 			);
 			batch.forEach(([path, file], i) => {
 				const data = bodies[i]!;
-				entries.push({ type: "file", path, mode: file.mode, data });
+				const name = String(plan.writes.length);
+				plan.writes.push([path, name, file.mode]);
+				files.push({ type: "file", path: `${stage}/${name}`, mode: 0o644, data, ...owner });
 				bytes += data.length;
 			});
 			if (bytes >= ARCHIVE_BUDGET) await flush();
 		}
 		await flush();
+		return failed;
+	}
+
+	/**
+	 * Kills every process the sandbox user runs in the container (see KILL_ALL_SCRIPT), as that user, so it can reach
+	 * nothing else.
+	 */
+	async #killAll(state: LeaseState): Promise<void> {
+		await this.#docker.exec(state.containerId, {
+			cmd: ["sh", "-c", KILL_ALL_SCRIPT],
+			user: SANDBOX_USER,
+			workingDir: MAINTENANCE_CWD,
+			timeoutMs: this.#execTimeoutMs,
+		});
 	}
 
 	/** Scans /workspace (see SCAN_SCRIPT) and marks what changed since the last scan or re-base as dirty. */
 	async #scan(state: LeaseState): Promise<void> {
 		const result = await this.#docker.exec(state.containerId, {
-			cmd: ["python3", "-c", SCAN_SCRIPT, JSON.stringify(LOCAL_ONLY)],
-			user: ROOT_USER,
+			cmd: [...PYTHON, SCAN_SCRIPT, JSON.stringify(LOCAL_ONLY)],
+			user: SANDBOX_USER,
+			workingDir: MAINTENANCE_CWD,
 			timeoutMs: this.#execTimeoutMs,
 		});
 		if (result.exitCode !== 0) {
@@ -794,9 +975,14 @@ class DockerContainerTier implements DockerContainerBackend {
 		const stamp = ++this.#stamp;
 		const seen = new Map<string, FileState>();
 		const kinds = new Map<string, Kind>();
+		const skipped: string[] = [];
 		for (const item of listed as unknown[]) {
 			if (!Array.isArray(item)) continue;
 			const [kind, path, mode, digest] = item as [unknown, unknown, unknown, unknown];
+			if (kind === "s" && typeof path === "string" && (path === "" || trackable(path))) {
+				skipped.push(path);
+				continue;
+			}
 			if (typeof path !== "string" || typeof mode !== "number" || !trackable(path)) continue;
 			if (kind === "f" && typeof digest === "string") {
 				kinds.set(path, "f");
@@ -809,6 +995,13 @@ class DockerContainerTier implements DockerContainerBackend {
 			} else if (kind === "d" || kind === "l" || kind === "o") {
 				kinds.set(path, kind);
 			}
+		}
+		// Could not be listed or looked at (the sandbox user made it unreadable): everything at and under it is unchanged
+		// as far as anyone can tell, so it keeps what was known of it.
+		for (const prefix of skipped) {
+			const within = (candidate: string) => prefix === "" || candidate === prefix || candidate.startsWith(`${prefix}/`);
+			for (const [path, file] of state.index) if (within(path) && !seen.has(path)) seen.set(path, file);
+			for (const [path, kind] of state.kinds) if (within(path) && !kinds.has(path)) kinds.set(path, kind);
 		}
 		for (const [path, file] of seen) {
 			const known = state.index.get(path);
@@ -829,8 +1022,9 @@ class DockerContainerTier implements DockerContainerBackend {
 		const collected = new Map<string, { data: Uint8Array; mode: number }>();
 		for (const chunk of chunkJson(paths)) {
 			const result = await this.#docker.exec(state.containerId, {
-				cmd: ["python3", "-c", COLLECT_SCRIPT, chunk],
+				cmd: [...PYTHON, COLLECT_SCRIPT, chunk],
 				user: SANDBOX_USER,
+				workingDir: MAINTENANCE_CWD,
 				timeoutMs: this.#execTimeoutMs,
 			});
 			if (result.exitCode !== 0) {

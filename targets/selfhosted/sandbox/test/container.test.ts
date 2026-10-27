@@ -227,6 +227,110 @@ describe.skipIf(!enabled)(`Docker container tier (${runtime})`, () => {
 		}
 	});
 
+	it("never imports the working copy's Python modules during maintenance", async () => {
+		const { sandboxes, workspaces, workspaceId, acquire, cleanup } = await setUp();
+		try {
+			const isolate = await acquire("isolate");
+			const container = await acquire("container");
+			// Imported by any maintenance script that put the working directory on sys.path: it leaves /tmp/pwned and makes
+			// the script fail.
+			const hostile = 'import os\nopen("/tmp/pwned", "w").write("pwned")\nraise SystemExit(3)\n';
+			const planted = await sandboxes.exec(ctx, container.id, {
+				command:
+					'for name in hashlib json os stat tarfile io shutil; do printf "%s" "$HOSTILE" > "$name.py"; done && echo planted',
+				env: { HOSTILE: hostile },
+			});
+			expect(planted).toMatchObject({ exitCode: 0, stdout: "planted\n" });
+
+			// A write from the head, so the next command's re-base runs the scan and the apply script too.
+			await sandboxes.exec(ctx, isolate.id, { command: "printf '%s' 'from isolate' > from-isolate.txt" });
+			const next = await sandboxes.exec(ctx, container.id, {
+				command: "cat from-isolate.txt && if [ -e /tmp/pwned ]; then echo ' pwned'; else echo ' clean'; fi",
+			});
+			expect(next).toMatchObject({ exitCode: 0, stdout: "from isolate clean\n" });
+
+			await sandboxes.release(ctx, container.id);
+			const files = (await listAll(workspaces, ctx, workspaceId)).map((entry) => entry.path);
+			expect(files).toEqual(expect.arrayContaining(["hashlib.py", "json.py", "from-isolate.txt"]));
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("writes the head's files in as the sandbox user, with their modes", async () => {
+		const { sandboxes, workspaces, workspaceId, acquire, cleanup } = await setUp();
+		try {
+			const base = (await workspaces.get(ctx, workspaceId)).head;
+			await workspaces.commit(ctx, workspaceId, {
+				baseVersion: base,
+				changes: [{ op: "put", path: "secret/deep/key.txt", content: "key", mode: 0o600 }],
+			});
+			const container = await acquire("container");
+			const listed = await sandboxes.exec(ctx, container.id, {
+				command: "stat -c '%u:%g %a %n' secret secret/deep secret/deep/key.txt && cat secret/deep/key.txt",
+			});
+			expect(listed).toMatchObject({
+				exitCode: 0,
+				stdout: "1000:1000 755 secret\n1000:1000 755 secret/deep\n1000:1000 600 secret/deep/key.txt\nkey",
+			});
+			await sandboxes.release(ctx, container.id);
+			expect((await workspaces.get(ctx, workspaceId)).head, "nothing changed in the container").toBe(base + 1);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("skips what the sandbox user cannot read, without failing or deleting it", async () => {
+		const { sandboxes, workspaces, workspaceId, acquire, cleanup } = await setUp();
+		try {
+			const base = (await workspaces.get(ctx, workspaceId)).head;
+			await workspaces.commit(ctx, workspaceId, {
+				baseVersion: base,
+				changes: [{ op: "put", path: "kept/a.txt", content: "kept" }],
+			});
+			const container = await acquire("container");
+			const locked = await sandboxes.exec(ctx, container.id, {
+				command: "printf x > locked.txt && chmod 000 locked.txt && chmod 000 kept && echo locked",
+			});
+			expect(locked).toMatchObject({ exitCode: 0, stdout: "locked\n" });
+			expect((await sandboxes.exec(ctx, container.id, { command: "echo ok" })).stdout).toBe("ok\n");
+
+			await sandboxes.release(ctx, container.id);
+			const files = (await listAll(workspaces, ctx, workspaceId))
+				.filter((entry) => entry.kind === "file")
+				.map((entry) => entry.path);
+			expect(files, "an unreadable directory's files are not deleted").toContain("kept/a.txt");
+			expect(files, "an unreadable file is not collected").not.toContain("locked.txt");
+			expect((await workspaces.get(ctx, workspaceId)).head).toBe(base + 1);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("kills the sandbox user's background jobs before the final snapshot", async () => {
+		const { backend, sandboxes, workspaces, workspaceId, acquire, cleanup } = await setUp();
+		try {
+			const container = await acquire("container");
+			const started = await sandboxes.exec(ctx, container.id, {
+				command: "(sleep 1; echo late > late.txt) & echo started",
+			});
+			expect(started).toMatchObject({ exitCode: 0, stdout: "started\n" });
+			const record = await workspaces.get(ctx, workspaceId);
+			// The final snapshot, taken directly, then a wait past the job's write: a job that survived the snapshot would
+			// have written late.txt by the time the release takes its own.
+			const first = await backend.pending({ ctx, lease: container, record }, { final: true });
+			expect(first.changes.map((change) => change.path)).not.toContain("late.txt");
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+
+			await sandboxes.release(ctx, container.id);
+			const files = (await listAll(workspaces, ctx, workspaceId)).map((entry) => entry.path);
+			expect(files).not.toContain("late.txt");
+			expect((await workspaces.get(ctx, workspaceId)).head, "nothing to commit").toBe(record.head);
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("kills a command at its timeout and returns promptly", async () => {
 		const { sandboxes, acquire, cleanup } = await setUp();
 		try {
