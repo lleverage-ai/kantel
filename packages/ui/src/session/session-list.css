@@ -41,8 +41,16 @@
 	list-style: none;
 }
 
+/*
+ * A list of hundreds of sessions: the browser skips styling, layout and paint for rows out of view, so selecting a
+ * row restyles a screenful, not the whole list. The size estimate holds only until a row has rendered once (`auto`
+ * then remembers its real height), so one estimate serves the one- and three-line rows. Paint containment cannot
+ * clip the focus ring: ListRow draws it inset.
+ */
 .hb-session-rows-item {
 	min-width: 0;
+	content-visibility: auto;
+	contain-intrinsic-size: auto var(--hb-space-11);
 }
 
 /*

@@ -7,8 +7,8 @@ it on the score without making anything measurably worse.
 It started from the brief's suggestion (gates, measurements, a judged rubric). The changes from that suggestion are
 marked **Change**, with the reason. Everything below is in place: the static gates (`scripts/token-lint.ts`), the
 browser and States gates (`loop/gates.ts`, `loop/specs.ts`), the measurement harness (`loop/harness/`,
-`loop/measure.ts`) and the score (`loop/score.ts`). Round 1 has run on five components; its results are in
-[loop-results.md](loop-results.md) and every number and verdict behind them is in `loop/history/`.
+`loop/measure.ts`) and the score (`loop/score.ts`). Round 1 ran on five components and round 2 on four; the
+results are in [loop-results.md](loop-results.md) and every number and verdict behind them is in `loop/history/`.
 
 ## Fitness
 

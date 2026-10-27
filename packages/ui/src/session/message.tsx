@@ -3,6 +3,7 @@ import { memo } from "react";
 import { Disclosure } from "../primitives/controls.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
+import { Elapsed } from "../primitives/time.tsx";
 import { Markdown } from "./markdown.tsx";
 import "./message.css";
 
@@ -25,10 +26,33 @@ export const UserMessage = memo(function UserMessage({ item }: { item: UserItem 
 });
 
 /**
- * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
- * caret sits at the end of the text; before any text or thought arrives, three dots say it is working.
+ * While the agent works before its first word, after T3 Code's working row (TimelineWorkGroupRows.tsx:274-300): a
+ * muted "Working for 12s", timed from when the turn started. Only the `Elapsed` leaf ticks, on the shared clock. It
+ * is a timer named "Working", whose implicit aria-live is off, so screen readers are not told every second. Without a
+ * start time it says "Working".
  */
-export const AssistantMessage = memo(function AssistantMessage({ item }: { item: AssistantItem }) {
+function WorkingRow({ since }: { since: number | undefined }) {
+	if (since === undefined) return <div className="hb-working">Working</div>;
+	return (
+		<div className="hb-working" role="timer" aria-label="Working">
+			Working for <Elapsed since={since} />
+		</div>
+	);
+}
+
+/**
+ * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
+ * caret sits at the end of the text; before any text or thought arrives, "Working for 12s" says it is working, timed
+ * from `turnStartedAt` (when the turn started), or "Working" without it.
+ */
+export const AssistantMessage = memo(function AssistantMessage({
+	item,
+	turnStartedAt,
+}: {
+	item: AssistantItem;
+	/** When the turn this answer belongs to started, for the working row's timer. */
+	turnStartedAt?: number | undefined;
+}) {
 	useRenderProbe("AssistantMessage", item.id);
 	const { streaming, text, thinking } = item;
 	return (
@@ -41,15 +65,7 @@ export const AssistantMessage = memo(function AssistantMessage({ item }: { item:
 					<p className="hb-assistant-message-thought">{thinking}</p>
 				</Disclosure>
 			) : null}
-			{text !== "" ? (
-				<Markdown text={text} />
-			) : streaming && !thinking ? (
-				<span className="hb-working" role="img" aria-label="Working">
-					<span className="hb-working-dot" />
-					<span className="hb-working-dot" />
-					<span className="hb-working-dot" />
-				</span>
-			) : null}
+			{text !== "" ? <Markdown text={text} /> : streaming && !thinking ? <WorkingRow since={turnStartedAt} /> : null}
 		</div>
 	);
 });
