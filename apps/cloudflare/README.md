@@ -67,7 +67,7 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | secret | The deploy token, with the permissions below |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | The account to deploy to |
-| `HARBOUR_HOSTNAME` | variable | The one hostname, `harbour.myslop.app`, attached as the Worker's custom domain |
+| `HARBOUR_HOSTNAME` | variable | The one hostname, `harbour.myslop.app`, served by the zone route `<hostname>/*` on its parent zone (`myslop.app`) |
 | `HARBOUR_ACCESS_TEAM_DOMAIN` | variable | The Access team domain, such as `<team>.cloudflareaccess.com` |
 | `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
@@ -76,7 +76,7 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
 --dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
 
-1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the custom domain, the Access vars, the admin
+1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,
    and a base config that could serve on workers.dev or a preview URL);
 2. runs the dry run, then `wrangler deploy`. On the first deploy wrangler creates the D1 database `harbour` and the
@@ -84,8 +84,13 @@ Until the secret and every variable exist, and on every pull request, the workfl
 3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
 
-The custom domain makes its own DNS record, and wrangler refuses to replace an existing one, so nothing else should
-create a DNS record for `HARBOUR_HOSTNAME`.
+Harbour is served on a zone route, `harbour.myslop.app/*` with `zone_name: "myslop.app"`, not a custom domain. The
+`myslop.app` zone already has a `*.myslop.app/*` route to the `myslop-apps` Worker, and Cloudflare gives a route
+precedence over a custom domain on the same hostname, so a custom domain would be shadowed. Between routes the most
+specific pattern wins, so `harbour.myslop.app/*` beats the wildcard
+([Routes](https://developers.cloudflare.com/workers/configuration/routing/routes/)). A route makes no DNS record of its
+own: the zone's proxied wildcard record (`*.myslop.app`) already resolves the hostname, so none is needed for it. The
+zone is the hostname's parent, so `HARBOUR_HOSTNAME` must be a direct subdomain of its zone.
 
 ### The deploy token's permissions
 
@@ -95,10 +100,9 @@ create a DNS record for `HARBOUR_HOSTNAME`.
 | Account | D1: Edit | Create the `harbour` database on the first deploy and look it up by name after |
 | Account | Workers R2 Storage: Edit | Create the `harbour-workspaces` bucket on the first deploy and look it up by name after |
 | Account | Connectivity Directory: Bind | Bind the existing Workers VPC service (`MODELS`) |
-| Zone (myslop.app) | Workers Routes: Edit | Attach the custom domain `HARBOUR_HOSTNAME` |
+| Zone (myslop.app) | Workers Routes: Edit | Add the zone route `HARBOUR_HOSTNAME/*` |
 
-Cloudflare documents Workers Routes edit as what a custom domain needs; DNS edit isn't listed, so it shouldn't be
-needed. Later steps of #17 may add more, such as Containers for the container tier; each will be listed here.
+A zone route needs only Workers Routes edit on the zone; it makes no DNS record, so DNS edit isn't needed. Later steps of #17 may add more, such as Containers for the container tier; each will be listed here.
 
 ## Checks
 

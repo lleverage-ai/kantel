@@ -1,13 +1,13 @@
 {
 	// Harbour M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
-	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the custom domain, the
+	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-01",
 	"compatibility_flags": ["nodejs_compat"],
-	// Never reachable on workers.dev or a preview URL: those would bypass Access, which guards only the custom domain.
+	// Never reachable on workers.dev or a preview URL: those would bypass Access, which guards only HARBOUR_HOSTNAME.
 	"workers_dev": false,
 	"preview_urls": false,
 	"observability": { "enabled": true },
