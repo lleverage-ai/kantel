@@ -373,10 +373,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	/** Opens the session's Harness on its storage, or returns it if it is open already. */
 	const ensureOpen = (stored: StoredSession): Promise<OpenSession> => {
 		const id = stored.record.id;
-		const current = open.get(id);
-		if (current !== undefined) return Promise.resolve(current);
+		// A session is in `open` before it is ready (so registration changes reach it while its tools install); callers
+		// wait for the opening to finish.
 		const pending = opening.get(id);
 		if (pending !== undefined) return pending;
+		const current = open.get(id);
+		if (current !== undefined) return Promise.resolve(current);
 		if (closed) return Promise.reject(new HarbourError("unavailable", "The session runtime is closed"));
 		const started = openSession(stored).finally(() => opening.delete(id));
 		opening.set(id, started);

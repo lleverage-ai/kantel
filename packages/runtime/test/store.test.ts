@@ -274,8 +274,14 @@ describe("session runtime on SQL", () => {
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		const second = await openOn(db, undefined, gate);
+		let entered: () => void = () => {};
+		const reached = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const second = await openOn(db, undefined, gate, entered);
 		const opening = second.service.runtime.snapshot(ctx, session.id);
+		// The session is now opening, held at its storage.
+		await reached;
 		const calls: string[] = [];
 		await second.service.hostTools.register(
 			ctx,
@@ -297,15 +303,80 @@ describe("session runtime on SQL", () => {
 	});
 });
 
+describe("session runtime opening", () => {
+	it("holds a prompt that arrives while a session's host tools are still installing until they are in", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		const hosted = { ...profile, hostId: "sal", tools: ["lookup"] };
+		const calls: string[] = [];
+		const first = await openOn(db);
+		await first.service.profiles.put(ctx, hosted);
+		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		await first.service.close();
+
+		let hold = false;
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let entered: () => void = () => {};
+		const reached = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const second = await openOn(db, (store) => ({
+			...store,
+			async host(organisationId, hostId) {
+				if (hold) {
+					entered();
+					await gate;
+				}
+				return store.host(organisationId, hostId);
+			},
+		}));
+		await second.service.hostTools.register(
+			ctx,
+			"sal",
+			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
+			async (call) => {
+				calls.push(call.tool);
+				return { output: "found" };
+			},
+		);
+		hold = true;
+		const opening = second.service.runtime.snapshot(ctx, session.id);
+		await reached;
+		hold = false;
+		second.script.reply({ toolCalls: [{ name: "lookup", args: {} }] }, { text: "Done" });
+		const prompting = second.service.runtime.prompt(ctx, session.id, { text: "Look it up" });
+		// Long enough for the prompt to reach the model if nothing held it.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		release();
+		await opening;
+		const prompt = await prompting;
+		expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ answer: "Done" });
+		expect(calls).toEqual(["lookup"]);
+		await second.service.close();
+		await db.close();
+	});
+});
+
 const ctx = { actor: { kind: "service", serviceId: "test" }, organisationId: ORG } as const;
 
-/** A runtime on `db`, its store optionally wrapped, its Pi storage optionally held until `gate` resolves. */
-async function openOn(db: SqliteDatabase, wrap?: (store: SessionStore) => SessionStore, gate?: Promise<void>) {
+/**
+ * A runtime on `db`, its store optionally wrapped, its Pi storage optionally held until `gate` resolves (`entered` is
+ * called when a session reaches it).
+ */
+async function openOn(
+	db: SqliteDatabase,
+	wrap?: (store: SessionStore) => SessionStore,
+	gate?: Promise<void>,
+	entered?: () => void,
+) {
 	const { models, script } = createScriptedModel();
 	const store = await createSqlSessionStore(db);
 	const service = createSessionRuntime({
 		store: wrap === undefined ? store : wrap(store),
 		storage: async (session) => {
+			entered?.();
 			await gate;
 			return sqlPiStorage(db, session.id);
 		},

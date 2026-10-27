@@ -236,13 +236,16 @@ export async function createSqlSessionStore(
 		},
 		async deleteHost(organisationId, hostId, registration) {
 			// One statement: a replacement that lands first leaves nothing for a stale registration to remove.
-			const removed = await db.all<{ host_id: string }>(
-				`DELETE FROM ${p}hosts WHERE organisation_id = ? AND host_id = ? AND registration = ? RETURNING host_id`,
-				organisationId,
-				hostId,
-				registration,
-			);
-			return removed.length > 0;
+			// In a transaction, where a fenced database (self-hosted Postgres) checks its fence before the write.
+			return db.transaction(async (tx) => {
+				const removed = await tx.all<{ host_id: string }>(
+					`DELETE FROM ${p}hosts WHERE organisation_id = ? AND host_id = ? AND registration = ? RETURNING host_id`,
+					organisationId,
+					hostId,
+					registration,
+				);
+				return removed.length > 0;
+			});
 		},
 		async hosts() {
 			const rows = await db.all<{ body: string }>(
