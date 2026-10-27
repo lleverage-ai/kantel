@@ -57,6 +57,13 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../workspace
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
 
   packages/testing:
     dependencies:
@@ -82,6 +89,10 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
 
 packages:
   "@anthropic-ai/sdk@0.129.0":

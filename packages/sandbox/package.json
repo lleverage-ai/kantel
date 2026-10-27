@@ -10,6 +10,10 @@
 		"./memory": "./src/memory.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@harbour/contracts": "workspace:*",
+		"@harbour/workspace": "workspace:*"
+	},
+	"devDependencies": {
+		"@harbour/testing": "workspace:*"
 	}
 }

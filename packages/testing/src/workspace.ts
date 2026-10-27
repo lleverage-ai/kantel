@@ -1,0 +1,468 @@
+/**
+ * Workspace conformance: versioned trees, atomic commits, paged listing, history, export and read-only pinned mounts.
+ * The subject wires a `project-files` mount source (with `write`) into the workspaces under test.
+ */
+import type {
+	CallContext,
+	MountSource,
+	OwnerRef,
+	WorkspaceChange,
+	WorkspaceRecord,
+	Workspaces,
+} from "@harbour/contracts";
+import {
+	actors,
+	type ConformanceAssertions,
+	type ConformanceCase,
+	type ConformanceDeps,
+	type ConformanceRunner,
+	contextFor,
+	createDeps,
+	createExpectAssertions,
+	registerCases,
+} from "./harness.ts";
+
+export interface WorkspaceSubject {
+	readonly workspaces: Workspaces;
+	/** A `project-files` source registered with `workspaces`; it must implement `write`. */
+	readonly projectFiles: MountSource;
+}
+
+export type WorkspaceConformanceProvider = (
+	deps: ConformanceDeps,
+	use: (subject: WorkspaceSubject) => Promise<void>,
+) => Promise<void>;
+
+export const WORKSPACE_FIXTURE = {
+	organisationId: "org-harbour",
+	otherOrganisationId: "org-elsewhere",
+	projectId: "proj-harbour",
+} as const;
+
+const ctx: CallContext = contextFor(
+	actors.human("user-alice"),
+	WORKSPACE_FIXTURE.organisationId,
+	WORKSPACE_FIXTURE.projectId,
+);
+const otherCtx: CallContext = contextFor(actors.human("user-mallory"), WORKSPACE_FIXTURE.otherOrganisationId);
+const owner: OwnerRef = {
+	kind: "project",
+	organisationId: WORKSPACE_FIXTURE.organisationId,
+	projectId: WORKSPACE_FIXTURE.projectId,
+};
+
+const decoder = new TextDecoder();
+const text = (bytes: Uint8Array): string => decoder.decode(bytes);
+
+/** Writes project files through the source's own tool, as a tool call does. */
+export async function writeProjectFiles(
+	projectFiles: MountSource,
+	callContext: CallContext,
+	ref: string,
+	changes: readonly WorkspaceChange[],
+): Promise<string> {
+	if (projectFiles.write === undefined) throw new Error("the project files source must implement write");
+	return (await projectFiles.write(callContext, ref, changes)).version;
+}
+
+export function createWorkspaceConformance(options: {
+	assertions: ConformanceAssertions;
+	provider: WorkspaceConformanceProvider;
+}): readonly ConformanceCase[] {
+	const a = options.assertions;
+	const withSubject = (run: (subject: WorkspaceSubject, deps: ConformanceDeps) => Promise<void>) => async () => {
+		const deps = createDeps();
+		await options.provider(deps, (subject) => run(subject, deps));
+	};
+	const project = WORKSPACE_FIXTURE.projectId;
+
+	async function withProjectMount(subject: WorkspaceSubject): Promise<{ record: WorkspaceRecord; pinned: string }> {
+		const pinned = await writeProjectFiles(subject.projectFiles, ctx, project, [
+			{ op: "put", path: "README.md", content: "project readme v1" },
+			{ op: "put", path: "src/app.ts", content: "export const app = 1;" },
+		]);
+		const record = await subject.workspaces.create(ctx, {
+			owner,
+			mounts: [{ path: "/project", source: subject.projectFiles.kind, ref: project }],
+		});
+		return { record, pinned };
+	}
+
+	return [
+		{
+			name: "creates a workspace at version 0 with no files",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, { owner, sessionId: "sess-1" });
+				a.strictEqual(record.head, 0);
+				a.partialDeepEqual(record, { owner, sessionId: "sess-1", mounts: [] });
+				a.deepEqual(await workspaces.get(ctx, record.id), record);
+				a.deepEqual((await workspaces.list(ctx, record.id)).items, []);
+			}),
+		},
+		{
+			name: "applies seed files as version 1",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, {
+					owner,
+					seed: { name: "notes", sources: [{ kind: "files", files: { "notes/a.md": "alpha", "b.txt": "beta" } }] },
+				});
+				a.strictEqual(record.head, 1);
+				const file = await workspaces.read(ctx, record.id, "notes/a.md");
+				a.strictEqual(text(file.content), "alpha");
+				a.strictEqual(file.version, 1);
+				a.strictEqual((await workspaces.read(ctx, record.id, "b.txt", { version: 1 })).digest.length, 64);
+				await a.rejectsWithCode(workspaces.read(ctx, record.id, "b.txt", { version: 0 }), "not_found");
+			}),
+		},
+		{
+			name: "commits puts and deletes atomically as one new version",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, {
+					owner,
+					seed: { name: "s", sources: [{ kind: "files", files: { "old.txt": "old", "keep.txt": "keep" } }] },
+				});
+				const result = await workspaces.commit(ctx, record.id, {
+					baseVersion: 1,
+					changes: [
+						{ op: "put", path: "notes/new.md", content: new TextEncoder().encode("new") },
+						{ op: "put", path: "keep.txt", content: "kept" },
+						{ op: "delete", path: "old.txt" },
+					],
+				});
+				a.deepEqual(result, { version: 2, changed: ["keep.txt", "notes/new.md", "old.txt"] });
+				a.strictEqual((await workspaces.get(ctx, record.id)).head, 2);
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "notes/new.md")).content), "new");
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "keep.txt")).content), "kept");
+				await a.rejectsWithCode(workspaces.read(ctx, record.id, "old.txt"), "not_found");
+
+				// A commit that fails on one change applies none of them.
+				await a.rejectsWithCode(
+					workspaces.commit(ctx, record.id, {
+						baseVersion: 2,
+						changes: [
+							{ op: "put", path: "keep.txt", content: "lost" },
+							{ op: "put", path: "../outside.txt", content: "lost" },
+						],
+					}),
+					"invalid",
+				);
+				a.strictEqual((await workspaces.get(ctx, record.id)).head, 2);
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "keep.txt")).content), "kept");
+			}),
+		},
+		{
+			name: "rejects a commit on a stale base version with conflict",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, { owner });
+				await workspaces.commit(ctx, record.id, { baseVersion: 0, changes: [{ op: "put", path: "a", content: "1" }] });
+				await a.rejectsWithCode(
+					workspaces.commit(ctx, record.id, { baseVersion: 0, changes: [{ op: "put", path: "a", content: "2" }] }),
+					"conflict",
+				);
+				a.strictEqual((await workspaces.get(ctx, record.id)).head, 1);
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "a")).content), "1");
+			}),
+		},
+		{
+			name: "reads older content at an older version",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, { owner });
+				await workspaces.commit(ctx, record.id, {
+					baseVersion: 0,
+					changes: [{ op: "put", path: "a", content: "one" }],
+				});
+				await workspaces.commit(ctx, record.id, {
+					baseVersion: 1,
+					changes: [{ op: "put", path: "a", content: "two" }],
+				});
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "a", { version: 1 })).content), "one");
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "a")).content), "two");
+				a.strictEqual((await workspaces.stat(ctx, record.id, "a", { version: 1 })).version, 1);
+				a.strictEqual((await workspaces.stat(ctx, record.id, "a")).version, 2);
+			}),
+		},
+		{
+			name: "rejects paths that are not normalised relative paths as invalid",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, { owner });
+				for (const path of ["", "../escape", "a/../b", "./a", "a//b", "a\\b", "dir/", "/elsewhere/a"]) {
+					await a.rejectsWithCode(
+						workspaces.commit(ctx, record.id, {
+							baseVersion: 0,
+							changes: [
+								{ op: "put", path: "fine.txt", content: "x" },
+								{ op: "put", path, content: "x" },
+							],
+						}),
+						"invalid",
+						`commit of ${JSON.stringify(path)}`,
+					);
+					await a.rejectsWithCode(workspaces.read(ctx, record.id, path), "invalid", `read of ${JSON.stringify(path)}`);
+				}
+				a.strictEqual((await workspaces.get(ctx, record.id)).head, 0);
+			}),
+		},
+		{
+			name: "lists 250 files in three pages, sorted and without bodies",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, { owner });
+				const changes: WorkspaceChange[] = [];
+				for (let index = 0; index < 250; index++) {
+					changes.push({ op: "put", path: `file-${String(index).padStart(3, "0")}.txt`, content: `body ${index}` });
+				}
+				await workspaces.commit(ctx, record.id, { baseVersion: 0, changes });
+				const pages: string[][] = [];
+				let cursor: string | undefined;
+				do {
+					const page = await workspaces.list(ctx, record.id, cursor === undefined ? {} : { cursor });
+					for (const item of page.items) a.strictEqual("content" in item, false, "list must not return bodies");
+					pages.push(page.items.map((item) => item.path));
+					cursor = page.nextCursor;
+				} while (cursor !== undefined && pages.length < 5);
+				a.deepEqual(
+					pages.map((page) => page.length),
+					[100, 100, 50],
+				);
+				const all = pages.flat();
+				a.deepEqual(all, [...all].sort());
+				a.strictEqual(new Set(all).size, 250);
+				a.partialDeepEqual((await workspaces.list(ctx, record.id, { limit: 10 })).items[0], {
+					path: "file-000.txt",
+					kind: "file",
+					size: 6,
+					version: 1,
+				});
+			}),
+		},
+		{
+			name: "lists nested files only when recursive",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, {
+					owner,
+					seed: {
+						name: "s",
+						sources: [{ kind: "files", files: { "top.txt": "t", "docs/a.md": "a", "docs/deep/b.md": "b" } }],
+					},
+				});
+				const shallow = await workspaces.list(ctx, record.id);
+				a.deepEqual(
+					shallow.items.map((item) => [item.path, item.kind]),
+					[
+						["docs", "directory"],
+						["top.txt", "file"],
+					],
+				);
+				const docs = await workspaces.list(ctx, record.id, { path: "docs" });
+				a.deepEqual(
+					docs.items.map((item) => item.path),
+					["docs/a.md", "docs/deep"],
+				);
+				const deep = await workspaces.list(ctx, record.id, { recursive: true });
+				a.deepEqual(
+					deep.items.map((item) => item.path),
+					["docs", "docs/a.md", "docs/deep", "docs/deep/b.md", "top.txt"],
+				);
+				a.strictEqual((await workspaces.stat(ctx, record.id, "docs/deep")).kind, "directory");
+				await a.rejectsWithCode(workspaces.list(ctx, record.id, { path: "missing" }), "not_found");
+			}),
+		},
+		{
+			name: "returns history newest first with the committing actor",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, { owner });
+				const bot = contextFor(actors.agent("agent-1", "sess-1"), WORKSPACE_FIXTURE.organisationId);
+				await workspaces.commit(ctx, record.id, { baseVersion: 0, changes: [{ op: "put", path: "a", content: "1" }] });
+				await workspaces.commit(bot, record.id, {
+					baseVersion: 1,
+					changes: [{ op: "put", path: "b", content: "2" }],
+					message: "agent edit",
+				});
+				const history = await workspaces.history(ctx, record.id);
+				a.partialDeepEqual(history.items[0], { version: 2, actor: bot.actor, changed: ["b"], message: "agent edit" });
+				a.partialDeepEqual(history.items[1], { version: 1, actor: ctx.actor, changed: ["a"] });
+				const firstPage = await workspaces.history(ctx, record.id, { limit: 1 });
+				a.strictEqual(firstPage.items[0]?.version, 2);
+				a.ok(firstPage.nextCursor, "a short page has a cursor");
+				const next = await workspaces.history(ctx, record.id, { limit: 1, cursor: firstPage.nextCursor! });
+				a.strictEqual(next.items[0]?.version, 1);
+			}),
+		},
+		{
+			name: "exports only the files under the requested prefixes at head",
+			run: withSubject(async ({ workspaces }) => {
+				const record = await workspaces.create(ctx, {
+					owner,
+					seed: {
+						name: "s",
+						sources: [{ kind: "files", files: { "notes/a.md": "a", "notes/sub/b.md": "b", "src/c.ts": "c" } }],
+					},
+				});
+				await workspaces.commit(ctx, record.id, {
+					baseVersion: 1,
+					changes: [{ op: "put", path: "notes/a.md", content: "a2" }],
+				});
+				const exported = await workspaces.export(ctx, record.id, ["notes/"]);
+				a.deepEqual(
+					exported.map((file) => [file.path, text(file.content)]),
+					[
+						["notes/a.md", "a2"],
+						["notes/sub/b.md", "b"],
+					],
+				);
+			}),
+		},
+		{
+			name: "refuses a commit under /project, audits it and leaves the head unchanged",
+			run: withSubject(async (subject, deps) => {
+				const { record } = await withProjectMount(subject);
+				await a.rejectsWithCode(
+					subject.workspaces.commit(ctx, record.id, {
+						baseVersion: record.head,
+						changes: [
+							{ op: "put", path: "notes/ok.md", content: "fine" },
+							{ op: "put", path: "/project/README.md", content: "overwritten" },
+						],
+					}),
+					"refused",
+				);
+				const refused = deps.audit.ofType("workspace.write.refused");
+				a.strictEqual(refused.length, 1);
+				a.partialDeepEqual(refused[0], {
+					source: "workspace",
+					organisationId: WORKSPACE_FIXTURE.organisationId,
+					actor: ctx.actor,
+					subject: { kind: "workspace", id: record.id },
+				});
+				a.strictEqual((await subject.workspaces.get(ctx, record.id)).head, record.head);
+				await a.rejectsWithCode(subject.workspaces.read(ctx, record.id, "notes/ok.md"), "not_found");
+				a.strictEqual(
+					text((await subject.workspaces.read(ctx, record.id, "/project/README.md")).content),
+					"project readme v1",
+				);
+				a.strictEqual(deps.audit.ofType("workspace.committed").length, 0);
+			}),
+		},
+		{
+			name: "keeps a mount read-only and pinned until remount",
+			run: withSubject(async (subject) => {
+				const { record, pinned } = await withProjectMount(subject);
+				a.deepEqual(record.mounts, [
+					{ path: "/project", source: subject.projectFiles.kind, ref: project, version: pinned, readOnly: true },
+				]);
+				const next = await writeProjectFiles(subject.projectFiles, ctx, project, [
+					{ op: "put", path: "README.md", content: "project readme v2" },
+				]);
+				a.ok(next !== pinned, "a write creates a new source version");
+				a.strictEqual(await subject.projectFiles.latestVersion(ctx, project), next);
+				const stillPinned = await subject.workspaces.read(ctx, record.id, "/project/README.md");
+				a.strictEqual(text(stillPinned.content), "project readme v1");
+				a.strictEqual(stillPinned.version, pinned);
+
+				const remounted = await subject.workspaces.remount(ctx, record.id, {
+					path: "/project",
+					source: subject.projectFiles.kind,
+					ref: project,
+				});
+				a.partialDeepEqual(remounted.mounts[0], { path: "/project", version: next, readOnly: true });
+				a.strictEqual(
+					text((await subject.workspaces.read(ctx, record.id, "/project/README.md")).content),
+					"project readme v2",
+				);
+				// Pinning an explicit version still reads that version.
+				const older = await subject.workspaces.create(ctx, {
+					owner,
+					mounts: [{ path: "/project", source: subject.projectFiles.kind, ref: project, version: pinned }],
+				});
+				a.strictEqual(
+					text((await subject.workspaces.read(ctx, older.id, "/project/README.md")).content),
+					"project readme v1",
+				);
+			}),
+		},
+		{
+			name: "lists and reads /project through the mount",
+			run: withSubject(async (subject) => {
+				const { record } = await withProjectMount(subject);
+				const listed = await subject.workspaces.list(ctx, record.id, { path: "/project" });
+				a.deepEqual(
+					listed.items.map((item) => [item.path, item.kind]),
+					[
+						["/project/README.md", "file"],
+						["/project/src", "directory"],
+					],
+				);
+				const deep = await subject.workspaces.list(ctx, record.id, { path: "/project", recursive: true });
+				a.deepEqual(
+					deep.items.map((item) => item.path),
+					["/project/README.md", "/project/src", "/project/src/app.ts"],
+				);
+				const file = await subject.workspaces.read(ctx, record.id, "/project/src/app.ts");
+				a.strictEqual(text(file.content), "export const app = 1;");
+				a.partialDeepEqual(await subject.workspaces.stat(ctx, record.id, "/project/src/app.ts"), {
+					path: "/project/src/app.ts",
+					kind: "file",
+				});
+				await a.rejectsWithCode(subject.workspaces.read(ctx, record.id, "/project/missing.md"), "not_found");
+				a.deepEqual((await subject.workspaces.list(ctx, record.id)).items, []);
+			}),
+		},
+		{
+			name: "audits each commit as workspace.committed",
+			run: withSubject(async ({ workspaces }, deps) => {
+				const record = await workspaces.create(ctx, { owner });
+				await workspaces.commit(ctx, record.id, {
+					baseVersion: 0,
+					changes: [{ op: "put", path: "a", content: "1" }],
+					writer: { sessionId: "sess-1", leaseId: "lease-1" },
+				});
+				const committed = deps.audit.ofType("workspace.committed");
+				a.strictEqual(committed.length, 1);
+				a.partialDeepEqual(committed[0], {
+					source: "workspace",
+					actor: ctx.actor,
+					organisationId: WORKSPACE_FIXTURE.organisationId,
+					sessionId: "sess-1",
+					subject: { kind: "workspace", id: record.id },
+				});
+			}),
+		},
+		{
+			name: "hides another organisation's workspace as not_found",
+			run: withSubject(async (subject) => {
+				const { record } = await withProjectMount(subject);
+				const { workspaces } = subject;
+				await a.rejectsWithCode(workspaces.get(otherCtx, record.id), "not_found");
+				await a.rejectsWithCode(workspaces.list(otherCtx, record.id), "not_found");
+				await a.rejectsWithCode(workspaces.read(otherCtx, record.id, "/project/README.md"), "not_found");
+				await a.rejectsWithCode(workspaces.stat(otherCtx, record.id, "/project"), "not_found");
+				await a.rejectsWithCode(
+					workspaces.commit(otherCtx, record.id, { baseVersion: 0, changes: [{ op: "put", path: "a", content: "x" }] }),
+					"not_found",
+				);
+				await a.rejectsWithCode(workspaces.history(otherCtx, record.id), "not_found");
+				await a.rejectsWithCode(workspaces.export(otherCtx, record.id, [""]), "not_found");
+				await a.rejectsWithCode(
+					workspaces.remount(otherCtx, record.id, {
+						path: "/project",
+						source: subject.projectFiles.kind,
+						ref: project,
+					}),
+					"not_found",
+				);
+				a.strictEqual((await workspaces.get(ctx, record.id)).head, 0);
+			}),
+		},
+	];
+}
+
+export function registerWorkspaceConformance(
+	runner: ConformanceRunner,
+	name: string,
+	provider: WorkspaceConformanceProvider,
+): void {
+	registerCases(
+		runner,
+		name,
+		createWorkspaceConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+	);
+}
