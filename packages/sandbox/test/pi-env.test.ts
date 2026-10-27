@@ -328,6 +328,70 @@ describe("createSandboxExecutionEnv: files", () => {
 		expect(await readHead("dst/keep.txt")).toBe("keep");
 	});
 
+	it("refuses to make a directory below a file, by createDir, createTempDir or a rename", async () => {
+		const { env, head } = await setUp();
+		getOrThrow(await env.writeFile("file", "x", context));
+		getOrThrow(await env.createDir("empty", undefined, context));
+		getOrThrow(await env.createDir("made/inner", undefined, context));
+		const before = await head();
+
+		expect(codeOf(await env.renameFile("empty", "file/child", context))).toBe("not_directory");
+		expect(codeOf(await env.renameFile("made", "file/child/deeper", context))).toBe("not_directory");
+		expect(codeOf(await env.createDir("file/child", undefined, context))).toBe("not_directory");
+		expect(await head()).toBe(before);
+		expect(getOrThrow(await env.fileInfo("file", context))).toMatchObject({ kind: "file", size: 1 });
+		expect(getOrThrow(await env.exists("file/child", context))).toBe(false);
+		expect(codeOf(await env.fileInfo("file/child", context))).toBe("not_directory");
+		// The sources stay where they were.
+		expect(getOrThrow(await env.fileInfo("empty", context))).toMatchObject({ kind: "directory" });
+		expect(getOrThrow(await env.fileInfo("made/inner", context))).toMatchObject({ kind: "directory" });
+
+		// With a file at `.tmp`, no temporary directory can be made below it.
+		getOrThrow(await env.writeFile(".tmp", "x", context));
+		expect(codeOf(await env.createTempDir("run-", context))).toBe("not_directory");
+		expect(getOrThrow(await env.listDir(".", context)).map((entry) => [entry.name, entry.kind])).toEqual([
+			[".tmp", "file"],
+			["docs", "directory"],
+			["empty", "directory"],
+			["file", "file"],
+			["made", "directory"],
+		]);
+	});
+
+	it("lets a file another writer committed win over the directories made here", async () => {
+		const { env, workspaces, record, head } = await setUp();
+		const commitFile = async (path: string) => {
+			await workspaces.commit(ctx, record.id, {
+				baseVersion: await head(),
+				changes: [{ op: "put", path, content: "file" }],
+			});
+		};
+
+		getOrThrow(await env.createDir("a/child", undefined, context));
+		await commitFile("a");
+		expect(getOrThrow(await env.fileInfo("a", context))).toMatchObject({ path: "/workspace/a", kind: "file" });
+		expect(codeOf(await env.fileInfo("a/child", context))).toBe("not_directory");
+		expect(codeOf(await env.listDir("a/child", context))).toBe("not_directory");
+		expect(getOrThrow(await env.exists("a/child", context))).toBe(false);
+		getOrThrow(await env.remove("a", undefined, context));
+		expect(getOrThrow(await env.exists("a", context))).toBe(false);
+		expect(getOrThrow(await env.exists("a/child", context))).toBe(false);
+
+		// Removing the file forgets the directories made at and below it even when nothing asked about them first.
+		getOrThrow(await env.createDir("b/child", undefined, context));
+		await commitFile("b");
+		getOrThrow(await env.remove("b", undefined, context));
+		expect(getOrThrow(await env.exists("b", context))).toBe(false);
+		expect(getOrThrow(await env.exists("b/child", context))).toBe(false);
+		expect(getOrThrow(await env.listDir(".", context)).map((entry) => entry.name)).toEqual(["docs"]);
+
+		// A rename sees the file too: the made directory below it is no source.
+		getOrThrow(await env.createDir("c/child", undefined, context));
+		await commitFile("c");
+		expect(codeOf(await env.renameFile("c/child", "moved", context))).toBe("not_directory");
+		expect(getOrThrow(await env.exists("moved", context))).toBe(false);
+	});
+
 	it("reports reads, stats and listings below a file as not_directory, and exists as false", async () => {
 		const { env } = await setUp();
 		expect(codeOf(await env.readTextFile("docs/one.md/child", context))).toBe("not_directory");
@@ -709,9 +773,10 @@ describe("createSandboxExecutionEnv: shell", () => {
 			["stdout", "partial"],
 			["stderr", "\n[output truncated by the sandbox]\n"],
 		]);
-		expect(getOrThrow(await env.readTextFile(result.spillPath ?? "", context))).toBe(
-			"partial\n[output truncated by the sandbox]\n",
-		);
+		// Not the complete output: the spill file says so first, and keeps the marker where the output stops.
+		const spilled = getOrThrow(await env.readTextFile(result.spillPath ?? "", context));
+		expect(spilled.startsWith("[output truncated by the sandbox]\n")).toBe(true);
+		expect(spilled).toBe("[output truncated by the sandbox]\npartial\n[output truncated by the sandbox]\n");
 
 		chunks.length = 0;
 		getOrThrow(await env.exec("echo whole", { onOutput }, context));
@@ -736,6 +801,63 @@ describe("createSandboxExecutionEnv: shell", () => {
 		const shell = getOrThrow(await env.exec("no-such-program", { onOutput }, context));
 		expect(shell.exitCode).toBe(127);
 		expect(chunks).toEqual(["sh: no-such-program: command not found\n"]);
+	});
+
+	it("reports an argv program that ran and exited with 127 as an exit code, with its output", async () => {
+		let stub: { readonly stdout: string; readonly stderr: string } | undefined;
+		const { env } = await setUp({
+			wrapSandboxes: (inner) => ({
+				...inner,
+				async run(callCtx, input) {
+					if (stub === undefined) return inner.run(callCtx, input);
+					// A program that started, printed `stub` and exited with 127.
+					const ran = await inner.run(callCtx, { ...input, request: { ...input.request, command: "true" } });
+					return { ...ran, exitCode: 127, ...stub };
+				},
+			}),
+		});
+		const chunks: [string, string][] = [];
+		const onOutput = (text: string, _context: Context, info: { stream: string }) => {
+			chunks.push([info.stream, text]);
+		};
+
+		// A script whose last nested command is missing: it ran, so its output is delivered.
+		stub = { stdout: "step one done\n", stderr: "./script.sh: line 3: helper: command not found\n" };
+		const ran = getOrThrow(await env.exec(["./script.sh"], { onOutput }, context));
+		expect(ran.exitCode).toBe(127);
+		expect(chunks).toEqual([
+			["stdout", "step one done\n"],
+			["stderr", "./script.sh: line 3: helper: command not found\n"],
+		]);
+
+		// Not the program's own "not found", though stdout is empty: another program, more than one line, a name that
+		// only matches as a pattern.
+		const others: readonly (readonly [readonly string[], string])[] = [
+			[["./script.sh"], "bash: line 1: helper: command not found\n"],
+			[["./script.sh"], "warning: slow\nsh: ./script.sh: command not found\n"],
+			[["a.b"], "sh: aXb: command not found\n"],
+		];
+		for (const [command, stderr] of others) {
+			chunks.length = 0;
+			stub = { stdout: "", stderr };
+			expect(getOrThrow(await env.exec(command, { onOutput }, context)).exitCode, stderr).toBe(127);
+			expect(chunks, stderr).toEqual([["stderr", stderr]]);
+		}
+
+		// Every shape the sandboxes give for the program itself not being found is a spawn error, with nothing delivered.
+		chunks.length = 0;
+		for (const line of [
+			"sh: ./script.sh: command not found",
+			"bash: ./script.sh: command not found",
+			"bash: line 1: ./script.sh: command not found",
+			"./script.sh: command not found",
+		]) {
+			stub = { stdout: "", stderr: `${line}\n` };
+			const missing = await env.exec(["./script.sh", "arg"], { onOutput }, context);
+			expect(codeOf(missing), line).toBe("spawn_error");
+			expect(missing.ok ? undefined : missing.error.message).toBe(line);
+		}
+		expect(chunks).toEqual([]);
 	});
 });
 

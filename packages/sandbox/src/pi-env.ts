@@ -29,9 +29,13 @@
  *   lifetime: they exist, are (empty, or merged with what the workspace lists) directories to `fileInfo`, `listDir` and
  *   `openDirReader`, cannot be written as files, and go away when `remove` removes them or `renameFile` moves them.
  *   Nothing is committed for them, so the sandboxes, other environments and later sessions do not see an empty one;
- *   once a file is below one, the workspace has it anyway. `createDir` refuses a path that is a file or has a file as
- *   an ancestor; its `recursive` flag is ignored (missing parents are always made). Removing a directory recursively
- *   deletes every file below it in one commit.
+ *   once a file is below one, the workspace has it anyway. `createDir`, `createTempDir` and a rename of a directory
+ *   refuse a destination that is a file or has a file as an ancestor (`not_directory`); `createDir`'s `recursive` flag
+ *   is ignored (missing parents are always made). Another writer may commit a file where a directory was made here:
+ *   before answering from the directories made here, the environment checks that no ancestor is a file at head, and
+ *   if one is, the file wins: the directories made at and below it are forgotten and the path is `not_directory`.
+ *   Removing a path forgets the directories made at and below it, whatever was removed. Removing a directory
+ *   recursively deletes every file below it in one commit.
  * - Errors. `HarbourError` codes map to `FileError` codes: `not_found` to `not_found`, `refused` and `forbidden` to
  *   `permission_denied`, `invalid` to `invalid`, `aborted` to `aborted`, anything else to `unknown`. An `invalid` or
  *   `not_found` at a path that is a directory (one made here, for `not_found`), or that has a file as an ancestor,
@@ -48,12 +52,18 @@
  *   streams are not interleaved. `window` is ignored, so every chunk is delivered. When the sandbox truncated the
  *   output (`ExecResult.truncated`; `ShellExecResult` has no field for it), a last stderr chunk holds the line
  *   `[output truncated by the sandbox]`. With `spill`, output over either threshold (UTF-8 bytes of the combined text,
- *   or its lines, counting an unterminated last one) is written whole, stdout then stderr then that line, to a new
+ *   or its lines, counting an unterminated last one) is written, stdout then stderr then that line, to a new
  *   `<root>/.tmp/pi-output-<uuid>.log` in one commit, whose absolute path is the result's `spillPath`; when that write
- *   fails, the command's result is an `unknown` error. An argv command that exits with 127 (the sandbox's "command not
- *   found") is a `spawn_error` and its output is not delivered, so a caller can try another form; this also catches a
- *   program that itself exits with 127. A string command's 127 is an ordinary exit code. `onExec` (and `onOutput`)
- *   failures are `callback_error`.
+ *   fails, the command's result is an `unknown` error. The spill file holds the complete output only when the sandbox
+ *   did not truncate it. When the sandbox truncated the output, the spill file holds only what the sandbox returned,
+ *   with the marker, and is not complete; the marker is then also its first line, so a reader of the file sees it at
+ *   once. An argv command is a `spawn_error`, with its output not delivered (so a caller can try another form), only
+ *   when its program was not found: it exits with 127, prints nothing to stdout, and its stderr is exactly one line
+ *   saying `argv[0]` was not found (`sh: <argv0>: command not found`, `bash: <argv0>: command not found`,
+ *   `bash: line 1: <argv0>: command not found` or `<argv0>: command not found`). Any other 127, such as a script whose
+ *   last nested command is missing, is an ordinary exit code with its output, since the program started and may have
+ *   had side effects. A string command's 127 is always an ordinary exit code. `onExec` (and `onOutput`) failures are
+ *   `callback_error`.
  * - Temporary files live in the workspace under `<root>/.tmp/`: `createTempFile` commits an empty file there and
  *   `createTempDir` makes a fresh directory there (in this environment only, as above). Files are committed like any
  *   file, so both tiers and `git status` see them; a host that seeds a repository may want `.tmp/` ignored.
@@ -147,10 +157,13 @@ type Location =
 /** What is at a location; `not_directory` when an ancestor is a file. */
 type Shape = "file" | "directory" | "missing" | "not_directory";
 
-/** What a rename finds at a location: `empty` is a directory made here with nothing below it. */
+/**
+ * What a rename finds at a location: `empty` is a directory made here with nothing below it, `not_directory` a path
+ * with a file as an ancestor.
+ */
 type Found =
 	| { readonly kind: "file"; readonly entry: ModedFileEntry }
-	| { readonly kind: "directory" | "empty" | "missing" };
+	| { readonly kind: "directory" | "empty" | "missing" | "not_directory" };
 
 class SandboxExecutionEnv implements ExecutionEnv {
 	readonly id: string;
@@ -305,6 +318,29 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			.filter((info) => !listed.has(info.name));
 	}
 
+	/**
+	 * Checks that the directory made here at `location`, which the workspace reported missing (the error `missing`), is
+	 * still one: `not_directory` when an ancestor is now a file at head, whose directories made here are then forgotten.
+	 */
+	async #madeDirectory(
+		call: CallContext,
+		location: Location,
+		path: string,
+		missing: unknown,
+	): Promise<Result<void, FileError>> {
+		let shape: Exclude<Shape, "file">;
+		try {
+			shape = await this.#shapeOfMissing(call, location);
+		} catch (error) {
+			return err(toFileError(error, path));
+		}
+		if (shape === "directory") return ok(undefined);
+		if (shape === "not_directory") {
+			return err(new FileError("not_directory", `not a directory: ${path}`, path, asError(missing)));
+		}
+		return err(toFileError(missing, path));
+	}
+
 	/** `is_directory` when `location` is a directory made here rather than a file in the workspace. */
 	async #directoryInTheWay(call: CallContext, location: Location, path: string): Promise<FileError | undefined> {
 		if (!this.#isMade(location) || (await this.#shape(call, location)) !== "directory") return undefined;
@@ -422,8 +458,11 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		try {
 			return ok(this.#info(await this.#stat(call, location)));
 		} catch (error) {
-			if (isHarbourError(error, "not_found") && this.#isMade(location)) return ok(this.#directoryInfo(location));
-			return err(await this.#fileError(error, location, path, call));
+			if (!isHarbourError(error, "not_found") || !this.#isMade(location)) {
+				return err(await this.#fileError(error, location, path, call));
+			}
+			const made = await this.#madeDirectory(call, location, path, error);
+			return made.ok ? ok(this.#directoryInfo(location)) : made;
 		}
 	}
 
@@ -448,8 +487,11 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			if (entry.kind !== "directory") return err(new FileError("not_directory", `not a directory: ${path}`, path));
 			return start;
 		} catch (error) {
-			if (isHarbourError(error, "not_found") && this.#isMade(location)) return start;
-			return err(await this.#fileError(error, location, path, call));
+			if (!isHarbourError(error, "not_found") || !this.#isMade(location)) {
+				return err(await this.#fileError(error, location, path, call));
+			}
+			const made = await this.#madeDirectory(call, location, path, error);
+			return made.ok ? start : made;
 		}
 	}
 
@@ -658,7 +700,14 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				async (head) => {
 					const origin = await this.#found(call, from, head);
 					if (origin.kind === "missing") throw missing();
+					if (origin.kind === "not_directory") {
+						throw new FileError("not_directory", `not a directory: ${sourcePath}`, sourcePath);
+					}
 					const target = await this.#found(call, to, head);
+					// Nothing can be put below a file, and a directory made there would be impossible.
+					if (target.kind === "not_directory") {
+						throw new FileError("not_directory", `not a directory: ${destinationPath}`, destinationPath);
+					}
 					let moved: ModedFileEntry[] = [];
 					if (origin.kind === "file") {
 						// A file replaces a file, as rename(2) does, but not a directory.
@@ -723,7 +772,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		} catch (error) {
 			if (!isHarbourError(error, "not_found")) throw error;
 		}
-		if (!this.#isMade(location)) return { kind: "missing" };
+		const shape = await this.#shapeOfMissing(call, location, version);
+		if (shape !== "directory") return { kind: shape };
 		return this.#madeChildren(location).length === 0 ? { kind: "empty" } : { kind: "directory" };
 	}
 
@@ -743,9 +793,18 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			} catch (error) {
 				if (!isHarbourError(error, "not_found")) throw error;
 			}
-			if (found === undefined && this.#isMade(location)) found = "directory";
 			if (found === undefined) {
-				return options?.force === true ? ok(undefined) : err(new FileError("not_found", `no such file: ${path}`, path));
+				// A directory made here, unless a file has since been committed at one of its ancestors.
+				const shape = await this.#shapeOfMissing(call, location);
+				if (shape !== "directory") {
+					if (options?.force === true) return ok(undefined);
+					return err(
+						shape === "not_directory"
+							? new FileError("not_directory", `not a directory: ${path}`, path)
+							: new FileError("not_found", `no such file: ${path}`, path),
+					);
+				}
+				found = "directory";
 			}
 			const kind = found;
 			if (kind === "directory" && options?.recursive !== true) {
@@ -768,7 +827,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				},
 				`remove ${location.path}`,
 			);
-			if (kind === "directory" && location.kind === "workspace") this.#forget(location.path);
+			// Whatever was removed, no directory made here is left at or below it.
+			if (location.kind === "workspace") this.#forget(location.path);
 			return ok(undefined);
 		} catch (error) {
 			if (options?.force === true && isHarbourError(error, "not_found")) return ok(undefined);
@@ -807,8 +867,17 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		if (name.includes("/")) return err(new FileError("invalid", "a temporary directory prefix must not contain /"));
 		// Kept here, not committed, like any directory made by `createDir`.
 		const path = `${TEMP_DIR}/${name}`;
+		const absolute = this.#display({ kind: "workspace", path });
+		try {
+			// A directory below a file would be impossible.
+			if ((await this.#fileAncestor(this.#call(context), path)) !== undefined) {
+				return err(new FileError("not_directory", `a file is in the way: ${absolute}`, absolute));
+			}
+		} catch (error) {
+			return err(toFileError(error, absolute));
+		}
 		this.#remember(path);
-		return ok(this.#display({ kind: "workspace", path }));
+		return ok(absolute);
 	}
 
 	async createTempFile(
@@ -843,22 +912,39 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		return this.#shapeOfMissing(call, location);
 	}
 
-	/** What is at a location the workspace does not have: a directory made here, missing, or `not_directory`. */
-	async #shapeOfMissing(call: CallContext, location: Location): Promise<Exclude<Shape, "file">> {
-		if (this.#isMade(location)) return "directory";
-		if (location.kind === "workspace") {
-			const segments = location.path.split("/");
-			for (let depth = 1; depth < segments.length; depth++) {
-				try {
-					const ancestor = await this.#stat(call, { kind: "workspace", path: segments.slice(0, depth).join("/") });
-					if (ancestor.kind === "file") return "not_directory";
-				} catch (error) {
-					if (!isHarbourError(error, "not_found")) throw error;
-					break;
-				}
+	/**
+	 * What is at a location the workspace does not have (at `version`, head when absent): a directory made here, missing,
+	 * or `not_directory` when an ancestor is a file. Another writer may have committed that file after a directory was
+	 * made below it: the file wins, and the directories made at and below it are forgotten.
+	 */
+	async #shapeOfMissing(
+		call: CallContext,
+		location: Location,
+		version?: WorkspaceVersion,
+	): Promise<Exclude<Shape, "file">> {
+		if (location.kind !== "workspace") return "missing";
+		const file = await this.#fileAncestor(call, location.path, version);
+		if (file !== undefined) {
+			this.#forget(file);
+			return "not_directory";
+		}
+		return this.#isMade(location) ? "directory" : "missing";
+	}
+
+	/** The shallowest ancestor of a workspace path that is a file at `version` (head when absent), if any. */
+	async #fileAncestor(call: CallContext, path: string, version?: WorkspaceVersion): Promise<string | undefined> {
+		const segments = path.split("/");
+		for (let depth = 1; depth < segments.length; depth++) {
+			const ancestor = segments.slice(0, depth).join("/");
+			try {
+				if ((await this.#stat(call, { kind: "workspace", path: ancestor }, version)).kind === "file") return ancestor;
+			} catch (error) {
+				if (!isHarbourError(error, "not_found")) throw error;
+				// Nothing is below a missing path in the workspace.
+				return undefined;
 			}
 		}
-		return "missing";
+		return undefined;
 	}
 
 	/**
@@ -966,10 +1052,11 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		} catch (error) {
 			return err(new ExecutionError("callback_error", errorMessage(error), asError(error)));
 		}
-		if (typeof command !== "string" && result.exitCode === 127) {
-			// The sandbox's "command not found": the program did not start, so its output is not delivered.
-			const message = result.stderr.trim();
-			return err(new ExecutionError("spawn_error", message === "" ? `${command[0]}: command not found` : message));
+		if (typeof command !== "string") {
+			// Only the sandbox's "command not found" for the program itself: it did not start, so there is no output to
+			// deliver and a caller may safely try another form. Any other 127 came from a program that ran.
+			const notFound = programNotFound(command[0] ?? "", result);
+			if (notFound !== undefined) return err(new ExecutionError("spawn_error", notFound));
 		}
 		const chunks = outputChunks(result);
 		try {
@@ -980,11 +1067,15 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		const spill = options?.spill;
 		const output = chunks.map((chunk) => chunk.text).join("");
 		if (spill === undefined || !exceedsSpill(output, spill)) return ok({ exitCode: result.exitCode });
-		const spilled = await this.#spill(output, context);
+		// Truncated output cannot be complete in the file either, so the file says so on its first line too.
+		const spilled = await this.#spill(result.truncated === true ? `${TRUNCATED_LINE}\n${output}` : output, context);
 		return spilled.ok ? ok({ exitCode: result.exitCode, spillPath: spilled.value }) : spilled;
 	}
 
-	/** Writes a command's complete output to a new file under `.tmp/` in one commit; its absolute path. */
+	/**
+	 * Writes a command's output to a new file under `.tmp/` in one commit; its absolute path. The output is complete
+	 * unless the sandbox truncated it, which the caller marks.
+	 */
 	async #spill(output: string, context: Context): Promise<Result<string, ExecutionError>> {
 		const path = this.#display({ kind: "workspace", path: `${TEMP_DIR}/${tempName("pi-output-", ".log")}` });
 		const written = await this.writeFile(path, output, context);
@@ -1133,6 +1224,23 @@ function outputChunks(result: ExecResult): OutputChunk[] {
 		chunks.push({ text: `${start}${TRUNCATED_LINE}\n`, stream: "stderr" });
 	}
 	return chunks;
+}
+
+/**
+ * The `spawn_error` message when an argv command's program was not found: exit code 127, nothing on stdout, and
+ * exactly one line on stderr saying, in a shape the sandboxes produce, that `program` was not found. Otherwise
+ * undefined, as for a program that started and then exited with 127.
+ */
+function programNotFound(program: string, result: ExecResult): string | undefined {
+	if (program === "" || result.exitCode !== 127 || result.stdout !== "") return undefined;
+	const line = result.stderr.endsWith("\n") ? result.stderr.slice(0, -1) : result.stderr;
+	if (line.includes("\n")) return undefined;
+	const shape = new RegExp(`^(?:sh: |bash: (?:line 1: )?)?${escapeRegExp(program)}: command not found$`);
+	return shape.test(line) ? line : undefined;
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Whether output is over either spill threshold: its UTF-8 bytes, or its lines counting an unterminated last one. */
