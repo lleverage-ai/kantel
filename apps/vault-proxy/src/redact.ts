@@ -32,7 +32,11 @@ const hex = (value: number, width: number) =>
 		.map((digit) => (/[a-f]/.test(digit) ? `[${digit}${digit.toUpperCase()}]` : digit))
 		.join("");
 
-/** HTML named character references for the punctuation a secret may contain. */
+/**
+ * Every HTML named character reference that decodes to characters a secret may
+ * contain: the whole WHATWG table filtered to [A-Za-z0-9._~+/=:-]. `-` and `~`
+ * have none; `&fjlig;` is the only one that stands for two characters.
+ */
 const NAMED: Record<string, string[]> = {
 	".": ["period"],
 	"/": ["sol"],
@@ -59,7 +63,14 @@ function charPattern(char: string): string {
 
 /** A pattern matching the secret in any mix of its encoded spellings. */
 export function patternOf(secret: string): RegExp {
-	return new RegExp([...secret].map(charPattern).join(""), "g");
+	const parts: string[] = [];
+	for (let i = 0; i < secret.length; i++) {
+		if (secret.startsWith("fj", i)) {
+			parts.push(`(?:${charPattern("f")}${charPattern("j")}|&fjlig;)`);
+			i++;
+		} else parts.push(charPattern(secret.charAt(i)));
+	}
+	return new RegExp(parts.join(""), "g");
 }
 
 export class Redactor {

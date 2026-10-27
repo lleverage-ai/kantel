@@ -81,6 +81,14 @@ describe("vault redaction", () => {
 		}
 	});
 
+	test("&fjlig;, the one reference for two characters, is seen through", () => {
+		const fj = new Redactor(["abcdfj12"]);
+		for (const body of ["abcd&fjlig;12", "abcdfj12", "abcd&#102;j12", "abcdf%6a12"]) {
+			expect(fj.text(body), body).toEqual({ text: REDACTED, count: 1 });
+		}
+		expect(new Redactor(["fjfjfjfj"]).text("&fjlig;fj&fjlig;f&#106;")).toEqual({ text: REDACTED, count: 1 });
+	});
+
 	test("every occurrence is counted, and other text and bytes are untouched", () => {
 		const { text, count } = redactor.text(`a ${secret} b ${secret} c`);
 		expect(count).toBe(2);
