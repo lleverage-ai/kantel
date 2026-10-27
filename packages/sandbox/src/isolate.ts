@@ -11,7 +11,7 @@
  * fails with `Read-only file system`, however the write is reached (directly, or inside a recursive `cp` or `mv`).
  * Nothing under a mount is ever collected.
  */
-import type { CallContext, FileEntry, Mount, WorkspaceId } from "@harbour/contracts";
+import { type CallContext, type FileEntry, HarbourError, type Mount, type WorkspaceId } from "@harbour/contracts";
 import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@harbour/workspace/stored";
 import { Bash, type CustomCommand, type IFileSystem, InMemoryFs, MountableFs } from "just-bash/browser";
 import type { BackendExec, BackendOutput, IsolateBackend } from "./tiered.ts";
@@ -80,6 +80,11 @@ export interface ShellOptions {
 	readonly commands?: readonly CustomCommand[];
 	/** Entries by version, cached by the caller (versions are immutable). */
 	readonly entries?: (version: number) => Promise<readonly ModedFileEntry[]>;
+	/**
+	 * The caller's cancellation. Aborting it stops the command at its next statement (as the timeout does), and the
+	 * shell then rejects with `aborted` instead of returning output or changes.
+	 */
+	readonly signal?: AbortSignal;
 }
 
 const WRITE_FIRST_ARG = new Set(["writeFile", "appendFile", "mkdir", "rm", "chmod", "createExclusive", "utimes", "mv"]);
@@ -124,6 +129,7 @@ export async function runShell(
 	request: ShellRequest,
 	options: ShellOptions = {},
 ): Promise<ShellOutcome> {
+	requireNotCancelled(options.signal);
 	const timings: Record<string, number> = {};
 	let at = performance.now();
 	const mark = (phase: string) => {
@@ -223,8 +229,17 @@ export async function runShell(
 		network: { dangerouslyAllowFullInternetAccess: true, denyPrivateRanges: false },
 		...(options.commands === undefined ? {} : { customCommands: [...options.commands] }),
 	});
+	// One signal for just-bash, aborted by the timeout or by the caller's cancellation.
 	const controller = new AbortController();
-	const timer = request.timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(), request.timeoutMs);
+	let timedOut = false;
+	const onTimeout = () => {
+		timedOut = true;
+		controller.abort();
+	};
+	const timer = request.timeoutMs === undefined ? undefined : setTimeout(onTimeout, request.timeoutMs);
+	const cancel = () => controller.abort();
+	options.signal?.addEventListener("abort", cancel, { once: true });
+	if (options.signal?.aborted === true) controller.abort();
 	const command = typeof request.command === "string" ? request.command : request.command.map(shellQuote).join(" ");
 	let result: { stdout: string; stderr: string; exitCode: number };
 	try {
@@ -234,22 +249,31 @@ export async function runShell(
 			...(request.stdin === undefined ? {} : { stdin: request.stdin }),
 		});
 	} catch (error) {
+		requireNotCancelled(options.signal);
 		// A redirection onto a read-only mount escapes just-bash as an exception; it fails the command, as in sh.
 		if (!(error instanceof ReadOnlyError)) throw error;
 		result = { stdout: "", stderr: `bash: ${error.path}: Read-only file system\n`, exitCode: 1 };
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
+		options.signal?.removeEventListener("abort", cancel);
 	}
+	// A cancelled command's output and changes are not returned: the caller commits nothing.
+	requireNotCancelled(options.signal);
 	mark("isolate.exec");
 	const changes = await collectChanges(fs, base, touched, underMount, cache);
 	mark("isolate.scan");
 	return {
-		exitCode: controller.signal.aborted ? 124 : result.exitCode,
+		exitCode: timedOut ? 124 : result.exitCode,
 		stdout: result.stdout,
-		stderr: controller.signal.aborted ? `${result.stderr}timed out after ${request.timeoutMs} ms\n` : result.stderr,
+		stderr: timedOut ? `${result.stderr}timed out after ${request.timeoutMs} ms\n` : result.stderr,
 		changes,
 		timings,
 	};
+}
+
+/** Rejects with `aborted` when the caller cancelled. */
+function requireNotCancelled(signal: AbortSignal | undefined): void {
+	if (signal?.aborted === true) throw new HarbourError("aborted", "the command was cancelled");
 }
 
 /** The real paths a write to `path` can land at: through a symlinked parent, or into a symlinked directory. */
@@ -425,7 +449,13 @@ export function createInProcessIsolateBackend(
 			return runShell(
 				port,
 				{ ...request, baseVersion: record.head, mounts: record.mounts },
-				{ cache, entries, ...(options.commands === undefined ? {} : { commands: options.commands }) },
+				{
+					cache,
+					entries,
+					...(options.commands === undefined ? {} : { commands: options.commands }),
+					// The caller's cancellation stops the command.
+					...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+				},
 			);
 		},
 	};

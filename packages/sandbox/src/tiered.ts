@@ -14,7 +14,12 @@
  *
  * Leases live in a `LeaseStore`: a Map in tests and local runs, durable storage when deployed. A lease that passed its
  * TTL, whether `sweep` finds it or a call notices it, is ended as `expired` and never committed: the container backend
- * is told to discard its working copy.
+ * is told to discard its working copy. Every commit for a lease (an isolate command's, each re-based retry, a container
+ * release or checkpoint) first re-checks that the lease is live and within its TTL, so nothing commits after expiry,
+ * and the sweep ends an expired lease even while its release is in flight, so a hung release cannot keep it alive.
+ *
+ * Acquisition is serialised per organisation, session and tier in this process, so concurrent `acquire` or first `run`
+ * calls see one live lease. A caller's cancelled `ctx.signal` stops an isolate command and commits nothing.
  *
  * Project access, audit events and errors match `createMemorySandboxes` exactly.
  */
@@ -196,6 +201,8 @@ class Tiered implements TieredSandboxes {
 	readonly #releasing = new Map<string, Promise<SandboxLease>>();
 	/** Ends in flight, so a sweep and a call that both notice an expired lease end it (and audit it) once. */
 	readonly #ending = new Map<string, Promise<SandboxLease>>();
+	/** Per organisation, session and tier, the tail of the acquisitions in flight, so they run one at a time. */
+	readonly #acquiring = new Map<string, Promise<void>>();
 
 	constructor(options: TieredSandboxesOptions) {
 		this.#workspaces = options.workspaces;
@@ -218,6 +225,16 @@ class Tiered implements TieredSandboxes {
 		if (!TIERS.includes(input.tier)) throw new HarbourError("invalid", `unknown tier ${String(input.tier)}`);
 		const workspace = await this.#workspaceInOrganisation(ctx, input.workspaceId);
 		await this.#requireSession(ctx, input.sessionId, "operator", "sandbox.acquire", projectOf(workspace));
+		return this.#serialised(acquireKey(ctx.organisationId, input.sessionId, input.tier), () =>
+			this.#create(ctx, input, ttlMs),
+		);
+	}
+
+	/**
+	 * Creates the session's lease on `input.tier`, or rejects with `conflict` when it holds a live one. Runs under the
+	 * session's acquisition lock (`#serialised`), so the check and the insert are not interleaved with another's.
+	 */
+	async #create(ctx: CallContext, input: Parameters<Sandboxes["acquire"]>[1], ttlMs: number): Promise<SandboxLease> {
 		const record = await this.#workspaces.get(ctx, input.workspaceId);
 		const expired: AuditEventInput[] = [];
 		const existing = await this.#liveLease(ctx.organisationId, input.sessionId, input.tier, expired);
@@ -293,18 +310,28 @@ class Tiered implements TieredSandboxes {
 		const workspace = await this.#workspaceInOrganisation(ctx, input.workspaceId);
 		await this.#requireSession(ctx, input.sessionId, "operator", "sandbox.run", projectOf(workspace));
 		const tier = this.route(input.tool, input.request.command);
-		const expired: AuditEventInput[] = [];
-		let row = await this.#liveLease(ctx.organisationId, input.sessionId, tier, expired);
-		await this.#emit(expired);
-		if (row !== undefined && row.lease.workspaceId !== input.workspaceId) {
-			throw new HarbourError("conflict", `the session's ${tier} lease is on another workspace`, {
-				leaseId: row.lease.id,
-			});
-		}
-		if (row === undefined) {
-			const lease = await this.acquire(ctx, { sessionId: input.sessionId, workspaceId: input.workspaceId, tier });
-			row = this.#leases.get(lease.id)!;
-		}
+		// Under the acquisition lock, so concurrent first runs share one lease instead of acquiring two.
+		const row = await this.#serialised(acquireKey(ctx.organisationId, input.sessionId, tier), async () => {
+			const expired: AuditEventInput[] = [];
+			const found = await this.#liveLease(ctx.organisationId, input.sessionId, tier, expired);
+			await this.#emit(expired);
+			if (found !== undefined) {
+				if (found.lease.workspaceId !== input.workspaceId) {
+					throw new HarbourError("conflict", `the session's ${tier} lease is on another workspace`, {
+						leaseId: found.lease.id,
+					});
+				}
+				return found;
+			}
+			// The checks `acquire` makes, then its body (the lock is already held).
+			await this.#requireSession(ctx, input.sessionId, "operator", "sandbox.acquire", projectOf(workspace));
+			const lease = await this.#create(
+				ctx,
+				{ sessionId: input.sessionId, workspaceId: input.workspaceId, tier },
+				this.#ttl(undefined),
+			);
+			return this.#leases.get(lease.id)!;
+		});
 		if (tier === "container") {
 			const key = `${ctx.organisationId}\u0000${input.sessionId}`;
 			if (!this.#leases.escalated(key, true)) {
@@ -362,7 +389,9 @@ class Tiered implements TieredSandboxes {
 		const events: AuditEventInput[] = [];
 		const failures: unknown[] = [];
 		for (const row of [...this.#leases.all()]) {
-			if (this.#releasing.has(row.lease.id) || !this.#pastTtl(row)) continue;
+			// A release in flight does not keep an expired lease alive: its flush re-checks before committing, sees the lease
+			// ended and commits nothing.
+			if (!this.#pastTtl(row)) continue;
 			try {
 				const ended = await this.#end(row, "expired", SWEEPER);
 				if (ended.event === undefined) continue;
@@ -440,12 +469,19 @@ class Tiered implements TieredSandboxes {
 		return ended.lease;
 	}
 
-	/** Commits a container lease's working copy on top of the head. Returns the new version, if anything changed. */
+	/**
+	 * Commits a container lease's working copy on top of the head. Returns the new version, if anything changed. After
+	 * every wait it re-checks the lease (`#requireCommittable`), so a lease that expired or ended meanwhile commits
+	 * nothing and the release or checkpoint rejects with `expired`.
+	 */
 	async #flush(ctx: CallContext, row: LeaseRow, final = false): Promise<number | undefined> {
 		const { lease } = row;
 		for (let attempt = 1; ; attempt++) {
+			await this.#requireCommittable(ctx, row);
 			const record = await this.#workspaces.get(ctx, lease.workspaceId);
+			await this.#requireCommittable(ctx, row);
 			const { changes: pending, stamp } = await this.#container.pending({ ctx, lease, record }, { final });
+			await this.#requireCommittable(ctx, row);
 			if (pending.length === 0) return undefined;
 			const present = new Set(
 				(await listAll(this.#workspaces, ctx, lease.workspaceId, { version: record.head }))
@@ -457,6 +493,7 @@ class Tiered implements TieredSandboxes {
 				await this.#container.committed(lease, record.head, stamp);
 				return undefined;
 			}
+			await this.#requireCommittable(ctx, row);
 			try {
 				const result = await this.#workspaces.commit(ctx, lease.workspaceId, {
 					baseVersion: record.head,
@@ -476,16 +513,20 @@ class Tiered implements TieredSandboxes {
 	/**
 	 * Commits an isolate command's changes, made relative to `base`. When the head moved meanwhile and none of the
 	 * changed paths (or their parents or children) changed in between, the same changes are committed on the new head;
-	 * otherwise `conflict`.
+	 * otherwise `conflict`. Before every attempt the lease must still be live and within its TTL, and the caller must not
+	 * have cancelled; otherwise `expired` (or `aborted`), with nothing committed.
 	 */
 	async #commitIsolate(
 		ctx: CallContext,
-		lease: SandboxLease,
+		row: LeaseRow,
 		base: WorkspaceVersion,
 		changes: readonly ModedChange[],
 	): Promise<number> {
+		const { lease } = row;
 		let baseVersion = base;
 		for (let attempt = 1; ; attempt++) {
+			requireNotCancelled(ctx, lease.id);
+			await this.#requireCommittable(ctx, row);
 			try {
 				const result = await this.#workspaces.commit(ctx, lease.workspaceId, {
 					baseVersion,
@@ -546,18 +587,14 @@ class Tiered implements TieredSandboxes {
 		const backend = lease.tier === "isolate" ? this.#isolate : this.#container;
 		try {
 			const output = await backend.exec({ ctx, lease, record, request: normalized });
+			// A cancelled command is not reported as a success, and its changes are not committed.
+			requireNotCancelled(ctx, lease.id);
 			const timings: Record<string, number> = { ...output.timings };
 			let workspaceVersion = record.head;
 			if (lease.tier === "isolate" && output.changes !== undefined && output.changes.length > 0) {
-				// A lease that expired while the command ran is never committed.
-				const current = this.#leases.get(lease.id) ?? row;
-				if (current.lease.endedAt !== undefined || this.#pastTtl(current)) {
-					throw new HarbourError("expired", `lease ${lease.id} expired before its changes were committed`, {
-						endReason: current.lease.endReason ?? "expired",
-					});
-				}
+				// A lease that expired while the command ran is never committed: `#commitIsolate` checks before each attempt.
 				const at = performance.now();
-				workspaceVersion = await this.#commitIsolate(ctx, lease, record.head, output.changes);
+				workspaceVersion = await this.#commitIsolate(ctx, row, record.head, output.changes);
 				timings["isolate.commit"] = round(performance.now() - at);
 			}
 			timings[`${lease.tier}.total`] = round(performance.now() - started);
@@ -600,6 +637,46 @@ class Tiered implements TieredSandboxes {
 			throw new HarbourError("expired", `lease ${leaseId} has ended`, { endReason: row.lease.endReason ?? "released" });
 		}
 		return row;
+	}
+
+	/**
+	 * Before a commit for a lease: rejects with `expired`, committing nothing, when the lease has ended, is being ended or
+	 * passed its TTL. A lease past its TTL is ended as `expired` through `#end`, so it is torn down (discarding a
+	 * container's changes) and audited once, however many callers notice it.
+	 */
+	async #requireCommittable(ctx: CallContext, row: LeaseRow): Promise<void> {
+		const id = row.lease.id;
+		let current = this.#leases.get(id) ?? row;
+		if (current.lease.endedAt === undefined && (this.#pastTtl(current) || this.#ending.has(id))) {
+			const ended = await this.#end(current, "expired", ctx.actor);
+			await this.#emit(ended.event === undefined ? [] : [ended.event]);
+			current = this.#leases.get(id) ?? { ...current, lease: ended.lease };
+		}
+		if (current.lease.endedAt !== undefined) {
+			throw new HarbourError("expired", `lease ${id} ended before its changes were committed`, {
+				endReason: current.lease.endReason ?? "expired",
+			});
+		}
+	}
+
+	/**
+	 * Runs `task` after every earlier task with the same key has settled: an in-process keyed chain, so concurrent
+	 * acquisitions for one organisation, session and tier see each other's leases. A `LeaseStore` shared across hosts
+	 * must make the check and the insert atomic itself.
+	 */
+	async #serialised<T>(key: string, task: () => Promise<T>): Promise<T> {
+		const previous = this.#acquiring.get(key) ?? Promise.resolve();
+		const result = previous.then(task);
+		const tail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#acquiring.set(key, tail);
+		try {
+			return await result;
+		} finally {
+			if (this.#acquiring.get(key) === tail) this.#acquiring.delete(key);
+		}
 	}
 
 	/** The session's live lease on `tier`, ending any that passed its TTL on the way. */
@@ -700,6 +777,18 @@ class Tiered implements TieredSandboxes {
 /** The project a project-owned workspace belongs to, for checking that a session acts in it. */
 function projectOf(workspace: WorkspaceRecord): { readonly projectId?: string } {
 	return workspace.owner.kind === "project" ? { projectId: workspace.owner.projectId } : {};
+}
+
+/** The key acquisitions are serialised on. */
+function acquireKey(organisationId: string, sessionId: SessionId, tier: SandboxTier): string {
+	return `${organisationId}\u0000${sessionId}\u0000${tier}`;
+}
+
+/** Rejects with `aborted` when the caller cancelled the call. */
+function requireNotCancelled(ctx: CallContext, leaseId: string): void {
+	if (ctx.signal?.aborted === true) {
+		throw new HarbourError("aborted", `the command on lease ${leaseId} was cancelled; nothing was committed`);
+	}
 }
 
 function round(ms: number): number {

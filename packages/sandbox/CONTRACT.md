@@ -102,10 +102,21 @@ with the in-process isolate and the simulated container in `test/backends.ts`).
 - Beyond the contract, `run` routed to the isolate first checkpoints the session's live container lease on the same
   workspace (commits its pending changes; the lease stays live), so the isolate sees the container's last write too.
 - A lease past its TTL, whether `sweep`, `release` or a call that finds it (`exec`, `renew`, `run`, `acquire`) ends
-  it, is `expired` and never committed: the container backend gets `ended(lease, { discard: true })`. An isolate
-  command whose lease expired while it ran rejects with `expired` and commits nothing. Concurrent ends of one lease
-  call the backend and audit once. If a backend fails to tear down, the lease stays live and `release` (or the next
-  sweep) retries; `sweep` ends the others and then rejects.
+  it, is `expired` and never committed: the container backend gets `ended(lease, { discard: true })`. Every commit
+  for a lease re-checks first that it is live and within its TTL: an isolate command (each re-based attempt
+  included) and a container release or checkpoint (after every wait: the head, `pending`, the listing) whose lease
+  expired or ended meanwhile reject with `expired` and commit nothing, ending a lease past its TTL as `expired`. The
+  sweep ends an expired lease even while its release is in flight, so a hung release cannot keep it live; the release
+  then commits nothing. Concurrent ends of one lease call the backend and audit once. If a backend fails to tear
+  down, the lease stays live and `release` (or the next sweep) retries; `sweep` ends the others and then rejects.
+- One live lease per session per tier holds under concurrency: `acquire` and `run`'s acquisition are serialised per
+  organisation, session and tier by an in-process keyed promise chain, so a second concurrent `acquire` gets
+  `conflict` and a second concurrent first `run` reuses the lease. That lock covers one process only: a `LeaseStore`
+  shared by several hosts must make the live-lease check and the insert atomic itself.
+- Cancellation: when the caller's `ctx.signal` aborts, an isolate command stops at its next statement (the in-process
+  backend passes the signal to `runShell`, which also takes `signal` in its options and rejects with `aborted`), and
+  `exec`/`run` reject with `aborted` and commit nothing. A container command whose caller cancelled is not reported
+  as a success either (`aborted`); its changes stay in the container until release, as for any container command.
 - `exec` and `run` also return `baseVersion` (the head the command ran on) and `timings` (milliseconds per phase,
   such as `isolate.manifest`, `isolate.exec`, `isolate.scan`, `isolate.commit`, `<tier>.total`). Busy time comes from
   the clock.

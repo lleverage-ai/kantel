@@ -10,6 +10,7 @@ import { containerWins, createTieredSandboxes, type IsolateBackend } from "@harb
 import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
+import { defineCommand } from "just-bash/browser";
 import { describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
 
@@ -30,6 +31,8 @@ interface SetUpOptions {
 	) => IsolateBackend;
 	/** Seeds the workspace; true by default. */
 	readonly seeded?: boolean;
+	/** Wraps the stored workspaces the sandboxes (and only they) use. */
+	readonly sandboxWorkspaces?: (inner: StoredWorkspaces) => StoredWorkspaces;
 }
 
 async function setUp(options: SetUpOptions = {}) {
@@ -51,7 +54,13 @@ async function setUp(options: SetUpOptions = {}) {
 	const container = new SimulatedContainer(workspaces);
 	const inner = createInProcessIsolateBackend(workspaces);
 	const isolate = options.isolate?.(inner, { clock, workspaces }) ?? inner;
-	const sandboxes = createTieredSandboxes({ workspaces, isolate, container, clock, audit });
+	const sandboxes = createTieredSandboxes({
+		workspaces: options.sandboxWorkspaces?.(workspaces) ?? workspaces,
+		isolate,
+		container,
+		clock,
+		audit,
+	});
 	const workspaceId = record.id;
 	const run = (command: string) =>
 		sandboxes.run(ctx, { sessionId: "sess-1", workspaceId, tool: "bash", request: { command } });
@@ -90,6 +99,60 @@ function interfering(slot: Slot) {
 			return output;
 		},
 	});
+}
+
+interface Gate {
+	/** Settles when something first waits at the gate. */
+	readonly reached: Promise<void>;
+	open(): void;
+	wait(): Promise<void>;
+}
+
+/** A pause the test controls: `wait` blocks until `open`. */
+function gate(): Gate {
+	let open: () => void = () => undefined;
+	let reach: () => void = () => undefined;
+	const opened = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	const reached = new Promise<void>((resolve) => {
+		reach = resolve;
+	});
+	return {
+		reached,
+		open: () => open(),
+		async wait() {
+			reach();
+			await opened;
+		},
+	};
+}
+
+/** Stored workspaces whose `history` (read only when an isolate commit is re-based) waits at `paused` first. */
+function pausingHistory(paused: Gate) {
+	return (inner: StoredWorkspaces): StoredWorkspaces =>
+		new Proxy(inner, {
+			get(target, property, receiver) {
+				if (property === "history") {
+					return async (...args: Parameters<StoredWorkspaces["history"]>) => {
+						await paused.wait();
+						return target.history(...args);
+					};
+				}
+				const value: unknown = Reflect.get(target, property, receiver);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+}
+
+/** Makes the container's `pending` wait at `paused` after taking its snapshot. */
+function pausePending(container: SimulatedContainer, paused: Gate): void {
+	const pending = container.pending.bind(container);
+	container.pending = async (input, options) => {
+		const snapshot = await pending(input, options);
+		await paused.wait();
+		return snapshot;
+	};
 }
 
 describe("tiered sandboxes: one tree in both directions", () => {
@@ -207,6 +270,198 @@ describe("tiered sandboxes: isolate commits", () => {
 		});
 		expect(await head()).toBe(before);
 		await expect(workspaces.read(ctx, workspaceId, "late.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+});
+
+describe("tiered sandboxes: nothing commits after expiry", () => {
+	it("commits nothing when a container lease passes its TTL while its release waits on pending", async () => {
+		const { sandboxes, container, clock, audit, acquire, head, workspaces, workspaceId } = await setUp();
+		const lease = await acquire("container", 1_000);
+		await sandboxes.exec(ctx, lease.id, { command: "printf late > late.txt" });
+		const before = await head();
+		const paused = gate();
+		pausePending(container, paused);
+		const releasing = sandboxes.release(ctx, lease.id);
+		await paused.reached;
+		clock.advance(1_500);
+		paused.open();
+		await expect(releasing).rejects.toMatchObject({ code: "expired" });
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "late.txt")).rejects.toMatchObject({ code: "not_found" });
+		expect(container.endedCalls).toEqual([{ leaseId: lease.id, discard: true }]);
+		const released = audit.ofType("sandbox.lease.released");
+		expect(released).toHaveLength(1);
+		expect(released[0]?.data).toMatchObject({ reason: "expired" });
+	});
+
+	it("lets the sweep end an expired lease whose release hangs, and the release then commits nothing", async () => {
+		const { sandboxes, container, clock, audit, acquire, head } = await setUp();
+		const lease = await acquire("container", 1_000);
+		await sandboxes.exec(ctx, lease.id, { command: "printf late > late.txt" });
+		const before = await head();
+		const paused = gate();
+		pausePending(container, paused);
+		const releasing = sandboxes.release(ctx, lease.id);
+		await paused.reached;
+		clock.advance(1_500);
+		const swept = await sandboxes.sweep(SWEEP);
+		expect(swept.map((ended) => [ended.id, ended.endReason])).toEqual([[lease.id, "expired"]]);
+		expect(container.endedCalls).toEqual([{ leaseId: lease.id, discard: true }]);
+		paused.open();
+		await expect(releasing).rejects.toMatchObject({ code: "expired", details: { endReason: "expired" } });
+		expect(await head()).toBe(before);
+		expect(container.endedCalls).toHaveLength(1);
+		expect(audit.ofType("sandbox.lease.released")).toHaveLength(1);
+	});
+
+	it("commits nothing from a run-to-isolate checkpoint whose container lease expires meanwhile", async () => {
+		const { sandboxes, container, clock, acquire, run, head, workspaces, workspaceId } = await setUp();
+		const lease = await acquire("container", 1_000);
+		await sandboxes.exec(ctx, lease.id, { command: "printf late > late.txt" });
+		const before = await head();
+		const paused = gate();
+		pausePending(container, paused);
+		const running = run("cat top.txt");
+		await paused.reached;
+		clock.advance(1_500);
+		paused.open();
+		await expect(running).rejects.toMatchObject({ code: "expired" });
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "late.txt")).rejects.toMatchObject({ code: "not_found" });
+		expect(container.endedCalls).toEqual([{ leaseId: lease.id, discard: true }]);
+	});
+
+	it("commits nothing when the lease expires while an isolate commit is re-based", async () => {
+		const slot: Slot = { interfere: undefined };
+		const paused = gate();
+		const { sandboxes, workspaces, workspaceId, clock, acquire, head } = await setUp({
+			isolate: interfering(slot),
+			sandboxWorkspaces: pausingHistory(paused),
+		});
+		const lease = await acquire("isolate", 1_000);
+		const before = await head();
+		slot.interfere = () =>
+			workspaces.commit(ctx, workspaceId, {
+				baseVersion: before,
+				changes: [{ op: "put", path: "other.txt", content: encoder.encode("other") }],
+			});
+		const running = sandboxes.exec(ctx, lease.id, { command: "printf mine > mine.txt" });
+		await paused.reached;
+		clock.advance(2_000);
+		paused.open();
+		await expect(running).rejects.toMatchObject({ code: "expired" });
+		expect(await head()).toBe(before + 1);
+		await expect(workspaces.read(ctx, workspaceId, "mine.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("commits nothing when the lease is released while an isolate commit is re-based", async () => {
+		const slot: Slot = { interfere: undefined };
+		const paused = gate();
+		const { sandboxes, workspaces, workspaceId, acquire, head } = await setUp({
+			isolate: interfering(slot),
+			sandboxWorkspaces: pausingHistory(paused),
+		});
+		const lease = await acquire("isolate");
+		const before = await head();
+		slot.interfere = () =>
+			workspaces.commit(ctx, workspaceId, {
+				baseVersion: before,
+				changes: [{ op: "put", path: "other.txt", content: encoder.encode("other") }],
+			});
+		const running = sandboxes.exec(ctx, lease.id, { command: "printf mine > mine.txt" });
+		await paused.reached;
+		expect((await sandboxes.release(ctx, lease.id)).endReason).toBe("released");
+		paused.open();
+		await expect(running).rejects.toMatchObject({ code: "expired", details: { endReason: "released" } });
+		expect(await head()).toBe(before + 1);
+		await expect(workspaces.read(ctx, workspaceId, "mine.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+});
+
+describe("tiered sandboxes: concurrent acquisition", () => {
+	it("gives one of two concurrent acquires for a session and tier a conflict", async () => {
+		const { sandboxes, acquire } = await setUp();
+		const settled = await Promise.allSettled([acquire("container"), acquire("container")]);
+		expect(settled.map((outcome) => outcome.status).sort()).toEqual(["fulfilled", "rejected"]);
+		const rejected = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+		expect(rejected?.reason).toMatchObject({ code: "conflict" });
+		expect(await sandboxes.leases(ctx, { sessionId: "sess-1", live: true })).toHaveLength(1);
+	});
+
+	it("shares one lease between two concurrent first runs", async () => {
+		const { sandboxes, run } = await setUp();
+		const [first, second] = await Promise.all([run("echo one"), run("echo two")]);
+		expect(second.leaseId).toBe(first.leaseId);
+		expect(await sandboxes.leases(ctx, { sessionId: "sess-1" })).toHaveLength(1);
+	});
+});
+
+describe("tiered sandboxes: cancellation", () => {
+	it("stops an isolate command when the caller cancels, committing nothing", async () => {
+		const controller = new AbortController();
+		const ran: string[] = [];
+		const commands = [
+			defineCommand("mark", async (args) => {
+				ran.push(args.join(" "));
+				return { stdout: "", stderr: "", exitCode: 0 };
+			}),
+			defineCommand("cancel", async () => {
+				controller.abort();
+				return { stdout: "", stderr: "", exitCode: 0 };
+			}),
+		];
+		const { sandboxes, acquire, head, workspaces, workspaceId } = await setUp({
+			isolate: (_inner, deps) => createInProcessIsolateBackend(deps.workspaces, { commands }),
+		});
+		const lease = await acquire("isolate");
+		const before = await head();
+		const cancelling: CallContext = { ...ctx, signal: controller.signal };
+		const command = "printf a > a.txt\nmark one\ncancel\nmark two\nprintf b > b.txt";
+		await expect(sandboxes.exec(cancelling, lease.id, { command })).rejects.toMatchObject({ code: "aborted" });
+		expect(ran).toEqual(["one"]);
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "a.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("commits nothing for an isolate command whose caller cancelled as the backend returned", async () => {
+		const controller = new AbortController();
+		const { sandboxes, acquire, head, workspaces, workspaceId } = await setUp({
+			isolate: (inner) => ({
+				async exec(input) {
+					const output = await inner.exec(input);
+					controller.abort();
+					return output;
+				},
+			}),
+		});
+		const lease = await acquire("isolate");
+		const before = await head();
+		const cancelling: CallContext = { ...ctx, signal: controller.signal };
+		await expect(sandboxes.exec(cancelling, lease.id, { command: "printf a > a.txt" })).rejects.toMatchObject({
+			code: "aborted",
+		});
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "a.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("does not report a cancelled container command as a success", async () => {
+		const controller = new AbortController();
+		const { sandboxes, container, acquire, head } = await setUp();
+		const lease = await acquire("container");
+		const before = await head();
+		const containerExec = container.exec.bind(container);
+		container.exec = async (input) => {
+			const output = await containerExec(input);
+			controller.abort();
+			return output;
+		};
+		const cancelling: CallContext = { ...ctx, signal: controller.signal };
+		await expect(sandboxes.exec(cancelling, lease.id, { command: "printf c > c.txt" })).rejects.toMatchObject({
+			code: "aborted",
+		});
+		expect(await head()).toBe(before);
+		// As for any container command, its changes stay in the container until the lease is released.
+		expect(container.pendingPaths(lease.id)).toEqual(["c.txt"]);
 	});
 });
 
@@ -503,6 +758,14 @@ describe("the isolate shell over a port", () => {
 			expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/^real\/t\.\w{6}$/)]));
 		},
 	);
+
+	it("rejects with aborted, running nothing, when the caller has already cancelled", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		await expect(runShell(port, request("echo x"), { signal: controller.signal })).rejects.toMatchObject({
+			code: "aborted",
+		});
+	});
 
 	it("refuses a mount over the shell's own paths", async () => {
 		const outcome = await runShell(port, { command: "cat /bin/echo", baseVersion: 0, mounts: [{ path: "/bin" }] });
