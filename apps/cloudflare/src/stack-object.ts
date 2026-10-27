@@ -17,6 +17,7 @@ import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
+import { startOnce } from "./start.ts";
 import type { VaultVars } from "./vault.ts";
 
 export { STACK_NAME } from "./route.ts";
@@ -36,7 +37,16 @@ const BOOTSTRAP_KEY = "harbour.bootstrap";
 const WORKSPACE_PREFIX = "workspaces";
 
 export abstract class HarbourStackBase extends DurableObject<Env> {
-	#ready: Promise<{ stack: Stack; gateway: Gateway }> | undefined;
+	/** Starts the stack once; see `startOnce` for what a failed configuration or start does. */
+	readonly #ready = startOnce({
+		configure: () => gatewayConfig(this.env),
+		start: async (config) => {
+			const stack = await createStack({ ...this.stackOptions(), config, storage: this.stackStorage() });
+			return { stack, gateway: createGateway(stack) };
+		},
+		reset: (reason) => this.ctx.abort(reason),
+		onStartError: (error) => console.error("harbour: the stack did not start; resetting the object", error),
+	});
 
 	/** How the stack is built; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
@@ -65,27 +75,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 	}
 
 	protected ready(): Promise<{ stack: Stack; gateway: Gateway }> {
-		this.#ready ??= (async () => {
-			// A configuration error is answered (503) and retried by the next request: nothing has started yet.
-			const config = gatewayConfig(this.env);
-			let stack: Stack;
-			try {
-				stack = await createStack({ ...this.stackOptions(), config, storage: this.stackStorage() });
-			} catch (error) {
-				// The session core may have opened sessions (resumed due work) before the start failed, and a core whose
-				// `ready` rejected cannot close them. Reset the object so none of it outlives this instance; the next
-				// request or alarm starts a fresh one over the same storage.
-				console.error("harbour: the stack did not start; resetting the object", error);
-				this.ctx.abort("harbour: the stack did not start");
-				throw error;
-			}
-			return { stack, gateway: createGateway(stack) };
-		})();
-		// A failed start is retried by the next request rather than remembered.
-		this.#ready.catch(() => {
-			this.#ready = undefined;
-		});
-		return this.#ready;
+		return this.#ready();
 	}
 
 	/** Resumes every session whose wake is due (a run cut off by eviction, a retry backoff), then arms the next. */
