@@ -132,7 +132,9 @@ and `objects` sources stay with M2-BE1.
 `Workspaces.export(ctx, id, prefixes)` returns the files under the prefixes at head. `@harbour/workspace/export` has
 `syncExport(ctx, workspaces, id, { prefixes, sink, previous? })`, which keeps a host-side copy (a task's `notes/`) in step:
 it writes only files whose digest changed since `previous`, removes files that an earlier sync wrote and the workspace
-no longer has, never touches host files it did not write, and returns the next manifest. The sink decides where bytes
+no longer has (removals first, so a path can turn from a file into a directory), never touches host files it did not
+write, and returns the next manifest. When the sink fails part-way it rejects with the manifest of what the host now
+holds in the error (`exportManifestOf(error)`), the failed path marked unknown, to pass to the next sync. The sink decides where bytes
 go; `createMemoryExportSink()` is one for tests, and a filesystem sink must keep paths inside its root. The read API
 client's `export` is a drop-in source for a remote host.
 

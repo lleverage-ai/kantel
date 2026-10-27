@@ -4,10 +4,11 @@
  * refused, so a link planted in the host directory cannot redirect a write. The root itself may be a symlink: it is
  * resolved once, as the host chose it. The check is not atomic with the write, so the directory must not be shared with
  * an untrusted writer while a sync runs. Each file is written to a temporary name and renamed into place, so a reader
- * never sees half a file.
+ * never sees half a file. Removing a file also removes the directories on its way that it leaves empty (never the root,
+ * and never one holding anything else), so a path that turns from a directory into a file can be written next.
  */
-import { lstat, mkdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { HarbourError } from "@harbour/contracts";
 import { normalizeWorkspacePath } from "@harbour/workspace";
 import type { ExportSink } from "@harbour/workspace/export";
@@ -66,6 +67,15 @@ export function createDirectoryExportSink(root: string): ExportSink {
 			await unlink(file).catch((error: NodeJS.ErrnoException) => {
 				if (error.code !== "ENOENT") throw error;
 			});
+			const top = await base();
+			for (let directory = dirname(file); directory.startsWith(`${top}/`); directory = dirname(directory)) {
+				const emptied = await rmdir(directory).then(
+					() => true,
+					// Not empty (the host's files or other notes), already gone, or not a directory: stop there.
+					() => false,
+				);
+				if (!emptied) break;
+			}
 		},
 	};
 }

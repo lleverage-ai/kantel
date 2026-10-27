@@ -1,5 +1,5 @@
 import { type CallContext, HarbourError, isHarbourError } from "@harbour/contracts";
-import { createMemoryExportSink, syncExport } from "@harbour/workspace/export";
+import { createMemoryExportSink, exportManifestOf, syncExport } from "@harbour/workspace/export";
 import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
 import { createWorkspaceReadApi, createWorkspaceReadClient } from "@harbour/workspace/read-api";
 import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
@@ -66,6 +66,61 @@ describe.each(Object.entries(subjects))("syncExport over %s workspaces", (_name,
 		});
 		expect(third).toMatchObject({ written: [], removed: [] });
 		expect(Object.keys(third.manifest.files).sort()).toEqual(["notes/a.md", "notes/deep/c.md"]);
+	});
+
+	it("hands back what the host holds when the sink fails part-way, so the next sync puts it right", async () => {
+		const workspaces = make();
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "notes/a.md": "A" } }] },
+		});
+		const memory = createMemoryExportSink();
+		const failing = new Set<string>();
+		const sink = {
+			files: memory.files,
+			async write(path: string, content: Uint8Array, digest: string) {
+				if (failing.has(path)) throw new HarbourError("invalid", `${path} is a directory on the host`);
+				return memory.write(path, content, digest);
+			},
+			remove: (path: string) => memory.remove(path),
+		};
+		const first = await syncExport(ctx, workspaces, record.id, { prefixes: ["notes/"], sink });
+
+		// a.md changes to B and z.md is added; writing z.md fails after B is on the host.
+		await workspaces.commit(ctx, record.id, {
+			baseVersion: 1,
+			changes: [
+				{ op: "put", path: "notes/a.md", content: "B" },
+				{ op: "put", path: "notes/z.md", content: "Z" },
+			],
+		});
+		failing.add("notes/z.md");
+		const failed = await syncExport(ctx, workspaces, record.id, {
+			prefixes: ["notes/"],
+			sink,
+			previous: first.manifest,
+		}).catch((error: unknown) => error);
+		expect(failed).toMatchObject({ code: "invalid", details: { path: "notes/z.md" } });
+		const held = exportManifestOf(failed);
+		expect(Object.keys(held?.files ?? {}).sort()).toEqual(["notes/a.md", "notes/z.md"]);
+		expect(held?.files["notes/a.md"]).not.toBe(first.manifest.files["notes/a.md"]);
+		expect(held?.files["notes/z.md"]).toBe("");
+		expect(decode(sink.files.get("notes/a.md")!)).toBe("B");
+
+		// The workspace goes back to A without z.md; given the handed-back manifest, the sync restores A and drops z.md.
+		await workspaces.commit(ctx, record.id, {
+			baseVersion: 2,
+			changes: [
+				{ op: "put", path: "notes/a.md", content: "A" },
+				{ op: "delete", path: "notes/z.md" },
+			],
+		});
+		failing.clear();
+		const retried = await syncExport(ctx, workspaces, record.id, { prefixes: ["notes/"], sink, previous: held! });
+		expect(retried).toMatchObject({ written: ["notes/a.md"], removed: ["notes/z.md"] });
+		expect(decode(sink.files.get("notes/a.md")!)).toBe("A");
+		expect([...sink.files.keys()]).toEqual(["notes/a.md"]);
+		expect(retried.manifest).toEqual(first.manifest);
 	});
 
 	it("refuses an export over maxBytes with refused and its sizes, and allows one within it", async () => {

@@ -109,8 +109,70 @@ describe("createDirectoryExportSink", () => {
 			previous: second.manifest,
 		});
 		expect(third.removed).toEqual(["notes/evidence/run.json"]);
-		expect((await readdir(join(root, "notes"))).sort()).toEqual(["TASK-1.md", "evidence", "mine.md"]);
-		expect(await readdir(join(root, "notes/evidence"))).toEqual([]);
+		// The directory the removal left empty goes too; the host's file and the root stay.
+		expect((await readdir(join(root, "notes"))).sort()).toEqual(["TASK-1.md", "mine.md"]);
+	});
+
+	it("follows a path that turns from a file into a directory and back", async () => {
+		const db = pgliteDatabase(new PGlite());
+		const schema = laneSchema();
+		await migrateWorkspaceStore(db, schema);
+		const workspaces = createSelfHostedWorkspaces({ db, objects: createMemoryObjects(), schema });
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "notes/a": "file" } }] },
+		});
+		const root = join(dir, "task");
+		const sink = createDirectoryExportSink(root);
+		const first = await syncExport(ctx, workspaces, record.id, { prefixes: ["notes/"], sink });
+
+		await workspaces.commit(ctx, record.id, {
+			baseVersion: 1,
+			changes: [
+				{ op: "delete", path: "notes/a" },
+				{ op: "put", path: "notes/a/b.md", content: "below" },
+			],
+		});
+		const second = await syncExport(ctx, workspaces, record.id, {
+			prefixes: ["notes/"],
+			sink,
+			previous: first.manifest,
+		});
+		expect(second).toMatchObject({ written: ["notes/a/b.md"], removed: ["notes/a"] });
+		expect(await readFile(join(root, "notes/a/b.md"), "utf8")).toBe("below");
+
+		await workspaces.commit(ctx, record.id, {
+			baseVersion: 2,
+			changes: [
+				{ op: "delete", path: "notes/a/b.md" },
+				{ op: "put", path: "notes/a", content: "file again" },
+			],
+		});
+		const third = await syncExport(ctx, workspaces, record.id, {
+			prefixes: ["notes/"],
+			sink,
+			previous: second.manifest,
+		});
+		expect(third).toMatchObject({ written: ["notes/a"], removed: ["notes/a/b.md"] });
+		expect(await readFile(join(root, "notes/a"), "utf8")).toBe("file again");
+	});
+
+	it("never removes a directory the host keeps files in", async () => {
+		const db = pgliteDatabase(new PGlite());
+		const schema = laneSchema();
+		await migrateWorkspaceStore(db, schema);
+		const workspaces = createSelfHostedWorkspaces({ db, objects: createMemoryObjects(), schema });
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "notes/d/x.md": "x" } }] },
+		});
+		const root = join(dir, "task");
+		const sink = createDirectoryExportSink(root);
+		const first = await syncExport(ctx, workspaces, record.id, { prefixes: ["notes/"], sink });
+		await writeFile(join(root, "notes/d/host.md"), "host");
+		await workspaces.commit(ctx, record.id, { baseVersion: 1, changes: [{ op: "delete", path: "notes/d/x.md" }] });
+		await syncExport(ctx, workspaces, record.id, { prefixes: ["notes/"], sink, previous: first.manifest });
+		expect(await readdir(join(root, "notes/d"))).toEqual(["host.md"]);
 	});
 
 	it("refuses to write or remove through a symlink, or over a host directory or file", async () => {
