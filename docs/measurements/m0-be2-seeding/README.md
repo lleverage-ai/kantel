@@ -5,8 +5,10 @@ medium repo and a large monorepo, plus their dependencies, on a self-hosted Dock
 and whether isomorphic-git can serve status, diff and log on the isolate tier.
 
 - [results.md](results.md): p50/p95 per method, repo and target, against the plan's targets, and the recommendation.
-- [seed-spec.proposal.ts](seed-spec.proposal.ts): the proposed SeedSpec shape for M0-BE1 (#2) to adopt into
-  `packages/contracts`. Proposal only; nothing imports it.
+- SeedSpec: the shape these measurements proposed was adopted as is into
+  [packages/contracts/src/workspace.ts](../../../packages/contracts/src/workspace.ts) (`SeedMethod`, `SeedReport`,
+  `prepare`, `staleWithin`, `indexState`), with the reasoning in its comments. The proposal file was removed then;
+  it is in git history at `docs/measurements/m0-be2-seeding/seed-spec.proposal.ts`.
 - `raw/*.jsonl`: every run, one JSON line each. `harness/summarise.mjs` turns them into the tables.
 - `harness/`: everything needed to rerun it.
 

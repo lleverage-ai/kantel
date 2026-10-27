@@ -51,4 +51,5 @@ History includes version 0. It leaves out: fetching `git` and `objects` seeds (r
 
 - How a mount source checks that the caller's organisation owns the ref; the memory source does not.
 - Whether deleting a missing path should be idempotent rather than `not_found`.
-- Seed readiness stages and `git`/`objects` fetching for real targets (M0-BE2, M2-BE1).
+- `git`/`objects` fetching and `SeedReport` for real targets (M2-BE1). The seed shape, readiness stages and
+  methods are settled by M0-BE2's measurements (#5).

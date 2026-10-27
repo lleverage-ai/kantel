@@ -96,7 +96,8 @@ caught) was 0.45 / 0.86 s p50 / p95 for vite and 2.76 / 3.72 s for n8n.
 - **Everywhere**: set `core.checkStat=minimal` and `core.trustctime=false` in seeded repos; settle the index
   before capturing a tree; report `files` and `dependencies` readiness separately.
 
-The SeedSpec changes that follow are in [seed-spec.proposal.ts](seed-spec.proposal.ts), for M0-BE1 (#2) and Tom.
+The SeedSpec changes that follow from this are now in the contract,
+[packages/contracts/src/workspace.ts](../../../packages/contracts/src/workspace.ts).
 
 ## All rows
 
