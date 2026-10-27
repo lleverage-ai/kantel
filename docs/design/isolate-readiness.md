@@ -102,7 +102,7 @@ takes module source; this lane found no way to give it a V8 code cache and measu
 ## Recommendation
 
 **Self-hosted: the pre-loaded pool, now built (next section).** It meets the target with a wide margin. In
-the model it was 7 / 11 ms, and as built it is 6.4 / 10 ms, against 100 / 300. On gVisor the hand-out call would
+the model it was 7 / 11 ms, and as built it is 6.4 / 7.4 ms, against 100 / 300. On gVisor the hand-out call would
 roughly double. It keeps one isolate per session.
 
 One isolate per workspace is 3 ms faster, but it makes the workspace, not the session, the isolation unit, and
@@ -121,7 +121,8 @@ The HTTP interface (`/list`, `/exec`, `/healthz`) is unchanged. It adds a `pool`
 
 - **One isolate per session.** A slot (`pool:<n>`) is loaded with no `WS` binding and no session. A session's
   first call takes one, and it is never handed out again. After 30 minutes idle the session loses its slot, its
-  next call gets a fresh one, and the old slot's egress is refused. Calls carry no state between them, so this is
+  next call gets a fresh one, and the old slot's egress is refused. Egress checks this itself, and health checks
+  clear idle sessions, so it doesn't wait for another session's call. Calls carry no state between them, so this is
   safe.
 - **Workspace per call.** Each call passes a `WorkspaceScope` (an `RpcTarget`) for the request's workspace, and
   it is revoked when the call ends. `Workspace` and the scope both accept only 64-hex-digit SHA-256 blob names, so
@@ -132,17 +133,19 @@ The HTTP interface (`/list`, `/exec`, `/healthz`) is unchanged. It adds a `pool`
 - **Refill in quiet spells.** A refill loads one isolate at a time, and only once no `/list` or `/exec` has been
   in flight for 25 ms. The first `/healthz` after start fills the pool.
 
-Measured as M0 measured, on 48 threads with load1 between 10 and 19 ([the pool as
+Measured as M0 measured, on 48 threads with load1 between 7 and 10 ([the pool as
 built](../measurements/m1-be1-isolate/README.md#the-pool-as-built-harnesspoolts-27-october-2026)):
 
 | | ready p50 / p95 | first command p50 |
 |---|---|---|
-| Pool, sessions arriving slower than the refill | **6.4–6.5 / 7.9–10.0 ms** | 74–76 ms |
-| Off (`ISOLATE_POOL_SIZE=0`) | 120.9–123.3 / 138.4–147.6 ms | 189–192 ms |
-| Pool, back-to-back burst | 122–124 / 137–141 ms (2 of 50 hits) | 187–189 ms |
+| Pool, each new session arriving with the pool full | **6.2–6.4 / 7.4 ms** | 70–71 ms |
+| Off (`ISOLATE_POOL_SIZE=0`) | 118.4–120.9 / 129.8–137.4 ms | 182–184 ms |
+| Pool, back-to-back burst | 118–121 / 135–138 ms (2 of 50 hits) | 183–185 ms |
 
-Self-hosted meets the target whenever new sessions arrive slower than one process can refill, which is about
-eight a second. A burst larger than the pool pays today's cost. gVisor, the cost of concurrent bursts and the
+Self-hosted meets the target when a new session finds an isolate ready. Two things must hold for that. New
+sessions must arrive slower than one process can load isolates, about eight a second. And the process must have
+quiet spells, 25 ms with no call in flight from any session, often enough to refill. A burst larger than the pool,
+or sessions running commands back to back, pays today's cost and no more. gVisor, the cost of concurrent bursts and the
 memory held by idle isolates are still unmeasured.
 
 ## What #18 needs to do on Cloudflare

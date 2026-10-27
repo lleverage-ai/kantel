@@ -23,6 +23,7 @@ import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 // Bundled just-bash sandbox, embedded as a text module by config.capnp.
 import sandboxSource from "harbour-sandbox-bundle";
+import { type Assignment, Pool, parsePoolSize } from "./pool.ts";
 import type { ExecRequest, Manifest, default as Sandbox } from "./sandbox.ts";
 
 interface Env {
@@ -166,133 +167,25 @@ export class PooledEgress extends WorkerEntrypoint<Env, PooledEgressProps> {
 
 // --- The pool ----------------------------------------------------------------
 
-const DEFAULT_POOL_SIZE = 4;
-const MAX_POOL_SIZE = 64;
-/** A session idle this long gives up its slot; its next call gets a fresh isolate. Calls carry no state between them. */
-const SESSION_IDLE_MS = 30 * 60_000;
-/**
- * A load holds workerd's only thread for about 125 ms, so a refill loads only when no /list or /exec has been in
- * flight for this long: the refill fills the gaps (a model call between tool calls) instead of stalling a command.
- */
-const QUIET_MS = 25;
-/** A refill that finds no quiet spell for this long stops; the next hand-out or health check starts another. */
-const REFILL_PATIENCE_MS = 10_000;
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 let warnedSize = false;
-/** ISOLATE_POOL_SIZE: unset or empty is the default; anything but an integer from 0 to 64 turns the pool off. */
-export function poolSize(env: Pick<Env, "ISOLATE_POOL_SIZE">): number {
-	const raw = env.ISOLATE_POOL_SIZE?.trim();
-	if (raw === undefined || raw === "") return DEFAULT_POOL_SIZE;
-	const size = Number(raw);
-	if (/^\d+$/.test(raw) && size <= MAX_POOL_SIZE) return size;
-	if (!warnedSize)
-		console.warn(`ISOLATE_POOL_SIZE=${raw} is not an integer from 0 to ${MAX_POOL_SIZE}; the pool is off`);
-	warnedSize = true;
-	return 0;
+function poolSize(env: Pick<Env, "ISOLATE_POOL_SIZE">): number {
+	const { size, invalid } = parsePoolSize(env.ISOLATE_POOL_SIZE);
+	if (invalid && !warnedSize) {
+		console.warn(`ISOLATE_POOL_SIZE=${env.ISOLATE_POOL_SIZE} is not an integer from 0 to 64; the pool is off`);
+		warnedSize = true;
+	}
+	return size;
 }
 
-interface Assignment {
-	slot: string;
-	lastUsed: number;
-	inFlight: number;
-}
-
-/**
- * Pre-loaded isolates and who owns them. A slot is loaded with no workspace and no session; handing it out
- * writes slot → session once. A slot is never handed out twice: when its session goes idle the mapping is
- * dropped, and the isolate's egress is refused from then on.
- */
-class Pool {
-	/** Loaded, not yet handed out. */
-	readonly #idle: string[] = [];
-	readonly #owners = new Map<string, string>();
-	readonly #sessions = new Map<string, Assignment>();
-	#next = 0;
-	#refilling: Promise<void> | undefined;
-	/** /list and /exec calls in flight, and when the last one started or ended. */
-	#active = 0;
-	#lastActive = 0;
-
-	owner(slot: string): string | undefined {
-		return this.#owners.get(slot);
-	}
-
-	begin(now: number): void {
-		this.#active += 1;
-		this.#lastActive = now;
-	}
-
-	end(now: number): void {
-		this.#active -= 1;
-		this.#lastActive = now;
-	}
-
-	/** The session's slot, handing out a pre-loaded one (or a fresh one when none is ready) on its first call. */
-	assign(sessionId: string, now: number): { assignment: Assignment; hit: boolean | undefined } {
-		this.#expire(now);
-		const existing = this.#sessions.get(sessionId);
-		if (existing) return { assignment: existing, hit: undefined };
-		const ready = this.#idle.shift();
-		const slot = ready ?? this.#newSlot();
-		const assignment = { slot, lastUsed: now, inFlight: 0 };
-		this.#owners.set(slot, sessionId);
-		this.#sessions.set(sessionId, assignment);
-		return { assignment, hit: ready !== undefined };
-	}
-
-	/** Top the pool up to `size`, one load at a time, each in a quiet spell. */
-	refill(load: (slot: string) => Promise<unknown>, size: number): Promise<void> {
-		this.#refilling ??= (async () => {
-			// After a turn, so `#refilling` is set before the `finally` below clears it.
-			await undefined;
-			const giveUp = Date.now() + REFILL_PATIENCE_MS;
-			try {
-				while (this.#idle.length < size) {
-					if (!(await this.#quiet(giveUp))) return;
-					const slot = this.#newSlot();
-					await load(slot);
-					this.#idle.push(slot);
-				}
-			} catch (error) {
-				console.error("isolate pool refill failed:", error);
-			} finally {
-				this.#refilling = undefined;
-			}
-		})();
-		return this.#refilling;
-	}
-
-	stats() {
-		return { idle: this.#idle.length, sessions: this.#sessions.size };
-	}
-
-	/** Until nothing has been in flight for QUIET_MS; false once `giveUp` passes first. */
-	async #quiet(giveUp: number): Promise<boolean> {
-		for (;;) {
-			const now = Date.now();
-			if (this.#active === 0 && now - this.#lastActive >= QUIET_MS) return true;
-			if (now >= giveUp) return false;
-			await sleep(QUIET_MS);
-		}
-	}
-
-	#newSlot(): string {
-		// Never reused, and apart from the `session:` IDs of the unpooled path.
-		return `pool:${this.#next++}`;
-	}
-
-	#expire(now: number): void {
-		for (const [sessionId, assignment] of this.#sessions) {
-			if (assignment.inFlight > 0 || now - assignment.lastUsed < SESSION_IDLE_MS) continue;
-			this.#sessions.delete(sessionId);
-			this.#owners.delete(assignment.slot);
-		}
-	}
-}
-
-const pool = new Pool();
+const pool = new Pool({
+	// Calls carry no state between them, so an idle session can lose its isolate.
+	sessionIdleMs: 30 * 60_000,
+	// A load holds workerd's only thread for about 125 ms, so a refill loads only in a quiet spell: it fills the
+	// gaps (a model call between tool calls) instead of stalling a command.
+	quietMs: 25,
+	refillPatienceMs: 10_000,
+	onRefillError: (error) => console.error("isolate pool refill failed:", error),
+});
 
 function pooledSandbox(env: Env, ctx: LoaderContext, slot: string): SandboxEntrypoint {
 	return env.LOADER.get(slot, async () => ({
@@ -367,7 +260,7 @@ export default {
 		}
 		let assignment: Assignment | undefined;
 		const scopes: WorkspaceScope[] = [];
-		pool.begin(Date.now());
+		pool.begin();
 		try {
 			const started = Date.now();
 			const body = (await request.json()) as LoadBody & Partial<ExecRequest>;
@@ -379,7 +272,7 @@ export default {
 			if (size > 0) {
 				if (typeof body.sessionId !== "string" || body.sessionId === "")
 					return json({ error: "sessionId required" }, 400);
-				const assigned = pool.assign(body.sessionId, Date.now());
+				const assigned = pool.assign(body.sessionId);
 				assignment = assigned.assignment;
 				assignment.inFlight += 1;
 				if (assigned.hit !== undefined) scheduleRefill(env, ctx, size);
@@ -412,7 +305,7 @@ export default {
 		} catch (error) {
 			return json({ error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }, 500);
 		} finally {
-			pool.end(Date.now());
+			pool.end();
 			for (const scope of scopes) scope.revoke();
 			if (assignment) {
 				assignment.inFlight -= 1;

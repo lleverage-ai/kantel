@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // vitest config and a `test` script; CI runs `pnpm test` at the root and `pnpm -r --if-present test` for those.
 export default defineConfig({
 	test: {
-		include: ["packages/*/test/**/*.test.ts"],
+		include: ["packages/*/test/**/*.test.ts", "images/isolate-host/test/**/*.test.ts"],
 		environment: "node",
 		testTimeout: 10_000,
 	},

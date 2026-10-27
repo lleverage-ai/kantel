@@ -395,7 +395,9 @@ async function batch(mode: "off" | "pool", cadence: string, round: number, seede
 		if (size > 0) await poolFull(base, size);
 		// Warm-up, not recorded.
 		await ok(base, "/list", body(`${prefix}-warmup`));
-		await ok(base, "/exec", { ...body(`${prefix}-warmup`), command });
+		// As M0 and IsolateRunner.exec: /list fetches the manifest, /exec is sent it.
+		const exec = (sessionId: string) => ({ ...body(sessionId), manifest: seeded.manifest, command });
+		await ok(base, "/exec", exec(`${prefix}-warmup`));
 		const before = load();
 		const rows: {
 			load1: number;
@@ -413,9 +415,9 @@ async function batch(mode: "off" | "pool", cadence: string, round: number, seede
 			const ready = await ok(base, "/list", body(`${prefix}-iso-${i}`));
 			if (ready.json.entries !== 381) throw new Error("listing mismatch");
 			if (size > 0 && cadence === "paced") await poolFull(base, size);
-			const first = await ok(base, "/exec", { ...body(`${prefix}-first-${i}`), command });
+			const first = await ok(base, "/exec", exec(`${prefix}-first-${i}`));
 			if (String(first.json.stdout).trim() === "") throw new Error("first command printed nothing");
-			const warm = await ok(base, "/exec", { ...body(`${prefix}-first-${i}`), command });
+			const warm = await ok(base, "/exec", exec(`${prefix}-first-${i}`));
 			rows.push({
 				load1,
 				ready: ready.ms,
