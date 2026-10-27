@@ -39,7 +39,7 @@ async function open(browser: Browser, width: number, height: number, query: stri
 	const page = await browser.newPage({
 		viewport: { width, height },
 		deviceScaleFactor: width < 600 ? 2 : 1,
-		colorScheme: "light",
+		colorScheme: "dark",
 	});
 	await page.goto(`${base}?${query}`);
 	await page.waitForFunction(() => (window as Win).__harbour?.client.getState().cursor !== undefined, undefined, {
@@ -144,7 +144,7 @@ async function scrollRun(browser: Browser, width: number, height: number, name: 
 		const tick = (now: number) => {
 			frames.push(now - last);
 			last = now;
-			maxRows = Math.max(maxRows, document.querySelectorAll(".row").length);
+			maxRows = Math.max(maxRows, document.querySelectorAll(".hb-transcript-row").length);
 			Object.assign(window, { __frames: frames, __maxRows: maxRows });
 			requestAnimationFrame(tick);
 		};
@@ -157,7 +157,7 @@ async function scrollRun(browser: Browser, width: number, height: number, name: 
 		await page.waitForTimeout(16);
 		const done = await page.evaluate(() => {
 			const state = (window as Win).__harbour!.client.getState();
-			const viewport = document.querySelector(".vlist") as HTMLElement;
+			const viewport = document.querySelector(".hb-transcript-list") as HTMLElement;
 			return !state.hasEarlier && viewport.scrollTop < 5;
 		});
 		if (done || Date.now() - started > 240_000) break;

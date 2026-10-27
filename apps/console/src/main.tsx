@@ -1,4 +1,5 @@
 import { parseFixture } from "@harbour/protocol";
+import { Notice, Spinner } from "@harbour/ui";
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
@@ -61,8 +62,18 @@ function App() {
 			session?.stop();
 		};
 	}, []);
-	if (error !== undefined) return <div className="boot">{error}</div>;
-	if (client === undefined) return <div className="boot">Opening session…</div>;
+	if (error !== undefined)
+		return (
+			<div className="boot hb-app">
+				<Notice level="error">{error}</Notice>
+			</div>
+		);
+	if (client === undefined)
+		return (
+			<div className="boot hb-app">
+				<Spinner label="Opening the session" />
+			</div>
+		);
 	return <SessionView client={client} fixtures={fixtures} current={chosen.id} />;
 }
 

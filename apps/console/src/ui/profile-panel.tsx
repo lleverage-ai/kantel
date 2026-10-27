@@ -1,3 +1,4 @@
+import { Button } from "@harbour/ui";
 import { useEffect, useState } from "react";
 import type { SessionClient } from "../state/session-client.ts";
 import { profileStore } from "./profile.tsx";
@@ -24,12 +25,12 @@ export function ProfilePanel({ client }: { client: SessionClient }) {
 		<aside className={`profile${open ? "" : " profile-closed"}`} aria-label="React Profiler">
 			<div className="profile-head">
 				<strong>React Profiler</strong>
-				<button type="button" onClick={() => store.reset(state.items.map((item) => item.id))}>
+				<Button size="sm" variant="secondary" onClick={() => store.reset(state.items.map((item) => item.id))}>
 					Reset
-				</button>
-				<button type="button" onClick={() => setOpen((value) => !value)}>
+				</Button>
+				<Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
 					{open ? "Hide" : "Show"}
-				</button>
+				</Button>
 			</div>
 			{open ? (
 				<>
@@ -44,7 +45,7 @@ export function ProfilePanel({ client }: { client: SessionClient }) {
 					<ol className="profile-list">
 						{updated.slice(0, 8).map(([id, count]) => (
 							<li key={id}>
-								<code>{id}</code> <span>{count}×</span>
+								<code>{id}</code> <span>{count} times</span>
 							</li>
 						))}
 					</ol>
