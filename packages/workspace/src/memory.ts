@@ -254,7 +254,11 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 		// A racing `ensure` may have created it while this one awaited; the first one wins.
 		const raced = workspaces.get(id);
 		if (raced !== undefined) {
-			if (keyed && raced.organisationId === ctx.organisationId) return raced.record;
+			if (keyed && raced.organisationId === ctx.organisationId) {
+				// The winner may be another project's: the loser sees it only as any existing workspace would be seen.
+				await requireWorkspace(ctx, raced.record, "viewer", "workspace.get");
+				return raced.record;
+			}
 			throw new HarbourError("conflict", `workspace ${id} is taken`);
 		}
 		workspaces.set(id, { organisationId: ctx.organisationId, record, versions });

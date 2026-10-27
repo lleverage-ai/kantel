@@ -17,6 +17,7 @@ const OTHER = "proj-2";
 const SESSION = "sess-1";
 const alice = contextFor(actors.human("alice"), ORG, PROJECT);
 const bob = contextFor(actors.human("bob"), ORG, OTHER);
+const carol = contextFor(actors.human("carol"), ORG, OTHER);
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
@@ -36,6 +37,8 @@ describe("workspace-backed project files", () => {
 		deps.tenancy.bind(alice.actor, ORG, "operator", PROJECT);
 		deps.tenancy.bind(bob.actor, ORG, "viewer", PROJECT);
 		deps.tenancy.bind(bob.actor, ORG, "operator", OTHER);
+		deps.tenancy.bind(carol.actor, ORG, "operator", OTHER);
+		deps.tenancy.session({ id: "sess-x", organisationId: ORG, projectId: PROJECT, agentId: "agent-x" });
 	});
 
 	it("keeps each project's files as a workspace owned by the project, under a derived ID", async () => {
@@ -80,6 +83,58 @@ describe("workspace-backed project files", () => {
 		]);
 		expect(await files.latestVersion(alice, PROJECT)).toBe("3");
 		expect((await files.list(alice, PROJECT, "3", "")).map((entry) => entry.path)).toEqual(["a.md", "b.md", "c.md"]);
+	});
+
+	it("derives distinct IDs for pairs a naive join would merge", async () => {
+		expect(await projectFilesWorkspaceId("a\nb", "c")).not.toBe(await projectFilesWorkspaceId("a", "b\nc"));
+		expect(await projectFilesWorkspaceId(ORG, "\uD800")).not.toBe(await projectFilesWorkspaceId(ORG, "\uFFFD"));
+	});
+
+	it("never uses a tree under the derived ID that is not exactly the project's", async () => {
+		const trees = createMemoryWorkspaces({ clock: deps.clock, access: deps.access });
+		const files = createWorkspaceProjectFiles({ workspaces: trees, access: deps.access });
+		const id = await projectFilesWorkspaceId(ORG, PROJECT);
+		// Bob operates OTHER and takes PROJECT's derived ID first, seeding it with his own files.
+		await trees.ensure(bob, id, {
+			owner: { kind: "project", organisationId: ORG, projectId: OTHER },
+			seed: { name: "bait", sources: [{ kind: "files", files: { "README.md": "bob's" } }] },
+		});
+		expect(await codeOf(files.latestVersion(alice, PROJECT))).toBe("conflict");
+		expect(await codeOf(files.read(alice, PROJECT, "1", "README.md"))).toBe("conflict");
+		expect(await codeOf(files.write!(alice, PROJECT, [{ op: "put", path: "secret.md", content: "s" }]))).toBe(
+			"conflict",
+		);
+		expect((await trees.get(bob, id)).head).toBe(1);
+
+		// A session-tied workspace under the ID is refused the same way.
+		const sessionTrees = createMemoryWorkspaces({ clock: deps.clock, access: deps.access });
+		await sessionTrees.ensure(alice, id, {
+			owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+			sessionId: "sess-x",
+		});
+		const sessionFiles = createWorkspaceProjectFiles({ workspaces: sessionTrees, access: deps.access });
+		expect(await codeOf(sessionFiles.latestVersion(alice, PROJECT))).toBe("conflict");
+	});
+
+	it("checks the caller against the record that won an ensure race", async () => {
+		const trees = createMemoryWorkspaces({ clock: deps.clock, access: deps.access });
+		const seed = (who: string) => ({ name: who, sources: [{ kind: "files" as const, files: { "x.md": who } }] });
+		const results = await Promise.allSettled([
+			trees.ensure(alice, "pf_contested", {
+				owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+				seed: seed("alice"),
+			}),
+			// Carol operates only OTHER, so she may not see PROJECT's workspace if Alice's wins.
+			trees.ensure(carol, "pf_contested", {
+				owner: { kind: "project", organisationId: ORG, projectId: OTHER },
+				seed: seed("bob"),
+			}),
+		]);
+		const won = results.filter((result) => result.status === "fulfilled");
+		const lost = results.filter((result) => result.status === "rejected");
+		expect(won).toHaveLength(1);
+		expect(lost).toHaveLength(1);
+		expect(isHarbourError(lost[0]?.reason, "forbidden")).toBe(true);
 	});
 
 	it("refuses a keyed ID another organisation holds", async () => {
@@ -194,6 +249,7 @@ describe("the skills mount", () => {
 		expect(await codeOf(source.list(alice, SESSION, forged, ""))).toBe("forbidden");
 		expect(await codeOf(source.read(alice, SESSION, forged, "hidden/SKILL.md"))).toBe("forbidden");
 		expect(await codeOf(source.list(alice, SESSION, "not-a-version", ""))).toBe("not_found");
+		expect(await codeOf(source.list(alice, SESSION, "pins:%@1", ""))).toBe("not_found");
 		const pinned = await source.latestVersion(alice, SESSION);
 		expect(await codeOf(source.read(alice, SESSION, pinned, "hidden/SKILL.md"))).toBe("not_found");
 		expect(await codeOf(source.read(alice, SESSION, pinned, "pr-review/missing.md"))).toBe("not_found");

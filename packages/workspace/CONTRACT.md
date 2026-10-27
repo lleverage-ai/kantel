@@ -116,9 +116,12 @@ types as `Workspaces` and rethrows error bodies as `HarbourError`.
   workspaces. Versions are that workspace's versions as strings (`"0"` is empty). `write` needs operator on the project
   (`workspace.files.write`), commits with the caller as the actor and retries a lost race on the head (blind puts and
   deletes). The store must be a `KeyedWorkspaces`: `Workspaces` plus `ensure(ctx, id, input)`, which opens or creates a
-  workspace under an ID the caller derives (`checkKeyedId`); an ID another organisation holds is `conflict`. Because
-  the ID includes the organisation, a ref is always the caller's organisation's project, which settles the first open
-  question below for this source.
+  workspace under an ID the caller derives (`checkKeyedId`); an ID another organisation holds is `conflict`, and a caller
+  gets an existing record (or the one that won a race) only with viewer on it. The ID hashes the JSON pair, so it is
+  unambiguous, and includes the organisation, so a ref is always the caller's organisation's project; this settles
+  the first open question below for this source. The source uses a tree only when it is exactly the project's (owned
+  by it, in no session, with no mounts): any other workspace under the ID is `conflict`, because the source reads it
+  with Harbour's own authority.
 - `createSkillsMountSource({ skills, visibility })` is the `skills` source for `/skills`; a mount's ref is the
   session ID. `latestVersion` pins the session's skills through `Skills.pinForSession` (once), and the version
   `skillsMountVersion(pins)` names the pinned revisions themselves (`pins:<skillId>@<revision>,…`), so it never changes

@@ -48,7 +48,8 @@ export interface WorkspaceProjectFilesOptions {
 
 /** The workspace that holds a project's files: derived, so every host finds the same one without an index. */
 export async function projectFilesWorkspaceId(organisationId: string, projectId: ProjectId): Promise<WorkspaceId> {
-	const digest = await sha256Hex(toBytes(`project-files\n${organisationId}\n${projectId}`));
+	// JSON is a lossless, unambiguous encoding of the pair (lone surrogates are escaped, separators quoted).
+	const digest = await sha256Hex(toBytes(JSON.stringify(["project-files", organisationId, projectId])));
 	return `pf_${digest.slice(0, 48)}`;
 }
 
@@ -64,9 +65,22 @@ export function createWorkspaceProjectFiles(options: WorkspaceProjectFilesOption
 	async function open(ctx: CallContext, ref: ProjectId): Promise<WorkspaceId> {
 		if (typeof ref !== "string" || ref === "") throw new HarbourError("invalid", "a project-files ref is a project ID");
 		const id = await projectFilesWorkspaceId(ctx.organisationId, ref);
-		await workspaces.ensure(internal(ctx), id, {
+		const record = await workspaces.ensure(internal(ctx), id, {
 			owner: { kind: "project", organisationId: ctx.organisationId, projectId: ref },
 		});
+		// Anyone who may create workspaces could have taken the derived ID first. The source acts with Harbour's own
+		// authority on this tree, so it uses only one that is exactly the project's: owned by it, in no session and
+		// with no mounts of its own.
+		const { owner } = record;
+		if (
+			owner.kind !== "project" ||
+			owner.organisationId !== ctx.organisationId ||
+			owner.projectId !== ref ||
+			record.sessionId !== undefined ||
+			record.mounts.length > 0
+		) {
+			throw new HarbourError("conflict", `the project files store for ${ref} is taken by another workspace`);
+		}
 		return id;
 	}
 
@@ -179,7 +193,13 @@ function parsePins(version: string): { readonly skillId: string; readonly revisi
 		const at = part.lastIndexOf("@");
 		const revision = Number(part.slice(at + 1));
 		if (at <= 0 || !Number.isInteger(revision) || revision < 1) throw bad();
-		return { skillId: decodeURIComponent(part.slice(0, at)), revision };
+		let skillId: string;
+		try {
+			skillId = decodeURIComponent(part.slice(0, at));
+		} catch {
+			throw bad();
+		}
+		return { skillId, revision };
 	});
 }
 
