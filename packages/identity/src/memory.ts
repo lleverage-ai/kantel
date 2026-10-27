@@ -11,6 +11,7 @@ import {
 	type Authentication,
 	type CallContext,
 	type Clock,
+	type ExternalIdentity,
 	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
@@ -174,6 +175,37 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 
 	function requireMember(ctx: CallContext): void {
 		if (!isMember(ctx.actor, ctx.organisationId)) throw forbidden("the actor holds no role in this organisation");
+	}
+
+	/**
+	 * The user `identity` signs in as, and whether signing in links them to its subject; undefined when `signIn` would
+	 * refuse it. Malformed identities match no one.
+	 */
+	function signInMatch(
+		identity: ExternalIdentity,
+	): { readonly stored: StoredUser; readonly link: boolean } | undefined {
+		if (
+			typeof identity?.issuer !== "string" ||
+			identity.issuer === "" ||
+			typeof identity.subject !== "string" ||
+			identity.subject === ""
+		) {
+			return undefined;
+		}
+		const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
+		const bySubject = [...users.values()].filter((candidate) => candidate.user.externalSubject === externalSubject);
+		// Subjects are unique by construction; should two records ever share one, refuse rather than pick.
+		if (bySubject.length > 1) return undefined;
+		if (bySubject[0] !== undefined) return { stored: bySubject[0], link: false };
+		const email =
+			identity.emailVerified === true && typeof identity.email === "string"
+				? normalisedEmail(identity.email)
+				: undefined;
+		if (email === undefined || email === "") return undefined;
+		const invited = [...users.values()].filter(
+			(candidate) => candidate.user.externalSubject === undefined && normalisedEmail(candidate.user.email) === email,
+		);
+		return invited.length === 1 && invited[0] !== undefined ? { stored: invited[0], link: true } : undefined;
 	}
 
 	async function emit(
@@ -507,22 +539,11 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
-			const bySubject = [...users.values()].filter((candidate) => candidate.user.externalSubject === externalSubject);
-			// Subjects are unique by construction; should two records ever share one, refuse rather than pick.
-			if (bySubject.length > 1) throw forbidden("no user matches this sign-in");
-			let stored = bySubject[0];
-			if (stored === undefined) {
-				const email = identity.emailVerified === true ? normalisedEmail(identity.email) : undefined;
-				const invited =
-					email === undefined || email === ""
-						? []
-						: [...users.values()].filter(
-								(candidate) =>
-									candidate.user.externalSubject === undefined && normalisedEmail(candidate.user.email) === email,
-							);
-				const only = invited.length === 1 ? invited[0] : undefined;
-				if (only === undefined) throw forbidden("no user matches this sign-in");
-				stored = { ...only, user: Object.freeze({ ...only.user, externalSubject }) };
+			const match = signInMatch(identity);
+			if (match === undefined) throw forbidden("no user matches this sign-in");
+			let stored = match.stored;
+			if (match.link) {
+				stored = { ...stored, user: Object.freeze({ ...stored.user, externalSubject }) };
 				users.set(stored.user.id, stored);
 				await emit(
 					// The person signing in links themselves; the authenticator only carried their token.
@@ -542,6 +563,11 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				}
 			}
 			return { user: stored.user, organisationIds: [...organisationIds] };
+		},
+
+		async canSignIn(ctx, identity) {
+			await requireSystem(ctx, "identity.canSignIn", { ...(audit === undefined ? {} : { audit }), clock });
+			return signInMatch(identity) !== undefined;
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {

@@ -71,6 +71,20 @@ creates the user, and sign-in never creates one.
   share, a linked user's email at a new subject, or nobody at all is `forbidden`.
 - The organisations — "signIn lists the organisations the user was created in or holds a role in".
 - A worker call: the authenticator makes it as `system` — "worker calls: signIn refuses every caller but system".
+- `canSignIn(ctx, identity)` says whether `signIn` would accept the identity now, without linking or auditing, and
+  does the same work whoever it names. Email one-time PIN sign-in asks it before sending a code — "canSignIn answers
+  what signIn would, without linking or auditing anyone". A worker call too.
+
+## Email one-time PIN (M1-BE7, self-hosted)
+
+Sign-in is by email one-time PIN (decided by Tom, 27 Oct 2026, issue #15). On Cloudflare, Access's own one-time PIN
+login sits in front of Harbour and `cloudflareAccessProvider` verifies its token. Self-hosted, Harbour runs the same
+flow itself: `POST /auth/otp/start {email}` (`OTP_START_PATH`) always answers 202 with the same body, and only an
+invited user's inbox gets a code; `POST /auth/otp/verify {email, code}` (`OTP_VERIFY_PATH`) calls `signIn` with
+`ExternalIdentity { issuer: EMAIL_OTP_ISSUER, subject: <normalised email>, email, emailVerified: true }` and issues a
+Harbour session (`hbs_…`), which the authenticator accepts as the `harbour_session` method. Sign-in and sign-out are
+audited as `identity.session.started` and `identity.session.ended`. The wire types are in
+`packages/contracts/src/identity.ts`.
 
 ## The authenticator (M1-BE7)
 

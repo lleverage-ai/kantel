@@ -5,6 +5,7 @@
 import {
 	type Actor,
 	type CallContext,
+	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
 	type IdentityDirectory,
 	type Organisation,
@@ -696,6 +697,58 @@ export function createIdentityConformance(options: {
 					"home and the organisation with a role, not a third",
 				);
 				a.ok(!organisationIds.includes(elsewhere.organisation.id));
+			}),
+		},
+		{
+			name: "canSignIn answers what signIn would, without linking or auditing anyone",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const issuer = EMAIL_OTP_ISSUER;
+				const otp = (email: string) => ({ issuer, subject: email, email, emailVerified: true });
+				const invited = await identity.createUser(tenant.admin, { name: "Ada", email: "Ada@Example.test" });
+				await identity.createUser(tenant.admin, {
+					name: "Grace",
+					email: "grace@example.test",
+					externalSubject: externalSubjectOf(issuer, "grace@example.test"),
+				});
+				await identity.createUser(tenant.admin, {
+					name: "Linked elsewhere",
+					email: "linked@example.test",
+					externalSubject: externalSubjectOf("https://idp.example.test", "linked"),
+				});
+				await identity.createUser(tenant.admin, { name: "Twin one", email: "twin@example.test" });
+				await identity.createUser(tenant.admin, { name: "Twin two", email: "TWIN@example.test" });
+				const auditedBefore = deps.audit.events.length;
+
+				a.strictEqual(await identity.canSignIn(WORKER, otp("ada@example.test")), true, "an invited email");
+				a.strictEqual(await identity.canSignIn(WORKER, otp("grace@example.test")), true, "a linked subject");
+				a.strictEqual(await identity.canSignIn(WORKER, otp("nobody@example.test")), false, "a stranger");
+				a.strictEqual(
+					await identity.canSignIn(WORKER, otp("linked@example.test")),
+					false,
+					"a user linked to another subject",
+				);
+				a.strictEqual(await identity.canSignIn(WORKER, otp("twin@example.test")), false, "an email two users share");
+				a.strictEqual(
+					await identity.canSignIn(WORKER, { issuer, subject: "ada@example.test", email: "ada@example.test" }),
+					false,
+					"an unverified email",
+				);
+				a.strictEqual(await identity.canSignIn(WORKER, { issuer: "", subject: "x" }), false, "a malformed identity");
+				a.strictEqual(deps.audit.events.length, auditedBefore, "nothing was audited");
+				a.strictEqual(
+					(await identity.getUser(tenant.admin, invited.id)).externalSubject,
+					undefined,
+					"nobody was linked",
+				);
+
+				await assertWorkerCallRefused(
+					a,
+					deps,
+					"identity.canSignIn",
+					(ctx) => identity.canSignIn(ctx, otp("ada@example.test")),
+					tenant.organisation.id,
+				);
 			}),
 		},
 		{

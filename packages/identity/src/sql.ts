@@ -1103,6 +1103,31 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
 
+		async canSignIn(ctx, identity) {
+			await requireSystem(ctx, "identity.canSignIn", workerOptions);
+			const wellFormed =
+				typeof identity?.issuer === "string" &&
+				identity.issuer !== "" &&
+				typeof identity.subject === "string" &&
+				identity.subject !== "";
+			const externalSubject = wellFormed ? externalSubjectOf(identity.issuer, identity.subject) : "";
+			const email =
+				wellFormed && identity.emailVerified === true && typeof identity.email === "string"
+					? normaliseEmail(identity.email)
+					: "";
+			// One query whoever the identity names, so the answer's timing says nothing about who exists.
+			const rows = await driver.query<{ external_subject: unknown }>(
+				`SELECT external_subject FROM identity_users
+				WHERE external_subject = ? OR (external_subject IS NULL AND email_normalised = ? AND email_normalised <> '')
+				LIMIT 3`,
+				[externalSubject, email],
+			);
+			if (!wellFormed) return false;
+			const bySubject = rows.filter((row) => row.external_subject === externalSubject);
+			if (bySubject.length > 0) return bySubject.length === 1;
+			return email !== "" && rows.length === 1;
+		},
+
 		async roleOf(ctx, actor, organisationId, projectId) {
 			await requireSystem(ctx, "identity.roleOf", { ...workerOptions, organisationId });
 			return resolveRole(actor, organisationId, projectId);
