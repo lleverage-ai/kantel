@@ -1,0 +1,241 @@
+{
+	"ok": true,
+	"sessionId": "research-task-mvqly5ko",
+	"elapsedMs": 5496,
+	"killAfterExec": 2,
+	"workspace": {
+		"id": "ws-research-task-mvqly5ko",
+		"head": "ddbecc3e43c1d9a85af24dc77d1e8ff022e22814f6caf29c9845b8d9880a4cbc"
+	},
+	"interrupted": [
+		{
+			"tool": "bash",
+			"text": "<harness>\n[error] Tool bash was interrupted and may have partially run\n</harness>"
+		}
+	],
+	"execs": [
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "3298bebb8adc0be042f7a7d2737fdc80dc178b22c45175eb67b719f30ac2ae37",
+			"version": "3298bebb8adc0be042f7a7d2737fdc80dc178b22c45175eb67b719f30ac2ae37",
+			"command": "ls -1 /workspace && cat brief.txt",
+			"timings": {
+				"fsMs": 6,
+				"execMs": 160,
+				"totalMs": 159,
+				"commitMs": 0,
+				"lazyReads": 1,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "3298bebb8adc0be042f7a7d2737fdc80dc178b22c45175eb67b719f30ac2ae37",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "mkdir -p research && curl -sS https://example.com/ -o resear",
+			"timings": {
+				"fsMs": 3,
+				"execMs": 183,
+				"totalMs": 182,
+				"commitMs": 14,
+				"lazyReads": 0,
+				"manifestMs": 1
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "mkdir -p research && curl -sS https://example.com/ -o resear",
+			"timings": {
+				"fsMs": 2,
+				"execMs": 54,
+				"totalMs": 53,
+				"commitMs": 0,
+				"lazyReads": 0,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[",
+			"timings": {
+				"fsMs": 2,
+				"execMs": 151,
+				"totalMs": 149,
+				"commitMs": 0,
+				"lazyReads": 0,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github",
+			"timings": {
+				"fsMs": 2,
+				"execMs": 9,
+				"totalMs": 7,
+				"commitMs": 0,
+				"lazyReads": 0,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "container",
+			"exitCode": 0,
+			"base": "19e366c5eadcdaae0bdaf23f757fdeb74f71e59d62684afffc82ec49b2b56516",
+			"version": "ddbecc3e43c1d9a85af24dc77d1e8ff022e22814f6caf29c9845b8d9880a4cbc",
+			"command": "cat notes/x.md && grep -c 'Example Domain' research/example.",
+			"timings": {
+				"runMs": 786,
+				"execMs": 1313,
+				"startMs": 549.8,
+				"copyInMs": 327.4,
+				"createMs": 316.7,
+				"uploadMs": 880,
+				"copyOutMs": 830.4,
+				"networkMs": 143.8,
+				"workspaceTarMs": 8.2
+			}
+		},
+		{
+			"tier": "container",
+			"exitCode": 0,
+			"base": "ddbecc3e43c1d9a85af24dc77d1e8ff022e22814f6caf29c9845b8d9880a4cbc",
+			"version": "ddbecc3e43c1d9a85af24dc77d1e8ff022e22814f6caf29c9845b8d9880a4cbc",
+			"command": "# harbour:container\ncurl -sS https://postman-echo.com/header",
+			"timings": {
+				"runMs": 743.3,
+				"execMs": 1079,
+				"startMs": 389.5,
+				"copyInMs": 178.9,
+				"createMs": 152.9,
+				"uploadMs": 768.9,
+				"copyOutMs": 768.4,
+				"networkMs": 102.9,
+				"workspaceTarMs": 24.2
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "ddbecc3e43c1d9a85af24dc77d1e8ff022e22814f6caf29c9845b8d9880a4cbc",
+			"version": "ddbecc3e43c1d9a85af24dc77d1e8ff022e22814f6caf29c9845b8d9880a4cbc",
+			"command": "cat git-log.txt && wc -l < git-log.txt",
+			"timings": {
+				"fsMs": 2,
+				"execMs": 19,
+				"totalMs": 15,
+				"commitMs": 0,
+				"lazyReads": 1,
+				"manifestMs": 3
+			}
+		}
+	],
+	"events": [
+		{
+			"at": 1793100849397,
+			"type": "kill",
+			"owner": "host-a/e81dce9f",
+			"command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html"
+		},
+		{
+			"at": 1793100849698,
+			"type": "reopen",
+			"fence": 2,
+			"owner": "host-b/94247e91",
+			"previousOwner": "host-a/e81dce9f"
+		}
+	],
+	"checks": [
+		{
+			"name": "submission done",
+			"ok": true
+		},
+		{
+			"name": "final answer",
+			"ok": true
+		},
+		{
+			"name": "one tool result per step",
+			"ok": true
+		},
+		{
+			"name": "step 1 isolate-lists-workspace",
+			"ok": true
+		},
+		{
+			"name": "step 2 isolate-fetches-through-vault",
+			"ok": true
+		},
+		{
+			"name": "step 3 isolate-vault-injects-and-redacts",
+			"ok": true
+		},
+		{
+			"name": "step 4 isolate-vault-denies-unlisted-host",
+			"ok": true
+		},
+		{
+			"name": "step 5 write-tool-writes-notes",
+			"ok": true
+		},
+		{
+			"name": "step 6 container-sees-isolate-and-write-tool",
+			"ok": true
+		},
+		{
+			"name": "step 7 container-vault-injects-and-redacts",
+			"ok": true
+		},
+		{
+			"name": "step 8 isolate-sees-container-write",
+			"ok": true
+		},
+		{
+			"name": "step 9 read-tool-reads-notes",
+			"ok": true
+		},
+		{
+			"name": "both tiers ran",
+			"ok": true
+		},
+		{
+			"name": "canary absent from transcript, fixture and exec log",
+			"ok": true
+		},
+		{
+			"name": "vault allowed and injected for both tiers",
+			"ok": true
+		},
+		{
+			"name": "vault denied for both tiers",
+			"ok": true
+		},
+		{
+			"name": "vault redacted echoed canary for both tiers",
+			"ok": true
+		},
+		{
+			"name": "object was killed mid tool call",
+			"ok": true
+		},
+		{
+			"name": "object reopened after the kill",
+			"ok": true
+		},
+		{
+			"name": "killed call came back as interrupted",
+			"ok": true
+		}
+	]
+}

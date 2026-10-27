@@ -1,0 +1,209 @@
+# Harbour self-hosted, on one machine (M0-SH1 spike).
+#
+#   docker compose -f deploy/compose/compose.yaml up -d --build --wait
+#
+# Two session hosts (host-a, host-b) share one Postgres lease table, so killing
+# one moves its sessions to the other within a lease TTL. Each sandbox
+# container gets its own internal network, created per command, whose only
+# other member is the vault proxy: nothing a sandbox sends can leave except
+# through the vault, and no sandbox can reach another.
+#
+# Runtimes: HARBOUR_ISOLATE_RUNTIME and HARBOUR_SANDBOX_RUNTIME pick the OCI
+# runtime for the workerd isolate host and for sandbox containers. Both
+# default to runc; set them to runsc once gVisor is registered with the
+# Docker daemon (see README.md). Production must not run workerd on runc.
+
+name: harbour
+
+x-host: &host
+  build:
+    context: ../..
+    dockerfile: apps/selfhosted/Dockerfile
+  image: harbour-selfhosted:dev
+  restart: unless-stopped
+  depends_on:
+    postgres: { condition: service_healthy }
+    minio: { condition: service_healthy }
+    isolate-host: { condition: service_healthy }
+    vault-proxy: { condition: service_healthy }
+    sandbox-image: { condition: service_completed_successfully }
+  networks: [control]
+  volumes:
+    # The container runner starts sandboxes through the Docker API. Anything
+    # holding this socket is root on the machine: a spike-only shortcut, see
+    # README.md for the production shape.
+    - /var/run/docker.sock:/var/run/docker.sock
+  healthcheck:
+    test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+  environment: &host-env
+    HARBOUR_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
+    HARBOUR_LEASE_TTL_MS: ${HARBOUR_LEASE_TTL_MS:-10000}
+    HARBOUR_IDLE_CLOSE_MS: ${HARBOUR_IDLE_CLOSE_MS:-300000}
+    S3_ENDPOINT: http://minio:9000
+    S3_BUCKET: harbour
+    S3_ACCESS_KEY: harbour
+    S3_SECRET_KEY: harbour-dev-secret
+    HARBOUR_ISOLATE_URL: http://isolate-host:8080
+    HARBOUR_SANDBOX_IMAGE: harbour-sandbox:dev
+    HARBOUR_SANDBOX_RUNTIME: ${HARBOUR_SANDBOX_RUNTIME:-runc}
+    # Name prefix of the per-command sandbox networks.
+    HARBOUR_SANDBOX_NETWORK: harbour-sbx
+    HARBOUR_VAULT_CONTAINER: harbour-vault-proxy
+    HARBOUR_VAULT_PROXY_URL: http://vault-proxy:3128
+    HARBOUR_SPIKE_TOKEN: ${HARBOUR_SPIKE_TOKEN:-}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: harbour
+      POSTGRES_PASSWORD: harbour
+      POSTGRES_DB: harbour
+    ports: ["127.0.0.1:${HARBOUR_PG_PORT:-55432}:5432"]
+    networks: [control]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "harbour"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  minio:
+    # MinIO no longer publishes images to Docker Hub or Quay; Chainguard's
+    # build of the same server is public. Pinned by digest.
+    image: cgr.dev/chainguard/minio@sha256:a1d2b3516a41296510f7fb49184c18b88287fa8f35cf3ce5c047289053b94964
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: harbour
+      MINIO_ROOT_PASSWORD: harbour-dev-secret
+    ports: ["127.0.0.1:${HARBOUR_S3_PORT:-59000}:9000"]
+    networks: [control]
+    volumes: [miniodata:/data]
+    healthcheck:
+      test: ["CMD", "/usr/bin/minio", "--version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  isolate-host:
+    build:
+      context: ../..
+      dockerfile: images/isolate-host/Dockerfile
+    image: harbour-isolate-host:dev
+    runtime: ${HARBOUR_ISOLATE_RUNTIME:-runc}
+    restart: unless-stopped
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: harbour
+      S3_ACCESS_KEY: harbour
+      S3_SECRET_KEY: harbour-dev-secret
+      VAULT_ISOLATE_KEY: ${HARBOUR_VAULT_ISOLATE_KEY:-dev-isolate-key}
+    ports: ["127.0.0.1:${HARBOUR_ISOLATE_PORT:-58080}:8080"]
+    networks: [control]
+    depends_on:
+      minio: { condition: service_healthy }
+    healthcheck:
+      # No shell tools in the image beyond bash's /dev/tcp.
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"ok\":true' <&3",
+        ]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  vault-proxy:
+    build:
+      context: ../..
+      dockerfile: apps/vault-proxy/Dockerfile
+    image: harbour-vault-proxy:dev
+    # Fixed, because session hosts connect it to each sandbox network by name.
+    container_name: harbour-vault-proxy
+    restart: unless-stopped
+    environment:
+      HARBOUR_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
+      VAULT_POLICY: /etc/harbour/vault-policy.json
+      VAULT_ISOLATE_KEY: ${HARBOUR_VAULT_ISOLATE_KEY:-dev-isolate-key}
+      # The canary: injected by the vault, required by the research fixture,
+      # and checked to appear nowhere in sandboxes, transcripts or logs.
+      HARBOUR_CANARY_SECRET: ${HARBOUR_CANARY_SECRET:-harbour-canary-0000}
+    volumes:
+      - ./vault-policy.json:/etc/harbour/vault-policy.json:ro
+      # The CA the vault intercepts sandbox HTTPS with; kept so sandboxes
+      # trust the same CA across vault restarts. Only the vault mounts it.
+      - vaultca:/var/lib/harbour-vault
+    networks: [control, upstream]
+    depends_on:
+      postgres: { condition: service_healthy }
+      host-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3128/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  research-site:
+    image: oven/bun:1.3.14-alpine
+    command: ["bun", "/srv/server.ts"]
+    environment:
+      HARBOUR_CANARY_SECRET: ${HARBOUR_CANARY_SECRET:-harbour-canary-0000}
+      PORT: "80"
+    volumes:
+      - ../../spike/fixtures/research-site/server.ts:/srv/server.ts:ro
+    networks: [upstream]
+
+  # Builds the sandbox image, then exits. Session hosts start containers from it.
+  sandbox-image:
+    build:
+      context: ../../images/sandbox
+    image: harbour-sandbox:dev
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+
+  # Applies sql/ once before anything uses the tables.
+  host-migrate:
+    <<: *host
+    command: ["bun", "src/main.ts", "migrate"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes: []
+    healthcheck: { disable: true }
+
+  host-a:
+    <<: *host
+    environment:
+      <<: *host-env
+      HARBOUR_HOST_ID: host-a
+      HARBOUR_HOST_URL: http://host-a:8080
+    ports: ["127.0.0.1:${HARBOUR_HOST_A_PORT:-58081}:8080"]
+
+  host-b:
+    <<: *host
+    environment:
+      <<: *host-env
+      HARBOUR_HOST_ID: host-b
+      HARBOUR_HOST_URL: http://host-b:8080
+    ports: ["127.0.0.1:${HARBOUR_HOST_B_PORT:-58082}:8080"]
+
+networks:
+  control: {}
+  upstream: {}
+
+volumes:
+  pgdata: {}
+  miniodata: {}
+  vaultca: {}
