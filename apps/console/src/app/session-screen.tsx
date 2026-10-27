@@ -29,9 +29,12 @@ export function SessionScreen({
 
 	useEffect(() => {
 		session.start();
-		client.markRead(sessionId);
+		const release = client.markRead(sessionId);
 		onOpen?.(sessionId, session);
-		return () => session.stop();
+		return () => {
+			release();
+			session.stop();
+		};
 	}, [client, session, sessionId, onOpen]);
 
 	const run = useCallback(async (action: () => Promise<void>) => {

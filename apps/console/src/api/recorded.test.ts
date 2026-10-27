@@ -75,6 +75,37 @@ describe("the recorded client", () => {
 		client.dispose();
 	});
 
+	it("keeps a session read while it is shown, and not once it has been left", async () => {
+		const shown = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
+		const a = follow(shown, "harbour");
+		shown.markRead("s-flaky");
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(byId(a.seen.state?.sessions, "s-flaky")).toMatchObject({ status: "done", unread: false });
+		shown.dispose();
+
+		const left = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
+		const b = follow(left, "harbour");
+		const release = left.markRead("s-flaky");
+		await vi.advanceTimersByTimeAsync(200);
+		release();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(byId(b.seen.state?.sessions, "s-flaky")).toMatchObject({ status: "done", unread: true });
+		left.dispose();
+	});
+
+	it("calls nobody back and plays nothing once stopped or disposed", async () => {
+		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
+		const onChange = vi.fn();
+		client.watchSessions("harbour", onChange)();
+		const receive = vi.fn();
+		client.transport("s-none").connect(receive).close();
+		client.dispose();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(onChange).not.toHaveBeenCalled();
+		expect(receive).not.toHaveBeenCalled();
+		expect(client.hostFor("s-flaky")?.finished).toBe(false);
+	});
+
 	it("keeps unchanged sessions' objects, so the list re-renders only what changed", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
 		const harbour = follow(client, "harbour");

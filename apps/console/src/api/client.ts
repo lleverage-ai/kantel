@@ -58,6 +58,9 @@ export interface ConsoleClient {
 	followUp(sessionId: string, text: string, options?: SendOptions): Promise<void>;
 	/** Stops the running turn; the session stays usable. */
 	cancel(sessionId: string): Promise<void>;
-	/** The session was opened: it is no longer unread. */
-	markRead(sessionId: string): void;
+	/**
+	 * The session is on screen: it is no longer unread, and doesn't become unread while it stays shown. Call the
+	 * returned function when it leaves the screen.
+	 */
+	markRead(sessionId: string): () => void;
 }

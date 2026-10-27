@@ -59,8 +59,10 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 	const setTimer = options.timers?.set ?? ((task: () => void, ms: number) => setTimeout(task, ms));
 	const clearTimer = options.timers?.clear ?? ((handle: unknown) => clearTimeout(handle as number));
 	const openDelay = options.openDelayMs ?? 600;
-	/** The session open on screen, which can't become unread. */
-	const open = new Set<string>();
+	/** Sessions on screen, which can't become unread, with how many screens show each. */
+	const open = new Map<string, number>();
+	/** Set by dispose: nothing pending may start playback or call back afterwards. */
+	let disposed = false;
 
 	const notify = (projectId: string) => {
 		for (const listener of listeners.get(projectId) ?? []) listener();
@@ -104,7 +106,7 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 			const host = new FixtureHost(frames, options);
 			entry.host = host;
 			follow(entry, host);
-			if (entry.recorded.playOnLoad === true) host.play();
+			if (entry.recorded.playOnLoad === true && !disposed) host.play();
 			return host;
 		});
 		return entry.loading;
@@ -153,9 +155,15 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 				listeners.set(projectId, set);
 			}
 			set.add(emit);
+			let active = true;
 			// Asynchronously, as a server would answer.
-			queueMicrotask(emit);
-			return () => set.delete(emit);
+			queueMicrotask(() => {
+				if (active && !disposed) emit();
+			});
+			return () => {
+				active = false;
+				set.delete(emit);
+			};
 		},
 
 		projectOf: (sessionId) => entries.get(sessionId)?.recorded.projectId,
@@ -168,11 +176,13 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 					let upstream: Connection | undefined;
 					const queued: Parameters<Connection["send"]>[0][] = [];
 					if (entry === undefined) {
-						queueMicrotask(() => receive({ type: "error", code: "not_found", message: "There's no such session." }));
+						queueMicrotask(() => {
+							if (!closed) receive({ type: "error", code: "not_found", message: "There's no such session." });
+						});
 					} else {
 						load(entry).then(
 							(host) => {
-								if (closed) return;
+								if (closed || disposed) return;
 								upstream = host.connect(receive);
 								for (const frame of queued.splice(0)) upstream.send(frame);
 								if (!entry.opened) {
@@ -188,7 +198,7 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 								}
 							},
 							(reason: unknown) => {
-								if (!closed) receive({ type: "error", code: "unavailable", message: String(reason) });
+								if (!closed && !disposed) receive({ type: "error", code: "unavailable", message: String(reason) });
 							},
 						);
 					}
@@ -214,15 +224,23 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 
 		markRead(sessionId) {
 			const entry = entries.get(sessionId);
-			if (entry === undefined) return;
-			open.clear();
-			open.add(sessionId);
+			if (entry === undefined) return () => {};
+			open.set(sessionId, (open.get(sessionId) ?? 0) + 1);
 			update(entry, { unread: false });
+			let released = false;
+			return () => {
+				if (released) return;
+				released = true;
+				const count = (open.get(sessionId) ?? 1) - 1;
+				if (count > 0) open.set(sessionId, count);
+				else open.delete(sessionId);
+			};
 		},
 
 		hostFor: (sessionId) => entries.get(sessionId)?.host,
 
 		dispose() {
+			disposed = true;
 			for (const timer of timers) clearTimer(timer);
 			for (const entry of entries.values()) entry.host?.pause();
 		},

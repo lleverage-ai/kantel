@@ -11,13 +11,17 @@ import { NARROW_QUERY, useMedia } from "./use-media.ts";
 // only decides what goes where.
 
 const loadingList: SessionListState = { sessions: [], loading: true };
+const noList: SessionListState = { sessions: [], loading: false };
 
 /** A project's sessions, followed live. */
 function useSessionList(client: ConsoleClient, projectId: string | undefined): SessionListState {
 	const [state, setState] = useState<SessionListState>(loadingList);
 	useEffect(() => {
+		if (projectId === undefined) {
+			setState(noList);
+			return;
+		}
 		setState(loadingList);
-		if (projectId === undefined) return;
 		return client.watchSessions(projectId, setState);
 	}, [client, projectId]);
 	return state;
@@ -98,17 +102,28 @@ export function App({
 	const unknownProject = projectId !== undefined && project === undefined;
 	const unknownSession = sessionId !== undefined && project !== undefined && client.projectOf(sessionId) !== projectId;
 
+	// A way back for an error, which on a phone fills the screen: the project's list, or the first project's.
+	const way = project ?? projects[0];
+	const wayBack =
+		way === undefined ? undefined : (
+			<ListRow title={`Go to ${way.name}`} href={projectPath(way.id)} density="compact" />
+		);
+
 	let main: ReactNode;
 	if (route.name === "not-found" || unknownProject) {
 		main = (
 			<div className="shell-empty">
-				<EmptyState title="There's nothing here">Pick a project or a session from the list.</EmptyState>
+				<EmptyState title="There's nothing here" action={wayBack}>
+					Pick a project or a session from the list.
+				</EmptyState>
 			</div>
 		);
 	} else if (unknownSession) {
 		main = (
 			<div className="shell-empty">
-				<EmptyState title="There's no such session in this project">It may have been in another project.</EmptyState>
+				<EmptyState title="There's no such session in this project" action={wayBack}>
+					It may have been in another project.
+				</EmptyState>
 			</div>
 		);
 	} else if (sessionId !== undefined) {
@@ -130,7 +145,7 @@ export function App({
 		);
 	}
 
-	const pane = sessionId !== undefined || route.name === "not-found" ? "main" : "list";
+	const pane = sessionId !== undefined || route.name === "not-found" || unknownProject ? "main" : "list";
 
 	return (
 		<div className="shell hb-app" data-pane={pane}>
