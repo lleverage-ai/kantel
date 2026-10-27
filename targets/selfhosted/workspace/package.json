@@ -1,0 +1,29 @@
+{
+	"name": "@harbour/selfhosted-workspace",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Self-hosted workspaces: Postgres heads and versions, S3/MinIO objects",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/workspace": "workspace:*",
+		"aws4fetch": "1.0.20"
+	},
+	"devDependencies": {
+		"@electric-sql/pglite": "0.5.12",
+		"@harbour/testing": "workspace:*",
+		"@types/node": "24.19.2",
+		"@types/pg": "8.15.5",
+		"pg": "8.16.3",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12"
+	}
+}

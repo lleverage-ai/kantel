@@ -441,6 +441,65 @@ importers:
         specifier: 4.153.0
         version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
 
+  targets/cloudflare/workspace:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../../../packages/workspace
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
+      wrangler:
+        specifier: 4.153.0
+        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
+
+  targets/selfhosted/workspace:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../../../packages/workspace
+      aws4fetch:
+        specifier: 1.0.20
+        version: 1.0.20
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      "@types/pg":
+        specifier: 8.15.5
+        version: 8.15.5
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
+
 packages:
   "@anthropic-ai/sdk@0.129.0":
     resolution:

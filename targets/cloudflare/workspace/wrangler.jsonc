@@ -1,0 +1,7 @@
+// Local only: the tests get this R2 binding from `getPlatformProxy`, as `wrangler dev` would bind it. Nothing deploys.
+{
+	"$schema": "../../../node_modules/wrangler/config-schema.json",
+	"name": "harbour-cloudflare-workspace-test",
+	"compatibility_date": "2026-10-01",
+	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-m1-be23-workspaces" }]
+}
