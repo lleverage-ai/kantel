@@ -30,7 +30,8 @@ only through proposals that a human or service applies. Learned facts never over
   and half the best. Filler-only queries recall nothing. A stale concept scores half.
 - `profile` concepts come first, oldest first, whatever the query, within `maxProfileConcepts` (all) and
   `maxProfileBytes` (24576); those left out are named in `profileOmitted` and in the text. Matches follow, up to
-  `maxConcepts` (5) and `maxBytes` (4096 UTF-8 bytes of their rendered text). `exclude` leaves out IDs the session
+  `maxConcepts` (5) and `maxBytes` (4096 UTF-8 bytes of their rendered text, less the frame and the omitted notice,
+  which are always shown and may on their own exceed it). `exclude` leaves out IDs the session
   already holds. A job concept with `overrides` comes in with the concept it overrides, and only for its job.
 - The result has the rendered `text`, the concepts, a manifest (version, reason, score, matched terms, staleness,
   truncation and snapshot ref), `skipped` matches with why, and `truncated`. The target's `RecallRenderer` makes the
@@ -58,7 +59,8 @@ statement) and an `index.md` of active concepts.
 - Recall is bounded and explained: "bounds recall by maxConcepts and maxBytes, reports truncation and keeps the
   profile apart", "keeps the profile within its own limits, names what it leaves out and shows the oldest first",
   "recalls a concept only for a keyword match in its title, ID or tags, not one passing word", "recalls the most
-  relevant concept for a query first by BM25, without embeddings", "recalls project and job concepts only when their
+  relevant concept for a query first by BM25, without embeddings", "applies the BM25 floor and half-the-best cutoff
+  once a space holds 30 concepts", "recalls project and job concepts only when their
   scope is asked for, and global ones always", "brings a job's exception along with the general concept it overrides,
   and only for that job", "names each recalled concept's version and reason in the manifest and marks stale
   concepts", "never recalls superseded or forgotten concepts, and a superseded one points to its replacement".
@@ -93,8 +95,10 @@ a promise chain; inside it the proposal and the concept's version are checked ag
 so racing applies or an apply racing a reject settle once; `decide` checks the proposal is pending after the access
 check. Without `access` it checks only the organisation; every target and conformance run passes one. It audits `memory.space.created`,
 `memory.proposal.created`, `.applied` and `.rejected` with stable IDs (`memory:proposal:<id>:<event>`), and
-`memory.snapshot.imported` (`memory:space:<id>:snapshot:<source>:<ref>`); importing the space's current snapshot
-again changes nothing, and a concept the new snapshot leaves unchanged keeps its version. Portable logic
+`memory.snapshot.imported` (`memory:space:<id>:snapshot:<n>`, the space's nth import, so going back to an earlier ref
+is audited too); importing the space's current snapshot again changes nothing, and a concept the new snapshot leaves
+unchanged keeps its version. A space remembers the highest version each ID has had, so a concept a snapshot drops
+and a later one brings back carries on from there and a proposal against its old version is `conflict`. Portable logic
 (`similarity` with `DEFAULT_SIMILARITY_THRESHOLD` 0.6, `renderConcept`, `validateConceptId` in `src/index.ts`; the
 index, terms and recall beside it) has no Node APIs. It leaves out durable storage, publishing to a `MemorySource`
 and embeddings; reading a source's bundle into a snapshot is the host's adapter.

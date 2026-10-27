@@ -76,6 +76,11 @@ describe("ftsTerms", () => {
 		expect(porterStem(long)).toBe(long);
 		expect(unicode61Tokens("Ünïcödé")).toEqual(["unicode"]);
 	});
+
+	it("keeps a very long token whole, as SQLite does", () => {
+		const long = "x".repeat(1_000_000);
+		expect(ftsTerms(`a ${long} b`)).toEqual(["a", long, "b"]);
+	});
 });
 
 describe("searchFts", () => {
@@ -151,6 +156,8 @@ describe("searchFts", () => {
 		["skills", "pinned", "session", "mount"],
 		["deploy", "fridays", "weekday", "mornings", "never"],
 		["binding", "code", "writes", "serial", "nothing"],
+		["read-only", "skills"],
+		["serial writer", "pull requests", "memory"],
 		["missing"],
 	]) {
 		it(`scores ${words.join(" ")} as bm25() does`, () => {

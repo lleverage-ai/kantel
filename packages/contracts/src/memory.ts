@@ -138,7 +138,10 @@ export interface RecallRequest {
 	readonly exclude?: readonly string[];
 	/** Default 5: search matches, not counting the profile or the exceptions that travel with a match. */
 	readonly maxConcepts?: number;
-	/** Default 4096: bytes of the rendered recall (`Recall.text`) outside the profile, its frame included. */
+	/**
+	 * Default 4096: bytes of the rendered recall (`Recall.text`) outside the profile, its frame included. Matches fill what
+	 * the frame and the omitted notice leave; those two are always shown, so on their own they may exceed it.
+	 */
 	readonly maxBytes?: number;
 	/** Default no limit: profile concepts. 0 turns the profile off. */
 	readonly maxProfileConcepts?: number;

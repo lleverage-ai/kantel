@@ -56,6 +56,13 @@ interface StoredSpace {
 	concepts: Map<string, Concept>;
 	/** Counts changes to `concepts`, so a recall index built from them knows when it is out of date. */
 	generation: number;
+	/**
+	 * The highest version each concept ID has had in the space, kept when a snapshot drops the concept, so an ID that
+	 * comes back carries on from there and a proposal made against its old version stays stale.
+	 */
+	readonly versions: Map<string, number>;
+	/** Snapshot imports so far, which names each import's audit event. */
+	imports: number;
 	/** The tail of the space's writer queue: applies run one at a time, in the order they were asked for. */
 	writer: Promise<void>;
 }
@@ -182,6 +189,11 @@ function conceptFrom(
 		...(input.overrides === undefined ? {} : { overrides: input.overrides }),
 		...(input.extensions === undefined ? {} : { extensions: structuredClone(input.extensions) }),
 	};
+}
+
+/** The version a new record of `id` gets: one past the highest it has had in the space, held now or not. */
+function nextVersion(stored: StoredSpace, id: string): number {
+	return Math.max(stored.versions.get(id) ?? 0, stored.concepts.get(id)?.version ?? 0) + 1;
 }
 
 function copyInput(input: ConceptInput): ConceptInput {
@@ -360,6 +372,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 		const setBy = setByFor(proposal.proposedBy);
 		const put = (concept: Concept) => {
 			stored.concepts.set(concept.id, concept);
+			stored.versions.set(concept.id, Math.max(stored.versions.get(concept.id) ?? 0, concept.version));
 			stored.generation += 1;
 		};
 		switch (write.op) {
@@ -370,8 +383,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 						duplicateOf: proposal.duplicateOf,
 					});
 				}
-				const previous = stored.concepts.get(write.concept.id);
-				const concept = conceptFrom(stored.space.id, write.concept, setBy, (previous?.version ?? 0) + 1, now);
+				const concept = conceptFrom(stored.space.id, write.concept, setBy, nextVersion(stored, write.concept.id), now);
 				put(concept);
 				return concept;
 			}
@@ -388,8 +400,13 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				assertMayChange(proposal.proposedBy, current);
 				assertVersion(current, write.expectedVersion);
 				assertNotActive(stored, write.replacement.id);
-				const previous = stored.concepts.get(write.replacement.id);
-				const replacement = conceptFrom(stored.space.id, write.replacement, setBy, (previous?.version ?? 0) + 1, now);
+				const replacement = conceptFrom(
+					stored.space.id,
+					write.replacement,
+					setBy,
+					nextVersion(stored, write.replacement.id),
+					now,
+				);
 				put({
 					...current,
 					status: "superseded",
@@ -447,6 +464,8 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				space,
 				concepts: new Map(),
 				generation: 0,
+				versions: new Map(),
+				imports: 0,
 				writer: Promise.resolve(),
 			});
 			await emit({
@@ -526,7 +545,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				const concepts = new Map<string, Concept>();
 				for (const input of snapshot.concepts) {
 					const previous = stored.concepts.get(input.id);
-					const base = conceptFrom(stored.space.id, input, input.setBy, (previous?.version ?? 0) + 1, input.updatedAt);
+					const base = conceptFrom(stored.space.id, input, input.setBy, nextVersion(stored, input.id), input.updatedAt);
 					const next: Concept = {
 						...base,
 						status: input.status,
@@ -536,16 +555,19 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 					const same =
 						previous !== undefined &&
 						JSON.stringify({ ...previous, version: 0 }) === JSON.stringify({ ...next, version: 0 });
-					concepts.set(input.id, same ? previous : next);
+					const kept = same ? previous : next;
+					concepts.set(input.id, kept);
+					stored.versions.set(input.id, kept.version);
 				}
 				stored.concepts = concepts;
 				stored.generation += 1;
+				stored.imports += 1;
 				stored.space = {
 					...stored.space,
 					snapshot: { sourceId: snapshot.sourceId, ref: snapshot.ref, importedAt: clock.now() },
 				};
 				await emit({
-					id: `memory:space:${stored.space.id}:snapshot:${snapshot.sourceId}:${snapshot.ref}`,
+					id: `memory:space:${stored.space.id}:snapshot:${stored.imports}`,
 					type: "memory.snapshot.imported",
 					actor: ctx.actor,
 					organisationId: ctx.organisationId,

@@ -130,26 +130,27 @@ function foldCode(code: number): number {
 /** The tokens FTS5's `unicode61` tokenizer finds in `text`, folded, in order. */
 export function unicode61Tokens(text: string): string[] {
 	const tokens: string[] = [];
-	let current: number[] | null = null;
+	// Built a character at a time: a long token must not become the arguments of one call.
+	let current: string | null = null;
 	for (const character of text) {
 		const code = character.codePointAt(0)!;
 		const tokenCharacter = isTokenCharacter(code);
 		if (current === null) {
 			if (!tokenCharacter) continue;
-			current = [];
+			current = "";
 		} else if (!tokenCharacter && !(code >= 128 && isDiacritic(code))) {
-			tokens.push(String.fromCodePoint(...current));
+			tokens.push(current);
 			current = null;
 			continue;
 		}
 		if (code < 128) {
-			current.push(code >= 65 && code <= 90 ? code + 32 : code);
+			current += code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : character;
 		} else {
 			const folded = foldCode(code);
-			if (folded !== 0) current.push(folded);
+			if (folded !== 0) current += String.fromCodePoint(folded);
 		}
 	}
-	if (current !== null) tokens.push(String.fromCodePoint(...current));
+	if (current !== null) tokens.push(current);
 	return tokens;
 }
 

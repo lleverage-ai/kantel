@@ -104,6 +104,8 @@ async function remember(
 	return memory.getConcept(human, spaceId, input.id);
 }
 
+const EMPTY_SNAPSHOT = { sourceId: "fixture", ref: "planted", concepts: [] };
+
 function recalledIds(recall: { readonly concepts: readonly Concept[] }): string[] {
 	return recall.concepts.map((concept) => concept.id);
 }
@@ -721,6 +723,113 @@ export function createMemoryConformance(options: {
 			);
 			await assert.rejectsWithCode(memory.importSnapshot(outsider, space.id, snapshot), "not_found");
 			assert.strictEqual(deps.audit.ofType("memory.snapshot.imported").length, 2, "each import is audited once");
+
+			// A concept a snapshot drops and a later one brings back carries on from its highest version, so a proposal
+			// made against the old one is stale.
+			const pending = await memory.propose(human, space.id, {
+				op: "correct",
+				concept: conceptInput("projects/harbour/deploys", "Deploy windows", "Deploy only on Mondays."),
+				expectedVersion: version,
+			});
+			await memory.importSnapshot(service, space.id, {
+				...snapshot,
+				ref: "9c0d1e2",
+				concepts: [snapshot.concepts[1]!],
+			});
+			const back = { ...snapshot.concepts[0]!, statement: "Deploy on weekday mornings before ten." };
+			await memory.importSnapshot(service, space.id, { ...snapshot, ref: "a3b4c5d", concepts: [back] });
+			const restored = await memory.getConcept(human, space.id, "projects/harbour/deploys");
+			assert.greaterThan(restored.version, version, "a concept that comes back gets a new version");
+			await assert.rejectsWithCode(memory.decide(human, pending.id, { outcome: "apply" }), "conflict");
+			assert.strictEqual(
+				(await memory.getConcept(human, space.id, "projects/harbour/deploys")).statement,
+				back.statement,
+				"the stale correction changed nothing",
+			);
+
+			// Going back to an earlier ref is a change of its own, audited as one.
+			await memory.importSnapshot(service, space.id, snapshot);
+			await memory.importSnapshot(service, space.id, snapshot);
+			assert.strictEqual(
+				deps.audit.ofType("memory.snapshot.imported").length,
+				5,
+				"returning to a ref is audited, importing the current one again is not",
+			);
+		}),
+
+		test("applies the BM25 floor and half-the-best cutoff once a space holds 30 concepts", async (memory) => {
+			const space = await createSpace(memory);
+			const words = [
+				"amber",
+				"birch",
+				"cedar",
+				"delta",
+				"ember",
+				"fjord",
+				"grove",
+				"heath",
+				"inlet",
+				"juniper",
+				"kestrel",
+				"larch",
+				"maple",
+				"nettle",
+				"orchid",
+				"poplar",
+				"quartz",
+				"rowan",
+				"sorrel",
+				"thistle",
+				"umber",
+				"violet",
+				"willow",
+				"xylem",
+				"yarrow",
+				"zinnia",
+				"aspen",
+				"bracken",
+			];
+			const snapshot = {
+				sourceId: "fixture",
+				ref: "1",
+				concepts: [
+					...words.map((word) => ({
+						...conceptInput(`projects/garden/${word}`, `${word} bed`, `The ${word} bed is watered weekly.`),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: 1,
+					})),
+					{
+						...conceptInput("projects/garden/compost-heap", "Compost heap", "Turn the compost heap monthly.", {
+							tags: ["compost"],
+						}),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: 1,
+					},
+					{
+						...conceptInput("projects/garden/heap-notes", "Heap notes", "Notes on the leaf heap behind the shed."),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: 1,
+					},
+				],
+			};
+			await memory.importSnapshot(service, space.id, snapshot);
+			const recall = await memory.recall(human, { spaceIds: [space.id], query: "compost heap" });
+			assert.deepEqual(
+				recalledIds(recall),
+				["projects/garden/compost-heap"],
+				"a weaker keyword match under half the best score is left out",
+			);
+			assert.strictEqual(recall.truncated, false, "a concept under the cutoff did not match, so nothing was cut");
+			const small = await createSpace(memory);
+			await memory.importSnapshot(service, small.id, { ...snapshot, concepts: snapshot.concepts.slice(-2) });
+			assert.deepEqual(
+				[...recalledIds(await memory.recall(human, { spaceIds: [small.id], query: "compost heap" }))].sort(),
+				["projects/garden/compost-heap", "projects/garden/heap-notes"],
+				"below 30 concepts only the keyword gate applies",
+			);
 		}),
 
 		test("recalls the most relevant concept for a query first by BM25, without embeddings", async (memory) => {
@@ -1036,6 +1145,9 @@ export function createMemoryConformance(options: {
 			await refused("memory.exportBundle", memory.exportBundle(stranger, space.id));
 			await refused("memory.recall", memory.recall(stranger, { spaceIds: [space.id], query: "ci" }));
 			await refused("memory.recall", memory.recall(stranger, { spaceIds: [team.id, space.id], query: "ci" }));
+			await refused("memory.search", memory.search(stranger, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.search", memory.search(stranger, { spaceIds: [team.id, space.id], query: "ci" }));
+			await refused("memory.importSnapshot", memory.importSnapshot(stranger, space.id, EMPTY_SNAPSHOT));
 			await refused(
 				"memory.propose",
 				memory.propose(stranger, space.id, {
@@ -1062,6 +1174,10 @@ export function createMemoryConformance(options: {
 			assert.strictEqual((await memory.listProposals(viewer, space.id)).items.length, 2);
 			assert.ok((await memory.exportBundle(viewer, space.id)).some((file) => file.path === `${concept.id}.md`));
 			assert.deepEqual(recalledIds(await memory.recall(viewer, { spaceIds: [space.id], query: "ci" })), [concept.id]);
+			assert.deepEqual(
+				(await memory.search(viewer, { spaceIds: [space.id], query: "ci" })).map((hit) => hit.concept.id),
+				[concept.id],
+			);
 			const refused = (operation: string, call: Promise<unknown>) =>
 				assertAccessDenied(assert, deps, call, { operation });
 			await refused("memory.createSpace", createProjectSpace(memory, viewer));
@@ -1073,6 +1189,7 @@ export function createMemoryConformance(options: {
 				}),
 			);
 			await refused("memory.decide", memory.decide(viewer, pending.id, { outcome: "apply" }));
+			await refused("memory.importSnapshot", memory.importSnapshot(viewer, space.id, EMPTY_SNAPSHOT));
 			await assertUnchanged(memory, seeded);
 		}),
 
@@ -1086,6 +1203,7 @@ export function createMemoryConformance(options: {
 			await refused("memory.listProposals", memory.listProposals(otherProjectAgent, space.id));
 			await refused("memory.exportBundle", memory.exportBundle(otherProjectAgent, space.id));
 			await refused("memory.recall", memory.recall(otherProjectAgent, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.search", memory.search(otherProjectAgent, { spaceIds: [space.id], query: "ci" }));
 			await refused(
 				"memory.propose",
 				memory.propose(otherProjectAgent, space.id, {
@@ -1116,6 +1234,7 @@ export function createMemoryConformance(options: {
 			await refused("memory.getConcept", memory.getConcept(agent, space.id, concept.id));
 			await refused("memory.listConcepts", memory.listConcepts(agent, space.id));
 			await refused("memory.recall", memory.recall(agent, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.search", memory.search(agent, { spaceIds: [space.id], query: "ci" }));
 			await refused(
 				"memory.propose",
 				memory.propose(agent, space.id, {
@@ -1141,6 +1260,9 @@ export function createMemoryConformance(options: {
 				"projects/harbour/ci",
 			]);
 			assert.strictEqual((await memory.exportBundle(agent, space.id)).length, 2);
+			assert.strictEqual((await memory.search(agent, { spaceIds: [space.id], query: "ci" })).length, 1);
+			const imported = await memory.importSnapshot(service, space.id, EMPTY_SNAPSHOT);
+			assert.strictEqual(imported.snapshot?.ref, EMPTY_SNAPSHOT.ref, "an operator on the project imports");
 			const rejected = await memory.propose(service, space.id, {
 				op: "remember",
 				concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
