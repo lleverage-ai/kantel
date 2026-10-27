@@ -66,6 +66,27 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
 - Secrets in `data` are detectable, IDs are not data: "findSecret ignores a canary in record IDs but finds one anywhere
   in data". Other suites use the suite's `findSecret` to check their events.
 
+## The query API over HTTP (M1-BE8)
+
+The audit view (M1-FE3) and host apps read the store through two `GET` routes, defined in
+`packages/contracts/src/audit.ts` next to the store:
+
+- `GET /v1/audit/events?<query>` (`AUDIT_EVENTS_PATH`) answers `AuditEventsResponse` (`{ items, nextCursor? }`):
+  `AuditStore.query` with the query and page as search parameters. `auditQueryToSearchParams` writes them and
+  `auditQueryFromSearchParams` reads them: `projectId`, `sessionId`, `agentId`, `actorKind` with `actorId` (plus
+  `actorKeyId` for a service's key, `actorSessionId` for an agent), `source`, `type` (a prefix when it ends in `.`),
+  `subjectKind` with `subjectId`, `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and
+  `cursor`. An unknown, repeated, empty or half-given parameter is `invalid`.
+- `GET /v1/audit/events/<id>` answers `AuditEventResponse` (`{ event }`): `AuditStore.get`, the id URI-encoded.
+- Every call goes through the deployment's `Authenticator`; the organisation is always the caller's, and the store
+  decides what they see. Errors answer `{ error: { code, message } }`: 400 `invalid`, 401 `unauthenticated` (with
+  `WWW-Authenticate: Bearer`), 403 `forbidden`, 404 `not_found`, 405 for a method other than `GET`, 503
+  `unavailable`, and 500 with no detail for anything unexpected.
+
+`@harbour/audit/http` has the handler, `createAuditQueryHandler({ store, authenticator })`, and a client,
+`createAuditClient({ baseUrl, headers, fetch })`, whose `query` and `get` mirror the store's and reject with the
+server's `HarbourError` code.
+
 ## The in-memory implementation
 
 `createMemoryAuditStore({ clock?, retentionMs?, access? })` keeps rows in one array in `seq` order with an index by id;
