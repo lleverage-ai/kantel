@@ -750,6 +750,11 @@ export function createAuditConformance(options: {
 			const named = await refusals(ORG);
 			const unnamed = await refusals(PLATFORM_ORGANISATION);
 			assert.strictEqual(named.length, 6, "the store audits each refusal of a caller in the organisation once");
+			assert.deepEqual(
+				named.map((row) => `${row.data?.operation}:${row.data?.caller}`),
+				["human", "service", "agent"].flatMap((kind) => [`audit.append:${kind}`, `audit.applyRetention:${kind}`]),
+				"one row per refused store call, naming the operation and the caller's kind",
+			);
 			assert.strictEqual(unnamed.length, 2, "and each refusal of no caller under the platform");
 			assert.deepEqual(
 				unnamed.map((row) => [row.data?.operation, row.data?.caller]),

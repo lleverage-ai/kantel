@@ -704,23 +704,49 @@ export function createSchedulesConformance(options: {
 			const inProject = { agentId: "agent-1", sessionId: "session-1" };
 			const refused = (operation: string, call: Parameters<typeof assertWorkerCallRefused>[3]) =>
 				assertWorkerCallRefused(assert, deps, operation, call, ORG, inProject);
-			await createCheck(schedules, deps);
+			const check = await createCheck(schedules, deps);
+			const occurrencesOf = async (scheduleId: string) =>
+				(await schedules.listOccurrences(service, scheduleId)).items.map(({ id, status, attempt, claimedBy }) => ({
+					id,
+					status,
+					attempt,
+					claimedBy,
+				}));
 			deps.clock.advance(HOUR);
 			await refused("schedules.tick", (caller) => schedules.tick(caller));
+			assert.deepEqual(await occurrencesOf(check.id), [], "no refused tick materialised an occurrence");
 			const [due] = await schedules.tick(WORKER);
-			assert.ok(due, "no refused tick materialised the occurrence");
+			assert.ok(due, "Harbour's own tick materialises it");
+			const beforeClaim = await occurrencesOf(check.id);
 			await refused("schedules.claim", (caller) => schedules.claim(caller, RUNNER, 10 * MINUTE));
+			assert.deepEqual(await occurrencesOf(check.id), beforeClaim, "no refused claim touched the occurrence");
 			const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
 			assert.strictEqual(claimed?.attempt, 1, "no refused claim took the occurrence");
+			const running = await occurrencesOf(check.id);
 			await refused("schedules.complete", (caller) =>
 				schedules.complete(caller, claimed!.id, RUNNER, { status: "failed" }),
 			);
 			await refused("schedules.reportCheck", (caller) =>
 				schedules.reportCheck(caller, claimed!.id, RUNNER, { exitCode: 1 }),
 			);
+			assert.deepEqual(await occurrencesOf(check.id), running, "no refused complete or report settled it");
 			await schedules.reportCheck(WORKER, claimed!.id, RUNNER, { exitCode: 0 });
 			const [finished] = (await schedules.listOccurrences(service, claimed!.scheduleId)).items;
 			assert.strictEqual(finished?.status, "succeeded", "the claim was still held for Harbour's own report");
+			// A task's occurrence: refused completes leave it running, and Harbour's own complete settles it.
+			await schedules.end(service, check.id);
+			const task = await schedules.create(service, hourly(deps, { kind: "task", title: "Report", payload: "x" }));
+			deps.clock.advance(HOUR);
+			await schedules.tick(WORKER);
+			const taskRun = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
+			assert.strictEqual(taskRun?.scheduleId, task.id);
+			const taskRunning = await occurrencesOf(task.id);
+			await refused("schedules.complete", (caller) =>
+				schedules.complete(caller, taskRun!.id, RUNNER, { status: "failed" }),
+			);
+			assert.deepEqual(await occurrencesOf(task.id), taskRunning, "no refused complete settled the task");
+			const completed = await schedules.complete(WORKER, taskRun!.id, RUNNER, { status: "succeeded" });
+			assert.strictEqual(completed.status, "succeeded", "Harbour's own complete settles it");
 		}),
 	];
 }

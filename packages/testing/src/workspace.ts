@@ -792,7 +792,9 @@ export function createWorkspaceConformance(options: {
 						[() => workspaces.list(caller, record.id, { path: "/source" }), "list"],
 						[() => workspaces.stat(caller, record.id, "/source/README.md"), "stat"],
 					] as const) {
-						await assertAccessDenied(a, deps, call(), {
+						// Started after the audit is counted: the refusal may be audited before the call first awaits.
+						const deferred = Promise.resolve().then((): Promise<unknown> => call());
+						await assertAccessDenied(a, deps, deferred, {
 							operation: "workspace.mount.read",
 							message: `${label} may not ${what} the source project through the mount`,
 						});
@@ -807,14 +809,22 @@ export function createWorkspaceConformance(options: {
 			run: withSubject(async (subject, deps) => {
 				const { workspaces } = subject;
 				const record = await withSourceMount(subject, deps);
+				await workspaces.commit(ctx, record.id, { baseVersion: record.head, changes: change });
 				a.strictEqual(text((await workspaces.read(ctx, record.id, "/source/README.md")).content), "source readme");
 				deps.tenancy.unbind(ctx.actor, WORKSPACE_FIXTURE.organisationId, SOURCE_PROJECT);
-				await assertAccessDenied(a, deps, workspaces.read(ctx, record.id, "/source/README.md"), {
-					operation: "workspace.mount.read",
-					message: "the second read, after the source role was revoked",
-				});
+				for (const [call, what] of [
+					[() => workspaces.read(ctx, record.id, "/source/README.md"), "read"],
+					[() => workspaces.list(ctx, record.id, { path: "/source" }), "list"],
+					[() => workspaces.stat(ctx, record.id, "/source/README.md"), "stat"],
+				] as const) {
+					const deferred = Promise.resolve().then((): Promise<unknown> => call());
+					await assertAccessDenied(a, deps, deferred, {
+						operation: "workspace.mount.read",
+						message: `a ${what} after the source role was revoked`,
+					});
+				}
 				// The workspace's own files stay readable: only the mounted project's role went.
-				a.strictEqual((await workspaces.get(ctx, record.id)).id, record.id);
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "a")).content), "x");
 			}),
 		},
 		{

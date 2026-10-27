@@ -651,13 +651,22 @@ export function createSandboxConformance(options: {
 				const { workspaceId } = await setUp(subject);
 				const lease = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate", ttlMs: 1000 });
 				deps.clock.advance(2000);
+				const live = async () =>
+					(await subject.sandboxes.leases(ctx, { sessionId })).map(({ id, endedAt, endReason }) => ({
+						id,
+						ended: endedAt !== undefined || endReason !== undefined,
+					}));
+				const before = await live();
+				// The agent is the session's own, in an open session, so only the worker rule can refuse it.
 				await assertWorkerCallRefused(
 					a,
 					deps,
 					"sandbox.sweep",
 					(caller) => subject.sandboxes.sweep(caller),
 					SANDBOX_FIXTURE.organisationId,
+					{ agentId: "agent-1", sessionId },
 				);
+				a.deepEqual(await live(), before, "no refused sweep released the lease");
 				const swept = await subject.sandboxes.sweep(WORKER);
 				a.deepEqual(
 					swept.map((ended) => ended.id),
