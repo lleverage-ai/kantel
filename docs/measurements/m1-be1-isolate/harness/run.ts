@@ -149,6 +149,10 @@ type Manifest = Record<string, { kind: "file"; sha: string; size: number; mode: 
 
 /** Only this invocation's workspace: a concurrent run's objects are left alone. */
 const ours = `${s3.prefix}/workspaces/${workspaceId}/`;
+/** Every upload this run started; clean-up waits for them all, so none lands after it. */
+const uploads: Promise<unknown>[] = [];
+/** Set (synchronously) by teardown: no further workerd or batch starts. */
+let stopping = false;
 
 /** The same workspace as apps/selfhosted/src/measure.ts seeds. */
 async function seed(fileCount = 300, fileBytes = 4096): Promise<{ version: string; manifest: Manifest }> {
@@ -164,9 +168,12 @@ async function seed(fileCount = 300, fileBytes = 4096): Promise<{ version: strin
 		manifest[`${dir}/file${i}.ts`] = { kind: "file", sha, size: bytes.length, mode: 0o644 };
 		writes.push(client.write(key(`blobs/${sha}`), bytes));
 	}
+	uploads.push(...writes);
 	const sorted = Object.fromEntries(Object.entries(manifest).sort(([a], [b]) => a.localeCompare(b)));
 	const version = `v-${createHash("sha256").update(JSON.stringify(sorted)).digest("hex").slice(0, 16)}`;
-	writes.push(client.write(key(`manifests/${version}.json`), JSON.stringify(sorted)));
+	const manifestWrite = client.write(key(`manifests/${version}.json`), JSON.stringify(sorted));
+	writes.push(manifestWrite);
+	uploads.push(manifestWrite);
 	// Every write settles before a failure surfaces, so clean-up never races an upload still in flight.
 	const failed = (await Promise.allSettled(writes)).find((write) => write.status === "rejected");
 	if (failed) throw failed.reason;
@@ -196,6 +203,7 @@ function freePort(): number {
 }
 
 async function startHost(): Promise<string> {
+	if (stopping) throw new Error("stopping: no new workerd");
 	const port = freePort();
 	host = Bun.spawn(
 		[workerd, "serve", join(harness, "config.capnp"), "--experimental", `--socket-addr=http=127.0.0.1:${port}`],
@@ -350,7 +358,9 @@ async function batch(variant: Variant, seeded: { version: string; manifest: Mani
 /** Stops workerd and deletes this run's objects, once, however the run ends. */
 let tearingDown: Promise<number> | undefined;
 const tearDown = () => {
+	stopping = true;
 	tearingDown ??= (async () => {
+		await Promise.allSettled(uploads);
 		await stopHost();
 		return cleanUp();
 	})();
@@ -358,6 +368,7 @@ const tearDown = () => {
 };
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
 	process.on(signal, () => {
+		stopping = true;
 		console.error(`${signal}: stopping workerd and deleting ${ours}`);
 		void tearDown()
 			.catch((error) => console.error("clean-up failed:", error))
@@ -370,10 +381,12 @@ const batches: Awaited<ReturnType<typeof batch>>[] = [];
 let deleted = 0;
 try {
 	const seeded = await seed();
+	if (stopping) throw new Error("stopping before the first batch");
 	console.error(`seeded ${workspaceId}@${seeded.version}: ${Object.keys(seeded.manifest).length} entries`);
 	for (let round = 1; round <= rounds; round++) {
 		for (const variant of variants) {
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				if (stopping) throw new Error("stopping: no further batches");
 				const result = { round, attempt, ...(await batch(variant, seeded)) };
 				batches.push(result);
 				const { p50, p95 } = result.summary;
