@@ -167,6 +167,14 @@ describe("SessionRuntimeDurableObjectCore", () => {
 		expect(alarm.armed).toBe(clock.now() + 5_000);
 	});
 
+	it("refuses a watchdog interval that isn't a positive number", () => {
+		const db = database();
+		const { models } = createScriptedModel();
+		for (const watchdogMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() => coreOn(db, models, fakeAlarm(), { watchdogMs })).toThrow(RangeError);
+		}
+	});
+
 	it("never moves an alarm an earlier instance armed to a later wake", async () => {
 		const db = database();
 		const clock = new ManualClock();

@@ -94,7 +94,12 @@ export class SessionRuntimeDurableObjectCore {
 		this.#setAlarm = options.setAlarm;
 		this.#getAlarm = options.getAlarm;
 		this.#onAlarmError = options.onAlarmError;
-		this.#watchdogMs = options.watchdogMs ?? DEFAULT_WATCHDOG_MS;
+		const watchdogMs = options.watchdogMs ?? DEFAULT_WATCHDOG_MS;
+		// Zero or less would fire the alarm again at once for as long as a run lasts.
+		if (!Number.isFinite(watchdogMs) || watchdogMs <= 0) {
+			throw new RangeError(`watchdogMs must be a positive number of milliseconds, not ${watchdogMs}`);
+		}
+		this.#watchdogMs = watchdogMs;
 		this.ready = this.#start(options);
 		// Whoever awaits `ready` (fetch, alarm, the object's constructor) sees a failure; this only keeps it handled.
 		this.ready.catch(() => undefined);
