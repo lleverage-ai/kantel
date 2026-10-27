@@ -189,9 +189,24 @@ importers:
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
+      "@harbour/browser":
+        specifier: workspace:*
+        version: link:../browser
+      "@harbour/codemode":
+        specifier: workspace:*
+        version: link:../codemode
+      "@harbour/sandbox":
+        specifier: workspace:*
+        version: link:../sandbox
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../vault
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/sandbox:
     dependencies:

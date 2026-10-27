@@ -1,4 +1,4 @@
-import type { CallContext } from "@harbour/contracts";
+import type { CallContext, SessionEnd, SessionEndHook, SessionTeardown } from "@harbour/contracts";
 import { createMemorySandboxes } from "@harbour/sandbox/memory";
 import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
 import { describe, expect, it } from "vitest";
@@ -75,5 +75,41 @@ describe("the in-memory shell", () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.workspaceVersion).toBe(record.head + 1);
 		expect(new TextDecoder().decode((await workspaces.read(ctx, record.id, "kept.txt")).content)).toBe("a");
+	});
+});
+
+describe("createMemorySandboxes with a session-end hook", () => {
+	it("registers releaseSession once as the sandbox teardown, which ends the session's leases", async () => {
+		const registered: [string, SessionTeardown][] = [];
+		const sessionEnd: SessionEndHook = {
+			register(name, teardown) {
+				registered.push([name, teardown]);
+				return { close: async () => {} };
+			},
+		};
+		const workspaces = createMemoryWorkspaces();
+		const record = await workspaces.create(ctx, { owner: { kind: "organisation", organisationId: "org-1" } });
+		const sandboxes = createMemorySandboxes({ workspaces, sessionEnd });
+		expect(registered.map(([name]) => name)).toEqual(["sandbox"]);
+
+		const lease = await sandboxes.acquire(ctx, { sessionId: "sess-1", workspaceId: record.id, tier: "isolate" });
+		const other = await sandboxes.acquire(ctx, { sessionId: "sess-2", workspaceId: record.id, tier: "isolate" });
+		const end: SessionEnd = {
+			sessionId: "sess-1",
+			organisationId: "org-1",
+			projectId: "proj-1",
+			agentId: "agent-1",
+			reason: "aborted",
+			endedBy: ctx.actor,
+			at: 0,
+		};
+		const teardown = registered[0]![1];
+		await teardown({ actor: { kind: "system", component: "session-end" }, organisationId: "org-1" }, end);
+		expect((await sandboxes.leases(ctx, { sessionId: "sess-1" })).map((ended) => [ended.id, ended.endReason])).toEqual([
+			[lease.id, "aborted"],
+		]);
+		expect((await sandboxes.leases(ctx, { sessionId: "sess-2", live: true })).map((live) => live.id)).toEqual([
+			other.id,
+		]);
 	});
 });

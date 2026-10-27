@@ -1,3 +1,4 @@
+export * from "./access.ts";
 export * from "./audit.ts";
 export * from "./browser.ts";
 export * from "./capability.ts";

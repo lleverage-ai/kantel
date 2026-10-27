@@ -1,6 +1,6 @@
 /**
  * Conformance suite for `Memory` (packages/contracts/src/memory.ts). Every target registers it with a provider that
- * builds a fresh memory on the suite's clock and audit sink.
+ * builds a fresh memory on the suite's clock, audit sink and project access.
  */
 import type {
 	CallContext,
@@ -13,9 +13,11 @@ import type {
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
@@ -34,12 +36,33 @@ export type MemoryConformanceProvider = (
 
 const ORG = "org-a";
 const OTHER_ORG = "org-b";
+const PROJECT = "proj-a";
+const OTHER_PROJECT = "proj-b";
 
 const human = contextFor(actors.human("owner-1"), ORG);
 const service = contextFor(actors.service("sal-supervisor"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 const outsiderAgent = contextFor(actors.agent("agent-9", "session-9"), OTHER_ORG);
+/** An operator in the organisation, but only on another project. */
+const stranger = contextFor(actors.human("stranger-1"), ORG, OTHER_PROJECT);
+/** A viewer on the project. */
+const viewer = contextFor(actors.human("viewer-1"), ORG, PROJECT);
+/** An agent whose session belongs to another project. */
+const otherProjectAgent = contextFor(actors.agent("agent-2", "session-other-project"), ORG, OTHER_PROJECT);
+
+/** The role bindings and agent sessions every case acts with. */
+function seedTenancy(deps: ConformanceDeps): void {
+	const tenancy = deps.tenancy;
+	tenancy.bind(human.actor, ORG, "operator", PROJECT);
+	tenancy.bind(service.actor, ORG, "operator", PROJECT);
+	tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
+	tenancy.bind(viewer.actor, ORG, "viewer", PROJECT);
+	tenancy.bind(outsider.actor, OTHER_ORG, "operator");
+	tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	tenancy.session({ id: "session-other-project", organisationId: ORG, projectId: OTHER_PROJECT, agentId: "agent-2" });
+	tenancy.session({ id: "session-9", organisationId: OTHER_ORG, projectId: PROJECT, agentId: "agent-9" });
+}
 
 function conceptInput(id: string, title: string, statement: string, extra: Partial<ConceptInput> = {}): ConceptInput {
 	return { id, title, statement, scope: { kind: "global" }, sources: ["tvdavies/harbour#39"], ...extra };
@@ -51,6 +74,13 @@ function bytesOf(concept: Pick<Concept, "title" | "statement">): number {
 
 function createSpace(memory: Memory, ctx: CallContext = human): Promise<MemorySpace> {
 	return memory.createSpace(ctx, { owner: { kind: "organisation", organisationId: ORG }, name: "Team memory" });
+}
+
+function createProjectSpace(memory: Memory, ctx: CallContext = human): Promise<MemorySpace> {
+	return memory.createSpace(ctx, {
+		owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+		name: "Project memory",
+	});
 }
 
 /** Proposes `write` as `proposer` and applies it as a human; returns the applied proposal. */
@@ -81,17 +111,19 @@ function recalledIds(recall: { readonly concepts: readonly Concept[] }): string[
 export function createMemoryConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: MemoryConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (name: string, body: (memory: Memory, deps: ConformanceDeps) => Promise<void>): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject.memory, deps));
 		},
 	});
 
-	return [
+	const cases: ConformanceCase[] = [
 		test("lets only humans and services create memory spaces", async (memory, deps) => {
 			await assert.rejectsWithCode(createSpace(memory, agent), "forbidden", "an agent cannot create a space");
 			const byHuman = await createSpace(memory, human);
@@ -739,12 +771,173 @@ export function createMemoryConformance(options: {
 			assert.ok(!index.includes(`${gone.id}.md`), "the index leaves out a forgotten concept");
 		}),
 	];
+	if (options.projectAccess !== true) return cases;
+
+	/** A project space holding one applied concept and one pending proposal. */
+	const seedProjectSpace = async (memory: Memory) => {
+		const space = await createProjectSpace(memory);
+		const concept = await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI", "CI runs on push."));
+		const pending = await memory.propose(human, space.id, {
+			op: "remember",
+			concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+		});
+		return { space, concept, pending };
+	};
+
+	/** Asserts the seeded project space is as `seedProjectSpace` left it. */
+	const assertUnchanged = async (memory: Memory, seeded: Awaited<ReturnType<typeof seedProjectSpace>>) => {
+		const { space, concept, pending } = seeded;
+		assert.partialDeepEqual(await memory.getConcept(human, space.id, concept.id), { version: 1, status: "active" });
+		const proposals = (await memory.listProposals(human, space.id)).items;
+		assert.strictEqual(proposals.length, 2, "no proposal was added");
+		assert.strictEqual(proposals.find((item) => item.id === pending.id)?.status, "pending", "the proposal is pending");
+		assert.strictEqual((await memory.listConcepts(human, space.id)).items.length, 1, "no concept was added");
+	};
+
+	return [
+		...cases,
+
+		test("project access: an operator outside the project is refused for every change and read of its space, and nothing changed", async (memory, deps) => {
+			const seeded = await seedProjectSpace(memory);
+			const { space, concept, pending } = seeded;
+			const team = await createSpace(memory);
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused("memory.createSpace", createProjectSpace(memory, stranger));
+			await refused("memory.getConcept", memory.getConcept(stranger, space.id, concept.id));
+			await refused("memory.listConcepts", memory.listConcepts(stranger, space.id));
+			await refused("memory.listProposals", memory.listProposals(stranger, space.id));
+			await refused("memory.exportBundle", memory.exportBundle(stranger, space.id));
+			await refused("memory.recall", memory.recall(stranger, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.recall", memory.recall(stranger, { spaceIds: [team.id, space.id], query: "ci" }));
+			await refused(
+				"memory.propose",
+				memory.propose(stranger, space.id, {
+					op: "remember",
+					concept: conceptInput("projects/harbour/planted", "Planted", "Planted by a stranger."),
+				}),
+			);
+			await refused("memory.decide", memory.decide(stranger, pending.id, { outcome: "apply" }));
+			await refused("memory.decide", memory.decide(stranger, pending.id, { outcome: "reject" }));
+			await assertUnchanged(memory, seeded);
+			assert.strictEqual(deps.audit.ofType("memory.space.created").length, 2, "no space was created");
+			assert.strictEqual(
+				(await memory.recall(stranger, { spaceIds: [team.id], query: "ci" })).concepts.length,
+				0,
+				"the organisation's own space stays readable",
+			);
+		}),
+
+		test("project access: a viewer on the project may read its space but not change it", async (memory, deps) => {
+			const seeded = await seedProjectSpace(memory);
+			const { space, concept, pending } = seeded;
+			assert.strictEqual((await memory.getConcept(viewer, space.id, concept.id)).version, 1);
+			assert.strictEqual((await memory.listConcepts(viewer, space.id)).items.length, 1);
+			assert.strictEqual((await memory.listProposals(viewer, space.id)).items.length, 2);
+			assert.ok((await memory.exportBundle(viewer, space.id)).some((file) => file.path === `${concept.id}.md`));
+			assert.deepEqual(recalledIds(await memory.recall(viewer, { spaceIds: [space.id], query: "ci" })), [concept.id]);
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused("memory.createSpace", createProjectSpace(memory, viewer));
+			await refused(
+				"memory.propose",
+				memory.propose(viewer, space.id, {
+					op: "remember",
+					concept: conceptInput("projects/harbour/planted", "Planted", "Planted by a viewer."),
+				}),
+			);
+			await refused("memory.decide", memory.decide(viewer, pending.id, { outcome: "apply" }));
+			await assertUnchanged(memory, seeded);
+		}),
+
+		test("project access: an agent whose session belongs to another project is refused, and nothing changed", async (memory, deps) => {
+			const seeded = await seedProjectSpace(memory);
+			const { space, concept, pending } = seeded;
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused("memory.getConcept", memory.getConcept(otherProjectAgent, space.id, concept.id));
+			await refused("memory.listConcepts", memory.listConcepts(otherProjectAgent, space.id));
+			await refused("memory.listProposals", memory.listProposals(otherProjectAgent, space.id));
+			await refused("memory.exportBundle", memory.exportBundle(otherProjectAgent, space.id));
+			await refused("memory.recall", memory.recall(otherProjectAgent, { spaceIds: [space.id], query: "ci" }));
+			await refused(
+				"memory.propose",
+				memory.propose(otherProjectAgent, space.id, {
+					op: "remember",
+					concept: conceptInput("projects/harbour/planted", "Planted", "Planted by another project's agent."),
+				}),
+			);
+			// Agents never create spaces or decide, whichever project: that refusal comes first.
+			await assert.rejectsWithCode(createProjectSpace(memory, otherProjectAgent), "forbidden");
+			await assert.rejectsWithCode(memory.decide(otherProjectAgent, pending.id, { outcome: "apply" }), "forbidden");
+			await assertUnchanged(memory, seeded);
+			const team = await createSpace(memory);
+			await remember(memory, team.id, conceptInput("org/ci", "CI", "CI runs on push."));
+			assert.deepEqual(
+				recalledIds(await memory.recall(otherProjectAgent, { spaceIds: [team.id], query: "ci" })),
+				["org/ci"],
+				"the organisation's spaces stay readable to its agents",
+			);
+		}),
+
+		test("project access: an agent whose session was closed is refused", async (memory, deps) => {
+			const seeded = await seedProjectSpace(memory);
+			const { space, concept } = seeded;
+			assert.strictEqual((await memory.getConcept(agent, space.id, concept.id)).version, 1, "open, it reads");
+			deps.tenancy.close("session-1");
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused("memory.getConcept", memory.getConcept(agent, space.id, concept.id));
+			await refused("memory.listConcepts", memory.listConcepts(agent, space.id));
+			await refused("memory.recall", memory.recall(agent, { spaceIds: [space.id], query: "ci" }));
+			await refused(
+				"memory.propose",
+				memory.propose(agent, space.id, {
+					op: "remember",
+					concept: conceptInput("projects/harbour/late", "Late", "Proposed after the session closed."),
+				}),
+			);
+			await assertUnchanged(memory, seeded);
+		}),
+
+		test("project access: an operator on the project and an agent in its own session still work on its space", async (memory, deps) => {
+			const space = await createProjectSpace(memory, service);
+			const proposal = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput("projects/harbour/ci", "CI", "CI runs on push."),
+			});
+			assert.strictEqual(proposal.sessionId, "session-1");
+			assert.strictEqual((await memory.listProposals(agent, space.id)).items.length, 1);
+			await memory.decide(human, proposal.id, { outcome: "apply" });
+			assert.strictEqual((await memory.getConcept(agent, space.id, "projects/harbour/ci")).setBy, "learned");
+			assert.strictEqual((await memory.listConcepts(agent, space.id)).items.length, 1);
+			assert.deepEqual(recalledIds(await memory.recall(agent, { spaceIds: [space.id], query: "ci" })), [
+				"projects/harbour/ci",
+			]);
+			assert.strictEqual((await memory.exportBundle(agent, space.id)).length, 2);
+			const rejected = await memory.propose(service, space.id, {
+				op: "remember",
+				concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+			});
+			assert.strictEqual((await memory.decide(service, rejected.id, { outcome: "reject" })).status, "rejected");
+			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
+		}),
+	];
 }
 
 export function registerMemoryConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: MemoryConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
-	registerCases(runner, name, createMemoryConformance({ assertions: createExpectAssertions(runner.expect), provider }));
+	registerCases(
+		runner,
+		name,
+		createMemoryConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
+	);
 }

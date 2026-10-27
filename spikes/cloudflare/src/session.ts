@@ -23,6 +23,7 @@ import {
 	HarbourError,
 	type SandboxLease,
 	type SandboxTier,
+	type SystemContext,
 } from "@harbour/contracts";
 import { type ExecRecord, HarbourEnv } from "./env.ts";
 import { SPIKE_OWNER, sessionContext } from "./identity.ts";
@@ -97,7 +98,7 @@ export class SessionDO extends DurableObject<Env> {
 		);
 		this.#leases = sqliteLeaseStore(sql);
 		this.#audit = {
-			append: async (events: readonly AuditEventInput[]) => {
+			append: async (_ctx: SystemContext, events: readonly AuditEventInput[]) => {
 				for (const event of events) {
 					sql.exec("INSERT OR IGNORE INTO harbour_audit (id, body) VALUES (?, ?)", event.id, JSON.stringify(event));
 				}

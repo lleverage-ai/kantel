@@ -18,6 +18,11 @@
 		"@harbour/protocol": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*"
+		"@harbour/browser": "workspace:*",
+		"@harbour/codemode": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
+		"@harbour/testing": "workspace:*",
+		"@harbour/vault": "workspace:*",
+		"@harbour/workspace": "workspace:*"
 	}
 }

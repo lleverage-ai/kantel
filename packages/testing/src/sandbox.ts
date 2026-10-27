@@ -15,14 +15,18 @@ import type {
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
+	assertWorkerCallRefused,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface SandboxSubject {
@@ -42,7 +46,9 @@ export const SANDBOX_FIXTURE = {
 	organisationId: "org-harbour",
 	otherOrganisationId: "org-elsewhere",
 	projectId: "proj-harbour",
+	otherProjectId: "proj-elsewhere",
 	sessionId: "sess-sandbox",
+	/** A child session of `sessionId`, so its agent may act on it as a supervisor. */
 	otherSessionId: "sess-other",
 	projectReadme: "project readme v1",
 } as const;
@@ -53,6 +59,30 @@ const ctx: CallContext = contextFor(
 	SANDBOX_FIXTURE.projectId,
 );
 const otherCtx: CallContext = contextFor(actors.human("user-mallory"), SANDBOX_FIXTURE.otherOrganisationId);
+/** An operator on the project. */
+const operatorCtx: CallContext = contextFor(
+	actors.human("user-alice"),
+	SANDBOX_FIXTURE.organisationId,
+	SANDBOX_FIXTURE.projectId,
+);
+/** An operator in the same organisation, on another project only. */
+const outsiderCtx: CallContext = contextFor(
+	actors.human("user-oscar"),
+	SANDBOX_FIXTURE.organisationId,
+	SANDBOX_FIXTURE.otherProjectId,
+);
+/** An agent whose session belongs to another project. */
+const strayAgentCtx: CallContext = contextFor(
+	actors.agent("agent-3", "sess-elsewhere"),
+	SANDBOX_FIXTURE.organisationId,
+);
+/** An agent in the project whose session the case closes. */
+const closingAgentCtx: CallContext = contextFor(
+	actors.agent("agent-4", "sess-closing"),
+	SANDBOX_FIXTURE.organisationId,
+);
+/** The context the session-end hook gives a teardown. */
+const teardownCtx: CallContext = contextFor(actors.system("session-end"), SANDBOX_FIXTURE.organisationId);
 const owner: OwnerRef = {
 	kind: "project",
 	organisationId: SANDBOX_FIXTURE.organisationId,
@@ -62,13 +92,32 @@ const sessionId: SessionId = SANDBOX_FIXTURE.sessionId;
 
 const decoder = new TextDecoder();
 
+/** Records the roles and agent sessions the cases use, whether or not the project-access cases run. */
+function seedTenancy(deps: ConformanceDeps): void {
+	const { organisationId, projectId, otherProjectId } = SANDBOX_FIXTURE;
+	deps.tenancy.bind(operatorCtx.actor, organisationId, "operator", projectId);
+	deps.tenancy.bind(outsiderCtx.actor, organisationId, "operator", otherProjectId);
+	deps.tenancy.session({ id: sessionId, organisationId, projectId, agentId: "agent-1" });
+	deps.tenancy.session({
+		id: SANDBOX_FIXTURE.otherSessionId,
+		organisationId,
+		projectId,
+		agentId: "agent-2",
+		parentSessionId: sessionId,
+	});
+	deps.tenancy.session({ id: "sess-elsewhere", organisationId, projectId: otherProjectId, agentId: "agent-3" });
+	deps.tenancy.session({ id: "sess-closing", organisationId, projectId, agentId: "agent-4" });
+}
+
 export function createSandboxConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: SandboxConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const a = options.assertions;
 	const withSubject = (run: (subject: SandboxSubject, deps: ConformanceDeps) => Promise<void>) => async () => {
 		const deps = createDeps();
+		seedTenancy(deps);
 		await options.provider(deps, (subject) => run(subject, deps));
 	};
 
@@ -102,7 +151,58 @@ export function createSandboxConformance(options: {
 		return decoder.decode((await subject.workspaces.read(ctx, workspaceId, path)).content);
 	}
 
-	return [
+	/** Runs the session-end teardown for `sessionId` twice, checking what the first run ended and that the second is silent. */
+	async function teardownCase(subject: SandboxSubject, deps: ConformanceDeps, reason: "session_ended" | "aborted") {
+		const { workspaceId } = await setUp(subject);
+		const isolate = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate" });
+		const container = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "container" });
+		const other = await subject.sandboxes.acquire(ctx, {
+			sessionId: SANDBOX_FIXTURE.otherSessionId,
+			workspaceId,
+			tier: "isolate",
+		});
+		await subject.sandboxes.exec(ctx, container.id, { command: "printf '%s' 'held' > held.txt" });
+
+		await subject.sandboxes.releaseSession(teardownCtx, sessionId, reason);
+		const ended = await subject.sandboxes.leases(ctx, { sessionId });
+		a.deepEqual(
+			ended.map((lease) => [lease.id, lease.endReason, lease.endedAt !== undefined]),
+			[
+				[isolate.id, reason, true],
+				[container.id, reason, true],
+			],
+		);
+		for (const lease of [isolate, container]) {
+			await a.rejectsWithCode(subject.sandboxes.exec(ctx, lease.id, { command: "true" }), "expired");
+			await a.rejectsWithCode(subject.sandboxes.renew(ctx, lease.id, 1000), "expired");
+		}
+		const released = deps.audit.ofType("sandbox.lease.released");
+		for (const lease of [isolate, container]) {
+			const events = released.filter((event) => event.subject?.id === lease.id);
+			a.strictEqual(events.length, 1, `the ${lease.tier} lease's release is audited once`);
+			a.partialDeepEqual(events[0], { source: "sandbox", sessionId, data: { reason } });
+		}
+		a.strictEqual(
+			released.filter((event) => event.subject?.id === other.id).length,
+			0,
+			"another session's lease is not released",
+		);
+		a.deepEqual(
+			(await subject.sandboxes.leases(ctx, { sessionId: SANDBOX_FIXTURE.otherSessionId, live: true })).map(
+				(lease) => lease.id,
+			),
+			[other.id],
+		);
+
+		const audited = deps.audit.events.length;
+		const before = await subject.sandboxes.leases(ctx, { sessionId });
+		await subject.sandboxes.releaseSession(teardownCtx, sessionId, reason);
+		a.strictEqual(deps.audit.events.length, audited, "a second teardown audits nothing");
+		a.deepEqual(await subject.sandboxes.leases(ctx, { sessionId }), before, "a second teardown changes nothing");
+		return { workspaceId };
+	}
+
+	const cases: ConformanceCase[] = [
 		{
 			name: "routes tools to tiers through the table",
 			run: withSubject(async ({ sandboxes }) => {
@@ -254,9 +354,9 @@ export function createSandboxConformance(options: {
 				const renewed = await subject.sandboxes.renew(ctx, lease.id, 1000);
 				a.strictEqual(renewed.expiresAt, deps.clock.now() + 1000);
 				deps.clock.advance(900);
-				a.deepEqual(await subject.sandboxes.sweep(), [], "a renewed lease is still live");
+				a.deepEqual(await subject.sandboxes.sweep(WORKER), [], "a renewed lease is still live");
 				deps.clock.advance(200);
-				const swept = await subject.sandboxes.sweep();
+				const swept = await subject.sandboxes.sweep(WORKER);
 				a.deepEqual(
 					swept.map((ended) => [ended.id, ended.endReason]),
 					[[lease.id, "expired"]],
@@ -264,7 +364,7 @@ export function createSandboxConformance(options: {
 				await a.rejectsWithCode(subject.sandboxes.exec(ctx, lease.id, { command: "true" }), "expired");
 				await a.rejectsWithCode(subject.sandboxes.renew(ctx, lease.id, 1000), "expired");
 				a.deepEqual(await subject.sandboxes.leases(ctx, { sessionId, live: true }), []);
-				a.deepEqual(await subject.sandboxes.sweep(), [], "a swept lease is not swept twice");
+				a.deepEqual(await subject.sandboxes.sweep(WORKER), [], "a swept lease is not swept twice");
 			}),
 		},
 		{
@@ -394,17 +494,204 @@ export function createSandboxConformance(options: {
 				);
 			}),
 		},
+		{
+			name: "session end: the teardown (session_ended) ends the session's leases once, and a second run changes nothing",
+			run: withSubject(async (subject, deps) => {
+				await teardownCase(subject, deps, "session_ended");
+			}),
+		},
+		{
+			name: "session end: the teardown (aborted) ends the session's leases once and leaves the session usable",
+			run: withSubject(async (subject, deps) => {
+				const { workspaceId } = await teardownCase(subject, deps, "aborted");
+				const next = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate" });
+				a.strictEqual(next.endedAt, undefined);
+				const ran = await subject.sandboxes.run(ctx, bash(workspaceId, "git --version"));
+				a.strictEqual(ran.exitCode, 0);
+				a.deepEqual(
+					(await subject.sandboxes.leases(ctx, { sessionId, live: true })).map((lease) => lease.tier),
+					["isolate", "container"],
+				);
+			}),
+		},
 	];
+	if (options.projectAccess !== true) return cases;
+
+	/**
+	 * Refuses `caller` every call on the session's records, each through `assertAccessDenied` with its operation. Calls
+	 * start one at a time, so each refusal's audit is counted on its own.
+	 */
+	async function assertSessionCallsDenied(
+		subject: SandboxSubject,
+		deps: ConformanceDeps,
+		target: { readonly workspaceId: WorkspaceId; readonly leaseId: string },
+		caller: CallContext,
+	): Promise<void> {
+		const { sandboxes } = subject;
+		const { workspaceId, leaseId } = target;
+		const calls: [string, () => Promise<unknown>][] = [
+			["sandbox.acquire", () => sandboxes.acquire(caller, { sessionId, workspaceId, tier: "container" })],
+			["sandbox.run", () => sandboxes.run(caller, bash(workspaceId, "true"))],
+			["sandbox.renew", () => sandboxes.renew(caller, leaseId, 60_000)],
+			["sandbox.exec", () => sandboxes.exec(caller, leaseId, { command: "printf x > stray.txt" })],
+			["sandbox.release", () => sandboxes.release(caller, leaseId)],
+			["sandbox.leases", () => sandboxes.leases(caller, { sessionId })],
+			["sandbox.usage", () => sandboxes.usage(caller, sessionId)],
+			["sandbox.releaseSession", () => sandboxes.releaseSession(caller, sessionId)],
+		];
+		for (const [operation, call] of calls) {
+			await assertAccessDenied(a, deps, call(), { operation, message: `${operation} on this project's session` });
+		}
+	}
+
+	/** What the denial cases check stayed the same: the session's leases, the workspace head and the audit trail. */
+	async function snapshot(subject: SandboxSubject, deps: ConformanceDeps, workspaceId: WorkspaceId) {
+		return {
+			leases: await subject.sandboxes.leases(ctx, { sessionId }),
+			head: await head(subject, workspaceId),
+			sandboxEvents: deps.audit.events.filter((event) => event.source === "sandbox").length,
+		};
+	}
+
+	cases.push(
+		{
+			name: "project access: refuses an operator outside the project on every session call, and changes nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaceId } = await setUp(subject);
+				const lease = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate" });
+				const before = await snapshot(subject, deps, workspaceId);
+				await assertSessionCallsDenied(subject, deps, { workspaceId, leaseId: lease.id }, outsiderCtx);
+				a.deepEqual(await snapshot(subject, deps, workspaceId), before);
+			}),
+		},
+		{
+			name: "project access: refuses an agent whose session belongs to another project, and changes nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaceId } = await setUp(subject);
+				const lease = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate" });
+				const before = await snapshot(subject, deps, workspaceId);
+				await assertSessionCallsDenied(subject, deps, { workspaceId, leaseId: lease.id }, strayAgentCtx);
+				await assertAccessDenied(
+					a,
+					deps,
+					subject.sandboxes.acquire(strayAgentCtx, { sessionId: "sess-elsewhere", workspaceId, tier: "isolate" }),
+					{ operation: "sandbox.acquire", message: "a lease for its own session on this project's workspace" },
+				);
+				await assertAccessDenied(
+					a,
+					deps,
+					subject.sandboxes.run(strayAgentCtx, { ...bash(workspaceId, "true"), sessionId: "sess-elsewhere" }),
+					{ operation: "sandbox.run", message: "a run for its own session on this project's workspace" },
+				);
+				a.deepEqual(await subject.sandboxes.leases(teardownCtx, { sessionId: "sess-elsewhere" }), []);
+				a.deepEqual(await snapshot(subject, deps, workspaceId), before);
+			}),
+		},
+		{
+			name: "project access: refuses an agent whose session was closed",
+			run: withSubject(async (subject, deps) => {
+				await setUp(subject);
+				const shared = await subject.workspaces.create(ctx, { owner });
+				const lease = await subject.sandboxes.acquire(closingAgentCtx, {
+					sessionId: "sess-closing",
+					workspaceId: shared.id,
+					tier: "isolate",
+				});
+				a.strictEqual((await subject.sandboxes.exec(closingAgentCtx, lease.id, { command: "true" })).exitCode, 0);
+				deps.tenancy.close("sess-closing");
+				await assertAccessDenied(a, deps, subject.sandboxes.exec(closingAgentCtx, lease.id, { command: "true" }), {
+					operation: "sandbox.exec",
+				});
+				await assertAccessDenied(a, deps, subject.sandboxes.renew(closingAgentCtx, lease.id, 60_000), {
+					operation: "sandbox.renew",
+				});
+				await assertAccessDenied(
+					a,
+					deps,
+					subject.sandboxes.acquire(closingAgentCtx, {
+						sessionId: "sess-closing",
+						workspaceId: shared.id,
+						tier: "container",
+					}),
+					{ operation: "sandbox.acquire" },
+				);
+				await assertAccessDenied(
+					a,
+					deps,
+					subject.sandboxes.run(closingAgentCtx, {
+						...bash(shared.id, "true"),
+						sessionId: "sess-closing",
+					}),
+					{ operation: "sandbox.run" },
+				);
+				// The session-end teardown still ends what the closed session holds.
+				await subject.sandboxes.releaseSession(teardownCtx, "sess-closing", "session_ended");
+				a.deepEqual(await subject.sandboxes.leases(teardownCtx, { sessionId: "sess-closing", live: true }), []);
+			}),
+		},
+		{
+			name: "project access: lets an operator on the project and an agent in its own session work",
+			run: withSubject(async (subject) => {
+				const { workspaceId } = await setUp(subject);
+				const ran = await subject.sandboxes.run(ctx, bash(workspaceId, "printf '%s' 'agent' > a.txt"));
+				a.strictEqual(ran.exitCode, 0);
+				const lease = await subject.sandboxes.acquire(operatorCtx, { sessionId, workspaceId, tier: "container" });
+				a.strictEqual((await subject.sandboxes.exec(operatorCtx, lease.id, { command: "cat a.txt" })).stdout, "agent");
+				await subject.sandboxes.renew(operatorCtx, lease.id, 60_000);
+				a.strictEqual((await subject.sandboxes.leases(operatorCtx, { sessionId, live: true })).length, 2);
+				a.strictEqual((await subject.sandboxes.usage(operatorCtx, sessionId)).length, 2);
+				await subject.sandboxes.release(operatorCtx, lease.id);
+				await subject.sandboxes.releaseSession(operatorCtx, sessionId);
+				a.deepEqual(await subject.sandboxes.leases(ctx, { sessionId, live: true }), []);
+			}),
+		},
+		{
+			name: "worker calls: sweep refuses no caller, a human, a service and an agent, and releases nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaceId } = await setUp(subject);
+				const lease = await subject.sandboxes.acquire(ctx, { sessionId, workspaceId, tier: "isolate", ttlMs: 1000 });
+				deps.clock.advance(2000);
+				const live = async () =>
+					(await subject.sandboxes.leases(ctx, { sessionId })).map(({ id, endedAt, endReason }) => ({
+						id,
+						ended: endedAt !== undefined || endReason !== undefined,
+					}));
+				const before = await live();
+				// The agent is the session's own, in an open session, so only the worker rule can refuse it.
+				await assertWorkerCallRefused(
+					a,
+					deps,
+					"sandbox.sweep",
+					(caller) => subject.sandboxes.sweep(caller),
+					SANDBOX_FIXTURE.organisationId,
+					{ agentId: "agent-1", sessionId },
+				);
+				a.deepEqual(await live(), before, "no refused sweep released the lease");
+				const swept = await subject.sandboxes.sweep(WORKER);
+				a.deepEqual(
+					swept.map((ended) => ended.id),
+					[lease.id],
+					"the lease was still there for Harbour's own sweep",
+				);
+			}),
+		},
+	);
+	return cases;
 }
 
 export function registerSandboxConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: SandboxConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
 	registerCases(
 		runner,
 		name,
-		createSandboxConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+		createSandboxConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
 	);
 }

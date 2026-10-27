@@ -31,6 +31,7 @@ import {
 	type SandboxUsage,
 	type SessionId,
 	systemClock,
+	systemContext,
 	type TierRoute,
 	type WorkspaceRecord,
 } from "@harbour/contracts";
@@ -515,7 +516,7 @@ export class CloudflareSandboxes implements Sandboxes {
 	}
 
 	async #emit(events: readonly AuditEventInput[]): Promise<void> {
-		if (events.length > 0) await this.#audit?.append(events);
+		if (events.length > 0) await this.#audit?.append(systemContext("sandbox"), events);
 	}
 }
 

@@ -1,4 +1,5 @@
 import {
+	type AccessCheck,
 	type Actor,
 	type AgentId,
 	type AuditEventInput,
@@ -16,10 +17,20 @@ import {
 	type OrganisationId,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
 	type ProjectId,
+	requireSystem,
+	type SessionEndHook,
+	type SessionEndReason,
 	type SessionId,
+	type SystemContext,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
+
+/** The broker appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("browser");
+
 import { assertValidSite, isSupervisor, type ParentOf, siteAllowed, siteCovered } from "./index.ts";
 
 export interface MemoryBrowserOptions {
@@ -29,6 +40,13 @@ export interface MemoryBrowserOptions {
 	readonly provider?: BrowserProvider;
 	/** A session's parent session. Default: no session has a parent, so only humans and services can grant. */
 	readonly parentOf?: ParentOf;
+	/**
+	 * Project access (settled question 7). Without it the broker checks only the organisation; every target and every
+	 * conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
+	/** When given, the broker registers `endSession` with it once, as `browser`. */
+	readonly sessionEnd?: SessionEndHook;
 }
 
 /** One browser session the fake provider opened. */
@@ -174,6 +192,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	const audit = options.audit;
 	const provider = options.provider ?? createFakeBrowserProvider().provider;
 	const parentOf: ParentOf = options.parentOf ?? (() => undefined);
+	const access = options.access;
 
 	const contexts = new Map<string, StoredContext>();
 	const grants = new Map<string, StoredGrant>();
@@ -186,9 +205,28 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 
 	const slotKey = (organisationId: OrganisationId, contextId: string) => `${organisationId} ${contextId}`;
 
+	/** Resolves when the actor may make the call in the project (`forbidden` otherwise); without `access`, always. */
+	async function requireAccess(ctx: CallContext, check: AccessCheck): Promise<void> {
+		if (access !== undefined) await access.require(ctx, check);
+	}
+
+	/** Whether the actor may see a record of `check`'s project or session; without `access`, always. */
+	async function mayView(ctx: CallContext, check: Pick<AccessCheck, "projectId" | "sessionId">): Promise<boolean> {
+		return access === undefined || (await access.allows(ctx, { ...check, needed: "viewer" }));
+	}
+
+	/** The project and agent session a browser session belongs to, for its access checks. */
+	function browserSessionScope(stored: StoredSession): Pick<AccessCheck, "projectId" | "sessionId" | "subject"> {
+		return {
+			projectId: stored.projectId,
+			sessionId: stored.session.sessionId,
+			subject: { kind: "browser.session", id: stored.session.id },
+		};
+	}
+
 	async function emit(event: Omit<AuditEventInput, "at" | "source">): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([{ ...event, at: clock.now(), source: "browser" }]);
+		await audit.append(AUDIT_CONTEXT, [{ ...event, at: clock.now(), source: "browser" }]);
 	}
 
 	/**
@@ -274,10 +312,14 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	 * Ends a grant as `revoked` or `ended` and, transitively, every active grant passed on from it, closing their open
 	 * browser sessions. Every state change happens here, synchronously; the returned work releases and audits.
 	 */
-	function endGrant(stored: StoredGrant, status: "revoked" | "ended", actor: Actor): (() => Promise<void>)[] {
+	function endGrant(
+		stored: StoredGrant,
+		status: "revoked" | "ended",
+		endReason: EndReason,
+		actor: Actor,
+	): (() => Promise<void>)[] {
 		stored.grant = { ...stored.grant, status };
 		const ended = stored.grant;
-		const endReason: EndReason = status === "revoked" ? "revoked" : "session_ended";
 		const work: (() => Promise<void>)[] = [];
 		for (const session of sessions.values()) {
 			if (session.session.grantId === ended.id && session.session.status === "open") {
@@ -297,7 +339,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		);
 		for (const child of grants.values()) {
 			if (child.grant.parentGrantId === ended.id && child.grant.status === "active") {
-				work.push(...endGrant(child, status, actor));
+				work.push(...endGrant(child, status, endReason, actor));
 			}
 		}
 		return work;
@@ -341,13 +383,19 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		return stored;
 	}
 
-	return {
+	const browser: Browser = {
 		async putContext(ctx, input) {
 			await sweep();
 			forbidAgent(ctx, "create browser contexts");
 			const owner = input.owner;
 			if (owner.kind === "platform" || owner.organisationId !== ctx.organisationId) {
 				throw new HarbourError("invalid", "A browser context must be owned within the caller's organisation");
+			}
+			// A project's context needs operator on the project, an organisation's operator across the organisation.
+			if (owner.kind === "project") {
+				await requireAccess(ctx, { projectId: owner.projectId, needed: "operator", operation: "browser.putContext" });
+			} else if (owner.kind === "organisation") {
+				await requireAccess(ctx, { needed: "operator", operation: "browser.putContext" });
 			}
 			assertNonEmpty(input.name, "A context name");
 			assertNonEmpty(input.providerContextId, "A provider context ID");
@@ -378,12 +426,18 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			const own = [...contexts.values()]
 				.filter((stored) => stored.organisationId === ctx.organisationId)
 				.map((stored) => stored.context);
-			return paginate(own, page);
+			const visible: BrowserContext[] = [];
+			for (const context of own) {
+				const owner = context.owner;
+				if (owner.kind !== "project" || (await mayView(ctx, { projectId: owner.projectId }))) visible.push(context);
+			}
+			return paginate(visible, page);
 		},
 
 		async request(ctx, input) {
 			await sweep();
 			const actor = requireAgent(ctx, "ask for a browser");
+			await requireAccess(ctx, { sessionId: actor.sessionId, needed: "operator", operation: "browser.request" });
 			assertNonEmpty(input.reason, "A browser request's reason");
 			for (const site of input.sites) assertValidSite(site);
 			const request: BrowserRequest = {
@@ -426,6 +480,15 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				});
 				throw new HarbourError("refused", message);
 			};
+			const onProject = (projectId: ProjectId): AccessCheck => ({
+				projectId,
+				needed: "operator",
+				operation: "browser.grant",
+				subject: { kind: "browser.context", id: input.contextId },
+			});
+			// An agent is checked on the project first, so an agent of another project is `forbidden` while one in the
+			// project that does not supervise the session still gets the supervisor rule's `refused`.
+			if (ctx.actor.kind === "agent") await requireAccess(ctx, onProject(input.projectId));
 			if (!isSupervisor(ctx.actor, input.sessionId, parentOf)) {
 				return refuse(
 					ctx.actor.kind === "agent" && ctx.actor.sessionId === input.sessionId ? "own_session" : "not_supervisor",
@@ -436,6 +499,9 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			if (context === undefined || context.organisationId !== ctx.organisationId) {
 				throw new HarbourError("not_found", `No browser context ${input.contextId}`);
 			}
+			await requireAccess(ctx, { ...onProject(input.projectId), sessionId: input.sessionId });
+			const owner = context.context.owner;
+			if (owner.kind === "project") await requireAccess(ctx, onProject(owner.projectId));
 			assertNonEmpty(input.sessionId, "A session ID");
 			assertNonEmpty(input.projectId, "A project ID");
 			assertNonEmpty(input.agentId, "An agent ID");
@@ -533,11 +599,18 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		async revokeGrant(ctx, grantId) {
 			await sweep();
 			const stored = grantFor(ctx.organisationId, grantId);
+			await requireAccess(ctx, {
+				projectId: stored.grant.projectId,
+				sessionId: stored.grant.sessionId,
+				needed: "operator",
+				operation: "browser.revokeGrant",
+				subject: { kind: "browser.grant", id: stored.grant.id },
+			});
 			if (!isSupervisor(ctx.actor, stored.grant.sessionId, parentOf)) {
 				throw new HarbourError("forbidden", "Only a supervisor can revoke a browser grant");
 			}
 			if (stored.grant.status !== "active") return stored.grant;
-			const work = endGrant(stored, "revoked", ctx.actor);
+			const work = endGrant(stored, "revoked", "revoked", ctx.actor);
 			const revoked = stored.grant;
 			await runAll(work);
 			return revoked;
@@ -546,14 +619,24 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		async listGrants(ctx, filter) {
 			await sweep();
 			const sessionId = ctx.actor.kind === "agent" ? ctx.actor.sessionId : undefined;
-			return [...grants.values()]
-				.map((stored) => stored.grant)
-				.filter(
-					(grant) =>
-						grant.organisationId === ctx.organisationId &&
-						(sessionId === undefined || grant.sessionId === sessionId) &&
-						(filter.sessionId === undefined || grant.sessionId === filter.sessionId),
-				);
+			// An agent lists only its own session's grants, so naming another session finds none.
+			if (sessionId !== undefined && filter.sessionId !== undefined && filter.sessionId !== sessionId) return [];
+			if (filter.sessionId !== undefined) {
+				await requireAccess(ctx, { sessionId: filter.sessionId, needed: "viewer", operation: "browser.listGrants" });
+			}
+			const listed: BrowserGrant[] = [];
+			for (const { grant } of [...grants.values()]) {
+				if (
+					grant.organisationId === ctx.organisationId &&
+					(sessionId === undefined || grant.sessionId === sessionId) &&
+					(filter.sessionId === undefined || grant.sessionId === filter.sessionId) &&
+					(filter.sessionId !== undefined ||
+						(await mayView(ctx, { projectId: grant.projectId, sessionId: grant.sessionId })))
+				) {
+					listed.push(grant);
+				}
+			}
+			return listed;
 		},
 
 		async open(ctx, input) {
@@ -568,6 +651,13 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			) {
 				throw new HarbourError("not_found", `No browser grant ${input.grantId}`);
 			}
+			await requireAccess(ctx, {
+				projectId: stored.grant.projectId,
+				sessionId: stored.grant.sessionId,
+				needed: "operator",
+				operation: "browser.open",
+				subject: { kind: "browser.grant", id: stored.grant.id },
+			});
 			const grant = stored.grant;
 			if (grant.status !== "active") throw new HarbourError("expired", `Browser grant ${grant.id} is ${grant.status}`);
 			if (input.contextId !== undefined && input.contextId !== grant.contextId) {
@@ -659,6 +749,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		async checkSite(ctx, browserSessionId, url) {
 			await sweep();
 			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "viewer", operation: "browser.checkSite" });
 			if (stored.session.status !== "open") return { allow: false };
 			const grant = grants.get(stored.session.grantId)!.grant;
 			return { allow: siteAllowed(grant.allowedSites, url) };
@@ -667,6 +758,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		async close(ctx, browserSessionId) {
 			await sweep();
 			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "operator", operation: "browser.close" });
 			if (stored.session.status === "closed") return stored.session;
 			const finish = closeSession(stored, "closed", ctx.actor);
 			const closed = stored.session;
@@ -674,30 +766,49 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			return closed;
 		},
 
-		async endSession(sessionId: SessionId, _reason) {
-			await sweep();
+		async endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason) {
+			await requireSystem(ctx, "browser.endSession", { ...(audit === undefined ? {} : { audit }), clock });
+			// A failing sweep (its audit, say) must not keep this session's browsers and grants alive: end them first,
+			// then report the sweep's failure.
+			let sweepFailure: { readonly error: unknown } | undefined;
+			try {
+				await sweep();
+			} catch (error) {
+				sweepFailure = { error };
+			}
 			const work: (() => Promise<void>)[] = [];
 			for (const stored of sessions.values()) {
 				if (stored.session.sessionId === sessionId && stored.session.status === "open") {
-					work.push(closeSession(stored, "session_ended", BROKER_ACTOR));
+					work.push(closeSession(stored, reason, BROKER_ACTOR));
 				}
 			}
 			for (const stored of grants.values()) {
 				if (stored.grant.sessionId === sessionId && stored.grant.status === "active") {
-					work.push(...endGrant(stored, "ended", BROKER_ACTOR));
+					work.push(...endGrant(stored, "ended", reason, BROKER_ACTOR));
 				}
 			}
-			for (const stored of requests.values()) {
-				if (stored.request.sessionId === sessionId && stored.request.status === "pending") {
-					stored.request = { ...stored.request, status: "declined" };
+			// An aborted session stays usable, so its pending requests can still be answered.
+			if (reason === "session_ended") {
+				for (const stored of requests.values()) {
+					if (stored.request.sessionId === sessionId && stored.request.status === "pending") {
+						stored.request = { ...stored.request, status: "declined" };
+					}
 				}
 			}
 			await runAll(work);
+			if (sweepFailure !== undefined) throw sweepFailure.error;
 		},
 
 		async get(ctx, browserSessionId) {
 			await sweep();
-			return sessionFor(ctx, browserSessionId).session;
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "viewer", operation: "browser.get" });
+			return stored.session;
 		},
 	};
+	if (options.sessionEnd !== undefined) {
+		// The hook's context is a system one, which `endSession` requires.
+		options.sessionEnd.register("browser", (ctx, end) => browser.endSession(ctx, end.sessionId, end.reason));
+	}
+	return browser;
 }

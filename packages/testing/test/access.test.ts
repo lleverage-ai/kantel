@@ -1,0 +1,84 @@
+import type { AccessCheck, CallContext } from "@harbour/contracts";
+import { createDeps } from "@harbour/testing/harness";
+import { describe, expect, it } from "vitest";
+
+const ORG = "org-1";
+
+function setUp() {
+	const deps = createDeps();
+	const owner = { kind: "human", userId: "owner" } as const;
+	const reader = { kind: "human", userId: "reader" } as const;
+	const ci = { kind: "service", serviceId: "ci" } as const;
+	deps.tenancy.bind(owner, ORG, "admin");
+	deps.tenancy.bind(reader, ORG, "viewer", "proj-a");
+	deps.tenancy.bind(ci, ORG, "operator", "proj-a");
+	const parent = deps.tenancy.session({ id: "sess-parent", organisationId: ORG, projectId: "proj-a", agentId: "a" });
+	const child = deps.tenancy.session({
+		id: "sess-child",
+		organisationId: ORG,
+		projectId: "proj-a",
+		agentId: "a",
+		parentSessionId: "sess-parent",
+	});
+	deps.tenancy.session({ id: "sess-sibling", organisationId: ORG, projectId: "proj-a", agentId: "a" });
+	const as = (actor: CallContext["actor"], organisationId = ORG): CallContext => ({ actor, organisationId });
+	const allows = (ctx: CallContext, check: Omit<AccessCheck, "operation">) => deps.access.allows(ctx, check);
+	return { deps, owner, reader, ci, parent, child, as, allows };
+}
+
+describe("createProjectAccess", () => {
+	it("checks humans and services by role, on the project or across the organisation", async () => {
+		const { owner, reader, ci, as, allows } = setUp();
+		expect(await allows(as(owner), { projectId: "proj-b", needed: "admin" })).toBe(true);
+		expect(await allows(as(owner), { needed: "admin" })).toBe(true);
+		expect(await allows(as(reader), { projectId: "proj-a", needed: "viewer" })).toBe(true);
+		expect(await allows(as(reader), { projectId: "proj-a", needed: "operator" })).toBe(false);
+		expect(await allows(as(reader), { needed: "viewer" })).toBe(false);
+		expect(await allows(as(ci), { projectId: "proj-a", needed: "operator" })).toBe(true);
+		expect(await allows(as(ci), { projectId: "proj-b", needed: "viewer" })).toBe(false);
+		expect(await allows(as(owner, "org-2"), { projectId: "proj-a", needed: "viewer" })).toBe(false);
+		expect(await allows(as({ kind: "system", component: "relay" }), { needed: "admin" })).toBe(true);
+	});
+
+	it("lets an agent act as an operator in its own open session's project, and on its children, never wider", async () => {
+		const { deps, parent, child, as, allows } = setUp();
+		expect(await allows(as(parent), { projectId: "proj-a", needed: "operator" })).toBe(true);
+		expect(await allows(as(parent), { projectId: "proj-a", needed: "admin" })).toBe(false);
+		expect(await allows(as(parent), { projectId: "proj-b", needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent), { needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent), { sessionId: "sess-parent", needed: "operator" })).toBe(true);
+		expect(await allows(as(parent), { sessionId: "sess-child", needed: "operator" })).toBe(true);
+		expect(await allows(as(child), { sessionId: "sess-parent", needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent), { sessionId: "sess-sibling", needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent), { sessionId: "sess-child", projectId: "proj-b", needed: "viewer" })).toBe(false);
+		const impostor = { kind: "agent", agentId: "b", sessionId: "sess-parent" } as const;
+		expect(await allows(as(impostor), { projectId: "proj-a", needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent, "org-2"), { projectId: "proj-a", needed: "viewer" })).toBe(false);
+		deps.tenancy.close("sess-parent");
+		expect(await allows(as(parent), { projectId: "proj-a", needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent), { sessionId: "sess-child", needed: "viewer" })).toBe(false);
+	});
+
+	it("refuses with one generic forbidden and audits it once, with no secret", async () => {
+		const { deps, reader, as } = setUp();
+		const refusal = deps.access.require(as(reader), {
+			projectId: "proj-b",
+			needed: "operator",
+			operation: "vault.propose",
+			subject: { kind: "vault.item", id: "item-1" },
+		});
+		await expect(refusal).rejects.toMatchObject({ code: "forbidden" });
+		const denied = deps.audit.ofType("access.denied");
+		expect(denied).toHaveLength(1);
+		expect(denied[0]).toMatchObject({
+			source: "access",
+			actor: reader,
+			organisationId: ORG,
+			projectId: "proj-b",
+			subject: { kind: "vault.item", id: "item-1" },
+			data: { operation: "vault.propose", needed: "operator" },
+		});
+		expect(await deps.access.allows(as(reader), { projectId: "proj-b", needed: "operator" })).toBe(false);
+		expect(deps.audit.ofType("access.denied")).toHaveLength(1);
+	});
+});

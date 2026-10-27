@@ -3,6 +3,7 @@
  * that builds fresh schedules on the suite's clock and audit sink.
  */
 import type {
+	CallContext,
 	CheckReport,
 	Occurrence,
 	OwnerRef,
@@ -14,14 +15,18 @@ import type {
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
+	assertWorkerCallRefused,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface SchedulesSubject {
@@ -36,6 +41,7 @@ export type SchedulesConformanceProvider = (
 const ORG = "org-a";
 const OTHER_ORG = "org-b";
 const PROJECT = "proj-a";
+const OTHER_PROJECT = "proj-b";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -46,6 +52,25 @@ const service = contextFor(actors.service("supervisor-1"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG, PROJECT);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 const owner: OwnerRef = { kind: "project", organisationId: ORG, projectId: PROJECT };
+/** An operator on another project of the same organisation. */
+const stranger = contextFor(actors.human("stranger-1"), ORG, OTHER_PROJECT);
+/** A viewer on the project. */
+const viewer = contextFor(actors.human("viewer-1"), ORG, PROJECT);
+/** An agent whose session belongs to another project. */
+const strayAgent = contextFor(actors.agent("agent-2", "session-2"), ORG, OTHER_PROJECT);
+/** An agent whose session in the project is closed during the case. */
+const closingAgent = contextFor(actors.agent("agent-3", "session-3"), ORG, PROJECT);
+
+/** Records the roles and agent sessions the cases use, so every call passes `deps.access` where it should. */
+function seedTenancy(deps: ConformanceDeps): void {
+	deps.tenancy.bind(human.actor, ORG, "operator", PROJECT);
+	deps.tenancy.bind(service.actor, ORG, "operator", PROJECT);
+	deps.tenancy.bind(viewer.actor, ORG, "viewer", PROJECT);
+	deps.tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
+	deps.tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	deps.tenancy.session({ id: "session-2", organisationId: ORG, projectId: OTHER_PROJECT, agentId: "agent-2" });
+	deps.tenancy.session({ id: "session-3", organisationId: ORG, projectId: PROJECT, agentId: "agent-3" });
+}
 
 const utc = (iso: string): Timestamp => Date.parse(iso);
 
@@ -68,6 +93,7 @@ function hourly(deps: ConformanceDeps, extra: Partial<ScheduleInput> = {}): Sche
 export function createSchedulesConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: SchedulesConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (
@@ -77,17 +103,18 @@ export function createSchedulesConformance(options: {
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject.schedules, deps));
 		},
 	});
 
 	/** Ticks, claims and finishes one occurrence as RUNNER. */
 	async function runOnce(schedules: Schedules): Promise<Occurrence> {
-		const created = await schedules.tick();
+		const created = await schedules.tick(WORKER);
 		assert.strictEqual(created.length, 1, "the tick materialises one occurrence");
-		const claimed = await schedules.claim(RUNNER, 10 * MINUTE);
+		const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
 		assert.ok(claimed, "the occurrence can be claimed");
-		return schedules.complete(claimed!.id, RUNNER, { status: "succeeded" });
+		return schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded" });
 	}
 
 	/** Moves the clock to a check's next hourly run and reports it. */
@@ -97,18 +124,18 @@ export function createSchedulesConformance(options: {
 		report: CheckReport,
 	): Promise<readonly RaisedFinding[]> {
 		deps.clock.advance(HOUR);
-		const created = await schedules.tick();
+		const created = await schedules.tick(WORKER);
 		assert.strictEqual(created.length, 1, "each check run is one occurrence");
-		const claimed = await schedules.claim(RUNNER, 10 * MINUTE);
+		const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
 		assert.ok(claimed, "the check run can be claimed");
-		return schedules.reportCheck(claimed!.id, RUNNER, report);
+		return schedules.reportCheck(WORKER, claimed!.id, RUNNER, report);
 	}
 
 	function createCheck(schedules: Schedules, deps: ConformanceDeps, check: ScheduleInput["check"] = {}) {
 		return schedules.create(service, hourly(deps, { kind: "check", title: "Disk", payload: "df -h", check }));
 	}
 
-	return [
+	const cases: ConformanceCase[] = [
 		test("runs a daily 09:00 Europe/London schedule at 08:00 UTC in summer and 09:00 UTC in winter", async (schedules, deps) => {
 			deps.clock.set(utc("2026-10-22T12:00:00Z"));
 			const schedule = await schedules.create(human, scheduleInput({ repeat: { every: "day", at: "09:00" } }));
@@ -121,7 +148,7 @@ export function createSchedulesConformance(options: {
 				utc("2026-10-26T09:00:00Z"),
 				utc("2026-10-27T09:00:00Z"),
 			]);
-			assert.strictEqual((await schedules.tick()).length, 0, "previewing materialises nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "previewing materialises nothing");
 		}),
 
 		test("runs a local time in the spring-forward gap once at the first valid instant after it", async (schedules, deps) => {
@@ -148,7 +175,7 @@ export function createSchedulesConformance(options: {
 			const first = await runOnce(schedules);
 			assert.strictEqual(first.dueAt, utc("2026-10-25T00:30:00Z"));
 			deps.clock.set(utc("2026-10-25T01:30:00Z"));
-			assert.strictEqual((await schedules.tick()).length, 0, "the second 01:30 of the night is not due");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "the second 01:30 of the night is not due");
 			assert.strictEqual((await schedules.get(human, schedule.id)).nextDueAt, utc("2026-10-26T01:30:00Z"));
 		}),
 
@@ -203,7 +230,7 @@ export function createSchedulesConformance(options: {
 		test("creates one occurrence when ticked twice at the same time", async (schedules, deps) => {
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			const [first, ...rest] = await schedules.tick();
+			const [first, ...rest] = await schedules.tick(WORKER);
 			assert.strictEqual(rest.length, 0);
 			assert.partialDeepEqual(first, {
 				id: `${schedule.id}@${schedule.nextDueAt}`,
@@ -213,7 +240,7 @@ export function createSchedulesConformance(options: {
 				status: "due",
 				attempt: 0,
 			});
-			assert.strictEqual((await schedules.tick()).length, 0, "the second tick creates nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "the second tick creates nothing");
 			assert.strictEqual((await schedules.listOccurrences(human, schedule.id)).items.length, 1);
 			assert.strictEqual((await schedules.get(human, schedule.id)).occurrences, 1);
 		}),
@@ -222,7 +249,7 @@ export function createSchedulesConformance(options: {
 			const start = deps.clock.now();
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(DAY);
-			const created = await schedules.tick();
+			const created = await schedules.tick(WORKER);
 			assert.strictEqual(created.length, 1);
 			assert.partialDeepEqual(created[0], { coalesced: 24, dueAt: start + DAY, id: `${schedule.id}@${start + DAY}` });
 			const after = await schedules.get(human, schedule.id);
@@ -234,14 +261,14 @@ export function createSchedulesConformance(options: {
 			const start = deps.clock.now();
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 1);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 1);
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 0, "nothing while one is due");
-			const claimed = await schedules.claim(RUNNER, DAY);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "nothing while one is due");
+			const claimed = await schedules.claim(WORKER, RUNNER, DAY);
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 0, "nothing while one is running");
-			await schedules.complete(claimed!.id, RUNNER, { status: "succeeded", result: { ok: true } });
-			const next = await schedules.tick();
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "nothing while one is running");
+			await schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded", result: { ok: true } });
+			const next = await schedules.tick(WORKER);
 			assert.strictEqual(next.length, 1, "one occurrence after it completes");
 			assert.partialDeepEqual(next[0], { coalesced: 2, dueAt: start + 3 * HOUR });
 			const listed = await schedules.listOccurrences(human, schedule.id);
@@ -257,48 +284,48 @@ export function createSchedulesConformance(options: {
 			deps.clock.advance(30 * MINUTE);
 			await schedules.create(human, hourly(deps));
 			deps.clock.advance(2 * HOUR);
-			assert.strictEqual((await schedules.tick()).length, 2);
-			const first = await schedules.claim(RUNNER, MINUTE);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 2);
+			const first = await schedules.claim(WORKER, RUNNER, MINUTE);
 			assert.strictEqual(first?.scheduleId, early.id);
-			const second = await schedules.claim("runner-2", MINUTE);
+			const second = await schedules.claim(WORKER, "runner-2", MINUTE);
 			assert.ok(second && second.scheduleId !== early.id, "the second claim takes the other occurrence");
-			assert.strictEqual(await schedules.claim("runner-3", MINUTE), undefined, "nothing is left to claim");
+			assert.strictEqual(await schedules.claim(WORKER, "runner-3", MINUTE), undefined, "nothing is left to claim");
 		}),
 
 		test("keeps a claim exclusive until its lease passes, then hands it over and refuses the first runner", async (schedules, deps) => {
 			await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			await schedules.tick();
-			const first = await schedules.claim(RUNNER, MINUTE);
+			await schedules.tick(WORKER);
+			const first = await schedules.claim(WORKER, RUNNER, MINUTE);
 			assert.partialDeepEqual(first, {
 				status: "running",
 				claimedBy: RUNNER,
 				attempt: 1,
 				leaseUntil: deps.clock.now() + MINUTE,
 			});
-			assert.strictEqual(await schedules.claim("runner-2", MINUTE), undefined, "a live claim is exclusive");
+			assert.strictEqual(await schedules.claim(WORKER, "runner-2", MINUTE), undefined, "a live claim is exclusive");
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, "runner-2", { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, "runner-2", { status: "succeeded" }),
 				"conflict",
 				"only the claimant completes",
 			);
 			deps.clock.advance(MINUTE);
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, RUNNER, { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, RUNNER, { status: "succeeded" }),
 				"conflict",
 				"a lapsed lease cannot complete",
 			);
-			const second = await schedules.claim("runner-2", MINUTE);
+			const second = await schedules.claim(WORKER, "runner-2", MINUTE);
 			assert.partialDeepEqual(second, { id: first!.id, claimedBy: "runner-2", attempt: 2 });
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, RUNNER, { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, RUNNER, { status: "succeeded" }),
 				"conflict",
 				"the first runner lost the claim",
 			);
-			const done = await schedules.complete(first!.id, "runner-2", { status: "failed" });
+			const done = await schedules.complete(WORKER, first!.id, "runner-2", { status: "failed" });
 			assert.strictEqual(done.status, "failed");
 			await assert.rejectsWithCode(
-				schedules.complete(first!.id, "runner-2", { status: "succeeded" }),
+				schedules.complete(WORKER, first!.id, "runner-2", { status: "succeeded" }),
 				"conflict",
 				"a finished occurrence cannot complete again",
 			);
@@ -313,14 +340,14 @@ export function createSchedulesConformance(options: {
 				counted.createdAt + 2 * HOUR,
 			]);
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 3);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 3);
 			assert.strictEqual((await schedules.get(human, oneOff.id)).status, "ended", "a one-off ends after it runs");
 			for (let index = 0; index < 3; index += 1) {
-				const claimed = await schedules.claim(RUNNER, MINUTE);
-				await schedules.complete(claimed!.id, RUNNER, { status: "succeeded" });
+				const claimed = await schedules.claim(WORKER, RUNNER, MINUTE);
+				await schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded" });
 			}
 			deps.clock.advance(HOUR);
-			assert.strictEqual((await schedules.tick()).length, 2);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 2);
 			for (const id of [counted.id, until.id]) {
 				const ended = await schedules.get(human, id);
 				assert.strictEqual(ended.status, "ended");
@@ -329,11 +356,11 @@ export function createSchedulesConformance(options: {
 				assert.deepEqual(await schedules.preview(human, id, 3), []);
 			}
 			for (let index = 0; index < 2; index += 1) {
-				const claimed = await schedules.claim(RUNNER, MINUTE);
-				await schedules.complete(claimed!.id, RUNNER, { status: "succeeded" });
+				const claimed = await schedules.claim(WORKER, RUNNER, MINUTE);
+				await schedules.complete(WORKER, claimed!.id, RUNNER, { status: "succeeded" });
 			}
 			deps.clock.advance(5 * HOUR);
-			assert.strictEqual((await schedules.tick()).length, 0, "ended schedules create nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "ended schedules create nothing");
 		}),
 
 		test("raises nothing for a check that exits 0", async (schedules, deps) => {
@@ -427,11 +454,11 @@ export function createSchedulesConformance(options: {
 		test("lets only the claimant report a check", async (schedules, deps) => {
 			await createCheck(schedules, deps);
 			deps.clock.advance(HOUR);
-			await schedules.tick();
-			const claimed = await schedules.claim(RUNNER, MINUTE);
-			await assert.rejectsWithCode(schedules.reportCheck(claimed!.id, "runner-2", { exitCode: 0 }), "conflict");
+			await schedules.tick(WORKER);
+			const claimed = await schedules.claim(WORKER, RUNNER, MINUTE);
+			await assert.rejectsWithCode(schedules.reportCheck(WORKER, claimed!.id, "runner-2", { exitCode: 0 }), "conflict");
 			deps.clock.advance(MINUTE);
-			await assert.rejectsWithCode(schedules.reportCheck(claimed!.id, RUNNER, { exitCode: 0 }), "conflict");
+			await assert.rejectsWithCode(schedules.reportCheck(WORKER, claimed!.id, RUNNER, { exitCode: 0 }), "conflict");
 		}),
 
 		test("refuses an agent creating, updating, pausing, resuming or ending a schedule", async (schedules, deps) => {
@@ -462,13 +489,13 @@ export function createSchedulesConformance(options: {
 			assert.strictEqual(paused.status, "paused");
 			assert.strictEqual(paused.nextDueAt, undefined);
 			deps.clock.advance(5 * HOUR + 30 * MINUTE);
-			assert.strictEqual((await schedules.tick()).length, 0, "paused schedules create nothing");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "paused schedules create nothing");
 			const resumed = await schedules.resume(service, schedule.id);
 			assert.strictEqual(resumed.status, "active");
 			assert.strictEqual(resumed.nextDueAt, start + 6 * HOUR, "the next due time is after now");
-			assert.strictEqual((await schedules.tick()).length, 0, "no backfill on resume");
+			assert.strictEqual((await schedules.tick(WORKER)).length, 0, "no backfill on resume");
 			deps.clock.advance(30 * MINUTE);
-			const created = await schedules.tick();
+			const created = await schedules.tick(WORKER);
 			assert.partialDeepEqual(created, [{ coalesced: 1, dueAt: start + 6 * HOUR }]);
 			const ended = await schedules.end(service, schedule.id);
 			assert.strictEqual(ended.status, "ended");
@@ -483,7 +510,7 @@ export function createSchedulesConformance(options: {
 		test("update ignores fields outside ScheduleInput and is audited", async (schedules, deps) => {
 			const schedule = await schedules.create(human, hourly(deps));
 			deps.clock.advance(HOUR);
-			await schedules.tick();
+			await schedules.tick(WORKER);
 			const before = await schedules.get(human, schedule.id);
 			const sneaky = {
 				title: "Renamed",
@@ -564,16 +591,179 @@ export function createSchedulesConformance(options: {
 			assert.strictEqual(unchanged.status, "active");
 		}),
 	];
+	if (options.projectAccess !== true) return cases;
+
+	/** The lifecycle events a change would audit; a refused change audits none. */
+	const changeEvents = (deps: ConformanceDeps) =>
+		["updated", "paused", "resumed", "ended"].flatMap((change) => deps.audit.ofType(`schedules.schedule.${change}`));
+
+	return [
+		...cases,
+		test("project access: refuses an operator outside the project every change and read of its schedule, changing nothing", async (schedules, deps) => {
+			const schedule = await schedules.create(human, hourly(deps));
+			const denied = (call: Promise<unknown>, operation: string) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await denied(schedules.create(stranger, hourly(deps)), "schedules.create");
+			await denied(schedules.update(stranger, schedule.id, { title: "Theirs" }), "schedules.update");
+			await denied(schedules.pause(stranger, schedule.id), "schedules.pause");
+			await denied(schedules.resume(stranger, schedule.id), "schedules.resume");
+			await denied(schedules.end(stranger, schedule.id), "schedules.end");
+			await denied(schedules.get(stranger, schedule.id), "schedules.get");
+			await denied(schedules.preview(stranger, schedule.id, 1), "schedules.preview");
+			await denied(schedules.listOccurrences(stranger, schedule.id), "schedules.listOccurrences");
+			assert.deepEqual(await schedules.get(human, schedule.id), schedule, "the schedule is unchanged");
+			assert.strictEqual((await schedules.list(human)).items.length, 1, "the refused create stored nothing");
+			assert.strictEqual(deps.audit.ofType("schedules.schedule.created").length, 1);
+			assert.strictEqual(changeEvents(deps).length, 0, "no change was audited");
+		}),
+
+		test("project access: refuses an agent whose session belongs to another project, changing nothing", async (schedules, deps) => {
+			const schedule = await schedules.create(human, hourly(deps));
+			const denied = (call: Promise<unknown>, operation: string) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await denied(schedules.get(strayAgent, schedule.id), "schedules.get");
+			await denied(schedules.preview(strayAgent, schedule.id, 1), "schedules.preview");
+			await denied(schedules.listOccurrences(strayAgent, schedule.id), "schedules.listOccurrences");
+			assert.strictEqual((await schedules.list(strayAgent)).items.length, 0, "the list leaves the schedule out");
+			const refusals = deps.audit.ofType("access.denied").length;
+			await assert.rejectsWithCode(schedules.create(strayAgent, hourly(deps)), "forbidden");
+			await assert.rejectsWithCode(schedules.pause(strayAgent, schedule.id), "forbidden");
+			assert.strictEqual(
+				deps.audit.ofType("access.denied").length,
+				refusals,
+				"the agent rule refuses changes before any project check",
+			);
+			assert.deepEqual(await schedules.get(human, schedule.id), schedule, "the schedule is unchanged");
+			assert.strictEqual(changeEvents(deps).length, 0);
+		}),
+
+		test("project access: refuses an agent whose session was closed", async (schedules, deps) => {
+			const schedule = await schedules.create(human, hourly(deps));
+			assert.strictEqual((await schedules.get(closingAgent, schedule.id)).id, schedule.id, "open, it may read");
+			deps.tenancy.close("session-3");
+			await assertAccessDenied(assert, deps, schedules.get(closingAgent, schedule.id), {
+				operation: "schedules.get",
+			});
+			await assertAccessDenied(assert, deps, schedules.listOccurrences(closingAgent, schedule.id), {
+				operation: "schedules.listOccurrences",
+			});
+			assert.strictEqual(
+				(await schedules.list(closingAgent)).items.length,
+				0,
+				"closed, it lists nothing of the project",
+			);
+		}),
+
+		test("project access: lists leave out another project's schedules, and pages hold only visible ones", async (schedules, deps) => {
+			const ours = await schedules.create(human, hourly(deps, { title: "Ours" }));
+			const second = await schedules.create(human, hourly(deps, { title: "Ours too" }));
+			const theirs = await schedules.create(
+				stranger,
+				hourly(deps, { owner: { kind: "project", organisationId: ORG, projectId: OTHER_PROJECT }, title: "Theirs" }),
+			);
+			const shared = await schedules.create(
+				service,
+				hourly(deps, { owner: { kind: "organisation", organisationId: ORG }, title: "Organisation" }),
+			);
+			const listedIds = async (ctx: CallContext) => (await schedules.list(ctx)).items.map((item) => item.id).sort();
+			assert.deepEqual(await listedIds(stranger), [theirs.id, shared.id].sort(), "the stranger sees its project's");
+			assert.deepEqual(
+				await listedIds(human),
+				[ours.id, second.id, shared.id].sort(),
+				"the operator sees its project's",
+			);
+			assert.deepEqual(await listedIds(agent), [ours.id, second.id, shared.id].sort(), "an agent sees its session's");
+			const first = await schedules.list(stranger, undefined, { limit: 1 });
+			assert.strictEqual(first.items.length, 1);
+			assert.ok(first.nextCursor !== undefined, "a second visible schedule follows");
+			const rest = await schedules.list(stranger, undefined, { limit: 1, cursor: first.nextCursor! });
+			assert.deepEqual(
+				[...first.items, ...rest.items].map((item) => item.id).sort(),
+				[theirs.id, shared.id].sort(),
+				"paging walks only the visible schedules",
+			);
+			assert.strictEqual(rest.nextCursor, undefined);
+		}),
+
+		test("project access: lets an operator on the project and an agent in its own session use the project's schedule", async (schedules, deps) => {
+			const schedule = await schedules.create(human, hourly(deps));
+			assert.strictEqual((await schedules.update(human, schedule.id, { title: "Renamed" })).title, "Renamed");
+			assert.strictEqual((await schedules.pause(service, schedule.id)).status, "paused");
+			assert.strictEqual((await schedules.resume(human, schedule.id)).status, "active");
+			assert.strictEqual((await schedules.get(agent, schedule.id)).title, "Renamed");
+			assert.strictEqual((await schedules.preview(agent, schedule.id, 2)).length, 2);
+			assert.strictEqual((await schedules.listOccurrences(agent, schedule.id)).items.length, 0);
+			assert.strictEqual((await schedules.get(viewer, schedule.id)).title, "Renamed", "a viewer may read");
+			await assertAccessDenied(assert, deps, schedules.pause(viewer, schedule.id), {
+				operation: "schedules.pause",
+				message: "a viewer may not change it",
+			});
+			assert.strictEqual((await schedules.end(human, schedule.id)).status, "ended");
+		}),
+		test("worker calls: tick, claim, complete and reportCheck refuse every caller but system, and change nothing", async (schedules, deps) => {
+			const inProject = { agentId: "agent-1", sessionId: "session-1" };
+			const refused = (operation: string, call: Parameters<typeof assertWorkerCallRefused>[3]) =>
+				assertWorkerCallRefused(assert, deps, operation, call, ORG, inProject);
+			const check = await createCheck(schedules, deps);
+			const occurrencesOf = async (scheduleId: string) =>
+				(await schedules.listOccurrences(service, scheduleId)).items.map(({ id, status, attempt, claimedBy }) => ({
+					id,
+					status,
+					attempt,
+					claimedBy,
+				}));
+			deps.clock.advance(HOUR);
+			await refused("schedules.tick", (caller) => schedules.tick(caller));
+			assert.deepEqual(await occurrencesOf(check.id), [], "no refused tick materialised an occurrence");
+			const [due] = await schedules.tick(WORKER);
+			assert.ok(due, "Harbour's own tick materialises it");
+			const beforeClaim = await occurrencesOf(check.id);
+			await refused("schedules.claim", (caller) => schedules.claim(caller, RUNNER, 10 * MINUTE));
+			assert.deepEqual(await occurrencesOf(check.id), beforeClaim, "no refused claim touched the occurrence");
+			const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
+			assert.strictEqual(claimed?.attempt, 1, "no refused claim took the occurrence");
+			const running = await occurrencesOf(check.id);
+			await refused("schedules.complete", (caller) =>
+				schedules.complete(caller, claimed!.id, RUNNER, { status: "failed" }),
+			);
+			await refused("schedules.reportCheck", (caller) =>
+				schedules.reportCheck(caller, claimed!.id, RUNNER, { exitCode: 1 }),
+			);
+			assert.deepEqual(await occurrencesOf(check.id), running, "no refused complete or report settled it");
+			await schedules.reportCheck(WORKER, claimed!.id, RUNNER, { exitCode: 0 });
+			const [finished] = (await schedules.listOccurrences(service, claimed!.scheduleId)).items;
+			assert.strictEqual(finished?.status, "succeeded", "the claim was still held for Harbour's own report");
+			// A task's occurrence: refused completes leave it running, and Harbour's own complete settles it.
+			await schedules.end(service, check.id);
+			const task = await schedules.create(service, hourly(deps, { kind: "task", title: "Report", payload: "x" }));
+			deps.clock.advance(HOUR);
+			await schedules.tick(WORKER);
+			const taskRun = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
+			assert.strictEqual(taskRun?.scheduleId, task.id);
+			const taskRunning = await occurrencesOf(task.id);
+			await refused("schedules.complete", (caller) =>
+				schedules.complete(caller, taskRun!.id, RUNNER, { status: "failed" }),
+			);
+			assert.deepEqual(await occurrencesOf(task.id), taskRunning, "no refused complete settled the task");
+			const completed = await schedules.complete(WORKER, taskRun!.id, RUNNER, { status: "succeeded" });
+			assert.strictEqual(completed.status, "succeeded", "Harbour's own complete settles it");
+		}),
+	];
 }
 
 export function registerSchedulesConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: SchedulesConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
 	registerCases(
 		runner,
 		name,
-		createSchedulesConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+		createSchedulesConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			projectAccess: options?.projectAccess === true,
+		}),
 	);
 }

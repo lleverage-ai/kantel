@@ -12,7 +12,8 @@ The suites follow the pattern of Pi Durable's `registerEnvConformance`. Each sui
 `create<X>Conformance({ assertions, provider })` that returns plain `{ name, run }` cases, plus a
 `register<X>Conformance(runner, name, provider)` that registers them with any runner that has `describe`, `it` and
 `expect`. The provider builds a fresh subject for every case from the deps the suite passes in (`ManualClock`,
-`RecordingAuditSink`), then calls `use(subject)`. A target proves itself in one file:
+`RecordingAuditSink`, and a `ProjectAccess` over a `TenancyFixture` of role bindings and agent sessions), then calls
+`use(subject)`. A target proves itself in one file:
 
 ```ts
 import { registerVaultConformance } from "@harbour/testing/vault";
@@ -22,13 +23,19 @@ import { createD1Vault } from "../src/d1.ts";
 registerVaultConformance({ describe, expect, it }, "D1 vault", async (deps, use) => {
 	const vault = await createD1Vault({ clock: deps.clock, audit: deps.audit, database: await freshDatabase() });
 	await use({ vault });
-});
+}, { projectAccess: true });
 ```
+
+`{ projectAccess: true }` adds the suite's `project access:` cases, and with them its `worker calls:`, `mount reads:`
+and `existence` cases (questions 11 to 13). It is opt-in only while targets migrate: the in-memory implementations all
+pass it, and a target must before it ships the service.
 
 Errors are `HarbourError`s with a code (`invalid`, `not_found`, `forbidden`, `conflict`, `expired`, `refused`,
 `aborted`, `unavailable`). Records from another organisation are `not_found`, never `forbidden`, so that IDs leak
-nothing. Every call takes a `CallContext` that names the actor (`human`, `agent`, `service` or `system`) and the
-organisation. Every change made on a caller's behalf is audited through an `AuditSink`, with its actor. The scheduler's own
+nothing across organisations; within one, `forbidden` stays distinct from `not_found` (settled question 12). Every
+call takes a `CallContext` that names the actor (`human`, `agent`, `service` or `system`) and the organisation. A
+worker call, which Harbour makes on its own behalf, takes a `SystemContext` instead and refuses any other actor
+(settled question 13). Every change made on a caller's behalf is audited through an `AuditSink`, with its actor. The scheduler's own
 bookkeeping (materialising and claiming occurrences) lives on the occurrence records instead. No audit event contains a secret
 value; each suite plants `CANARY_SECRET` and checks for it.
 
@@ -36,18 +43,21 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 
 | Contract | Interface | Reference implementation | Suite (cases) | Notes |
 | --- | --- | --- | --- | --- |
-| Identity and tenancy | `IdentityDirectory` | `@harbour/identity/memory` | `registerIdentityConformance` (18) | [identity](../packages/identity/CONTRACT.md) |
-| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge` | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (14) | [runtime](../packages/runtime/CONTRACT.md) |
+| Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@harbour/identity/memory`, `createProjectAccess` | `registerIdentityConformance` (19) | [identity](../packages/identity/CONTRACT.md) |
+| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (23) | [runtime](../packages/runtime/CONTRACT.md) |
 | Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
-| Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (15) | [workspace](../packages/workspace/CONTRACT.md) |
-| Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (14) | [sandbox](../packages/sandbox/CONTRACT.md) |
-| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (41) | [vault](../packages/vault/CONTRACT.md) |
-| Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (17) | [codemode](../packages/codemode/CONTRACT.md) |
-| Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (24) | [browser](../packages/browser/CONTRACT.md) |
-| Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (15) | [skills](../packages/skills/CONTRACT.md) |
-| Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (19) | [memory](../packages/memory/CONTRACT.md) |
-| Schedules | `Schedules` | `@harbour/schedules/memory` | `registerSchedulesConformance` (23) | [schedules](../packages/schedules/CONTRACT.md) |
-| Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (17) | [audit](../packages/audit/CONTRACT.md) |
+| Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (26) | [workspace](../packages/workspace/CONTRACT.md) |
+| Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (21) | [sandbox](../packages/sandbox/CONTRACT.md) |
+| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (49) | [vault](../packages/vault/CONTRACT.md) |
+| Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (25) | [codemode](../packages/codemode/CONTRACT.md) |
+| Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
+| Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (22) | [skills](../packages/skills/CONTRACT.md) |
+| Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (24) | [memory](../packages/memory/CONTRACT.md) |
+| Schedules | `Schedules` | `@harbour/schedules/memory` | `registerSchedulesConformance` (29) | [schedules](../packages/schedules/CONTRACT.md) |
+| Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (22) | [audit](../packages/audit/CONTRACT.md) |
+
+Counts include the cases `projectAccess` adds. `ProjectAccess` and `createProjectAccess` are in `@harbour/contracts`
+(`access.ts`); they have no state of their own, so every target can use them as they are.
 
 The capability registry lives in `@harbour/codemode`, where the plan's layout puts code mode, because direct tools,
 code-mode scripts and saved programs all call the same registry.
@@ -56,13 +66,49 @@ code-mode scripts and saved programs all call the same registry.
 
 These come from the plan and cannot be changed by a target.
 
+- **Project access is checked by Harbour, on every call.** Settled by Tom on 27 Oct 2026 (question 7). The runtime and
+  every component check `ProjectAccess.require` before acting on a project's records, for operators and agents alike;
+  a caller or target never enforces it alone. Humans and services are checked by role, from identity's bindings on the
+  project or across the organisation (an API key is limited to its projects and role). An agent passes only through
+  its own open session: in that session's project, as an operator and never an admin, and on that session or its
+  children. A refusal is `forbidden`, says the same thing whichever check failed, carries no secret and is audited
+  once as `access.denied`. A list scoped to one project is checked like any other call; an organisation-wide list
+  leaves out what the caller may not see. Records in another organisation stay `not_found`.
+- **One session-end hook.** Settled by Tom on 27 Oct 2026 (question 8). The runtime runs one `SessionEndHook` when a
+  session is closed (`session_ended`) and when it is aborted (`aborted`), for each child first. The sandbox, browser,
+  capability registry and vault register teardowns (`sandbox`, `browser`, `capability`, `vault`), which end the
+  session's sandbox leases, browser sessions and context grants (and those passed on), capability grants and vault
+  grants. Teardowns run as `system`, in registration order, and are idempotent. One that fails does not stop the others
+  or fail the close; it is audited as `session.teardown.failed` with its name and error code, never its message. An
+  aborted session stays usable; closing or aborting a closed one runs nothing.
+- **Reads through a mount check the source project, every time.** Settled by Tom on 27 Oct 2026 (question 11):
+  "Check the source project on every read." A `read`, `stat` or `list` under a `project-files` mount needs viewer on
+  the project the files come from, as well as on the workspace's project. Nothing caches a past allow, so a role
+  revoked between two reads refuses the second. A caller who may read the workspace but not the source project gets
+  `forbidden`, audited as `access.denied` (`workspace.mount.read`), with no secret.
+- **Within an organisation, `forbidden` stays distinct from `not_found`.** Settled by Tom on 27 Oct 2026 (question
+  12): "Keep forbidden distinct." This is deliberate: lookups find a record before checking access, so a caller in
+  the same organisation can tell an existing ID it may not see (`forbidden`) from a missing one (`not_found`), and a
+  capability call ID another session used is a `conflict`. Why that is acceptable: the caller is already a member of
+  the organisation, record IDs are random, and the answer says only that a record exists, never what is in it; the
+  `forbidden` is audited, and it tells an operator to ask for a role rather than hunt for a typo. Don't change these
+  to `not_found`. Across organisations nothing changes: both are `not_found`, and a call ID is
+  free in another organisation. The workspace and capability suites pin it (`existence (settled question 12)`).
+- **Worker calls require a system identity.** Settled by Tom on 27 Oct 2026 (question 13): "Require a system
+  identity." The calls Harbour makes on its own behalf take a `SystemContext` (the `system` actor the session-end
+  teardowns already use) and call `requireSystem` first: `Schedules.tick`, `claim`, `complete` and `reportCheck`;
+  `AuditStore.append` and `applyRetention`; `AuditOutbox.append`, `drain` and `pending`; `Vault.decideEgress`;
+  `Browser.endSession`; `Sandboxes.sweep`; and `IdentityDirectory.authenticateApiKey` and `roleOf`. No caller, a
+  human, a service or an agent (even with every role) is `forbidden`, changes nothing and is audited once as
+  `access.denied` with the caller's kind and no secret; a refusal naming no organisation goes under
+  `PLATFORM_ORGANISATION`. Each suite has a `worker calls:` case for these.
+
 - **Binding codes.** Every vault proposal gets a binding code, such as `K7Q-2MX`. The approver sees the real code once,
   among at least three decoys, and must pick it to approve a write, a route grant or a secret paste. A wrong or missing
   code is refused, changes nothing and is audited as `vault.binding_code.mismatch`. The proposal stays pending. The
   vault derives a proposal's kind from its terms, so an agent cannot avoid the code by calling a write a read.
 - **Agents never decide.** An agent actor cannot open the approval view, decide a proposal, or change items, policies
-  or the ceiling. Identity never authorises an agent actor. Agents are meant to be authorised through their session, but
-  the in-memory runtime and sandbox do not check that yet (open question 7).
+  or the ceiling. Identity never authorises an agent actor; agents are authorised through their session (question 7).
 - **Browser contexts are chosen by a supervisor or a human.** Only a human, a service, or an agent acting in the
   parent session may grant a context to a session. An agent granting to its own session, or to an unrelated one, is
   `refused` and audited. A parent-session agent may only pass on a context it already holds through an active grant,
@@ -87,8 +133,8 @@ These come from the plan and cannot be changed by a target.
   (`git`, `node`, `bun`, `python` and others) run in the container. The container sees the isolate's latest commit.
   Ending a session releases every lease it holds.
 - **Keys are scoped.** A host API key scoped to one project cannot act in another project of the same organisation, or
-  in another organisation. Its secret is returned once and stored only as a hash. Identity enforces this; workspace
-  mounts, vault items and sandbox leases do not yet check the caller's project (open question 7).
+  in another organisation. Its secret is returned once and stored only as a hash. `ProjectAccess` applies the key's
+  scope in every component (question 7).
 
 ## Client wire protocol
 
@@ -163,7 +209,7 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
 
 1. **Bootstrap context.** `CallContext` needs an `organisationId` before the first organisation exists. The memory
    implementation passes a placeholder. Should the contract define a bootstrap context?
-2. **Who checks project roles for sessions.** It could be the runtime, or the gateway in front of it.
+2. **Who checks project roles for sessions. Settled with question 7:** the runtime does, on every call.
 3. **Pi types in `@harbour/runtime`.** The projector and the host-tool adapter take Pi types, so targets can reuse
    them. Hosts still import only `@harbour/contracts`.
 4. **Ceilings.** An organisation without a ceiling is bounded only by item hosts. Should every organisation start with
@@ -172,17 +218,27 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
    and `session_ended` releases commit the container's changes.
 6. **Users across organisations.** `User` has no organisation, so which organisations can see a user is an
    implementation choice for now.
-7. **Project scoping beyond identity.** The in-memory workspace does not check that the caller owns a mount's ref.
-   The vault lets an agent propose against another project's item, although a human must still approve it with the
-   code. The sandbox and runtime do not check that an agent acts only in its own session. These checks need a shared
-   way to authorise a `CallContext` (identity plus the session directory) and suite cases in each contract, before any
-   target ships these services. Skills' `list` and `pinForSession` take a project and user from the caller without
-   checking them, and memory spaces are scoped by organisation only.
-8. **Session-end wiring.** Ending a session should release its sandbox leases (done), close its browsers
-   (`Browser.endSession`) and end its capability and vault grants. The runtime calls only the sandbox today. The
-   other calls belong in M1-BE1, behind one session-end hook.
+7. **Project scoping beyond identity. Settled (Tom, 27 Oct 2026):** the runtime and components enforce project
+   authorisation for operators and agents on every project-scoped call. Built as `ProjectAccess`; see
+   [settled decisions](#settled-decisions-the-suites-enforce). The Cloudflare and self-hosted targets still register
+   their suites without `projectAccess: true` and must wire `ProjectAccess` before they ship these services.
+8. **Session-end wiring. Settled (Tom, 27 Oct 2026):** one session-end hook, run on close and abort, tears down
+   browser sessions and context grants, capability grants, vault grants and sandbox leases. Built as
+   `SessionEndHook`; see [settled decisions](#settled-decisions-the-suites-enforce).
 9. **Reading browser requests.** The browser contract has no read for an agent's requests, so "granted" is visible only
    through audit. `getRequest` and `listRequests` are the likely additions, with a way to decline.
 10. **Agent supervisors and browsers. Settled: yes, as built (Tom, 27 Oct 2026).** An agent in the parent session
     counts as a supervisor. It may pass a context it holds to its child session, no wider, and the passed-on grant
     ends when its own does.
+11. **Reading through a mount. Settled: check the source project on every read (Tom, 27 Oct 2026).** Every read
+    through a `project-files` mount checks the project the files come from, with no caching, so access revoked
+    between reads refuses the next one. See [settled decisions](#settled-decisions-the-suites-enforce).
+12. **Existence within an organisation. Settled: keep `forbidden` distinct (Tom, 27 Oct 2026).** Within an
+    organisation an ID the caller may not see stays `forbidden`, a missing one `not_found`, and a capability call ID
+    used by another session `conflict`; across organisations both stay `not_found`. Deliberate, and pinned by suite
+    cases; see [settled decisions](#settled-decisions-the-suites-enforce).
+13. **Worker calls. Settled: require a system identity (Tom, 27 Oct 2026).** Every call that had no caller now takes
+    a `SystemContext` and refuses anything but `system`, audited; see
+    [settled decisions](#settled-decisions-the-suites-enforce). Still open from the same question: lazy expiry (vault
+    proposals, browser timeouts) runs before a call's access check, so a refused call can still expire records that
+    were already due. That is time-driven housekeeping, not a change the caller asked for.

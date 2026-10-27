@@ -11,7 +11,12 @@ import {
 	type OrganisationId,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
+	type ProjectId,
+	requireSystem,
+	type SystemContext,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
 import { assertValidAuditEvent, matchesQuery } from "./index.ts";
 
@@ -19,10 +24,19 @@ export interface MemoryAuditStoreOptions {
 	readonly clock?: Clock;
 	/** Retention for organisations that have not set their own. Default: keep rows forever. */
 	readonly retentionMs?: number;
+	/**
+	 * Checks access on every read and on `setRetention` (`audit.<method>`): viewer on a row's project, or an
+	 * organisation-wide role for rows without one and for retention. Without it the store checks only the organisation;
+	 * every target and every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
 }
 
 /** The most events `drain` hands a sink in one `append`. */
 export const OUTBOX_BATCH_SIZE = 100;
+
+/** The relay hands batches on as itself. */
+const RELAY_CONTEXT: SystemContext = systemContext("audit.relay");
 
 const DEFAULT_PAGE_LIMIT = 100;
 const MAX_PAGE_LIMIT = 500;
@@ -53,6 +67,7 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 	const clock = options.clock ?? systemClock;
 	if (options.retentionMs !== undefined) assertRetention(options.retentionMs);
 	const defaultRetentionMs = options.retentionMs;
+	const access = options.access;
 
 	let rows: AuditEvent[] = [];
 	/** Rows by organisation and id: one organisation's event can never shadow another's that reuses an id. */
@@ -61,30 +76,66 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 	const retention = new Map<OrganisationId, number>();
 	let lastSeq = 0;
 
+	function record(events: readonly AuditEventInput[]): void {
+		for (const event of events) assertValidAuditEvent(event);
+		const recordedAt = clock.now();
+		for (const event of events) {
+			if (byId.has(keyOf(event.organisationId, event.id))) continue;
+			lastSeq += 1;
+			const row: AuditEvent = { ...structuredClone(event), seq: lastSeq, recordedAt };
+			rows.push(row);
+			byId.set(keyOf(row.organisationId, row.id), row);
+		}
+	}
+	/** Records a refused worker call in the store itself, the only sink it has. */
+	const self: AuditSink = { append: async (_ctx, events) => record(events) };
+
 	return {
-		async append(events: readonly AuditEventInput[]): Promise<void> {
-			for (const event of events) assertValidAuditEvent(event);
-			const recordedAt = clock.now();
-			for (const event of events) {
-				if (byId.has(keyOf(event.organisationId, event.id))) continue;
-				lastSeq += 1;
-				const row: AuditEvent = { ...structuredClone(event), seq: lastSeq, recordedAt };
-				rows.push(row);
-				byId.set(keyOf(row.organisationId, row.id), row);
-			}
+		async append(ctx: SystemContext, events: readonly AuditEventInput[]): Promise<void> {
+			await requireSystem(ctx, "audit.append", { audit: self, clock });
+			record(events);
 		},
 
 		async query(ctx: CallContext, query: AuditQuery, page?: PageRequest): Promise<Page<AuditEvent>> {
 			forbidAgent(ctx, "read the audit log");
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
+			const scoped = query.projectId !== undefined || query.sessionId !== undefined;
+			// The project the check resolved; rows naming another project are left out, even when they name the session.
+			let checkedProject: ProjectId | undefined;
+			if (access !== undefined && scoped) {
+				({ projectId: checkedProject } = await access.require(ctx, {
+					...(query.projectId === undefined ? {} : { projectId: query.projectId }),
+					...(query.sessionId === undefined ? {} : { sessionId: query.sessionId }),
+					needed: "viewer",
+					operation: "audit.query",
+				}));
+			}
 			const newestFirst = query.newestFirst === true;
-			const matching = rows.filter(
+			let matching = rows.filter(
 				(row) =>
 					row.organisationId === ctx.organisationId &&
 					matchesQuery(row, query) &&
+					(checkedProject === undefined || row.projectId === undefined || row.projectId === checkedProject) &&
 					(after === undefined || (newestFirst ? row.seq < after : row.seq > after)),
 			);
+			// Without a project or session filter, keep only the rows the caller may see, before the page is cut.
+			if (access !== undefined && !scoped) {
+				const viewable = new Map<ProjectId | undefined, Promise<boolean>>();
+				const visible: AuditEvent[] = [];
+				for (const row of matching) {
+					let allowed = viewable.get(row.projectId);
+					if (allowed === undefined) {
+						allowed = access.allows(
+							ctx,
+							row.projectId === undefined ? { needed: "viewer" } : { projectId: row.projectId, needed: "viewer" },
+						);
+						viewable.set(row.projectId, allowed);
+					}
+					if (await allowed) visible.push(row);
+				}
+				matching = visible;
+			}
 			if (newestFirst) matching.reverse();
 			const items = matching.slice(0, limit).map((row) => structuredClone(row));
 			const last = items.at(-1);
@@ -97,16 +148,28 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			if (row === undefined) {
 				throw new HarbourError("not_found", `No audit event ${eventId}`);
 			}
+			if (access !== undefined) {
+				await access.require(ctx, {
+					...(row.projectId === undefined ? {} : { projectId: row.projectId }),
+					needed: "viewer",
+					operation: "audit.get",
+					subject: { kind: "audit.event", id: row.id },
+				});
+			}
 			return structuredClone(row);
 		},
 
 		async setRetention(ctx: CallContext, retentionMs: number): Promise<void> {
 			forbidAgent(ctx, "set audit retention");
+			if (access !== undefined) {
+				await access.require(ctx, { needed: "admin", operation: "audit.setRetention" });
+			}
 			assertRetention(retentionMs);
 			retention.set(ctx.organisationId, retentionMs);
 		},
 
-		async applyRetention(): Promise<number> {
+		async applyRetention(ctx: SystemContext): Promise<number> {
+			await requireSystem(ctx, "audit.applyRetention", { audit: self, clock });
 			const now = clock.now();
 			const kept: AuditEvent[] = [];
 			let removed = 0;
@@ -130,18 +193,30 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
  * removes a batch only once the sink has taken it. Drains run one at a time. An event already queued (same organisation
  * and id) is queued once; events are validated on the way in so one malformed event cannot block the queue.
  */
-export function createMemoryAuditOutbox(): AuditOutbox {
+export function createMemoryAuditOutbox(options: { readonly clock?: Clock } = {}): AuditOutbox {
+	const clock = options.clock ?? systemClock;
 	let queue: AuditEventInput[] = [];
 	/** Queued events by organisation and id, as the store keys them. */
 	const queuedIds = new Set<string>();
 	const queueKey = (event: AuditEventInput) => `${event.organisationId}\u0000${event.id}`;
 	let draining: Promise<unknown> = Promise.resolve();
 
+	function enqueue(events: readonly AuditEventInput[]): void {
+		for (const event of events) assertValidAuditEvent(event);
+		for (const event of events) {
+			if (queuedIds.has(queueKey(event))) continue;
+			queuedIds.add(queueKey(event));
+			queue.push(structuredClone(event));
+		}
+	}
+	/** Queues a refused worker call's `access.denied` row, to reach the store with the rest. */
+	const self: AuditSink = { append: async (_ctx, events) => enqueue(events) };
+
 	async function drainNow(sink: AuditSink): Promise<number> {
 		let sent = 0;
 		while (queue.length > 0) {
 			const batch = queue.slice(0, OUTBOX_BATCH_SIZE);
-			await sink.append(batch);
+			await sink.append(RELAY_CONTEXT, batch);
 			const delivered = new Set(batch);
 			queue = queue.filter((event) => !delivered.has(event));
 			for (const event of batch) queuedIds.delete(queueKey(event));
@@ -151,22 +226,20 @@ export function createMemoryAuditOutbox(): AuditOutbox {
 	}
 
 	return {
-		async append(events: readonly AuditEventInput[]): Promise<void> {
-			for (const event of events) assertValidAuditEvent(event);
-			for (const event of events) {
-				if (queuedIds.has(queueKey(event))) continue;
-				queuedIds.add(queueKey(event));
-				queue.push(structuredClone(event));
-			}
+		async append(ctx: SystemContext, events: readonly AuditEventInput[]): Promise<void> {
+			await requireSystem(ctx, "audit.append", { audit: self, clock });
+			enqueue(events);
 		},
 
-		drain(sink: AuditSink): Promise<number> {
+		async drain(ctx: SystemContext, sink: AuditSink): Promise<number> {
+			await requireSystem(ctx, "audit.drain", { audit: self, clock });
 			const run = draining.then(() => drainNow(sink));
 			draining = run.catch(() => undefined);
 			return run;
 		},
 
-		async pending(): Promise<number> {
+		async pending(ctx: SystemContext): Promise<number> {
+			await requireSystem(ctx, "audit.pending", { audit: self, clock });
 			return queue.length;
 		},
 	};

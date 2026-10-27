@@ -1,13 +1,15 @@
 /**
  * Conformance suite for `Skills` (packages/contracts/src/skills.ts). Every target registers it with a provider that
- * builds a fresh skills store on the suite's clock and audit sink, mounted at the default `/skills`.
+ * builds a fresh skills store on the suite's clock, audit sink and project access, mounted at the default `/skills`.
  */
 import type { CallContext, OwnerRef, SkillFile, SkillRevision, Skills } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
@@ -38,6 +40,32 @@ const service = contextFor(actors.service("sal-supervisor", "key-1"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG, PROJECT);
 const harbour = contextFor(actors.system("skills-seed"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
+const outsiderService = contextFor(actors.service("outsider-service"), OTHER_ORG);
+/** An operator in the organisation, but only on another project. */
+const stranger = contextFor(actors.human("user-3"), ORG, OTHER_PROJECT);
+/** A viewer on the project. */
+const viewer = contextFor(actors.human("user-4"), ORG, PROJECT);
+/** An agent whose session belongs to another project. */
+const otherProjectAgent = contextFor(actors.agent("agent-3", "session-other-project"), ORG, OTHER_PROJECT);
+
+/** The role bindings and agent sessions every case acts with. */
+function seedTenancy(deps: ConformanceDeps): void {
+	const tenancy = deps.tenancy;
+	for (const projectId of [PROJECT, OTHER_PROJECT]) {
+		tenancy.bind(human.actor, ORG, "operator", projectId);
+		tenancy.bind(otherHuman.actor, ORG, "operator", projectId);
+	}
+	tenancy.bind(service.actor, ORG, "operator", PROJECT);
+	tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
+	tenancy.bind(viewer.actor, ORG, "viewer", PROJECT);
+	tenancy.bind(outsider.actor, OTHER_ORG, "operator");
+	tenancy.bind(outsiderService.actor, OTHER_ORG, "viewer");
+	tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	tenancy.session({ id: "session-2", organisationId: ORG, projectId: PROJECT, agentId: "agent-2" });
+	tenancy.session({ id: "session-9", organisationId: ORG, projectId: PROJECT, agentId: "agent-9" });
+	tenancy.session({ id: "session-other-project", organisationId: ORG, projectId: OTHER_PROJECT, agentId: "agent-3" });
+	tenancy.session({ id: "outsider-session", organisationId: OTHER_ORG, projectId: PROJECT, agentId: "agent-8" });
+}
 
 const platform: OwnerRef = { kind: "platform" };
 const organisation: OwnerRef = { kind: "organisation", organisationId: ORG };
@@ -80,17 +108,19 @@ function sortedKeys(value: object): string[] {
 export function createSkillsConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: SkillsConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (name: string, body: (skills: Skills, deps: ConformanceDeps) => Promise<void>): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject.skills, deps));
 		},
 	});
 
-	return [
+	const cases: ConformanceCase[] = [
 		test("A published revision never changes when later drafts are saved and published", async (skills) => {
 			const pkg = await skills.create(human, { owner: project, name: "pr-review", description: "Review PRs" });
 			const files = skillFiles("pr-review", "Version one.");
@@ -249,7 +279,7 @@ export function createSkillsConformance(options: {
 			await publishNew(skills, otherHuman, otherProject, "user-only", "Another project's clash.");
 			await skills.create(human, { owner: organisation, name: "unpublished", description: "Never published" });
 
-			const full = (await skills.list(agent, { projectId: PROJECT, userId: USER })).items;
+			const full = (await skills.list(human, { projectId: PROJECT, userId: USER })).items;
 			assert.deepEqual(
 				full.map((listing) => listing.name),
 				["deploy", "platform-only", "pr-review", "project-only", "user-only"],
@@ -274,7 +304,7 @@ export function createSkillsConformance(options: {
 			);
 			assert.strictEqual(organisationOnly.find((listing) => listing.name === "pr-review")!.skillId, orgReview.skillId);
 
-			const elsewhere = (await skills.list(outsider, { projectId: PROJECT, userId: USER })).items;
+			const elsewhere = (await skills.list(outsiderService, { projectId: PROJECT, userId: USER })).items;
 			assert.deepEqual(
 				elsewhere.map((listing) => listing.name),
 				["platform-only", "pr-review"],
@@ -285,7 +315,7 @@ export function createSkillsConformance(options: {
 
 		test("Pins are fixed per session: a later revision reaches only new sessions", async (skills, deps) => {
 			const review = await publishNew(skills, human, project, "pr-review", "One.");
-			const visibility = { projectId: PROJECT, userId: USER };
+			const visibility = { projectId: PROJECT };
 			const pinned = await skills.pinForSession(agent, "session-1", visibility);
 			assert.deepEqual(pinned, [
 				{ sessionId: "session-1", skillId: review.skillId, revision: 1, pinnedAt: deps.clock.now() },
@@ -299,7 +329,7 @@ export function createSkillsConformance(options: {
 				"the session keeps its pins",
 			);
 			assert.deepEqual(await skills.pinForSession(human, "session-1", {}), pinned, "whatever the later visibility");
-			const fresh = await skills.pinForSession(human, "session-2", visibility);
+			const fresh = await skills.pinForSession(human, "session-2", { projectId: PROJECT, userId: USER });
 			assert.deepEqual(
 				[...fresh].sort((a, b) => a.skillId.localeCompare(b.skillId)),
 				[
@@ -308,7 +338,11 @@ export function createSkillsConformance(options: {
 				].sort((a, b) => a.skillId.localeCompare(b.skillId)),
 				"a new session pins the latest revisions",
 			);
-			assert.deepEqual(await skills.pinForSession(outsider, "session-1", {}), [], "pins are per organisation");
+			assert.deepEqual(
+				await skills.pinForSession(outsider, "outsider-session", {}),
+				[],
+				"another organisation's session pins none of these",
+			);
 			const pinEvents = deps.audit.ofType("skills.session.pinned");
 			assert.strictEqual(pinEvents.length, 3, "each session's first pin is audited once");
 			assert.partialDeepEqual(pinEvents[0], { actor: agent.actor, sessionId: "session-1" });
@@ -469,7 +503,7 @@ export function createSkillsConformance(options: {
 				skills.create(outsider, { owner: organisation, name: "planted", description: "In another organisation" }),
 				"invalid",
 			);
-			assert.deepEqual((await skills.list(outsider, { projectId: PROJECT, userId: USER })).items, []);
+			assert.deepEqual((await skills.list(outsiderService, { projectId: PROJECT, userId: USER })).items, []);
 			assert.deepEqual(await skills.pinForSession(outsider, "outsider-session", { projectId: PROJECT }), []);
 			assert.ok((await skills.readDraft(human, id)).length > 0, "the owner's draft is untouched");
 		}),
@@ -532,12 +566,239 @@ export function createSkillsConformance(options: {
 			assert.deepEqual(sortedKeys(listing!), ["description", "name", "path", "revision", "skillId"]);
 		}),
 	];
+	if (options.projectAccess !== true) return cases;
+
+	return [
+		...cases,
+
+		test("project access: an operator outside the project is refused for every change and read of its skills, and nothing changed", async (skills, deps) => {
+			const first = await publishNew(skills, human, project, "pr-review", "One.");
+			const id = first.skillId;
+			const { digest } = await skills.saveDraft(human, id, { files: skillFiles("pr-review", "Draft in review.") });
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused("skills.create", skills.create(stranger, { owner: project, name: "planted", description: "No" }));
+			await refused(
+				"skills.saveDraft",
+				skills.saveDraft(stranger, id, { files: skillFiles("pr-review", "Overwritten.") }),
+			);
+			await refused("skills.publish", skills.publish(stranger, id, { expectedDigest: digest }));
+			await refused(
+				"skills.importRevision",
+				skills.importRevision(stranger, {
+					owner: project,
+					name: "pr-review",
+					description: "Imported",
+					files: skillFiles("pr-review", "Imported."),
+					source: { sourceId: "git", ref: "abc" },
+				}),
+			);
+			await refused("skills.get", skills.get(stranger, id));
+			await refused("skills.readDraft", skills.readDraft(stranger, id));
+			await refused("skills.getRevision", skills.getRevision(stranger, id, 1));
+			await refused("skills.readFile", skills.readFile(stranger, id, 1, "SKILL.md"));
+			await refused("skills.listRevisions", skills.listRevisions(stranger, id));
+			await refused("skills.list", skills.list(stranger, { projectId: PROJECT }));
+			await refused("skills.pinForSession", skills.pinForSession(stranger, "session-2", {}));
+			await refused("skills.pinForSession", skills.pinForSession(stranger, "session-2", { projectId: OTHER_PROJECT }));
+
+			// The session must belong to the project the visibility names, even for an operator on both.
+			await assertAccessDenied(assert, deps, skills.pinForSession(human, "session-2", { projectId: OTHER_PROJECT }), {
+				operation: "skills.pinForSession",
+				message: "pinning a session under another project's visibility",
+			});
+
+			const pkg = await skills.get(human, id);
+			assert.strictEqual(pkg.draftDigest, digest, "the draft is untouched");
+			assert.strictEqual(pkg.latestRevision, 1, "nothing was published");
+			assert.strictEqual(deps.audit.ofType("skills.package.created").length, 1, "nothing was created");
+			assert.strictEqual(deps.audit.ofType("skills.session.pinned").length, 0, "nothing was pinned");
+			await skills.publish(human, id, { expectedDigest: digest });
+			const pins = await skills.pinForSession(human, "session-2", { projectId: PROJECT });
+			assert.deepEqual(
+				pins.map((pin) => pin.revision),
+				[2],
+				"the refused pin left the session unpinned",
+			);
+			const theirs = await skills.create(stranger, { owner: otherProject, name: "pr-review", description: "Theirs" });
+			assert.strictEqual(theirs.name, "pr-review", "the operator still works in its own project");
+		}),
+
+		test("project access: a viewer on the project may read its skills but not change them", async (skills, deps) => {
+			const first = await publishNew(skills, human, project, "pr-review", "One.");
+			const id = first.skillId;
+			const { digest } = await skills.saveDraft(human, id, { files: skillFiles("pr-review", "Draft in review.") });
+			assert.strictEqual((await skills.get(viewer, id)).latestRevision, 1);
+			assert.strictEqual((await skills.readDraft(viewer, id)).length, 2);
+			assert.strictEqual((await skills.getRevision(viewer, id, 1)).digest, first.digest);
+			assert.ok((await skills.readFile(viewer, id, 1, "SKILL.md")).includes("One."));
+			assert.strictEqual((await skills.listRevisions(viewer, id)).items.length, 1);
+			assert.deepEqual(
+				(await skills.list(viewer, { projectId: PROJECT })).items.map((listing) => listing.skillId),
+				[id],
+			);
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused("skills.create", skills.create(viewer, { owner: project, name: "planted", description: "No" }));
+			await refused("skills.saveDraft", skills.saveDraft(viewer, id, { files: skillFiles("pr-review", "Changed.") }));
+			await refused("skills.publish", skills.publish(viewer, id, { expectedDigest: digest }));
+			await refused(
+				"skills.importRevision",
+				skills.importRevision(viewer, {
+					owner: project,
+					name: "pr-review",
+					description: "Imported",
+					files: skillFiles("pr-review", "Imported."),
+					source: { sourceId: "git", ref: "abc" },
+				}),
+			);
+			await refused("skills.pinForSession", skills.pinForSession(viewer, "session-2", { projectId: PROJECT }));
+			const pkg = await skills.get(human, id);
+			assert.strictEqual(pkg.draftDigest, digest, "the draft is untouched");
+			assert.strictEqual(pkg.latestRevision, 1, "nothing was published");
+		}),
+
+		test("project access: an agent whose session belongs to another project is refused, and nothing changed", async (skills, deps) => {
+			const first = await publishNew(skills, human, project, "pr-review", "One.");
+			const id = first.skillId;
+			const { digest } = await skills.saveDraft(human, id, { files: skillFiles("pr-review", "Draft in review.") });
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused(
+				"skills.saveDraft",
+				skills.saveDraft(otherProjectAgent, id, { files: skillFiles("pr-review", "Overwritten.") }),
+			);
+			await refused("skills.get", skills.get(otherProjectAgent, id));
+			await refused("skills.readDraft", skills.readDraft(otherProjectAgent, id));
+			await refused("skills.getRevision", skills.getRevision(otherProjectAgent, id, 1));
+			await refused("skills.readFile", skills.readFile(otherProjectAgent, id, 1, "SKILL.md"));
+			await refused("skills.listRevisions", skills.listRevisions(otherProjectAgent, id));
+			await refused("skills.list", skills.list(otherProjectAgent, { projectId: PROJECT }));
+			await refused(
+				"skills.pinForSession",
+				skills.pinForSession(otherProjectAgent, "session-other-project", { projectId: PROJECT }),
+			);
+			// Naming this project's session is refused before the project check: an agent pins only its own session.
+			await assert.rejectsWithCode(
+				skills.pinForSession(otherProjectAgent, "session-1", { projectId: PROJECT }),
+				"forbidden",
+			);
+			assert.strictEqual((await skills.get(human, id)).draftDigest, digest, "the draft is untouched");
+			assert.strictEqual(deps.audit.ofType("skills.session.pinned").length, 0, "nothing was pinned");
+			const theirs = await skills.create(human, { owner: otherProject, name: "theirs", description: "Theirs" });
+			await skills.saveDraft(otherProjectAgent, theirs.id, { files: skillFiles("theirs", "In its own project.") });
+			assert.strictEqual((await skills.readDraft(otherProjectAgent, theirs.id)).length, 2);
+		}),
+
+		test("project access: an agent whose session was closed is refused", async (skills, deps) => {
+			const first = await publishNew(skills, human, project, "pr-review", "One.");
+			const id = first.skillId;
+			const { digest } = await skills.saveDraft(agent, id, { files: skillFiles("pr-review", "Before the close.") });
+			deps.tenancy.close("session-1");
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused(
+				"skills.saveDraft",
+				skills.saveDraft(agent, id, { files: skillFiles("pr-review", "After the close.") }),
+			);
+			await refused("skills.get", skills.get(agent, id));
+			await refused("skills.readDraft", skills.readDraft(agent, id));
+			await refused("skills.readFile", skills.readFile(agent, id, 1, "SKILL.md"));
+			await refused("skills.list", skills.list(agent, { projectId: PROJECT }));
+			await refused("skills.pinForSession", skills.pinForSession(agent, "session-1", { projectId: PROJECT }));
+			assert.strictEqual((await skills.get(human, id)).draftDigest, digest, "the draft is untouched");
+			assert.strictEqual(deps.audit.ofType("skills.session.pinned").length, 0, "nothing was pinned");
+		}),
+
+		test("project access: lists without a project filter leave out another project's skills for an operator outside it", async (skills) => {
+			await publishNew(skills, human, organisation, "deploy");
+			await publishNew(skills, human, project, "project-only");
+			await publishNew(skills, stranger, otherProject, "theirs");
+			assert.deepEqual(
+				(await skills.list(stranger, {})).items.map((listing) => listing.name),
+				["deploy"],
+			);
+			assert.deepEqual(
+				(await skills.list(stranger, { projectId: OTHER_PROJECT })).items.map((listing) => listing.name),
+				["deploy", "theirs"],
+			);
+		}),
+
+		test("project access: a visibility may name only the calling human's own user; services and Harbour may name any user, agents none", async (skills, deps) => {
+			await publishNew(skills, human, user, "mine");
+			const deniedBefore = deps.audit.ofType("access.denied").length;
+			await assert.rejectsWithCode(skills.list(otherHuman, { userId: USER }), "forbidden", "another human's user");
+			await assert.rejectsWithCode(skills.list(agent, { projectId: PROJECT, userId: USER }), "forbidden", "an agent");
+			await assert.rejectsWithCode(
+				skills.pinForSession(agent, "session-1", { projectId: PROJECT, userId: USER }),
+				"forbidden",
+				"an agent pinning with a user",
+			);
+			await assert.rejectsWithCode(
+				skills.pinForSession(otherHuman, "session-2", { projectId: PROJECT, userId: USER }),
+				"forbidden",
+				"another human pinning with a user",
+			);
+			assert.strictEqual(
+				deps.audit.ofType("access.denied").length,
+				deniedBefore,
+				"naming a user is not a project check, so it audits no access.denied",
+			);
+			assert.strictEqual(deps.audit.ofType("skills.session.pinned").length, 0, "nothing was pinned");
+			for (const caller of [human, service, harbour]) {
+				assert.deepEqual(
+					(await skills.list(caller, { userId: USER })).items.map((listing) => listing.name),
+					["mine"],
+				);
+			}
+			const pinned = await skills.pinForSession(human, "session-2", { projectId: PROJECT, userId: USER });
+			assert.strictEqual(pinned.length, 1, "the human pins its own user's skill");
+		}),
+
+		test("project access: an operator on the project and an agent in its own session still work on its skills", async (skills, deps) => {
+			const pkg = await skills.create(human, { owner: project, name: "triage", description: "Triage issues" });
+			const { digest } = await skills.saveDraft(agent, pkg.id, { files: skillFiles("triage", "Proposed.") });
+			assert.strictEqual((await skills.readDraft(agent, pkg.id)).length, 2);
+			const revision = await skills.publish(service, pkg.id, { expectedDigest: digest });
+			assert.strictEqual((await skills.get(agent, pkg.id)).latestRevision, 1);
+			assert.strictEqual((await skills.getRevision(agent, pkg.id, 1)).digest, revision.digest);
+			assert.ok((await skills.readFile(agent, pkg.id, 1, "SKILL.md")).includes("Proposed."));
+			assert.strictEqual((await skills.listRevisions(agent, pkg.id)).items.length, 1);
+			assert.deepEqual(
+				(await skills.list(agent, { projectId: PROJECT })).items.map((listing) => listing.name),
+				["triage"],
+			);
+			const pins = await skills.pinForSession(agent, "session-1", { projectId: PROJECT });
+			assert.deepEqual(
+				pins.map((pin) => [pin.skillId, pin.revision]),
+				[[pkg.id, 1]],
+			);
+			const imported = await skills.importRevision(service, {
+				owner: project,
+				name: "triage",
+				description: "Triage issues",
+				files: skillFiles("triage", "From commit abc."),
+				source: { sourceId: "sal-git", ref: "abc" },
+			});
+			assert.strictEqual(imported.revision, 2);
+			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
+		}),
+	];
 }
 
 export function registerSkillsConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: SkillsConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
-	registerCases(runner, name, createSkillsConformance({ assertions: createExpectAssertions(runner.expect), provider }));
+	registerCases(
+		runner,
+		name,
+		createSkillsConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
+	);
 }

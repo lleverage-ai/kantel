@@ -56,25 +56,43 @@ creates the package if needed and publishes, idempotent by source and ref.
 - A revision and a listing carry only their documented keys: "A skill grants nothing: a revision and its listing
   expose only their documented keys".
 
+## Project access (settled question 7)
+
+A package is project-scoped when its owner is a project. After the organisation lookup (another organisation's skill
+is still `not_found`) and after the agent rules above (which keep their `forbidden`), each call checks
+`ProjectAccess.require` with the package's project and subject `skills.skill`: `skills.create`, `skills.saveDraft`,
+`skills.publish` and `skills.importRevision` need `operator`; `skills.get`, `skills.readDraft`, `skills.getRevision`,
+`skills.readFile` and `skills.listRevisions` need `viewer`. Platform-, organisation- and user-owned packages keep their
+rules. `skills.list` needs `viewer` on `visibility.projectId` when it is set; without it no project's skills are
+listed. `skills.pinForSession` needs `operator` with the session and `visibility.projectId`, so the session must be in
+that project. In both, `visibility.userId` may name only the calling human; services and Harbour may name any user, an
+agent none. That is not a project check: it is `forbidden` without an `access.denied` audit. A refusal is `forbidden`
+and audited once as `access.denied`. The cases: "project access: an operator outside the project is refused for every
+change and read of its skills, and nothing changed", "project access: a viewer on the project may read its skills
+but not change them", "project access: an agent whose session belongs to another project is refused, and nothing
+changed", "project access: an agent whose session was closed is refused", "project access: lists without a project
+filter leave out another project's skills for an operator outside it", "project access: a visibility may name only
+the calling human's own user; services and Harbour may name any user, agents none" and "project access: an operator
+on the project and an agent in its own session still work on its skills".
+
 ## The in-memory implementation
 
-`createMemorySkills({ clock?, audit?, mountRoot? })` keeps packages, drafts, frozen revisions, file contents and pins
+`createMemorySkills({ clock?, audit?, access?, mountRoot? })` keeps packages, drafts, frozen revisions, file contents and pins
 in maps. `normaliseSkillPath`, `skillDigest` (hex SHA-256 over files sorted by path, each `path\0content\0`),
 `validateSkillName` and `parseSkillFrontmatter` are exported from the package root. A draft's description is the one
 given, else the `SKILL.md` frontmatter's, else the package's; publishing makes it the package's description. A
 retried publish after success (no draft, digest equal to the latest) returns the latest revision. In `saveDraft` and
-`importRevision` every change follows the one await (the digest) and re-reads the package; `publish` changes
-everything before its first await. It leaves out
-durable storage, file size limits, role checks beyond "not an agent", and checking the frontmatter `name` against the
-package name.
+`importRevision` every change follows the last await (the digest) and re-reads the package; `publish` re-reads it
+after the access check and changes everything before the audit. Without `access` it checks only the organisation
+(and the user rule is off); every target and conformance run passes one. It leaves out durable storage, file size
+limits and checking the frontmatter `name` against the package name.
 
 ## Open questions
 
-- Should `list` and `pinForSession` check `visibility` against the caller (an agent's own project and user), or does
-  the session runtime own that? Today any caller in the organisation may pass any project or user.
+- Settled (question 7): `list` and `pinForSession` now check `visibility`'s project and user against the caller.
 - Should the frontmatter `name` have to match the package name, as Agent Skills require?
-- `get` and `readFile` let anyone in the organisation read a user's or another project's skill by ID; only `list` is
-  narrowed. Is that intended?
+- `get` and `readFile` let anyone in the organisation read a user's skill by ID (project skills are now checked);
+  only `list` is narrowed for users. Is that intended?
 - An import with a new ref but unchanged files still makes a new revision, so each ref maps to exactly one revision.
   Should it reuse the latest instead, like `publish`?
 - An import leaves any open draft open, and publishing that draft later replaces the imported content as the next

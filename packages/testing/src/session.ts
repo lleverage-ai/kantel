@@ -3,18 +3,21 @@
  * `HostToolBridge`. The model is scripted through `ModelScript`, so the suite knows nothing of Pi; each implementation
  * wires its scripted model, its clock, its audit sink and a sandbox `releaseSession` recorder into the subject.
  */
-import type {
-	AgentProfile,
-	AgentProfiles,
-	CallContext,
-	HostToolBridge,
-	HostToolCall,
-	HostToolDefinition,
-	HostToolHandler,
-	JsonValue,
-	SessionDirectory,
-	SessionRuntime,
-	Subscription,
+import {
+	type AgentProfile,
+	type AgentProfiles,
+	type CallContext,
+	HarbourError,
+	type HostToolBridge,
+	type HostToolCall,
+	type HostToolDefinition,
+	type HostToolHandler,
+	type JsonValue,
+	type SessionDirectory,
+	type SessionEnd,
+	type SessionEndHook,
+	type SessionRuntime,
+	type Subscription,
 } from "@harbour/contracts";
 import {
 	applyFrames,
@@ -26,10 +29,14 @@ import {
 } from "@harbour/protocol";
 import {
 	actors,
+	assertAccessDenied,
+	CANARY_SECRET,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
+	containsCanary,
 	contextFor,
 	createDeps,
 	createExpectAssertions,
@@ -63,8 +70,14 @@ export interface RuntimeSubject {
 	readonly model: ModelScript;
 	/** Session IDs passed to the sandbox's releaseSession, in order. */
 	readonly releasedSessions: readonly string[];
+	/** The session-end hook the runtime runs on close and abort; the suite registers teardowns with it. */
+	readonly sessionEnd: SessionEndHook;
 }
 
+/**
+ * Besides the clock and audit sink, wire `deps.tenancy.identity` into the runtime's project-access check (the runtime
+ * reads sessions from its own directory), and `releaseSession` into its sandbox.
+ */
 export interface RuntimeConformanceDeps extends ConformanceDeps {
 	/** Wire this into the sandbox's `releaseSession`. */
 	readonly releaseSession: (sessionId: string) => void;
@@ -86,6 +99,42 @@ const AGENT = "sal-worker";
 
 const operator: CallContext = contextFor(actors.service("sal-supervisor"), ORG, PROJECT);
 const outsider: CallContext = contextFor(actors.service("intruder"), OTHER_ORG);
+/** Same organisation, operator only on the other project. */
+const siteOperator: CallContext = contextFor(actors.service("site-operator"), ORG, OTHER_PROJECT);
+/** Same organisation, viewer only on the project. */
+const reader: CallContext = contextFor(actors.human("reader"), ORG, PROJECT);
+const agentIn = (sessionId: string, projectId = PROJECT): CallContext =>
+	contextFor(actors.agent(AGENT, sessionId), ORG, projectId);
+
+/** What each fake component holds for a session, and the teardown that ends it. */
+const FAKE_COMPONENTS: readonly { readonly name: string; readonly holds: readonly string[] }[] = [
+	{ name: "conformance-sandbox", holds: ["sandbox.lease"] },
+	{ name: "conformance-browser", holds: ["browser.session", "browser.grant"] },
+	{ name: "conformance-capability", holds: ["capability.grant"] },
+	{ name: "conformance-vault", holds: ["vault.grant"] },
+];
+const EVERYTHING = FAKE_COMPONENTS.flatMap((component) => component.holds);
+
+interface FakeHoldings {
+	/** What each session still holds. */
+	readonly held: Map<string, Set<string>>;
+	/** Every teardown call, in order. */
+	readonly calls: { readonly name: string; readonly ctx: CallContext; readonly end: SessionEnd }[];
+	hold(sessionId: string): void;
+}
+
+/** Registers fake browser, capability, vault and sandbox teardowns that drop what a session holds. */
+function registerFakeComponents(subject: RuntimeSubject): FakeHoldings {
+	const held = new Map<string, Set<string>>();
+	const calls: FakeHoldings["calls"][number][] = [];
+	for (const component of FAKE_COMPONENTS) {
+		subject.sessionEnd.register(component.name, async (ctx, end) => {
+			calls.push({ name: component.name, ctx, end });
+			for (const kind of component.holds) held.get(end.sessionId)?.delete(kind);
+		});
+	}
+	return { held, calls, hold: (sessionId) => held.set(sessionId, new Set(EVERYTHING)) };
+}
 
 const LOOKUP: HostToolDefinition = {
 	name: "lookup",
@@ -179,6 +228,8 @@ function comparable(snapshot: SessionSnapshot | undefined) {
 export function createRuntimeConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: RuntimeConformanceProvider;
+	/** Adds the `project access:` cases; see `ConformanceOptions.projectAccess`. */
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const a = options.assertions;
 	const run =
@@ -192,10 +243,325 @@ export function createRuntimeConformance(options: {
 				},
 				releasedSessions: released,
 			};
+			// The supervisor operates across the organisation; the others hold one project each.
+			deps.tenancy.bind(operator.actor, ORG, "operator");
+			deps.tenancy.bind(siteOperator.actor, ORG, "operator", OTHER_PROJECT);
+			deps.tenancy.bind(reader.actor, ORG, "viewer", PROJECT);
 			await options.provider(deps, (subject) => body(subject, deps));
 		};
 
-	return [
+	const sessionEndCases: ConformanceCase[] = [
+		{
+			name: "session end: closing runs every registered teardown once for the session, which then holds nothing, and closing again runs none",
+			run: run(async (subject) => {
+				const fakes = registerFakeComponents(subject);
+				const session = await setUp(subject);
+				const other = await subject.runtime.create(operator, { projectId: PROJECT, agentId: AGENT });
+				fakes.hold(session.id);
+				fakes.hold(other.id);
+				await subject.runtime.close(operator, session.id);
+				a.deepEqual(
+					fakes.calls.map((call) => call.name),
+					FAKE_COMPONENTS.map((component) => component.name),
+					"each teardown runs once, in registration order",
+				);
+				for (const call of fakes.calls) {
+					a.partialDeepEqual(call.end, {
+						sessionId: session.id,
+						organisationId: ORG,
+						projectId: PROJECT,
+						agentId: AGENT,
+						reason: "session_ended",
+						endedBy: operator.actor,
+					});
+					a.strictEqual(call.ctx.actor.kind, "system", "a teardown runs as Harbour, not as the caller");
+					a.strictEqual(call.ctx.organisationId, ORG);
+				}
+				a.strictEqual(fakes.held.get(session.id)?.size, 0, "the closed session holds nothing");
+				a.strictEqual(fakes.held.get(other.id)?.size, EVERYTHING.length, "another session keeps what it holds");
+				await subject.runtime.close(operator, session.id);
+				await subject.runtime.abort(operator, session.id);
+				a.strictEqual(fakes.calls.length, FAKE_COMPONENTS.length, "closing or aborting a closed session runs nothing");
+			}),
+		},
+		{
+			name: "session end: closing a parent does not end an already closed child again",
+			run: run(async (subject) => {
+				const fakes = registerFakeComponents(subject);
+				const parent = await setUp(subject);
+				const child = await subject.runtime.create(operator, {
+					projectId: PROJECT,
+					agentId: AGENT,
+					parentSessionId: parent.id,
+				});
+				await subject.runtime.close(operator, child.id);
+				await subject.runtime.close(operator, parent.id);
+				a.deepEqual(
+					fakes.calls.map((call) => `${call.end.sessionId === child.id ? "child" : "parent"}:${call.end.reason}`),
+					[...FAKE_COMPONENTS.map(() => "child:session_ended"), ...FAKE_COMPONENTS.map(() => "parent:session_ended")],
+				);
+			}),
+		},
+		{
+			name: "session end: aborting runs the teardowns for each child and the session, which stays usable, and a second abort changes nothing",
+			run: run(async (subject, deps) => {
+				const fakes = registerFakeComponents(subject);
+				const parent = await setUp(subject);
+				const child = await subject.runtime.create(operator, {
+					projectId: PROJECT,
+					agentId: AGENT,
+					parentSessionId: parent.id,
+				});
+				fakes.hold(parent.id);
+				fakes.hold(child.id);
+				await subject.runtime.abort(operator, parent.id, "operator stopped it");
+				const ended = fakes.calls.map((call) => `${call.end.sessionId === child.id ? "child" : "parent"}:${call.name}`);
+				a.deepEqual(ended, [
+					...FAKE_COMPONENTS.map((component) => `child:${component.name}`),
+					...FAKE_COMPONENTS.map((component) => `parent:${component.name}`),
+				]);
+				a.ok(
+					fakes.calls.every((call) => call.end.reason === "aborted"),
+					"an abort ends with reason aborted",
+				);
+				a.partialDeepEqual(fakes.calls[0]?.end, { parentSessionId: parent.id, endedBy: operator.actor });
+				a.strictEqual(fakes.held.get(parent.id)?.size, 0, "the aborted session holds nothing");
+				a.strictEqual(fakes.held.get(child.id)?.size, 0, "its child holds nothing");
+				const before = deps.audit.events.filter((event) => event.type !== "session.aborted").length;
+				await subject.runtime.abort(operator, parent.id);
+				a.strictEqual(fakes.held.get(parent.id)?.size, 0);
+				a.strictEqual(
+					deps.audit.events.filter((event) => event.type !== "session.aborted").length,
+					before,
+					"a second abort with nothing held audits nothing new",
+				);
+				subject.model.reply({ text: "Still here" });
+				const next = await subject.runtime.prompt(operator, parent.id, { text: "Carry on" });
+				a.partialDeepEqual(await subject.runtime.wait(operator, parent.id, next.id), { answer: "Still here" });
+			}),
+		},
+		{
+			name: "session end: a failing teardown does not stop the others or fail the close, and is audited with its name and code but not its message",
+			run: run(async (subject, deps) => {
+				const ran: string[] = [];
+				subject.sessionEnd.register("conformance-first", async () => {
+					ran.push("first");
+				});
+				subject.sessionEnd.register("conformance-broken", async () => {
+					ran.push("broken");
+					throw new HarbourError("unavailable", `The provider answered with ${CANARY_SECRET}`);
+				});
+				subject.sessionEnd.register("conformance-last", async () => {
+					ran.push("last");
+				});
+				const session = await setUp(subject);
+				await subject.runtime.close(operator, session.id);
+				a.deepEqual(ran, ["first", "broken", "last"], "every teardown runs");
+				a.strictEqual((await subject.directory.get(operator, session.id)).status, "done", "the session still closes");
+				const failed = deps.audit.ofType("session.teardown.failed");
+				a.strictEqual(failed.length, 1);
+				a.partialDeepEqual(failed[0], {
+					source: "session",
+					organisationId: ORG,
+					projectId: PROJECT,
+					sessionId: session.id,
+					data: { teardown: "conformance-broken", reason: "session_ended", code: "unavailable" },
+				});
+				a.ok(!containsCanary(deps.audit.events), "the failure's message is never audited");
+			}),
+		},
+		{
+			name: "session end: a teardown name is registered once, and closing its registration removes it",
+			run: run(async (subject) => {
+				let calls = 0;
+				const registration = subject.sessionEnd.register("conformance-once", async () => {
+					calls += 1;
+				});
+				await a.rejectsWithCode(
+					Promise.resolve().then(() => subject.sessionEnd.register("conformance-once", async () => {})),
+					"conflict",
+				);
+				await registration.close();
+				const session = await setUp(subject);
+				await subject.runtime.close(operator, session.id);
+				a.strictEqual(calls, 0, "a removed teardown is not run");
+			}),
+		},
+	];
+
+	const projectAccessCases: ConformanceCase[] = [
+		{
+			name: "project access: refuses an operator outside the project every call on its sessions and profiles, and changes nothing",
+			run: run(async (subject, deps) => {
+				const session = await setUp(subject);
+				const site = await subject.runtime.create(operator, { projectId: OTHER_PROJECT, agentId: AGENT });
+				const denied = (call: Promise<unknown>, operation: string) =>
+					assertAccessDenied(a, deps, call, { operation, message: `${operation} by an operator outside the project` });
+				await denied(subject.runtime.create(siteOperator, { projectId: PROJECT, agentId: AGENT }), "session.create");
+				await denied(
+					subject.runtime.create(siteOperator, {
+						projectId: OTHER_PROJECT,
+						agentId: AGENT,
+						parentSessionId: session.id,
+					}),
+					"session.create",
+				);
+				await denied(subject.runtime.prompt(siteOperator, session.id, { text: "Hi" }), "session.prompt");
+				await denied(subject.runtime.steer(siteOperator, session.id, { text: "Hi" }), "session.steer");
+				await denied(subject.runtime.followUp(siteOperator, session.id, { text: "Hi" }), "session.followUp");
+				await denied(subject.runtime.abort(siteOperator, session.id), "session.abort");
+				await denied(subject.runtime.close(siteOperator, session.id), "session.close");
+				await denied(subject.runtime.wait(siteOperator, session.id, "no-such-submission"), "session.wait");
+				await denied(subject.runtime.snapshot(siteOperator, session.id), "session.snapshot");
+				await denied(
+					subject.runtime.watch(siteOperator, session.id, {}, () => {}),
+					"session.watch",
+				);
+				await denied(subject.directory.get(siteOperator, session.id), "session.get");
+				await denied(subject.directory.children(siteOperator, session.id), "session.children");
+				await denied(subject.directory.list(siteOperator, { projectId: PROJECT }), "session.list");
+				await denied(
+					subject.profiles.put(siteOperator, workerProfile({ id: "docs-only", projectId: PROJECT })),
+					"session.profiles.put",
+				);
+				const docs = await subject.profiles.put(operator, workerProfile({ id: "docs-writer", projectId: PROJECT }));
+				await denied(subject.profiles.get(siteOperator, docs.id), "session.profiles.get");
+				await denied(
+					subject.profiles.put(siteOperator, workerProfile({ id: docs.id, projectId: OTHER_PROJECT })),
+					"session.profiles.put",
+				);
+				a.strictEqual((await subject.profiles.get(operator, docs.id)).projectId, PROJECT, "the profile was not moved");
+				a.ok(
+					!(await subject.profiles.list(siteOperator)).items.some((profile) => profile.id === docs.id),
+					"the other project's profile is left out of the list",
+				);
+				a.ok((await subject.profiles.list(operator)).items.some((profile) => profile.id === docs.id));
+				await denied(
+					subject.hostTools.register(
+						contextFor(siteOperator.actor, ORG, PROJECT),
+						"intruder-host",
+						[LOOKUP],
+						async () => ({
+							output: "no",
+						}),
+					),
+					"session.hostTools.register",
+				);
+				a.deepEqual(await subject.hostTools.list(operator, "intruder-host"), [], "no host tools were registered");
+				await serveHost(subject);
+				await denied(
+					subject.hostTools.register(siteOperator, HOST, [LOOKUP], async () => ({ output: "hijacked" })),
+					"session.hostTools.register",
+				);
+				await denied(subject.hostTools.list(siteOperator, HOST), "session.hostTools.list");
+				a.deepEqual(
+					(await subject.hostTools.list(operator, HOST)).map((tool) => tool.name),
+					[LOOKUP.name, REVIEW.name],
+					"the project's host keeps its tools",
+				);
+				const listed = await subject.directory.list(siteOperator);
+				a.deepEqual(
+					listed.items.map((record) => record.id),
+					[site.id],
+					"an unfiltered list leaves out the other project's sessions",
+				);
+				a.strictEqual(subject.model.requests.length, 0, "the model was never asked");
+				const record = await subject.directory.get(operator, session.id);
+				a.strictEqual(record.status, "idle");
+				a.strictEqual((await subject.runtime.snapshot(operator, session.id)).items.length, 0);
+				a.strictEqual(deps.audit.ofType("session.aborted").length, 0, "nothing was aborted");
+				a.strictEqual((await subject.directory.list(operator, { projectId: PROJECT })).items.length, 1);
+				await a.rejectsWithCode(subject.profiles.get(operator, "docs-only"), "not_found");
+			}),
+		},
+		{
+			name: "project access: refuses an agent whose session belongs to another project, and changes nothing",
+			run: run(async (subject, deps) => {
+				const session = await setUp(subject);
+				const site = await subject.runtime.create(operator, { projectId: OTHER_PROJECT, agentId: AGENT });
+				const siteAgent = agentIn(site.id, OTHER_PROJECT);
+				const denied = (call: Promise<unknown>, operation: string) =>
+					assertAccessDenied(a, deps, call, { operation, message: `${operation} by another project's agent` });
+				await denied(subject.runtime.prompt(siteAgent, session.id, { text: "Hi" }), "session.prompt");
+				await denied(subject.runtime.abort(siteAgent, session.id), "session.abort");
+				await denied(subject.runtime.close(siteAgent, session.id), "session.close");
+				await denied(subject.runtime.snapshot(siteAgent, session.id), "session.snapshot");
+				await denied(subject.directory.get(siteAgent, session.id), "session.get");
+				await denied(subject.runtime.create(siteAgent, { projectId: PROJECT, agentId: AGENT }), "session.create");
+				await denied(
+					subject.runtime.create(siteAgent, { projectId: PROJECT, agentId: AGENT, parentSessionId: session.id }),
+					"session.create",
+				);
+				a.deepEqual(
+					(await subject.directory.list(siteAgent)).items.map((record) => record.id),
+					[site.id],
+					"the agent lists only its own session",
+				);
+				a.strictEqual(subject.model.requests.length, 0);
+				a.strictEqual((await subject.directory.get(operator, session.id)).status, "idle");
+				a.strictEqual((await subject.directory.list(operator)).items.length, 2, "no session was created");
+			}),
+		},
+		{
+			name: "project access: an agent acts in its own session and supervises its children, never a sibling, and nowhere once its session is closed",
+			run: run(async (subject, deps) => {
+				const parent = await setUp(subject);
+				const sibling = await subject.runtime.create(operator, { projectId: PROJECT, agentId: AGENT });
+				const agent = agentIn(parent.id);
+				const child = await subject.runtime.create(agent, {
+					projectId: PROJECT,
+					agentId: AGENT,
+					parentSessionId: parent.id,
+				});
+				a.strictEqual(child.parentSessionId, parent.id);
+				a.partialDeepEqual(child.createdBy, agent.actor);
+				a.strictEqual((await subject.runtime.snapshot(agent, parent.id)).status, "idle");
+				a.strictEqual((await subject.directory.get(agent, child.id)).id, child.id, "a supervisor reads its child");
+				await subject.runtime.abort(agent, child.id, "the supervisor stopped it");
+				a.deepEqual(
+					(await subject.directory.list(agent)).items.map((record) => record.id),
+					[child.id, parent.id],
+					"the agent lists its own session and its child, not its sibling",
+				);
+				await assertAccessDenied(a, deps, subject.directory.get(agent, sibling.id), { operation: "session.get" });
+				await assertAccessDenied(a, deps, subject.runtime.prompt(agent, sibling.id, { text: "Hi" }), {
+					operation: "session.prompt",
+				});
+				await subject.runtime.close(operator, parent.id);
+				await assertAccessDenied(a, deps, subject.runtime.snapshot(agent, parent.id), {
+					operation: "session.snapshot",
+					message: "an agent whose session is closed reads nothing",
+				});
+				await assertAccessDenied(a, deps, subject.directory.get(agent, child.id), {
+					operation: "session.get",
+					message: "an agent whose session is closed no longer supervises its child",
+				});
+				a.strictEqual(subject.model.requests.length, 0, "the sibling was never prompted");
+			}),
+		},
+		{
+			name: "project access: a viewer on the project reads its sessions but cannot change them",
+			run: run(async (subject, deps) => {
+				const session = await setUp(subject);
+				a.strictEqual((await subject.directory.get(reader, session.id)).id, session.id);
+				a.strictEqual((await subject.runtime.snapshot(reader, session.id)).status, "idle");
+				a.deepEqual(
+					(await subject.directory.list(reader, { projectId: PROJECT })).items.map((record) => record.id),
+					[session.id],
+				);
+				await assertAccessDenied(a, deps, subject.runtime.prompt(reader, session.id, { text: "Hi" }), {
+					operation: "session.prompt",
+				});
+				await assertAccessDenied(a, deps, subject.runtime.close(reader, session.id), { operation: "session.close" });
+				await assertAccessDenied(a, deps, subject.runtime.create(reader, { projectId: PROJECT, agentId: AGENT }), {
+					operation: "session.create",
+				});
+				a.strictEqual((await subject.directory.get(operator, session.id)).status, "idle");
+			}),
+		},
+	];
+
+	const cases: ConformanceCase[] = [
 		{
 			name: "lists a created session in its organisation with its labels, idle, and filters by project and labels",
 			run: run(async (subject, deps) => {
@@ -283,6 +649,12 @@ export function createRuntimeConformance(options: {
 					subject.runtime.create(operator, { projectId: PROJECT, agentId: AGENT, parentSessionId: "no-such-session" }),
 					"not_found",
 					"an unknown parent session is not_found",
+				);
+				await subject.profiles.put(operator, workerProfile({ id: "site-writer", projectId: OTHER_PROJECT }));
+				await a.rejectsWithCode(
+					subject.runtime.create(operator, { projectId: PROJECT, agentId: "site-writer" }),
+					"invalid",
+					"a project's profile runs only in that project",
 				);
 			}),
 		},
@@ -587,16 +959,23 @@ export function createRuntimeConformance(options: {
 			}),
 		},
 	];
+
+	return [...cases, ...sessionEndCases, ...(options.projectAccess === true ? projectAccessCases : [])];
 }
 
 export function registerRuntimeConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: RuntimeConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
 	registerCases(
 		runner,
 		name,
-		createRuntimeConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+		createRuntimeConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
 	);
 }

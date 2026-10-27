@@ -1,4 +1,5 @@
 import {
+	type AccessCheck,
 	type Actor,
 	type AuditEventInput,
 	type AuditSink,
@@ -20,11 +21,16 @@ import {
 	type Page,
 	type PageRequest,
 	type PolicySelector,
+	type ProjectAccess,
+	type ProjectId,
 	type Proposal,
 	type ProposalOutcome,
 	type ProposalTerms,
 	type RouteScope,
+	requireSystem,
+	type SessionEndHook,
 	systemClock,
+	systemContext,
 	type Vault,
 	type VaultCeiling,
 	type VaultItem,
@@ -52,9 +58,19 @@ export interface MemoryVaultOptions {
 	readonly linkBase?: string;
 	/** How often a waiting agent's proposal is checked against the clock for expiry. Default 25 ms. */
 	readonly expiryPollMs?: number;
+	/**
+	 * Project access (settled question 7): when given, every project-scoped call is checked with it after the
+	 * organisation lookup (see CONTRACT.md for which call needs which role on which project). Without it the vault
+	 * checks only the organisation; every target and every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
+	/** When given, the vault registers `endSession` with it once, as `vault` (settled question 8). */
+	readonly sessionEnd?: SessionEndHook;
 }
 
 const DEFAULT_PROPOSAL_TTL_MS = 15 * 60 * 1000;
+/** The vault appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("vault");
 const NO_REQUEST_HAS_RUN = "No request has run.";
 
 interface StoredItem {
@@ -74,6 +90,37 @@ interface StoredPolicy {
 	readonly organisationId: OrganisationId;
 	policy: VaultPolicy;
 	uses: number;
+}
+
+/** A use, with the project the egress request named, so lists can be scoped without changing the record. */
+interface StoredUse {
+	readonly use: VaultUse;
+	readonly projectId?: ProjectId;
+}
+
+/** The project and session a record is scoped to; empty for an organisation's own records. */
+type Scope = Pick<AccessCheck, "projectId" | "sessionId">;
+
+function itemScope(item: VaultItem): Scope {
+	return item.owner.kind === "project" ? { projectId: item.owner.projectId } : {};
+}
+
+function proposalScope(proposal: Proposal): Scope {
+	return {
+		...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+		...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
+	};
+}
+
+function selectorScope(selector: PolicySelector): Scope {
+	return {
+		...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
+		...(selector.sessionId === undefined ? {} : { sessionId: selector.sessionId }),
+	};
+}
+
+function scoped(scope: Scope): boolean {
+	return scope.projectId !== undefined || scope.sessionId !== undefined;
 }
 
 interface Waiter {
@@ -125,6 +172,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 	const proposalTtlMs = options.proposalTtlMs ?? DEFAULT_PROPOSAL_TTL_MS;
 	const linkBase = options.linkBase ?? "/vault";
 	const expiryPollMs = options.expiryPollMs ?? 25;
+	const access = options.access;
 
 	const items = new Map<string, StoredItem>();
 	const values = new Map<string, string>();
@@ -133,7 +181,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 	const proposals = new Map<string, Proposal>();
 	const decisions = new Map<string, Decision>();
 	const grants = new Map<string, StoredGrant>();
-	const uses: VaultUse[] = [];
+	const uses: StoredUse[] = [];
 	const waiters = new Map<string, Set<Waiter>>();
 	/** Proposals being decided now: a second decision while one is in flight is a `conflict`, never a second outcome. */
 	const deciding = new Set<string>();
@@ -156,9 +204,22 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		polls.delete(proposalId);
 	}
 
+	/** Keeps the records the caller may view: an organisation's own records always, the rest as `access` allows. */
+	async function visibleOnly<T>(ctx: CallContext, records: readonly T[], scopeOf: (record: T) => Scope): Promise<T[]> {
+		if (access === undefined) return [...records];
+		const kept: T[] = [];
+		for (const record of records) {
+			const scope = scopeOf(record);
+			if (!scoped(scope) || (await access.allows(ctx, { ...scope, needed: "viewer" }))) kept.push(record);
+		}
+		return kept;
+	}
+
 	async function emit(event: Omit<AuditEventInput, "id" | "at" | "source"> & { readonly id?: string }): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([{ ...event, id: event.id ?? `vault:${randomHex(16)}`, at: clock.now(), source: "vault" }]);
+		await audit.append(AUDIT_CONTEXT, [
+			{ ...event, id: event.id ?? `vault:${randomHex(16)}`, at: clock.now(), source: "vault" },
+		]);
 	}
 
 	function contextFields(ctx: CallContext): Pick<AuditEventInput, "projectId" | "sessionId" | "agentId"> {
@@ -342,7 +403,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			method: request.method,
 			...use,
 		};
-		uses.push(record);
+		uses.push({ use: record, ...(request.projectId === undefined ? {} : { projectId: request.projectId }) });
 		const actor: Actor =
 			request.agentId !== undefined && request.sessionId !== undefined
 				? { kind: "agent", agentId: request.agentId, sessionId: request.sessionId }
@@ -379,12 +440,16 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		return { allow: false, reason, useId: use.id, fix };
 	}
 
-	return {
+	const vault: Vault = {
 		async putItem(ctx, input) {
 			forbidAgent(ctx, "create vault items");
 			const owner = input.owner;
 			if (owner.kind === "platform" || owner.organisationId !== ctx.organisationId) {
 				throw new HarbourError("invalid", "An item must be owned within the caller's organisation");
+			}
+			if (access !== undefined) {
+				const scope: Scope = owner.kind === "project" ? { projectId: owner.projectId } : {};
+				await access.require(ctx, { ...scope, needed: "admin", operation: "vault.putItem" });
 			}
 			assertItemInput(input);
 			if (input.value !== undefined && input.value.length === 0) {
@@ -404,6 +469,11 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		},
 
 		async getItem(ctx, itemId) {
+			const scope = itemScope(itemFor(ctx.organisationId, itemId));
+			if (access !== undefined && scoped(scope)) {
+				const subject = { kind: "vault.item", id: itemId };
+				await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.getItem", subject });
+			}
 			return itemFor(ctx.organisationId, itemId);
 		},
 
@@ -411,11 +481,12 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			const own = [...items.values()]
 				.filter((stored) => stored.organisationId === ctx.organisationId)
 				.map((stored) => stored.item);
-			return paginate(own, page);
+			return paginate(await visibleOnly(ctx, own, itemScope), page);
 		},
 
 		async setCeiling(ctx, routes) {
 			forbidAgent(ctx, "set the organisation's ceiling");
+			if (access !== undefined) await access.require(ctx, { needed: "admin", operation: "vault.setCeiling" });
 			for (const route of routes) assertValidRoute(route);
 			const ceiling: VaultCeiling = {
 				organisationId: ctx.organisationId,
@@ -433,6 +504,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		},
 
 		async getCeiling(ctx) {
+			if (access !== undefined) await access.require(ctx, { needed: "viewer", operation: "vault.getCeiling" });
 			const ceiling = ceilings.get(ctx.organisationId);
 			if (ceiling === undefined) throw new HarbourError("not_found", "The organisation has no ceiling");
 			return ceiling;
@@ -449,6 +521,10 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 				throw new HarbourError("invalid", "maxUses must be a positive integer");
 			}
 			const item = itemFor(ctx.organisationId, input.itemId);
+			if (access !== undefined) {
+				const subject = { kind: "vault.item", id: item.id };
+				await access.require(ctx, { ...itemScope(item), needed: "admin", operation: "vault.putPolicy", subject });
+			}
 			assertItemHost(item.hosts, input.route);
 			assertWithinCeiling(ctx.organisationId, input.route);
 			const policy: VaultPolicy = {
@@ -479,6 +555,11 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			if (stored === undefined || stored.organisationId !== ctx.organisationId) {
 				throw new HarbourError("not_found", `No policy ${policyId}`);
 			}
+			if (access !== undefined) {
+				const scope = itemScope(itemFor(ctx.organisationId, stored.policy.itemId));
+				const subject = { kind: "vault.policy", id: policyId };
+				await access.require(ctx, { ...scope, needed: "admin", operation: "vault.revokePolicy", subject });
+			}
 			if (stored.policy.revokedAt !== undefined) return;
 			stored.policy = { ...stored.policy, revokedAt: clock.now() };
 			await emit({
@@ -495,7 +576,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			const own = [...policies.values()]
 				.filter((stored) => stored.organisationId === ctx.organisationId)
 				.map((stored) => stored.policy);
-			return paginate(own, page);
+			return paginate(await visibleOnly(ctx, own, (policy) => selectorScope(policy.selector)), page);
 		},
 
 		async propose(ctx, proposed) {
@@ -504,29 +585,48 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			if (terms.reason.trim().length === 0) throw new HarbourError("invalid", "A proposal needs a reason");
 			assertValidRoute(terms.route);
 			assertLifetime(terms.lifetime);
-			if (terms.secret !== undefined) {
-				assertItemInput(terms.secret);
-				if (terms.itemId !== undefined) {
-					const existing = itemFor(ctx.organisationId, terms.itemId);
-					if (existing.hasValue) throw new HarbourError("conflict", `Item ${existing.id} already has a value`);
-					assertItemHost(existing.hosts, terms.route);
-				} else {
-					assertItemHost(terms.secret.hosts, terms.route);
+			if (terms.secret !== undefined) assertItemInput(terms.secret);
+			else if (terms.itemId === undefined) throw new HarbourError("invalid", "A proposal needs an item or a secret");
+			const named = terms.itemId === undefined ? undefined : itemFor(ctx.organisationId, terms.itemId);
+			const actor = ctx.actor;
+			// With access, the proposal's project is the one the check resolved: an agent's own session's project, which must
+			// be the item's when the item belongs to a project.
+			let projectId = ctx.projectId;
+			if (access !== undefined) {
+				const itemProject = named === undefined ? undefined : itemScope(named).projectId;
+				// An agent acts through its own session; a human or service on the item's project, else the call's.
+				const checked = actor.kind === "agent" ? itemProject : (itemProject ?? ctx.projectId);
+				const scope: Scope = {
+					...(checked === undefined ? {} : { projectId: checked }),
+					...(actor.kind === "agent" ? { sessionId: actor.sessionId } : {}),
+				};
+				const subject = named === undefined ? {} : { subject: { kind: "vault.item", id: named.id } };
+				const resolved = await access.require(ctx, {
+					...scope,
+					needed: "operator",
+					operation: "vault.propose",
+					...subject,
+				});
+				projectId = resolved.projectId;
+			}
+			if (named !== undefined) {
+				const existing = itemFor(ctx.organisationId, named.id);
+				if (terms.secret !== undefined && existing.hasValue) {
+					throw new HarbourError("conflict", `Item ${existing.id} already has a value`);
 				}
+				assertItemHost(existing.hosts, terms.route);
 			} else {
-				if (terms.itemId === undefined) throw new HarbourError("invalid", "A proposal needs an item or a secret");
-				assertItemHost(itemFor(ctx.organisationId, terms.itemId).hosts, terms.route);
+				assertItemHost(terms.secret!.hosts, terms.route);
 			}
 			assertWithinCeiling(ctx.organisationId, terms.route);
 
 			const id = newId("proposal");
 			const termsHash = await hashTerms(terms);
 			const now = clock.now();
-			const actor = ctx.actor;
 			const proposal: Proposal = {
 				id,
 				organisationId: ctx.organisationId,
-				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+				...(projectId === undefined ? {} : { projectId }),
 				requester: actor.kind === "agent" ? { actor, agentId: actor.agentId, sessionId: actor.sessionId } : { actor },
 				kind: classifyProposal(terms),
 				terms,
@@ -544,6 +644,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 				actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
+				...(projectId === undefined ? {} : { projectId }),
 				subject: { kind: "vault.proposal", id },
 				data: {
 					kind: proposal.kind,
@@ -557,23 +658,38 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		},
 
 		async getProposal(ctx, proposalId) {
+			const scope = proposalScope(proposalFor(ctx.organisationId, proposalId));
+			if (access !== undefined && scoped(scope)) {
+				const subject = { kind: "vault.proposal", id: proposalId };
+				await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.getProposal", subject });
+			}
 			return proposalFor(ctx.organisationId, proposalId);
 		},
 
 		async listProposals(ctx, filter, page) {
+			const sessionId = filter?.sessionId;
+			if (access !== undefined && sessionId !== undefined) {
+				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.listProposals" });
+			}
 			const own = [...proposals.values()]
 				.filter((proposal) => proposal.organisationId === ctx.organisationId)
 				.map((proposal) => proposalFor(ctx.organisationId, proposal.id))
 				.filter(
 					(proposal) =>
 						(filter?.status === undefined || proposal.status === filter.status) &&
-						(filter?.sessionId === undefined || proposal.requester.sessionId === filter.sessionId),
+						(sessionId === undefined || proposal.requester.sessionId === sessionId),
 				);
-			return paginate(own, page);
+			return paginate(sessionId === undefined ? await visibleOnly(ctx, own, proposalScope) : own, page);
 		},
 
 		async approvalView(ctx, proposalId) {
 			forbidAgent(ctx, "open the approval view");
+			const found = proposalFor(ctx.organisationId, proposalId);
+			if (access !== undefined) {
+				const scope: Scope = found.projectId === undefined ? {} : { projectId: found.projectId };
+				const subject = { kind: "vault.proposal", id: proposalId };
+				await access.require(ctx, { ...scope, needed: "operator", operation: "vault.approvalView", subject });
+			}
 			const proposal = proposalFor(ctx.organisationId, proposalId);
 			return {
 				proposal,
@@ -584,6 +700,13 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 
 		async decide(ctx, input) {
 			forbidAgent(ctx, "decide proposals");
+			const found = proposalFor(ctx.organisationId, input.proposalId);
+			if (access !== undefined) {
+				const scope: Scope = found.projectId === undefined ? {} : { projectId: found.projectId };
+				const subject = { kind: "vault.proposal", id: found.id };
+				await access.require(ctx, { ...scope, needed: "operator", operation: "vault.decide", subject });
+			}
+			// Read again: the proposal may have been decided, withdrawn or expired during the check.
 			const proposal = proposalFor(ctx.organisationId, input.proposalId);
 			assertPending(proposal);
 			if (deciding.has(proposal.id)) {
@@ -730,14 +853,24 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		},
 
 		async withdraw(ctx, proposalId) {
-			const proposal = proposalFor(ctx.organisationId, proposalId);
+			const found = proposalFor(ctx.organisationId, proposalId);
 			const actor = ctx.actor;
 			if (
 				actor.kind === "agent" &&
-				(actor.agentId !== proposal.requester.agentId || actor.sessionId !== proposal.requester.sessionId)
+				(actor.agentId !== found.requester.agentId || actor.sessionId !== found.requester.sessionId)
 			) {
 				throw new HarbourError("forbidden", "An agent can only withdraw its own proposals");
 			}
+			if (access !== undefined) {
+				const subject = { kind: "vault.proposal", id: proposalId };
+				await access.require(ctx, {
+					...proposalScope(found),
+					needed: "operator",
+					operation: "vault.withdraw",
+					subject,
+				});
+			}
+			const proposal = proposalFor(ctx.organisationId, proposalId);
 			assertPending(proposal);
 			if (deciding.has(proposal.id)) {
 				throw new HarbourError("conflict", `Proposal ${proposal.id} is being decided`);
@@ -757,6 +890,12 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		async waitForOutcome(ctx, proposalId) {
 			const signal = ctx.signal;
 			if (signal?.aborted) throw new HarbourError("aborted", "The wait was aborted");
+			const scope = proposalScope(proposalFor(ctx.organisationId, proposalId));
+			if (access !== undefined && scoped(scope)) {
+				const subject = { kind: "vault.proposal", id: proposalId };
+				await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.waitForOutcome", subject });
+				if (signal?.aborted) throw new HarbourError("aborted", "The wait was aborted");
+			}
 			const proposal = proposalFor(ctx.organisationId, proposalId);
 			if (proposal.status !== "pending") return outcomeOf(proposal);
 			return new Promise<ProposalOutcome>((resolve, reject) => {
@@ -785,19 +924,30 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			if (stored === undefined || stored.organisationId !== ctx.organisationId) {
 				throw new HarbourError("not_found", `No grant ${grantId}`);
 			}
+			const scope = selectorScope(stored.grant.selector);
+			if (access !== undefined && scoped(scope)) {
+				const subject = { kind: "vault.grant", id: grantId };
+				await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.getGrant", subject });
+			}
 			return grantView(stored);
 		},
 
 		async listGrants(ctx, filter, page) {
+			const sessionId = filter?.sessionId;
+			if (access !== undefined && sessionId !== undefined) {
+				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.listGrants" });
+			}
 			const own = [...grants.values()]
 				.filter((stored) => stored.organisationId === ctx.organisationId)
 				.map(grantView)
 				.filter(
 					(grant) =>
 						(filter?.status === undefined || grant.status === filter.status) &&
-						(filter?.sessionId === undefined || grant.selector.sessionId === filter.sessionId),
+						(sessionId === undefined || grant.selector.sessionId === sessionId),
 				);
-			return paginate(own, page);
+			const visible =
+				sessionId === undefined ? await visibleOnly(ctx, own, (grant) => selectorScope(grant.selector)) : own;
+			return paginate(visible, page);
 		},
 
 		async revokeGrant(ctx, grantId, reason) {
@@ -805,6 +955,11 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			const stored = grants.get(grantId);
 			if (stored === undefined || stored.organisationId !== ctx.organisationId) {
 				throw new HarbourError("not_found", `No grant ${grantId}`);
+			}
+			if (access !== undefined) {
+				const scope = selectorScope(stored.grant.selector);
+				const subject = { kind: "vault.grant", id: grantId };
+				await access.require(ctx, { ...scope, needed: "operator", operation: "vault.revokeGrant", subject });
 			}
 			if (grantView(stored).status !== "active") return grantView(stored);
 			stored.revokedAt = clock.now();
@@ -821,15 +976,82 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 		},
 
 		async listUses(ctx, filter, page) {
+			const sessionId = filter?.sessionId;
+			if (access !== undefined && sessionId !== undefined) {
+				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.listUses" });
+			}
 			const own = uses.filter(
-				(use) =>
-					use.organisationId === ctx.organisationId &&
-					(filter?.sessionId === undefined || use.sessionId === filter.sessionId),
+				({ use }) =>
+					use.organisationId === ctx.organisationId && (sessionId === undefined || use.sessionId === sessionId),
 			);
-			return paginate(own, page);
+			const visible =
+				sessionId === undefined
+					? await visibleOnly(ctx, own, (stored) => ({
+							...(stored.projectId === undefined ? {} : { projectId: stored.projectId }),
+							...(stored.use.sessionId === undefined ? {} : { sessionId: stored.use.sessionId }),
+						}))
+					: own;
+			return paginate(
+				visible.map((stored) => stored.use),
+				page,
+			);
 		},
 
-		async decideEgress(request) {
+		async endSession(ctx, sessionId, reason) {
+			if (access !== undefined) {
+				await access.require(ctx, { sessionId, needed: "operator", operation: "vault.endSession" });
+			}
+			// Every change happens here, before the first audit await; audit events are written afterwards.
+			const now = clock.now();
+			const afterwards: Parameters<typeof emit>[0][] = [];
+			for (const stored of grants.values()) {
+				const { id, selector } = stored.grant;
+				if (stored.organisationId !== ctx.organisationId || selector.sessionId !== sessionId) continue;
+				if (grantView(stored).status !== "active") continue;
+				stored.revokedAt = now;
+				afterwards.push({
+					id: `vault:grant:${id}:revoked`,
+					type: "vault.grant.revoked",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
+					sessionId,
+					...(selector.agentId === undefined ? {} : { agentId: selector.agentId }),
+					subject: { kind: "vault.grant", id },
+					data: { reason },
+				});
+			}
+			if (reason === "session_ended") {
+				for (const candidate of [...proposals.values()]) {
+					if (candidate.organisationId !== ctx.organisationId || candidate.requester.sessionId !== sessionId) continue;
+					const proposal = proposalFor(ctx.organisationId, candidate.id);
+					if (proposal.status !== "pending") continue;
+					// An in-flight decision on it changes nothing more (see decide), so it is withdrawn regardless.
+					store({ ...proposal, status: "withdrawn" });
+					afterwards.push({
+						id: `vault:proposal:${proposal.id}:withdrawn`,
+						type: "vault.proposal.withdrawn",
+						actor: ctx.actor,
+						organisationId: ctx.organisationId,
+						...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+						sessionId,
+						...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
+						subject: { kind: "vault.proposal", id: proposal.id },
+						data: { reason },
+					});
+				}
+			}
+			for (const event of afterwards) await emit(event);
+		},
+
+		async decideEgress(ctx, request) {
+			// Only the egress gateway asks, as system; anyone else learns nothing and records no use (question 13).
+			const named: unknown = typeof request === "object" && request !== null ? request.organisationId : undefined;
+			await requireSystem(ctx, "vault.decideEgress", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				...(typeof named === "string" ? { organisationId: named } : {}),
+			});
 			const method: HttpMethod = request.method;
 			let url: URL;
 			try {
@@ -936,4 +1158,6 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			);
 		},
 	};
+	options.sessionEnd?.register("vault", (ctx, end) => vault.endSession(ctx, end.sessionId, end.reason));
+	return vault;
 }

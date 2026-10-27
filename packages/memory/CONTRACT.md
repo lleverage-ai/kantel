@@ -47,15 +47,31 @@ statement) and an `index.md` of active concepts.
   decisions".
 - The bundle: "exports one Markdown file with frontmatter per concept and an index of active concepts".
 
+## Project access (settled question 7)
+
+A space is project-scoped when its owner is a project. After the organisation lookup (another organisation's space
+is still `not_found`) and after the agent rules (agents creating spaces or deciding stay `forbidden` first), each
+call checks `ProjectAccess.require` with the space's project, and for an agent its own session, subject
+`memory.space` (`memory.proposal` for `decide`): `memory.createSpace`, `memory.propose` and `memory.decide` need
+`operator`; `memory.getConcept`, `memory.listConcepts`, `memory.listProposals`, `memory.exportBundle` and
+`memory.recall` need `viewer`. `recall` finds every named space first, then checks each project-owned one and refuses
+the whole recall if one fails. Organisation- and user-owned spaces keep their rules: the organisation's agents still
+recall from its spaces. A refusal is `forbidden` and audited once as `access.denied`. Every list names its space, so
+there is no unfiltered list to narrow, and no call names a session. The cases: "project access: an operator outside
+the project is refused for every change and read of its space, and nothing changed", "project access: a viewer on the
+project may read its space but not change it", "project access: an agent whose session belongs to another project is
+refused, and nothing changed", "project access: an agent whose session was closed is refused" and "project access: an
+operator on the project and an agent in its own session still work on its space".
+
 ## The in-memory implementation
 
-`createMemoryMemory({ clock?, audit? })` keeps spaces, concepts and proposals in maps. Applies on a space run through
+`createMemoryMemory({ clock?, audit?, access? })` keeps spaces, concepts and proposals in maps. Applies on a space run through
 a promise chain; inside it the proposal and the concept's version are checked again, then changed without an await,
-so racing applies or an apply racing a reject settle once. It audits `memory.space.created`,
+so racing applies or an apply racing a reject settle once; `decide` checks the proposal is pending after the access
+check. Without `access` it checks only the organisation; every target and conformance run passes one. It audits `memory.space.created`,
 `memory.proposal.created`, `.applied` and `.rejected` with stable IDs (`memory:proposal:<id>:<event>`). Portable logic (`tokenize`, `bm25`, `similarity` with
 `DEFAULT_SIMILARITY_THRESHOLD` 0.6, `conceptBytes`, `renderConcept`, `validateConceptId`) lives in `src/index.ts`. It
-leaves out durable storage, publishing to a `MemorySource`, rebuilding from a bundle, embeddings and role checks beyond
-"not an agent".
+leaves out durable storage, publishing to a `MemorySource`, rebuilding from a bundle and embeddings.
 
 ## Open questions
 
@@ -63,5 +79,6 @@ leaves out durable storage, publishing to a `MemorySource`, rebuilding from a bu
 - A `remember` may reuse the ID of a superseded or forgotten concept; its version carries on from the old record. An
   agent may do this even when the owner set the old one. Should forgotten owner facts stay owner-only?
 - Duplicate detection compares statements only, against active concepts in the same space, and only at proposal time.
-- Space reads are scoped by organisation only, not by the owning project or user.
+- Settled (question 7) for project-owned spaces, which now check the project. User-owned spaces are still scoped
+  by organisation only, not by the owning user.
 - Proposals are not checked against `expectedVersion` until applied, so a stale proposal can sit pending.

@@ -7,6 +7,9 @@
  * "Supervisor" means a human, a service (a host app such as Sal), or an agent acting in the parent session of the
  * session the grant is for. An agent can never grant to its own session, and an agent supervisor can only pass on, no
  * wider, a context it holds through an active grant of its own.
+ *
+ * Project access (settled question 7): a context owned by a project, and every grant, request and browser session (through
+ * its agent session), belong to that project, and the broker checks the caller's role there on every call.
  */
 import type {
 	Actor,
@@ -18,8 +21,10 @@ import type {
 	PageRequest,
 	ProjectId,
 	SessionId,
+	SystemContext,
 	Timestamp,
 } from "./common.ts";
+import type { SessionEndReason } from "./session.ts";
 
 /** A stored browser profile at the provider (a brwsr context): cookies, storage, sign-ins. */
 export interface BrowserContext {
@@ -81,7 +86,7 @@ export interface BrowserSession {
 	/** `openedAt + grant.timeoutMs`; past it the session is closed as `timeout`. */
 	readonly expiresAt: Timestamp;
 	readonly closedAt?: Timestamp;
-	readonly endReason?: "closed" | "timeout" | "session_ended" | "revoked";
+	readonly endReason?: "closed" | "timeout" | "session_ended" | "aborted" | "revoked";
 }
 
 /** The provider behind the broker, such as brwsr. Implementations hold the provider key; nothing else sees it. */
@@ -137,7 +142,12 @@ export interface Browser {
 	/** Whether the browser session may visit `url` under its grant. */
 	checkSite(ctx: CallContext, browserSessionId: string, url: string): Promise<{ readonly allow: boolean }>;
 	close(ctx: CallContext, browserSessionId: string): Promise<BrowserSession>;
-	/** Closes every browser session of an agent session and ends its grants. Called by the runtime at session end. */
-	endSession(sessionId: SessionId, reason: "session_ended"): Promise<void>;
+	/**
+	 * The session-end teardown: closes every open browser session of an agent session (with `reason` as its end reason)
+	 * and ends its grants and the grants passed on from them. `session_ended` also declines its pending requests; after
+	 * `aborted` they stay pending and the session may acquire grants again. Idempotent: when the session holds nothing
+	 * more, it changes and audits nothing. A worker call (settled question 13): any actor but `system` is `forbidden`.
+	 */
+	endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason): Promise<void>;
 	get(ctx: CallContext, browserSessionId: string): Promise<BrowserSession>;
 }

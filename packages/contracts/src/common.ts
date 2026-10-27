@@ -56,6 +56,31 @@ export interface CallContext {
 	readonly signal?: AbortSignal;
 }
 
+/**
+ * The context of a worker call: one Harbour makes on its own behalf, such as a scheduler tick, an audit append, the
+ * egress gateway's decision or a sweep. Settled 27 Oct 2026 (open question 13): every worker call takes one, and refuses
+ * with `forbidden`, audited, any actor but `system` (a missing caller included). A worker call may span organisations,
+ * so the context need not name one; a `CallContext` with a system actor is one too.
+ */
+export interface SystemContext {
+	readonly actor: Actor;
+	readonly organisationId?: OrganisationId;
+	readonly requestId?: string;
+	readonly signal?: AbortSignal;
+}
+
+/** A `SystemContext` for one of Harbour's own components, named by `component` (such as `vault` or `scheduler`). */
+export function systemContext(component: string): SystemContext {
+	return { actor: { kind: "system", component } };
+}
+
+/** Whether `actor` is Harbour itself: a `system` actor naming its component. Checks the shape, as callers may not. */
+export function isSystemActor(actor: unknown): actor is Extract<Actor, { readonly kind: "system" }> {
+	if (typeof actor !== "object" || actor === null) return false;
+	const candidate = actor as { kind?: unknown; component?: unknown };
+	return candidate.kind === "system" && typeof candidate.component === "string" && candidate.component.length > 0;
+}
+
 export type ErrorCode =
 	/** The input is malformed or out of range. */
 	| "invalid"

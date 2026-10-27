@@ -22,6 +22,7 @@ export const AUDIT_SOURCES: readonly AuditSource[] = [
 	"capability",
 	"skills",
 	"memory",
+	"access",
 	"control",
 ];
 

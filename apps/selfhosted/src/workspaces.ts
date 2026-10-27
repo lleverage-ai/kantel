@@ -33,6 +33,7 @@ import {
 	type SeedReadiness,
 	type SeedSpec,
 	type SessionId,
+	systemContext,
 	type WorkspaceChange,
 	type WorkspaceId,
 	type WorkspaceRecord,
@@ -242,7 +243,7 @@ export class PostgresWorkspaces implements Workspaces {
 			.map((change) => change.path)
 			.filter((path) => typeof path === "string" && path.startsWith("/") && isUnderMount(path, record.mounts));
 		if (refused.length > 0) {
-			await this.#audit?.append([
+			await this.#audit?.append(systemContext("workspace"), [
 				{
 					...this.#auditBase(ctx, organisationId, record),
 					id: `workspace:refused:${id}:${crypto.randomUUID()}`,
@@ -275,7 +276,7 @@ export class PostgresWorkspaces implements Workspaces {
 			const actor = JSON.stringify(ctx.actor);
 			await this.#insertVersion(client, id, version, now, actor, changed, request.message ?? null, treeKey);
 		});
-		await this.#audit?.append([
+		await this.#audit?.append(systemContext("workspace"), [
 			{
 				...this.#auditBase(ctx, organisationId, record),
 				...(request.writer?.sessionId === undefined ? {} : { sessionId: request.writer.sessionId }),

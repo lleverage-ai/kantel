@@ -9,14 +9,27 @@
  */
 import {
 	type Actor,
+	type AgentId,
 	type AuditEventInput,
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	createProjectAccess,
 	type ErrorCode,
+	HarbourError,
+	type IdentityDirectory,
 	isHarbourError,
+	isSystemActor,
 	type OrganisationId,
+	type ProjectAccess,
 	type ProjectId,
+	type Role,
+	roleSatisfies,
+	type SessionDirectory,
+	type SessionId,
+	type SessionRecord,
+	type SystemContext,
+	systemContext,
 	type Timestamp,
 } from "@harbour/contracts";
 
@@ -113,10 +126,15 @@ export class ManualClock implements Clock {
 	}
 }
 
-/** An `AuditSink` that keeps what it is given, idempotent by id, so suites can check what was audited. */
+/**
+ * An `AuditSink` that keeps what it is given, idempotent by id, so suites can check what was audited. Like every sink,
+ * it takes appends from Harbour's own components only (settled question 13): one without a system context throws, so
+ * a component that appends as its caller fails its suite.
+ */
 export class RecordingAuditSink implements AuditSink {
 	readonly #events = new Map<string, AuditEventInput>();
-	async append(events: readonly AuditEventInput[]): Promise<void> {
+	async append(ctx: SystemContext, events: readonly AuditEventInput[]): Promise<void> {
+		if (!isSystemActor(ctx?.actor)) throw new Error("An audit append needs a system context");
 		for (const event of events) if (!this.#events.has(event.id)) this.#events.set(event.id, event);
 	}
 	get events(): readonly AuditEventInput[] {
@@ -127,14 +145,167 @@ export class RecordingAuditSink implements AuditSink {
 	}
 }
 
-/** What every provider receives: a manual clock and a recording audit sink, fresh per case. */
+/**
+ * A test double of the two directories `ProjectAccess` reads: identity's role bindings (`roleOf`) and the session
+ * directory (`get`). Suites seed it with the roles and agent sessions their cases use. It follows identity's model:
+ * a binding is on one project or, without a project, across the organisation, and the strongest one counts.
+ */
+export class TenancyFixture {
+	readonly #clock: Clock;
+	readonly #bindings: {
+		readonly organisationId: OrganisationId;
+		readonly projectId?: ProjectId;
+		readonly principal: string;
+		readonly role: Role;
+	}[] = [];
+	readonly #sessions = new Map<SessionId, SessionRecord>();
+
+	constructor(clock: Clock) {
+		this.#clock = clock;
+	}
+
+	/** Gives a human or service `role` on `projectId`, or across the organisation when `projectId` is absent. */
+	bind(actor: Actor, organisationId: OrganisationId, role: Role, projectId?: ProjectId): void {
+		const principal = principalOf(actor);
+		if (principal === undefined) throw new Error("Only humans and services hold roles");
+		this.#bindings.push({ organisationId, principal, role, ...(projectId === undefined ? {} : { projectId }) });
+	}
+
+	/** Removes `actor`'s binding on `projectId` (or its organisation-wide one), as `IdentityDirectory.revokeRole` does. */
+	unbind(actor: Actor, organisationId: OrganisationId, projectId?: ProjectId): void {
+		const principal = principalOf(actor);
+		for (let at = this.#bindings.length - 1; at >= 0; at--) {
+			const binding = this.#bindings[at]!;
+			if (
+				binding.organisationId === organisationId &&
+				binding.principal === principal &&
+				binding.projectId === projectId
+			) {
+				this.#bindings.splice(at, 1);
+			}
+		}
+	}
+
+	/** Records an open agent session in the directory and returns the agent actor acting in it. */
+	session(input: {
+		readonly id: SessionId;
+		readonly organisationId: OrganisationId;
+		readonly projectId: ProjectId;
+		readonly agentId: AgentId;
+		readonly parentSessionId?: SessionId;
+	}): Actor {
+		const now = this.#clock.now();
+		this.#sessions.set(input.id, {
+			id: input.id,
+			organisationId: input.organisationId,
+			projectId: input.projectId,
+			agentId: input.agentId,
+			...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
+			status: "idle",
+			labels: {},
+			createdBy: { kind: "system", component: "conformance" },
+			createdAt: now,
+			updatedAt: now,
+		});
+		return { kind: "agent", agentId: input.agentId, sessionId: input.id };
+	}
+
+	/** Marks a session closed (`done`); its agent acts nowhere after that. */
+	close(sessionId: SessionId): void {
+		const record = this.#sessions.get(sessionId);
+		if (record !== undefined) this.#sessions.set(sessionId, { ...record, status: "done" });
+	}
+
+	readonly identity: Pick<IdentityDirectory, "roleOf"> = {
+		roleOf: async (ctx, actor, organisationId, projectId) => {
+			if (!isSystemActor(ctx?.actor)) throw new HarbourError("forbidden", "roleOf is a worker call");
+			if (actor.kind === "system") return "admin";
+			const principal = principalOf(actor);
+			if (principal === undefined) return undefined;
+			let strongest: Role | undefined;
+			for (const binding of this.#bindings) {
+				if (binding.organisationId !== organisationId || binding.principal !== principal) continue;
+				if (binding.projectId !== undefined && binding.projectId !== projectId) continue;
+				if (strongest === undefined || roleSatisfies(binding.role, strongest)) strongest = binding.role;
+			}
+			return strongest;
+		},
+	};
+
+	readonly sessions: Pick<SessionDirectory, "get"> = {
+		get: async (ctx, sessionId) => {
+			const record = this.#sessions.get(sessionId);
+			if (record === undefined || record.organisationId !== ctx.organisationId) {
+				throw new HarbourError("not_found", `No session ${sessionId}`);
+			}
+			return record;
+		},
+	};
+}
+
+function principalOf(actor: Actor): string | undefined {
+	if (actor.kind === "human") return `user:${actor.userId}`;
+	if (actor.kind === "service") return `service:${actor.serviceId}`;
+	return undefined;
+}
+
+/**
+ * What every provider receives, fresh per case: a manual clock, a recording audit sink, and a `ProjectAccess` (the
+ * reference `createProjectAccess` over `tenancy`, auditing into `audit`). Wire `access` into the component under test.
+ */
 export interface ConformanceDeps {
 	readonly clock: ManualClock;
 	readonly audit: RecordingAuditSink;
+	readonly access: ProjectAccess;
+	readonly tenancy: TenancyFixture;
 }
 
 export function createDeps(): ConformanceDeps {
-	return { clock: new ManualClock(), audit: new RecordingAuditSink() };
+	const clock = new ManualClock();
+	const audit = new RecordingAuditSink();
+	const tenancy = new TenancyFixture(clock);
+	const access = createProjectAccess({ identity: tenancy.identity, sessions: tenancy.sessions, audit, clock });
+	return { clock, audit, access, tenancy };
+}
+
+/** Options every `register<X>Conformance` takes. */
+export interface ConformanceOptions {
+	/**
+	 * Runs the project-access cases (settled question 7): the component must refuse, through `deps.access`, an operator
+	 * outside the project and an agent whose session belongs to another project. Off by default only until the
+	 * Cloudflare and self-hosted targets wire `deps.access`; every in-memory implementation runs with it on.
+	 */
+	readonly projectAccess?: boolean;
+}
+
+/**
+ * Asserts that `call` rejects with `forbidden`, that the refusal holds no canary secret, and that `ProjectAccess`
+ * audited it once as `access.denied` for `operation` without the canary.
+ */
+export async function assertAccessDenied(
+	a: ConformanceAssertions,
+	deps: Pick<ConformanceDeps, "audit">,
+	call: Promise<unknown>,
+	expected: { readonly operation: string; readonly message?: string },
+): Promise<void> {
+	const label = expected.message ?? `${expected.operation} is refused`;
+	const before = deps.audit.ofType("access.denied").length;
+	let caught: unknown;
+	let rejected = false;
+	try {
+		await call;
+	} catch (error) {
+		rejected = true;
+		caught = error;
+	}
+	a.strictEqual(rejected, true, `${label}: it resolved`);
+	a.strictEqual(isHarbourError(caught) ? caught.code : `non-Harbour error: ${String(caught)}`, "forbidden", label);
+	const refusal = isHarbourError(caught) ? { message: caught.message, details: caught.details ?? null } : null;
+	a.ok(!containsCanary(refusal), `${label}: the refusal holds no secret`);
+	const events = deps.audit.ofType("access.denied").slice(before);
+	a.strictEqual(events.length, 1, `${label}: audited once as access.denied`);
+	a.strictEqual(events[0]?.data?.operation, expected.operation, `${label}: the audit names the operation`);
+	a.ok(!containsCanary(events), `${label}: the audit holds no secret`);
 }
 
 /** Builds call contexts for suites. */
@@ -160,6 +331,51 @@ export const actors = {
 	agent: (agentId: string, sessionId: string): Actor => ({ kind: "agent", agentId, sessionId }),
 	system: (component = "conformance"): Actor => ({ kind: "system", component }),
 };
+
+/** The context suites make worker calls with: Harbour's own, as `system`. */
+export const WORKER: SystemContext = systemContext("conformance.worker");
+
+/**
+ * The callers a worker call must refuse (settled question 13): no caller at all, and a human, a service and an agent,
+ * each with a full call context in `organisationId`. The agent's session is open in the tenancy fixture when the suite
+ * seeds one, so the refusal cannot come from a closed session.
+ */
+export function nonSystemCallers(
+	organisationId: OrganisationId,
+	agent: { readonly agentId: AgentId; readonly sessionId: SessionId } = {
+		agentId: "agent-worker-call",
+		sessionId: "sess-worker-call",
+	},
+): readonly { readonly label: string; readonly ctx: SystemContext }[] {
+	return [
+		{ label: "no caller", ctx: undefined as unknown as SystemContext },
+		{ label: "a human", ctx: contextFor(actors.human("user-worker-call"), organisationId) },
+		{ label: "a service", ctx: contextFor(actors.service("svc-worker-call"), organisationId) },
+		{ label: "an agent", ctx: contextFor(actors.agent(agent.agentId, agent.sessionId), organisationId) },
+	];
+}
+
+/**
+ * Asserts that a worker call refuses every caller `nonSystemCallers` lists: `forbidden`, no secret, and audited once as
+ * `access.denied` for `operation` (see `assertAccessDenied`). `call` makes the call with the given context.
+ */
+export async function assertWorkerCallRefused(
+	a: ConformanceAssertions,
+	deps: Pick<ConformanceDeps, "audit">,
+	operation: string,
+	call: (ctx: SystemContext) => Promise<unknown>,
+	organisationId: OrganisationId,
+	agent?: { readonly agentId: AgentId; readonly sessionId: SessionId },
+): Promise<void> {
+	for (const caller of nonSystemCallers(organisationId, agent)) {
+		// Started after `assertAccessDenied` counts the audit: a refusal may be audited before the call first awaits.
+		const deferred = Promise.resolve().then(() => call(caller.ctx));
+		await assertAccessDenied(a, deps, deferred, {
+			operation,
+			message: `${operation} refuses ${caller.label}`,
+		});
+	}
+}
 
 /** Waits until `predicate` holds, polling with real time; for suites that watch asynchronous work. */
 export async function eventually(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000, label = "condition") {

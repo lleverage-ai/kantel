@@ -25,9 +25,11 @@ import type {
 	PageRequest,
 	ProjectId,
 	SessionId,
+	SystemContext,
 	Timestamp,
 	UserId,
 } from "./common.ts";
+import type { SessionEndReason } from "./session.ts";
 
 export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 export const READ_METHODS: readonly HttpMethod[] = ["GET", "HEAD", "OPTIONS"];
@@ -353,8 +355,19 @@ export interface Vault {
 	listUses(ctx: CallContext, filter?: { readonly sessionId?: SessionId }, page?: PageRequest): Promise<Page<VaultUse>>;
 
 	/**
-	 * Decides one outbound request for the egress proxy: the first active grant or policy whose selector and route
-	 * match allows it and returns the header to inject; anything else is denied. Every call records a use.
+	 * The vault's session-end teardown (registered with `SessionEndHook` as `vault`). Revokes every active grant whose
+	 * `selector.sessionId` is the session, audited `vault.grant.revoked` once per grant with `data.reason` set to
+	 * `reason`, so the next egress request on it is denied. On `session_ended` it also withdraws the session's pending
+	 * proposals (a waiting `waitForOutcome` gets `withdrawn`); on `aborted` they stay pending, and grants approved later
+	 * work as usual. Needs operator on the session (a system actor passes). Idempotent: when the session holds nothing
+	 * more, it changes nothing and audits nothing.
 	 */
-	decideEgress(request: EgressRequest): Promise<EgressDecision>;
+	endSession(ctx: CallContext, sessionId: SessionId, reason: SessionEndReason): Promise<void>;
+
+	/**
+	 * Decides one outbound request for the egress proxy: the first active grant or policy whose selector and route
+	 * match allows it and returns the header to inject; anything else is denied. Every call records a use. A worker call
+	 * (settled question 13): only the egress gateway, as `system`, may ask; anyone else is `forbidden` and records no use.
+	 */
+	decideEgress(ctx: SystemContext, request: EgressRequest): Promise<EgressDecision>;
 }

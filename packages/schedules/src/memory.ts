@@ -11,11 +11,17 @@ import {
 	type OrganisationId,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
+	type ProjectId,
 	type RaisedFinding,
+	type Role,
+	requireSystem,
 	type Schedule,
 	type ScheduleInput,
 	type Schedules,
+	type SystemContext,
 	systemClock,
+	systemContext,
 	type Timestamp,
 } from "@harbour/contracts";
 import { assertValidRecurrence, assertValidTimeZone, nextDue, previewDue } from "./index.ts";
@@ -23,6 +29,11 @@ import { assertValidRecurrence, assertValidTimeZone, nextDue, previewDue } from 
 export interface MemorySchedulesOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
+	/**
+	 * Checks project access on every call about a project-owned schedule (`schedules.<method>`). Without it the store
+	 * checks only the organisation; every target and every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
 }
 
 const HOUR_MS = 3_600_000;
@@ -32,6 +43,8 @@ const DEFAULT_FAILURES_BEFORE_RAISE = 3;
 /** The most missed due times one tick walks through for a schedule. */
 const MAX_COALESCED = 10_000;
 const SCHEDULER: Actor = { kind: "system", component: "schedules" };
+/** The scheduler appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("schedules");
 
 interface StoredSchedule {
 	readonly organisationId: OrganisationId;
@@ -131,6 +144,7 @@ function rescheduled(schedule: Schedule, now: Timestamp): Schedule {
 export function createMemorySchedules(options: MemorySchedulesOptions = {}): Schedules {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
+	const access = options.access;
 
 	const schedules = new Map<string, StoredSchedule>();
 	/** Every occurrence, in the order it was materialised. */
@@ -138,7 +152,12 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 
 	async function emit(events: readonly AuditEventInput[]): Promise<void> {
 		if (audit === undefined || events.length === 0) return;
-		await audit.append(events);
+		await audit.append(AUDIT_CONTEXT, events);
+	}
+
+	/** The scheduler's worker calls take a system caller and nothing else (settled question 13). */
+	async function requireWorker(ctx: SystemContext, operation: string): Promise<void> {
+		await requireSystem(ctx, operation, { ...(audit === undefined ? {} : { audit }), clock });
 	}
 
 	/** Audits a lifecycle change (`updated`, `paused`, `resumed`, `ended`) by its actor. */
@@ -158,6 +177,35 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 				data: { status: stored.schedule.status, nextDueAt: stored.schedule.nextDueAt ?? null },
 			},
 		]);
+	}
+
+	/** Requires `needed` on the schedule's project when a project owns it; other owners need no project check. */
+	async function requireOwner(
+		ctx: CallContext,
+		owner: ScheduleInput["owner"],
+		needed: Role,
+		operation: string,
+		scheduleId?: string,
+	): Promise<void> {
+		if (access === undefined || owner.kind !== "project") return;
+		await access.require(ctx, {
+			projectId: owner.projectId,
+			needed,
+			operation,
+			...(scheduleId === undefined ? {} : { subject: { kind: "schedules.schedule", id: scheduleId } }),
+		});
+	}
+
+	/** The schedule in the caller's organisation (`not_found` otherwise), once the caller holds `needed` on it. */
+	async function accessibleFor(
+		ctx: CallContext,
+		scheduleId: string,
+		needed: Role,
+		operation: string,
+	): Promise<StoredSchedule> {
+		const stored = storedFor(ctx.organisationId, scheduleId);
+		await requireOwner(ctx, stored.schedule.owner, needed, operation, scheduleId);
+		return stored;
 	}
 
 	function storedFor(organisationId: OrganisationId, scheduleId: string): StoredSchedule {
@@ -263,6 +311,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 		async create(ctx, input) {
 			forbidAgent(ctx, "create schedules");
 			assertValidInput(ctx, input);
+			await requireOwner(ctx, input.owner, "operator", "schedules.create");
 			const now = clock.now();
 			const draft: Schedule = {
 				...(inputFields(input) as ScheduleInput),
@@ -305,7 +354,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 
 		async update(ctx, scheduleId, input) {
 			forbidAgent(ctx, "update schedules");
-			const stored = storedFor(ctx.organisationId, scheduleId);
+			const stored = await accessibleFor(ctx, scheduleId, "operator", "schedules.update");
 			const current = stored.schedule;
 			if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${scheduleId} has ended`);
 			const merged: Schedule = { ...current, ...inputFields(input), owner: current.owner, kind: current.kind };
@@ -320,7 +369,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 
 		async pause(ctx, scheduleId) {
 			forbidAgent(ctx, "pause schedules");
-			const stored = storedFor(ctx.organisationId, scheduleId);
+			const stored = await accessibleFor(ctx, scheduleId, "operator", "schedules.pause");
 			const current = stored.schedule;
 			if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${scheduleId} has ended`);
 			if (current.status === "paused") return current;
@@ -332,7 +381,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 
 		async resume(ctx, scheduleId) {
 			forbidAgent(ctx, "resume schedules");
-			const stored = storedFor(ctx.organisationId, scheduleId);
+			const stored = await accessibleFor(ctx, scheduleId, "operator", "schedules.resume");
 			const current = stored.schedule;
 			if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${scheduleId} has ended`);
 			if (current.status === "active") return current;
@@ -344,7 +393,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 
 		async end(ctx, scheduleId) {
 			forbidAgent(ctx, "end schedules");
-			const stored = storedFor(ctx.organisationId, scheduleId);
+			const stored = await accessibleFor(ctx, scheduleId, "operator", "schedules.end");
 			const current = stored.schedule;
 			if (current.status === "ended") return current;
 			stored.schedule = { ...withoutNextDue(current), status: "ended", updatedAt: clock.now() };
@@ -354,7 +403,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 		},
 
 		async get(ctx, scheduleId) {
-			return storedFor(ctx.organisationId, scheduleId).schedule;
+			return (await accessibleFor(ctx, scheduleId, "viewer", "schedules.get")).schedule;
 		},
 
 		async list(ctx, filter, page) {
@@ -366,18 +415,35 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 						(filter?.kind === undefined || schedule.kind === filter.kind) &&
 						(filter?.status === undefined || schedule.status === filter.status),
 				);
-			return paginate(own, page);
+			if (access === undefined) return paginate(own, page);
+			// Whether the caller may view each project, asked once per project.
+			const viewable = new Map<ProjectId, Promise<boolean>>();
+			const visible: Schedule[] = [];
+			for (const schedule of own) {
+				const owner = schedule.owner;
+				if (owner.kind === "project") {
+					let allowed = viewable.get(owner.projectId);
+					if (allowed === undefined) {
+						allowed = access.allows(ctx, { projectId: owner.projectId, needed: "viewer" });
+						viewable.set(owner.projectId, allowed);
+					}
+					if (!(await allowed)) continue;
+				}
+				visible.push(schedule);
+			}
+			return paginate(visible, page);
 		},
 
 		async preview(ctx, scheduleId, n) {
-			const schedule = storedFor(ctx.organisationId, scheduleId).schedule;
+			const schedule = (await accessibleFor(ctx, scheduleId, "viewer", "schedules.preview")).schedule;
 			if (!Number.isInteger(n) || n < 0) throw new HarbourError("invalid", "n must be a non-negative integer");
 			if (schedule.status === "ended") return [];
 			const from = schedule.status === "active" && schedule.nextDueAt !== undefined ? schedule.nextDueAt : clock.now();
 			return previewDue(schedule, from, n);
 		},
 
-		async tick() {
+		async tick(ctx) {
+			await requireWorker(ctx, "schedules.tick");
 			const now = clock.now();
 			const created: Occurrence[] = [];
 			for (const stored of schedules.values()) {
@@ -415,7 +481,8 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			return created;
 		},
 
-		async claim(runner, leaseMs) {
+		async claim(ctx, runner, leaseMs) {
+			await requireWorker(ctx, "schedules.claim");
 			if (runner.length === 0) throw new HarbourError("invalid", "A claim needs a runner");
 			if (!(leaseMs > 0)) throw new HarbourError("invalid", "leaseMs must be positive");
 			const now = clock.now();
@@ -438,12 +505,14 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			return claimed;
 		},
 
-		async complete(occurrenceId, runner, outcome) {
+		async complete(ctx, occurrenceId, runner, outcome) {
+			await requireWorker(ctx, "schedules.complete");
 			const occurrence = heldClaim(occurrenceId, runner);
 			return finish(occurrence, outcome.status, outcome.result);
 		},
 
-		async reportCheck(occurrenceId, runner, report: CheckReport) {
+		async reportCheck(ctx, occurrenceId, runner, report: CheckReport) {
+			await requireWorker(ctx, "schedules.reportCheck");
 			const occurrence = heldClaim(occurrenceId, runner);
 			const stored = schedules.get(occurrence.scheduleId)!;
 			if (stored.schedule.kind !== "check") {
@@ -477,7 +546,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 		},
 
 		async listOccurrences(ctx, scheduleId, page) {
-			storedFor(ctx.organisationId, scheduleId);
+			await accessibleFor(ctx, scheduleId, "viewer", "schedules.listOccurrences");
 			const own = [...occurrences.values()]
 				.filter((occurrence) => occurrence.scheduleId === scheduleId)
 				.sort((left, right) => left.dueAt - right.dueAt);

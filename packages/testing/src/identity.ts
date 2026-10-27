@@ -10,10 +10,12 @@ import type {
 	ProjectId,
 	Role,
 	ServiceIdentity,
+	SystemContext,
 	User,
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
@@ -22,6 +24,7 @@ import {
 	createDeps,
 	createExpectAssertions,
 	registerCases,
+	WORKER,
 } from "./harness.ts";
 
 export interface IdentitySubject {
@@ -103,7 +106,7 @@ export function createIdentityConformance(options: {
 					"forbidden",
 					"a service cannot create an organisation",
 				);
-				a.strictEqual(await identity.roleOf(actors.human(tenant.founder.id), tenant.organisation.id), "admin");
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(tenant.founder.id), tenant.organisation.id), "admin");
 				const project = await identity.createProject(tenant.admin, { name: "Harbour" });
 				a.strictEqual(project.organisationId, tenant.organisation.id);
 				a.deepEqual(await identity.getProject(tenant.admin, project.id), project);
@@ -134,7 +137,7 @@ export function createIdentityConformance(options: {
 				const operator = await createMember(identity, tenant, "operator");
 				const second = await identity.createProject(tenant.admin, { name: "Second" });
 				for (const project of [first, second]) {
-					a.strictEqual(await identity.roleOf(operator, tenant.organisation.id, project.id), "operator");
+					a.strictEqual(await identity.roleOf(WORKER, operator, tenant.organisation.id, project.id), "operator");
 					await identity.authorize(contextFor(operator, tenant.organisation.id, project.id), "operator");
 				}
 				await identity.authorize(contextFor(operator, tenant.organisation.id), "operator");
@@ -153,9 +156,9 @@ export function createIdentityConformance(options: {
 					role: "admin",
 					projectId: first.id,
 				});
-				a.strictEqual(await identity.roleOf(member, tenant.organisation.id, first.id), "admin");
-				a.strictEqual(await identity.roleOf(member, tenant.organisation.id, second.id), "viewer");
-				a.strictEqual(await identity.roleOf(member, tenant.organisation.id), "viewer");
+				a.strictEqual(await identity.roleOf(WORKER, member, tenant.organisation.id, first.id), "admin");
+				a.strictEqual(await identity.roleOf(WORKER, member, tenant.organisation.id, second.id), "viewer");
+				a.strictEqual(await identity.roleOf(WORKER, member, tenant.organisation.id), "viewer");
 			}),
 		},
 		{
@@ -167,7 +170,7 @@ export function createIdentityConformance(options: {
 				if (member.kind !== "human") throw new Error("expected a human member");
 				const principal = { kind: "user", userId: member.userId } as const;
 				await identity.grantRole(tenant.admin, { principal, role: "viewer", projectId: project.id });
-				a.strictEqual(await identity.roleOf(member, tenant.organisation.id, project.id), "viewer");
+				a.strictEqual(await identity.roleOf(WORKER, member, tenant.organisation.id, project.id), "viewer");
 				const bindings = await identity.listRoleBindings(tenant.admin, { projectId: project.id });
 				const forMember = bindings.filter(
 					(binding) => binding.principal.kind === "user" && binding.principal.userId === member.userId,
@@ -194,7 +197,7 @@ export function createIdentityConformance(options: {
 					projectId: project.id,
 				});
 				await a.rejectsWithCode(identity.authorize(ctx, "viewer"), "forbidden");
-				a.strictEqual(await identity.roleOf(member, tenant.organisation.id, project.id), undefined);
+				a.strictEqual(await identity.roleOf(WORKER, member, tenant.organisation.id, project.id), undefined);
 			}),
 		},
 		{
@@ -214,7 +217,7 @@ export function createIdentityConformance(options: {
 					projectIds: [scoped.id],
 					role: "operator",
 				});
-				const auth = await identity.authenticateApiKey(issued.secret);
+				const auth = await identity.authenticateApiKey(WORKER, issued.secret);
 				a.deepEqual(auth.actor, { kind: "service", serviceId: service.id, keyId: issued.key.id });
 				a.strictEqual(auth.organisationId, tenant.organisation.id);
 				a.deepEqual(auth.projectIds, [scoped.id]);
@@ -236,7 +239,7 @@ export function createIdentityConformance(options: {
 					"forbidden",
 					"a project-scoped key has no organisation-wide role",
 				);
-				a.strictEqual(await identity.roleOf(auth.actor, org, other.id), undefined);
+				a.strictEqual(await identity.roleOf(WORKER, auth.actor, org, other.id), undefined);
 				await a.rejectsWithCode(identity.createProject(contextFor(auth.actor, org), { name: "Sneaky" }), "forbidden");
 			}),
 		},
@@ -273,7 +276,7 @@ export function createIdentityConformance(options: {
 					projectIds: [acmeProject.id],
 					role: "admin",
 				});
-				const { actor } = await identity.authenticateApiKey(issued.secret);
+				const { actor } = await identity.authenticateApiKey(WORKER, issued.secret);
 				await a.rejectsWithCode(
 					identity.authorize(contextFor(actor, globex.organisation.id, globexProject.id), "viewer"),
 					"forbidden",
@@ -288,7 +291,7 @@ export function createIdentityConformance(options: {
 					"forbidden",
 					"naming another organisation's project under the key's organisation does not help",
 				);
-				a.strictEqual(await identity.roleOf(actor, globex.organisation.id, globexProject.id), undefined);
+				a.strictEqual(await identity.roleOf(WORKER, actor, globex.organisation.id, globexProject.id), undefined);
 				await a.rejectsWithCode(
 					identity.issueApiKey(acme.admin, { serviceId: service.id, projectIds: [globexProject.id], role: "viewer" }),
 					"not_found",
@@ -339,7 +342,7 @@ export function createIdentityConformance(options: {
 					identity.authorize(contextFor(acmeFounder, acme.organisation.id, globexProject.id), "viewer"),
 					"forbidden",
 				);
-				await identity.authenticateApiKey(globexKey.secret);
+				await identity.authenticateApiKey(WORKER, globexKey.secret);
 			}),
 		},
 		{
@@ -384,9 +387,9 @@ export function createIdentityConformance(options: {
 					projectIds: [project.id],
 					role: "operator",
 				});
-				const revokedActor = (await identity.authenticateApiKey(revoked.secret)).actor;
+				const revokedActor = (await identity.authenticateApiKey(WORKER, revoked.secret)).actor;
 				await identity.revokeApiKey(tenant.admin, revoked.key.id);
-				await a.rejectsWithCode(identity.authenticateApiKey(revoked.secret), "forbidden");
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, revoked.secret), "forbidden");
 				await a.rejectsWithCode(
 					identity.authorize(contextFor(revokedActor, tenant.organisation.id, project.id), "viewer"),
 					"forbidden",
@@ -401,10 +404,10 @@ export function createIdentityConformance(options: {
 					role: "operator",
 					expiresAt: deps.clock.now() + 60_000,
 				});
-				const expiringActor = (await identity.authenticateApiKey(expiring.secret)).actor;
+				const expiringActor = (await identity.authenticateApiKey(WORKER, expiring.secret)).actor;
 				await identity.authorize(contextFor(expiringActor, tenant.organisation.id, project.id), "operator");
 				deps.clock.advance(60_000);
-				await a.rejectsWithCode(identity.authenticateApiKey(expiring.secret), "forbidden");
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, expiring.secret), "forbidden");
 				await a.rejectsWithCode(
 					identity.authorize(contextFor(expiringActor, tenant.organisation.id, project.id), "viewer"),
 					"forbidden",
@@ -415,8 +418,8 @@ export function createIdentityConformance(options: {
 			name: "an unknown key fails with forbidden, not not_found",
 			run: withSubject(async ({ identity }) => {
 				await createTenant(identity, "Acme");
-				await a.rejectsWithCode(identity.authenticateApiKey("hbr_this-key-was-never-issued"), "forbidden");
-				await a.rejectsWithCode(identity.authenticateApiKey(""), "forbidden");
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, "hbr_this-key-was-never-issued"), "forbidden");
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, ""), "forbidden");
 			}),
 		},
 		{
@@ -488,7 +491,7 @@ export function createIdentityConformance(options: {
 					);
 					await a.rejectsWithCode(identity.authorize(contextFor(agent, tenant.organisation.id), needed), "forbidden");
 				}
-				a.strictEqual(await identity.roleOf(agent, tenant.organisation.id, project.id), undefined);
+				a.strictEqual(await identity.roleOf(WORKER, agent, tenant.organisation.id, project.id), undefined);
 				await a.rejectsWithCode(
 					identity.createProject(contextFor(agent, tenant.organisation.id), { name: "Q" }),
 					"forbidden",
@@ -563,7 +566,42 @@ export function createIdentityConformance(options: {
 					projectIds: [third.id],
 					role: "viewer",
 				});
-				a.deepEqual(await ids((await identity.authenticateApiKey(issued.secret)).actor), [third.id]);
+				a.deepEqual(await ids((await identity.authenticateApiKey(WORKER, issued.secret)).actor), [third.id]);
+			}),
+		},
+		{
+			name: "worker calls: roleOf and authenticateApiKey refuse every caller but system",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const org = tenant.organisation.id;
+				const project = await identity.createProject(tenant.admin, { name: "Harbour" });
+				const service = await createService(identity, tenant);
+				const issued = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "operator",
+				});
+				const founder = actors.human(tenant.founder.id);
+				// The founder may do anything in the organisation, and still may not make a worker call.
+				const callers = [
+					{ label: "no caller", ctx: undefined as unknown as SystemContext },
+					{ label: "the organisation's admin", ctx: tenant.admin },
+					{ label: "a service", ctx: contextFor(actors.service(service.id), org, project.id) },
+					{ label: "an agent", ctx: contextFor(actors.agent("agent-1", "session-1"), org, project.id) },
+				];
+				for (const { label, ctx } of callers) {
+					for (const [operation, call] of [
+						["identity.roleOf", () => identity.roleOf(ctx, founder, org)],
+						["identity.authenticateApiKey", () => identity.authenticateApiKey(ctx, issued.secret)],
+					] as const) {
+						// Started after the audit is counted: the refusal may be audited before the call first awaits.
+						const deferred = Promise.resolve().then((): Promise<unknown> => call());
+						await assertAccessDenied(a, deps, deferred, { operation, message: `${operation} refuses ${label}` });
+					}
+				}
+				a.ok(!JSON.stringify(deps.audit.events).includes(issued.secret), "no refusal audits the key's secret");
+				a.strictEqual(await identity.roleOf(WORKER, founder, org), "admin");
+				a.strictEqual((await identity.authenticateApiKey(WORKER, issued.secret)).role, "operator");
 			}),
 		},
 	];

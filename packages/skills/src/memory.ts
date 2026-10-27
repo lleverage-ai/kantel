@@ -7,6 +7,8 @@ import {
 	type OwnerRef,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
+	type Role,
 	type SessionSkillPin,
 	type SkillFile,
 	type SkillListing,
@@ -15,12 +17,23 @@ import {
 	type Skills,
 	type SkillVisibility,
 	systemClock,
+	systemContext,
 } from "@harbour/contracts";
 import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, validateSkillName } from "./index.ts";
+
+/** Skills appends its audit events as itself. */
+const AUDIT_CONTEXT = systemContext("skills");
 
 export interface MemorySkillsOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
+	/**
+	 * Project access (settled question 7): project-owned skills need `viewer` to read and `operator` to change, a
+	 * `list` naming a project needs `viewer` on it, `pinForSession` needs `operator` on the session's project, and a
+	 * visibility may name only the calling human's own user. Without it the store checks only the organisation;
+	 * every target and every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
 	/** Where skills are mounted in the sandbox; a listing's path is `<mountRoot>/<name>/SKILL.md`. Default `/skills`. */
 	readonly mountRoot?: string;
 }
@@ -140,6 +153,7 @@ function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T
 export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
+	const access = options.access;
 	const mountRoot = (options.mountRoot ?? "/skills").replace(/\/+$/, "");
 
 	const skills = new Map<string, StoredSkill>();
@@ -155,6 +169,35 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			if (owner.kind === "platform" || owner.organisationId === ctx.organisationId) return stored;
 		}
 		throw new HarbourError("not_found", `No skill ${skillId}`);
+	}
+
+	/** Checks project access on a project-owned skill; other owners keep their own rules. */
+	async function requireOwner(
+		ctx: CallContext,
+		owner: OwnerRef,
+		needed: Role,
+		operation: string,
+		skillId?: string,
+	): Promise<void> {
+		if (access === undefined || owner.kind !== "project") return;
+		await access.require(ctx, {
+			projectId: owner.projectId,
+			needed,
+			operation,
+			...(skillId === undefined ? {} : { subject: { kind: "skills.skill", id: skillId } }),
+		});
+	}
+
+	/**
+	 * A visibility may name only the calling human's own user; services and Harbour may name any user, agents none.
+	 * Not a project check, so a refusal is not audited as `access.denied`.
+	 */
+	function assertMayNameUser(ctx: CallContext, visibility: SkillVisibility): void {
+		if (access === undefined || visibility.userId === undefined) return;
+		const actor = ctx.actor;
+		if (actor.kind === "service" || actor.kind === "system") return;
+		if (actor.kind === "human" && actor.userId === visibility.userId) return;
+		throw new HarbourError("forbidden", "A caller may name only its own user's skills");
 	}
 
 	function revisionFor(stored: StoredSkill, revision: number): SkillRevision {
@@ -242,7 +285,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		},
 	): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([
+		await audit.append(AUDIT_CONTEXT, [
 			{
 				id: event.id,
 				at: clock.now(),
@@ -259,7 +302,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 
 	async function auditPublished(ctx: CallContext, revision: SkillRevision): Promise<void> {
 		if (audit === undefined) return;
-		await audit.append([
+		await audit.append(AUDIT_CONTEXT, [
 			{
 				id: `skills:revision:${revision.skillId}:${revision.revision}`,
 				at: revision.publishedAt,
@@ -316,6 +359,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		async create(ctx, input) {
 			forbidAgent(ctx, "create skills");
 			assertMayOwn(ctx, input.owner);
+			await requireOwner(ctx, input.owner, "operator", "skills.create");
 			validateSkillName(input.name);
 			assertDescription(input.description);
 			const pkg = { ...createPackage(input.owner, input.name, input.description).pkg };
@@ -329,12 +373,15 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		},
 
 		async get(ctx, skillId) {
-			return { ...skillFor(ctx, skillId).pkg };
+			const stored = skillFor(ctx, skillId);
+			await requireOwner(ctx, stored.pkg.owner, "viewer", "skills.get", skillId);
+			return { ...stored.pkg };
 		},
 
 		async saveDraft(ctx, skillId, input) {
 			const before = skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.pkg.owner);
+			await requireOwner(ctx, before.pkg.owner, "operator", "skills.saveDraft", skillId);
 			if (input.description !== undefined) assertDescription(input.description);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
@@ -357,14 +404,18 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		async readDraft(ctx, skillId) {
 			const stored = skillFor(ctx, skillId);
 			assertMayOwn(ctx, stored.pkg.owner);
+			await requireOwner(ctx, stored.pkg.owner, "viewer", "skills.readDraft", skillId);
 			if (stored.draft === undefined) throw new HarbourError("not_found", `Skill ${skillId} has no open draft`);
 			return stored.draft.files;
 		},
 
 		async publish(ctx, skillId, input) {
 			forbidAgent(ctx, "publish skills");
+			const before = skillFor(ctx, skillId);
+			assertMayOwn(ctx, before.pkg.owner);
+			await requireOwner(ctx, before.pkg.owner, "operator", "skills.publish", skillId);
+			// Re-read after the await; everything below changes the package without another await until the audit.
 			const stored = skillFor(ctx, skillId);
-			assertMayOwn(ctx, stored.pkg.owner);
 			const latest = latestOf(stored);
 			const draft = stored.draft;
 			if (draft === undefined) {
@@ -393,11 +444,14 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		},
 
 		async getRevision(ctx, skillId, revision) {
-			return revisionFor(skillFor(ctx, skillId), revision);
+			const stored = skillFor(ctx, skillId);
+			await requireOwner(ctx, stored.pkg.owner, "viewer", "skills.getRevision", skillId);
+			return revisionFor(stored, revision);
 		},
 
 		async readFile(ctx, skillId, revision, path) {
 			const stored = skillFor(ctx, skillId);
+			await requireOwner(ctx, stored.pkg.owner, "viewer", "skills.readFile", skillId);
 			revisionFor(stored, revision);
 			const content = stored.contents.get(revision)?.get(normaliseSkillPath(path));
 			if (content === undefined) throw new HarbourError("not_found", `No ${path} in revision ${revision}`);
@@ -405,16 +459,32 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		},
 
 		async listRevisions(ctx, skillId, page) {
-			return paginate([...skillFor(ctx, skillId).revisions].reverse(), page);
+			const stored = skillFor(ctx, skillId);
+			await requireOwner(ctx, stored.pkg.owner, "viewer", "skills.listRevisions", skillId);
+			return paginate([...stored.revisions].reverse(), page);
 		},
 
 		async list(ctx, visibility, page) {
+			assertMayNameUser(ctx, visibility);
+			if (access !== undefined && visibility.projectId !== undefined) {
+				await access.require(ctx, { projectId: visibility.projectId, needed: "viewer", operation: "skills.list" });
+			}
 			return paginate(visibleListings(ctx, visibility), page);
 		},
 
 		async pinForSession(ctx, sessionId, visibility) {
 			if (ctx.actor.kind === "agent" && ctx.actor.sessionId !== sessionId) {
 				throw new HarbourError("forbidden", "An agent may pin skills only for its own session");
+			}
+			assertMayNameUser(ctx, visibility);
+			if (access !== undefined) {
+				// The session must belong to the project the visibility names.
+				await access.require(ctx, {
+					sessionId,
+					...(visibility.projectId === undefined ? {} : { projectId: visibility.projectId }),
+					needed: "operator",
+					operation: "skills.pinForSession",
+				});
 			}
 			const key = `${ctx.organisationId}\0${sessionId}`;
 			const existing = pins.get(key);
@@ -430,7 +500,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			);
 			pins.set(key, pinned);
 			if (audit !== undefined) {
-				await audit.append([
+				await audit.append(AUDIT_CONTEXT, [
 					{
 						id: `skills:session:${ctx.organisationId}:${sessionId}:pinned`,
 						at: pinnedAt,
@@ -450,6 +520,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		async importRevision(ctx, input) {
 			forbidAgent(ctx, "import skills");
 			assertMayOwn(ctx, input.owner);
+			await requireOwner(ctx, input.owner, "operator", "skills.importRevision");
 			validateSkillName(input.name);
 			assertDescription(input.description);
 			if (input.source.sourceId === "" || input.source.ref === "") {

@@ -16,14 +16,21 @@ import {
 	isHarbourError,
 	type LeaseEndReason,
 	type Mount,
+	type ProjectAccess,
+	type Role,
+	requireSystem,
 	type Sandboxes,
 	type SandboxLease,
 	type SandboxTier,
 	type SandboxUsage,
+	type SessionEndHook,
 	type SessionId,
+	type SystemContext,
 	systemClock,
+	systemContext,
 	type TierRoute,
 	type WorkspaceId,
+	type WorkspaceRecord,
 	type Workspaces,
 	type WorkspaceVersion,
 } from "@harbour/contracts";
@@ -33,6 +40,10 @@ import { isAssignmentWord, routeTool, tokenizeShell } from "./index.ts";
 const DEFAULT_TTL_MS = 15 * 60_000;
 const TIERS: readonly SandboxTier[] = ["isolate", "container"];
 const SWEEPER: Actor = { kind: "system", component: "sandbox.sweeper" };
+/** Looks a workspace up in the caller's organisation, before the caller's own access is checked. */
+const LOOKUP: Actor = { kind: "system", component: "sandbox" };
+/** The sandbox appends its audit events as itself. */
+const AUDIT_CONTEXT: SystemContext = systemContext("sandbox");
 
 export interface MemorySandboxesOptions {
 	readonly workspaces: Workspaces;
@@ -41,6 +52,13 @@ export interface MemorySandboxesOptions {
 	/** The tool-to-tier table; `DEFAULT_TIER_ROUTES` when absent. */
 	readonly routes?: readonly TierRoute[];
 	readonly defaultTtlMs?: number;
+	/**
+	 * Project access (settled question 7). Without it the sandboxes check only the organisation; every target and every
+	 * conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
+	/** The session-end hook (settled question 8); when given, `releaseSession` is registered as the `sandbox` teardown. */
+	readonly sessionEnd?: SessionEndHook;
 }
 
 /** Uncommitted changes over a workspace version. The in-memory shell only creates and overwrites files. */
@@ -66,8 +84,38 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 	const audit = options.audit;
 	const routes = options.routes ?? DEFAULT_TIER_ROUTES;
 	const defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
+	const access = options.access;
 	const leases = new Map<string, LeaseState>();
 	const escalated = new Set<string>();
+
+	/** Requires `needed` on `sessionId`'s project (and, when given, that the session belongs to `projectId`). */
+	async function requireSession(
+		ctx: CallContext,
+		sessionId: SessionId,
+		needed: Role,
+		operation: string,
+		extra: { readonly projectId?: string; readonly leaseId?: string } = {},
+	): Promise<void> {
+		await access?.require(ctx, {
+			sessionId,
+			needed,
+			operation,
+			...(extra.projectId === undefined ? {} : { projectId: extra.projectId }),
+			...(extra.leaseId === undefined ? {} : { subject: { kind: "sandbox.lease", id: extra.leaseId } }),
+		});
+	}
+
+	/** The workspace in the caller's organisation (`not_found` otherwise), read without the caller's project check. */
+	function workspaceInOrganisation(ctx: CallContext, workspaceId: WorkspaceId): Promise<WorkspaceRecord> {
+		return workspaces.get({ actor: LOOKUP, organisationId: ctx.organisationId }, workspaceId);
+	}
+
+	/** The leases of `sessionId` in the caller's organisation. */
+	function leasesOf(ctx: CallContext, sessionId: SessionId): LeaseState[] {
+		return [...leases.values()].filter(
+			(state) => state.organisationId === ctx.organisationId && state.lease.sessionId === sessionId,
+		);
+	}
 
 	function load(ctx: CallContext, leaseId: string): LeaseState {
 		const state = leases.get(leaseId);
@@ -113,13 +161,18 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 		});
 	}
 
+	/** Appends `event`. Takes the event already built, so the lease ends even without an audit sink. */
+	async function emit(event: AuditEventInput): Promise<void> {
+		await audit?.append(AUDIT_CONTEXT, [event]);
+	}
+
 	function pastTtl(state: LeaseState): boolean {
 		return state.lease.endedAt === undefined && clock.now() >= state.lease.expiresAt;
 	}
 
 	/** Rejects with `expired` when the lease has ended or passed its TTL (ending it first in that case). */
 	async function requireLive(state: LeaseState, actor: Actor): Promise<void> {
-		if (pastTtl(state)) await audit?.append([end(state, "expired", actor)]);
+		if (pastTtl(state)) await emit(end(state, "expired", actor));
 		if (state.lease.endedAt !== undefined || state.releasing !== undefined) {
 			throw new HarbourError("expired", `lease ${state.lease.id} has ended`, {
 				endReason: state.lease.endReason ?? "released",
@@ -150,10 +203,12 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 	const sandboxes: Sandboxes = {
 		async acquire(ctx, input) {
 			const ttlMs = ttl(input.ttlMs);
+			const workspace = await workspaceInOrganisation(ctx, input.workspaceId);
+			await requireSession(ctx, input.sessionId, "operator", "sandbox.acquire", projectOf(workspace));
 			const record = await workspaces.get(ctx, input.workspaceId);
 			const expired: AuditEventInput[] = [];
 			const existing = liveLease(ctx.organisationId, input.sessionId, input.tier, expired);
-			await audit?.append(expired);
+			await audit?.append(AUDIT_CONTEXT, expired);
 			if (existing !== undefined) {
 				throw new HarbourError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
 					leaseId: existing.lease.id,
@@ -176,7 +231,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 				...(input.tier === "container" ? { working: { base: record.head, puts: new Map(), dirs: new Set() } } : {}),
 				busyMs: 0,
 			});
-			await audit?.append([
+			await audit?.append(AUDIT_CONTEXT, [
 				event({ organisationId: ctx.organisationId, projectId: ctx.projectId }, ctx.actor, input.sessionId, {
 					id: `sandbox:lease:${lease.id}:acquired`,
 					type: "sandbox.lease.acquired",
@@ -195,6 +250,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 		async renew(ctx, leaseId, ttlMs) {
 			const value = ttl(ttlMs);
 			const state = load(ctx, leaseId);
+			await requireSession(ctx, state.lease.sessionId, "operator", "sandbox.renew", { leaseId });
 			await requireLive(state, ctx.actor);
 			state.lease = { ...state.lease, expiresAt: clock.now() + value };
 			return state.lease;
@@ -202,11 +258,12 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 
 		async release(ctx, leaseId, reason = "released") {
 			const state = load(ctx, leaseId);
+			await requireSession(ctx, state.lease.sessionId, "operator", "sandbox.release", { leaseId });
 			if (state.lease.endedAt !== undefined) return state.lease;
 			state.releasing ??= (async () => {
 				if (pastTtl(state) || reason === "expired") {
 					// Expired leases are discarded, not committed.
-					await audit?.append([end(state, "expired", ctx.actor)]);
+					await emit(end(state, "expired", ctx.actor));
 					return state.lease;
 				}
 				let committedVersion: number | undefined;
@@ -222,7 +279,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 					});
 					committedVersion = result.version;
 				}
-				await audit?.append([end(state, reason, ctx.actor, committedVersion)]);
+				await emit(end(state, reason, ctx.actor, committedVersion));
 				return state.lease;
 			})();
 			try {
@@ -234,15 +291,18 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 
 		async exec(ctx, leaseId, request) {
 			const state = load(ctx, leaseId);
+			await requireSession(ctx, state.lease.sessionId, "operator", "sandbox.exec", { leaseId });
 			await requireLive(state, ctx.actor);
 			return execOn(ctx, state, request);
 		},
 
 		async run(ctx, input) {
+			const workspace = await workspaceInOrganisation(ctx, input.workspaceId);
+			await requireSession(ctx, input.sessionId, "operator", "sandbox.run", projectOf(workspace));
 			const tier = sandboxes.route(input.tool, input.request.command);
 			const expired: AuditEventInput[] = [];
 			let state = liveLease(ctx.organisationId, input.sessionId, tier, expired);
-			await audit?.append(expired);
+			await audit?.append(AUDIT_CONTEXT, expired);
 			if (state !== undefined && state.lease.workspaceId !== input.workspaceId) {
 				throw new HarbourError("conflict", `the session's ${tier} lease is on another workspace`, {
 					leaseId: state.lease.id,
@@ -259,7 +319,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 			const escalation = `${ctx.organisationId}\u0000${input.sessionId}`;
 			if (tier === "container" && !escalated.has(escalation)) {
 				escalated.add(escalation);
-				await audit?.append([
+				await audit?.append(AUDIT_CONTEXT, [
 					event(state, ctx.actor, input.sessionId, {
 						id: `sandbox:escalated:${ctx.organisationId}:${input.sessionId}`,
 						type: "sandbox.escalated",
@@ -276,9 +336,12 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 		},
 
 		async leases(ctx, filter) {
+			const held = leasesOf(ctx, filter.sessionId);
+			// A session with no leases here lists nothing, as one in another organisation does.
+			if (held.length === 0) return [];
+			await requireSession(ctx, filter.sessionId, "viewer", "sandbox.leases");
 			const found: SandboxLease[] = [];
-			for (const state of leases.values()) {
-				if (state.organisationId !== ctx.organisationId || state.lease.sessionId !== filter.sessionId) continue;
+			for (const state of held) {
 				const live = state.lease.endedAt === undefined && !pastTtl(state);
 				if (filter.live === undefined || filter.live === live) found.push(state.lease);
 			}
@@ -286,14 +349,18 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 		},
 
 		async releaseSession(ctx, sessionId, reason = "session_ended") {
-			for (const state of [...leases.values()]) {
-				if (state.organisationId !== ctx.organisationId || state.lease.sessionId !== sessionId) continue;
+			const held = leasesOf(ctx, sessionId).filter((state) => state.lease.endedAt === undefined);
+			// Nothing held: a silent no-op, so the session-end teardown can run twice.
+			if (held.length === 0) return;
+			await requireSession(ctx, sessionId, "operator", "sandbox.releaseSession");
+			for (const state of held) {
 				if (state.lease.endedAt !== undefined) continue;
 				await sandboxes.release(ctx, state.lease.id, reason);
 			}
 		},
 
-		async sweep() {
+		async sweep(ctx) {
+			await requireSystem(ctx, "sandbox.sweep", { ...(audit === undefined ? {} : { audit }), clock });
 			const swept: SandboxLease[] = [];
 			const events: AuditEventInput[] = [];
 			for (const state of leases.values()) {
@@ -301,17 +368,18 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 				events.push(end(state, "expired", SWEEPER));
 				swept.push(state.lease);
 			}
-			await audit?.append(events);
+			await audit?.append(AUDIT_CONTEXT, events);
 			return swept;
 		},
 
 		async usage(ctx, sessionId) {
+			const held = leasesOf(ctx, sessionId);
+			if (held.length > 0) await requireSession(ctx, sessionId, "viewer", "sandbox.usage");
 			const now = clock.now();
 			const usage = new Map<SandboxTier, { leases: number; heldMs: number; busyMs: number }>(
 				TIERS.map((tier) => [tier, { leases: 0, heldMs: 0, busyMs: 0 }]),
 			);
-			for (const state of leases.values()) {
-				if (state.organisationId !== ctx.organisationId || state.lease.sessionId !== sessionId) continue;
+			for (const state of held) {
 				const totals = usage.get(state.lease.tier)!;
 				totals.leases++;
 				totals.heldMs += (state.lease.endedAt ?? now) - state.lease.acquiredAt;
@@ -355,7 +423,13 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 		return { ...outcome, tier: lease.tier, leaseId: lease.id, workspaceVersion, durationMs };
 	}
 
+	options.sessionEnd?.register("sandbox", (ctx, end) => sandboxes.releaseSession(ctx, end.sessionId, end.reason));
 	return sandboxes;
+}
+
+/** The project a project-owned workspace belongs to, for checking that a session acts in it. */
+function projectOf(workspace: WorkspaceRecord): { readonly projectId?: string } {
+	return workspace.owner.kind === "project" ? { projectId: workspace.owner.projectId } : {};
 }
 
 interface ShellIo {
