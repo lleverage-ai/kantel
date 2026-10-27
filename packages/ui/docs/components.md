@@ -40,7 +40,8 @@ grant". Tones: `neutral`, `accent`, or any status.
 
 **For** every row in every list: sessions, skills, schedules, memory concepts, audit events, inbox items. One line
 (`compact`, 36px) or three (`comfortable`: overline, title, meta). `leading` takes a dot or an icon, `trailing` a
-status or a time, `actions` replaces `trailing` on hover or keyboard focus (always shown on touch). A row is a
+status or a time, `actions` replaces `trailing` on hover or keyboard focus (always shown on touch, and on a static row, which has no
+main target to focus). A row is a
 link with `href`, a button with `onSelect`, or static. The main target and the actions are siblings, so both are
 reachable by Tab.
 

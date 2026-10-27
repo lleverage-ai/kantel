@@ -43,7 +43,7 @@ export const ListRow = memo(function ListRow({
 	density = "compact",
 	quiet = false,
 }: ListRowProps) {
-	const className = `hb-list-row hb-list-row-${density}${selected ? " hb-list-row-selected" : ""}${quiet ? " hb-list-row-quiet" : ""}${actions === undefined ? "" : " hb-list-row-has-actions"}`;
+	const className = `hb-list-row hb-list-row-${density}${selected ? " hb-list-row-selected" : ""}${quiet ? " hb-list-row-quiet" : ""}${actions === undefined ? "" : " hb-list-row-has-actions"}${actions !== undefined && href === undefined && onSelect === undefined ? " hb-list-row-static" : ""}`;
 	const body = (
 		<>
 			{leading === undefined ? null : <span className="hb-list-row-leading">{leading}</span>}

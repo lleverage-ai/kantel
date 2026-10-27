@@ -4,7 +4,7 @@
 	border: calc(var(--hb-hairline) * 1.5) solid var(--hb-border-strong);
 	border-top-color: var(--hb-status-working);
 	border-radius: var(--hb-radius-full);
-	animation: hb-spin 0.9s linear infinite;
+	animation: hb-spin var(--hb-duration-spin) linear infinite;
 }
 
 .hb-spinner-sm {
@@ -29,7 +29,7 @@
 	height: var(--hb-text-sm);
 	border-radius: var(--hb-radius-xs);
 	background: var(--hb-active);
-	animation: hb-shimmer 2.4s ease-in-out infinite;
+	animation: hb-shimmer var(--hb-duration-shimmer) ease-in-out infinite;
 }
 
 .hb-kbd {

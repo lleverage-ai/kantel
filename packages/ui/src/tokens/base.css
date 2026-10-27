@@ -73,10 +73,10 @@
 	.hb-app *::before,
 	.hb-app *::after {
 		/* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every component's animation. */
-		animation-duration: 0.01ms !important;
+		animation-duration: var(--hb-duration-instant) !important;
 		/* biome-ignore lint/complexity/noImportantStyles: as above. */
 		animation-iteration-count: 1 !important;
 		/* biome-ignore lint/complexity/noImportantStyles: as above. */
-		transition-duration: 0.01ms !important;
+		transition-duration: var(--hb-duration-instant) !important;
 	}
 }

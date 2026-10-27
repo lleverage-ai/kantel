@@ -103,9 +103,11 @@ export function TextField({
 	hint,
 	error,
 	className,
+	id: suppliedId,
 	...rest
 }: ComponentProps<"input"> & { label: string; hint?: string; error?: string }) {
-	const id = useId();
+	const generatedId = useId();
+	const id = suppliedId ?? generatedId;
 	const described = error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
 	return (
 		<div className={`hb-text-field${className ? ` ${className}` : ""}`}>

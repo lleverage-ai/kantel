@@ -72,7 +72,9 @@ async function keyboard(page: Page): Promise<GateResult["keyboard"]> {
 	const reached = new Set<string>();
 	const withoutRing: string[] = [];
 	await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-	for (let step = 0; step < tabbable + 2; step++) {
+	// Controls revealed on focus (a row's actions) add stops the initial scan can't see, so allow for them; stop once
+	// every scanned control has been reached.
+	for (let step = 0; step < tabbable * 3 + 4 && reached.size < tabbable; step++) {
 		await page.keyboard.press("Tab");
 		const seen = await page.evaluate(() => {
 			const element = document.activeElement as HTMLElement | null;

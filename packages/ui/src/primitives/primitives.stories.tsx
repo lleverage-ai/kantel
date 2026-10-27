@@ -277,6 +277,23 @@ function ListDemo() {
 					</div>
 				</Column>
 			</Section>
+			<Section title="Static, with actions always shown">
+				<Column>
+					<div>
+						<ListRow
+							title="LINEAR_API_KEY"
+							meta="Used by 2 grants"
+							density="comfortable"
+							trailing={<RelativeTime at={now - 3 * 3_600_000} />}
+							actions={
+								<Button size="xs" variant="ghost">
+									Rotate
+								</Button>
+							}
+						/>
+					</div>
+				</Column>
+			</Section>
 			<Section title="Loading">
 				<Column>
 					<div>

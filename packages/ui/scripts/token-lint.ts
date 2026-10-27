@@ -32,6 +32,10 @@ const cssRules: { rule: string; test: (line: string) => boolean }[] = [
 		test: (line) => !/^\s*@media/.test(line) && /(?<![\w-])\d*\.?\d+(px|rem)\b/.test(line),
 	},
 	{
+		rule: "raw duration: use a --hb-duration token",
+		test: (line) => !/^\s*@media/.test(line) && /(?<![\w.-])\d*\.?\d+m?s\b/.test(line),
+	},
+	{
 		rule: "font-size must be a --hb-text token",
 		test: (line) => /^\s*font-size\s*:/.test(line) && !/var\(--hb-|inherit/.test(line),
 	},
@@ -58,6 +62,20 @@ const tsxRules: { rule: string; test: (line: string) => boolean }[] = [
 			/\b(width|height|size|fontSize|padding\w*|margin\w*|gap|top|left|right|bottom|inset|borderRadius|lineHeight)\s*[:=]\s*\{?\s*["'`][^"'`]*\d(px|rem)\b/.test(
 				stripComment(line),
 			),
+	},
+	{
+		// React reads a bare number on these properties as px. Zero and unitless line heights are fine, and so is a
+		// Ladle story's `meta` (its viewport width, not a style).
+		rule: "raw numeric size in a style: use a --hb- size token",
+		test: (line) =>
+			!/\.meta\s*=/.test(line) &&
+			/\b(width|height|minWidth|maxWidth|minHeight|maxHeight|fontSize|padding\w*|margin\w*|gap|rowGap|columnGap|top|left|right|bottom|inset\w*|borderRadius|borderWidth|outlineWidth|outlineOffset)\s*:\s*-?(\d*\.\d*[1-9]|[1-9]\d*)\d*\s*[,}]/.test(
+				stripComment(line),
+			),
+	},
+	{
+		rule: "raw duration in TSX: use a --hb-duration token",
+		test: (line) => /\b(animation|transition)\w*\s*:\s*["'`][^"'`]*\d(ms|s)\b/.test(stripComment(line)),
 	},
 	{ rule: "copy: no arrows or middle dots in rendered text", test: (line) => copyChars.test(stripComment(line)) },
 ];

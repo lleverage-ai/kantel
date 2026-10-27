@@ -116,6 +116,14 @@ a.hb-list-row-main {
 	gap: var(--hb-space-1);
 }
 
+/*
+ * A static row has no focusable main target for Tab to land on and reveal its actions, so they always show, next to
+ * whatever is trailing.
+ */
+.hb-list-row-static .hb-list-row-actions {
+	display: inline-flex;
+}
+
 .hb-list-row-has-actions:hover .hb-list-row-actions,
 .hb-list-row-has-actions:focus-within .hb-list-row-actions {
 	display: inline-flex;
@@ -126,13 +134,18 @@ a.hb-list-row-main {
 	display: none;
 }
 
+.hb-list-row-static.hb-list-row-has-actions:hover .hb-list-row-trailing,
+.hb-list-row-static.hb-list-row-has-actions:focus-within .hb-list-row-trailing {
+	display: inline-flex;
+}
+
 /* Touch has no hover: keep the actions in reach. */
 @media (pointer: coarse) {
 	.hb-list-row-actions {
 		display: inline-flex;
 	}
 
-	.hb-list-row-has-actions .hb-list-row-trailing {
+	.hb-list-row-has-actions:not(.hb-list-row-static) .hb-list-row-trailing {
 		display: none;
 	}
 }

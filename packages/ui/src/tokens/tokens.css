@@ -121,6 +121,10 @@
 	--hb-duration-fast: 120ms;
 	--hb-duration: 160ms;
 	--hb-duration-pulse: 2s;
+	--hb-duration-spin: 0.9s;
+	--hb-duration-shimmer: 2.4s;
+	/* What every duration becomes under reduced motion. */
+	--hb-duration-instant: 0.01ms;
 	--hb-ease: cubic-bezier(0.2, 0, 0, 1);
 
 	/* Layers. */

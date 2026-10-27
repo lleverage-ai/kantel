@@ -23,6 +23,10 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/tokens/tokens.css", ":root { --x: #fff; --y: 12px; }")).toEqual([]);
 		expect(lintSource("src/x.css", "/* was #fff and 12px */\n.a { color: var(--hb-text); }")).toEqual([]);
 		expect(lintSource("src/x.css", "@media (max-width: 600px) {")).toEqual([]);
+		expect(lintSource("src/x.css", "  animation: hb-spin 0.9s linear infinite;")).toHaveLength(1);
+		expect(lintSource("src/x.css", "  transition: opacity 120ms;")).toHaveLength(1);
+		expect(lintSource("src/x.css", "  transition: opacity var(--hb-duration-fast) var(--hb-ease);")).toEqual([]);
+		expect(lintSource("src/x.css", ".hb-icons { display: flex; }")).toEqual([]);
 	});
 
 	it("requires token font sizes and radii", () => {
@@ -42,6 +46,10 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/x.tsx", '<div style={{ color: "#0a0a0a" }} />')).toHaveLength(1);
 		expect(lintSource("src/x.tsx", '<div style={{ width: "12px" }} />')).toHaveLength(1);
 		expect(lintSource("src/x.tsx", '<div style={{ width: "var(--hb-card-width)" }} />')).toEqual([]);
+		expect(lintSource("src/x.tsx", "<div style={{ padding: 12 }} />")).toHaveLength(1);
+		expect(lintSource("src/x.tsx", "<div style={{ marginTop: 0.5, gap: 4 }} />")).toHaveLength(1);
+		expect(lintSource("src/x.tsx", "<div style={{ margin: 0, lineHeight: 1.4, flex: 1 }} />")).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div style={{ transition: "opacity 200ms" }} />')).toHaveLength(1);
 		expect(lintSource("src/x.tsx", "// a comment about 12px and → arrows")).toEqual([]);
 	});
 });
