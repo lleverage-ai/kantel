@@ -31,10 +31,17 @@
 	opacity: 0.8;
 }
 
+/*
+ * The label is trimmed to its capitals (cap height down to the baseline), so centring it in the button centres the
+ * letters rather than a line box whose space below them is deeper than above. The padding gives descenders room
+ * inside the clip and, being even, keeps the capitals on the button's centre.
+ */
 .hb-button-label {
 	min-width: 0;
+	padding-block: var(--hb-trim-room);
 	overflow: hidden;
 	text-overflow: ellipsis;
+	text-box: trim-both cap alphabetic;
 }
 
 .hb-button-xs {

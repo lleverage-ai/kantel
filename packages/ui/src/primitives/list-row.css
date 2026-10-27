@@ -51,14 +51,28 @@ a.hb-list-row-main {
 	padding-bottom: var(--hb-space-4);
 }
 
+/*
+ * One title line tall, with an invisible character in the title's type to give it the title's baseline. The dot or
+ * icon sits on that baseline, then moves up onto the middle of the capitals (see --hb-on-cap).
+ */
 .hb-list-row-leading {
 	display: inline-flex;
 	flex: none;
-	align-items: center;
+	align-items: baseline;
 	justify-content: center;
 	min-width: var(--hb-icon-md);
 	height: calc(var(--hb-text-md) * var(--hb-leading));
 	color: var(--hb-text-faint);
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading);
+}
+
+.hb-list-row-leading::before {
+	content: "\200b";
+}
+
+.hb-list-row-leading > * {
+	translate: 0 var(--hb-on-cap);
 }
 
 .hb-list-row-text {

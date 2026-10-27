@@ -1,5 +1,6 @@
 // Screenshots every workbench story (or those matching --only) at 1280px and 420px with a headless Chromium.
 //   pnpm build:workbench && node scripts/shoot.ts [--only workbench--overview,primitives--buttons] [--out shots]
+//   [--scale 2]: every width at that pixel density, for checking alignment closely (default: 2x under 600px, else 1x)
 // Writes <out>/<story>-1280.png and <out>/<story>-420.png, full page.
 
 import { mkdirSync, readFileSync } from "node:fs";
@@ -14,6 +15,7 @@ const { values } = parseArgs({
 		build: { type: "string", default: new URL("../build/", import.meta.url).pathname },
 		chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" },
 		widths: { type: "string", default: "1280,420" },
+		scale: { type: "string" },
 	},
 });
 
@@ -28,7 +30,7 @@ try {
 	for (const width of values.widths.split(",").map(Number)) {
 		const page = await browser.newPage({
 			viewport: { width, height: width < 600 ? 860 : 900 },
-			deviceScaleFactor: width < 600 ? 2 : 1,
+			deviceScaleFactor: values.scale === undefined ? (width < 600 ? 2 : 1) : Number(values.scale),
 			colorScheme: "dark",
 			reducedMotion: "reduce",
 		});

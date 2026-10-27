@@ -61,11 +61,14 @@
 	line-height: var(--hb-leading);
 }
 
+/* The icon sits on the first line's baseline, then moves up onto the middle of its capitals (see --hb-on-cap). */
 .hb-notice > .hb-icon {
-	margin-top: calc((var(--hb-text-sm) * var(--hb-leading) - var(--hb-icon-sm)) / 2);
+	align-self: baseline;
+	translate: 0 var(--hb-on-cap);
 }
 
 .hb-notice-text {
+	align-self: baseline;
 	flex: 1;
 	min-width: 0;
 	overflow-wrap: anywhere;
@@ -155,7 +158,28 @@
 	overflow-wrap: anywhere;
 }
 
+/* A pill is nearly a line tall; it may overhang the line by a pixel rather than push the rows apart. */
 .hb-field-extra {
 	flex: none;
-	margin: 0;
+	margin: calc(var(--hb-space-1) * -1) 0;
+}
+
+/*
+ * A badge shares the row's baseline, and its words are centred in the pill, but its type is smaller than the
+ * value's, so the middle of its capitals sits below the middle of the value's. It moves up by half the difference
+ * in cap height: --hb-row-cap is the row's cap height, resolved in the row's type (a registered length computes
+ * where it is set), against 1cap in the badge's own. Nothing about the row's layout changes.
+ */
+@property --hb-row-cap {
+	syntax: "<length>";
+	inherits: true;
+	initial-value: 0;
+}
+
+.hb-field-row {
+	--hb-row-cap: 1cap;
+}
+
+.hb-field-extra > * {
+	translate: 0 calc(0.5cap - 0.5 * var(--hb-row-cap));
 }
