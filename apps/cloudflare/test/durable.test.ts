@@ -1,12 +1,19 @@
 // The stack over durable storage, in Node: SQLite stands in for D1 and the Durable Object's own SQLite, and the
 // in-memory object store for R2. A second stack opened over the same storage is the Durable Object restarting.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { createMockAccess } from "@harbour/identity/testing";
+import { createSessionRuntime } from "@harbour/runtime/core";
+import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import type { SqlValue } from "@harbour/runtime-cloudflare";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
+import { createEchoModels } from "../src/echo-model.ts";
 import { createGateway } from "../src/gateway.ts";
 import {
 	type BootstrapRecord,
@@ -155,6 +162,55 @@ describe("the stack over durable storage", () => {
 		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
 		const audit = await second.call("/v1/audit/events?type=identity.project.created");
 		expect(((await audit.json()) as { items: unknown[] }).items).toHaveLength(1);
+	});
+
+	it("reads sessions the object stored before it hosted the session core", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harbour-sessions-"));
+		try {
+			const file = join(dir, "object.sqlite");
+			const storage: StackStorage = {
+				...(await durableStorage()),
+				sessions: objectStorage(new DatabaseSync(file)),
+			};
+			const first = await start(storage);
+			const { organisation, project, admin } = first.stack;
+			await first.stack.close();
+
+			// What the deployed object did before: `createSessionRuntime` over chord's SQLite wrapper, default prefix.
+			const old = await openNodeSqliteDatabase(file);
+			const before = createSessionRuntime({
+				models: createEchoModels(),
+				store: await createSqlSessionStore(old),
+				storage: (session) => sqlPiStorage(old, session.id),
+			});
+			const ctx = { actor: { kind: "service", serviceId: "before" }, organisationId: organisation.id } as const;
+			const session = await before.runtime.create(ctx, {
+				projectId: project.id,
+				agentId: DEFAULT_AGENT_ID,
+				title: "Before",
+			});
+			const prompt = await before.runtime.prompt(ctx, session.id, { text: "ping" });
+			expect(await before.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ answer: "Echo: ping" });
+			await before.close();
+			await old.close();
+
+			const after = await start(storage);
+			const listed = await after.call(`/v1/sessions?projectId=${project.id}`);
+			expect(((await listed.json()) as { items: { id: string; title: string }[] }).items).toMatchObject([
+				{ id: session.id, title: "Before" },
+			]);
+			const snapshot = await after.stack.runtime.runtime.snapshot(admin, session.id);
+			expect(snapshot.items.map((item) => item.kind)).toEqual(["user", "assistant"]);
+			// And it carries on: the session takes a new prompt under the core.
+			const next = await after.stack.runtime.runtime.prompt(admin, session.id, { text: "again" });
+			expect(await after.stack.runtime.runtime.wait(admin, session.id, next.id)).toMatchObject({
+				answer: "Echo: again",
+			});
+			await after.stack.close();
+			opened.splice(opened.indexOf(after.stack), 1);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("arms the object's alarm when a prompt is admitted, and runs the session core from alarm()", async () => {

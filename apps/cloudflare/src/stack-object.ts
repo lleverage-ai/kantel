@@ -66,11 +66,19 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 
 	protected ready(): Promise<{ stack: Stack; gateway: Gateway }> {
 		this.#ready ??= (async () => {
-			const stack = await createStack({
-				...this.stackOptions(),
-				config: gatewayConfig(this.env),
-				storage: this.stackStorage(),
-			});
+			// A configuration error is answered (503) and retried by the next request: nothing has started yet.
+			const config = gatewayConfig(this.env);
+			let stack: Stack;
+			try {
+				stack = await createStack({ ...this.stackOptions(), config, storage: this.stackStorage() });
+			} catch (error) {
+				// The session core may have opened sessions (resumed due work) before the start failed, and a core whose
+				// `ready` rejected cannot close them. Reset the object so none of it outlives this instance; the next
+				// request or alarm starts a fresh one over the same storage.
+				console.error("harbour: the stack did not start; resetting the object", error);
+				this.ctx.abort("harbour: the stack did not start");
+				throw error;
+			}
 			return { stack, gateway: createGateway(stack) };
 		})();
 		// A failed start is retried by the next request rather than remembered.
