@@ -406,6 +406,30 @@ export function createRuntimeConformance(options: {
 					subject.profiles.put(siteOperator, workerProfile({ id: "docs-only", projectId: PROJECT })),
 					"session.profiles.put",
 				);
+				const docs = await subject.profiles.put(operator, workerProfile({ id: "docs-writer", projectId: PROJECT }));
+				await denied(subject.profiles.get(siteOperator, docs.id), "session.profiles.get");
+				await denied(
+					subject.profiles.put(siteOperator, workerProfile({ id: docs.id, projectId: OTHER_PROJECT })),
+					"session.profiles.put",
+				);
+				a.strictEqual((await subject.profiles.get(operator, docs.id)).projectId, PROJECT, "the profile was not moved");
+				a.ok(
+					!(await subject.profiles.list(siteOperator)).items.some((profile) => profile.id === docs.id),
+					"the other project's profile is left out of the list",
+				);
+				a.ok((await subject.profiles.list(operator)).items.some((profile) => profile.id === docs.id));
+				await denied(
+					subject.hostTools.register(
+						contextFor(siteOperator.actor, ORG, PROJECT),
+						"intruder-host",
+						[LOOKUP],
+						async () => ({
+							output: "no",
+						}),
+					),
+					"session.hostTools.register",
+				);
+				a.deepEqual(await subject.hostTools.list(operator, "intruder-host"), [], "no host tools were registered");
 				const listed = await subject.directory.list(siteOperator);
 				a.deepEqual(
 					listed.items.map((record) => record.id),

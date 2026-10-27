@@ -561,16 +561,44 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 				operation: "session.profiles.put",
 				subject: { kind: "session.profile", id: profile.id },
 			});
+			// Replacing a profile needs the same on the profile it replaces, so no one moves another project's profile.
+			const existing = profilesByKey.get(keyOf(ctx.organisationId, profile.id));
+			if (existing !== undefined && existing.projectId !== profile.projectId) {
+				await check(ctx, {
+					...(existing.projectId === undefined ? {} : { projectId: existing.projectId }),
+					needed: "operator",
+					operation: "session.profiles.put",
+					subject: { kind: "session.profile", id: profile.id },
+				});
+			}
 			profilesByKey.set(keyOf(ctx.organisationId, profile.id), profile);
 			return profile;
 		},
 		async get(ctx, agentId) {
-			return requireProfile(ctx, agentId);
+			const profile = requireProfile(ctx, agentId);
+			// A project's profile is read with viewer on the project; an organisation-wide one by the organisation.
+			if (profile.projectId !== undefined) {
+				await check(ctx, {
+					projectId: profile.projectId,
+					needed: "viewer",
+					operation: "session.profiles.get",
+					subject: { kind: "session.profile", id: profile.id },
+				});
+			}
+			return profile;
 		},
 		async list(ctx, page) {
-			const items = [...profilesByKey.values()]
+			const items: AgentProfile[] = [];
+			const sorted = [...profilesByKey.values()]
 				.filter((profile) => profile.organisationId === ctx.organisationId)
 				.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+			for (const profile of sorted) {
+				const visible =
+					access === undefined ||
+					profile.projectId === undefined ||
+					(await access.allows(ctx, { projectId: profile.projectId, needed: "viewer" }));
+				if (visible) items.push(profile);
+			}
 			return paginate(items, page);
 		},
 	};
