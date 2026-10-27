@@ -18,6 +18,12 @@
 # on runsc finds its peers by address, not by name: minio and vault-proxy have
 # fixed addresses on `control` (HARBOUR_CONTROL_PREFIX, default 10.250.89),
 # and the isolate host gets them as /etc/hosts entries.
+#
+# The isolate host has a fixed address too, for a different reason: the session
+# hosts (Bun) cache DNS answers for 30 s, so if the isolate host is recreated
+# on a new address, a host that isn't recreated with it keeps calling the old
+# one. Docker hands out the other addresses on `control` from .128 up, so they
+# can never take a fixed one.
 
 name: harbour
 
@@ -111,7 +117,8 @@ services:
       S3_SECRET_KEY: harbour-dev-secret
       VAULT_ISOLATE_KEY: ${HARBOUR_VAULT_ISOLATE_KEY:-dev-isolate-key}
     ports: ["127.0.0.1:${HARBOUR_ISOLATE_PORT:-58080}:8080"]
-    networks: [control]
+    networks:
+      control: { ipv4_address: "${HARBOUR_CONTROL_PREFIX:-10.250.89}.12" }
     # By address: on runsc this container cannot use Docker's DNS.
     extra_hosts:
       - "minio:${HARBOUR_CONTROL_PREFIX:-10.250.89}.10"
@@ -219,6 +226,8 @@ networks:
     ipam:
       config:
         - subnet: "${HARBOUR_CONTROL_PREFIX:-10.250.89}.0/24"
+          # Dynamic addresses only; .10-.12 are fixed above.
+          ip_range: "${HARBOUR_CONTROL_PREFIX:-10.250.89}.128/25"
   upstream: {}
 
 volumes:

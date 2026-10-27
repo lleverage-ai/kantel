@@ -64,8 +64,10 @@ jobs:
           --kill-cmd "docker compose -f deploy/compose/compose.yaml kill host-a"
           --fallback http://127.0.0.1:58082
 
+      # --no-deps: bring back host-a only. Without it compose on the runner
+      # also recreated the isolate host, vault proxy and migrations.
       - name: Bring the killed host back
-        run: docker compose -f deploy/compose/compose.yaml up -d --wait host-a
+        run: docker compose -f deploy/compose/compose.yaml up -d --wait --no-deps host-a
 
       # The scenario script shared with the Cloudflare target (M0-CF1, #3).
       # It needs the public internet: example.com, postman-echo.com, api.github.com.

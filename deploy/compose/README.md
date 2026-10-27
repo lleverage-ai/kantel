@@ -100,6 +100,13 @@ Two things work differently under gVisor, and the stack allows for both:
   of reach of Docker's archive API. `/workspace` is an anonymous volume per
   container, so the session host can read the command's changes back.
 
+The isolate host has a fixed address as well (`.12`), on any runtime. The
+session hosts run on Bun, which caches DNS answers for 30 s, so when the
+isolate host was recreated on a new address, a session host that wasn't
+recreated with it kept calling the old one, and its isolate commands failed
+with "Unable to connect" until the cache expired. Docker allocates every other
+address on `control` from `.128` up, so nothing else can take a fixed one.
+
 ## Spike shortcuts (not the production shape)
 
 - The session hosts mount the Docker socket to start sandboxes. Anything with
