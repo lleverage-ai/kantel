@@ -75,6 +75,58 @@ describe("the runtime's session-end hook with every in-memory component", () => 
 	});
 });
 
+describe("the runtime's session end when the audit sink fails", () => {
+	it("still runs every session's teardowns, then rejects", async () => {
+		const { models } = createScriptedModel();
+		const audit = new RecordingAuditSink();
+		let failing: string | undefined;
+		const memory = createMemoryRuntime({
+			models,
+			audit: {
+				append: async (events) => {
+					if (events.some((event) => event.type === "session.aborted" && event.sessionId === failing)) {
+						throw new HarbourError("unavailable", "The audit sink is down");
+					}
+					await audit.append(events);
+				},
+			},
+		});
+		const ended: string[] = [];
+		memory.sessionEnd.register("recorder", async (_ctx, end) => {
+			ended.push(end.sessionId);
+		});
+		try {
+			await memory.profiles.put(operator, {
+				id: "agent-1",
+				organisationId: "org-1",
+				name: "Worker",
+				model: { route: "default" },
+				promptLayers: [],
+				tools: [],
+				skills: [],
+				sandbox: { tiers: ["isolate"] },
+				memoryScopes: [],
+			});
+			const parent = await memory.runtime.create(operator, { projectId: "proj-1", agentId: "agent-1" });
+			const first = await memory.runtime.create(operator, {
+				projectId: "proj-1",
+				agentId: "agent-1",
+				parentSessionId: parent.id,
+			});
+			const second = await memory.runtime.create(operator, {
+				projectId: "proj-1",
+				agentId: "agent-1",
+				parentSessionId: parent.id,
+			});
+			failing = first.id;
+			await expect(memory.runtime.abort(operator, parent.id)).rejects.toMatchObject({ code: "unavailable" });
+			expect(new Set(ended)).toEqual(new Set([first.id, second.id, parent.id]));
+		} finally {
+			await memory.close();
+		}
+	});
+});
+
 describe("createSessionEndHook", () => {
 	const end = {
 		sessionId: "sess-1",

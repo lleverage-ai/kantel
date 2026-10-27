@@ -38,6 +38,7 @@ import {
 	type ModelChoice,
 	type OrganisationId,
 	type ProjectAccess,
+	type ProjectId,
 	type PromptInput,
 	type Sandboxes,
 	type SessionDirectory,
@@ -104,6 +105,8 @@ export interface MemoryRuntime {
 interface HostRegistration {
 	readonly tools: readonly HostToolDefinition[];
 	readonly handler: HostToolHandler;
+	/** The project the host registered for; absent when it registered across the organisation. */
+	readonly projectId?: ProjectId;
 }
 
 interface SubmissionEntry {
@@ -306,14 +309,23 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		release: "aborted" | "session_ended",
 		reason?: string,
 	): Promise<void> => {
+		// One child failing (its audit sink, say) must not keep its siblings or this session from ending; the first
+		// failure is rethrown once every session has run its teardowns. A closed child has already ended.
+		let failure: { readonly error: unknown } | undefined;
 		for (const child of childrenOf(session.record.organisationId, session.record.id)) {
-			await stopWork(ctx, child, "aborted", `parent ${session.record.id} aborted`);
+			if (child.closed) continue;
+			try {
+				await stopWork(ctx, child, "aborted", `parent ${session.record.id} aborted`);
+			} catch (error) {
+				failure ??= { error };
+			}
 		}
 		await session.conversation.abort(piContext(ctx));
 		await sync(session);
 		const run = session.aborts + 1;
 		session.aborts = run;
 		await ends.run(endOf(session, release, ctx.actor), String(run));
+		if (failure !== undefined) throw failure.error;
 		await audit([
 			{
 				id: `session:${session.record.id}:aborted:${session.aborts}`,
@@ -385,6 +397,10 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		async create(ctx, input) {
 			const profile = requireProfile(ctx, input.agentId);
 			if (input.projectId === "") throw new HarbourError("invalid", "A session needs a project");
+			// A project's profile runs only in that project; an organisation-wide one runs in any.
+			if (profile.projectId !== undefined && profile.projectId !== input.projectId) {
+				throw new HarbourError("invalid", `Agent profile ${profile.id} is for another project`);
+			}
 			if (input.parentSessionId !== undefined) requireSession(ctx, input.parentSessionId);
 			// A child is in its parent's project, and an agent may create one only from its own session or its child.
 			await check(ctx, {
@@ -612,15 +628,23 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 				}
 				names.add(tool.name);
 			}
-			// A host registers for the project its call names, or across the organisation.
-			await check(ctx, {
-				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
-				needed: "operator",
-				operation: "session.hostTools.register",
-				subject: { kind: "session.host", id: hostId },
-			});
+			// A host registers for the project its call names, or across the organisation. Replacing a host registered
+			// for another scope needs the same there, so no one takes over another project's tools.
 			const key = keyOf(ctx.organisationId, hostId);
-			const registration: HostRegistration = { tools: [...tools], handler };
+			const existing = hosts.get(key);
+			for (const projectId of new Set([ctx.projectId, ...(existing === undefined ? [] : [existing.projectId])])) {
+				await check(ctx, {
+					...(projectId === undefined ? {} : { projectId }),
+					needed: "operator",
+					operation: "session.hostTools.register",
+					subject: { kind: "session.host", id: hostId },
+				});
+			}
+			const registration: HostRegistration = {
+				tools: [...tools],
+				handler,
+				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+			};
 			hosts.set(key, registration);
 			refreshHostTools(ctx.organisationId, hostId);
 			return {
@@ -632,7 +656,17 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 			};
 		},
 		async list(ctx, hostId) {
-			return hosts.get(keyOf(ctx.organisationId, hostId))?.tools ?? [];
+			const registration = hosts.get(keyOf(ctx.organisationId, hostId));
+			if (registration === undefined) return [];
+			if (registration.projectId !== undefined) {
+				await check(ctx, {
+					projectId: registration.projectId,
+					needed: "viewer",
+					operation: "session.hostTools.list",
+					subject: { kind: "session.host", id: hostId },
+				});
+			}
+			return registration.tools;
 		},
 	};
 

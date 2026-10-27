@@ -285,6 +285,24 @@ export function createRuntimeConformance(options: {
 			}),
 		},
 		{
+			name: "session end: closing a parent does not end an already closed child again",
+			run: run(async (subject) => {
+				const fakes = registerFakeComponents(subject);
+				const parent = await setUp(subject);
+				const child = await subject.runtime.create(operator, {
+					projectId: PROJECT,
+					agentId: AGENT,
+					parentSessionId: parent.id,
+				});
+				await subject.runtime.close(operator, child.id);
+				await subject.runtime.close(operator, parent.id);
+				a.deepEqual(
+					fakes.calls.map((call) => `${call.end.sessionId === child.id ? "child" : "parent"}:${call.end.reason}`),
+					[...FAKE_COMPONENTS.map(() => "child:session_ended"), ...FAKE_COMPONENTS.map(() => "parent:session_ended")],
+				);
+			}),
+		},
+		{
 			name: "session end: aborting runs the teardowns for each child and the session, which stays usable, and a second abort changes nothing",
 			run: run(async (subject, deps) => {
 				const fakes = registerFakeComponents(subject);
@@ -430,6 +448,17 @@ export function createRuntimeConformance(options: {
 					"session.hostTools.register",
 				);
 				a.deepEqual(await subject.hostTools.list(operator, "intruder-host"), [], "no host tools were registered");
+				await serveHost(subject);
+				await denied(
+					subject.hostTools.register(siteOperator, HOST, [LOOKUP], async () => ({ output: "hijacked" })),
+					"session.hostTools.register",
+				);
+				await denied(subject.hostTools.list(siteOperator, HOST), "session.hostTools.list");
+				a.deepEqual(
+					(await subject.hostTools.list(operator, HOST)).map((tool) => tool.name),
+					[LOOKUP.name, REVIEW.name],
+					"the project's host keeps its tools",
+				);
 				const listed = await subject.directory.list(siteOperator);
 				a.deepEqual(
 					listed.items.map((record) => record.id),
@@ -620,6 +649,12 @@ export function createRuntimeConformance(options: {
 					subject.runtime.create(operator, { projectId: PROJECT, agentId: AGENT, parentSessionId: "no-such-session" }),
 					"not_found",
 					"an unknown parent session is not_found",
+				);
+				await subject.profiles.put(operator, workerProfile({ id: "site-writer", projectId: OTHER_PROJECT }));
+				await a.rejectsWithCode(
+					subject.runtime.create(operator, { projectId: PROJECT, agentId: "site-writer" }),
+					"invalid",
+					"a project's profile runs only in that project",
 				);
 			}),
 		},
