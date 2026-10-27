@@ -88,9 +88,14 @@ CACHE=/path/to/cache OUT=raw/selfhosted-docker-runc.jsonl STAT=minimal N=50 harn
 
 # Cloudflare containers: render wrangler.jsonc from the template, deploy, prepare snapshots, drive
 cd harness/cloudflare && npx wrangler deploy && npx wrangler secret put BENCH_TOKEN
-# /prepare runs a script in a fresh container, then snapshots it and/or backs up a directory:
-#   {"image":"slim","internet":true,"prep":"seed-prepare vite vitejs/vite <sha> 'pnpm install --frozen-lockfile'","snapshotName":"..."}
-curl -N -X POST -H "Authorization: Bearer $T" "$URL/prepare?box=prep-cache" -d @prep-cache.json
+# /prepare runs a script in a fresh container, then snapshots it and/or backs up a directory, and returns
+# the snapshot id and backup record. Payloads are in payloads/:
+#   prepare-cache.json  slim image + Internet: mirrors, deps archives and SquashFS images for vite and n8n
+#   prepare-ready.json  from the cache snapshot: unpack <repo>'s prepared tree, snapshot it and back it up
+#   prepare-src.json    the same tree, backed up without node_modules/
+curl -N -X POST -H "Authorization: Bearer $T" "$URL/prepare?box=prep-cache" -d @payloads/prepare-cache.json
+# Fill the returned ids into a plan like payloads/plan.used.json (the plan these results came from; its
+# snapshots and backups are deleted). Dependency archive names come from prepare-cache's output.
 BENCH_URL=$URL BENCH_TOKEN_FILE=token node drive.mjs plan.json ../../raw/cloudflare-container-standard-4.jsonl
 
 # Isolate tier
@@ -99,6 +104,13 @@ cd harness/isolate && npx wrangler deploy && BENCH_URL=... BENCH_TOKEN_FILE=... 
 
 node harness/summarise.mjs raw/*.jsonl
 ```
+
+## Failed runs
+
+Cloudflare and isolate failures are in `raw/` as `ok:false` lines and left out of the tables. Self-hosted
+failures are recorded the same way from this commit on. Before that they were only logged: 60 n8n
+`snapshot-image` attempts failed because the image had been built through a context that honoured n8n's
+`.dockerignore`. They were dropped, the image was rebuilt by copy and commit, and the rows were rerun.
 
 ## Cloudflare resources
 

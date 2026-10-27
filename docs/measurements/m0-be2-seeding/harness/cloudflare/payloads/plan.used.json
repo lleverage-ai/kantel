@@ -1,0 +1,98 @@
+{
+  "cacheSnapshot": "46a07744-78dc-4830-8b38-70565ec30d45",
+  "deps": {
+    "sal": "/cache/deps/sal-3d8136d053344ef9.tar.zst",
+    "vite": "/cache/deps/vite-df07f7cec6cec5c5.tar.zst",
+    "n8n": "/cache/deps/n8n-5812752e69f43ac5.tar.zst"
+  },
+  "ready": {
+    "sal": {
+      "snapshot": "31f89a60-953e-4ae0-999a-1b2e2d80f3a2",
+      "backupFull": {
+        "id": "15df914e-eae9-4b4a-b4b6-f6cd6b9f39fd",
+        "dir": "/workspace/w",
+        "size": 58294438,
+        "sha256": "eec4d7473be6716a9d0c8975fa3999bad2f60d7b75b8163338dd8b5f3f73513d",
+        "format": "tar+zstd/1",
+        "name": "harbour-m0-seed-ready-sal"
+      },
+      "backupSrc": {
+        "id": "f87b0d4c-ac73-4af5-84b4-fd42663ab0fe",
+        "dir": "/workspace/w",
+        "size": 11630393,
+        "sha256": "4497563c620de63597004b09cfa6c69526d1bae3e8a1deae7940df27add24ef2",
+        "format": "tar+zstd/1"
+      }
+    },
+    "vite": {
+      "snapshot": "bb21fc8e-a87e-4c50-b7e1-eb7540cd9048",
+      "backupFull": {
+        "id": "effa7dfb-2bf9-4ce4-ae27-52f8fbcc8703",
+        "dir": "/workspace/w",
+        "size": 272047088,
+        "sha256": "5ac82fea2b2d9d6ac5c08ae2d30a0c98c9b4e0f9d07788021539c1b0f4dcad7e",
+        "format": "tar+zstd/1",
+        "name": "harbour-m0-seed-ready-vite"
+      },
+      "backupSrc": {
+        "id": "30b437dc-cc33-4871-a88c-a87afc4b24bc",
+        "dir": "/workspace/w",
+        "size": 13514188,
+        "sha256": "3c8185de33aceb076df14a38dda29eead2808056557864a89d9a473122a9d12b",
+        "format": "tar+zstd/1"
+      }
+    },
+    "n8n": {
+      "snapshot": "59a94554-6ca5-4d3b-a921-e547a90c3d6d",
+      "backupFull": {
+        "id": "3b12fa43-bf94-4f4c-a76e-baf66ca754f6",
+        "dir": "/workspace/w",
+        "size": 974685155,
+        "sha256": "26e34d2f3269488cfff18f9f87831d5dd33bc8d2fcf0dda3f65f26087090ec01",
+        "format": "tar+zstd/1",
+        "name": "harbour-m0-seed-ready-n8n"
+      },
+      "backupSrc": {
+        "id": "2cb97bd1-d974-4549-8f78-272e7845ef35",
+        "dir": "/workspace/w",
+        "size": 78638799,
+        "sha256": "3d18deac2bdd6e4fd30ee3820912ca2c3fe89f1094ae05e3a176e68671bfc7c6",
+        "format": "tar+zstd/1"
+      }
+    }
+  },
+  "n": 50,
+  "concurrency": 6,
+  "rows": [
+    "container-start:sal",
+    "cache-start:sal",
+    "worktree:sal",
+    "ref-full:sal",
+    "ref-sparse:sal",
+    "squashfs:sal",
+    "deps-archive:sal",
+    "snapshot-restore:sal",
+    "dirbackup-full:sal",
+    "dirbackup-src:sal",
+    "container-start:vite",
+    "cache-start:vite",
+    "worktree:vite",
+    "ref-full:vite",
+    "ref-sparse:vite",
+    "squashfs:vite",
+    "deps-archive:vite",
+    "snapshot-restore:vite",
+    "dirbackup-full:vite",
+    "dirbackup-src:vite",
+    "container-start:n8n",
+    "cache-start:n8n",
+    "worktree:n8n",
+    "ref-full:n8n",
+    "ref-sparse:n8n",
+    "squashfs:n8n",
+    "deps-archive:n8n",
+    "snapshot-restore:n8n",
+    "dirbackup-full:n8n",
+    "dirbackup-src:n8n"
+  ]
+}

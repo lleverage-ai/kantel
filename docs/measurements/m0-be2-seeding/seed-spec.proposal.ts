@@ -15,7 +15,8 @@
  *     the cone"; no new stage is needed.
  *  4. Git status speed depends on the restored tree matching the index's stat data. A seed that copies files
  *     (tar, DirectoryBackup, SquashFS without a settled index) must refresh the index once, so the host needs
- *     to know whether the tree came from git (fast) or from bytes (needs refresh). That is SeedReport.indexState.
+ *     to know whether the tree came from git (fast) or from bytes (needs refresh). That is `indexState` on each
+ *     resolved git source in SeedReport.
  */
 
 import type { MountRequest, SandboxTier } from "@harbour/contracts";
@@ -94,20 +95,37 @@ export interface SeedSpec {
 /** Stages as in #39. `files` means "git status works for the cone"; `dependencies` means `deps` are restored. */
 export type SeedReadiness = "pending" | "metadata" | "files" | "dependencies" | "failed";
 
+/** One source as the host resolved it, in spec order. */
+export type ResolvedSeedSource =
+	| {
+			readonly kind: "git";
+			readonly repo: string;
+			readonly commit: string;
+			readonly sparse?: readonly string[];
+			readonly into: string;
+			/**
+			 * `fresh`: the tree came from git checkout or a snapshot with a settled index; status is fast.
+			 * `refreshed`: the tree came from bytes and the host ran `git update-index --refresh` once.
+			 */
+			readonly indexState: "fresh" | "refreshed";
+	  }
+	/** sha256 over the sorted (path, contents) pairs. */
+	| { readonly kind: "files"; readonly digest: string }
+	/** The object prefix and the version or ETag set that was read. */
+	| { readonly kind: "objects"; readonly prefix: string; readonly version: string; readonly into: string };
+
 /** What the host did, recorded on the workspace and in the audit log, and the input to the next seed's choice. */
 export interface SeedReport {
 	readonly method: SeedMethod;
-	/** sha256 of (commit, cone, depsKey, image digest). Equal keys mean a snapshot can be reused. */
-	readonly cacheKey: string;
-	readonly commit: string;
-	readonly depsKey?: string;
-	/** Whether a snapshot was used, and if so how many commits it had to fetch forward. */
-	readonly snapshot?: { readonly id: string; readonly fetchedForward: number };
 	/**
-	 * `fresh`: the tree came from git checkout or a snapshot with a settled index; status is fast.
-	 * `refreshed`: the tree came from bytes and the host ran `git update-index --refresh` once.
+	 * sha256 over the canonical JSON of (sources, depsKey, mounts, image digest), with `sources` the
+	 * ResolvedSeedSource list without `indexState`. Equal keys mean a prepared snapshot can be reused.
 	 */
-	readonly indexState: "fresh" | "refreshed";
+	readonly cacheKey: string;
+	readonly sources: readonly ResolvedSeedSource[];
+	readonly depsKey?: string;
+	/** Whether a snapshot was used, and if so how many commits it had to fetch forward per git source. */
+	readonly snapshot?: { readonly id: string; readonly fetchedForward: readonly number[] };
 	/** Milliseconds from seed start to each readiness stage. */
 	readonly timings: { readonly [stage in Exclude<SeedReadiness, "pending" | "failed">]?: number };
 }

@@ -13,6 +13,7 @@ repo_f="${1:-}"; method_f="${2:-}"
 METHODS="${METHODS:-container-start worktree ref-full ref-sparse overlay fuse-overlay squashfs deps-archive snapshot-image}"
 
 ms() { echo $(( $(date +%s%N) / 1000000 )); }
+failures=0
 
 one() { # name method iteration docker-args... -- seed-op args...
   local name=$1 method=$2 i=$3; shift 3
@@ -21,7 +22,15 @@ one() { # name method iteration docker-args... -- seed-op args...
   sargs=("$@" "stat=${STAT:-default}")
   local t0 t1 line
   t0=$(ms)
-  line=$(docker run --rm --runtime "$RUNTIME" "${dargs[@]}" "${sargs[@]}" 2>/tmp/seed-err.$$) || { echo "FAIL $name $method $i: $(tail -3 /tmp/seed-err.$$)" >&2; return 0; }
+  if ! line=$(docker run --rm --runtime "$RUNTIME" "${dargs[@]}" "${sargs[@]}" 2>/tmp/seed-err.$$); then
+    t1=$(ms); failures=$((failures + 1))
+    echo "FAIL $name $method $i: $(tail -3 /tmp/seed-err.$$)" >&2
+    # Keep the failed attempt in the raw data (summarise.mjs skips ok:false lines).
+    jq -nc --arg t "$TARGET" --argjson i "$i" --argjson total $((t1 - t0)) --arg m "$method" --arg r "$name" \
+      --arg s "${STAT:-default}" --arg e "$(tail -3 /tmp/seed-err.$$)" \
+      '{ok:false, target:$t, iteration:$i, total_ms:$total, method:$m, repo:$r, stat:$s, error:$e}' >>"$OUT"
+    return 0
+  fi
   t1=$(ms)
   line=$(tail -1 <<<"$line")
   jq -c --arg t "$TARGET" --argjson i "$i" --argjson total $((t1 - t0)) --arg m "$method" --arg r "$name" --arg s "${STAT:-default}" \
@@ -80,3 +89,4 @@ for f in "${FIXTURES[@]}"; do
     done
   done
 done
+if (( failures > 0 )); then echo "done with $failures failed runs (recorded as ok:false in $OUT)" >&2; exit 1; fi

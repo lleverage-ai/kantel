@@ -1,5 +1,6 @@
 // Run the isolate-tier git bench in Node against a packed lazy workspace on local disk,
-// sampling peak memory (heap + external + array buffers) as a proxy for the 128 MB isolate cap.
+// sampling peak memory (V8 heap used + external, which already includes ArrayBuffers and Buffers)
+// every 5 ms as a proxy for the 128 MB isolate cap. Peaks shorter than the interval can be missed.
 //   node --max-old-space-size=128 node-run.mjs <packed dir> <cone...>
 import { openSync, readSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ const backend = {
 let peak = 0;
 const sample = () => {
   const m = process.memoryUsage();
-  peak = Math.max(peak, m.heapUsed + m.external + m.arrayBuffers);
+  peak = Math.max(peak, m.heapUsed + m.external);
 };
 const timer = setInterval(sample, 5);
 const r = await runBench({ manifest, backend, cone, statSkewMs: skew, memory: () => (sample(), peak) });

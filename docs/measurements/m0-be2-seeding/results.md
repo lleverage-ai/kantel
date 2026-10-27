@@ -8,13 +8,14 @@ Object, and those runs are left out). Percentiles are nearest-rank. Method detai
 ## Against the plan's targets
 
 The plan's Table 6 targets are proposals; these are the first measurements against them.
-"Start+ready" is container start plus seeding. ✓ meets p50 and p95, ◐ meets p50 only, ✗ misses p50.
+"Start+ready" is container start plus seeding. ✓ meets p50 and p95, ◐ meets p50 only, ✗ misses p50,
+"baseline" means only part of the step was measured, so it shows the floor rather than settling the target.
 
 | Target (p50 / p95) | Self-hosted Docker | Cloudflare | Verdict |
 |---|---|---|---|
-| Isolate session ready, workspace listed (100 ms / 300 ms) | – | manifest listed in the Worker: vite 13 / 62 ms, n8n 15 / 35 ms | ✓ |
-| Container on the same workspace version, warm image (3 s / 8 s) | 0.42–0.54 / 0.55–0.92 s | slim image 0.26–0.36 / 0.58–0.88 s; from the 4.8 GB cache snapshot 1.1–1.8 / 4.4–9.0 s | ✓ (cache snapshot ◐ for n8n) |
-| Small repo worktree off a warm mirror, `tvdavies/sal` (1 s / 3 s) | worktree 1.04 / 1.32 s, including container removal (in-container 0.42 / 0.45 s) | worktree 2.67 / 6.02 s; ref-sparse 2.09 / 9.52 s; dirbackup-src 1.93 / 3.35 s | self-hosted ✓ within noise; Cloudflare ✗ |
+| Isolate session ready, workspace listed (100 ms / 300 ms) | – | manifest fetched and parsed in the Worker: vite 13 / 62 ms, n8n 15 / 35 ms (isolate start and session routing not included) | baseline: the listing fits; the session step was not measured |
+| Container on the same workspace version, warm image (3 s / 8 s) | empty container: 0.42–0.54 / 0.55–0.92 s | empty container, slim image: 0.26–0.36 / 0.58–0.88 s; from the 4.8 GB cache snapshot: 1.1–1.8 / 4.4–9.0 s | baseline: the start fits, except n8n's cache-snapshot p95 (9.0 s); reattaching a workspace was not measured |
+| Small repo worktree off a warm mirror, `tvdavies/sal` (1 s / 3 s) | `docker run` to exit 1.04 / 1.32 s, including container removal; worktree in-container 0.42 / 0.45 s | worktree 2.67 / 6.02 s; ref-sparse 2.09 / 9.52 s; dirbackup-src 1.93 / 3.35 s | self-hosted ◐ (p50 is 40 ms over, and that includes teardown); Cloudflare ✗ |
 | Large monorepo checkout ready, snapshot or overlay, n8n (10 s / 25 s) | overlay 1.29 / 1.95 s; image layer 1.14 / 2.21 s (both include `node_modules`) | snapshot 3.64 / 112.7 s; ref-sparse (cone only) 4.20 / 9.55 s; dirbackup-src 7.16 / 17.0 s | self-hosted ✓; Cloudflare snapshot ◐, sparse clone ✓ |
 | Dependencies ready from a cached layer, n8n `node_modules` 2.5 GB (15 s / 40 s) | archive 32.7 / 35.7 s (extract only); overlay lower: included in the 1.29 s above | archive 46.3 / 137 s; DirectoryBackup 45.5 / 126 s; snapshot (includes deps) 3.64 / 112.7 s | self-hosted ✓ only as an overlay; Cloudflare ✗ except snapshot p50 |
 
@@ -50,9 +51,12 @@ The tree is a shallow (50), blobless, sparse checkout; file bodies are fetched o
 |---|---|---:|---:|---:|---:|---:|
 | Worker (deployed) | vite (597) | 44 | 0.90 / 1.35 s | 67 / 202 ms† | 1.9 MB | not exposed; no limit errors |
 | Worker (deployed) | n8n (5,461) | 50 | 4.00 / 7.41 s | 0.90 / 3.18 s† | 19.6 MB | not exposed; no limit errors |
-| Node, `--max-old-space-size=128` | sal (363) | 20 | – | 100 / 111 ms | 2.2 MB | 33 / 37 MB |
-| Node | vite (597) | 20 | – | 163 / 172 ms | 1.9 MB | 41 / 41 MB |
-| Node | n8n (5,461) | 20 | – | 755 / 908 ms | 19.6 MB | 109 / 166 MB |
+| Node, `--max-old-space-size=128` | sal (363) | 20 | – | 99 / 109 ms | 2.2 MB | 25 / 30 MB |
+| Node | vite (597) | 20 | – | 163 / 175 ms | 1.9 MB | 34 / 35 MB |
+| Node | n8n (5,461) | 20 | – | 746 / 841 ms | 19.6 MB | 103 / 138 MB |
+
+Node peak memory is V8 `heapUsed + external` (external includes ArrayBuffers), sampled every 5 ms. It is a
+proxy for the isolate's accounting, not the same thing.
 
 † In a deployed Worker `performance.now()` only advances across I/O, so phase times undercount CPU work;
 request wall time is the honest number. Worker CPU time per request (`wrangler tail`, the 78 requests it
@@ -62,8 +66,10 @@ caught) was 0.45 / 0.86 s p50 / p95 for vite and 2.76 / 3.72 s for n8n.
   request) and its live memory sits near the 128 MB isolate cap, which is per isolate, shared by concurrent
   requests. It is a read path, not a seeding method for large repos.
 - isomorphic-git reads only index version 2; git writes version 3 for sparse checkouts. `harness/isolate/pack.mjs`
-  writes a v2 index for the whole tree. The index's stat data must match the lazy tree's: with it skewed, status
-  read every file (5,468 reads, 57 MB, 2.3 s in Node) and the deployed Worker did not finish in 10 minutes.
+  writes a v2 index for the whole tree. The index's stat data must match the lazy tree's. In one exploratory run
+  per target with every mtime skewed by 5 s (`STAT_SKEW_MS=5000 node harness/isolate/node-run.mjs ...`, and
+  `skew=5000` on the Worker), status read every file in the cone: 5,468 reads, 57 MB and 2.3 s in Node. The
+  deployed Worker had not answered after 10 minutes. These two runs are not in `raw/`.
 - 6 of 50 vite requests at concurrency 2 were cancelled as hung. isomorphic-git keeps one module-level lock keyed
   by file path, and both requests used `/.git/index`, so one request awaited a promise owned by another. One
   workspace per isolate (per Durable Object) avoids it.
@@ -76,11 +82,15 @@ caught) was 0.45 / 0.86 s p50 / p95 for vite and 2.76 / 3.72 s for n8n.
   where the runtime cannot mount overlays). On a cache miss, seed with `clone --filter=blob:none --sparse
   --reference <mirror>` and report `files` ready, restore or install dependencies, then build the prepared tree
   in the background. Do not use squashfuse or fuse-overlayfs for large trees; do not tar `node_modules`.
-- **Cloudflare**: use a container snapshot of the prepared tree per (commit, lockfile, image) as the fast path,
-  but never block a session on it: start from the slim image with a sparse reference clone (source in about
-  4 s for n8n, start included) and let the snapshot path win when it is warm. Back up source with DirectoryBackup only for
-  session handoff, not for cold seeding of large dependency trees. Measure snapshot placement again once the
-  beta ends; it decides the p95.
+- **Cloudflare**: use two layers of snapshot. Keep one shared cache snapshot per image, holding the bare
+  mirrors, dependency archives and prepared trees for every repo. It is started for every seed, so it stays
+  warm: here 1 of 1,193 starts from it was slow. Use it to run a sparse `--reference` clone (n8n's source cone
+  in 4.20 / 9.55 s, start included), and report `files` ready. On top of that, keep a per-repo snapshot of the
+  prepared tree keyed by (commit, lockfile, image). It wins when warm (3.64 s p50 for n8n with dependencies)
+  but never block a session on it, because it is cold about 12% of the time. Without any snapshot, the only
+  measured route is a clone from GitHub (13.6 s for n8n's cone self-hosted; not measured on Cloudflare). Use
+  DirectoryBackup of source for session handoff, not for cold seeding of large dependency trees. Measure
+  snapshot placement again once the beta ends, because it decides the p95.
 - **Isolate tier**: isomorphic-git over the lazy workspace for log, status and diff on small and medium cones,
   with the workspace carrying a v2 index whose stat data matches the manifest; hand large cones to a container.
 - **Everywhere**: set `core.checkStat=minimal` and `core.trustctime=false` in seeded repos; settle the index
