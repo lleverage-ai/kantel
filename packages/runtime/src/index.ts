@@ -96,11 +96,13 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	});
 }
 
+type HostToolHandlerLookup = ((call: HostToolCall, signal: AbortSignal) => Promise<HostToolResult>) | undefined;
+
 export interface HostToolTarget {
 	/** The call as the host sees it, without the per-call fields. */
 	readonly call: Omit<HostToolCall, "callId" | "tool" | "args">;
 	/** The host's current handler, looked up at call time: a tool unregistered meanwhile fails the call. */
-	readonly handler: () => ((call: HostToolCall, signal: AbortSignal) => Promise<HostToolResult>) | undefined;
+	readonly handler: () => HostToolHandlerLookup | Promise<HostToolHandlerLookup>;
 	readonly onStarted?: (call: HostToolCall) => void | Promise<void>;
 	readonly onFinished?: (call: HostToolCall, outcome: "done" | "error" | "aborted") => void | Promise<void>;
 }
@@ -123,7 +125,7 @@ export function hostToolAsPiTool(definition: HostToolDefinition, target: HostToo
 				args: args as JsonValue,
 			};
 			await target.onStarted?.(call);
-			const handler = target.handler();
+			const handler = await target.handler();
 			if (handler === undefined) {
 				await target.onFinished?.(call, "error");
 				return {
