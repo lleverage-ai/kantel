@@ -24,6 +24,7 @@ const base = values.url;
 
 type Win = Window & {
 	__harbour?: {
+		// Both are set once a session is open; `open` waits for that.
 		host: { finished: boolean; head: string; published: number };
 		client: { getState(): SessionState; simulateDisconnect(ms?: number): void };
 	};
@@ -41,10 +42,17 @@ async function open(browser: Browser, width: number, height: number, query: stri
 		deviceScaleFactor: width < 600 ? 2 : 1,
 		colorScheme: "dark",
 	});
-	await page.goto(`${base}?${query}`);
-	await page.waitForFunction(() => (window as Win).__harbour?.client.getState().cursor !== undefined, undefined, {
-		timeout: 30_000,
-	});
+	// The 2,000-turn recording is the Harbour project's "Platform migration" session.
+	await page.goto(new URL(`projects/harbour/sessions/s-migration?${query.replace(/^session=long&?/, "")}`, base).href);
+	await page.waitForFunction(
+		() =>
+			(window as Win).__harbour?.client?.getState().cursor !== undefined &&
+			(window as Win).__harbour?.host !== undefined,
+		undefined,
+		{
+			timeout: 30_000,
+		},
+	);
 	return page;
 }
 
