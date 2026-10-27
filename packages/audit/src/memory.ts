@@ -55,7 +55,9 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 	const defaultRetentionMs = options.retentionMs;
 
 	let rows: AuditEvent[] = [];
+	/** Rows by organisation and id: one organisation's event can never shadow another's that reuses an id. */
 	const byId = new Map<string, AuditEvent>();
+	const keyOf = (organisationId: OrganisationId, id: string) => `${organisationId}\u0000${id}`;
 	const retention = new Map<OrganisationId, number>();
 	let lastSeq = 0;
 
@@ -64,11 +66,11 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			for (const event of events) assertValidAuditEvent(event);
 			const recordedAt = clock.now();
 			for (const event of events) {
-				if (byId.has(event.id)) continue;
+				if (byId.has(keyOf(event.organisationId, event.id))) continue;
 				lastSeq += 1;
 				const row: AuditEvent = { ...structuredClone(event), seq: lastSeq, recordedAt };
 				rows.push(row);
-				byId.set(row.id, row);
+				byId.set(keyOf(row.organisationId, row.id), row);
 			}
 		},
 
@@ -91,8 +93,8 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 
 		async get(ctx: CallContext, eventId: string): Promise<AuditEvent> {
 			forbidAgent(ctx, "read the audit log");
-			const row = byId.get(eventId);
-			if (row === undefined || row.organisationId !== ctx.organisationId) {
+			const row = byId.get(keyOf(ctx.organisationId, eventId));
+			if (row === undefined) {
 				throw new HarbourError("not_found", `No audit event ${eventId}`);
 			}
 			return structuredClone(row);
@@ -111,7 +113,7 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			for (const row of rows) {
 				const retentionMs = retention.get(row.organisationId) ?? defaultRetentionMs;
 				if (retentionMs !== undefined && row.at < now - retentionMs) {
-					byId.delete(row.id);
+					byId.delete(keyOf(row.organisationId, row.id));
 					removed += 1;
 				} else {
 					kept.push(row);

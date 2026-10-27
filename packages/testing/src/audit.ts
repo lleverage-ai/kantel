@@ -419,6 +419,17 @@ export function createAuditConformance(options: {
 			assert.strictEqual((await store.get(outsider, "theirs")).organisationId, OTHER_ORG);
 		}),
 
+		test("keeps an event per organisation when two organisations reuse an id", async ({ store }) => {
+			await store.append([auditEvent("shared-id", 1, { data: { org: "a" } })]);
+			await store.append([auditEvent("shared-id", 2, { organisationId: OTHER_ORG, data: { org: "b" } })]);
+			assert.partialDeepEqual(await store.get(admin, "shared-id"), { organisationId: ORG, data: { org: "a" } });
+			assert.partialDeepEqual(await store.get(outsider, "shared-id"), {
+				organisationId: OTHER_ORG,
+				data: { org: "b" },
+			});
+			assert.deepEqual(await queryIds(store, {}, outsider), ["shared-id"]);
+		}),
+
 		test("refuses an agent querying, reading or setting retention", async ({ store }) => {
 			await store.append([auditEvent("evt-1", 1, { actor: agent.actor, sessionId: "session-1" })]);
 			await assert.rejectsWithCode(store.query(agent, {}), "forbidden", "an agent cannot query");

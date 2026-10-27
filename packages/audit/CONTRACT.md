@@ -59,7 +59,7 @@ and goes at the next retention run).
 
 ## Open questions
 
-- Idempotency is by `id` across the whole store, as the contract says. Should it be per organisation, so one
-  organisation's event can never shadow another's that happens to reuse an id?
+- Idempotency is by organisation and id, so one organisation's event never shadows another's that reuses an id ("keeps
+  an event per organisation when two organisations reuse an id"). Should ids also be namespaced by source?
 - Who may set retention: any non-agent actor. Role checks belong with identity. Should there be a minimum retention?
 - Should `query` reject `from >= to` or an unknown source as `invalid`, rather than return nothing?

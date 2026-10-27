@@ -1,6 +1,6 @@
 /**
  * Audit events. Components never write to the audit store directly: each emits events through an outbox to an
- * `AuditSink`, which is idempotent by event id so outbox retries never duplicate a row. Event data never holds a
+ * `AuditSink`, which is idempotent by organisation and event id so outbox retries never duplicate a row. Event data never holds a
  * secret value.
  */
 import type {
@@ -97,7 +97,7 @@ export interface AuditEventInput {
 	readonly data?: { readonly [key: string]: JsonValue };
 }
 
-/** Where components send audit events. Implementations must be idempotent by `id`. */
+/** Where components send audit events. Implementations must be idempotent by `(organisationId, id)`. */
 export interface AuditSink {
 	append(events: readonly AuditEventInput[]): Promise<void>;
 }
@@ -143,7 +143,7 @@ export interface AuditStore extends AuditSink {
 
 /**
  * An outbox: components write events into it inside their own transaction, and a relay drains it to the store with
- * retries. Draining twice never duplicates a row, because the store is idempotent by event id.
+ * retries. Draining twice never duplicates a row, because the store is idempotent by organisation and event id.
  */
 export interface AuditOutbox extends AuditSink {
 	/** Sends every pending event to `sink`; events stay pending if the sink throws. Returns how many were sent. */
