@@ -25,6 +25,8 @@ export type Decision = {
 	score: number;
 	/** Measures more than 10% worse than the champion's, which reject the variant whatever its score. */
 	worse: string[];
+	/** Measures one side has and the other lacks. Missing evidence is not "no regression": it rejects the variant. */
+	missing: string[];
 	accepted: boolean;
 };
 
@@ -42,6 +44,11 @@ export function decide(input: {
 	variant: Measures;
 }): Decision {
 	const names = Object.keys(input.champion).filter((name) => name in input.variant);
+	const missing = [
+		...Object.keys(input.champion).filter((name) => !(name in input.variant)),
+		...Object.keys(input.variant).filter((name) => !(name in input.champion)),
+	];
+	if (names.length === 0 && missing.length === 0) missing.push("every measure");
 	const gains = names.map((name) => measureGain(name, input.champion[name] as number, input.variant[name] as number));
 	const measured = gains.length === 0 ? 0 : gains.reduce((sum, gain) => sum + gain, 0) / gains.length;
 	const worse = names.filter((_name, index) => (gains[index] as number) < -Math.log2(WORSE_LIMIT));
@@ -52,6 +59,7 @@ export function decide(input: {
 		measured,
 		score,
 		worse,
-		accepted: input.gatesPassed && score > ACCEPT_ABOVE && worse.length === 0,
+		missing,
+		accepted: input.gatesPassed && score > ACCEPT_ABOVE && worse.length === 0 && missing.length === 0,
 	};
 }

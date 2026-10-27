@@ -143,7 +143,13 @@ async function measureOnce(page: Page, url: string, spec: ComponentSpec, throttl
 	const expected = await (interactions[spec.scenario] ?? (async () => undefined))(page);
 	await page.waitForTimeout(300);
 	const input = await page.evaluate(() => (window as HarnessWindow).__hb!.collect());
-	const { wasted, needed } = split(update.renders, spec.watched, changed);
+	// Per update where the scenario marks its steps, so a render is needed only in the update that changed its id.
+	const parts =
+		update.steps.length > 0
+			? update.steps.map((step) => split(step.renders, spec.watched, step.changed))
+			: [split(update.renders, spec.watched, changed)];
+	const wasted = parts.reduce((sum, part) => sum + part.wasted, 0);
+	const needed = parts.reduce((sum, part) => sum + part.needed, 0);
 	let inputRenders = 0;
 	for (const component of spec.watched)
 		for (const count of Object.values(input.renders[component] ?? {})) inputRenders += count;

@@ -2,7 +2,8 @@
 //   1. axe: no WCAG 2.2 A/AA violations.
 //   2. Keyboard: every enabled, tabbable control is reached by Tab in order, and shows a visible focus ring when it
 //      is; nothing traps focus.
-//   3. States: each of the loop's components (loop/specs.ts) has a story for every required state.
+//   3. Alignment: icons, dots, badges and button labels are centred on their text within 1px (loop/align.ts).
+//   4. States: each of the loop's components (loop/specs.ts) has a story for every required state.
 // The static gates (token and copy lint) run in scripts/token-lint.ts. A story or variant that fails any gate is
 // rejected before it is measured or judged.
 //   pnpm build:workbench && node loop/gates.ts [--only id,id] [--json out.json]
@@ -12,6 +13,7 @@ import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
 import { chromium, type Page } from "playwright-core";
 import { serve } from "../scripts/workbench-server.ts";
+import { alignment, type Misalignment } from "./align.ts";
 import { missingStates } from "./specs.ts";
 
 const { values } = parseArgs({
@@ -30,6 +32,9 @@ export type GateResult = {
 	width: number;
 	axe: { id: string; impact: string | null; nodes: number; help: string }[];
 	keyboard: { tabbable: number; reached: number; withoutRing: string[]; unreached: string[] };
+	alignment: Misalignment[];
+	/** Set when the story never loaded, after one retry: a failure, not a crash that loses every other result. */
+	error?: string;
 };
 
 type AxeWindow = Window & {
@@ -131,10 +136,26 @@ export async function runGates(options: { build: string; only?: string[]; chromi
 				reducedMotion: "reduce",
 			});
 			for (const story of stories) {
-				await page.goto(`${server.url}?story=${story}&mode=preview`);
-				await page.waitForSelector(".hb-app");
+				let error: string | undefined;
+				for (let attempt = 0; attempt < 2; attempt++) {
+					try {
+						await page.goto(`${server.url}?story=${story}&mode=preview`);
+						await page.waitForSelector(".hb-app", { timeout: 60_000 });
+						error = undefined;
+						break;
+					} catch (cause) {
+						error = cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
+					}
+				}
+				if (error !== undefined) {
+					const empty = { tabbable: 0, reached: 0, withoutRing: [], unreached: [] };
+					results.push({ story, width, alignment: [], axe: [], keyboard: empty, error });
+					continue;
+				}
 				await page.waitForTimeout(150);
-				results.push({ story, width, axe: await axe(page), keyboard: await keyboard(page) });
+				// Alignment first, before Tab reveals any row's actions in place of its status.
+				const misaligned = await alignment(page);
+				results.push({ story, width, alignment: misaligned, axe: await axe(page), keyboard: await keyboard(page) });
 			}
 			await page.close();
 		}
@@ -146,7 +167,13 @@ export async function runGates(options: { build: string; only?: string[]; chromi
 }
 
 export function passed(result: GateResult): boolean {
-	return result.axe.length === 0 && result.keyboard.withoutRing.length === 0 && result.keyboard.unreached.length === 0;
+	return (
+		result.error === undefined &&
+		result.axe.length === 0 &&
+		result.keyboard.withoutRing.length === 0 &&
+		result.keyboard.unreached.length === 0 &&
+		result.alignment.length === 0
+	);
 }
 
 /** The States gate, on a built workbench: the loop's components each have a story for every required state. */
@@ -169,10 +196,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		console.log(
 			`${mark}  ${result.story} @${result.width}  axe ${result.axe.length}  keys ${result.keyboard.reached}/${result.keyboard.tabbable}`,
 		);
+		if (result.error !== undefined) console.log(`      did not load: ${result.error}`);
 		for (const violation of result.axe)
 			console.log(`      axe ${violation.id} (${violation.impact}, ${violation.nodes}): ${violation.help}`);
 		for (const label of result.keyboard.withoutRing) console.log(`      no focus ring: ${label}`);
 		for (const label of result.keyboard.unreached) console.log(`      not reached by Tab: ${label}`);
+		for (const pair of result.alignment)
+			console.log(`      off centre by ${pair.offset}px: ${pair.check}, ${pair.where}`);
 	}
 	if (values.json !== undefined) writeFileSync(values.json, JSON.stringify(results, null, "\t"));
 	process.exitCode = missing.length === 0 && results.every(passed) ? 0 : 1;

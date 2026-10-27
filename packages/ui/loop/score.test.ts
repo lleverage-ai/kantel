@@ -56,6 +56,25 @@ describe("decide", () => {
 		expect(decision.accepted).toBe(false);
 	});
 
+	it("rejects a variant missing a measure, so dropping a regressed measure cannot pass its veto", () => {
+		const { latencyMedian: _, ...partial } = same;
+		const decision = decide({
+			gatesPassed: true,
+			judgedChampion: 3,
+			judgedVariant: 4,
+			champion: same,
+			variant: partial,
+		});
+		expect(decision.missing).toEqual(["latencyMedian"]);
+		expect(decision.accepted).toBe(false);
+	});
+
+	it("rejects a comparison with no measures at all", () => {
+		const decision = decide({ gatesPassed: true, judgedChampion: 3, judgedVariant: 4, champion: {}, variant: {} });
+		expect(decision.missing).toEqual(["every measure"]);
+		expect(decision.accepted).toBe(false);
+	});
+
 	it("rejects a variant that failed a gate", () => {
 		expect(
 			decide({ gatesPassed: false, judgedChampion: 3, judgedVariant: 5, champion: same, variant: same }).accepted,

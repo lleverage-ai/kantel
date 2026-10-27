@@ -20,6 +20,11 @@ export type Collected = {
 	commits: number;
 	/** Re-renders (not mounts) per probed component, per id. */
 	renders: Record<string, Record<string, number>>;
+	/**
+	 * The same re-renders split by update: a scenario marks each update with the ids it may change (step() in
+	 * scenarios.tsx), so a render is needed only in the update that changed its id, not in every update of the run.
+	 */
+	steps: { changed: string[]; renders: Record<string, Record<string, number>> }[];
 	/** Mounts of probed instances: rows scrolled into view, parts that appeared. */
 	mounts: number;
 	/** Input latencies, ms. */
@@ -28,6 +33,7 @@ export type Collected = {
 
 export type HarnessWindow = Window & {
 	__hbRenderProbe?: (component: string, id: string, phase: "mount" | "update") => void;
+	__hbStep?: (changed: string[]) => void;
 	__hb?: {
 		ready: boolean;
 		run(): Promise<{ changed: string[] }>;
@@ -37,9 +43,19 @@ export type HarnessWindow = Window & {
 };
 
 const win = window as HarnessWindow;
-let collected: Collected = { renderMs: 0, commits: 0, renders: {}, mounts: 0, latencies: [] };
+let collected: Collected = { renderMs: 0, commits: 0, renders: {}, steps: [], mounts: 0, latencies: [] };
 const reset = () => {
-	collected = { renderMs: 0, commits: 0, renders: {}, mounts: 0, latencies: [] };
+	collected = { renderMs: 0, commits: 0, renders: {}, steps: [], mounts: 0, latencies: [] };
+};
+
+win.__hbStep = (changed) => {
+	collected.steps.push({ changed, renders: {} });
+};
+
+const count = (into: Collected["renders"], component: string, id: string) => {
+	const byId = into[component] ?? {};
+	byId[id] = (byId[id] ?? 0) + 1;
+	into[component] = byId;
 };
 
 win.__hbRenderProbe = (component, id, phase) => {
@@ -47,9 +63,9 @@ win.__hbRenderProbe = (component, id, phase) => {
 		collected.mounts += 1;
 		return;
 	}
-	const byId = collected.renders[component] ?? {};
-	byId[id] = (byId[id] ?? 0) + 1;
-	collected.renders[component] = byId;
+	count(collected.renders, component, id);
+	const step = collected.steps[collected.steps.length - 1];
+	if (step !== undefined) count(step.renders, component, id);
 };
 
 const onRender: ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {

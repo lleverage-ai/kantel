@@ -33,6 +33,14 @@ export function frame(): Promise<void> {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Marks the start of one update and the ids it may re-render (an id, or `Component:id`). Renders until the next
+ * step are counted against this one, so a row re-rendered by another row's update counts as wasted.
+ */
+function step(changed: string[]) {
+	(window as Window & { __hbStep?: (changed: string[]) => void }).__hbStep?.(changed);
+}
+
 export type Scenario = { Component: ComponentType; run(): Promise<{ changed: string[] }> };
 
 /** A setter the mounted scenario hands out, so run() can drive it. */
@@ -91,6 +99,7 @@ async function runTranscript() {
 	const batch = Math.ceil(words.length / 40);
 	for (let i = 1; i <= 40; i++) {
 		const text = words.slice(0, i * batch).join("");
+		step([STREAM_ID]);
 		transcript.update((items) => {
 			const last = items[items.length - 1] as AssistantItem;
 			return [...items.slice(0, -1), { ...last, text, streaming: i < 40 }];
@@ -121,6 +130,7 @@ function ToolGroupScenario() {
 async function runToolGroup() {
 	for (let i = 1; i <= 11; i++) {
 		const done = i === 11;
+		step([LAST_TOOL]);
 		toolGroup.update((items) => {
 			const last = items[items.length - 1] as ToolItem;
 			const output = Array.from({ length: i * 4 }, (_, line) => `migrated tenant ${line + 1}`).join("\n");
@@ -173,6 +183,7 @@ async function runSessionList() {
 	for (let i = 0; i < 20; i++) {
 		const id = `s${i * 7}`;
 		changed.push(id);
+		step([id]);
 		list.update((items) =>
 			items.map((session) =>
 				session.id !== id
@@ -203,6 +214,7 @@ function VaultScenario() {
 
 // Only the card's countdown changes each second; the terms' text ("14 minutes left") changes once a minute.
 async function runVault() {
+	step([`VaultApprovalCard:${pending.proposalId}`]);
 	await wait(5_000);
 	return { changed: [`VaultApprovalCard:${pending.proposalId}`] };
 }
