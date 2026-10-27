@@ -325,6 +325,9 @@ importers:
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/sql:
     devDependencies:

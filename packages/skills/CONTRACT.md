@@ -87,6 +87,33 @@ after the access check and changes everything before the audit. Without `access`
 (and the user rule is off); every target and conformance run passes one. It leaves out durable storage, file size
 limits and checking the frontmatter `name` against the package name.
 
+## Source helpers (`@harbour/skills/sources`)
+
+Portable glue a host uses around any `Skills`; no storage and no Node APIs. A host brings each source as a
+`SkillSource` (a Git checkout, a directory, an API) and picks the ref to pin.
+
+- `syncSkillSources(skills, ctx, { sources, owner, exclude?, extensions? })` publishes several sources as one set
+  through `importRevision`, in priority order: on a name more than one offers, the first source's skill is published
+  and the rest are reported in `shadowed`, as Pi does when it layers skill directories. Excluded names are reported
+  in `excluded`; a skill the store refuses (`invalid` or `conflict`) is reported in `refused`. Nothing is skipped
+  silently. Every revision records its own `{ sourceId, ref }`. `syncSkillSource` is the one-source form.
+- `sessionSkillListings(skills, ctx, sessionId, visibility, mountRoot?)` pins the session (or returns its existing
+  pins) and returns the listings and revisions of those pins, so later publishing never changes what a running
+  session sees.
+- `renderSkillListings(listings)` is Pi's `<available_skills>` prompt block (name, description, mount path), XML
+  escaped; empty for no skills. A host that keeps some skills out of the prompt (Pi's `disable-model-invocation`)
+  filters the listings first; they stay pinned and mounted.
+
+## The skills mount (`@harbour/skills/mount`)
+
+`createSkillsMountSource(skills, { visibility })` is the `skills` `MountSource`. A session mounts it at `/skills`
+with its session ID as the `ref`, and reads `/skills/<name>/…` at exactly its pinned revisions. The mount version is
+`pins:<sha256>` over the session's sorted `skillId@revision` pins, so a version names one set of pins: another
+session's pins under it are `not_found`. The first read pins the session with `visibility`. Paths that leave the
+mount are `invalid` and unknown names or files are `not_found`. Nothing writes through it.
+
+The Sal worker example (`examples/sal-worker`) composes these for a Sal worker and checks it against a local Sal.
+
 ## Open questions
 
 - Settled (question 7): `list` and `pinForSession` now check `visibility`'s project and user against the caller.
