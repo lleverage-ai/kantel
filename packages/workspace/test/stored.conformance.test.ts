@@ -1,0 +1,42 @@
+import { registerWorkspaceConformance } from "@harbour/testing/workspace";
+import { createMemoryProjectFiles } from "@harbour/workspace/memory";
+import { createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { describe, expect, it } from "vitest";
+
+// The stored workspaces every durable target wraps, over an in-memory store: the targets add only storage.
+registerWorkspaceConformance(
+	{ describe, expect, it },
+	"stored workspaces",
+	async (deps, use) => {
+		const projectFiles = createMemoryProjectFiles({ access: deps.access });
+		const workspaces = createStoredWorkspaces({
+			store: createMemoryWorkspaceStore(),
+			clock: deps.clock,
+			audit: deps.audit,
+			sources: [projectFiles],
+			access: deps.access,
+		});
+		await use({ workspaces, projectFiles });
+	},
+	{ projectAccess: true, keyed: true },
+);
+
+registerWorkspaceConformance(
+	{ describe, expect, it },
+	"stored workspaces with workspace-backed project files",
+	async (deps, use) => {
+		const store = createMemoryWorkspaceStore();
+		const trees = createStoredWorkspaces({ store, clock: deps.clock, access: deps.access });
+		const projectFiles = createWorkspaceProjectFiles({ workspaces: trees, access: deps.access });
+		const workspaces = createStoredWorkspaces({
+			store,
+			clock: deps.clock,
+			audit: deps.audit,
+			sources: [projectFiles],
+			access: deps.access,
+		});
+		await use({ workspaces, projectFiles });
+	},
+	{ projectAccess: true, keyed: true },
+);

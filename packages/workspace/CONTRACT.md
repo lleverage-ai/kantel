@@ -143,6 +143,26 @@ History includes version 0. It leaves out: fetching `git` and `objects` seeds (r
 "metadata"`), dependency steps, durable storage and any org check inside the project files source. Without `access`, both check only
 the organisation.
 
+## Stored workspaces (`@harbour/workspace/stored`)
+
+`createStoredWorkspaces({ store, clock?, audit?, sources?, access? })` is the implementation every durable target
+wraps: it answers exactly as the in-memory one does, and a target supplies only a `WorkspaceStore` (the head with a
+compare-and-set token, the version table, and immutable objects). File bodies are content-addressed blobs at
+`org/<organisation>/blobs/<sha256>`; each version's tree is an immutable JSON object at
+`org/<organisation>/trees/<sha256>.json` with each file's digest, size, last-changed version and mode bits. Listing and
+`stat` read only trees (cached per process, bounded by entries), never bodies. A commit writes its blobs and tree first
+and then moves the head with a compare-and-set on the token it read: a lost race is `conflict` and leaves only
+unreferenced objects. A token moved only by a remount is retried. `ensure` behaves as the in-memory one, including
+checking the loser of a race against the record that won.
+
+Beyond the contract, for the sandbox tiers: `list` returns mode bits, `commit` accepts them on puts (a put without one
+keeps the previous mode), and `readBlob(ctx, id, digest, { version })` reads a body by digest only when the digest is a
+file of that version. `createMemoryWorkspaceStore()` is a store for tests that counts blob and tree reads. The suite
+runs against stored workspaces, with memory and workspace-backed project files, in `test/stored.conformance.test.ts`.
+
+The conformance suite's keyed cases (`{ keyed: true }`) cover `ensure`: once per ID, one winner of a race, `conflict`
+across organisations and, with project access, the race loser checked against the winner.
+
 ## Open questions
 
 - How a mount source checks that the caller's organisation owns the ref; the memory source does not. (Whether the
