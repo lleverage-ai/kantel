@@ -44,6 +44,43 @@ async function withDatabase(kind: TestDatabaseKind, run: (driver: SqlDriver) => 
 	}
 }
 
+/**
+ * A driver that holds the first statement matching `when` until `release` is called, so a test can let another call
+ * run in between. `reached` resolves once that statement is held.
+ */
+function pausing(driver: SqlDriver, when: (sql: string) => boolean) {
+	let release: () => void = () => undefined;
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let reach: () => void = () => undefined;
+	const reached = new Promise<void>((resolve) => {
+		reach = resolve;
+	});
+	let held = false;
+	const hold = async (sql: string) => {
+		if (held || !when(sql)) return;
+		held = true;
+		reach();
+		await released;
+	};
+	const wrapped: SqlDriver = {
+		dialect: driver.dialect,
+		async query(sql, params) {
+			await hold(sql);
+			return driver.query(sql, params);
+		},
+		async batch(statements) {
+			for (const statement of statements) await hold(statement.sql);
+			return driver.batch(statements);
+		},
+	};
+	return { driver: wrapped, reached, release: () => release() };
+}
+
+/** The guarded batch every grant and revocation runs: its first statement moves the roles version. */
+const rolesChange = (sql: string) => sql.includes("SET roles_version");
+
 const request = (headers: Record<string, string>) => new Request("https://harbour.test/v1/sessions", { headers });
 
 for (const kind of testDatabaseKinds()) {
@@ -235,6 +272,80 @@ for (const kind of testDatabaseKinds()) {
 				await expect(
 					third.createUser(admin, { name: "Copy", externalSubject: externalSubjectOf(issuer, "ada-sub") }),
 				).rejects.toMatchObject({ code: "conflict" });
+			});
+		});
+
+		it("a grant checked before its granter was revoked does not bring the revoked binding back", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const directory = createSqlIdentity({ driver, clock });
+				const { admin, alpha } = await tenant(directory);
+				const bob = await directory.createUser(admin, { name: "Bob" });
+				const principal = { kind: "user", userId: bob.id } as const;
+				await directory.grantRole(admin, { principal, role: "admin", projectId: alpha.id });
+				const asBob: CallContext = { actor: { kind: "human", userId: bob.id }, organisationId: admin.organisationId };
+
+				// Bob's grant to himself passes its check, then waits before its write while the founder revokes him.
+				const paused = pausing(driver, rolesChange);
+				const bobs = createSqlIdentity({ driver: paused.driver, clock });
+				const regrant = bobs.grantRole(asBob, { principal, role: "admin", projectId: alpha.id });
+				await paused.reached;
+				await directory.revokeRole(admin, { principal, projectId: alpha.id });
+				paused.release();
+				await expect(regrant).rejects.toMatchObject({ code: "conflict" });
+
+				expect(await directory.listRoleBindings(admin, { projectId: alpha.id })).toEqual([]);
+				expect(await directory.roleOf(WORKER, asBob.actor, admin.organisationId, alpha.id)).toBeUndefined();
+				await expect(
+					directory.grantRole(asBob, { principal, role: "admin", projectId: alpha.id }),
+				).rejects.toMatchObject({ code: "forbidden" });
+			});
+		});
+
+		it("a revocation checked before a role changed fails rather than removing a binding it did not read", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const directory = createSqlIdentity({ driver, clock });
+				const { admin, alpha } = await tenant(directory);
+				const carol = await directory.createUser(admin, { name: "Carol" });
+				const principal = { kind: "user", userId: carol.id } as const;
+				await directory.grantRole(admin, { principal, role: "viewer", projectId: alpha.id });
+
+				const paused = pausing(driver, rolesChange);
+				const revoking = createSqlIdentity({ driver: paused.driver, clock }).revokeRole(admin, {
+					principal,
+					projectId: alpha.id,
+				});
+				await paused.reached;
+				await directory.grantRole(admin, { principal, role: "operator", projectId: alpha.id });
+				paused.release();
+				await expect(revoking).rejects.toMatchObject({ code: "conflict" });
+				expect(
+					await directory.roleOf(WORKER, { kind: "human", userId: carol.id }, admin.organisationId, alpha.id),
+				).toBe("operator");
+				await directory.revokeRole(admin, { principal, projectId: alpha.id });
+				expect(await directory.listRoleBindings(admin, { projectId: alpha.id })).toEqual([]);
+			});
+		});
+
+		it("two first sign-ins at once both resolve to the invited user, and the link is audited once", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const audit = new RecordingAuditSink();
+				const directory = createSqlIdentity({ driver, clock, audit });
+				const { admin } = await tenant(directory);
+				const invited = await directory.createUser(admin, { name: "Ada", email: "ada@example.test" });
+				const signInAs = { issuer, subject: "ada-sub", email: "ada@example.test", emailVerified: true };
+
+				// The first sign-in misses the subject, then waits before looking up the email while the second links.
+				const paused = pausing(driver, (sql) => sql.includes("external_subject IS NULL AND email_normalised"));
+				const first = createSqlIdentity({ driver: paused.driver, clock, audit }).signIn(WORKER, signInAs);
+				await paused.reached;
+				const second = await directory.signIn(WORKER, signInAs);
+				paused.release();
+				expect((await first).user.id).toBe(invited.id);
+				expect(second.user.id).toBe(invited.id);
+				expect(audit.ofType("identity.user.linked")).toHaveLength(1);
 			});
 		});
 

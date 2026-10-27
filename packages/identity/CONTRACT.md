@@ -169,7 +169,14 @@ in-memory directory, with the same choices, errors and audit events.
   transactions: an organisation and its first admin are one `batch`; a grant is one `INSERT … ON CONFLICT DO UPDATE`
   that replaces the binding for the same principal and scope; revoking a key sets `revoked_at` only where it is unset,
   so one revocation is audited. Uniqueness races are settled by the constraints: two users racing for one external
-  subject leave one, and the other is `conflict`; linking by email updates only a user still unlinked.
+  subject leave one, and the other is `conflict`; linking by email updates only a user still unlinked, and a first
+  sign-in that loses that race finds the user by subject.
+- Grants and revocations are checked against the caller's role and then written, with no transaction between. So
+  that a grant checked just before its granter was revoked cannot write after the revocation and bring the binding
+  back, each reads the organisation's `roles_version` before its check, and its batch moves the version on only if
+  it is unchanged; otherwise the batch fails whole and the call is `conflict` (try again). A grant or revocation that
+  races another in the same organisation can therefore be refused, never applied out of order ("a grant checked
+  before its granter was revoked does not bring the revoked binding back").
 - `listProjects` pages in creation order (`nextCursor` is the last project's ID, as in memory). Lists bind as one JSON
   parameter, so no statement meets D1's 100-parameter cap. Audit events go to the sink after the write.
 - On Postgres each `createProject` takes an advisory lock first, so projects commit in creation order and a reader

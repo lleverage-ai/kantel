@@ -44,7 +44,15 @@ import {
 	systemContext,
 	type User,
 } from "@harbour/contracts";
-import { type SqlDialect, type SqlDriver, type SqlValue, sql, sqlNumber, sqlOptionalString } from "@harbour/sql";
+import {
+	type SqlDialect,
+	type SqlDriver,
+	type SqlStatement,
+	type SqlValue,
+	sql,
+	sqlNumber,
+	sqlOptionalString,
+} from "@harbour/sql";
 import { apiKeyPrefix, generateApiKeySecret, hashApiKeySecret, strongestRole } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
 
@@ -69,10 +77,16 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 	const key = dialect === "postgres" ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
 	const time = dialect === "postgres" ? "DOUBLE PRECISION" : "REAL";
 	return [
+		// `roles_version` changes with every grant and revocation in the organisation (see `guardedRoleChange`).
 		`CREATE TABLE IF NOT EXISTS identity_organisations (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
-			created_at ${time} NOT NULL
+			created_at ${time} NOT NULL,
+			roles_version TEXT NOT NULL DEFAULT ''
+		)`,
+		// Never holds a row once a batch commits: `guardedRoleChange` inserts NULL here to fail a stale batch.
+		`CREATE TABLE IF NOT EXISTS identity_role_guard (
+			version TEXT NOT NULL
 		)`,
 		// `seq` keeps creation order, so listProjects pages in the order projects were made.
 		`CREATE TABLE IF NOT EXISTS identity_projects (
@@ -142,6 +156,13 @@ function inJsonList(dialect: SqlDialect, column: string): string {
 	return dialect === "postgres"
 		? `${column} IN (SELECT jsonb_array_elements_text(CAST(? AS jsonb)))`
 		: `${column} IN (SELECT value FROM json_each(?))`;
+}
+
+/** Whether `error` is a not-null violation: Postgres's SQLSTATE 23502, or SQLite's (and D1's) message. */
+function isNotNullViolation(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	return code === "23502" || (typeof message === "string" && /NOT NULL constraint failed/i.test(message));
 }
 
 /** Whether `error` is a unique-constraint violation: Postgres's SQLSTATE 23505, or SQLite's (and D1's) message. */
@@ -513,6 +534,88 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			? { kind: "user", userId: principal.userId }
 			: { kind: "service", serviceId: principal.serviceId };
 
+	/**
+	 * Links the one invited user an email matched to `externalSubject`, or, when a concurrent sign-in linked them first,
+	 * finds whoever now holds the subject. Audits `identity.user.linked` once, from the sign-in that linked.
+	 */
+	async function linkInvited(only: StoredUser, externalSubject: string, issuer: string): Promise<StoredUser> {
+		let linked: boolean;
+		try {
+			// Links only a user still unlinked; the UNIQUE subject refuses a second user taking this subject.
+			const updated = await driver.query<{ id: unknown }>(
+				"UPDATE identity_users SET external_subject = ? WHERE id = ? AND external_subject IS NULL RETURNING id",
+				[externalSubject, only.user.id],
+			);
+			linked = updated.length > 0;
+		} catch (error) {
+			if (!isUniqueViolation(error) && (await userBySubject(externalSubject)) === undefined) throw error;
+			linked = false;
+		}
+		if (!linked) {
+			// A concurrent sign-in linked first. Whoever now holds this subject is this person; anyone else is not.
+			const holder = await userBySubject(externalSubject);
+			if (holder === undefined) throw forbidden("no user matches this sign-in");
+			return holder;
+		}
+		const stored: StoredUser = { ...only, user: Object.freeze({ ...only.user, externalSubject }) };
+		await emit(
+			// The person signing in links themselves; the authenticator only carried their token.
+			{ actor: { kind: "human", userId: stored.user.id }, organisationId: stored.createdInOrganisationId },
+			"identity.user.linked",
+			stored.createdInOrganisationId,
+			{ kind: "identity.user", id: stored.user.id },
+			{ issuer },
+		);
+		return stored;
+	}
+
+	/** The organisation's roles version, read before a grant or revocation checks the caller's own role. */
+	async function rolesVersion(organisationId: OrganisationId): Promise<string> {
+		const [row] = await driver.query<{ roles_version: unknown }>(
+			"SELECT roles_version FROM identity_organisations WHERE id = ?",
+			[organisationId],
+		);
+		return row === undefined ? "" : String(row.roles_version);
+	}
+
+	/**
+	 * Runs a grant's or revocation's `statements` only if no role in the organisation changed since `seen` was read,
+	 * which was before the caller's own role was checked. Without it, a grant checked just before the caller's binding
+	 * was revoked could land after the revocation and bring the binding back. With no interactive transactions, the
+	 * check is in the batch: the version moves from `seen` to a new one, and a NULL insert into `identity_role_guard`
+	 * fails the whole batch when it did not move (on Postgres the update waits for a concurrent change's row lock, then
+	 * checks again).
+	 */
+	async function guardedRoleChange(
+		organisationId: OrganisationId,
+		seen: string,
+		statements: readonly SqlStatement[],
+	): Promise<void> {
+		const next = crypto.randomUUID();
+		try {
+			await driver.batch([
+				sql(
+					"UPDATE identity_organisations SET roles_version = ? WHERE id = ? AND roles_version = ?",
+					next,
+					organisationId,
+					seen,
+				),
+				sql(
+					"INSERT INTO identity_role_guard (version) VALUES ((SELECT roles_version FROM identity_organisations WHERE id = ? AND roles_version = ?))",
+					organisationId,
+					next,
+				),
+				sql("DELETE FROM identity_role_guard WHERE version = ?", next),
+				...statements,
+			]);
+		} catch (error) {
+			if (isNotNullViolation(error)) {
+				throw new HarbourError("conflict", "Roles in this organisation changed during the call; try again");
+			}
+			throw error;
+		}
+	}
+
 	const INSERT_BINDING = `INSERT INTO identity_role_bindings (${BINDING_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (organisation_id, principal_kind, principal_id, scope)
 		DO UPDATE SET role = excluded.role, granted_at = excluded.granted_at, granted_by = excluded.granted_by`;
@@ -734,6 +837,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		async grantRole(ctx, input) {
 			const role = requireRoleValue(input.role);
 			if (input.projectId !== undefined) await projectIn(ctx.organisationId, input.projectId);
+			const seen = await rolesVersion(ctx.organisationId);
 			await requireRole(ctx.actor, ctx.organisationId, input.projectId, "admin");
 			let principal: Principal;
 			if (input.principal.kind === "user") {
@@ -752,7 +856,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				grantedBy: ctx.actor,
 			});
 			// One statement: a binding for the same principal and scope is replaced, never duplicated.
-			await driver.query(INSERT_BINDING, bindingValues(binding));
+			await guardedRoleChange(ctx.organisationId, seen, [{ sql: INSERT_BINDING, params: bindingValues(binding) }]);
 			await emit(
 				ctx,
 				"identity.role.granted",
@@ -768,14 +872,23 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 
 		async revokeRole(ctx, input) {
 			if (input.projectId !== undefined) await projectIn(ctx.organisationId, input.projectId);
+			const seen = await rolesVersion(ctx.organisationId);
 			await requireRole(ctx.actor, ctx.organisationId, input.projectId, "admin");
 			const [kind, id] = principalColumns(input.principal);
 			if (typeof id !== "string") throw notFound("role binding");
+			const key: SqlValue[] = [ctx.organisationId, kind, id, input.projectId ?? ORGANISATION_SCOPE];
 			const [removed] = await driver.query<BindingRow>(
-				`DELETE FROM identity_role_bindings WHERE organisation_id = ? AND principal_kind = ? AND principal_id = ? AND scope = ? RETURNING ${BINDING_COLUMNS}`,
-				[ctx.organisationId, kind, id, input.projectId ?? ORGANISATION_SCOPE],
+				`SELECT ${BINDING_COLUMNS} FROM identity_role_bindings WHERE organisation_id = ? AND principal_kind = ? AND principal_id = ? AND scope = ?`,
+				key,
 			);
 			if (removed === undefined) throw notFound("role binding");
+			// The guard fails the delete if any role changed since `seen`, so the binding read above is the one removed.
+			await guardedRoleChange(ctx.organisationId, seen, [
+				{
+					sql: "DELETE FROM identity_role_bindings WHERE organisation_id = ? AND principal_kind = ? AND principal_id = ? AND scope = ?",
+					params: key,
+				},
+			]);
 			const binding = bindingOf(removed);
 			await emit(
 				ctx,
@@ -966,33 +1079,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 								[email],
 							);
 				const only = invited.length === 1 && invited[0] !== undefined ? storedUserOf(invited[0]) : undefined;
-				if (only === undefined) throw forbidden("no user matches this sign-in");
-				let linked: boolean;
-				try {
-					// Links only a user still unlinked; the UNIQUE subject refuses a second user taking this subject.
-					const updated = await driver.query<{ id: unknown }>(
-						"UPDATE identity_users SET external_subject = ? WHERE id = ? AND external_subject IS NULL RETURNING id",
-						[externalSubject, only.user.id],
-					);
-					linked = updated.length > 0;
-				} catch (error) {
-					if (!isUniqueViolation(error) && (await userBySubject(externalSubject)) === undefined) throw error;
-					linked = false;
-				}
-				if (linked) {
-					stored = { ...only, user: Object.freeze({ ...only.user, externalSubject }) };
-					await emit(
-						// The person signing in links themselves; the authenticator only carried their token.
-						{ actor: { kind: "human", userId: stored.user.id }, organisationId: stored.createdInOrganisationId },
-						"identity.user.linked",
-						stored.createdInOrganisationId,
-						{ kind: "identity.user", id: stored.user.id },
-						{ issuer: identity.issuer },
-					);
-				} else {
-					// A concurrent sign-in linked first. Whoever now holds this subject is this person; anyone else is not.
+				// A concurrent first sign-in may have linked the invited user since the subject lookup, taking them out of
+				// the unlinked candidates; whoever now holds this subject is this person. Ambiguity is still refused.
+				if (only === undefined) {
 					stored = await userBySubject(externalSubject);
 					if (stored === undefined) throw forbidden("no user matches this sign-in");
+				} else {
+					stored = await linkInvited(only, externalSubject, identity.issuer);
 				}
 			}
 			const userId = stored.user.id;
