@@ -61,6 +61,9 @@ export interface SqlIdentityOptions extends MemoryIdentityOptions {
 	readonly driver: SqlDriver;
 }
 
+/** The advisory lock every Postgres project insert takes, so projects commit in `seq` order. */
+const PROJECT_ORDER_LOCK = "SELECT pg_advisory_xact_lock(7316102019)";
+
 /** The tables and indexes, for `migrateIdentity` or a target's own migrations. Every statement is idempotent. */
 export function identitySchema(dialect: SqlDialect): readonly string[] {
 	const key = dialect === "postgres" ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
@@ -586,12 +589,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				name,
 				createdAt: clock.now(),
 			});
-			await driver.query("INSERT INTO identity_projects (id, organisation_id, name, created_at) VALUES (?, ?, ?, ?)", [
-				project.id,
-				project.organisationId,
-				name,
-				project.createdAt,
-			]);
+			const insert = {
+				sql: "INSERT INTO identity_projects (id, organisation_id, name, created_at) VALUES (?, ?, ?, ?)",
+				params: [project.id, project.organisationId, name, project.createdAt],
+			};
+			// On Postgres the lock makes projects commit in `seq` order, so a reader paging by cursor never skips one that
+			// commits late. SQLite and D1 run one write at a time anyway.
+			await driver.batch(driver.dialect === "postgres" ? [{ sql: PROJECT_ORDER_LOCK }, insert] : [insert]);
 			await emit(
 				ctx,
 				"identity.project.created",
