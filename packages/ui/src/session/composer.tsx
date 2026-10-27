@@ -100,7 +100,10 @@ export type ComposerProps = {
 	onRemoveAttachment?: (id: string) => void;
 	/** Retries a failed upload. Without it a failed attachment can only be removed. */
 	onRetryAttachment?: (id: string) => void;
-	/** What the host accepts. The composer turns away anything else, says why, and shows the limits by the paperclip. */
+	/**
+	 * What the host accepts. The composer turns away anything else, says why, and shows the limits by the paperclip.
+	 * Sizes are in bytes and shown in binary units: pass `5 * 1024 * 1024` to show "5 MB".
+	 */
 	attachmentLimits?: AttachmentLimits;
 	/**
 	 * When a paste becomes a pasted-text.txt attachment instead of going into the field. Defaults to 32 KiB or 80

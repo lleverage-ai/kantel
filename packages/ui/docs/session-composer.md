@@ -30,7 +30,7 @@ const uploads = useComposerAttachments(uploadToHost);
 			onAttach={uploads.attach}
 			onRemoveAttachment={uploads.remove}
 			onRetryAttachment={uploads.retry}
-			attachmentLimits={{ maxFiles: 10, maxFileBytes: 20_000_000, maxImageBytes: 5_000_000 }}
+			attachmentLimits={{ maxFiles: 10, maxFileBytes: 20 * 1024 * 1024, maxImageBytes: 5 * 1024 * 1024 }}
 			history={sentMessages}
 			banner={pendingQuestion ? <QuestionCard card={pendingQuestion} onAnswer={answer} /> : undefined}
 			captureTyping
@@ -108,7 +108,14 @@ The library never uploads. The composer checks files against `attachmentLimits` 
 in the draft; `maxFileBytes`; `maxImageBytes`, when images have a lower limit; `accept`, MIME types, wildcards or
 extensions, also passed to the file picker), hands those that pass to `onAttach`, and says in one sentence in the
 surface why any were turned away ("notes.heic isn't a type this session takes."). The paperclip's tooltip gives the
-limits. The host reports each file back in `attachments`:
+limits.
+
+**Sizes are in bytes and shown in binary units.** `maxFileBytes` and `maxImageBytes` are byte counts, and the
+composer shows them, in the paperclip's tooltip, the drop frame and the turned-away message, with the library's
+`formatBytes`, where 1 KB is 1,024 bytes and 1 MB is 1,048,576. To show "5 MB", pass `5 * 1024 * 1024`. A decimal
+limit shows as an odd number: `5_000_000` reads "4.8 MB", and `20_000_000` reads "19 MB".
+
+The host reports each file back in `attachments`:
 
 ```ts
 type ComposerAttachment = {

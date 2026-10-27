@@ -227,13 +227,21 @@ export function atScrollEnd(scroll: { top: number; height: number; client: numbe
 // Attachments. The library never uploads anything: it checks what it's given against the host's limits, hands the
 // files that pass to the host, and shows what the host reports back.
 
-/** What the host accepts. Every limit is optional; leave one out and the composer doesn't check it. */
+/**
+ * What the host accepts. Every limit is optional; leave one out and the composer doesn't check it.
+ *
+ * Sizes are in bytes and shown in binary units (formatBytes: 1 MB is 1,048,576 bytes). To show "5 MB", pass
+ * `5 * 1024 * 1024`; a decimal limit such as `5_000_000` shows as "4.8 MB".
+ */
 export type AttachmentLimits = {
 	/** At most this many attachments in one message, counting those already in the draft. */
 	maxFiles?: number;
-	/** The largest file, in bytes. */
+	/** The largest file, in bytes. Shown in binary units: pass `20 * 1024 * 1024` to show "20 MB". */
 	maxFileBytes?: number;
-	/** The largest image, in bytes, when images have a lower limit than other files. */
+	/**
+	 * The largest image, in bytes, when images have a lower limit than other files. Shown in binary units: pass
+	 * `5 * 1024 * 1024` to show "5 MB" (`5_000_000` shows as "4.8 MB").
+	 */
 	maxImageBytes?: number;
 	/**
 	 * What the host takes: MIME types (`image/png`), wildcards (`image/*`) or extensions (`.pdf`). Leave it out to
