@@ -98,8 +98,10 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
   answers the same.
 - Start does the same work for every well-formed email: `canSignIn`, then a code row under the rate limit (a decoy
   that no code matches for a stranger), so the database sees the same statements either way. The mail is sent after
-  the response through `defer` (a Worker passes `ctx.waitUntil`), so its outcome and duration never reach the caller;
-  a failed send goes to `onMailError` without the code.
+  the response, on a later task kept alive by `defer` (a Worker passes `ctx.waitUntil`), so neither its outcome nor
+  any of its work is on the response path; a failed send goes to `onMailError` without the code. The send still
+  loads the server for a moment after the response, so a caller timing a request made right after could notice it;
+  a deployment that must rule that out sends from a queue.
 - Verify claims one attempt with a single guarded `UPDATE … RETURNING` before comparing (constant-time), and consumes a
   match with another, so concurrent guesses never pass 5 and a code signs in once. Wrong, expired, used, burned and
   unknown all answer the same 401.

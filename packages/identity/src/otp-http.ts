@@ -40,14 +40,34 @@ const unauthenticated = (message: string) =>
 
 /** The JSON object in `request`'s body, or an `invalid` error. */
 async function jsonBody(request: Request): Promise<Record<string, unknown>> {
+	const tooLarge = () => new HarbourError("invalid", "The body is too large");
 	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (declared > MAX_BODY_BYTES) throw new HarbourError("invalid", "The body is too large");
-	const text = await request.text();
-	if (new TextEncoder().encode(text).length > MAX_BODY_BYTES)
-		throw new HarbourError("invalid", "The body is too large");
+	if (declared > MAX_BODY_BYTES) throw tooLarge();
+	// Counted as it arrives, so a body with no (or a false) Content-Length is cut off at the limit, not buffered whole.
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	if (request.body !== null) {
+		const reader = request.body.getReader();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.byteLength;
+			if (size > MAX_BODY_BYTES) {
+				await reader.cancel().catch(() => undefined);
+				throw tooLarge();
+			}
+			chunks.push(value);
+		}
+	}
+	const bytes = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
 	let body: unknown;
 	try {
-		body = JSON.parse(text);
+		body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 	} catch {
 		throw new HarbourError("invalid", "The body must be JSON");
 	}

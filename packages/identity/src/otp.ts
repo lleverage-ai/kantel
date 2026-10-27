@@ -218,6 +218,9 @@ function plausibleEmail(email: unknown): string {
 	return trimmed;
 }
 
+/** Resolves on a later macrotask, after everything already queued (the response included) has run. */
+const nextTask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 const otpIdentity = (email: string): ExternalIdentity => ({
 	issuer: EMAIL_OTP_ISSUER,
 	subject: email,
@@ -236,8 +239,8 @@ export interface EmailOtpOptions {
 	/** How long a session lasts. Defaults to `DEFAULT_SESSION_TTL_MILLISECONDS`. */
 	readonly sessionTtlMilliseconds?: number;
 	/**
-	 * Runs work that must not hold up the response: sending the mail. A Worker passes `ctx.waitUntil`; the default
-	 * starts it and lets it run.
+	 * Keeps work that must not hold up the response alive: sending the mail, which begins on a later task. A Worker
+	 * passes `ctx.waitUntil`; the default lets it run.
 	 */
 	readonly defer?: (work: Promise<unknown>) => void;
 	/** Told when a mail could not be sent. Never given the code. Defaults to `console.error`. */
@@ -315,10 +318,14 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 				{ since: now - OTP_RATE_WINDOW_MILLISECONDS, max: OTP_MAX_CODES_PER_WINDOW },
 			);
 			if (!invited || !issued) return;
+			// The send starts on a later task, so not even the mailer's synchronous work (building the message) runs before
+			// the response.
 			defer(
-				mailer.send({ to, code, expiresAt }).catch((error: unknown) => {
-					onMailError(error, to);
-				}),
+				nextTask()
+					.then(() => mailer.send({ to, code, expiresAt }))
+					.catch((error: unknown) => {
+						onMailError(error, to);
+					}),
 			);
 		},
 

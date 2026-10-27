@@ -170,10 +170,13 @@ describe.skipIf(smtpUrl === "" || mailpitUrl === "")("email one-time PIN through
 				for (let index = 0; index < 15; index += 1) {
 					const email = `timing.${index}.${run}@example.test`;
 					await identity.createUser(admin, { name: `Timing ${index}`, email });
-					for (const [address, times] of [
+					const pair = [
 						[email, invitedTimes],
 						[`nobody.${index}.${run}@example.test`, strangerTimes],
-					] as const) {
+					] as const;
+					// Alternate which goes first, and let the previous mail go out, so neither side pays for the other's send.
+					for (const [address, times] of index % 2 === 0 ? pair : [...pair].reverse()) {
+						await new Promise((resolve) => setTimeout(resolve, 50));
 						const began = performance.now();
 						const response = await post(OTP_START_PATH, { email: address });
 						times.push(performance.now() - began);

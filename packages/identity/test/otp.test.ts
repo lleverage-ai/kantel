@@ -260,10 +260,12 @@ for (const backend of backends) {
 			try {
 				await h.start("ada@example.test");
 				const code = h.mailer.lastCodeFor("ada@example.test") ?? "";
-				const guesses = await Promise.all(
-					Array.from({ length: 20 }, () => h.otp.verify("ada@example.test", wrong(code)).catch(() => "refused")),
+				const guesses = await Promise.allSettled(
+					Array.from({ length: 20 }, () => h.otp.verify("ada@example.test", wrong(code))),
 				);
-				expect(guesses.every((outcome) => outcome === "refused")).toBe(true);
+				for (const guess of guesses) {
+					expect(guess.status === "rejected" && authenticationFailureOf(guess.reason) === "invalid").toBe(true);
+				}
 				await expect(h.otp.verify("ada@example.test", code)).rejects.toSatisfy(
 					(error) => authenticationFailureOf(error) === "invalid",
 				);
@@ -274,6 +276,63 @@ for (const backend of backends) {
 					Array.from({ length: 5 }, () => h.otp.verify("ada@example.test", fresh)),
 				);
 				expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+			} finally {
+				await h.close();
+			}
+		});
+
+		it("admits exactly five attempts on a code however many claim at once", async () => {
+			const h = await harness(backend);
+			try {
+				await h.start("ada@example.test");
+				const claims = await Promise.all(
+					Array.from({ length: 20 }, () => h.codes.claimAttempt("ada@example.test", h.clock.now(), 5)),
+				);
+				expect(claims.filter((claim) => claim !== undefined)).toHaveLength(5);
+				if (h.driver !== undefined) {
+					const [row] = await h.driver.query<{ attempts: unknown }>(
+						"SELECT attempts FROM identity_otp_codes WHERE email = ?",
+						["ada@example.test"],
+					);
+					expect(Number(row?.attempts)).toBe(5);
+				}
+			} finally {
+				await h.close();
+			}
+		});
+
+		it("issues one code for the last slot when starts race for it", async () => {
+			const h = await harness(backend);
+			try {
+				for (let index = 0; index < 4; index += 1) await h.start("ada@example.test");
+				expect(h.mailer.sent).toHaveLength(4);
+				const responses = await Promise.all(
+					Array.from({ length: 10 }, () => h.handler(post(OTP_START_PATH, { email: "ada@example.test" }))),
+				);
+				await h.settle();
+				expect(responses.every((response) => response.status === 202)).toBe(true);
+				expect(h.mailer.sent).toHaveLength(5);
+			} finally {
+				await h.close();
+			}
+		});
+
+		it("answers before the mailer has begun any work, even its synchronous part", async () => {
+			let begun = false;
+			const h = await harness(backend, {
+				mailer: {
+					send: () => {
+						begun = true;
+						return Promise.resolve();
+					},
+				},
+			});
+			try {
+				const response = await h.handler(post(OTP_START_PATH, { email: "ada@example.test" }));
+				expect(response.status).toBe(202);
+				expect(begun).toBe(false);
+				await h.settle();
+				expect(begun).toBe(true);
 			} finally {
 				await h.close();
 			}
@@ -392,6 +451,24 @@ for (const backend of backends) {
 				expect((await h.handler(new Request(`https://harbour.test${OTP_START_PATH}`))).status).toBe(405);
 				expect((await h.handler(post("/auth/otp/other", {}))).status).toBe(404);
 				expect((await h.handler(post(SESSION_END_PATH, ""))).status).toBe(401);
+
+				// A body with no Content-Length that passes the limit and never ends is cut off at the limit.
+				const endless = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode(`{"email":"${"a".repeat(5000)}`));
+					},
+				});
+				const streamed = await Promise.race([
+					h.handler(
+						new Request(`https://harbour.test${OTP_START_PATH}`, {
+							method: "POST",
+							body: endless,
+							duplex: "half",
+						} as RequestInit & { duplex: "half" }),
+					),
+					new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2000)),
+				]);
+				expect(streamed === "hung" ? streamed : streamed.status).toBe(400);
 				expect(h.mailer.sent).toHaveLength(0);
 			} finally {
 				await h.close();
@@ -420,6 +497,8 @@ for (const backend of backends) {
 					await otp.start("stranger@example.test");
 					const forStranger = traced.statements.splice(0);
 					expect(forStranger).toEqual(forUser);
+					// The mail goes out on a later task.
+					await new Promise((resolve) => setTimeout(resolve, 20));
 
 					const code = mailer.lastCodeFor("ada@example.test") ?? "";
 					const session = await otp.verify("ada@example.test", code);
