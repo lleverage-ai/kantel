@@ -8,7 +8,8 @@ key (brwsr acts for a whole project), so the broker decides which stored profile
 browser session is a lease that ends with its agent session.
 
 A supervisor is a human, a service, or an agent acting in the parent session of the target session. Humans and
-services may grant any context. An agent supervisor may only pass on, no wider, a context it already holds.
+services may grant any context. An agent supervisor may only pass on, no wider, a context it already holds. Tom
+confirmed agent supervisors on 27 Oct 2026 ("Yes, as built").
 
 ## Records
 
@@ -89,8 +90,6 @@ egress layer must apply it).
 
 ## Open questions
 
-- Should an agent in the parent session be able to grant at all? Here it may only pass on, no wider, a context it
-  already holds.
 - A provider release that keeps failing is retried on every call, for ever, and each attempt is audited. Should it
   give up and alert after some attempts? Retries also run inside whichever call sweeps next, in any organisation, so
   a `release` that hangs delays that call. A durable broker should retry from a background loop with a timeout.
