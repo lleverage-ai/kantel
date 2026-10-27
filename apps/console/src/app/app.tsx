@@ -146,10 +146,24 @@ export function App({
 	}
 
 	const pane = sessionId !== undefined || route.name === "not-found" || unknownProject ? "main" : "list";
+	// On a phone the list is the page, so it becomes the main landmark.
+	const listIsPage = narrow && pane === "list";
+	const Sidebar = listIsPage ? "main" : "aside";
+	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
+	const title =
+		route.name === "not-found" || unknownProject
+			? "Page not found"
+			: unknownSession
+				? "Session not found"
+				: sessionId === undefined
+					? `${project?.name ?? "Harbour"} sessions`
+					: undefined;
+	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
 
 	return (
 		<div className="shell hb-app" data-pane={pane}>
-			<aside className="shell-sidebar" aria-label="Projects and sessions">
+			<Sidebar className="shell-sidebar" aria-label="Projects and sessions">
+				{listIsPage ? heading : null}
 				<div className="shell-brand">
 					<span className="shell-wordmark">Harbour</span>
 				</div>
@@ -173,8 +187,13 @@ export function App({
 					<span className="shell-actor-name">{client.actor.name}</span>
 					{client.actor.stubbed ? <Badge>Sign-in stubbed</Badge> : null}
 				</div>
-			</aside>
-			<main className="shell-main">{main}</main>
+			</Sidebar>
+			{listIsPage ? null : (
+				<main className="shell-main">
+					{heading}
+					{main}
+				</main>
+			)}
 		</div>
 	);
 }

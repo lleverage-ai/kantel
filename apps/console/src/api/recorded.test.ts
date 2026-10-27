@@ -1,4 +1,4 @@
-import { applyFrames, type ServerFrame } from "@harbour/protocol";
+import { applyFrames, PROTOCOL_VERSION, type ServerFrame } from "@harbour/protocol";
 import { groupSessions, type SessionSummary } from "@harbour/ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCatalogue } from "../recorded/catalogue.ts";
@@ -19,6 +19,8 @@ function follow(client: ReturnType<typeof createRecordedClient>, projectId: stri
 	});
 	return { seen, stop };
 }
+
+const hello = (sessionId: string) => ({ type: "hello" as const, v: PROTOCOL_VERSION, sessionId });
 
 const byId = (sessions: readonly SessionSummary[] | undefined, id: string) =>
 	sessions?.find((session) => session.id === id);
@@ -104,6 +106,33 @@ describe("the recorded client", () => {
 		expect(onChange).not.toHaveBeenCalled();
 		expect(receive).not.toHaveBeenCalled();
 		expect(client.hostFor("s-flaky")?.finished).toBe(false);
+	});
+
+	it("calls nobody back once disposed, even while still subscribed or connected", async () => {
+		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
+		const onChange = vi.fn();
+		client.watchSessions("harbour", onChange);
+		const unknown = vi.fn();
+		client.transport("s-none").connect(unknown);
+		const known = vi.fn();
+		client.transport("s-flaky").connect(known).send(hello("s-flaky"));
+		client.dispose();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(onChange).not.toHaveBeenCalled();
+		expect(unknown).not.toHaveBeenCalled();
+		expect(known).not.toHaveBeenCalled();
+	});
+
+	it("stops calling a connected session back at dispose", async () => {
+		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0, openDelayMs: 100 });
+		const receive = vi.fn();
+		client.transport("s-flaky").connect(receive).send(hello("s-flaky"));
+		await vi.advanceTimersByTimeAsync(50);
+		expect(receive).toHaveBeenCalled();
+		const calls = receive.mock.calls.length;
+		client.dispose();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(receive.mock.calls.length).toBe(calls);
 	});
 
 	it("keeps unchanged sessions' objects, so the list re-renders only what changed", async () => {

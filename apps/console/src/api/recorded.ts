@@ -65,6 +65,7 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 	let disposed = false;
 
 	const notify = (projectId: string) => {
+		if (disposed) return;
 		for (const listener of listeners.get(projectId) ?? []) listener();
 	};
 
@@ -105,8 +106,9 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 		entry.loading ??= entry.recorded.frames().then((frames) => {
 			const host = new FixtureHost(frames, options);
 			entry.host = host;
+			if (disposed) return host;
 			follow(entry, host);
-			if (entry.recorded.playOnLoad === true && !disposed) host.play();
+			if (entry.recorded.playOnLoad === true) host.play();
 			return host;
 		});
 		return entry.loading;
@@ -177,13 +179,16 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 					const queued: Parameters<Connection["send"]>[0][] = [];
 					if (entry === undefined) {
 						queueMicrotask(() => {
-							if (!closed) receive({ type: "error", code: "not_found", message: "There's no such session." });
+							if (!closed && !disposed)
+								receive({ type: "error", code: "not_found", message: "There's no such session." });
 						});
 					} else {
 						load(entry).then(
 							(host) => {
 								if (closed || disposed) return;
-								upstream = host.connect(receive);
+								upstream = host.connect((frame) => {
+									if (!closed && !disposed) receive(frame);
+								});
 								for (const frame of queued.splice(0)) upstream.send(frame);
 								if (!entry.opened) {
 									entry.opened = true;
