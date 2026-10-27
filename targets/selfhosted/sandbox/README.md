@@ -40,7 +40,9 @@ internal network whose only exit is the vault proxy; absent means `NetworkMode: 
   then removes the stage.
 - **Re-base before every command.** The diff between the version the container last synced and the head is applied
   (through the stage, as above, for added and changed files; removed by user 1000 for deleted ones), except for paths
-  the container itself changed since, which win, and never through a symlink. So the container sees the isolate's last
+  the container itself changed since, which win, and never through a symlink at the path itself (a background job can
+  still swap a parent directory mid-way, which only redirects the write to somewhere user 1000 could already write).
+  So the container sees the isolate's last
   write. A path user 1000 cannot change (it made it unwritable) is reported on the script's stderr and left as it is:
   the working copy misses that part of the head and never reverts it.
 - **Change detection.** After every command (and before every re-base) a Python script inside the container hashes

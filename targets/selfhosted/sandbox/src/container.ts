@@ -233,7 +233,9 @@ const COLLECT_SCRIPT = [
 
 /**
  * Applies a re-base inside the container, as the sandbox user (see `STAGE_DIR`): removes paths, creates directories,
- * and copies each staged file into place with its mode (replacing whatever is there, never writing through a symlink).
+ * and copies each staged file into place with its mode (replacing whatever is there; the final path component is opened
+ * with O_NOFOLLOW, so it never writes through a symlink there, but a background job can still swap a parent directory
+ * between planning and writing, which only redirects the write to somewhere user 1000 could already write).
  * Its argument is the stage directory, holding `plan.json` (`{"remove": [path, ...], "dirs": [path, ...], "writes":
  * [[path, staged name, mode], ...]}`) and the staged files. A path it cannot apply (one the user made unwritable, say)
  * is reported on stderr and in the JSON array of paths it prints, and the rest goes on.
