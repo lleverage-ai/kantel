@@ -7,7 +7,15 @@ review fixes (each container command now gets its own network). **The first
 tables below are runc**: the host had no gVisor then, so the isolate host and
 the sandbox containers ran without the hardening the plan requires. The same
 rows on gVisor (runsc), measured later the same day, are in
-[gVisor (runsc) rows](#gvisor-runsc-rows-27-october-2026).
+[gVisor (runsc) rows](#gvisor-runsc-rows-27-october-2026), and on gVisor's
+KVM platform in [gVisor KVM rows](#gvisor-kvm-platform-runsc-kvm-rows-27-october-2026).
+
+**Recommended self-hosted default: `runsc-kvm` for both the isolate host and
+sandbox containers** on bare metal with `/dev/kvm`, and `runsc` (systrap)
+inside a VM or without `/dev/kvm`. KVM takes about 50 ms off a new isolate
+against systrap (p50 170 against 220 ms; runc 140 ms), so the 100 ms isolate
+p50 still does not hold, and makes real container work about 30% faster, with
+container starts unchanged.
 
 ## Cold-start table, self-hosted rows (50 runs each)
 
@@ -170,7 +178,7 @@ Not tried, because each needs a change to Docker's daemon config:
 
 - **The KVM platform** (`runtimeArgs: ["--platform=kvm"]`). The host has
   `/dev/kvm`, and the isolate overhead is system-call cost, which is what KVM
-  is for. It is the obvious next measurement for the isolate row.
+  is for. Measured later the same day: see the next section.
 - **`--overlay2=none`**, which would make root filesystem writes visible to
   the host without the volume. The volume works on the defaults, so it isn't
   needed.
@@ -184,3 +192,109 @@ Raw numbers: `raw/cold-start-runsc-pair1-2026-10-27.json`,
 `raw/takeover-pause-runsc-2026-10-27.jsonl`,
 `raw/cf1-scenario-runsc-2026-10-27.json` and
 `raw/cf1-scenario-kill-after-exec-2-runsc-2026-10-27.json`.
+
+## gVisor KVM platform (runsc-kvm) rows, 27 October 2026
+
+The same rows, method and run counts on gVisor's KVM platform: **runsc
+release-20261019.0** (the same binary as the runsc rows), registered with
+Docker as a second runtime, `runsc-kvm`, with `runtimeArgs:
+["--platform=kvm"]`; `runsc` stays on systrap. Same machine (bare metal,
+`/dev/kvm` present), Docker 29.8.1, load average 4.8–10.1 (mostly 6–8).
+
+The cold starts were measured in rounds on one stack, 50 runs each, from
+16:12 to 16:27 UTC: runsc-kvm, runsc, runc, then the mixed config (isolate
+on runsc-kvm, containers on runsc), twice, then one more runsc-kvm run. So the
+runsc and runc columns here are new runs beside the KVM ones, not the earlier
+pairs. Before and after every run the script checked the isolate host's
+runtime, the `--platform=kvm` flag on its `runsc-sandbox` process, and the
+session host's sandbox setting.
+
+| Step (plan Table 6) | Target p50 / p95 | runc p50 / p95 (round 1, 2) | runsc systrap (round 1, 2) | **runsc-kvm** (round 1, 2, 3) | runsc-kvm min–max |
+|---|---|---|---|---|---|
+| Isolate session ready, workspace listed | 100 ms / 300 ms | 139 / 157, 141 / 161 ms | 216 / 248, 224 / 247 ms | **174 / 205, 170 / 197, 169 / 219 ms** | 138–238 ms |
+| Container on the same workspace version, warm image | 3 s / 8 s | 1.04 / 1.12, 1.06 / 1.13 s | 1.12 / 1.31, 1.10 / 1.19 s | **1.23 / 1.70, 1.09 / 1.17, 1.08 / 1.21 s** | 0.99–2.24 s |
+| New session's first command (`ls -R \| wc -l`) | | 178 / 193, 178 / 189 ms | 366 / 415, 370 / 409 ms | 290 / 346, 279 / 342, 278 / 334 ms | 208–385 ms |
+| A further command in the same, loaded isolate | | 37 / 41, 37 / 43 ms | 77 / 95, 88 / 110 ms | 71 / 89, 71 / 94, 69 / 95 ms | 41–125 ms |
+| Session open (host side, not sandboxed) | | 137 / 161, 133 / 153 ms | 138 / 153, 137 / 151 ms | 140 / 152, 150 / 194, 139 / 156 ms | 116–246 ms |
+
+The mixed config (isolate on runsc-kvm, containers on runsc) gave the same
+isolate rows as runsc-kvm (ready 171 / 210 and 170 / 194 ms, warm command
+69 / 103 and 67 / 91 ms) and the same container row as runsc (1.07 / 1.39
+and 1.06 / 1.13 s), as it should: each row depends on one runtime only.
+
+**Overhead against runc, KVM against systrap:** a new isolate costs about
++30 ms on KVM against +80 ms on systrap (p50 170 against 220 against
+140 ms), and an isolate command still takes about twice as long as on runc
+(warm 70 ms against 77–88 on systrap and 37 on runc). The first command's
+phases show where KVM helps: file system 17–23 ms (systrap 30, runc 11),
+exec 89–97 ms (systrap 121, runc 49). The isolate p95 target (300 ms) now
+holds with about 80–100 ms to spare; **the p50 target (100 ms) still does
+not hold** on any runtime, and needs the pre-loaded isolate pool or one
+isolate per workspace, not a faster platform. Container starts are the same
+on every runtime (1.04–1.12 s p50; rounds 2 and 3 on KVM 1.08–1.09 s). KVM's
+round 1, the first run after the stack came up, was slower (1.23 / 1.70 s,
+mostly in `create`, about 70 ms slower) while the load average rose
+from 4.8 to 7.9; it is kept in the table and the raw file.
+
+A container that does real work is where KVM pays off. One `docker run` of
+`harbour-sandbox:dev` with no network, five runs per runtime interleaved:
+`git init`, write 1,000 files in 20 directories, `git add -A` and commit,
+200 `fork`/`exec`s of `/bin/true`, and `find / -xdev -type f`, timed inside
+the container from `/proc/uptime`:
+
+| Runtime | Work, median (min–max) | Whole `docker run`, median |
+|---|---|---|
+| runc | 1.23 s (1.19–1.29) | 1.80 s |
+| runsc (systrap) | 6.24 s (5.98–6.30) | 6.75 s |
+| runsc-kvm | **4.32 s** (4.20–4.52) | 4.85 s |
+
+KVM is about 30% faster than systrap on it, though still about 3.5 times
+runc. The shared scenario shows the same: its two container commands (git and
+curl) took 1.00–1.18 s on runsc-kvm against 1.26–1.38 s with containers on
+runsc, and the whole scenario 4.4 s against 5.4–5.5 s.
+
+Takeover, scenario and suites on runsc-kvm. The cold starts and takeover ran
+on main at 5a1f5ac; the suites and scenarios were re-run after
+rebasing onto #51 (fixed isolate host address), on both runsc-kvm and the
+mixed config. A process watcher saw every `runsc-sandbox` during the suite
+run with `--platform=kvm` (15 sandboxes), and in the mixed run one KVM
+sandbox (the isolate host) and 17 systrap ones.
+
+| Check | runsc-kvm result | Mixed (isolate runsc-kvm, containers runsc) | runsc systrap (above) |
+|---|---|---|---|
+| `docker kill` takeover, 10 runs | **0.99 s p50 / 1.27 s max**; kill to lease acquired p50 0.47 s, lease to resumed p50 0.53 s; 10/10 passed | not run | 0.95 / 1.24 s |
+| `docker pause` takeover, 5 runs | **10.6 s p50 / 10.7 s max**; lease acquired 30–36 ms after expiry; 5/5 passed | not run | 10.6 / 11.9 s |
+| Conformance, `--target=selfhosted` | spike suite 11/11, Pi storage, lease and workspace tests 45/45 | same | same |
+| Scripted task, and its `--crash` run | 9/9 (2.8 s); 12/12, taken over in 1.0 s | 9/9; 12/12, taken over in 1.3 s | same |
+| M0-CF1's shared scenario | 17/17 (4.4 s); `--kill-after-exec 2` 20/20 (4.4 s), reopen on host-b 237 ms after the kill | 17/17 (5.5 s); 20/20 (5.4 s), reopen after 444 ms | 17/17, 20/20 |
+| Canary check | absent from service logs, Postgres and MinIO | same | same |
+
+Nothing broke on KVM that had not already broken on systrap: the fixed
+addresses and the `/workspace` volume work unchanged, and no other change was
+needed. KVM needs `/dev/kvm`, and gVisor recommends it for bare metal and
+systrap inside a VM, where nested virtualisation often makes KVM slower
+(https://gvisor.dev/docs/architecture_guide/platforms/). So keep `runsc` as
+the fallback, and measure before choosing KVM on a cloud VM. CI stays on
+runc.
+
+**Recommendation:** run both the isolate host and sandbox containers on
+`runsc-kvm` on a bare-metal host with `/dev/kvm`. It is the fastest gVisor config
+on every row, and one runtime is simpler than two. A mixed config gains
+nothing: containers start no slower on KVM and do real work faster.
+
+Raw numbers: `raw/cold-start-runsc-kvm-round1-2026-10-27.json`,
+`raw/cold-start-runsc-kvm-round2-2026-10-27.json`,
+`raw/cold-start-runsc-kvm-round3-2026-10-27.json`,
+`raw/cold-start-runsc-round1-2026-10-27.json`,
+`raw/cold-start-runsc-round2-2026-10-27.json`,
+`raw/cold-start-runc-round1-2026-10-27.json`,
+`raw/cold-start-runc-round2-2026-10-27.json`,
+`raw/cold-start-mixed-round1-2026-10-27.json`,
+`raw/cold-start-mixed-round2-2026-10-27.json`,
+`raw/container-work-2026-10-27.jsonl`,
+`raw/takeover-kill-runsc-kvm-2026-10-27.jsonl`,
+`raw/takeover-pause-runsc-kvm-2026-10-27.jsonl`,
+`raw/cf1-scenario-runsc-kvm-2026-10-27.json`,
+`raw/cf1-scenario-kill-after-exec-2-runsc-kvm-2026-10-27.json`,
+`raw/cf1-scenario-mixed-2026-10-27.json` and
+`raw/cf1-scenario-kill-after-exec-2-mixed-2026-10-27.json`.

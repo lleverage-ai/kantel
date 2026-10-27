@@ -1,0 +1,194 @@
+{
+	"ok": true,
+	"sessionId": "research-task-mvqwv7rt",
+	"elapsedMs": 4409,
+	"workspace": {
+		"id": "ws-research-task-mvqwv7rt",
+		"head": "a5b639dd899c957f6b0d7c51d4b55e061e0e95e9d5b2d7cd3d8b718ac00ffc99"
+	},
+	"interrupted": [],
+	"execs": [
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "3298bebb8adc0be042f7a7d2737fdc80dc178b22c45175eb67b719f30ac2ae37",
+			"version": "3298bebb8adc0be042f7a7d2737fdc80dc178b22c45175eb67b719f30ac2ae37",
+			"command": "ls -1 /workspace && cat brief.txt",
+			"timings": {
+				"fsMs": 10,
+				"execMs": 228,
+				"totalMs": 220,
+				"commitMs": 1,
+				"lazyReads": 1,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "3298bebb8adc0be042f7a7d2737fdc80dc178b22c45175eb67b719f30ac2ae37",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "mkdir -p research && curl -sS https://example.com/ -o resear",
+			"timings": {
+				"fsMs": 9,
+				"execMs": 133,
+				"totalMs": 130,
+				"commitMs": 10,
+				"lazyReads": 0,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[",
+			"timings": {
+				"fsMs": 8,
+				"execMs": 198,
+				"totalMs": 196,
+				"commitMs": 0,
+				"lazyReads": 0,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"version": "16650bdb93f5c61b3ffffdf5021a4a67b93ce753a7fb9d3616e659c0221e32b4",
+			"command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github",
+			"timings": {
+				"fsMs": 6,
+				"execMs": 20,
+				"totalMs": 18,
+				"commitMs": 1,
+				"lazyReads": 0,
+				"manifestMs": 0
+			}
+		},
+		{
+			"tier": "container",
+			"exitCode": 0,
+			"base": "19e366c5eadcdaae0bdaf23f757fdeb74f71e59d62684afffc82ec49b2b56516",
+			"version": "a5b639dd899c957f6b0d7c51d4b55e061e0e95e9d5b2d7cd3d8b718ac00ffc99",
+			"command": "git init -q && cat notes/x.md && grep -c 'Example Domain' re",
+			"timings": {
+				"runMs": 673.1,
+				"execMs": 1052,
+				"startMs": 394.9,
+				"copyInMs": 141.1,
+				"createMs": 133.3,
+				"uploadMs": 753.8,
+				"copyOutMs": 706.8,
+				"networkMs": 91.8,
+				"workspaceTarMs": 15.2
+			}
+		},
+		{
+			"tier": "container",
+			"exitCode": 0,
+			"base": "a5b639dd899c957f6b0d7c51d4b55e061e0e95e9d5b2d7cd3d8b718ac00ffc99",
+			"version": "a5b639dd899c957f6b0d7c51d4b55e061e0e95e9d5b2d7cd3d8b718ac00ffc99",
+			"command": "git --version > /dev/null && curl -sS https://postman-echo.c",
+			"timings": {
+				"runMs": 897.9,
+				"execMs": 1175,
+				"startMs": 456.9,
+				"copyInMs": 191.7,
+				"createMs": 168,
+				"uploadMs": 919.1,
+				"copyOutMs": 918.7,
+				"networkMs": 127.7,
+				"workspaceTarMs": 12.2
+			}
+		},
+		{
+			"tier": "isolate",
+			"exitCode": 0,
+			"base": "a5b639dd899c957f6b0d7c51d4b55e061e0e95e9d5b2d7cd3d8b718ac00ffc99",
+			"version": "a5b639dd899c957f6b0d7c51d4b55e061e0e95e9d5b2d7cd3d8b718ac00ffc99",
+			"command": "cat git-log.txt && wc -l < git-log.txt",
+			"timings": {
+				"fsMs": 6,
+				"execMs": 22,
+				"totalMs": 20,
+				"commitMs": 0,
+				"lazyReads": 1,
+				"manifestMs": 0
+			}
+		}
+	],
+	"events": [],
+	"checks": [
+		{
+			"name": "submission done",
+			"ok": true
+		},
+		{
+			"name": "final answer",
+			"ok": true
+		},
+		{
+			"name": "one tool result per step",
+			"ok": true
+		},
+		{
+			"name": "step 1 isolate-lists-workspace",
+			"ok": true
+		},
+		{
+			"name": "step 2 isolate-fetches-through-vault",
+			"ok": true
+		},
+		{
+			"name": "step 3 isolate-vault-injects-and-redacts",
+			"ok": true
+		},
+		{
+			"name": "step 4 isolate-vault-denies-unlisted-host",
+			"ok": true
+		},
+		{
+			"name": "step 5 write-tool-writes-notes",
+			"ok": true
+		},
+		{
+			"name": "step 6 container-sees-isolate-and-write-tool",
+			"ok": true
+		},
+		{
+			"name": "step 7 container-vault-injects-and-redacts",
+			"ok": true
+		},
+		{
+			"name": "step 8 isolate-sees-container-write",
+			"ok": true
+		},
+		{
+			"name": "step 9 read-tool-reads-notes",
+			"ok": true
+		},
+		{
+			"name": "both tiers ran",
+			"ok": true
+		},
+		{
+			"name": "canary absent from transcript, fixture and exec log",
+			"ok": true
+		},
+		{
+			"name": "vault allowed and injected for both tiers",
+			"ok": true
+		},
+		{
+			"name": "vault denied for both tiers",
+			"ok": true
+		},
+		{
+			"name": "vault redacted echoed canary for both tiers",
+			"ok": true
+		}
+	]
+}

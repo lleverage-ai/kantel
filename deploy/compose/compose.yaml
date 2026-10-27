@@ -10,8 +10,9 @@
 #
 # Runtimes: HARBOUR_ISOLATE_RUNTIME and HARBOUR_SANDBOX_RUNTIME pick the OCI
 # runtime for the workerd isolate host and for sandbox containers. Both
-# default to runc; set them to runsc once gVisor is registered with the
-# Docker daemon (see README.md). Production must not run workerd on runc.
+# default to runc; set them to runsc-kvm (bare metal) or runsc (in a VM) once
+# gVisor is registered with the Docker daemon (see README.md). Production must
+# not run workerd on runc.
 #
 # gVisor cannot reach Docker's embedded DNS (127.0.0.11) on a user-defined
 # network (https://gvisor.dev/docs/user_guide/faq/), so anything that may run
