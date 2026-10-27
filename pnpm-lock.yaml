@@ -415,6 +415,9 @@ importers:
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../workspace
+      just-bash:
+        specifier: 3.6.0
+        version: 3.6.0
     devDependencies:
       "@harbour/testing":
         specifier: workspace:*
