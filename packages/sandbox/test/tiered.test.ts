@@ -9,7 +9,12 @@ import { usageReport } from "@harbour/sandbox/sweeper";
 import { containerWins, createTieredSandboxes, type IsolateBackend } from "@harbour/sandbox/tiered";
 import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
+import {
+	createMemoryWorkspaceStore,
+	createStoredWorkspaces,
+	type StoredWorkspaces,
+	type WorkspaceStore,
+} from "@harbour/workspace/stored";
 import { defineCommand } from "just-bash/browser";
 import { describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
@@ -33,6 +38,19 @@ interface SetUpOptions {
 	readonly seeded?: boolean;
 	/** Wraps the stored workspaces the sandboxes (and only they) use. */
 	readonly sandboxWorkspaces?: (inner: StoredWorkspaces) => StoredWorkspaces;
+	/** Wraps the workspace store, e.g. to pause object writes. */
+	readonly store?: (inner: WorkspaceStore) => WorkspaceStore;
+}
+
+/** A store whose tree writes wait on `paused` while `armed` is set. */
+function pausingTreeWrites(paused: Gate, armed: { on: boolean }) {
+	return (inner: WorkspaceStore): WorkspaceStore => ({
+		...inner,
+		async putObject(key, bytes) {
+			if (armed.on && key.includes("/trees/")) await paused.wait();
+			return inner.putObject(key, bytes);
+		},
+	});
 }
 
 async function setUp(options: SetUpOptions = {}) {
@@ -40,8 +58,9 @@ async function setUp(options: SetUpOptions = {}) {
 	const audit = new RecordingAuditSink();
 	const projectFiles = createMemoryProjectFiles();
 	const projectVersion = await projectFiles.seed("proj-1", { "README.md": "readme", "src/a.ts": "a" });
+	const store = createMemoryWorkspaceStore();
 	const workspaces = createStoredWorkspaces({
-		store: createMemoryWorkspaceStore(),
+		store: options.store?.(store) ?? store,
 		clock,
 		audit,
 		sources: [projectFiles],
@@ -421,6 +440,47 @@ describe("tiered sandboxes: cancellation", () => {
 		expect(ran).toEqual(["one"]);
 		expect(await head()).toBe(before);
 		await expect(workspaces.read(ctx, workspaceId, "a.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("commits nothing when the caller cancels while the isolate's commit writes its objects", async () => {
+		const paused = gate();
+		const armed = { on: false };
+		const controller = new AbortController();
+		const { sandboxes, acquire, head, workspaces, workspaceId } = await setUp({
+			store: pausingTreeWrites(paused, armed),
+		});
+		const lease = await acquire("isolate");
+		const before = await head();
+		armed.on = true;
+		const running = sandboxes.exec({ ...ctx, signal: controller.signal }, lease.id, { command: "printf a > a.txt" });
+		await paused.reached;
+		controller.abort();
+		paused.open();
+		await expect(running).rejects.toMatchObject({ code: "aborted" });
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "a.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("commits nothing when the sweep ends a container lease while its release's commit writes its objects", async () => {
+		const paused = gate();
+		const armed = { on: false };
+		const { sandboxes, acquire, head, clock, container, workspaces, workspaceId } = await setUp({
+			store: pausingTreeWrites(paused, armed),
+		});
+		const lease = await acquire("container", 1_000);
+		await sandboxes.exec(ctx, lease.id, { command: "printf c > c.txt" });
+		const before = await head();
+		armed.on = true;
+		const releasing = sandboxes.release(ctx, lease.id);
+		await paused.reached;
+		clock.advance(2_000);
+		const swept = await sandboxes.sweep(SWEEP);
+		expect(swept.map((ended) => [ended.id, ended.endReason])).toEqual([[lease.id, "expired"]]);
+		paused.open();
+		await expect(releasing).rejects.toMatchObject({ code: "expired" });
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "c.txt")).rejects.toMatchObject({ code: "not_found" });
+		expect(container.endedCalls).toEqual([{ leaseId: lease.id, discard: true }]);
 	});
 
 	it("commits nothing for an isolate command whose caller cancelled as the backend returned", async () => {

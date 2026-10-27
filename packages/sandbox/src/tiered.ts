@@ -29,6 +29,8 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	type CommitRequest,
+	type CommitResult,
 	DEFAULT_TIER_ROUTES,
 	type ExecRequest,
 	type ExecResult,
@@ -201,6 +203,7 @@ class Tiered implements TieredSandboxes {
 	readonly #releasing = new Map<string, Promise<SandboxLease>>();
 	/** Ends in flight, so a sweep and a call that both notice an expired lease end it (and audit it) once. */
 	readonly #ending = new Map<string, Promise<SandboxLease>>();
+	readonly #fences = new Map<string, AbortController>();
 	/** Per organisation, session and tier, the tail of the acquisitions in flight, so they run one at a time. */
 	readonly #acquiring = new Map<string, Promise<void>>();
 
@@ -495,7 +498,7 @@ class Tiered implements TieredSandboxes {
 			}
 			await this.#requireCommittable(ctx, row);
 			try {
-				const result = await this.#workspaces.commit(ctx, lease.workspaceId, {
+				const result = await this.#commit(ctx, row, {
 					baseVersion: record.head,
 					changes,
 					writer: { sessionId: lease.sessionId, leaseId: lease.id },
@@ -528,7 +531,7 @@ class Tiered implements TieredSandboxes {
 			requireNotCancelled(ctx, lease.id);
 			await this.#requireCommittable(ctx, row);
 			try {
-				const result = await this.#workspaces.commit(ctx, lease.workspaceId, {
+				const result = await this.#commit(ctx, row, {
 					baseVersion,
 					changes,
 					writer: { sessionId: lease.sessionId, leaseId: lease.id },
@@ -709,6 +712,9 @@ class Tiered implements TieredSandboxes {
 		if (inFlight !== undefined) return { lease: await inFlight };
 		const stored = this.#leases.get(id) ?? row;
 		if (stored.lease.endedAt !== undefined) return { lease: stored.lease };
+		// A commit for this lease still in flight stops before it moves the head (see `#commit`).
+		const fence = this.#fence(id);
+		fence.abort();
 		const ending = (async (): Promise<Required<Ended>> => {
 			const now = this.#clock.now();
 			const lease: SandboxLease = { ...stored.lease, endedAt: now, endReason: reason };
@@ -737,8 +743,45 @@ class Tiered implements TieredSandboxes {
 		this.#ending.set(id, shared);
 		try {
 			return await ending;
+		} catch (error) {
+			// The lease is still live (the backend refused to end it): later commits may proceed again.
+			if (this.#fences.get(id) === fence) this.#fences.delete(id);
+			throw error;
 		} finally {
 			this.#ending.delete(id);
+		}
+	}
+
+	/** The lease's commit fence: aborted once the lease starts to end, and kept so for good. */
+	#fence(leaseId: string): AbortController {
+		let fence = this.#fences.get(leaseId);
+		if (fence === undefined) {
+			fence = new AbortController();
+			this.#fences.set(leaseId, fence);
+		}
+		return fence;
+	}
+
+	/**
+	 * Commits for a lease under its fence and the caller's signal. Workspaces check the signal immediately before the
+	 * head moves, so a lease that ends (or a caller that cancels) while the commit writes its objects commits nothing:
+	 * `expired` when the lease ended, `aborted` when the caller cancelled.
+	 */
+	async #commit(
+		ctx: CallContext,
+		row: LeaseRow,
+		request: Omit<CommitRequest, "changes"> & { readonly changes: readonly ModedChange[] },
+	): Promise<CommitResult> {
+		const fence = this.#fence(row.lease.id).signal;
+		const signal = ctx.signal === undefined ? fence : AbortSignal.any([ctx.signal, fence]);
+		try {
+			return await this.#workspaces.commit({ ...ctx, signal }, row.lease.workspaceId, request);
+		} catch (error) {
+			if (isHarbourError(error, "aborted") && fence.aborted) {
+				throw new HarbourError("expired", `lease ${row.lease.id} ended before its changes were committed`);
+			}
+			if (isHarbourError(error, "aborted")) requireNotCancelled({ ...ctx, signal }, row.lease.id);
+			throw error;
 		}
 	}
 

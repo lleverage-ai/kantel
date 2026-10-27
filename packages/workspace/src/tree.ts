@@ -345,6 +345,13 @@ export function checkExportSize(sizes: Iterable<number>, maxBytes: number | unde
 	}
 }
 
+/** Rejects with `aborted` when the caller's signal fired: a commit checks it just before it moves the head. */
+export function requireNotAborted(ctx: CallContext): void {
+	if (ctx.signal?.aborted === true) {
+		throw new HarbourError("aborted", "the call was cancelled before the commit moved the head; nothing was committed");
+	}
+}
+
 export function pageLimit(limit: number | undefined): number {
 	if (limit === undefined) return DEFAULT_PAGE_LIMIT;
 	if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");

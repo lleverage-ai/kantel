@@ -54,6 +54,7 @@ import {
 	pageLimit,
 	prepareChanges,
 	readTree,
+	requireNotAborted,
 	seedFiles,
 	statTree,
 	type TreeFile,
@@ -285,6 +286,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			const prepared = await prepareChanges(request.changes);
 
 			// Everything below is synchronous, so the head check and the new version are atomic.
+			requireNotAborted(ctx);
 			if (request.baseVersion !== state.record.head) {
 				throw new HarbourError("conflict", `base version ${request.baseVersion} is not the head`, {
 					head: state.record.head,

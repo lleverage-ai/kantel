@@ -66,6 +66,7 @@ import {
 	pageLimit,
 	prepareChanges,
 	readTree,
+	requireNotAborted,
 	seedFiles,
 	statTree,
 	type Tree,
@@ -441,6 +442,9 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 					record: { ...head.record, head: version, updatedAt: now },
 					tree: treeKey,
 				};
+				// The last moment a cancelled caller (or an ended sandbox lease) can stop the commit: nothing refers to the
+				// objects written so far.
+				requireNotAborted(ctx);
 				if (await store.advance(head, next, { info, tree: treeKey })) break;
 				// The head changed: a commit that won is a conflict; a remount that only moved the token is retried.
 				const reloaded = await load(ctx, id);
