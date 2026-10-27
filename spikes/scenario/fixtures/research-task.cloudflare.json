@@ -1,6 +1,6 @@
 {
 	"format": "harbour-m0-session-fixture/2",
-	"recordedAt": "2026-10-27T12:38:05.186Z",
+	"recordedAt": "2026-10-27T13:01:14.043Z",
 	"scenario": "research-task",
 	"entries": [
 		{
@@ -13,7 +13,7 @@
 							"text": "Done: the title of example.com is \"Example Domain\"; notes are in notes/x.md and committed in the container's git repository."
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -31,7 +31,7 @@
 						}
 					},
 					"stopReason": "stop",
-					"timestamp": 1793104684629,
+					"timestamp": 1793106073723,
 					"durationMs": 0
 				}
 			],
@@ -53,8 +53,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 328,
-					"timestamp": 1793104684629
+					"durationMs": 320,
+					"timestamp": 1793106073723
 				}
 			],
 			"data": {
@@ -79,7 +79,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -97,7 +97,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104684301,
+					"timestamp": 1793106073403,
 					"durationMs": 0
 				}
 			],
@@ -115,12 +115,12 @@
 					"content": [
 						{
 							"type": "text",
-							"text": "4abe66c research notes\n1\n"
+							"text": "e93dd88 research notes\n1\n"
 						}
 					],
 					"isError": false,
-					"durationMs": 1343,
-					"timestamp": 1793104684301
+					"durationMs": 1635,
+					"timestamp": 1793106073403
 				}
 			],
 			"data": {
@@ -145,7 +145,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -163,7 +163,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104682958,
+					"timestamp": 1793106071768,
 					"durationMs": 0
 				}
 			],
@@ -185,8 +185,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 1108,
-					"timestamp": 1793104682958
+					"durationMs": 793,
+					"timestamp": 1793106071768
 				}
 			],
 			"data": {
@@ -211,7 +211,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -229,7 +229,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104681850,
+					"timestamp": 1793106070975,
 					"durationMs": 0
 				}
 			],
@@ -247,12 +247,12 @@
 					"content": [
 						{
 							"type": "text",
-							"text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\n4abe66c research notes\n0\n"
+							"text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\ne93dd88 research notes\n0\n"
 						}
 					],
 					"isError": false,
-					"durationMs": 2326,
-					"timestamp": 1793104681850
+					"durationMs": 1992,
+					"timestamp": 1793106070975
 				}
 			],
 			"data": {
@@ -277,7 +277,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -295,7 +295,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104679524,
+					"timestamp": 1793106068983,
 					"durationMs": 0
 				}
 			],
@@ -317,8 +317,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 727,
-					"timestamp": 1793104679524
+					"durationMs": 729,
+					"timestamp": 1793106068983
 				}
 			],
 			"data": {
@@ -344,7 +344,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -362,7 +362,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104678797,
+					"timestamp": 1793106068254,
 					"durationMs": 0
 				}
 			],
@@ -384,8 +384,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 126,
-					"timestamp": 1793104678797
+					"durationMs": 105,
+					"timestamp": 1793106068254
 				}
 			],
 			"data": {
@@ -410,7 +410,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -428,7 +428,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104678671,
+					"timestamp": 1793106068149,
 					"durationMs": 0
 				}
 			],
@@ -450,8 +450,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 496,
-					"timestamp": 1793104678671
+					"durationMs": 754,
+					"timestamp": 1793106068149
 				}
 			],
 			"data": {
@@ -476,7 +476,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -494,7 +494,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104678175,
+					"timestamp": 1793106067395,
 					"durationMs": 0
 				}
 			],
@@ -516,8 +516,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 2101,
-					"timestamp": 1793104678175
+					"durationMs": 1063,
+					"timestamp": 1793106067395
 				}
 			],
 			"data": {
@@ -542,7 +542,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -560,7 +560,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104676074,
+					"timestamp": 1793106066332,
 					"durationMs": 0
 				}
 			],
@@ -582,8 +582,8 @@
 						}
 					],
 					"isError": false,
-					"durationMs": 660,
-					"timestamp": 1793104676074
+					"durationMs": 589,
+					"timestamp": 1793106066332
 				}
 			],
 			"data": {
@@ -608,7 +608,7 @@
 							}
 						}
 					],
-					"api": "faux:1793104674869:q75zc84tn9p",
+					"api": "faux:1793106065636:j0kbpjksvzd",
 					"provider": "harbour-script",
 					"model": "scripted",
 					"usage": {
@@ -626,7 +626,7 @@
 						}
 					},
 					"stopReason": "toolUse",
-					"timestamp": 1793104675414,
+					"timestamp": 1793106065743,
 					"durationMs": 0
 				}
 			],
@@ -735,7 +735,7 @@
 							}
 						}
 					],
-					"timestamp": 1793104675414
+					"timestamp": 1793106065743
 				}
 			],
 			"kind": "pi.system",
@@ -748,7 +748,7 @@
 				{
 					"role": "user",
 					"content": "Run the research task in brief.txt.",
-					"timestamp": 1793104675414
+					"timestamp": 1793106065743
 				}
 			],
 			"kind": "pi.user",
@@ -761,205 +761,205 @@
 			"command": "ls -1 /workspace && cat brief.txt",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
+			"leaseId": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944",
 			"base": 1,
 			"version": 1,
 			"timings": {
-				"isolate.manifest": 229,
-				"isolate.exec": 181,
+				"isolate.manifest": 231,
+				"isolate.exec": 134,
 				"isolate.scan": 0,
-				"isolate.call": 505,
-				"isolate.total": 505
+				"isolate.call": 453,
+				"isolate.total": 453
 			}
 		},
 		{
 			"command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
+			"leaseId": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944",
 			"base": 1,
 			"version": 2,
 			"timings": {
 				"isolate.manifest": 0,
-				"isolate.exec": 1333,
+				"isolate.exec": 224,
 				"isolate.scan": 0,
-				"isolate.call": 1333,
-				"isolate.commit": 694,
-				"isolate.total": 2027
+				"isolate.call": 224,
+				"isolate.commit": 769,
+				"isolate.total": 993
 			}
 		},
 		{
 			"command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
+			"leaseId": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944",
 			"base": 2,
 			"version": 2,
 			"timings": {
-				"isolate.manifest": 177,
-				"isolate.exec": 175,
+				"isolate.manifest": 187,
+				"isolate.exec": 468,
 				"isolate.scan": 0,
-				"isolate.call": 352,
-				"isolate.total": 352
+				"isolate.call": 655,
+				"isolate.total": 655
 			}
 		},
 		{
 			"command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
+			"leaseId": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944",
 			"base": 2,
 			"version": 2,
 			"timings": {
 				"isolate.manifest": 0,
-				"isolate.exec": 47,
+				"isolate.exec": 40,
 				"isolate.scan": 0,
-				"isolate.call": 47,
-				"isolate.total": 47
+				"isolate.call": 40,
+				"isolate.total": 40
 			}
 		},
 		{
 			"command": "git init -q && cat notes/x.md && grep -c 'Example Domain' research/example.html && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true",
 			"tier": "container",
 			"exitCode": 0,
-			"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
+			"leaseId": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90",
 			"base": 3,
 			"version": 3,
 			"timings": {
-				"container.start": 554,
-				"container.ready": 507,
-				"container.request": 594,
-				"container.sync": 12.1,
-				"container.exec": 317.8,
-				"container.scan": 2,
-				"container.call": 2191,
-				"container.total": 2191
+				"container.start": 391,
+				"container.ready": 230,
+				"container.request": 499,
+				"container.sync": 5.3,
+				"container.exec": 108.5,
+				"container.scan": 0.8,
+				"container.call": 1850,
+				"container.total": 1850
 			}
 		},
 		{
 			"command": "git --version > /dev/null && curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
 			"tier": "container",
 			"exitCode": 0,
-			"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
+			"leaseId": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90",
 			"base": 3,
 			"version": 3,
 			"timings": {
-				"container.request": 983,
-				"container.sync": 0.2,
-				"container.exec": 972.1,
-				"container.scan": 0.8,
-				"container.call": 1018,
-				"container.total": 1018
+				"container.request": 697,
+				"container.sync": 1.7,
+				"container.exec": 676.3,
+				"container.scan": 0.4,
+				"container.call": 726,
+				"container.total": 726
 			}
 		},
 		{
 			"command": "cat git-log.txt && wc -l < git-log.txt",
 			"tier": "isolate",
 			"exitCode": 0,
-			"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
+			"leaseId": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944",
 			"base": 4,
 			"version": 4,
 			"timings": {
 				"isolate.manifest": 130,
-				"isolate.exec": 266,
+				"isolate.exec": 156,
 				"isolate.scan": 0,
-				"isolate.call": 396,
-				"isolate.total": 396
+				"isolate.call": 286,
+				"isolate.total": 286
 			}
 		}
 	],
 	"events": [],
 	"leases": [
 		{
-			"id": "lease_a4863d37-c260-4842-9170-b816fbb52ebb",
-			"sessionId": "research-task-mvqo84hp",
-			"workspaceId": "ws-research-task-mvqo84hp",
+			"id": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944",
+			"sessionId": "research-task-mvqp1xs8",
+			"workspaceId": "ws-research-task-mvqp1xs8",
 			"tier": "isolate",
 			"baseVersion": 1,
-			"acquiredAt": 1793104675488,
-			"expiresAt": 1793105575488,
-			"endedAt": 1793104684629,
+			"acquiredAt": 1793106065824,
+			"expiresAt": 1793106965824,
+			"endedAt": 1793106073723,
 			"endReason": "released"
 		},
 		{
-			"id": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
-			"sessionId": "research-task-mvqo84hp",
-			"workspaceId": "ws-research-task-mvqo84hp",
+			"id": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90",
+			"sessionId": "research-task-mvqp1xs8",
+			"workspaceId": "ws-research-task-mvqp1xs8",
 			"tier": "container",
 			"baseVersion": 3,
-			"acquiredAt": 1793104679603,
-			"expiresAt": 1793105579603,
-			"endedAt": 1793104685070,
+			"acquiredAt": 1793106069059,
+			"expiresAt": 1793106969059,
+			"endedAt": 1793106073879,
 			"endReason": "released"
 		}
 	],
 	"audit": [
 		{
-			"at": 1793104675488,
+			"at": 1793106065824,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_a4863d37-c260-4842-9170-b816fbb52ebb:acquired",
+			"id": "sandbox:lease:lease_4803ccde-06f4-4abc-9102-c475fcfb0944:acquired",
 			"type": "sandbox.lease.acquired",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_a4863d37-c260-4842-9170-b816fbb52ebb"
+				"id": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944"
 			},
 			"data": {
 				"tier": "isolate",
-				"workspaceId": "ws-research-task-mvqo84hp",
+				"workspaceId": "ws-research-task-mvqp1xs8",
 				"baseVersion": 1,
-				"expiresAt": 1793105575488
+				"expiresAt": 1793106965824
 			}
 		},
 		{
-			"at": 1793104678175,
+			"at": 1793106067395,
 			"source": "workspace",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
 			"subject": {
 				"kind": "workspace",
-				"id": "ws-research-task-mvqo84hp"
+				"id": "ws-research-task-mvqp1xs8"
 			},
-			"id": "workspace:commit:ws-research-task-mvqo84hp:2",
+			"id": "workspace:commit:ws-research-task-mvqp1xs8:2",
 			"type": "workspace.committed",
 			"data": {
 				"version": 2,
 				"changed": ["research/example.html"],
-				"leaseId": "lease_a4863d37-c260-4842-9170-b816fbb52ebb"
+				"leaseId": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944"
 			}
 		},
 		{
-			"at": 1793104679524,
+			"at": 1793106068983,
 			"source": "workspace",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
 			"subject": {
 				"kind": "workspace",
-				"id": "ws-research-task-mvqo84hp"
+				"id": "ws-research-task-mvqp1xs8"
 			},
-			"id": "workspace:commit:ws-research-task-mvqo84hp:3",
+			"id": "workspace:commit:ws-research-task-mvqp1xs8:3",
 			"type": "workspace.committed",
 			"data": {
 				"version": 3,
@@ -967,140 +967,140 @@
 			}
 		},
 		{
-			"at": 1793104679603,
+			"at": 1793106069059,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613:acquired",
+			"id": "sandbox:lease:lease_4729f06b-926c-49bf-b9a1-b2c30629cb90:acquired",
 			"type": "sandbox.lease.acquired",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613"
+				"id": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90"
 			},
 			"data": {
 				"tier": "container",
-				"workspaceId": "ws-research-task-mvqo84hp",
+				"workspaceId": "ws-research-task-mvqp1xs8",
 				"baseVersion": 3,
-				"expiresAt": 1793105579603
+				"expiresAt": 1793106969059
 			}
 		},
 		{
-			"at": 1793104679603,
+			"at": 1793106069059,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:escalated:org-harbour-m0:research-task-mvqo84hp",
+			"id": "sandbox:escalated:org-harbour-m0:research-task-mvqp1xs8",
 			"type": "sandbox.escalated",
 			"subject": {
 				"kind": "session",
-				"id": "research-task-mvqo84hp"
+				"id": "research-task-mvqp1xs8"
 			},
 			"data": {
 				"tool": "bash",
-				"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613",
-				"workspaceId": "ws-research-task-mvqo84hp"
+				"leaseId": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90",
+				"workspaceId": "ws-research-task-mvqp1xs8"
 			}
 		},
 		{
-			"at": 1793104683775,
+			"at": 1793106072946,
 			"source": "workspace",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
 			"subject": {
 				"kind": "workspace",
-				"id": "ws-research-task-mvqo84hp"
+				"id": "ws-research-task-mvqp1xs8"
 			},
-			"id": "workspace:commit:ws-research-task-mvqo84hp:4",
+			"id": "workspace:commit:ws-research-task-mvqp1xs8:4",
 			"type": "workspace.committed",
 			"data": {
 				"version": 4,
 				"changed": ["git-log.txt"],
-				"leaseId": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613"
+				"leaseId": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90"
 			}
 		},
 		{
-			"at": 1793104684629,
+			"at": 1793106073723,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_a4863d37-c260-4842-9170-b816fbb52ebb:released",
+			"id": "sandbox:lease:lease_4803ccde-06f4-4abc-9102-c475fcfb0944:released",
 			"type": "sandbox.lease.released",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_a4863d37-c260-4842-9170-b816fbb52ebb"
+				"id": "lease_4803ccde-06f4-4abc-9102-c475fcfb0944"
 			},
 			"data": {
 				"tier": "isolate",
 				"reason": "released",
-				"heldMs": 9141,
-				"busyMs": 3327
+				"heldMs": 7899,
+				"busyMs": 2427
 			}
 		},
 		{
-			"at": 1793104685099,
+			"at": 1793106073911,
 			"source": "sandbox",
 			"actor": {
 				"kind": "agent",
 				"agentId": "agent-m0-cf1",
-				"sessionId": "research-task-mvqo84hp"
+				"sessionId": "research-task-mvqp1xs8"
 			},
 			"organisationId": "org-harbour-m0",
 			"projectId": "proj-m0-cf1",
-			"sessionId": "research-task-mvqo84hp",
+			"sessionId": "research-task-mvqp1xs8",
 			"agentId": "agent-m0-cf1",
-			"id": "sandbox:lease:lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613:released",
+			"id": "sandbox:lease:lease_4729f06b-926c-49bf-b9a1-b2c30629cb90:released",
 			"type": "sandbox.lease.released",
 			"subject": {
 				"kind": "sandbox.lease",
-				"id": "lease_d89faae7-0ca1-479d-9b0a-33ebcf0a2613"
+				"id": "lease_4729f06b-926c-49bf-b9a1-b2c30629cb90"
 			},
 			"data": {
 				"tier": "container",
 				"reason": "released",
-				"heldMs": 5467,
-				"busyMs": 3209
+				"heldMs": 4820,
+				"busyMs": 2576
 			}
 		}
 	],
 	"vault": [
 		{
-			"at": 1793104676900,
-			"useId": "use_49bbf880-e224-4023-8369-54561a2c5fd3",
-			"sessionId": "research-task-mvqo84hp",
+			"at": 1793106066598,
+			"useId": "use_3855d84e-7a49-41e2-bebd-b242fd862841",
+			"sessionId": "research-task-mvqp1xs8",
 			"tier": "isolate",
 			"method": "GET",
 			"host": "example.com",
 			"path": "/",
-			"reason": "Allowed by policy policy_c08115f4-65d0-4c11-9b18-dcbc0191e57f",
-			"policyId": "policy_c08115f4-65d0-4c11-9b18-dcbc0191e57f",
+			"reason": "Allowed by policy policy_f45c3dc5-a5a8-4261-b1b0-54f50cb75170",
+			"policyId": "policy_f45c3dc5-a5a8-4261-b1b0-54f50cb75170",
 			"decision": "allowed",
 			"status": 200,
 			"redactions": 0,
@@ -1110,15 +1110,15 @@
 			}
 		},
 		{
-			"at": 1793104678536,
-			"useId": "use_6e3c5e1d-b35b-4615-aeac-ef67a02576ec",
-			"sessionId": "research-task-mvqo84hp",
+			"at": 1793106067998,
+			"useId": "use_68008a49-3e65-4238-a8cc-f2c83c8e0405",
+			"sessionId": "research-task-mvqp1xs8",
 			"tier": "isolate",
 			"method": "GET",
 			"host": "postman-echo.com",
 			"path": "/headers",
-			"reason": "Allowed by policy policy_6955e253-399f-4531-861b-ff80d0eab920",
-			"policyId": "policy_6955e253-399f-4531-861b-ff80d0eab920",
+			"reason": "Allowed by policy policy_bcffdec0-9743-46c5-97aa-3b67d75bf05e",
+			"policyId": "policy_bcffdec0-9743-46c5-97aa-3b67d75bf05e",
 			"decision": "allowed",
 			"status": 200,
 			"redactions": 1,
@@ -1128,9 +1128,9 @@
 			}
 		},
 		{
-			"at": 1793104678780,
-			"useId": "use_8f5301ff-df28-4a5a-ada4-1559e5e94dce",
-			"sessionId": "research-task-mvqo84hp",
+			"at": 1793106068238,
+			"useId": "use_5227decd-80b6-4583-9d66-ec4a4f290c06",
+			"sessionId": "research-task-mvqp1xs8",
 			"tier": "isolate",
 			"method": "GET",
 			"host": "api.github.com",
@@ -1140,15 +1140,15 @@
 			"status": 403
 		},
 		{
-			"at": 1793104682605,
-			"useId": "use_a59a032c-bc76-4b02-a098-286c889fe1b4",
-			"sessionId": "research-task-mvqo84hp",
+			"at": 1793106071536,
+			"useId": "use_51d8e45c-2c16-43b6-a063-9ec95c139c2a",
+			"sessionId": "research-task-mvqp1xs8",
 			"tier": "container",
 			"method": "GET",
 			"host": "postman-echo.com",
 			"path": "/headers",
-			"reason": "Allowed by policy policy_6955e253-399f-4531-861b-ff80d0eab920",
-			"policyId": "policy_6955e253-399f-4531-861b-ff80d0eab920",
+			"reason": "Allowed by policy policy_bcffdec0-9743-46c5-97aa-3b67d75bf05e",
+			"policyId": "policy_bcffdec0-9743-46c5-97aa-3b67d75bf05e",
 			"decision": "allowed",
 			"status": 200,
 			"redactions": 1,
@@ -1158,9 +1158,9 @@
 			}
 		},
 		{
-			"at": 1793104682926,
-			"useId": "use_cc51422c-212f-4e79-9c73-08fbb40ce907",
-			"sessionId": "research-task-mvqo84hp",
+			"at": 1793106071758,
+			"useId": "use_d484ce58-4a59-42aa-aed6-b45cda7f915d",
+			"sessionId": "research-task-mvqp1xs8",
 			"tier": "container",
 			"method": "GET",
 			"host": "api.github.com",

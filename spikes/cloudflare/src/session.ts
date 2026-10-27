@@ -315,9 +315,17 @@ export class SessionDO extends DurableObject<Env> {
 				case "POST release": {
 					const body = (await request.json().catch(() => ({}))) as { containerName?: string };
 					const meta = this.#requireMeta();
+					const name = body.containerName ?? meta.sessionId;
+					// Only a container one of this session's leases used: never another session's.
+					const bound = this.ctx.storage.sql
+						.exec("SELECT 1 FROM harbour_lease_container WHERE name = ? LIMIT 1", name)
+						.toArray().length;
+					if (body.containerName !== undefined && bound === 0) {
+						throw new HarbourError("conflict", `container ${name} was not used by this session`);
+					}
 					// Release commits each lease through the container it is bound to; then stop the one named.
 					await this.#sandboxes(meta).releaseSession(this.#ctx(meta), meta.sessionId, "released");
-					await stopContainer(this.env, body.containerName ?? meta.sessionId);
+					await stopContainer(this.env, name, meta.sessionId);
 					return json({ ok: true });
 				}
 				default:

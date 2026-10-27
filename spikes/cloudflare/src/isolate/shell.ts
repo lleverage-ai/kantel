@@ -81,6 +81,9 @@ export interface ShellOptions {
 const WRITE_FIRST_ARG = new Set(["writeFile", "appendFile", "mkdir", "rm", "chmod", "createExclusive", "utimes", "mv"]);
 const WRITE_SECOND_ARG = new Set(["cp", "mv", "link", "symlink"]);
 const MOUNT_WRITES = new Set([...WRITE_FIRST_ARG, ...WRITE_SECOND_ARG]);
+const SYNC_WRITES = new Set(["writeFileSync", "mkdirSync"]);
+/** Where just-bash keeps its own files (command stubs, devices): a mount there would shadow or be written by it. */
+const RESERVED = ["/bin", "/usr", "/dev", "/proc", ROOT];
 
 /** A mount's filesystem: reads pass through; every write method fails, naming the absolute path. */
 function readOnlyMount(inner: InMemoryFs, point: string): IFileSystem {
@@ -92,6 +95,12 @@ function readOnlyMount(inner: InMemoryFs, point: string): IFileSystem {
 				return (...args: unknown[]) => {
 					const path = typeof args[0] === "string" ? args[0] : "/";
 					return Promise.reject(new ReadOnlyError(path === "/" ? point : `${point}${path}`));
+				};
+			}
+			if (SYNC_WRITES.has(String(property))) {
+				return (...args: unknown[]) => {
+					const path = typeof args[0] === "string" ? args[0] : "/";
+					throw new ReadOnlyError(path === "/" ? point : `${point}${path}`);
 				};
 			}
 			return (value as (...a: unknown[]) => unknown).bind(target);
@@ -143,6 +152,20 @@ export async function runShell(
 		if (change !== null) await fs.writeFile(`${ROOT}/${path}`, change.content, { mode: change.mode } as never);
 	}
 	const mountPoints = request.mounts.map((mount) => mount.path);
+	const clash = mountPoints.find((point) =>
+		RESERVED.some(
+			(reserved) => point === reserved || point.startsWith(`${reserved}/`) || reserved.startsWith(`${point}/`),
+		),
+	);
+	if (clash !== undefined) {
+		return {
+			exitCode: 1,
+			stdout: "",
+			stderr: `harbour: the isolate cannot mount ${clash}: it overlaps the shell's own paths (${RESERVED.join(", ")})\n`,
+			changes: [],
+			timings,
+		};
+	}
 	const mounts: { mountPoint: string; filesystem: IFileSystem }[] = [];
 	for (const point of mountPoints) {
 		const inner = new InMemoryFs({});
@@ -170,8 +193,18 @@ export async function runShell(
 				];
 				const refused = writes.find(underMount);
 				if (refused !== undefined) return Promise.reject(new ReadOnlyError(String(refused)));
-				for (const path of writes) if (typeof path === "string") touched.add(path);
-				return (value as (...a: unknown[]) => unknown).apply(target, args);
+				const apply = () => (value as (...a: unknown[]) => unknown).apply(target, args);
+				if (writes.length === 0) return apply();
+				// Record where the write really lands now, while any symlink on its way still exists: a command may remove
+				// the link afterwards (`ln -s real alias && mktemp alias/t.XXX && rm alias`).
+				return (async () => {
+					for (const path of writes) {
+						if (typeof path !== "string") continue;
+						touched.add(path);
+						for (const resolved of await destinations(target, path)) touched.add(resolved);
+					}
+					return apply();
+				})();
 			};
 		},
 	});
@@ -213,6 +246,26 @@ export async function runShell(
 		changes,
 		timings,
 	};
+}
+
+/** The real paths a write to `path` can land at: through a symlinked parent, or into a symlinked directory. */
+async function destinations(fs: IFileSystem, path: string): Promise<string[]> {
+	const clean = path.replace(/\/+$/, "");
+	const found: string[] = [];
+	try {
+		found.push(await fs.realpath(clean));
+	} catch {
+		// Does not exist yet: resolve its parent below.
+	}
+	const slash = clean.lastIndexOf("/");
+	if (slash > 0) {
+		try {
+			found.push(`${await fs.realpath(clean.slice(0, slash))}/${clean.slice(slash + 1)}`);
+		} catch {
+			// No parent: the write fails on its own.
+		}
+	}
+	return found;
 }
 
 async function collectChanges(

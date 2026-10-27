@@ -59,10 +59,14 @@ function forget() {
 	dirty = new Map();
 }
 
-/** True when `path` or anything under it has uncommitted changes. */
+/**
+ * True when the container's own state at `path` must win over the head: `path` itself has an uncommitted change, or
+ * the container has put a file under it. A pending delete under `path` does not count: nothing of the container's is
+ * left there to keep.
+ */
 function dirtyAtOrUnder(path: string): boolean {
 	if (dirty.has(path)) return true;
-	for (const candidate of dirty.keys()) if (candidate.startsWith(`${path}/`)) return true;
+	for (const [candidate, entry] of dirty) if (entry.op === "put" && candidate.startsWith(`${path}/`)) return true;
 	return false;
 }
 
@@ -289,6 +293,9 @@ Bun.serve({
 				stdin?: string;
 				timeoutMs?: number;
 			};
+			// Scan before syncing: a background job may have written since the last command returned, and sync must
+			// see that write as the container's own change rather than overwrite it.
+			await scan();
 			if (!(await applySync(body.sync))) return json({ error: "version_mismatch", have: version }, 409);
 			const syncMs = performance.now() - started;
 			execs += 1;
@@ -316,8 +323,9 @@ Bun.serve({
 
 		if (url.pathname === "/changes" && request.method === "POST") {
 			const body = (await request.json()) as { sync: Sync };
+			// Scan before syncing (see /exec), and again after, for a write that landed while the sync ran.
+			await scan();
 			if (!(await applySync(body.sync))) return json({ error: "version_mismatch", have: version }, 409);
-			// Rescan: a background job may have written since the last command returned.
 			await scan();
 			return json(await pendingChanges());
 		}

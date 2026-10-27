@@ -116,8 +116,33 @@ check("container replaces a file with a directory", r.body.exitCode === 0, r);
 r = await exec(c, "cat base.txt/inner && test -d base.txt", "isolate");
 check("the replacement commits", r.body.exitCode === 0 && r.body.stdout === "x", r);
 
+// 7. A background write to a file the head then changes is not overwritten by the next sync: the container's later
+// write wins. (Before the fix, sync ran before the scan and replaced it with the head's copy.)
+r = await exec(c, "git --version >/dev/null; printf base > f.txt", "container");
+r = await exec(c, "git --version >/dev/null; (sleep 3; printf container > f.txt) >/dev/null 2>&1 &", "container");
+r = await exec(c, "printf isolate > f.txt", "isolate");
+check("the isolate writes f.txt while the background job sleeps", r.body.exitCode === 0, r);
+await new Promise((resolve) => setTimeout(resolve, 5000));
+r = await exec(c, "cat f.txt", "container");
+check("the container keeps its later background write", r.body.stdout === "container", r);
+r = await exec(c, "cat f.txt", "isolate");
+check("and commits it", r.body.stdout === "container", r);
+
+// 8. One session cannot stop a container another session's live lease holds.
+const d = `${run}-d`;
+await call(d, "setup", {
+	workspaceId: `ws-${d}`,
+	scenario: { name: "none", steps: [], finalAnswer: "ok", seed: { "keep.txt": "keep\n" } },
+});
+r = await exec(c, "git --version >/dev/null; printf pending > pending.txt", "container");
+const stopped = await call(d, "release", { containerName: c });
+check("release refuses another session's container", stopped.status >= 400, stopped);
+r = await exec(c, "cat pending.txt", "container");
+check("its uncommitted work survives", r.body.stdout === "pending", r);
+
 await call(a, "release", {});
 await call(b, "release", {});
 await call(c, "release", {});
+await call(d, "release", {});
 console.log(failures === 0 ? "all regressions pass" : `${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

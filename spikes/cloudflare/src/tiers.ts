@@ -84,8 +84,11 @@ export class ContainerDOBackend implements ContainerBackend {
 		return { ...result, timings: { ...result.timings, "container.call": round(performance.now() - started) } };
 	}
 
-	async pending({ ctx, lease, record }: Omit<BackendExec, "request">): Promise<PendingChanges> {
-		return this.#stub(lease).pending(this.#call(lease, ctx, record.head));
+	async pending(
+		{ ctx, lease, record }: Omit<BackendExec, "request">,
+		options: { readonly final?: boolean } = {},
+	): Promise<PendingChanges> {
+		return this.#stub(lease).pending(this.#call(lease, ctx, record.head), { final: options.final === true });
 	}
 
 	async committed(lease: SandboxLease, version: number, stamp: number): Promise<void> {
@@ -97,9 +100,9 @@ export class ContainerDOBackend implements ContainerBackend {
 	}
 }
 
-/** Stops the named container now, as the cold-start harness needs. */
-export async function stopContainer(env: Env, name: string): Promise<void> {
-	await env.CONTAINER.getByName(name).stop();
+/** Stops the named container now, as the cold-start harness needs; refused while another session holds it. */
+export async function stopContainer(env: Env, name: string, sessionId: string): Promise<void> {
+	await env.CONTAINER.getByName(name).stop({ sessionId });
 }
 
 /** Changes whenever the bundle changes, so a deploy never reuses an isolate with old code. */

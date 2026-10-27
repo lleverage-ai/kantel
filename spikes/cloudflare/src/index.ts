@@ -1,5 +1,6 @@
 /**
- * harbour-m0-cf1: the M0-CF1 Cloudflare spike Worker. Every route needs `Authorization: Bearer <HARBOUR_SPIKE_TOKEN>`.
+ * harbour-m0-cf1: the M0-CF1 Cloudflare spike Worker. Every route needs `Authorization: Bearer <HARBOUR_SPIKE_TOKEN>`,
+ * except `GET /health`, which is public on purpose and returns only the service name.
  *
  *   POST /sessions/:id/setup     { workspaceId?, scenario?, isolateGeneration? }
  *   POST /sessions/:id/prompt    { content, requestId }            -> { submissionId }

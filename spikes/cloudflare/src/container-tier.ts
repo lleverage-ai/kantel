@@ -22,7 +22,8 @@ type ContainerExecBody = {
 	timings: Record<string, number>;
 	container: { bootedAt: number; execs: number };
 };
-type Owner = { leaseId: string; sessionId: string; workspaceId: string };
+/** `closing`: the lease's release has taken its final snapshot; no more commands run on it. */
+type Owner = { leaseId: string; sessionId: string; workspaceId: string; closing?: boolean };
 
 /** A container's uncommitted changes, with the stamp that acknowledges exactly these and nothing later. */
 export type ContainerPending = { readonly changes: ModedChange[]; readonly stamp: number };
@@ -92,10 +93,17 @@ export class HarbourContainer extends DurableObject<Env> {
 		});
 	}
 
-	/** Re-bases on the head and returns the container's uncommitted changes, for the sandbox to commit. */
-	async pending(call: ContainerCall): Promise<ContainerPending> {
+	/**
+	 * Re-bases on the head and returns the container's uncommitted changes, for the sandbox to commit. `final` fences the
+	 * lease first: `exec` on it is refused from here on, so no command can change the working copy after this snapshot
+	 * (calls are serialised, so a command already accepted has finished and is in it).
+	 */
+	async pending(call: ContainerCall, options: { final?: boolean } = {}): Promise<ContainerPending> {
 		return this.#serial(async () => {
 			const owner = await this.ctx.storage.get<Owner>("owner");
+			if (options.final === true && owner?.leaseId === call.leaseId && owner.closing !== true) {
+				await this.ctx.storage.put("owner", { ...owner, closing: true });
+			}
 			if (owner?.leaseId !== call.leaseId || !this.#container().running) {
 				if (owner?.leaseId === call.leaseId) {
 					// The container stopped while this lease held it: whatever it had not committed is gone.
@@ -141,13 +149,20 @@ export class HarbourContainer extends DurableObject<Env> {
 				await this.#post("/reset");
 				this.#held = null;
 			}
-			await this.ctx.storage.put("owner", { ...owner, leaseId: "" });
+			await this.ctx.storage.put("owner", { ...owner, leaseId: "", closing: false });
 		});
 	}
 
-	/** Stops the container now, as the cold-start harness needs. */
-	async stop(): Promise<void> {
+	/**
+	 * Stops the container now, as the cold-start harness needs. Refused while another session's lease holds it, so one
+	 * session cannot throw away another's uncommitted work.
+	 */
+	async stop(args: { sessionId: string }): Promise<void> {
 		return this.#serial(async () => {
+			const owner = await this.ctx.storage.get<Owner>("owner");
+			if (owner !== undefined && owner.leaseId !== "" && owner.sessionId !== args.sessionId) {
+				throw new Error("this container is in use by another session");
+			}
 			this.#held = null;
 			const container = this.ctx.container;
 			if (container?.running) await container.destroy();
@@ -160,6 +175,9 @@ export class HarbourContainer extends DurableObject<Env> {
 	/** Starts the container if needed and makes `call.leaseId` its owner. */
 	async #claim(call: ContainerCall): Promise<Record<string, number>> {
 		const owner = await this.ctx.storage.get<Owner>("owner");
+		if (owner?.leaseId === call.leaseId && owner.closing === true) {
+			throw new Error(`lease ${call.leaseId} is being released`);
+		}
 		const claim: Owner = { leaseId: call.leaseId, sessionId: call.sessionId, workspaceId: call.workspaceId };
 		if (owner !== undefined && owner.leaseId !== "" && owner.leaseId !== call.leaseId && this.#container().running) {
 			throw new Error("this container is in use by another lease");

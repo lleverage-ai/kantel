@@ -23,7 +23,7 @@ async function fixture() {
 
 describe("workspace manifests", () => {
 	test("paths named like Object.prototype members are ordinary files", async () => {
-		const { workspaces, id } = await fixture();
+		const { store, workspaces, id } = await fixture();
 		const names = ["__proto__", "constructor", "toString", "dir/__proto__/hasOwnProperty"];
 		// Deleting a name that only exists on Object.prototype is not a delete of an existing file.
 		await expect(
@@ -35,7 +35,10 @@ describe("workspace manifests", () => {
 		});
 		for (const path of names) expect(text((await workspaces.read(ctx, id, path)).content)).toBe(path);
 		// A fresh instance reads the manifest back from storage: the names survive JSON.
-		const listed = await workspaces.list(ctx, id, { recursive: true });
+		const cold = new ObjectStoreWorkspaces({ store });
+		for (const path of names) expect(text((await cold.read(ctx, id, path)).content)).toBe(path);
+		await expect(cold.read(ctx, id, "hasOwnProperty")).rejects.toMatchObject({ code: "not_found" });
+		const listed = await cold.list(ctx, id, { recursive: true });
 		expect(listed.items.filter((entry) => entry.kind === "file").map((entry) => entry.path)).toEqual(
 			expect.arrayContaining(names),
 		);
@@ -136,6 +139,50 @@ describe("container commits", () => {
 		const after = await container.pending({ ctx, lease, record });
 		expect(after.changes.map((change) => change.path)).toEqual(["second"]);
 	});
+
+	test("once release has taken its final snapshot, the lease runs no more commands", async () => {
+		const { workspaces, id } = await fixture();
+		const container = new SimulatedContainer(workspaces);
+		const sandboxes = new CloudflareSandboxes({ workspaces, isolate: inProcessIsolate(workspaces), container });
+		const lease = await sandboxes.acquire(ctx, { sessionId: "sess-review", workspaceId: id, tier: "container" });
+		await sandboxes.exec(ctx, lease.id, { command: "printf a > a" });
+		// A second command arrives while release is between its snapshot and its commit.
+		let late: Promise<unknown> = Promise.resolve("not attempted");
+		const original = container.pending.bind(container);
+		container.pending = async (input, options) => {
+			const snapshot = await original(input, options);
+			if (options?.final === true) {
+				late = container.exec({ ...input, request: { command: "printf b > b" } }).then(
+					() => "ran",
+					(error: Error) => error.message,
+				);
+			}
+			return snapshot;
+		};
+		await sandboxes.release(ctx, lease.id);
+		expect(await late).toMatch(/being released/);
+		const files = await workspaces.list(ctx, id, { recursive: true });
+		expect(files.items.map((entry) => entry.path)).toEqual(["a"]);
+	});
+
+	test("a failed container cleanup leaves the lease live, so release can be retried", async () => {
+		const { workspaces, id } = await fixture();
+		const container = new SimulatedContainer(workspaces);
+		const sandboxes = new CloudflareSandboxes({ workspaces, isolate: inProcessIsolate(workspaces), container });
+		const lease = await sandboxes.acquire(ctx, { sessionId: "sess-review", workspaceId: id, tier: "container" });
+		const original = container.ended.bind(container);
+		let failures = 1;
+		container.ended = async (...args) => {
+			if (failures-- > 0) throw new Error("container unreachable");
+			return original(...args);
+		};
+		await expect(sandboxes.release(ctx, lease.id)).rejects.toThrow(/unreachable/);
+		expect((await sandboxes.leases(ctx, { sessionId: "sess-review", live: true })).map((live) => live.id)).toEqual([
+			lease.id,
+		]);
+		const ended = await sandboxes.release(ctx, lease.id);
+		expect(ended.endedAt).toBeDefined();
+	});
 });
 
 describe("isolate mounts", () => {
@@ -160,6 +207,39 @@ describe("isolate mounts", () => {
 		);
 		expect(outcome.stdout).toBe("original");
 		expect(outcome.changes.map((change) => change.path)).toEqual(["payload/project/README.md"]);
+	});
+
+	// just-bash's plain `rm alias` refuses a symlink to a directory; `rm -r` removes the link, `ln -sfn` retargets it.
+	test.each(["rm -r alias", "ln -sfn other alias"])(
+		"a file created through a symlink that the command then changes (%s) is still committed",
+		async (unlink) => {
+			// `real` and `other` come from the base version, so the command itself never touches `real`.
+			const seeded: WorkspacePort = {
+				...port,
+				entries: async () =>
+					["real/.keep", "other/.keep"].map(
+						(path) => ({ kind: "file", path, digest: "empty", mode: 0o644, size: 0, version: 0 }) as never,
+					),
+			};
+			const outcome = await runShell(
+				seeded,
+				request(`ln -s real alias && mktemp alias/t.XXXXXX > /dev/null && ${unlink} && ls real`),
+			);
+			expect(outcome.stderr).toBe("");
+			expect(outcome.exitCode).toBe(0);
+			const files = outcome.changes.filter((change) => change.op === "put").map((change) => change.path);
+			expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/^real\/t\.\w{6}$/)]));
+		},
+	);
+
+	test("a mount over the shell's own paths is refused", async () => {
+		const outcome = await runShell(port, {
+			command: "cat /bin/echo",
+			baseVersion: 0,
+			mounts: [{ path: "/bin", source: "project-files", ref: "p", version: "1" } as never],
+		});
+		expect(outcome.exitCode).toBe(1);
+		expect(outcome.stderr).toMatch(/cannot mount \/bin/);
 	});
 
 	test("a redirect onto a mount fails as read-only", async () => {

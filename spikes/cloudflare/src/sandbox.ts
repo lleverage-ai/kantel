@@ -72,9 +72,10 @@ export interface ContainerBackend {
 	exec(input: BackendExec): Promise<BackendOutput>;
 	/**
 	 * Re-bases the working copy on `record.head` and returns its uncommitted changes relative to it, with a stamp that
-	 * names exactly this set of changes.
+	 * names exactly this set of changes. `final` (the lease is being released) fences the lease: from then on the
+	 * backend refuses commands on it, so nothing can change the working copy after its last snapshot.
 	 */
-	pending(input: Omit<BackendExec, "request">): Promise<PendingChanges>;
+	pending(input: Omit<BackendExec, "request">, options?: { readonly final?: boolean }): Promise<PendingChanges>;
 	/**
 	 * The changes `pending` returned with `stamp` are committed as `version`. Changes the container made after that
 	 * `pending` (a command that ran meanwhile) stay pending.
@@ -337,18 +338,18 @@ export class CloudflareSandboxes implements Sandboxes {
 			await this.#emit([ended.event]);
 			return ended.lease;
 		}
-		const committedVersion = row.lease.tier === "container" ? await this.#flush(ctx, row) : undefined;
+		const committedVersion = row.lease.tier === "container" ? await this.#flush(ctx, row, true) : undefined;
 		const ended = await this.#end(this.#leases.get(row.lease.id) ?? row, reason, ctx.actor, committedVersion);
 		await this.#emit([ended.event]);
 		return ended.lease;
 	}
 
 	/** Commits a container lease's working copy on top of the head. Returns the new version, if anything changed. */
-	async #flush(ctx: CallContext, row: LeaseRow): Promise<number | undefined> {
+	async #flush(ctx: CallContext, row: LeaseRow, final = false): Promise<number | undefined> {
 		const { lease } = row;
 		for (let attempt = 1; ; attempt++) {
 			const record = await this.#workspaces.get(ctx, lease.workspaceId);
-			const { changes: pending, stamp } = await this.#container.pending({ ctx, lease, record });
+			const { changes: pending, stamp } = await this.#container.pending({ ctx, lease, record }, { final });
 			if (pending.length === 0) return undefined;
 			const present = new Set(
 				(await listAll(this.#workspaces, ctx, lease.workspaceId, { version: record.head }))
@@ -467,8 +468,10 @@ export class CloudflareSandboxes implements Sandboxes {
 	): Promise<{ lease: SandboxLease; event: AuditEventInput }> {
 		const now = this.#clock.now();
 		const lease: SandboxLease = { ...row.lease, endedAt: now, endReason: reason };
-		this.#leases.put({ ...row, lease });
+		// The backend first, then the record: if the backend call fails, the lease is still live and the release can be
+		// retried (`ended` is idempotent), instead of an ended lease whose container still belongs to it.
 		if (lease.tier === "container") await this.#container.ended(lease, { discard: reason === "expired" });
+		this.#leases.put({ ...row, lease });
 		const event = this.#event(row, actor, {
 			id: `sandbox:lease:${lease.id}:released`,
 			type: "sandbox.lease.released",
