@@ -3,11 +3,17 @@
 //   wasted        re-renders of a probed row or part whose data did not change (src/primitives/probe.ts); a mount
 //                 (a row scrolled into view) is not waste
 //   latency       interaction to the end of the next frame (ms): median and p95 over the scenario's inputs
+//   work          interaction to the end of its dispatch, React's update included (ms): median over the inputs. Not
+//                 scored; it explains latency, which moves in whole frames (see loop/harness/main.tsx)
 //   bundle        minified and gzipped JS and CSS of the component's module, React excluded
-// Headless Chromium with the CPU throttled 4x, five fresh pages per scenario, median kept; the min to max spread is
-// reported so a change inside the noise is visible as such.
+// Headless Chromium with the CPU throttled 4x, five fresh pages per scenario after one warm-up page that is thrown
+// away (the first page in a fresh browser runs cold), median kept; the quartiles and the min to max spread are
+// reported so a change inside the noise is visible as such. Garbage is collected before each phase, so a
+// collection left over from the last page or the update phase does not land in the interactions.
+// To compare two trees, use loop/ab.ts, which alternates them in one browser and gives each difference a noise band.
 //
-//   node loop/measure.ts [--only transcript,composer] [--runs 5] [--label champion] [--json out.json] [--no-build]
+//   node loop/measure.ts [--only transcript,composer] [--runs 5] [--warmup 1] [--label champion] [--json out.json]
+//                        [--no-build]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -22,6 +28,7 @@ const { values } = parseArgs({
 	options: {
 		only: { type: "string" },
 		runs: { type: "string", default: "5" },
+		warmup: { type: "string", default: "1" },
 		throttle: { type: "string", default: "4" },
 		label: { type: "string", default: "current" },
 		json: { type: "string" },
@@ -30,8 +37,15 @@ const { values } = parseArgs({
 	},
 });
 
-const here = new URL(".", import.meta.url).pathname;
-const harnessOut = `${here}out/harness/`;
+/** This tree's packages/ui directory, with a trailing slash. */
+export const uiRoot = new URL("..", import.meta.url).pathname;
+/** Where a tree's harness build is written (loop/harness/vite.config.ts). */
+export const harnessOut = (root = uiRoot) => `${root}loop/out/harness/`;
+
+/** Builds a tree's measurement harness, from that tree's own sources and config. */
+export async function buildHarness(root = uiRoot): Promise<void> {
+	await build({ configFile: `${root}loop/harness/vite.config.ts`, logLevel: "warn", mode: "production" });
+}
 
 export type Run = {
 	renderMs: number;
@@ -39,11 +53,12 @@ export type Run = {
 	wasted: number;
 	needed: number;
 	latencies: number[];
+	work: number[];
 	inputRenderMs: number;
 	inputWasted: number;
 };
 
-export type Measure = { median: number; min: number; max: number };
+export type Measure = { median: number; q1: number; q3: number; min: number; max: number };
 
 export type ScenarioResult = {
 	component: string;
@@ -55,19 +70,22 @@ export type ScenarioResult = {
 	needed: Measure;
 	latencyMedian: Measure;
 	latencyP95: Measure;
+	workMedian: Measure;
 	inputRenderMs: Measure;
 	inputWasted: Measure;
 	bundle: { js: number; css: number };
 };
 
-const quantile = (values: readonly number[], q: number): number => {
+export const quantile = (values: readonly number[], q: number): number => {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((a, b) => a - b);
 	return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] as number;
 };
 
-const summarise = (values: readonly number[]): Measure => ({
+export const summarise = (values: readonly number[]): Measure => ({
 	median: quantile(values, 0.5),
+	q1: quantile(values, 0.25),
+	q3: quantile(values, 0.75),
 	min: Math.min(...values),
 	max: Math.max(...values),
 });
@@ -86,7 +104,7 @@ function split(renders: Collected["renders"], watched: readonly string[], change
 
 // The interaction phase, as real input from Playwright. Returns the renders it should have caused, for wasted
 // renders: `undefined` when every render is needed.
-const interactions: Record<string, (page: Page) => Promise<number | undefined>> = {
+export const interactions: Record<string, (page: Page) => Promise<number | undefined>> = {
 	transcript: async (page) => {
 		const list = page.locator(".hb-transcript-list");
 		const box = await list.boundingBox();
@@ -132,13 +150,15 @@ const interactions: Record<string, (page: Page) => Promise<number | undefined>> 
 	},
 };
 
-async function measureOnce(page: Page, url: string, spec: ComponentSpec, throttle: number): Promise<Run> {
+export async function measureOnce(page: Page, url: string, spec: ComponentSpec, throttle: number): Promise<Run> {
 	const cdp = await page.context().newCDPSession(page);
 	await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle });
 	await page.goto(`${url}?scenario=${spec.scenario}`);
 	await page.waitForFunction(() => (window as HarnessWindow).__hb?.ready === true, undefined, { timeout: 60_000 });
+	await cdp.send("HeapProfiler.collectGarbage");
 	const { changed } = await page.evaluate(() => (window as HarnessWindow).__hb!.run());
 	const update = await page.evaluate(() => (window as HarnessWindow).__hb!.collect());
+	await cdp.send("HeapProfiler.collectGarbage");
 	await page.evaluate(() => (window as HarnessWindow).__hb!.reset());
 	const expected = await (interactions[spec.scenario] ?? (async () => undefined))(page);
 	await page.waitForTimeout(300);
@@ -160,14 +180,15 @@ async function measureOnce(page: Page, url: string, spec: ComponentSpec, throttl
 		wasted,
 		needed,
 		latencies: input.latencies,
+		work: input.work,
 		inputRenderMs: input.renderMs,
 		inputWasted: expected === undefined ? 0 : Math.max(0, inputRenders - expected),
 	};
 }
 
-/** Minified, gzipped bytes of the component module's exports, with React and react-dom external. */
-async function bundleCost(spec: ComponentSpec): Promise<{ js: number; css: number }> {
-	const dir = `${here}out/bundle/`;
+/** Minified, gzipped bytes of the component module's exports in a tree, with React and react-dom external. */
+export async function bundleCost(spec: ComponentSpec, root = uiRoot): Promise<{ js: number; css: number }> {
+	const dir = `${root}loop/out/bundle/`;
 	mkdirSync(dir, { recursive: true });
 	const entry = `${dir}${spec.scenario}.ts`;
 	writeFileSync(entry, `export { ${spec.bundle.exports.join(", ")} } from "../../../${spec.bundle.module}";\n`);
@@ -192,41 +213,53 @@ async function bundleCost(spec: ComponentSpec): Promise<{ js: number; css: numbe
 	return { js, css };
 }
 
+/** One scenario's runs summarised: the median of the per-run values, with their quartiles and range. */
+export function summariseRuns(
+	spec: ComponentSpec,
+	runs: readonly Run[],
+	bundle: { js: number; css: number },
+): ScenarioResult {
+	const of = (pick: (run: Run) => number) => summarise(runs.map(pick));
+	return {
+		component: spec.component,
+		scenario: spec.scenario,
+		runs: runs.length,
+		renderMs: of((run) => run.renderMs),
+		commits: of((run) => run.commits),
+		wasted: of((run) => run.wasted),
+		needed: of((run) => run.needed),
+		latencyMedian: of((run) => quantile(run.latencies, 0.5)),
+		latencyP95: of((run) => quantile(run.latencies, 0.95)),
+		workMedian: of((run) => quantile(run.work, 0.5)),
+		inputRenderMs: of((run) => run.inputRenderMs),
+		inputWasted: of((run) => run.inputWasted),
+		bundle,
+	};
+}
+
 export async function measure(options: {
 	only?: readonly string[];
 	runs: number;
+	warmup: number;
 	throttle: number;
 	build: boolean;
 	chromium: string;
 }): Promise<ScenarioResult[]> {
-	if (options.build) await build({ configFile: `${here}harness/vite.config.ts`, logLevel: "warn", mode: "production" });
+	if (options.build) await buildHarness();
 	const chosen = specs.filter((spec) => options.only === undefined || options.only.includes(spec.scenario));
-	const server = await serve(harnessOut);
+	const server = await serve(harnessOut());
 	const browser = await chromium.launch({ executablePath: options.chromium, args: ["--no-sandbox"] });
 	const results: ScenarioResult[] = [];
 	try {
 		for (const spec of chosen) {
 			const runs: Run[] = [];
-			for (let i = 0; i < options.runs; i++) {
+			for (let i = 0; i < options.warmup + options.runs; i++) {
 				const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-				runs.push(await measureOnce(page, server.url, spec, options.throttle));
+				const run = await measureOnce(page, server.url, spec, options.throttle);
 				await page.close();
+				if (i >= options.warmup) runs.push(run);
 			}
-			const of = (pick: (run: Run) => number) => summarise(runs.map(pick));
-			results.push({
-				component: spec.component,
-				scenario: spec.scenario,
-				runs: runs.length,
-				renderMs: of((run) => run.renderMs),
-				commits: of((run) => run.commits),
-				wasted: of((run) => run.wasted),
-				needed: of((run) => run.needed),
-				latencyMedian: of((run) => quantile(run.latencies, 0.5)),
-				latencyP95: of((run) => quantile(run.latencies, 0.95)),
-				inputRenderMs: of((run) => run.inputRenderMs),
-				inputWasted: of((run) => run.inputWasted),
-				bundle: await bundleCost(spec),
-			});
+			results.push(summariseRuns(spec, runs, await bundleCost(spec)));
 		}
 	} finally {
 		await browser.close();
@@ -240,12 +273,12 @@ const fixed = (measure: Measure, digits = 1) =>
 
 export function table(results: readonly ScenarioResult[]): string {
 	const lines = [
-		"| Component | Render ms | Wasted renders | Latency median ms | Latency p95 ms | Input render ms | Wasted on input | JS gz | CSS gz |",
-		"| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+		"| Component | Render ms | Wasted renders | Latency median ms | Latency p95 ms | Work median ms | Input render ms | Wasted on input | JS gz | CSS gz |",
+		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 	];
 	for (const r of results)
 		lines.push(
-			`| ${r.component} | ${fixed(r.renderMs)} | ${fixed(r.wasted, 0)} | ${fixed(r.latencyMedian)} | ${fixed(r.latencyP95)} | ${fixed(r.inputRenderMs)} | ${fixed(r.inputWasted, 0)} | ${(r.bundle.js / 1024).toFixed(1)} kB | ${(r.bundle.css / 1024).toFixed(1)} kB |`,
+			`| ${r.component} | ${fixed(r.renderMs)} | ${fixed(r.wasted, 0)} | ${fixed(r.latencyMedian)} | ${fixed(r.latencyP95)} | ${fixed(r.workMedian)} | ${fixed(r.inputRenderMs)} | ${fixed(r.inputWasted, 0)} | ${(r.bundle.js / 1024).toFixed(1)} kB | ${(r.bundle.css / 1024).toFixed(1)} kB |`,
 		);
 	return lines.join("\n");
 }
@@ -254,11 +287,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const results = await measure({
 		...(values.only ? { only: values.only.split(",") } : {}),
 		runs: Number(values.runs),
+		warmup: Number(values.warmup),
 		throttle: Number(values.throttle),
 		build: !values["no-build"],
 		chromium: values.chromium,
 	});
-	console.log(`${values.label}: ${values.runs} runs, CPU ${values.throttle}x, median (min–max)\n`);
+	console.log(
+		`${values.label}: ${values.runs} runs after ${values.warmup} warm-up, CPU ${values.throttle}x, median (min–max)\n`,
+	);
 	console.log(table(results));
 	if (values.json !== undefined)
 		writeFileSync(
