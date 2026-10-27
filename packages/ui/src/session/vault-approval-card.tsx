@@ -30,41 +30,47 @@ export type VaultApprovalCardProps = {
 	requester?: string;
 };
 
-/** The terms as label and value pairs, each tagged with who set them: the agent (Proposed) or a person (Approved). */
+/**
+ * The terms as label and value pairs, under one line that says who set them: the agent (proposed) or a person
+ * (approved). The protocol gives one source for every term on a card, so it is said once rather than as a badge on
+ * each row, where five identical amber marks read as five warnings and compete with the binding code.
+ */
 function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: number; requester?: string }) {
 	useRenderProbe("VaultTerms", card.proposalId);
-	const source =
-		card.termsSource === "approved" ? <Badge tone="done">Approved</Badge> : <Badge tone="approval">Proposed</Badge>;
+	const source = card.termsSource === "approved" ? "Approved on the vault page" : "Proposed by the agent";
 	return (
-		<FieldList>
-			<Field label="Host" extra={source}>
-				<code className="hb-mono hb-selectable">{card.host}</code>
-			</Field>
-			<Field label="Methods" extra={source}>
-				<code className="hb-mono">{methodText(card.methods)}</code>
-			</Field>
-			<Field label="Path" extra={source}>
-				<code className="hb-mono hb-selectable">{card.pathPrefix}</code>{" "}
-				<span className="hb-vault-muted">and below</span>
-			</Field>
-			<Field label="Injection" extra={source}>
-				{isRouteGrant(card) ? (
-					<span className="hb-vault-muted">Nothing injected: a route grant</span>
-				) : (
-					<code className="hb-mono hb-selectable">{card.injectionTemplate}</code>
-				)}
-			</Field>
-			<Field label="Lifetime" extra={source}>
-				<span className="hb-mono">{lifetimeText(card.expiresAt, now)}</span>
-			</Field>
-			{requester === undefined ? null : <Field label="Requested by">{requester}</Field>}
-		</FieldList>
+		<div className="hb-vault-term-set">
+			<p className="hb-vault-term-source">{source}</p>
+			<FieldList>
+				<Field label="Host">
+					<code className="hb-mono hb-selectable">{card.host}</code>
+				</Field>
+				<Field label="Methods">
+					<code className="hb-mono">{methodText(card.methods)}</code>
+				</Field>
+				<Field label="Path">
+					<code className="hb-mono hb-selectable">{card.pathPrefix}</code>{" "}
+					<span className="hb-vault-muted">and below</span>
+				</Field>
+				<Field label="Injection">
+					{isRouteGrant(card) ? (
+						<span className="hb-vault-muted">Nothing injected: a route grant</span>
+					) : (
+						<code className="hb-mono hb-selectable">{card.injectionTemplate}</code>
+					)}
+				</Field>
+				<Field label="Lifetime">
+					<span className="hb-mono">{lifetimeText(card.expiresAt, now)}</span>
+				</Field>
+				{requester === undefined ? null : <Field label="Requested by">{requester}</Field>}
+			</FieldList>
+		</div>
 	);
 }
 
 /**
  * The card a session shows when its agent asks the vault for a secret or a route. It says what is needed and why,
- * that the agent never sees the value, and the exact terms, each marked as the agent's proposal or as approved. The
+ * that the agent never sees the value, and the exact terms, marked once as the agent's proposal or as approved. The
  * binding code is always shown; the vault page shows the same one. Settled cards fold to one row.
  */
 export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApprovalCardProps) {

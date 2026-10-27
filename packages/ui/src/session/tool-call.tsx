@@ -22,7 +22,8 @@ import "./tool-call.css";
 
 // A tool call as one quiet work-log line, after T3 Code (WorkLog.tsx:53-90,134-164): an icon that says what kind of
 // call it was, the host's plain-words label ("Ran pnpm test", "Read src/billing/charge.ts") and how long it took.
-// The arguments and output are one tap away and rendered only while open; nothing about a call shouts while it runs.
+// The arguments and output are one tap away and rendered only while open; nothing about a call shouts while it runs,
+// though its label is at full strength (see tool-call.css) so the call happening now is read before the finished ones.
 
 type IconComponent = (props: IconProps) => ReactNode;
 

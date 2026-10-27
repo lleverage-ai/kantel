@@ -90,6 +90,20 @@
 	overflow-wrap: anywhere;
 }
 
+/* The terms under one quiet line saying whose they are, set like the binding code's label so the two read as a pair. */
+.hb-vault-term-set {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	min-width: 0;
+}
+
+.hb-vault-term-source {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+}
+
 /* The binding code: the one thing to compare with the vault page. */
 .hb-vault-code {
 	display: flex;

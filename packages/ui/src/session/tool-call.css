@@ -1,5 +1,5 @@
-/* Tool calls as quiet work-log rows (T3 Code's WorkLog): 24px rows, 13px muted labels, a 16px icon, the duration at
-   the end. The detail is a framed block of selectable mono text with a bounded height. */
+/* Tool calls as quiet work-log rows (T3 Code's WorkLog): 24px rows, 13px muted labels (full strength while running or
+   failed), a 16px icon, the duration at the end. The detail is a framed block of selectable mono text with a bounded height. */
 
 .hb-tool {
 	/* The tallest an argument or output block grows before it scrolls. Candidate token: --hb-tool-output-height. */
@@ -93,6 +93,12 @@
 }
 
 .hb-tool-error .hb-tool-label {
+	color: var(--hb-text);
+}
+
+/* In a live group every finished call is muted, so the one happening now is read first by its label at full
+   strength, not only by its small spinner. Nothing moves; only the colour differs. */
+.hb-tool-running .hb-tool-label {
 	color: var(--hb-text);
 }
 

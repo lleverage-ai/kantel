@@ -25,14 +25,18 @@ Pure functions in `session-model.ts`, after T3 Code's status priority (`apps/web
 **For** one session in a list: the console's sidebar, the inbox, search results. Built on `ListRow`.
 
 - Needs you and working sessions are `comfortable`, three lines after T3 Code's sidebar cards: the project and the
-  branch as separate elements (the branch in mono, separated by a gap, never a dot), the title, and for a working
-  session the time it has been working (`Elapsed`). The status is at the top right in words.
+  branch as separate elements (the branch in mono, separated by a gap, never a dot) with the status in words at the
+  right end of that line, the title on its own line across the row's full width, and for a working session the time
+  it has been working (`Elapsed`). Nothing sits beside the title; when space is short the project and branch
+  truncate before the status does.
 - Settled sessions are `compact`, one line. Seen ones are quiet with their time at the right (`RelativeTime`: "4m",
   "3h", never "ago"). An unseen completion shows an emerald Done; a failed one shows Failed in red, and neither is
   quiet.
 
 Props: `session`, `selected`, `href` (a link; wins over `onSelect`), `onSelect(id)` (a button), `actions` (shown in
-place of the status or time on hover or focus, as T3 Code swaps in "Settle").
+place of the status or time on hover or focus, as T3 Code swaps in "Settle"). On a three-line row the actions float
+at the top right over the status, which keeps its width, so nothing reflows; keep them about as small as the status
+(one extra-small button).
 
 **Not for** anything that isn't a session; use `ListRow` directly.
 
@@ -73,8 +77,10 @@ stable.
 
 **For** the card a session shows when its agent asks the vault for a secret or a route (Harbour issue #7). It names
 what is needed and why, says the agent never sees the value, shows the terms (host, methods, path prefix, injection
-template, lifetime), each tagged Proposed (the agent's) or Approved (a person's), the binding code, Open in vault and
-Copy link, a countdown, and that the agent carries on when you're done.
+template, lifetime) under one quiet line saying whose they are ("Proposed by the agent" or "Approved on the vault
+page"), the binding code, Open in vault and Copy link, a countdown, and that the agent carries on when you're done.
+The protocol gives one `termsSource` for every term on a card, so the source is said once rather than as a badge on
+each row: five identical amber badges read as five warnings and compete with the binding code.
 
 Props: `card` (the protocol's `VaultApprovalCard`), `now` (a fixed time for stories and screenshots), `onAskAgain`
 (offers "Ask for a new link" when expired), `requester` (adds a "Requested by" term).
@@ -86,8 +92,8 @@ Props: `card` (the protocol's `VaultApprovalCard`), `now` (a fixed time for stor
 - Approved: one quiet row, "Approved: what on host", the binding code small at the right, and Terms, which shows the
   approved terms on demand.
 - Approved and narrowed: looks the same as approved. The approver may narrow the agent's proposal on the vault page;
-  the card then carries the terms that were approved (`termsSource: "approved"`), so Terms shows the narrowed terms,
-  each marked Approved. The card doesn't show what was proposed before.
+  the card then carries the terms that were approved (`termsSource: "approved"`), so Terms shows the narrowed terms
+  under "Approved on the vault page". The card doesn't show what was proposed before.
 - Route grant: a request with no injection template. The Injection term says nothing is injected; "Any method" when
   the methods are empty or `*`.
 - Denied: one row in the error colour. Withdrawn: one quiet row.
