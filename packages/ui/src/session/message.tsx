@@ -1,6 +1,7 @@
 import type { AssistantItem, NoticeItem, UserItem } from "@harbour/protocol";
 import { memo } from "react";
 import { Disclosure } from "../primitives/controls.tsx";
+import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
 import { Markdown } from "./markdown.tsx";
 import "./message.css";
@@ -13,6 +14,7 @@ const viaCaption = { prompt: undefined, steer: "Steered", followUp: "Follow-up" 
 
 /** What the person sent: a right-aligned bubble, at most 80% of the column wide. */
 export const UserMessage = memo(function UserMessage({ item }: { item: UserItem }) {
+	useRenderProbe("UserMessage", item.id);
 	const caption = viaCaption[item.via];
 	return (
 		<div className="hb-user-message">
@@ -27,6 +29,7 @@ export const UserMessage = memo(function UserMessage({ item }: { item: UserItem 
  * caret sits at the end of the text; before any text or thought arrives, three dots say it is working.
  */
 export const AssistantMessage = memo(function AssistantMessage({ item }: { item: AssistantItem }) {
+	useRenderProbe("AssistantMessage", item.id);
 	const { streaming, text, thinking } = item;
 	return (
 		<div className={`hb-assistant-message${streaming ? " hb-assistant-message-streaming" : ""}`}>

@@ -15,6 +15,7 @@ import {
 	VaultIcon,
 	XCircleIcon,
 } from "../primitives/icons.tsx";
+import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { Elapsed } from "../primitives/time.tsx";
 import "./tool-call.css";
@@ -124,6 +125,7 @@ export type ToolCallChipProps = { item: ToolItem; defaultOpen?: boolean };
  * only while it is open. Memoised on `item`, so a transcript re-renders only the call that changed.
  */
 export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = false }: ToolCallChipProps) {
+	useRenderProbe("ToolCallChip", item.id);
 	const [open, setOpen] = useState(defaultOpen);
 	const id = useId();
 	return (

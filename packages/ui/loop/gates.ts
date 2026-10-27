@@ -2,6 +2,7 @@
 //   1. axe: no WCAG 2.2 A/AA violations.
 //   2. Keyboard: every enabled, tabbable control is reached by Tab in order, and shows a visible focus ring when it
 //      is; nothing traps focus.
+//   3. States: each of the loop's components (loop/specs.ts) has a story for every required state.
 // The static gates (token and copy lint) run in scripts/token-lint.ts. A story or variant that fails any gate is
 // rejected before it is measured or judged.
 //   pnpm build:workbench && node loop/gates.ts [--only id,id] [--json out.json]
@@ -11,6 +12,7 @@ import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
 import { chromium, type Page } from "playwright-core";
 import { serve } from "../scripts/workbench-server.ts";
+import { missingStates } from "./specs.ts";
 
 const { values } = parseArgs({
 	options: {
@@ -147,7 +149,16 @@ export function passed(result: GateResult): boolean {
 	return result.axe.length === 0 && result.keyboard.withoutRing.length === 0 && result.keyboard.unreached.length === 0;
 }
 
+/** The States gate, on a built workbench: the loop's components each have a story for every required state. */
+export function statesGate(build: string): string[] {
+	const meta = JSON.parse(readFileSync(`${build}meta.json`, "utf8")) as { stories: Record<string, unknown> };
+	return missingStates(Object.keys(meta.stories));
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
+	const missing = statesGate(values.build);
+	console.log(missing.length === 0 ? "pass  states: every loop component has every state" : "FAIL  states");
+	for (const id of missing) console.log(`      missing story: ${id}`);
 	const results = await runGates({
 		build: values.build,
 		chromium: values.chromium,
@@ -164,5 +175,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		for (const label of result.keyboard.unreached) console.log(`      not reached by Tab: ${label}`);
 	}
 	if (values.json !== undefined) writeFileSync(values.json, JSON.stringify(results, null, "\t"));
-	process.exitCode = results.every(passed) ? 0 : 1;
+	process.exitCode = missing.length === 0 && results.every(passed) ? 0 : 1;
 }

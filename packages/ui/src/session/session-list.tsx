@@ -1,5 +1,6 @@
 import { memo, type ReactNode, useCallback, useMemo } from "react";
 import { ListRow } from "../primitives/list-row.tsx";
+import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -42,6 +43,7 @@ export const SessionListItem = memo(function SessionListItem({
 	actions,
 }: SessionListItemProps) {
 	const { id } = session;
+	useRenderProbe("SessionListItem", id);
 	const select = useCallback(() => onSelect?.(id), [onSelect, id]);
 	const status = sessionStatus(session);
 	const group = attentionGroup(session);

@@ -12,6 +12,7 @@ import {
 	VaultIcon,
 	XCircleIcon,
 } from "../primitives/icons.tsx";
+import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Field, FieldList } from "../primitives/surface.tsx";
@@ -31,6 +32,7 @@ export type VaultApprovalCardProps = {
 
 /** The terms as label and value pairs, each tagged with who set them: the agent (Proposed) or a person (Approved). */
 function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: number; requester?: string }) {
+	useRenderProbe("VaultTerms", card.proposalId);
 	const source =
 		card.termsSource === "approved" ? <Badge tone="done">Approved</Badge> : <Badge tone="approval">Proposed</Badge>;
 	return (
@@ -66,6 +68,7 @@ function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: num
  * binding code is always shown; the vault page shows the same one. Settled cards fold to one row.
  */
 export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApprovalCardProps) {
+	useRenderProbe("VaultApprovalCard", card.proposalId);
 	const titleId = useId();
 	// Ticks once a second on the shared clock, only while pending, unfixed and not yet run out.
 	const [ranOut, setRanOut] = useState<number | undefined>(undefined);
