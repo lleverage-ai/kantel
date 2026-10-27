@@ -13,7 +13,7 @@ import {
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
-import { composerState, type SessionActions } from "./actions.ts";
+import { composerState, offersFollowUp, type SessionActions } from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -178,6 +178,15 @@ export function SessionView({
 					disabledReason={control.live ? undefined : control.reason}
 					label="Message"
 					banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
+					value={actions.draft}
+					onChange={actions.onDraft}
+					footer={
+						offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+							<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+								Send after this run
+							</Button>
+						) : undefined
+					}
 					onSend={actions.onSend}
 					onSteer={actions.onSteer}
 					onStop={actions.onStop}

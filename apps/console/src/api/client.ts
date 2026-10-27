@@ -1,12 +1,12 @@
 // The console's one seam to a Harbour host. Everything the screens need goes through `ConsoleClient`: who is signed
 // in, the projects, a project's sessions, the live connection to one session, and the controls. Two implementations:
-// the recorded-session client (`recorded.ts`, in the page, no backend) and, from M1-BE1, the session API over HTTP.
+// the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
 import type { SessionSummary } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
-/** Who the console acts as. Sign-in is stubbed until identity (M1-BE7) lands. */
+/** Who the console acts as. Stubbed for recorded sessions; the API client is whoever Access signed in. */
 export type ConsoleActor = {
 	readonly id: string;
 	readonly name: string;

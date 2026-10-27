@@ -26,6 +26,7 @@ export function SessionScreen({
 	const session = useMemo(() => new SessionClient(client.transport(sessionId), sessionId), [client, sessionId]);
 	const [sending, setSending] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	const [draft, setDraft] = useState("");
 
 	useEffect(() => {
 		session.start();
@@ -37,11 +38,13 @@ export function SessionScreen({
 		};
 	}, [client, session, sessionId, onOpen]);
 
-	const run = useCallback(async (action: () => Promise<void>) => {
+	/** Runs one action. A sent draft is cleared once it has gone, unless it was edited meanwhile; a failed one stays. */
+	const run = useCallback(async (action: () => Promise<void>, sent?: string) => {
 		setSending(true);
 		setFailure(undefined);
 		try {
 			await action();
+			if (sent !== undefined) setDraft((current) => (current.trim() === sent ? "" : current));
 		} catch (reason) {
 			setFailure(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -53,8 +56,11 @@ export function SessionScreen({
 		control: client.control(sessionId),
 		sending,
 		failure,
-		onSend: (text) => void run(() => client.prompt(sessionId, text, { requestId: crypto.randomUUID() })),
-		onSteer: (text) => void run(() => client.steer(sessionId, text, { requestId: crypto.randomUUID() })),
+		draft,
+		onDraft: setDraft,
+		onSend: (text) => void run(() => client.prompt(sessionId, text, { requestId: crypto.randomUUID() }), text),
+		onSteer: (text) => void run(() => client.steer(sessionId, text, { requestId: crypto.randomUUID() }), text),
+		onFollowUp: (text) => void run(() => client.followUp(sessionId, text, { requestId: crypto.randomUUID() }), text),
 		onStop: () => void run(() => client.cancel(sessionId)),
 	};
 

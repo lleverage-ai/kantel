@@ -43,7 +43,10 @@ async function open(browser: Browser, width: number, height: number, query: stri
 		colorScheme: "dark",
 	});
 	// The 2,000-turn recording is the Harbour project's "Platform migration" session.
-	await page.goto(new URL(`projects/harbour/sessions/s-migration?${query.replace(/^session=long&?/, "")}`, base).href);
+	const rest = query.replace(/^session=long&?/, "");
+	await page.goto(
+		new URL(`projects/harbour/sessions/s-migration?source=recorded${rest === "" ? "" : `&${rest}`}`, base).href,
+	);
 	await page.waitForFunction(
 		() =>
 			(window as Win).__harbour?.client?.getState().cursor !== undefined &&
