@@ -3,14 +3,14 @@
  *
  * - the identity directory and the audit store in D1 (`DB`);
  * - workspaces in R2 (`WORKSPACES`);
- * - the session runtime's directory, profiles and each session's Pi storage in this object's own SQLite;
+ * - the session runtime (`SessionRuntimeDurableObjectCore` from `@harbour/runtime-cloudflare`): its directory,
+ *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation.
  *
  * One object serves every session for now; a SessionDO per session is the next step.
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
 import { d1Driver } from "@harbour/sql/sqlite";
 import type { GatewayVars } from "./config.ts";
@@ -48,7 +48,14 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		const storage = this.ctx.storage;
 		return {
 			sql: d1Driver(this.env.DB),
-			sessions: new DurableObjectSqliteDatabase(storage),
+			// The runtime lane's session core: its transactions go through the object's async `transaction`, and its
+			// alarm resumes a session this object left mid-run when it was evicted.
+			sessions: {
+				sql: storage.sql,
+				transaction: (work) => storage.transaction(() => work()),
+				setAlarm: (at) => storage.setAlarm(at),
+				getAlarm: () => storage.getAlarm(),
+			},
 			workspaces: createR2WorkspaceStore({ bucket: this.env.WORKSPACES, prefix: WORKSPACE_PREFIX }),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
@@ -71,6 +78,12 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 			this.#ready = undefined;
 		});
 		return this.#ready;
+	}
+
+	/** Resumes every session whose wake is due (a run cut off by eviction, a retry backoff), then arms the next. */
+	override async alarm(): Promise<void> {
+		const { stack } = await this.ready();
+		await stack.alarm();
 	}
 
 	override async fetch(request: Request): Promise<Response> {

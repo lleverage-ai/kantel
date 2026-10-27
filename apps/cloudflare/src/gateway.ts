@@ -38,6 +38,8 @@ export function createGateway(stack: Stack): Gateway {
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,
+		// Durable host registrations, served after the object restarts by the runtime's callback host handlers.
+		...(stack.hosts === undefined ? {} : { hosts: stack.hosts }),
 		authenticator: stack.authenticator,
 		basePath: API_BASE,
 	});
