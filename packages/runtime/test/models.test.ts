@@ -323,6 +323,75 @@ describe("harbour model provider", () => {
 		gateway.reply(tooMany, textReply("Answered on retry"));
 		expect(await ask(session.id, "Hi")).toMatchObject({ status: "answered", answer: "Answered on retry" });
 		expect(gateway.messages.slice(1).map((call) => call.body.model)).toEqual(["default", "default"]);
+		// Pi Durable's first backoff is 2 s of real time: room for it on a loaded host.
+	}, 30_000);
+
+	it("shares one mint between concurrent requests, mints again after a failed mint, and renews by the issued expiry", async () => {
+		let now = 1_000_000;
+		const clock = { now: () => now };
+		const inner = fakeTokens(clock.now);
+		const gateway = toyGateway(inner.tokens);
+		let gate: Promise<void> | undefined;
+		let failNext = false;
+		const tokens: Pick<ModelSessionTokens, "mint"> = {
+			async mint(context, scope, ttlMs) {
+				await gate;
+				if (failNext) {
+					failNext = false;
+					throw new HarbourError("unavailable", "Issuer down");
+				}
+				// The issuer caps the lifetime at a minute, whatever is asked for.
+				const minted = await inner.tokens.mint(context, scope, Math.min(ttlMs ?? 60_000, 60_000));
+				return minted;
+			},
+		};
+		const session = {
+			id: "00000000-0000-4000-8000-0000000000aa",
+			organisationId: ORG,
+			projectId: "proj",
+			agentId: "worker",
+			status: "idle" as const,
+			labels: {},
+			createdBy: ctx.actor,
+			createdAt: now,
+			updatedAt: now,
+		};
+		const models = await harbourModels({
+			gateway: { baseUrl: GATEWAY_URL, fetch: gateway.fetch },
+			tokens,
+			ttlMs: TTL_MS,
+			clock,
+		})(session);
+		expect(inner.mints).toHaveLength(1);
+
+		// Renewal follows the minute issued, not the ten asked for: half of it later, a new token.
+		now += 31_000;
+		let release = () => {};
+		gate = new Promise((resolve) => {
+			release = resolve;
+		});
+		const model = models.getModel("harbour", "default");
+		if (model === undefined) throw new Error("The gateway's config lists the route");
+		gateway.reply(textReply("one"), textReply("two"));
+		const both = Promise.all([
+			models.completeSimple(model, { messages: [] }),
+			models.completeSimple(model, { messages: [] }),
+		]);
+		release();
+		gate = undefined;
+		await both;
+		expect(inner.mints).toHaveLength(2);
+		expect(gateway.messages.map((call) => call.token)).toEqual(["token-2", "token-2"]);
+
+		// A failed mint fails that request only; the next one mints again.
+		now += 31_000;
+		failNext = true;
+		const failed = await models.refresh({ providers: ["harbour"] });
+		expect(failed.errors.get("harbour")?.message).toMatch(/Issuer down/);
+		const retried = await models.refresh({ providers: ["harbour"] });
+		expect(retried.errors.size).toBe(0);
+		expect(inner.mints).toHaveLength(3);
+		expect(gateway.configs.at(-1)?.token).toBe("token-3");
 	});
 
 	it("fails a session's opening as unavailable when the gateway's config can't be loaded", async () => {
