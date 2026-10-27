@@ -76,6 +76,9 @@ function requireRoleValue(role: unknown): Role {
 	return role as Role;
 }
 
+const normalisedEmail = (email: string | undefined): string | undefined =>
+	email === undefined ? undefined : normaliseEmail(email);
+
 const forbidden = (message: string): HarbourError => new HarbourError("forbidden", message);
 const notFound = (what: string): HarbourError => new HarbourError("not_found", `${what} not found`);
 
@@ -299,6 +302,14 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		async createUser(ctx, input) {
 			if (ctx.actor.kind !== "system") requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const name = requireName(input.name, "a user");
+			if (input.externalSubject !== undefined) {
+				if (typeof input.externalSubject !== "string" || input.externalSubject === "") {
+					throw new HarbourError("invalid", "an external subject must be a non-empty string");
+				}
+				if ([...users.values()].some((stored) => stored.user.externalSubject === input.externalSubject)) {
+					throw new HarbourError("conflict", "another user already has this external subject");
+				}
+			}
 			const user: User = Object.freeze({
 				id: newId("usr"),
 				name,
@@ -495,15 +506,18 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
-			let stored = [...users.values()].find((candidate) => candidate.user.externalSubject === externalSubject);
+			const bySubject = [...users.values()].filter((candidate) => candidate.user.externalSubject === externalSubject);
+			// Subjects are unique by construction; should two records ever share one, refuse rather than pick.
+			if (bySubject.length > 1) throw forbidden("no user matches this sign-in");
+			let stored = bySubject[0];
 			if (stored === undefined) {
-				const email = identity.emailVerified === true ? identity.email?.trim().toLowerCase() : undefined;
+				const email = identity.emailVerified === true ? normalisedEmail(identity.email) : undefined;
 				const invited =
 					email === undefined || email === ""
 						? []
 						: [...users.values()].filter(
 								(candidate) =>
-									candidate.user.externalSubject === undefined && candidate.user.email?.trim().toLowerCase() === email,
+									candidate.user.externalSubject === undefined && normalisedEmail(candidate.user.email) === email,
 							);
 				const only = invited.length === 1 ? invited[0] : undefined;
 				if (only === undefined) throw forbidden("no user matches this sign-in");

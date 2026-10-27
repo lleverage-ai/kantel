@@ -62,8 +62,11 @@ organisation. Host apps call with API keys scoped to projects.
 creates the user, and sign-in never creates one.
 
 - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person — "signIn
-  finds a user by issuer and subject, links an invited user by verified email once, and refuses anyone else".
-- Otherwise a provider-verified email links the one user with that email (case-insensitive) and no `externalSubject`,
+  finds a user by issuer and subject, links an invited user by verified email once, and refuses anyone else". Issuer
+  and subject compare exactly, case included, and `createUser` refuses a subject another user has (`conflict`) —
+  "signIn compares issuer and subject exactly, and no two users share a subject".
+- Otherwise a provider-verified email links the one user with that email and no `externalSubject` (emails compare
+  trimmed and lower-cased, `normaliseEmail`, on both sides),
   once, audited as `identity.user.linked` with the user as actor. An unverified email, an email two unlinked users
   share, a linked user's email at a new subject, or nobody at all is `forbidden`.
 - The organisations — "signIn lists the organisations the user was created in or holds a role in".

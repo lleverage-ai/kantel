@@ -120,6 +120,11 @@ export function externalSubjectOf(issuer: string, subject: string): string {
 	return `${issuer} ${subject}`;
 }
 
+/** How sign-in compares emails: trimmed and lower-cased. */
+export function normaliseEmail(email: string): string {
+	return email.trim().toLowerCase();
+}
+
 /** A signed-in person's user record and the organisations they may act in. */
 export interface SignIn {
 	readonly user: User;
@@ -257,9 +262,11 @@ export interface IdentityDirectory {
 	/**
 	 * Resolves a person a sign-in provider vouched for to their user (M1-BE7). Harbour is invite-only: an admin creates
 	 * the user first, and sign-in never creates one.
-	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person.
-	 * - Otherwise, when the provider verified the email, the one user with that email (compared case-insensitively) and
-	 *   no `externalSubject` is linked to the subject, once, and audited as `identity.user.linked`.
+	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
+	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
+	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
+	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
+	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
 	 * - Anyone else, an unverified email, or an email two unlinked users share, is `forbidden`.
 	 * A worker call (settled question 13): the authenticator makes it as `system`; any other actor is `forbidden`.
 	 */

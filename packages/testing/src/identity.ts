@@ -633,14 +633,43 @@ export function createIdentityConformance(options: {
 				);
 				a.strictEqual(deps.audit.ofType("identity.user.linked").length, before + 1, "nothing else was linked");
 
-				await identity.createUser(tenant.admin, { name: "Twin one", email: "twin@example.test" });
-				await identity.createUser(tenant.admin, { name: "Twin two", email: "twin@example.test" });
+				const twinOne = await identity.createUser(tenant.admin, { name: "Twin one", email: "Twin@Example.test" });
+				const twinTwo = await identity.createUser(tenant.admin, { name: "Twin two", email: " twin@example.TEST " });
 				await a.rejectsWithCode(
 					identity.signIn(WORKER, { issuer, subject: "twin", email: "twin@example.test", emailVerified: true }),
 					"forbidden",
-					"an email two unlinked users share links neither",
+					"an email two unlinked users share once normalised links neither",
 				);
+				a.strictEqual((await identity.getUser(tenant.admin, twinOne.id)).externalSubject, undefined);
+				a.strictEqual((await identity.getUser(tenant.admin, twinTwo.id)).externalSubject, undefined);
 				await a.rejectsWithCode(identity.signIn(WORKER, { issuer: "", subject: "x" }), "invalid");
+			}),
+		},
+		{
+			name: "signIn compares issuer and subject exactly, and no two users share a subject",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const issuer = "https://idp.example.test/Realm";
+				await identity.createUser(tenant.admin, {
+					name: "Person",
+					externalSubject: externalSubjectOf(issuer, "Person"),
+				});
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { issuer, subject: "person" }),
+					"forbidden",
+					"a subject differing only in case is someone else",
+				);
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { issuer: "https://idp.example.test/realm", subject: "Person" }),
+					"forbidden",
+					"an issuer differing only in case is another issuer",
+				);
+				await a.rejectsWithCode(
+					identity.createUser(tenant.admin, { name: "Copy", externalSubject: externalSubjectOf(issuer, "Person") }),
+					"conflict",
+					"a second user cannot take the same subject",
+				);
+				a.strictEqual((await identity.signIn(WORKER, { issuer, subject: "Person" })).user.name, "Person");
 			}),
 		},
 		{
