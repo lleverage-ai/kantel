@@ -1,7 +1,7 @@
 /**
  * Portable workspace logic shared by every target: path rules, mount lookup, digests and content bytes.
  */
-import { HarbourError, type Mount } from "@harbour/contracts";
+import { type CallContext, HarbourError, type Mount, type WorkspaceRecord, type Workspaces } from "@harbour/contracts";
 
 /**
  * Returns `path` when it is a normalised relative workspace path, such as `notes/a.md`. Rejects with `invalid` an
@@ -64,6 +64,27 @@ const encoder = new TextEncoder();
 /** UTF-8 bytes of a string, or a copy of the given bytes so callers cannot change stored content. */
 export function toBytes(content: string | Uint8Array): Uint8Array {
 	return typeof content === "string" ? encoder.encode(content) : new Uint8Array(content);
+}
+
+/**
+ * A `Workspaces` that can also open a workspace under an ID the caller derives, creating it at version 0 on first use.
+ * Sources that keep their own versioned trees in workspaces (project files) use it. Not part of the contract: Harbour's
+ * own implementations offer it; a host's need not.
+ */
+export interface KeyedWorkspaces extends Workspaces {
+	/**
+	 * Returns the workspace `id`, creating it from `input` when absent; two racing callers get the same record. `id`
+	 * must pass `checkKeyedId`. An ID held by another organisation is `conflict`.
+	 */
+	ensure(ctx: CallContext, id: string, input: Parameters<Workspaces["create"]>[1]): Promise<WorkspaceRecord>;
+}
+
+/** Rejects with `invalid` an ID that `ensure` may not use: a lowercase prefix, `_`, then 1 to 120 of `[A-Za-z0-9_-]`. */
+export function checkKeyedId(id: string): string {
+	if (typeof id !== "string" || !/^[a-z]+_[A-Za-z0-9_-]{1,120}$/.test(id)) {
+		throw new HarbourError("invalid", "a keyed workspace ID is a lowercase prefix, _ and up to 120 safe characters");
+	}
+	return id;
 }
 
 function invalidPath(path: unknown, message: string): HarbourError {

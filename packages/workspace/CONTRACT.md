@@ -106,9 +106,35 @@ at an explicit `version` is cached as immutable; a mount path never is, because 
 carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, headers? })` returns the same
 types as `Workspaces` and rethrows error bodies as `HarbourError`.
 
+## Read-only mount sources (M1-BE3)
+
+`@harbour/workspace/mounts` has the two sources every target mounts, built on contracts rather than storage:
+
+- `createWorkspaceProjectFiles({ workspaces, access? })` is the `project-files` source for `/project`. Each
+  project's files are a tree in a workspace of the target's own store, under the derived ID
+  `projectFilesWorkspaceId(organisationId, projectId)` and owned by the project, so the files are as durable as the
+  workspaces. Versions are that workspace's versions as strings (`"0"` is empty). `write` needs operator on the project
+  (`workspace.files.write`), commits with the caller as the actor and retries a lost race on the head (blind puts and
+  deletes). The store must be a `KeyedWorkspaces`: `Workspaces` plus `ensure(ctx, id, input)`, which opens or creates a
+  workspace under an ID the caller derives (`checkKeyedId`); an ID another organisation holds is `conflict`, and a caller
+  gets an existing record (or the one that won a race) only with viewer on it. The ID hashes the JSON pair, so it is
+  unambiguous, and includes the organisation, so a ref is always the caller's organisation's project; this settles
+  the first open question below for this source. The source uses a tree only when it is exactly the project's (owned
+  by it, in no session, with no mounts): any other workspace under the ID is `conflict`, because the source reads it
+  with Harbour's own authority.
+- `createSkillsMountSource({ skills, visibility })` is the `skills` source for `/skills`; a mount's ref is the
+  session ID. `latestVersion` pins the session's skills through `Skills.pinForSession` (once), and the version
+  `skillsMountVersion(pins)` names the pinned revisions themselves (`pins:<skillId>@<revision>,…`), so it never changes
+  meaning. Files are at `/skills/<name>/<path>`, where `SkillListing.path` points. Every read goes through
+  `getRevision` and `readFile` as the caller, so a forged pin to another project's skill is `forbidden`.
+  `sessionSkillVisibility(sessions)` gives the session's own project as its visibility.
+
+Both are read-only like every mount: a commit under a mount point is `refused`. The workspace conformance suite runs a
+second time with `/project` served from workspace-backed trees (`test/mounts.conformance.test.ts`).
+
 ## The in-memory implementation
 
-`createMemoryWorkspaces({ clock?, audit?, sources?, access? })` keeps each version as an immutable map (copy-on-write).
+`createMemoryWorkspaces({ clock?, audit?, sources?, access? })` returns a `KeyedWorkspaces` and keeps each version as an immutable map (copy-on-write).
 `createMemoryProjectFiles({ access? })` is a `project-files` source versioned per ref (`"0"` is empty), with a `seed` helper for
 tests. Paths inside a source are relative and `""` is its root. It also rejects a tree where a path is both a file and
 a directory (`invalid`), a delete of a missing file (`not_found`), an empty commit (`invalid`) and an owner in another

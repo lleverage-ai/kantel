@@ -8,12 +8,14 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
-		"./read-api": "./src/read-api.ts"
+		"./read-api": "./src/read-api.ts",
+		"./mounts": "./src/mounts.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*"
+		"@harbour/testing": "workspace:*",
+		"@harbour/skills": "workspace:*"
 	}
 }

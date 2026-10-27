@@ -36,7 +36,16 @@ import {
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
 } from "@harbour/contracts";
-import { findMount, isUnderMount, normalizeMountPoint, normalizeWorkspacePath, sha256Hex, toBytes } from "./index.ts";
+import {
+	checkKeyedId,
+	findMount,
+	isUnderMount,
+	type KeyedWorkspaces,
+	normalizeMountPoint,
+	normalizeWorkspacePath,
+	sha256Hex,
+	toBytes,
+} from "./index.ts";
 
 const DEFAULT_PAGE_LIMIT = 100;
 const MAX_PAGE_LIMIT = 1000;
@@ -76,7 +85,7 @@ export interface MemoryWorkspacesOptions {
 	readonly access?: ProjectAccess;
 }
 
-export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): Workspaces {
+export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): KeyedWorkspaces {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
 	const access = options.access;
@@ -188,60 +197,86 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 		};
 	}
 
+	async function create(
+		ctx: CallContext,
+		input: Parameters<Workspaces["create"]>[1],
+		id: WorkspaceId,
+		keyed = false,
+	): Promise<WorkspaceRecord> {
+		checkOwner(ctx, input.owner);
+		const scope = projectScope(input.owner, input.sessionId);
+		if (access !== undefined && scope !== undefined) {
+			await access.require(ctx, { ...scope, needed: "operator", operation: "workspace.create" });
+		}
+		const seed = input.seed;
+		const seedFiles = new Map<string, string>();
+		for (const source of seed?.sources ?? []) {
+			if (source.kind !== "files") continue;
+			for (const [path, content] of Object.entries(source.files)) seedFiles.set(normalizeWorkspacePath(path), content);
+		}
+		const shape = treeShapeConflict(seedFiles.keys());
+		if (shape !== undefined) throw new HarbourError("invalid", shape);
+
+		const requests = new Map<string, MountRequest>();
+		for (const request of [...(seed?.mounts ?? []), ...(input.mounts ?? [])]) requests.set(request.path, request);
+		await requireMounts(ctx, requests.values());
+		const mounts: Mount[] = [];
+		for (const request of requests.values()) mounts.push(await resolveMount(ctx, request));
+		checkMountsDisjoint(mounts);
+
+		const files = new Map<string, StoredFile>();
+		for (const [path, content] of seedFiles) {
+			const bytes = toBytes(content);
+			files.set(path, { content: bytes, digest: await sha256Hex(bytes), version: 1 });
+		}
+
+		const now = clock.now();
+		const versions: StoredVersion[] = [
+			{ tree: new Map(), info: { version: 0, at: now, actor: ctx.actor, changed: [] } },
+		];
+		if (files.size > 0) {
+			versions.push({
+				tree: files,
+				info: { version: 1, at: now, actor: ctx.actor, changed: [...files.keys()].sort(), message: "seed" },
+			});
+		}
+		const record: WorkspaceRecord = {
+			id,
+			owner: input.owner,
+			...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+			head: versions.length - 1,
+			mounts,
+			...(seed === undefined ? {} : { seed }),
+			seedReadiness: seedReadiness(seed),
+			createdAt: now,
+			updatedAt: now,
+		};
+		// A racing `ensure` may have created it while this one awaited; the first one wins.
+		const raced = workspaces.get(id);
+		if (raced !== undefined) {
+			if (keyed && raced.organisationId === ctx.organisationId) {
+				// The winner may be another project's: the loser sees it only as any existing workspace would be seen.
+				await requireWorkspace(ctx, raced.record, "viewer", "workspace.get");
+				return raced.record;
+			}
+			throw new HarbourError("conflict", `workspace ${id} is taken`);
+		}
+		workspaces.set(id, { organisationId: ctx.organisationId, record, versions });
+		return record;
+	}
+
 	return {
-		async create(ctx, input) {
-			checkOwner(ctx, input.owner);
-			const scope = projectScope(input.owner, input.sessionId);
-			if (access !== undefined && scope !== undefined) {
-				await access.require(ctx, { ...scope, needed: "operator", operation: "workspace.create" });
-			}
-			const seed = input.seed;
-			const seedFiles = new Map<string, string>();
-			for (const source of seed?.sources ?? []) {
-				if (source.kind !== "files") continue;
-				for (const [path, content] of Object.entries(source.files))
-					seedFiles.set(normalizeWorkspacePath(path), content);
-			}
-			const shape = treeShapeConflict(seedFiles.keys());
-			if (shape !== undefined) throw new HarbourError("invalid", shape);
+		create: (ctx, input) => create(ctx, input, `ws_${crypto.randomUUID()}`),
 
-			const requests = new Map<string, MountRequest>();
-			for (const request of [...(seed?.mounts ?? []), ...(input.mounts ?? [])]) requests.set(request.path, request);
-			await requireMounts(ctx, requests.values());
-			const mounts: Mount[] = [];
-			for (const request of requests.values()) mounts.push(await resolveMount(ctx, request));
-			checkMountsDisjoint(mounts);
-
-			const files = new Map<string, StoredFile>();
-			for (const [path, content] of seedFiles) {
-				const bytes = toBytes(content);
-				files.set(path, { content: bytes, digest: await sha256Hex(bytes), version: 1 });
+		async ensure(ctx, id, input) {
+			checkKeyedId(id);
+			const existing = workspaces.get(id);
+			if (existing === undefined) return create(ctx, input, id, true);
+			if (existing.organisationId !== ctx.organisationId) {
+				throw new HarbourError("conflict", `workspace ${id} is taken`);
 			}
-
-			const now = clock.now();
-			const id = `ws_${crypto.randomUUID()}`;
-			const versions: StoredVersion[] = [
-				{ tree: new Map(), info: { version: 0, at: now, actor: ctx.actor, changed: [] } },
-			];
-			if (files.size > 0) {
-				versions.push({
-					tree: files,
-					info: { version: 1, at: now, actor: ctx.actor, changed: [...files.keys()].sort(), message: "seed" },
-				});
-			}
-			const record: WorkspaceRecord = {
-				id,
-				owner: input.owner,
-				...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-				head: versions.length - 1,
-				mounts,
-				...(seed === undefined ? {} : { seed }),
-				seedReadiness: seedReadiness(seed),
-				createdAt: now,
-				updatedAt: now,
-			};
-			workspaces.set(id, { organisationId: ctx.organisationId, record, versions });
-			return record;
+			await requireWorkspace(ctx, existing.record, "viewer", "workspace.get");
+			return existing.record;
 		},
 
 		async get(ctx, id) {
