@@ -1,0 +1,23 @@
+import { registerWorkspaceConformance } from "@harbour/testing/workspace";
+import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { describe, expect, it } from "vitest";
+
+// The whole workspace suite again, with `/project` served from trees kept in workspaces rather than in memory maps:
+// the source every target uses.
+registerWorkspaceConformance(
+	{ describe, expect, it },
+	"workspaces with workspace-backed project files",
+	async (deps, use) => {
+		const trees = createMemoryWorkspaces({ clock: deps.clock, access: deps.access });
+		const projectFiles = createWorkspaceProjectFiles({ workspaces: trees, access: deps.access });
+		const workspaces = createMemoryWorkspaces({
+			clock: deps.clock,
+			audit: deps.audit,
+			sources: [projectFiles],
+			access: deps.access,
+		});
+		await use({ workspaces, projectFiles });
+	},
+	{ projectAccess: true },
+);

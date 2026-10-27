@@ -321,6 +321,9 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../skills
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
