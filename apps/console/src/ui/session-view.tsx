@@ -1,16 +1,19 @@
-import type { Cursor, SessionStatus } from "@harbour/protocol";
+import type { Cursor, SessionStatus, TranscriptItem } from "@harbour/protocol";
 import {
 	Button,
 	Composer,
 	type ConnectionStateValue,
 	DotsIcon,
 	IconButton,
+	Notice,
 	SessionHeader,
 	type Status,
 	Transcript,
 } from "@harbour/ui";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
+import { composerState, type SessionActions } from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -27,6 +30,12 @@ const statusOf: Record<SessionStatus, Status> = {
 	failed: "error",
 	cancelled: "idle",
 };
+
+/** The header's status: a waiting session says whether it needs an approval or an answer, as the list does. */
+export function headerStatus(status: SessionStatus, items: readonly TranscriptItem[]): Status {
+	if (status === "waiting" && needsOf(items) === "approval") return "approval";
+	return statusOf[status];
+}
 
 function connectionOf(health: ConnectionHealth): ConnectionStateValue {
 	return health.status === "offline" ? { state: "offline", retryAt: health.retryAt } : { state: health.status };
@@ -58,16 +67,18 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 	}
 }
 
-const noop = () => {};
-
 export function SessionView({
 	client,
-	fixtures,
-	current,
+	project,
+	actions,
+	onBack,
 }: {
 	client: SessionClient;
-	fixtures: readonly { id: string; label: string }[];
-	current: string;
+	/** The project's name, shown with the session's facts. */
+	project?: string;
+	actions: SessionActions;
+	/** Shows Back, on a phone, to return to the list. */
+	onBack?: () => void;
 }) {
 	const state = useSyncExternalStore(client.subscribe, client.getState);
 	const [menu, setMenu] = useState(false);
@@ -92,14 +103,22 @@ export function SessionView({
 		};
 	}, [menu]);
 
+	const { control } = actions;
+
 	return (
-		<div className="console hb-app">
+		<div className="console">
 			<SessionHeader
 				title={state.title}
-				status={statusOf[state.status]}
+				status={headerStatus(state.status, state.items)}
 				connection={connectionOf(state.connection)}
 				loading={state.freshness.state === "loading" && state.title === ""}
-				meta={<FreshnessText freshness={state.freshness} cursor={state.cursor} />}
+				onBack={onBack}
+				meta={
+					<>
+						{project === undefined ? null : <span className="console-project">{project}</span>}
+						<FreshnessText freshness={state.freshness} cursor={state.cursor} />
+					</>
+				}
 				actions={
 					<div className="console-menu-root" ref={menuRoot}>
 						<IconButton
@@ -122,17 +141,6 @@ export function SessionView({
 								>
 									Drop the connection for 3s
 								</Button>
-								<div className="console-menu-label">Recorded session</div>
-								{fixtures.map((fixture) => (
-									<a
-										key={fixture.id}
-										className="console-menu-link hb-focusable"
-										href={`?session=${fixture.id}${profiling ? "&profile=1" : ""}`}
-										aria-current={fixture.id === current ? "page" : undefined}
-									>
-										{fixture.label}
-									</a>
-								))}
 								<div className="console-menu-label">Stream</div>
 								<ul className="console-menu-facts">
 									<li>
@@ -151,7 +159,7 @@ export function SessionView({
 					</div>
 				}
 			/>
-			<main className="console-main">
+			<div className="console-main">
 				<Profiled id="transcript-list">
 					<Transcript
 						items={state.items}
@@ -163,15 +171,18 @@ export function SessionView({
 						onRowRender={recordRow}
 					/>
 				</Profiled>
-			</main>
-			<footer className="console-composer">
+			</div>
+			<div className="console-composer">
 				<Composer
-					state="disabled"
-					disabledReason="Replaying a recorded session. Steering arrives with the live host."
+					state={composerState(control, state.status, actions.sending)}
+					disabledReason={control.live ? undefined : control.reason}
 					label="Message"
-					onSend={noop}
+					banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
+					onSend={actions.onSend}
+					onSteer={actions.onSteer}
+					onStop={actions.onStop}
 				/>
-			</footer>
+			</div>
 			{profiling ? <ProfilePanel client={client} /> : null}
 		</div>
 	);

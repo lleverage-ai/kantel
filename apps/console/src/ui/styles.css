@@ -22,12 +22,122 @@ body {
 	color: var(--hb-text-muted);
 }
 
+/* The shell: a sidebar with the projects and the current project's sessions, and the open session beside it. The
+   dynamic viewport height, so a phone's browser bars and keyboard never cover the composer. */
+.shell {
+	display: grid;
+	grid-template-columns: var(--hb-sidebar-width) minmax(0, 1fr);
+	height: 100dvh;
+}
+
+.shell-sidebar {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-height: 0;
+	padding: var(--hb-space-5) var(--hb-space-3) 0;
+	border-right: var(--hb-hairline) solid var(--hb-border);
+	background: var(--hb-panel);
+	overflow-y: auto;
+}
+
+.shell-brand {
+	padding: 0 var(--hb-space-5);
+}
+
+.shell-wordmark {
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+}
+
+/* Small and muted, like the session list's group headings. */
+.shell-heading {
+	margin: 0 0 var(--hb-space-2);
+	padding: 0 var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+}
+
+.shell-rows {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.shell-sessions {
+	flex: 1;
+}
+
+/* Who the console acts as, at the foot of the sidebar. */
+.shell-actor {
+	position: sticky;
+	bottom: 0;
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	padding: var(--hb-space-4) var(--hb-space-5);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+	background: var(--hb-panel);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.shell-actor-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.shell-main {
+	min-width: 0;
+	min-height: 0;
+}
+
+.shell-empty {
+	display: grid;
+	height: 100%;
+	place-items: center;
+	padding: var(--hb-space-7);
+}
+
+/* A phone: one pane at a time, the list or the open session (with Back). */
+@media (max-width: 640px) {
+	.shell {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.shell-sidebar {
+		border-right: 0;
+		background: var(--hb-canvas);
+	}
+
+	.shell-actor {
+		background: var(--hb-canvas);
+	}
+
+	.shell[data-pane="list"] .shell-main,
+	.shell[data-pane="main"] .shell-sidebar {
+		display: none;
+	}
+}
+
 /* Header, transcript, composer: the transcript takes what is left and scrolls on its own. */
 .console {
 	display: flex;
 	flex-direction: column;
-	/* The dynamic viewport height, so a phone's browser bars and keyboard never cover the composer. */
-	height: 100dvh;
+	height: 100%;
+}
+
+.console-project {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
 }
 
 .console-main {

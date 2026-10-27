@@ -3,7 +3,7 @@
 	"private": true,
 	"version": "0.0.0",
 	"type": "module",
-	"description": "Harbour's session console. M0 prototype: renders one recorded Pi Durable session with no backend.",
+	"description": "Harbour's session console: projects, each project's sessions by attention, and the live session view.",
 	"license": "Apache-2.0",
 	"scripts": {
 		"fixtures": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
