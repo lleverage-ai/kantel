@@ -3,7 +3,8 @@
  * headers and uses only globals, so it runs on Workers, Bun and Node.
  *
  * Host apps authenticate with API keys. People sign in through the `SignInProvider`s a deployment configures
- * (`@harbour/identity/jwt`): a Cloudflare Access token, an OIDC token, or both.
+ * (`@harbour/identity/jwt`): a Cloudflare Access token, an OIDC token, or both; self-hosted, a Harbour session from
+ * email one-time PIN sign-in (`@harbour/identity/otp`).
  */
 import {
 	type AuthenticatedCaller,
@@ -23,6 +24,7 @@ import {
 import { decodeJwt } from "jose";
 import { API_KEY_SECRET_PREFIX } from "./index.ts";
 import type { SignInProvider } from "./jwt.ts";
+import { SESSION_TOKEN_PREFIX } from "./otp.ts";
 
 /** The authenticator resolves keys and sign-ins as itself: `authenticateApiKey` and `signIn` are worker calls. */
 const AUTHENTICATOR_CONTEXT = systemContext("authenticator");
@@ -86,6 +88,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 	}
 	const accessProviders = providers.filter((provider) => provider.method === "cloudflare_access");
 	const oidcProviders = providers.filter((provider) => provider.method === "oidc");
+	const sessionProviders = providers.filter((provider) => provider.method === "harbour_session");
 
 	async function human(
 		request: AuthenticatorRequest,
@@ -113,6 +116,11 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 		async authenticate(request) {
 			// An API key comes first: a host app behind Cloudflare Access may also carry an Access service token.
 			const token = bearerToken(request);
+			// A Harbour session is a bearer of its own shape, so it never reaches a JWT provider.
+			if (token?.startsWith(SESSION_TOKEN_PREFIX)) {
+				if (sessionProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
+				return human(request, sessionProviders, token);
+			}
 			if (token === undefined || !token.startsWith(API_KEY_SECRET_PREFIX)) {
 				const accessToken = accessProviders[0]?.token(request);
 				if (accessToken !== undefined) return human(request, accessProviders, accessToken);

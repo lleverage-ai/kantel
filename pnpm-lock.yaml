@@ -242,6 +242,9 @@ importers:
       jose:
         specifier: 6.2.13
         version: 6.2.13
+      nodemailer:
+        specifier: 10.1.7
+        version: 10.1.7
     devDependencies:
       "@harbour/runtime":
         specifier: workspace:*
@@ -249,6 +252,9 @@ importers:
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
+      smtp-server:
+        specifier: 3.20.2
+        version: 3.20.2
 
   packages/memory:
     dependencies:
@@ -3429,6 +3435,10 @@ packages:
       { integrity: sha512-Ag3wB2o37wslZS19hZqorUnrnzSkpOVy+IiiDEiTqNubEYpYuHWIf6K4psgN2ZWKExS4xhVCrRVfb/wfW8fWJA== }
     engines: { node: ">= 10" }
 
+  ipv6-normalize@1.0.1:
+    resolution:
+      { integrity: sha512-Bm6H79i01DjgGTCWjUuCjJ6QDo1HB96PT/xCYuyJUP9WFbVDrLSbG4EZCvOCun2rNswZb0c3e4Jt/ws795esHA== }
+
   is-alphabetical@2.0.1:
     resolution:
       { integrity: sha512-FWyyY60MeTNyeSRpkM2Iry0G9hpr7/9kD40mD/cGQEuilcZYS4okz8SN2Q6rLCJ8gbCt6fN+rC+6tMGS99LaxQ== }
@@ -4033,6 +4043,11 @@ packages:
       { integrity: sha512-OmO8+GM1JUZqXET720VrJCwkjUCXmCMQm0Z3UDDRbfNLHS4NEAvY60j5jiFv0tkKw2PNNlqOLhahVmwJIOLDIQ== }
     engines: { node: ">=18" }
 
+  nodemailer@10.1.7:
+    resolution:
+      { integrity: sha512-OQa6FDln5fLttmqSbjDiRYvFDOFNrBqfiOwHPlEbURil3b+vPB1v8xpi+Sp46drzNDlsTnNsS502vthmz56r4w== }
+    engines: { node: ">=20.0.0" }
+
   nth-check@2.1.1:
     resolution:
       { integrity: sha512-lqjrjmaOoAnWfMmBPL+XNnynZh2+swxiX3WUE0s4yEHI6m+AwrK2UZOimIRl3X/4QctVqS8AiZjFqyOGrMXb/w== }
@@ -4274,6 +4289,11 @@ packages:
   pump@3.0.4:
     resolution:
       { integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA== }
+
+  punycode.js@2.3.1:
+    resolution:
+      { integrity: sha512-uxFIHU0YlHYhDQtV4R9J6a52SLx28BCjT+4ieh7IGbgwVJWO+km431c4yRlREUAsAmt/uMjQUyQHNEPf0M39CA== }
+    engines: { node: ">=6" }
 
   query-string@9.5.1:
     resolution:
@@ -4530,6 +4550,11 @@ packages:
     resolution:
       { integrity: sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ== }
     engines: { node: ">= 18" }
+
+  smtp-server@3.20.2:
+    resolution:
+      { integrity: sha512-94VrO5MWy6IJ1RjCEj4bjvIQCpp2z05SBueZ72c8g1ZEoXG/OVbX1RvuZRkO2WqP0AJgC81V1sv6UxQyIN7OHw== }
+    engines: { node: ">=20.0.0" }
 
   source-map-js@1.2.2:
     resolution:
@@ -7472,6 +7497,8 @@ snapshots:
 
   ipaddr.js@2.2.0: {}
 
+  ipv6-normalize@1.0.1: {}
+
   is-alphabetical@2.0.1: {}
 
   is-alphanumerical@2.0.1:
@@ -8285,6 +8312,8 @@ snapshots:
 
   node-releases@2.0.60: {}
 
+  nodemailer@10.1.7: {}
+
   nth-check@2.1.1:
     dependencies:
       boolbase: 1.0.0
@@ -8467,6 +8496,8 @@ snapshots:
       end-of-stream: 1.4.5
       once: 1.4.0
     optional: true
+
+  punycode.js@2.3.1: {}
 
   query-string@9.5.1:
     dependencies:
@@ -8775,6 +8806,12 @@ snapshots:
   slash@5.1.0: {}
 
   smol-toml@1.9.1: {}
+
+  smtp-server@3.20.2:
+    dependencies:
+      ipv6-normalize: 1.0.1
+      nodemailer: 10.1.7
+      punycode.js: 2.3.1
 
   source-map-js@1.2.2: {}
 

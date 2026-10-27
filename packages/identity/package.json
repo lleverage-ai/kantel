@@ -11,15 +11,20 @@
 		"./authenticator": "./src/authenticator.ts",
 		"./jwt": "./src/jwt.ts",
 		"./sql": "./src/sql.ts",
+		"./otp": "./src/otp.ts",
+		"./otp/http": "./src/otp-http.ts",
+		"./smtp": "./src/smtp.ts",
 		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*",
 		"@harbour/sql": "workspace:*",
-		"jose": "6.2.13"
+		"jose": "6.2.13",
+		"nodemailer": "10.1.7"
 	},
 	"devDependencies": {
+		"@harbour/runtime": "workspace:*",
 		"@harbour/testing": "workspace:*",
-		"@harbour/runtime": "workspace:*"
+		"smtp-server": "3.20.2"
 	}
 }

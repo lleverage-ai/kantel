@@ -22,7 +22,8 @@ import { API_KEY_SECRET_PREFIX } from "./index.ts";
 
 /** A configured sign-in provider: where it finds its token in a request, and how it verifies one. */
 export interface SignInProvider {
-	readonly method: "cloudflare_access" | "oidc";
+	/** `harbour_session` for Harbour's own sessions (`harbourSessionProvider` in `./otp.ts`). */
+	readonly method: "cloudflare_access" | "oidc" | "harbour_session";
 	/** The issuer its tokens must name in `iss`. The authenticator picks between providers of one method by it. */
 	readonly issuer: string;
 	/** The provider's token in `request`, or undefined when there is none. */

@@ -87,6 +87,43 @@ Harbour session (`hbs_…`), which the authenticator accepts as the `harbour_ses
 audited as `identity.session.started` and `identity.session.ended`. The wire types are in
 `packages/contracts/src/identity.ts`.
 
+### Implementation (`@harbour/identity/otp`, `/otp/http`, `/smtp`, `/sql`)
+
+- `createEmailOtp({ identity, codes, sessions, mailer, clock?, audit?, sessionTtlMilliseconds?, defer?,
+  onMailError? })` is the service; `createOtpHandler({ otp })` serves the three routes as a Fetch-style handler;
+  `harbourSessionProvider({ sessions })` goes in `createAuthenticator({ providers })`. Stores: `createSqlOtpStores(driver)`
+  (tables `identity_otp_codes` and `identity_sessions`, created by `migrateIdentity`) or `createMemoryOtpStores()`.
+- Codes: 6 uniformly random digits, valid 10 minutes, stored as the SHA-256 of the code's ID, email and code. A new
+  code burns the email's older ones. At most 5 codes per email per hour; a start over the limit sends nothing and
+  answers the same.
+- Start does the same work for every well-formed email: `canSignIn`, then a code row under the rate limit (a decoy
+  that no code matches for a stranger), so the database sees the same statements either way. The mail is sent after
+  the response through `defer` (a Worker passes `ctx.waitUntil`), so its outcome and duration never reach the caller;
+  a failed send goes to `onMailError` without the code.
+- Verify claims one attempt with a single guarded `UPDATE … RETURNING` before comparing (constant-time), and consumes a
+  match with another, so concurrent guesses never pass 5 and a code signs in once. Wrong, expired, used, burned and
+  unknown all answer the same 401.
+- Sessions: `hbs_` + 32 random bytes, stored as SHA-256, 12 hours by default. The authenticator takes an `hbs_`
+  bearer before anything but an API key, and resolves the person through `signIn` on every call.
+- Mail: `createSmtpMailer({ url, from })` or `smtpMailerFromEnv()` (`HARBOUR_SMTP_URL`, `HARBOUR_MAIL_FROM`).
+  `smtps://` is TLS from the start; `smtp://` requires STARTTLS; only `?starttls=off` sends in the clear, for a relay on
+  a private network such as Mailpit. `MemoryOtpMailer` is for tests.
+- Proof: `packages/identity/test/otp.test.ts` (memory, PGlite, node:sqlite, D1, and real Postgres when
+  `HARBOUR_TEST_POSTGRES_URL` is set), `smtp.test.ts` (an in-process SMTP relay), and `otp.mailpit.test.ts`, #15's
+  definition of done over HTTP against Mailpit when `HARBOUR_TEST_SMTP_URL` and `HARBOUR_TEST_MAILPIT_URL` are set.
+
+### Wiring it into the self-hosted stack (deployment lanes)
+
+1. Run Mailpit (`axllent/mailpit`) in the compose stack; its SMTP port is 1025 and its UI and API 8025.
+2. Give the gateway `HARBOUR_SMTP_URL=smtp://mailpit:1025?starttls=off` and `HARBOUR_MAIL_FROM=Harbour <harbour@…>`;
+   a real relay takes `smtps://user:pass@host` or `smtp://user:pass@host:587` instead.
+3. Run `migrateIdentity(driver)` on the Postgres driver, build `createSqlOtpStores(driver)`, then
+   `createEmailOtp({ identity, ...stores, mailer: smtpMailerFromEnv(), audit })`.
+4. Mount `createOtpHandler({ otp })` at `/auth/otp/start`, `/auth/otp/verify` and `/auth/session/end`, unauthenticated.
+5. Add `harbourSessionProvider(stores)` to the gateway's `createAuthenticator({ identity, providers })`.
+6. Rate-limit `/auth/otp/*` per client address at the edge too; the per-email limits do not stop one client from
+   trying many emails.
+
 ## The authenticator (M1-BE7)
 
 `Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Harbour API takes. It turns a

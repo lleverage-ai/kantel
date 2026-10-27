@@ -55,6 +55,9 @@ import {
 } from "@harbour/sql";
 import { apiKeyPrefix, generateApiKeySecret, hashApiKeySecret, strongestRole } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
+import { otpSchema } from "./otp-sql.ts";
+
+export { createSqlOtpStores, otpSchema } from "./otp-sql.ts";
 
 /** Identity appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("identity");
@@ -143,6 +146,7 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			revoked_at ${time}
 		)`,
 		"CREATE INDEX IF NOT EXISTS identity_api_keys_by_organisation ON identity_api_keys (organisation_id, seq)",
+		...otpSchema(dialect),
 	];
 }
 
