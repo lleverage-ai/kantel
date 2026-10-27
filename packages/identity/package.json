@@ -10,10 +10,12 @@
 		"./memory": "./src/memory.ts",
 		"./authenticator": "./src/authenticator.ts",
 		"./jwt": "./src/jwt.ts",
+		"./sql": "./src/sql.ts",
 		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*",
 		"jose": "6.2.13"
 	},
 	"devDependencies": {
