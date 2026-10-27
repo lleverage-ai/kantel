@@ -68,8 +68,8 @@ function conceptInput(id: string, title: string, statement: string, extra: Parti
 	return { id, title, statement, scope: { kind: "global" }, sources: ["tvdavies/harbour#39"], ...extra };
 }
 
-function bytesOf(concept: Pick<Concept, "title" | "statement">): number {
-	return new TextEncoder().encode(concept.title + concept.statement).length;
+function bytes(text: string): number {
+	return new TextEncoder().encode(text).length;
 }
 
 function createSpace(memory: Memory, ctx: CallContext = human): Promise<MemorySpace> {
@@ -103,6 +103,8 @@ async function remember(
 	await applied(memory, spaceId, { op: "remember", concept: input }, proposer);
 	return memory.getConcept(human, spaceId, input.id);
 }
+
+const EMPTY_SNAPSHOT = { sourceId: "fixture", ref: "planted", concepts: [] };
 
 function recalledIds(recall: { readonly concepts: readonly Concept[] }): string[] {
 	return recall.concepts.map((concept) => concept.id);
@@ -435,62 +437,399 @@ export function createMemoryConformance(options: {
 			assert.strictEqual(remembered, outcomes[0] === "applied", "memory matches the outcome");
 		}),
 
-		test("bounds recall by maxConcepts and maxBytes, reports truncation and puts profile concepts first", async (memory) => {
+		test("bounds recall by maxConcepts and maxBytes, reports truncation and keeps the profile apart", async (memory) => {
 			const space = await createSpace(memory);
 			const profile = await remember(
 				memory,
 				space.id,
 				conceptInput("personal/name", "Owner's name", "The owner is called Tom."),
 			);
-			const deploys: Concept[] = [];
 			for (let index = 0; index < 6; index += 1) {
-				deploys.push(
-					await remember(
-						memory,
-						space.id,
-						conceptInput(
-							`projects/harbour/deploy-${index}`,
-							`Déploy note ${index}`,
-							`Déploy step ${index}: café ${"é".repeat(index)}`,
-						),
+				await remember(
+					memory,
+					space.id,
+					conceptInput(
+						`projects/harbour/deploy-${index}`,
+						`Deploy note ${index}`,
+						`Deploy step ${index}: café ${"é".repeat(index)}`,
 					),
 				);
 			}
-			const query = "déploy";
+			const query = "deploy";
 			const two = await memory.recall(human, { spaceIds: [space.id], query, profile: [profile.id], maxConcepts: 2 });
-			assert.strictEqual(two.concepts.length, 2);
+			assert.strictEqual(two.concepts.length, 3, "maxConcepts counts matches, not the profile");
 			assert.strictEqual(two.concepts[0]?.id, profile.id, "the profile comes first");
-			assert.strictEqual(two.manifest[0]?.reason, "profile");
-			assert.strictEqual(two.manifest[1]?.reason, "search");
+			assert.deepEqual(
+				two.manifest.map((entry) => entry.reason),
+				["profile", "search", "search"],
+			);
 			assert.strictEqual(two.truncated, true, "more matched than maxConcepts allowed");
 
 			const defaults = await memory.recall(human, { spaceIds: [space.id], query });
 			assert.strictEqual(defaults.concepts.length, 5, "five concepts by default");
 			assert.strictEqual(defaults.truncated, true);
+			assert.ok(defaults.skipped.length > 0, "what was left out is named");
 
-			const [firstHit, secondHit] = defaults.concepts;
-			const budget = bytesOf(firstHit!) + bytesOf(secondHit!);
-			const tight = await memory.recall(human, { spaceIds: [space.id], query, maxBytes: budget - 1 });
-			assert.deepEqual(recalledIds(tight), [firstHit!.id], "maxBytes counts UTF-8 bytes of title and statement");
-			assert.strictEqual(tight.truncated, true);
+			// Without a profile, the rendered text is exactly what maxBytes counts.
+			const pair = await memory.recall(human, { spaceIds: [space.id], query, maxConcepts: 2 });
+			const budget = bytes(pair.text);
 			const exact = await memory.recall(human, { spaceIds: [space.id], query, maxBytes: budget });
-			assert.deepEqual(recalledIds(exact), [firstHit!.id, secondHit!.id], "a concept that fits exactly is kept");
+			assert.deepEqual(recalledIds(exact), recalledIds(pair), "a concept that fits exactly is kept");
+			const tight = await memory.recall(human, { spaceIds: [space.id], query, maxBytes: budget - 1 });
+			assert.deepEqual(recalledIds(tight), recalledIds(pair).slice(0, 1), "maxBytes counts UTF-8 bytes of the text");
+			assert.strictEqual(tight.truncated, true);
 
 			const fits = await memory.recall(human, { spaceIds: [space.id], query: "", profile: [profile.id] });
-			assert.deepEqual(recalledIds(fits), [profile.id]);
+			assert.deepEqual(recalledIds(fits), [profile.id], "the profile is recalled whatever the query");
 			assert.strictEqual(fits.truncated, false, "nothing more matched");
+			assert.ok(fits.text.includes("The owner is called Tom."), "the text shows the statement");
+			const none = await memory.recall(human, {
+				spaceIds: [space.id],
+				query: "",
+				profile: [profile.id],
+				maxProfileConcepts: 0,
+			});
+			assert.deepEqual(recalledIds(none), [], "a profile limit of 0 turns the profile off");
+			assert.strictEqual(none.text, "", "an empty recall renders nothing");
 
 			const longSpace = await createSpace(memory);
 			for (let index = 0; index < 3; index += 1) {
 				await remember(
 					memory,
 					longSpace.id,
-					conceptInput(`projects/harbour/long-${index}`, `Release ${index}`, `release ${"x".repeat(1500)} ${index}`),
+					conceptInput(`projects/harbour/long-${index}`, `Release ${index}`, `release ${"x ".repeat(1500)} ${index}`),
 				);
 			}
 			const bytesDefault = await memory.recall(human, { spaceIds: [longSpace.id], query: "release" });
-			assert.strictEqual(bytesDefault.concepts.length, 2, "4096 bytes by default");
+			assert.ok(bytes(bytesDefault.text) <= 4096, "4096 bytes by default");
+			assert.ok(bytesDefault.concepts.length < 3);
 			assert.strictEqual(bytesDefault.truncated, true);
+		}),
+
+		test("keeps the profile within its own limits, names what it leaves out and shows the oldest first", async (memory, deps) => {
+			const space = await createSpace(memory);
+			const ids: string[] = [];
+			const habits = [
+				"Runs before breakfast along the canal",
+				"Reads papers on Sunday afternoons",
+				"Answers email only after lunch",
+				"Plays chess with friends on Thursdays",
+			];
+			for (let index = 0; index < habits.length; index += 1) {
+				deps.clock.advance(1000);
+				const concept = await remember(
+					memory,
+					space.id,
+					conceptInput(`personal/habit-${index}`, `Habit ${index}`, `${habits[index]}.`),
+				);
+				ids.push(concept.id);
+			}
+			const all = await memory.recall(human, { spaceIds: [space.id], query: "", profile: [...ids].reverse() });
+			assert.deepEqual(recalledIds(all), ids, "rendered oldest first, whatever order the profile names them in");
+			assert.deepEqual(all.profileOmitted, []);
+
+			const capped = await memory.recall(human, {
+				spaceIds: [space.id],
+				query: "papers",
+				profile: ids,
+				maxProfileConcepts: 2,
+			});
+			assert.strictEqual(capped.concepts.length, 2);
+			assert.ok(recalledIds(capped).includes("personal/habit-1"), "a profile concept the query matches goes first");
+			assert.ok(recalledIds(capped).includes("personal/habit-3"), "then the newest");
+			assert.deepEqual([...capped.profileOmitted].sort(), ["personal/habit-0", "personal/habit-2"]);
+			for (const id of capped.profileOmitted) assert.ok(capped.text.includes(id), "the text names what was left out");
+			assert.strictEqual(capped.truncated, true);
+
+			const one = await memory.recall(human, { spaceIds: [space.id], query: "", profile: ids, maxProfileBytes: 1 });
+			assert.deepEqual(recalledIds(one), [], "a profile concept over its byte budget is left out");
+			assert.deepEqual([...one.profileOmitted].sort(), ids);
+		}),
+
+		test("recalls a concept only for a keyword match in its title, ID or tags, not one passing word", async (memory) => {
+			const space = await createSpace(memory);
+			await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/tunnels", "Tunnels", "Tunnels carry traffic; the gateway deploys them."),
+			);
+			await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/gateways", "Gateway notes", "The gateway fronts every session."),
+			);
+			await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/egress", "Egress", "Egress goes through the proxy.", { tags: ["gateway"] }),
+			);
+			const recall = await memory.recall(human, { spaceIds: [space.id], query: "gateway" });
+			assert.deepEqual(
+				[...recalledIds(recall)].sort(),
+				["projects/harbour/egress", "projects/harbour/gateways"],
+				"a title, ID or tag match recalls; a word in the statement alone does not",
+			);
+			assert.deepEqual(recall.manifest[0]?.matched, ["gateway"], "the manifest names the matched terms");
+			const filler = await memory.recall(human, { spaceIds: [space.id], query: "hi, thanks, quick question" });
+			assert.deepEqual(recalledIds(filler), [], "filler words recall nothing");
+		}),
+
+		test("brings a job's exception along with the general concept it overrides, and only for that job", async (memory) => {
+			const space = await createSpace(memory);
+			await remember(
+				memory,
+				space.id,
+				conceptInput("personal/merge-policy", "Merge policy", "Never merge without review."),
+			);
+			await remember(
+				memory,
+				space.id,
+				conceptInput("personal/merge-policy-nightly", "Nightly merges", "The nightly job may merge green PRs.", {
+					scope: { kind: "job", job: "docket:T-7" },
+					overrides: "personal/merge-policy",
+				}),
+			);
+			const plain = await memory.recall(human, { spaceIds: [space.id], query: "merge policy" });
+			assert.deepEqual(recalledIds(plain), ["personal/merge-policy"], "another job's exception stays out");
+			assert.ok(
+				plain.skipped.some((entry) => entry.conceptId === "personal/merge-policy-nightly"),
+				"and is named as skipped",
+			);
+			const forJob = await memory.recall(human, {
+				spaceIds: [space.id],
+				query: "merge policy",
+				scopes: { jobs: ["T-7", "docket:T-7"] },
+			});
+			assert.deepEqual(recalledIds(forJob), ["personal/merge-policy", "personal/merge-policy-nightly"]);
+			assert.deepEqual(
+				forJob.manifest.map((entry) => entry.reason),
+				["search", "exception"],
+			);
+			const excluded = await memory.recall(human, {
+				spaceIds: [space.id],
+				query: "merge policy",
+				exclude: ["personal/merge-policy"],
+			});
+			assert.deepEqual(recalledIds(excluded), [], "a concept the session already has is not recalled");
+			await assert.rejectsWithCode(
+				memory.propose(human, space.id, {
+					op: "remember",
+					concept: conceptInput("personal/merge-other", "Other", "Something else entirely here.", {
+						overrides: "personal/merge-policy",
+					}),
+				}),
+				"invalid",
+				"only a job concept overrides another",
+			);
+		}),
+
+		test("searches by keyword, ranks stale concepts lower and lists inactive ones only when asked", async (memory, deps) => {
+			const space = await createSpace(memory);
+			const staleAt = deps.clock.now() + 1000;
+			await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI runners", "CI runs on GitHub Actions."));
+			await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/ci-cache", "CI cache", "The pnpm store is cached between CI runs.", {
+					staleAfter: staleAt,
+				}),
+			);
+			const gone = await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/ci-old", "Old CI", "CI used to run on Buildkite runners."),
+			);
+			await applied(memory, space.id, { op: "forget", conceptId: gone.id, expectedVersion: 1, reason: "Moved" });
+			deps.clock.set(staleAt);
+			const hits = await memory.search(agent, { spaceIds: [space.id], query: "ci runners" });
+			assert.deepEqual(
+				hits.map((hit) => hit.concept.id),
+				["projects/harbour/ci", "projects/harbour/ci-cache"],
+			);
+			assert.strictEqual(hits[1]?.stale, true);
+			assert.ok((hits[0]?.score ?? 0) > (hits[1]?.score ?? 0), "the stale concept ranks lower");
+			assert.ok(hits[0]?.snippet.includes("GitHub Actions"), "a hit carries a snippet");
+			const history = await memory.search(agent, { spaceIds: [space.id], query: "ci runners", includeInactive: true });
+			assert.ok(
+				history.some((hit) => hit.concept.id === gone.id),
+				"inactive concepts are listed when asked for",
+			);
+			const one = await memory.search(agent, { spaceIds: [space.id], query: "ci", limit: 1 });
+			assert.strictEqual(one.length, 1);
+			await assert.rejectsWithCode(memory.search(agent, { spaceIds: [space.id], query: "ci", limit: 11 }), "invalid");
+			await assert.rejectsWithCode(memory.search(outsider, { spaceIds: [space.id], query: "ci" }), "not_found");
+		}),
+
+		test("imports a snapshot as one change, records its ref and names it in every recall", async (memory, deps) => {
+			const space = await createSpace(memory);
+			await remember(memory, space.id, conceptInput("projects/harbour/old", "Old fact", "Something applied before."));
+			const at = deps.clock.now();
+			const snapshot = {
+				sourceId: "sal-memory",
+				ref: "7fbf30f",
+				concepts: [
+					{
+						...conceptInput("projects/harbour/deploys", "Deploy windows", "Deploy on weekday mornings.", {
+							extensions: { sal: { learnedFrom: "owner" } },
+						}),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: at - 5000,
+					},
+					{
+						...conceptInput("projects/harbour/deploy-fridays", "Deploy on Fridays", "Deploy on Fridays too."),
+						setBy: "learned" as const,
+						status: "superseded" as const,
+						supersededBy: "projects/harbour/deploys",
+						updatedAt: at - 9000,
+					},
+				],
+			};
+			await assert.rejectsWithCode(
+				memory.importSnapshot(agent, space.id, snapshot),
+				"forbidden",
+				"agents cannot import",
+			);
+			const imported = await memory.importSnapshot(service, space.id, snapshot);
+			assert.partialDeepEqual(imported.snapshot, { sourceId: "sal-memory", ref: "7fbf30f" });
+			const concepts = await memory.listConcepts(human, space.id);
+			assert.deepEqual(
+				concepts.items.map((concept) => concept.id),
+				["projects/harbour/deploy-fridays", "projects/harbour/deploys"],
+				"the snapshot replaces what the space held",
+			);
+			assert.partialDeepEqual(await memory.getConcept(human, space.id, "projects/harbour/deploys"), {
+				setBy: "owner",
+				updatedAt: at - 5000,
+				extensions: { sal: { learnedFrom: "owner" } },
+			});
+			const recall = await memory.recall(agent, { spaceIds: [space.id], query: "deploy windows fridays" });
+			assert.deepEqual(recalledIds(recall), ["projects/harbour/deploys"], "inactive snapshot concepts stay out");
+			assert.strictEqual(recall.manifest[0]?.snapshotRef, "7fbf30f", "the manifest names the snapshot's ref");
+			const version = (await memory.getConcept(human, space.id, "projects/harbour/deploys")).version;
+			await memory.importSnapshot(service, space.id, { ...snapshot, ref: "8a1b2c3" });
+			assert.strictEqual(
+				(await memory.getConcept(human, space.id, "projects/harbour/deploys")).version,
+				version,
+				"an unchanged concept keeps its version",
+			);
+			await assert.rejectsWithCode(
+				memory.importSnapshot(service, space.id, {
+					...snapshot,
+					concepts: [snapshot.concepts[0]!, snapshot.concepts[0]!],
+				}),
+				"invalid",
+				"a concept appears once",
+			);
+			await assert.rejectsWithCode(memory.importSnapshot(outsider, space.id, snapshot), "not_found");
+			assert.strictEqual(deps.audit.ofType("memory.snapshot.imported").length, 2, "each import is audited once");
+
+			// A concept a snapshot drops and a later one brings back carries on from its highest version, so a proposal
+			// made against the old one is stale.
+			const pending = await memory.propose(human, space.id, {
+				op: "correct",
+				concept: conceptInput("projects/harbour/deploys", "Deploy windows", "Deploy only on Mondays."),
+				expectedVersion: version,
+			});
+			await memory.importSnapshot(service, space.id, {
+				...snapshot,
+				ref: "9c0d1e2",
+				concepts: [snapshot.concepts[1]!],
+			});
+			const back = { ...snapshot.concepts[0]!, statement: "Deploy on weekday mornings before ten." };
+			await memory.importSnapshot(service, space.id, { ...snapshot, ref: "a3b4c5d", concepts: [back] });
+			const restored = await memory.getConcept(human, space.id, "projects/harbour/deploys");
+			assert.greaterThan(restored.version, version, "a concept that comes back gets a new version");
+			await assert.rejectsWithCode(memory.decide(human, pending.id, { outcome: "apply" }), "conflict");
+			assert.strictEqual(
+				(await memory.getConcept(human, space.id, "projects/harbour/deploys")).statement,
+				back.statement,
+				"the stale correction changed nothing",
+			);
+
+			// Going back to an earlier ref is a change of its own, audited as one.
+			await memory.importSnapshot(service, space.id, snapshot);
+			await memory.importSnapshot(service, space.id, snapshot);
+			assert.strictEqual(
+				deps.audit.ofType("memory.snapshot.imported").length,
+				5,
+				"returning to a ref is audited, importing the current one again is not",
+			);
+		}),
+
+		test("applies the BM25 floor and half-the-best cutoff once a space holds 30 concepts", async (memory) => {
+			const space = await createSpace(memory);
+			const words = [
+				"amber",
+				"birch",
+				"cedar",
+				"delta",
+				"ember",
+				"fjord",
+				"grove",
+				"heath",
+				"inlet",
+				"juniper",
+				"kestrel",
+				"larch",
+				"maple",
+				"nettle",
+				"orchid",
+				"poplar",
+				"quartz",
+				"rowan",
+				"sorrel",
+				"thistle",
+				"umber",
+				"violet",
+				"willow",
+				"xylem",
+				"yarrow",
+				"zinnia",
+				"aspen",
+				"bracken",
+			];
+			const snapshot = {
+				sourceId: "fixture",
+				ref: "1",
+				concepts: [
+					...words.map((word) => ({
+						...conceptInput(`projects/garden/${word}`, `${word} bed`, `The ${word} bed is watered weekly.`),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: 1,
+					})),
+					{
+						...conceptInput("projects/garden/compost-heap", "Compost heap", "Turn the compost heap monthly.", {
+							tags: ["compost"],
+						}),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: 1,
+					},
+					{
+						...conceptInput("projects/garden/heap-notes", "Heap notes", "Notes on the leaf heap behind the shed."),
+						setBy: "owner" as const,
+						status: "active" as const,
+						updatedAt: 1,
+					},
+				],
+			};
+			await memory.importSnapshot(service, space.id, snapshot);
+			const recall = await memory.recall(human, { spaceIds: [space.id], query: "compost heap" });
+			assert.deepEqual(
+				recalledIds(recall),
+				["projects/garden/compost-heap"],
+				"a weaker keyword match under half the best score is left out",
+			);
+			assert.strictEqual(recall.truncated, false, "a concept under the cutoff did not match, so nothing was cut");
+			const small = await createSpace(memory);
+			await memory.importSnapshot(service, small.id, { ...snapshot, concepts: snapshot.concepts.slice(-2) });
+			assert.deepEqual(
+				[...recalledIds(await memory.recall(human, { spaceIds: [small.id], query: "compost heap" }))].sort(),
+				["projects/garden/compost-heap", "projects/garden/heap-notes"],
+				"below 30 concepts only the keyword gate applies",
+			);
 		}),
 
 		test("recalls the most relevant concept for a query first by BM25, without embeddings", async (memory) => {
@@ -565,11 +904,7 @@ export function createMemoryConformance(options: {
 		test("names each recalled concept's version and reason in the manifest and marks stale concepts", async (memory, deps) => {
 			const space = await createSpace(memory);
 			const staleAt = deps.clock.now() + 60_000;
-			const fresh = await remember(
-				memory,
-				space.id,
-				conceptInput("projects/harbour/owner", "Harbour owner", "Tom owns harbour releases."),
-			);
+			const fresh = await remember(memory, space.id, conceptInput("personal/owner", "Owner", "Tom is the owner."));
 			const ageing = await remember(
 				memory,
 				space.id,
@@ -584,21 +919,20 @@ export function createMemoryConformance(options: {
 				}),
 				expectedVersion: 1,
 			});
-			const request = { spaceIds: [space.id], query: "harbour releases", profile: [fresh.id] };
+			const request = {
+				spaceIds: [space.id],
+				query: "release train",
+				profile: [fresh.id],
+				scopes: { projects: ["harbour"] },
+			};
 			const before = await memory.recall(human, request);
-			assert.deepEqual(before.manifest, [
-				{ spaceId: space.id, conceptId: fresh.id, version: 1, reason: "profile", stale: false },
-				{
-					spaceId: space.id,
-					conceptId: ageing.id,
-					version: 2,
-					reason: "search",
-					score: before.manifest[1]?.score,
-					stale: false,
-				},
+			assert.partialDeepEqual(before.manifest, [
+				{ spaceId: space.id, conceptId: fresh.id, version: 1, reason: "profile", stale: false, truncated: false },
+				{ spaceId: space.id, conceptId: ageing.id, version: 2, reason: "search", stale: false, truncated: false },
 			]);
-			assert.strictEqual(before.manifest[0]?.score, undefined, "a profile entry has no score");
+			assert.strictEqual(before.manifest[0]?.score, undefined, "a profile entry the query missed has no score");
 			assert.greaterThan(before.manifest[1]?.score ?? 0, 0);
+			assert.deepEqual(before.manifest[1]?.matched, ["release", "train"]);
 
 			deps.clock.set(staleAt);
 			const after = await memory.recall(human, request);
@@ -608,6 +942,7 @@ export function createMemoryConformance(options: {
 				"a concept is stale from its staleAfter time",
 			);
 			assert.deepEqual(recalledIds(after), [fresh.id, ageing.id], "stale concepts are still recalled");
+			assert.ok((after.manifest[1]?.score ?? 0) < (before.manifest[1]?.score ?? 0), "a stale concept scores half");
 		}),
 
 		test("never recalls superseded or forgotten concepts, and a superseded one points to its replacement", async (memory) => {
@@ -810,6 +1145,9 @@ export function createMemoryConformance(options: {
 			await refused("memory.exportBundle", memory.exportBundle(stranger, space.id));
 			await refused("memory.recall", memory.recall(stranger, { spaceIds: [space.id], query: "ci" }));
 			await refused("memory.recall", memory.recall(stranger, { spaceIds: [team.id, space.id], query: "ci" }));
+			await refused("memory.search", memory.search(stranger, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.search", memory.search(stranger, { spaceIds: [team.id, space.id], query: "ci" }));
+			await refused("memory.importSnapshot", memory.importSnapshot(stranger, space.id, EMPTY_SNAPSHOT));
 			await refused(
 				"memory.propose",
 				memory.propose(stranger, space.id, {
@@ -836,6 +1174,10 @@ export function createMemoryConformance(options: {
 			assert.strictEqual((await memory.listProposals(viewer, space.id)).items.length, 2);
 			assert.ok((await memory.exportBundle(viewer, space.id)).some((file) => file.path === `${concept.id}.md`));
 			assert.deepEqual(recalledIds(await memory.recall(viewer, { spaceIds: [space.id], query: "ci" })), [concept.id]);
+			assert.deepEqual(
+				(await memory.search(viewer, { spaceIds: [space.id], query: "ci" })).map((hit) => hit.concept.id),
+				[concept.id],
+			);
 			const refused = (operation: string, call: Promise<unknown>) =>
 				assertAccessDenied(assert, deps, call, { operation });
 			await refused("memory.createSpace", createProjectSpace(memory, viewer));
@@ -847,6 +1189,7 @@ export function createMemoryConformance(options: {
 				}),
 			);
 			await refused("memory.decide", memory.decide(viewer, pending.id, { outcome: "apply" }));
+			await refused("memory.importSnapshot", memory.importSnapshot(viewer, space.id, EMPTY_SNAPSHOT));
 			await assertUnchanged(memory, seeded);
 		}),
 
@@ -860,6 +1203,7 @@ export function createMemoryConformance(options: {
 			await refused("memory.listProposals", memory.listProposals(otherProjectAgent, space.id));
 			await refused("memory.exportBundle", memory.exportBundle(otherProjectAgent, space.id));
 			await refused("memory.recall", memory.recall(otherProjectAgent, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.search", memory.search(otherProjectAgent, { spaceIds: [space.id], query: "ci" }));
 			await refused(
 				"memory.propose",
 				memory.propose(otherProjectAgent, space.id, {
@@ -890,6 +1234,7 @@ export function createMemoryConformance(options: {
 			await refused("memory.getConcept", memory.getConcept(agent, space.id, concept.id));
 			await refused("memory.listConcepts", memory.listConcepts(agent, space.id));
 			await refused("memory.recall", memory.recall(agent, { spaceIds: [space.id], query: "ci" }));
+			await refused("memory.search", memory.search(agent, { spaceIds: [space.id], query: "ci" }));
 			await refused(
 				"memory.propose",
 				memory.propose(agent, space.id, {
@@ -915,6 +1260,9 @@ export function createMemoryConformance(options: {
 				"projects/harbour/ci",
 			]);
 			assert.strictEqual((await memory.exportBundle(agent, space.id)).length, 2);
+			assert.strictEqual((await memory.search(agent, { spaceIds: [space.id], query: "ci" })).length, 1);
+			const imported = await memory.importSnapshot(service, space.id, EMPTY_SNAPSHOT);
+			assert.strictEqual(imported.snapshot?.ref, EMPTY_SNAPSHOT.ref, "an operator on the project imports");
 			const rejected = await memory.propose(service, space.id, {
 				op: "remember",
 				concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),

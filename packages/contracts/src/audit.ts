@@ -84,6 +84,7 @@ export type KnownAuditEventType =
 	| "memory.proposal.created"
 	| "memory.proposal.applied"
 	| "memory.proposal.rejected"
+	| "memory.snapshot.imported"
 	| "schedules.schedule.created"
 	| "schedules.finding.raised";
 
