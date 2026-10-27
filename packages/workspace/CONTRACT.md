@@ -81,6 +81,31 @@ may not see is `forbidden` and a missing one `not_found`; across organisations b
 "existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one
 not_found; across organisations both are not_found".
 
+## Console read API (M1-BE3)
+
+`@harbour/workspace/read-api` is the HTTP surface the console's file browser and note viewer read, with a typed
+client. `createWorkspaceReadApi({ workspaces, authenticate, basePath?, maxContentBytes? })` returns a fetch-style
+handler (`Request` to `Response`, or `null` for a path outside `basePath`), so the Cloudflare gateway Worker and the
+self-hosted gateway mount the same code. It takes only the read operations (`get`, `list`, `stat`, `read`,
+`history`) and no `Sandboxes`, so browsing never acquires a sandbox, and every call goes through the workspace's own
+project-access checks, mount reads included. The host's `authenticate` turns the request into a `CallContext`.
+
+| Route (`GET`, under `/v1/workspaces`) | Returns |
+| --- | --- |
+| `/:id` | the `WorkspaceRecord` (head, pinned mounts, seed readiness) |
+| `/:id/files?path=&recursive=&version=&cursor=&limit=` | `Page<FileEntry>`, no bodies; `path=/project` lists a mount |
+| `/:id/stat?path=&version=` | one `FileEntry` |
+| `/:id/content?path=&version=` | the bytes, `ETag` (the digest, `If-None-Match` answers 304), `Harbour-Version` (JSON) |
+| `/:id/history?cursor=&limit=` | `Page<WorkspaceVersionInfo>`, newest first |
+
+Errors are `{ "error": { "code", "message" } }`: `invalid` 400, `forbidden` and `refused` 403, `not_found` 404,
+`conflict` 409, `expired` 410, `exhausted` 429, `not_supported` 501, `unavailable` 503; a file over
+`maxContentBytes` (16 MiB) is 413. Content is never run by a browser: HTML and SVG go out as `text/plain`, and every
+response has `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. A workspace file read
+at an explicit `version` is cached as immutable; a mount path never is, because `remount` moves its pin. `HEAD` answers
+carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, headers? })` returns the same
+types as `Workspaces` and rethrows error bodies as `HarbourError`.
+
 ## The in-memory implementation
 
 `createMemoryWorkspaces({ clock?, audit?, sources?, access? })` keeps each version as an immutable map (copy-on-write).
