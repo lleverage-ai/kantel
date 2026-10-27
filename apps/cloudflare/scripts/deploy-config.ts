@@ -18,6 +18,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { VAULT_SECRETS } from "./vault-secrets.ts";
 
 export const DEPLOY_VARIABLES = [
 	"CLOUDFLARE_ACCOUNT_ID",
@@ -154,6 +155,10 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	}
 	const { $schema: _schema, env: _env, ...base } = raw;
 	const vars = typeof raw.vars === "object" && raw.vars !== null ? raw.vars : {};
+	// A var would show the value in the dashboard, and wrangler refuses a var and a secret of one name.
+	for (const name of VAULT_SECRETS) {
+		if (name in vars) throw new Error(`wrangler.jsonc must not set ${name} as a var: it is a Worker secret`);
+	}
 	return {
 		...base,
 		...(values.accountId === undefined ? {} : { account_id: values.accountId }),

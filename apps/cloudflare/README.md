@@ -4,13 +4,16 @@ M1-CF1, issue [#17](https://github.com/tvdavies/harbour/issues/17): Harbour M1 o
 one hostname (`harbour.myslop.app`) behind Cloudflare Access with One-time PIN. It serves the console and the gateway.
 
 ```
-browser ── Access (OTP) ── Worker harbour ─┬─ /v1/*      ─► HarbourStack DO ─► gateway (src/gateway.ts)
-host app ── API key ────────┘              │                                     ├─ /v1/workspaces/…  workspace read API (#58)
+browser ── Access (OTP) ── Worker harbour ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► HarbourVault DO (VaultDO)
+host app ── API key ────────┘              ├─ /v1/*      ─► HarbourStack DO ─► gateway (src/gateway.ts)
+                                           │                                     ├─ /v1/workspaces/…  workspace read API (#58)
                                            │                                     ├─ /v1/audit/…       audit query API (#60)
                                            │                                     └─ /v1/…             session API (#61)
                                            ├─ /healthz
                                            └─ anything else ─► console (apps/console/dist, single-page app)
 ```
+
+`src/route.ts` decides which part answers.
 
 Status: step 2 of #17, in part. The stack is durable and hosted in one Durable Object (`HarbourStack`):
 
@@ -21,11 +24,46 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | Workspaces | R2 `WORKSPACES`, under `workspaces/` | `@harbour/cloudflare-workspace` |
 | Session directory, profiles, each session's Pi storage | `HarbourStack`'s own SQLite | `@harbour/runtime/sql` |
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
+| Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
+| Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
 
 Migrations run on every start of the object; each is idempotent. The bootstrap saves each step as it completes, so a
-restart finds the same organisation rather than making another. Still to come: a SessionDO per session, VaultDO, and
-the models binding to CLIProxyAPI (`MODELS`, already bound by the deploy); until then sessions run on an echo model
+restart finds the same organisation rather than making another. Still to come: a SessionDO per session and the models
+binding to CLIProxyAPI (`MODELS`, already bound by the deploy); until then sessions run on an echo model
 (`src/echo-model.ts`).
+
+## The vault (VaultDO)
+
+`HarbourVault` (`src/vault-object.ts`) is a thin wrapper over `VaultDurableObjectCore` from
+`@harbour/vault-cloudflare`, as the vault contract (`packages/vault/CONTRACT.md`) intends. One object, named `vault`,
+holds every organisation's records and the platform's items, in its own SQLite (migration `v2`). Its audit events go to
+the stack's D1 audit store, so the audit view shows them.
+
+It serves the vault's egress decision API (`@harbour/vault/egress-api`), both `POST`:
+
+| Route | Caller |
+| --- | --- |
+| `/v1/egress/decisions` | the egress gateway, which asks what to inject on a sandbox's outbound request |
+| `/v1/connector-credentials` | the model gateway (#100), which reads a connector's key |
+
+These are worker calls: each component authenticates with its own shared key, and the vault refuses anyone else,
+people and agents included. On the deployed hostname Access is in front of them too; a Worker with a service binding
+to `harbour` reaches them without Access. The same two calls are RPC methods on the object for code in this Worker.
+The human side of the vault (the console's vault page deciding requests) has no HTTP API yet.
+
+Its secrets are Worker secrets, never vars (`scripts/deploy-config.ts` refuses them in `wrangler.jsonc`):
+
+| Secret | What it is | Without it |
+| --- | --- | --- |
+| `HARBOUR_VAULT_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`): the AES-256-GCM key item values are sealed with | the vault answers every call `unavailable` (503) |
+| `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN` | the model gateway's shared key, at least 16 characters | the model gateway is refused (403) |
+| `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | the egress gateway's shared key, at least 16 characters | the egress gateway is refused (403) |
+
+The deploy sets each one that exists as a repository secret of the same name (`scripts/vault-secrets.ts`, then
+`wrangler deploy --secrets-file`). Wrangler's secrets file is additive, so a deploy never removes one. Don't change
+`HARBOUR_VAULT_KEY` once the vault holds a value: values sealed under the old key no longer open, and there is no
+rotation yet. `wrangler dev --env dev` has a fixed, public dev key and model gateway token in its vars; they seal
+nothing but local state.
 
 ## Who gets in
 
@@ -72,6 +110,7 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
 | `HARBOUR_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
+| `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
 
 Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
 --dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
@@ -79,7 +118,7 @@ Until the secret and every variable exist, and on every pull request, the workfl
 1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,
    and a base config that could serve on workers.dev or a preview URL);
-2. runs the dry run, then `wrangler deploy`. On the first deploy wrangler creates the D1 database `harbour` and the
+2. runs the dry run, then `wrangler deploy`, with `--secrets-file` for the vault secrets that are set. On the first deploy wrangler creates the D1 database `harbour` and the
    R2 bucket `harbour-workspaces` (its automatic provisioning, by name); later deploys find them by name;
 3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
@@ -147,6 +186,9 @@ What would move it:
   line here with that step.
 - **Workers VPC** pricing after its beta.
 
+The VaultDO adds a second object, active only while it answers an egress decision or a key read, so its duration
+stays far inside the allowance.
+
 #17's definition of done checks this against the first week's bill.
 
 ## Checks
@@ -157,4 +199,7 @@ an uninvited email are 401; API keys work on every API; and each API is mounted 
 `test/durable.test.ts` runs the stack over SQLite and an in-memory object store, restarts it, and finds the same
 organisation, sessions with their transcripts, workspaces and audit; and resumes a bootstrap that stopped half way.
 `test/deploy.test.ts` checks the deploy config (every variable to deploy, placeholders for a dry run, malformed
-values refused, the dev environment dropped) and the Access sign-in check.
+values refused, the dev environment dropped) and the Access sign-in check. `test/vault.test.ts` builds the VaultDO's
+core over SQLite, restarts it, and reads a connector's key over the egress decision API with the model gateway's
+shared key, with no value in its rows or the audit store; refuses callers without a key; won't start without a vault
+key; routes only the two vault paths to the vault object; and checks the vault's secrets in the deploy.
