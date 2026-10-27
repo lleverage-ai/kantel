@@ -45,7 +45,10 @@
 	min-width: 0;
 }
 
-/* The project and the branch side by side, separated by a gap, never a dot. Each truncates on its own. */
+/*
+ * The project and the branch side by side, separated by a gap, never a dot. The project keeps its width (it is the
+ * short, recognisable part) up to 60%; the branch gives way first.
+ */
 .hb-session-overline {
 	display: flex;
 	align-items: baseline;
@@ -62,7 +65,7 @@
 }
 
 .hb-session-project {
-	flex: 0 1 auto;
+	flex: 0 0 auto;
 	max-width: 60%;
 	color: var(--hb-text-muted);
 }

@@ -11,6 +11,7 @@ import type {
 	UserItem,
 	VaultApprovalCard,
 } from "@harbour/protocol";
+import type { SessionSummary } from "./session-model.ts";
 
 /** The instant fixtures are relative to: 27 October 2026, 12:00 UTC. */
 export const FIXTURE_NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
@@ -207,21 +208,6 @@ export function longTranscript(turns: number): TranscriptItem[] {
 	}
 	return items;
 }
-
-/** A session as the session list shows it. Not part of the protocol yet; the list API arrives with M1-BE1. */
-export type SessionSummary = {
-	id: string;
-	title: string;
-	project?: string;
-	branch?: string;
-	status: "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
-	/** What the session is waiting on, when status is "waiting". */
-	needs?: "approval" | "answer";
-	startedAt: number;
-	updatedAt: number;
-	/** Finished since you last opened it. */
-	unread?: boolean;
-};
 
 export const sessions: SessionSummary[] = [
 	{

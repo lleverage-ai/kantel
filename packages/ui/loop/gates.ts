@@ -64,10 +64,19 @@ async function keyboard(page: Page): Promise<GateResult["keyboard"]> {
 			const box = element.getBoundingClientRect();
 			return style.visibility !== "hidden" && style.display !== "none" && box.width > 0 && box.height > 0;
 		});
-		nodes.forEach((element, index) => {
-			element.dataset.gateIndex = String(index);
-		});
-		return nodes.length;
+		// A native radio group is one Tab stop (arrow keys move within it), so its radios share one index.
+		const radioIndex = new Map<string, number>();
+		let count = 0;
+		for (const element of nodes) {
+			const name = element instanceof HTMLInputElement && element.type === "radio" ? element.name : "";
+			if (name !== "" && radioIndex.has(name)) {
+				element.dataset.gateIndex = String(radioIndex.get(name));
+				continue;
+			}
+			if (name !== "") radioIndex.set(name, count);
+			element.dataset.gateIndex = String(count++);
+		}
+		return count;
 	});
 	const reached = new Set<string>();
 	const withoutRing: string[] = [];
@@ -79,10 +88,16 @@ async function keyboard(page: Page): Promise<GateResult["keyboard"]> {
 		const seen = await page.evaluate(() => {
 			const element = document.activeElement as HTMLElement | null;
 			if (element === null || element === document.body) return undefined;
-			const style = getComputedStyle(element);
-			const ring =
-				(style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) >= 1) ||
-				(style.boxShadow !== "none" && style.boxShadow !== "");
+			const hasRing = (target: Element) => {
+				const style = getComputedStyle(target);
+				return (
+					(style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) >= 1) ||
+					(style.boxShadow !== "none" && style.boxShadow !== "")
+				);
+			};
+			// A field inside a declared focus surface (the composer) may show focus on the surface instead.
+			const surface = element.closest("[data-focus-surface]");
+			const ring = hasRing(element) || (surface !== null && getComputedStyle(surface).outlineStyle !== "none");
 			const label = `${element.tagName.toLowerCase()} "${(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40)}"`;
 			return { index: element.dataset.gateIndex, ring, label };
 		});

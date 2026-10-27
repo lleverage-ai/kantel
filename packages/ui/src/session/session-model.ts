@@ -4,10 +4,26 @@
 // apps/web/src/components/Sidebar.logic.ts:871-898): approval wins, then an answer, then working, then failed or an
 // unseen completion. A settled session you have already seen shows no status at all, only its time.
 
+import type { SessionStatus } from "@harbour/protocol";
 import type { Status } from "../tokens/tokens.ts";
-import type { SessionSummary } from "./fixtures.ts";
 
-export type { SessionSummary } from "./fixtures.ts";
+/**
+ * A session as the session list shows it. Not in the protocol yet: the list API arrives with M1-BE1, and this is the
+ * shape the list needs from it.
+ */
+export type SessionSummary = {
+	id: string;
+	title: string;
+	project?: string;
+	branch?: string;
+	status: SessionStatus;
+	/** What the session is waiting on, when status is "waiting". */
+	needs?: "approval" | "answer";
+	startedAt: number;
+	updatedAt: number;
+	/** Finished since you last opened it. */
+	unread?: boolean;
+};
 
 /** Where the list puts a session: waiting on you, still working, or settled. */
 export type AttentionGroup = "needs-you" | "working" | "done";

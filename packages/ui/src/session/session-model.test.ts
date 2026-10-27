@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FIXTURE_NOW, type SessionSummary, sessions } from "./fixtures.ts";
+import { FIXTURE_NOW, sessions } from "./fixtures.ts";
+import type { SessionSummary } from "./session-model.ts";
 import { attentionGroup, groupSessions, sessionStatus } from "./session-model.ts";
 
 const summary = (overrides: Partial<SessionSummary>): SessionSummary => ({

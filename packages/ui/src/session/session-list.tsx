@@ -156,8 +156,7 @@ export function SessionList({
 		content = groups.map(({ group, label, sessions: members }) => (
 			<div key={group} className="hb-session-group">
 				<h3 className="hb-session-group-heading">
-					<span>{label}</span>{" "}
-					<span className="hb-session-group-count">{members.length}</span>
+					<span>{label}</span> <span className="hb-session-group-count">{members.length}</span>
 				</h3>
 				<Rows sessions={members} selectedId={selectedId} onSelect={onSelect} hrefFor={hrefFor} />
 			</div>

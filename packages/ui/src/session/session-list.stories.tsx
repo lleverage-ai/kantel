@@ -168,7 +168,10 @@ export const LongContent: Story = () => (
 );
 
 export const Mobile: Story = () => (
-	<Sheet title="Session list at 420px" intro="The list fills the width of a phone; titles and branches truncate sooner.">
+	<Sheet
+		title="Session list at 420px"
+		intro="The list fills the width of a phone; titles and branches truncate sooner."
+	>
 		<Column>
 			<Selectable list={sessions} />
 		</Column>

@@ -70,7 +70,15 @@ function OfflineText({ seconds }: { seconds: number }) {
  * connection when it isn't healthy, and the session's actions. One compact row with a hairline under it; on a
  * phone the facts move to a second line so the title keeps its room.
  */
-export function SessionHeader({ title, status, connection, meta, actions, onBack, loading = false }: SessionHeaderProps) {
+export function SessionHeader({
+	title,
+	status,
+	connection,
+	meta,
+	actions,
+	onBack,
+	loading = false,
+}: SessionHeaderProps) {
 	const shown = title === undefined || title.trim() === "" ? "New session" : title;
 	return (
 		<header className="hb-session-header">
@@ -100,9 +108,7 @@ export function SessionHeader({ title, status, connection, meta, actions, onBack
 			</h1>
 			{meta === undefined || meta === null ? null : <div className="hb-session-header-meta">{meta}</div>}
 			<ConnectionState connection={connection} />
-			{actions === undefined || actions === null ? null : (
-				<div className="hb-session-header-actions">{actions}</div>
-			)}
+			{actions === undefined || actions === null ? null : <div className="hb-session-header-actions">{actions}</div>}
 		</header>
 	);
 }

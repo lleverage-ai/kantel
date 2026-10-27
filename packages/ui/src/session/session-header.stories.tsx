@@ -33,7 +33,10 @@ function useOffline(seconds: number): ConnectionStateValue {
 }
 
 export const Default: Story = () => (
-	<Sheet title="Session header" intro="Status, title, the session's facts and its actions. A healthy connection shows nothing.">
+	<Sheet
+		title="Session header"
+		intro="Status, title, the session's facts and its actions. A healthy connection shows nothing."
+	>
 		<SessionHeader
 			title="Fix the billing worker's double charges"
 			status="working"
@@ -112,7 +115,10 @@ export const Empty: Story = () => (
 );
 
 export const Streaming: Story = () => (
-	<Sheet title="Session header, agent working" intro="Working, with how long for in the meta, ticking on the shared clock.">
+	<Sheet
+		title="Session header, agent working"
+		intro="Working, with how long for in the meta, ticking on the shared clock."
+	>
 		<SessionHeader
 			title="Fix the billing worker's double charges"
 			status="working"
@@ -153,7 +159,10 @@ function ErrorDemo() {
 export const Error: Story = () => <ErrorDemo />;
 
 export const LongContent: Story = () => (
-	<Sheet title="Session header, long content" intro="A long title truncates with the full text on hover; long meta wraps.">
+	<Sheet
+		title="Session header, long content"
+		intro="A long title truncates with the full text on hover; long meta wraps."
+	>
 		<SessionHeader
 			title={longTitle}
 			status="done"
@@ -206,7 +215,10 @@ export const Mobile: Story = () => <MobileDemo />;
 Mobile.meta = { width: 420 };
 
 export const DiffStats: Story = () => (
-	<Sheet title="Diff stat" intro="Lines added and removed, in monospace with a true minus sign. Screen readers hear it in words.">
+	<Sheet
+		title="Diff stat"
+		intro="Lines added and removed, in monospace with a true minus sign. Screen readers hear it in words."
+	>
 		<Column>
 			<Row label="Small">
 				<DiffStat additions={12} deletions={3} />

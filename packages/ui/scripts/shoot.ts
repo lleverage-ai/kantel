@@ -38,7 +38,16 @@ try {
 			await page.evaluate(() => document.fonts.ready);
 			await page.waitForTimeout(300);
 			const path = `${values.out}${id}-${width}.png`;
-			await page.screenshot({ path, fullPage: true });
+			// Grow the viewport to the page instead of using a full-page capture: that resizes behind the page's back and
+			// resets inner scroll positions, so a transcript pinned to its end would be shot at its top.
+			const base = width < 600 ? 860 : 900;
+			const height = await page.evaluate(() => document.documentElement.scrollHeight);
+			if (height > base) {
+				await page.setViewportSize({ width, height });
+				await page.waitForTimeout(200);
+			}
+			await page.screenshot({ path });
+			if (height > base) await page.setViewportSize({ width, height: base });
 			console.log(path);
 		}
 		await page.close();

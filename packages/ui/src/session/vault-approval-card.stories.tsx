@@ -227,11 +227,12 @@ export const LongContent: Story = () => (
 		intro="A very long what, why, host, path, template and binding code. Everything wraps inside the card; nothing overflows."
 	>
 		<Column>
-			<VaultApprovalCard card={longCard} now={FIXTURE_NOW} requester="Billing reconciliation schedule for the EU region" />
 			<VaultApprovalCard
-				card={{ ...longCard, status: "approved", termsSource: "approved" }}
+				card={longCard}
 				now={FIXTURE_NOW}
+				requester="Billing reconciliation schedule for the EU region"
 			/>
+			<VaultApprovalCard card={{ ...longCard, status: "approved", termsSource: "approved" }} now={FIXTURE_NOW} />
 			<VaultApprovalCard card={{ ...longCard, status: "expired" }} now={FIXTURE_NOW} onAskAgain={() => {}} />
 		</Column>
 	</Sheet>

@@ -11,7 +11,9 @@ export default { title: "Session/Transcript" } satisfies StoryDefault;
 // Running calls are re-based on the real clock, so their elapsed time reads as seconds rather than the age of the
 // fixture's fixed instant.
 const rebase = (items: readonly TranscriptItem[]): TranscriptItem[] =>
-	items.map((item) => (item.kind === "tool" && item.status === "running" ? { ...item, at: Date.now() - 30_000 } : item));
+	items.map((item) =>
+		item.kind === "tool" && item.status === "running" ? { ...item, at: Date.now() - 30_000 } : item,
+	);
 
 const session: TranscriptItem[] = [...finishedTurn, ...rebase(liveTurn)];
 
@@ -137,7 +139,8 @@ const longItems: TranscriptItem[] = [
 		"Ran node scripts/export-invoices.ts --all-tenants --format jsonl --out /tmp/invoices-2026-10-27.jsonl --verbose",
 		{
 			args: {
-				command: "node scripts/export-invoices.ts --all-tenants --format jsonl --out /tmp/invoices-2026-10-27.jsonl --verbose",
+				command:
+					"node scripts/export-invoices.ts --all-tenants --format jsonl --out /tmp/invoices-2026-10-27.jsonl --verbose",
 			},
 			output: longOutput,
 			seconds: 74,

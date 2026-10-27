@@ -55,7 +55,9 @@ export const AssistantMessage = memo(function AssistantMessage({ item }: { item:
 export const NoticeRow = memo(function NoticeRow({ item }: { item: NoticeItem }) {
 	return (
 		<div className="hb-notice-row">
-			<Notice level={item.level}>{item.text}</Notice>
+			<Notice level={item.level} announce={false}>
+				{item.text}
+			</Notice>
 		</div>
 	);
 });

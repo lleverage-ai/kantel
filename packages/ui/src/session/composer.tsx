@@ -161,7 +161,7 @@ export function Composer({
 	return (
 		<div className={`hb-composer hb-composer-${state}`}>
 			{banner === undefined || banner === null ? null : <div className="hb-composer-banner">{banner}</div>}
-			<div className="hb-composer-surface">
+			<div className="hb-composer-surface" data-focus-surface="">
 				<textarea
 					ref={field}
 					className="hb-composer-input"

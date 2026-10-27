@@ -62,7 +62,9 @@ export function groupTranscript(
 		}
 		closeGroup(false);
 		const old = before.get(item.id);
-		rows.push(old !== undefined && old.kind === "item" && old.item === item ? old : { kind: "item", id: item.id, item });
+		rows.push(
+			old !== undefined && old.kind === "item" && old.item === item ? old : { kind: "item", id: item.id, item },
+		);
 	}
 	closeGroup(true);
 

@@ -29,4 +29,50 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { Elapsed, RelativeTime } from "./primitives/time.tsx";
+
+// Session components.
+export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
+export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
+export { type ComposerState, type PrimaryAction, primaryAction, shouldSend } from "./session/composer-model.ts";
+export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
+export { Markdown, splitBlocks } from "./session/markdown.tsx";
+export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
+export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
+export {
+	ConnectionState,
+	type ConnectionStateValue,
+	SessionHeader,
+	type SessionHeaderProps,
+} from "./session/session-header.tsx";
+export {
+	SessionList,
+	SessionListItem,
+	type SessionListItemProps,
+	type SessionListProps,
+} from "./session/session-list.tsx";
+export {
+	type AttentionGroup,
+	attentionGroup,
+	groupSessions,
+	type SessionGroup,
+	type SessionSummary,
+	sessionStatus,
+} from "./session/session-model.ts";
+export {
+	ToolCallChip,
+	type ToolCallChipProps,
+	ToolCallGroup,
+	type ToolCallGroupProps,
+	toolIcon,
+} from "./session/tool-call.tsx";
+export { type RowRenderPhase, Transcript, type TranscriptProps } from "./session/transcript.tsx";
+export { groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
+export {
+	BindingCodePicker,
+	type BindingCodePickerProps,
+	VaultApprovalCard,
+	type VaultApprovalCardProps,
+	VaultApprovalCardSkeleton,
+} from "./session/vault-approval-card.tsx";
+export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";

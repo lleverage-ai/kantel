@@ -32,9 +32,17 @@
 	transition: border-color var(--hb-duration-fast) var(--hb-ease);
 }
 
-/* The caret and a brighter hairline say where focus is; a ring round a box you are typing in is noise. */
+/*
+ * Focus in the field shows as a one-hairline accent edge on the whole surface: visible enough to find (a brighter
+ * grey border alone wasn't), and quieter than the 2px ring the buttons get, since you look at the caret while typing.
+ */
 .hb-composer-surface:focus-within {
 	border-color: var(--hb-border-strong);
+}
+
+.hb-composer-surface:has(.hb-composer-input:focus-visible) {
+	outline: var(--hb-hairline) solid var(--hb-focus);
+	outline-offset: calc(var(--hb-hairline) * -1);
 }
 
 .hb-composer-input {

@@ -52,7 +52,11 @@ const statuses: ToolItem[] = [
 			output: " ✓ billing/charge.test.ts (13)\n ✓ billing/retry.test.ts (10)",
 		}),
 	),
-	tool("s2", "bash", "Ran pnpm typecheck", { args: { command: "pnpm typecheck" }, output: "Done in 8.2s", seconds: 8.2 }),
+	tool("s2", "bash", "Ran pnpm typecheck", {
+		args: { command: "pnpm typecheck" },
+		output: "Done in 8.2s",
+		seconds: 8.2,
+	}),
 	tool("s3", "bash", "Ran pnpm migrate --env staging", {
 		status: "error",
 		args: { command: "pnpm migrate --env staging" },
@@ -105,7 +109,10 @@ export const Loading: Story = () => (
 		<Column>
 			<div>
 				<ToolCallChip
-					item={running(tool("l1", "bash", "Running pnpm install", { status: "running", args: { command: "pnpm install" } }), 4)}
+					item={running(
+						tool("l1", "bash", "Running pnpm install", { status: "running", args: { command: "pnpm install" } }),
+						4,
+					)}
 				/>
 				<ToolCallChip
 					item={running(
@@ -127,10 +134,7 @@ export const Empty: Story = () => (
 		<Column>
 			<div>
 				<ToolCallChip item={tool("e1", "list_sessions", "Listed the open sessions", { seconds: 0.3 })} defaultOpen />
-				<ToolCallChip
-					item={running(tool("e2", "bash", "Running a command", { status: "running" }), 2)}
-					defaultOpen
-				/>
+				<ToolCallChip item={running(tool("e2", "bash", "Running a command", { status: "running" }), 2)} defaultOpen />
 			</div>
 		</Column>
 	</Sheet>
@@ -159,7 +163,13 @@ function StreamingDemo() {
 			setItem((previous) => {
 				const output = previous.output === undefined ? line : `${previous.output}\n${line}`;
 				return done
-					? { ...previous, label: "Ran pnpm test", status: "done", endedAt: Date.now(), output: `${output}\n\n Tests  640 passed` }
+					? {
+							...previous,
+							label: "Ran pnpm test",
+							status: "done",
+							endedAt: Date.now(),
+							output: `${output}\n\n Tests  640 passed`,
+						}
 					: { ...previous, output };
 			});
 			if (done) clearInterval(timer);
@@ -198,7 +208,8 @@ ErrorState.storyName = "Error";
 
 const longOutput = Array.from(
 	{ length: 300 },
-	(_, index) => `${String(index + 1).padStart(3, "0")}  tenant-${(index % 37) + 1}  exported ${(index * 7) % 113} invoices`,
+	(_, index) =>
+		`${String(index + 1).padStart(3, "0")}  tenant-${(index % 37) + 1}  exported ${(index * 7) % 113} invoices`,
 ).join("\n");
 
 const longCommand =
@@ -252,7 +263,9 @@ const withFailure: ToolItem[] = [
 const liveTools: ToolItem[] = [
 	tool("gl1", "read", "Read src/billing/charge.ts", { seconds: 0.2 }),
 	tool("gl2", "grep", "Searched for retryCharge", { seconds: 0.4 }),
-	running(tool("gl3", "bash", "Running pnpm test billing", { status: "running", args: { command: "pnpm test billing" } })),
+	running(
+		tool("gl3", "bash", "Running pnpm test billing", { status: "running", args: { command: "pnpm test billing" } }),
+	),
 ];
 
 export const Group: Story = () => (

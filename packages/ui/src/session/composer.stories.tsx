@@ -55,7 +55,10 @@ function Interactive({
 }
 
 export const Default: Story = () => (
-	<Sheet title="Composer" intro="Idle and empty: Send is disabled until there is something to send. Type and press Enter.">
+	<Sheet
+		title="Composer"
+		intro="Idle and empty: Send is disabled until there is something to send. Type and press Enter."
+	>
 		<Interactive />
 	</Sheet>
 );
@@ -77,7 +80,10 @@ export const Loading: Story = () => (
 );
 
 export const Empty: Story = () => (
-	<Sheet title="Composer, empty" intro="The placeholder says what the box is for. Hosts can make it say what to do next.">
+	<Sheet
+		title="Composer, empty"
+		intro="The placeholder says what the box is for. Hosts can make it say what to do next."
+	>
 		<Section title="Default placeholder">
 			<Interactive />
 		</Section>
@@ -197,9 +203,7 @@ function WithQuestionDemo() {
 				state="idle"
 				onSend={(text) => setSent((all) => [...all, text])}
 				placeholder="Answer the question above, or tell the agent something else"
-				banner={
-					<QuestionCard card={card} onAnswer={(answer) => setCard({ ...card, status: "answered", answer })} />
-				}
+				banner={<QuestionCard card={card} onAnswer={(answer) => setCard({ ...card, status: "answered", answer })} />}
 				footer={<ComposerSendHint />}
 			/>
 			<Row>

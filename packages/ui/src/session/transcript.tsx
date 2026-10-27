@@ -47,8 +47,11 @@ type RowProps = {
 	first: boolean;
 	turnStart: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
-	report: (id: string) => void;
+	report: (id: string, phase: RowRenderPhase) => void;
 };
+
+/** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
+export type RowRenderPhase = "mount" | "update";
 
 function rowBody(row: TranscriptRow, renderCard: RowProps["renderCard"]): ReactNode {
 	if (row.kind === "tools") return <ToolCallGroup items={row.items} live={row.live} />;
@@ -68,7 +71,11 @@ function rowBody(row: TranscriptRow, renderCard: RowProps["renderCard"]): ReactN
 // Memoised on the row object, which groupTranscript keeps while the row's items are unchanged: while an answer
 // streams, every earlier row gets the same props and React skips it.
 const Row = memo(function Row({ row, first, turnStart, renderCard, report }: RowProps) {
-	report(row.id);
+	const mounted = useRef(false);
+	report(row.id, mounted.current ? "update" : "mount");
+	useEffect(() => {
+		mounted.current = true;
+	}, []);
 	const kind = row.kind === "tools" ? "tools" : row.item.kind;
 	return (
 		<div
@@ -116,8 +123,11 @@ export type TranscriptProps = {
 	empty?: ReactNode;
 	/** An error shown above the list, in an error notice. */
 	error?: ReactNode;
-	/** Called while a row renders, with its id: the design loop's wasted-render count. Never causes a render. */
-	onRowRender?: (id: string) => void;
+	/**
+	 * Called while a row renders, with its id and whether it is mounting or rendering again: the console's profiler
+	 * and the design loop's wasted-render count. Never causes a render.
+	 */
+	onRowRender?: (id: string, phase: RowRenderPhase) => void;
 	className?: string;
 };
 
@@ -150,7 +160,10 @@ export function Transcript({
 	// The render hook lives in a ref, so a new callback from the host never re-renders the rows.
 	const onRowRenderRef = useRef(onRowRender);
 	onRowRenderRef.current = onRowRender;
-	const report = useCallback((id: string) => onRowRenderRef.current?.(id), []);
+	const report = useCallback(
+		(id: string, phase: RowRenderPhase) => onRowRenderRef.current?.(id, phase),
+		[],
+	);
 
 	const list = useRef<VListHandle>(null);
 	const frame = useRef<HTMLElement>(null);
@@ -177,7 +190,8 @@ export function Transcript({
 		if (initial || (following.current && !prepended)) toBottom();
 	});
 
-	// While following, keep the bottom in view as the last row grows (a streamed answer, a tool's output).
+	// While following, keep the bottom in view as the last row grows (a streamed answer, a tool's output) and as the
+	// viewport itself changes size (a phone's keyboard opening, a window resized).
 	useEffect(() => {
 		if (!showList) return;
 		const viewport = frame.current?.firstElementChild;
@@ -187,6 +201,7 @@ export function Transcript({
 			if (following.current) viewport.scrollTop = viewport.scrollHeight;
 		});
 		observer.observe(content);
+		observer.observe(viewport);
 		return () => observer.disconnect();
 	}, [showList]);
 

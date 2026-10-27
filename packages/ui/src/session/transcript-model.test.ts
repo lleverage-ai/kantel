@@ -5,7 +5,9 @@ import { groupTranscript, type TranscriptRow } from "./transcript-model.ts";
 
 const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
-		row.kind === "item" ? `item ${row.id}` : `tools ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
+		row.kind === "item"
+			? `item ${row.id}`
+			: `tools ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
 	);
 
 describe("groupTranscript", () => {
@@ -32,9 +34,9 @@ describe("groupTranscript", () => {
 	});
 
 	it("keeps a single tool call in a group, and marks only a trailing group live", () => {
-		expect(shape(groupTranscript([user("u1", "Go"), tool("x1", "bash", "Running make", { status: "running" })]))).toEqual(
-			["item u1", "tools x1 [x1] live"],
-		);
+		expect(
+			shape(groupTranscript([user("u1", "Go"), tool("x1", "bash", "Running make", { status: "running" })])),
+		).toEqual(["item u1", "tools x1 [x1] live"]);
 		expect(shape(groupTranscript(liveTurn))).toEqual(["item u2", "tools t5 [t5,t6]", "item a2"]);
 	});
 

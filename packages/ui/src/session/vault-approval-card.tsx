@@ -4,7 +4,14 @@ import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { CopyButton, Disclosure } from "../primitives/controls.tsx";
 import { timeLeft } from "../primitives/format.ts";
-import { AlertIcon, CheckCircleIcon, CheckIcon, MinusCircleIcon, VaultIcon, XCircleIcon } from "../primitives/icons.tsx";
+import {
+	AlertIcon,
+	CheckCircleIcon,
+	CheckIcon,
+	MinusCircleIcon,
+	VaultIcon,
+	XCircleIcon,
+} from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Field, FieldList } from "../primitives/surface.tsx";
@@ -228,7 +235,7 @@ export function BindingCodePicker({
 }: BindingCodePickerProps) {
 	const id = useId();
 	const refs = useRef<(HTMLButtonElement | null)[]>([]);
-	const selected = codes.findIndex((code) => code === value);
+	const selected = value === undefined ? -1 : codes.indexOf(value);
 	const focusable = selected === -1 ? 0 : selected;
 
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

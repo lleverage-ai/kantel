@@ -70,21 +70,21 @@
 		opacity var(--hb-duration-fast) var(--hb-ease);
 }
 
-.hb-tool-open .hb-tool-chevron {
-	transform: rotate(90deg);
-}
-
 /* With a mouse, the chevron appears on hover or focus; on touch it is always there, as the only hint of more. */
 @media (hover: hover) {
 	.hb-tool-chevron {
 		opacity: 0;
 	}
 
+	.hb-tool-open .hb-tool-chevron,
 	.hb-tool-row:hover .hb-tool-chevron,
-	.hb-tool-row:focus-visible .hb-tool-chevron,
-	.hb-tool-open .hb-tool-chevron {
+	.hb-tool-row:focus-visible .hb-tool-chevron {
 		opacity: 1;
 	}
+}
+
+.hb-tool-open .hb-tool-chevron {
+	transform: rotate(90deg);
 }
 
 /* Failure is said by the icon; the label stays readable at full strength. */

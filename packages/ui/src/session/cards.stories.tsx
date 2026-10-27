@@ -183,12 +183,13 @@ export const Error: Story = () => (
 );
 
 export const LongContent: Story = () => (
-	<Sheet title="Cards, long content" intro="Long questions, options and reasons wrap; settled lines truncate, with the full text on hover.">
+	<Sheet
+		title="Cards, long content"
+		intro="Long questions, options and reasons wrap; settled lines truncate, with the full text on hover."
+	>
 		<QuestionDemo initial={longQuestion} />
 		<Column>
-			<QuestionCard
-				card={{ ...longQuestion, status: "answered", answer: longQuestion.options?.[1] ?? "" }}
-			/>
+			<QuestionCard card={{ ...longQuestion, status: "answered", answer: longQuestion.options?.[1] ?? "" }} />
 		</Column>
 		<BrowserDemo
 			initial={browser({

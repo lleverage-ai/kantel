@@ -14,9 +14,14 @@ import "./markdown.css";
 
 const plugins = [remarkGfm];
 
-// Links leave the session in a new tab, so following one never loses the reader's place in the transcript.
+// Links leave the session in a new tab, so following one never loses the reader's place in the transcript. Code
+// blocks scroll sideways rather than wrap, so they take focus for keyboard scrolling.
 const components: Components = {
 	a: ({ node: _node, ...props }) => <a {...props} className="hb-focusable" target="_blank" rel="noreferrer noopener" />,
+	pre: ({ node: _node, ...props }) => (
+		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.
+		<pre {...props} className="hb-focusable" tabIndex={0} />
+	),
 };
 
 /** Split Markdown into top-level blocks. A block ends at a blank line outside a fenced code block. */
