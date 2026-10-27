@@ -1,21 +1,21 @@
 // Render to wrangler.jsonc with @CONTEXT@ replaced by a directory holding mirrors/sal.git, deps/sal-*.tar.zst and
 // sqsh/sal.sqsh (see slim.Dockerfile), e.g. sed "s#@CONTEXT@#$PWD/ctx#" wrangler.template.jsonc > wrangler.jsonc
 {
-  "name": "harbour-m0-seed-bench",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-10-27",
-  "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
-  "containers": [
-    {
-      "class_name": "SeedBox",
-      "scheduling_policy": "durable_object",
-      "images": {
-        "slim": { "dockerfile": "./slim.Dockerfile", "build_context": "@CONTEXT@" }
-      }
-    }
-  ],
-  "durable_objects": { "bindings": [{ "class_name": "SeedBox", "name": "SEED_BOX" }] },
-  "exports": { "SeedBox": { "type": "durable-object", "storage": "sqlite" } },
-  "r2_buckets": [{ "binding": "SEED", "bucket_name": "harbour-m0-seed-r2" }]
+	"name": "harbour-m0-seed-bench",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-27",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"containers": [
+		{
+			"class_name": "SeedBox",
+			"scheduling_policy": "durable_object",
+			"images": {
+				"slim": { "dockerfile": "./slim.Dockerfile", "build_context": "@CONTEXT@" }
+			}
+		}
+	],
+	"durable_objects": { "bindings": [{ "class_name": "SeedBox", "name": "SEED_BOX" }] },
+	"exports": { "SeedBox": { "type": "durable-object", "storage": "sqlite" } },
+	"r2_buckets": [{ "binding": "SEED", "bucket_name": "harbour-m0-seed-r2" }]
 }
