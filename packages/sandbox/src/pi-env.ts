@@ -12,32 +12,50 @@
  * - Reads go to `Workspaces` at head. A binary or text-line reader reads the whole file when it opens (the contract
  *   reads whole files), so it keeps reading what it opened even after a rename. `mtimeMs` is always 0: the contract
  *   records versions, not times. There are no symbolic links, so `canonicalPath` is `absolutePath` (it does not check
- *   that the path exists) and `noFollow` changes nothing.
+ *   that the path exists) and `noFollow` changes nothing. A read, `fileInfo` or listing below a file fails with
+ *   `not_directory`, and `exists` reports false there.
  * - Writes. Every write, append, truncate, rename and remove is one commit on the head. When another writer moved the
  *   head first, the change is derived again from the new head and committed again (a few attempts), so an append or a
  *   truncate applies to exactly what it read; a whole-file write replaces whatever the head has, last writer wins.
- *   A rename is one commit (put plus delete; a directory moves every file below it).
+ *   A rename is one commit (put plus delete; a directory moves every file below it). As with rename(2), a file
+ *   replaces a file, but a directory replaces only a missing path or an empty directory: a destination that is a file
+ *   or a non-empty directory is `invalid` (Pi's `FileErrorCode` has no `already_exists`), as is one below the source;
+ *   a file onto a directory is `is_directory`.
  * - Mounts are readable and never writable. A write under a mount point is still sent to `Workspaces.commit`, which
  *   refuses it (and audits the refusal); `refused` becomes `permission_denied` and the source is unchanged.
  *   `createDir` under a mount fails with `permission_denied` directly, since there is nothing to commit.
- * - Directories are implicit in a workspace: they exist while a file below them does. `createDir` succeeds for any
- *   path that is not a file and has no file as an ancestor, but creates nothing, so an empty directory does not exist
- *   (its `recursive` flag is ignored). Removing a directory recursively deletes every file below it in one commit.
+ * - Directories. A workspace stores files, and a directory is in it while a file below it is. The environment adds
+ *   the directories `createDir` and `createTempDir` made, with their ancestors, which it keeps in memory for its
+ *   lifetime: they exist, are (empty, or merged with what the workspace lists) directories to `fileInfo`, `listDir` and
+ *   `openDirReader`, cannot be written as files, and go away when `remove` removes them or `renameFile` moves them.
+ *   Nothing is committed for them, so the sandboxes, other environments and later sessions do not see an empty one;
+ *   once a file is below one, the workspace has it anyway. `createDir` refuses a path that is a file or has a file as
+ *   an ancestor; its `recursive` flag is ignored (missing parents are always made). Removing a directory recursively
+ *   deletes every file below it in one commit.
  * - Errors. `HarbourError` codes map to `FileError` codes: `not_found` to `not_found`, `refused` and `forbidden` to
- *   `permission_denied`, `invalid` to `invalid`, `aborted` to `aborted`, anything else to `unknown`. An `invalid`
- *   from a path that is a directory, or that has a file as an ancestor, becomes `is_directory` or `not_directory`.
+ *   `permission_denied`, `invalid` to `invalid`, `aborted` to `aborted`, anything else to `unknown`. An `invalid` or
+ *   `not_found` at a path that is a directory (one made here, for `not_found`), or that has a file as an ancestor,
+ *   becomes `is_directory` or `not_directory`.
  * - Shell. `exec` calls `Sandboxes.run` with tool `bash`, so the contract's tool-to-tier table picks the isolate or the
  *   container. `cwd` resolves like any path and must be inside the workspace (the contract's `cwd` is relative to the
  *   root); `env` is passed through and `inheritEnv` is ignored (a sandbox has its own environment). `timeout`
  *   (seconds) becomes `request.timeoutMs`, and the environment also stops waiting at that deadline and reports
- *   `timeout`. Aborting the context reports `aborted` at once. Either way the call context's `signal` is aborted so a
- *   sandbox that honours it stops the command; one that does not may still finish it (and the isolate commits what it
- *   wrote). Output arrives when the command finishes: stdout then stderr, one chunk each with its stream, so the two
- *   streams are not interleaved. `window` and `spill` are ignored: the output is what the sandbox returned (which may be
- *   truncated by the sandbox) and there is never a `spillPath`. `onExec` (and `onOutput`) failures are
- *   `callback_error`. `cleanup` stops nothing: a session's leases end with the session (`Sandboxes.releaseSession`).
+ *   `timeout`. Aborting the context reports `aborted` at once, and `cleanup` does the same for every command still
+ *   running (later commands run as usual). In each case the call context's `signal` is aborted so a sandbox that
+ *   honours it stops the command; one that does not may still finish it (and the isolate commits what it wrote).
+ *   Leases end with the session (`Sandboxes.releaseSession`), not with `cleanup`.
+ * - Shell output arrives when the command finishes: stdout then stderr, one chunk each with its stream, so the two
+ *   streams are not interleaved. `window` is ignored, so every chunk is delivered. When the sandbox truncated the
+ *   output (`ExecResult.truncated`; `ShellExecResult` has no field for it), a last stderr chunk holds the line
+ *   `[output truncated by the sandbox]`. With `spill`, output over either threshold (UTF-8 bytes of the combined text,
+ *   or its lines, counting an unterminated last one) is written whole, stdout then stderr then that line, to a new
+ *   `<root>/.tmp/pi-output-<uuid>.log` in one commit, whose absolute path is the result's `spillPath`; when that write
+ *   fails, the command's result is an `unknown` error. An argv command that exits with 127 (the sandbox's "command not
+ *   found") is a `spawn_error` and its output is not delivered, so a caller can try another form; this also catches a
+ *   program that itself exits with 127. A string command's 127 is an ordinary exit code. `onExec` (and `onOutput`)
+ *   failures are `callback_error`.
  * - Temporary files live in the workspace under `<root>/.tmp/`: `createTempFile` commits an empty file there and
- *   `createTempDir` returns a fresh path there (it exists once something is written in it). They are committed like any
+ *   `createTempDir` makes a fresh directory there (in this environment only, as above). Files are committed like any
  *   file, so both tiers and `git status` see them; a host that seeds a repository may want `.tmp/` ignored.
  * - Not supported: `watch` (no change feed in the contract) fails with `not_supported`, and the optional `listFiles` is
  *   not implemented, so callers walk with `listDir`.
@@ -57,6 +75,7 @@ import {
 	type Result,
 	type ShellExecOptions,
 	type ShellExecResult,
+	type ShellSpillOptions,
 	type TextLineReader,
 } from "@earendil-works/pi-durable/env";
 import {
@@ -86,6 +105,8 @@ const COMMIT_ATTEMPTS = 5;
 const LIST_PAGE = 1000;
 /** Where temporary files and directories go, relative to the root. */
 const TEMP_DIR = ".tmp";
+/** The line that ends output the sandbox truncated. */
+const TRUNCATED_LINE = "[output truncated by the sandbox]";
 
 /** What one shell command did, for the host's records. */
 export interface SandboxExecRecord {
@@ -126,6 +147,11 @@ type Location =
 /** What is at a location; `not_directory` when an ancestor is a file. */
 type Shape = "file" | "directory" | "missing" | "not_directory";
 
+/** What a rename finds at a location: `empty` is a directory made here with nothing below it. */
+type Found =
+	| { readonly kind: "file"; readonly entry: ModedFileEntry }
+	| { readonly kind: "directory" | "empty" | "missing" };
+
 class SandboxExecutionEnv implements ExecutionEnv {
 	readonly id: string;
 	cwd: string;
@@ -138,6 +164,10 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	readonly #root: string;
 	readonly #onExec: ((record: SandboxExecRecord) => void | Promise<void>) | undefined;
 	#mounts: Promise<readonly Mount[]> | undefined;
+	/** Directories made here, which may hold no file: workspace paths, each with its ancestors. */
+	readonly #directories = new Set<string>();
+	/** One controller per command still running, for `cleanup`. */
+	readonly #running = new Set<AbortController>();
 
 	constructor(options: SandboxExecutionEnvOptions) {
 		const root = options.root ?? DEFAULT_ROOT;
@@ -219,6 +249,66 @@ class SandboxExecutionEnv implements ExecutionEnv {
 
 	async joinPath(parts: string[], _context: Context): Promise<Result<string, FileError>> {
 		return ok(joinPosix(parts));
+	}
+
+	// ---- directories made here ------------------------------------------------------------------------------------
+
+	/** Records a directory made here, with its ancestors. */
+	#remember(path: string): void {
+		const segments = path.split("/");
+		for (let depth = 1; depth <= segments.length; depth++) this.#directories.add(segments.slice(0, depth).join("/"));
+	}
+
+	/** Forgets the directories made here at or below `path`. */
+	#forget(path: string): void {
+		for (const directory of [...this.#directories]) {
+			if (directory === path || directory.startsWith(`${path}/`)) this.#directories.delete(directory);
+		}
+	}
+
+	/** Moves the directories made here at or below `from` to `to`. */
+	#move(from: string, to: string): void {
+		for (const directory of [...this.#directories]) {
+			if (directory !== from && !directory.startsWith(`${from}/`)) continue;
+			this.#directories.delete(directory);
+			this.#remember(`${to}${directory.slice(from.length)}`);
+		}
+	}
+
+	/** Whether a location is a directory made here (the workspace may have something there too). */
+	#isMade(location: Location): boolean {
+		return location.kind === "workspace" && location.path !== "" && this.#directories.has(location.path);
+	}
+
+	/** The directories made here directly in a directory, by path. */
+	#madeChildren(location: Location): string[] {
+		if (location.kind !== "workspace") return [];
+		const prefix = location.path === "" ? "" : `${location.path}/`;
+		const children: string[] = [];
+		for (const directory of this.#directories) {
+			if (directory.length > prefix.length && directory.startsWith(prefix) && !directory.includes("/", prefix.length)) {
+				children.push(directory);
+			}
+		}
+		return children.sort();
+	}
+
+	#directoryInfo(location: Location): FileInfo {
+		const path = this.#display(location);
+		return { name: basename(path), path, kind: "directory", size: 0, mtimeMs: 0 };
+	}
+
+	/** The directories made here directly in a directory that are not among `listed`. */
+	#madeEntries(location: Location, listed: ReadonlySet<string>): FileInfo[] {
+		return this.#madeChildren(location)
+			.map((path) => this.#directoryInfo({ kind: "workspace", path }))
+			.filter((info) => !listed.has(info.name));
+	}
+
+	/** `is_directory` when `location` is a directory made here rather than a file in the workspace. */
+	async #directoryInTheWay(call: CallContext, location: Location, path: string): Promise<FileError | undefined> {
+		if (!this.#isMade(location) || (await this.#shape(call, location)) !== "directory") return undefined;
+		return new FileError("is_directory", `is a directory: ${path}`, path);
 	}
 
 	// ---- reads -------------------------------------------------------------------------------------------------------
@@ -332,6 +422,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		try {
 			return ok(this.#info(await this.#stat(call, location)));
 		} catch (error) {
+			if (isHarbourError(error, "not_found") && this.#isMade(location)) return ok(this.#directoryInfo(location));
 			return err(await this.#fileError(error, location, path, call));
 		}
 	}
@@ -339,7 +430,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	async exists(path: string, context: Context): Promise<Result<boolean, FileError>> {
 		const found = await this.fileInfo(path, context);
 		if (found.ok) return ok(true);
-		return found.error.code === "not_found" ? ok(false) : found;
+		// Nothing is below a file either.
+		return found.error.code === "not_found" || found.error.code === "not_directory" ? ok(false) : found;
 	}
 
 	/** Resolves a directory to list: `not_found` when missing and `not_directory` for a file. */
@@ -356,6 +448,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			if (entry.kind !== "directory") return err(new FileError("not_directory", `not a directory: ${path}`, path));
 			return start;
 		} catch (error) {
+			if (isHarbourError(error, "not_found") && this.#isMade(location)) return start;
 			return err(await this.#fileError(error, location, path, call));
 		}
 	}
@@ -364,11 +457,16 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		const directory = await this.#directory(path, context);
 		if (!directory.ok) return directory;
 		const { location, call } = directory.value;
+		let entries: FileInfo[] = [];
 		try {
-			return ok((await this.#listAll(call, location)).map((entry) => this.#info(entry)));
+			entries = (await this.#listAll(call, location)).map((entry) => this.#info(entry));
 		} catch (error) {
-			return err(await this.#fileError(error, location, path, call));
+			// A directory made here may have no file below it.
+			if (!isHarbourError(error, "not_found")) return err(await this.#fileError(error, location, path, call));
 		}
+		const made = this.#madeEntries(location, new Set(entries.map((entry) => entry.name)));
+		if (made.length === 0) return ok(entries);
+		return ok([...entries, ...made].sort((left, right) => compare(left.name, right.name)));
 	}
 
 	async openDirReader(path: string, context: Context): Promise<Result<DirReader, FileError>> {
@@ -376,7 +474,10 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		if (!directory.ok) return directory;
 		const { location } = directory.value;
 		let cursor: string | undefined;
-		let done = false;
+		// Whether the workspace's entries are all listed; the directories made here come after them.
+		let listed = false;
+		const names = new Set<string>();
+		let made: FileInfo[] | undefined;
 		let closed = false;
 		const reader: DirReader = {
 			next: async (maxEntries, nextContext) => {
@@ -385,26 +486,33 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
 					return err(new FileError("invalid", "maxEntries must be a positive safe integer", path));
 				}
-				if (done) return ok({ entries: [], done: true });
-				const call = this.#call(nextContext);
-				try {
-					// Each page lists the head, so entries removed since the reader opened are skipped.
-					const page = await this.#workspaces.list(call, this.#workspaceId, {
-						limit: Math.min(maxEntries, LIST_PAGE),
-						...(location.path === "" ? {} : { path: location.path }),
-						...(cursor === undefined ? {} : { cursor }),
-					});
-					cursor = page.nextCursor;
-					done = cursor === undefined;
-					return ok({ entries: page.items.map((entry) => this.#info(entry)), done });
-				} catch (error) {
-					// The directory went away with its last file: nothing is left to list.
-					if (isHarbourError(error, "not_found")) {
-						done = true;
-						return ok({ entries: [], done: true });
+				const entries: FileInfo[] = [];
+				if (!listed) {
+					const call = this.#call(nextContext);
+					try {
+						// Each page lists the head, so entries removed since the reader opened are skipped.
+						const page = await this.#workspaces.list(call, this.#workspaceId, {
+							limit: Math.min(maxEntries, LIST_PAGE),
+							...(location.path === "" ? {} : { path: location.path }),
+							...(cursor === undefined ? {} : { cursor }),
+						});
+						cursor = page.nextCursor;
+						listed = cursor === undefined;
+						for (const entry of page.items) {
+							const info = this.#info(entry);
+							names.add(info.name);
+							entries.push(info);
+						}
+					} catch (error) {
+						// No file is below the directory (any more): only directories made here are left to list.
+						if (!isHarbourError(error, "not_found")) return err(await this.#fileError(error, location, path, call));
+						listed = true;
 					}
-					return err(await this.#fileError(error, location, path, call));
+					if (!listed) return ok({ entries, done: false });
 				}
+				made ??= this.#madeEntries(location, names);
+				entries.push(...made.splice(0, maxEntries - entries.length));
+				return ok({ entries, done: made.length === 0 });
 			},
 			close: async () => {
 				closed = true;
@@ -449,6 +557,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		const { location, call } = start.value;
 		if (isRoot(location)) return err(new FileError("is_directory", "cannot write the workspace root", path));
 		try {
+			const inTheWay = await this.#directoryInTheWay(call, location, path);
+			if (inTheWay !== undefined) return err(inTheWay);
 			// A whole-file write replaces whatever the head has, as on a local disk: last writer wins.
 			await this.#commit(call, () => [{ op: "put", path: location.path, content }], `write ${location.path}`);
 			return ok(undefined);
@@ -464,6 +574,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		if (isRoot(location)) return err(new FileError("is_directory", "cannot write the workspace root", path));
 		const add = typeof content === "string" ? new TextEncoder().encode(content) : content;
 		try {
+			const inTheWay = await this.#directoryInTheWay(call, location, path);
+			if (inTheWay !== undefined) return err(inTheWay);
 			await this.#commit(
 				call,
 				async (head) => {
@@ -526,25 +638,57 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		const call = source.value.call;
 		if (isRoot(from)) return err(new FileError("permission_denied", "cannot move the workspace root", sourcePath));
 		if (isRoot(to)) return err(new FileError("is_directory", "cannot replace the workspace root", destinationPath));
+		const missing = () => new FileError("not_found", `no such file or directory: ${sourcePath}`, sourcePath);
 		try {
 			if (from.kind === to.kind && from.path === to.path) {
 				// Renaming a path onto itself changes nothing, but the path must exist.
-				await this.#stat(call, from);
+				const shape = await this.#shape(call, from);
+				if (shape === "missing") return err(missing());
+				if (shape === "not_directory") {
+					return err(new FileError("not_directory", `not a directory: ${sourcePath}`, sourcePath));
+				}
 				return ok(undefined);
 			}
 			if (from.kind === to.kind && to.path.startsWith(`${from.path}/`)) {
 				return err(new FileError("invalid", `cannot move ${sourcePath} into itself`, destinationPath));
 			}
+			const moving = { directory: false };
 			await this.#commit(
 				call,
 				async (head) => {
-					const entry: ModedFileEntry = await this.#stat(call, from, head);
-					const moved: ModedFileEntry[] =
-						entry.kind === "file"
-							? [entry]
-							: (await this.#listAll(call, from, { recursive: true, version: head })).filter(
-									(candidate) => candidate.kind === "file",
-								);
+					const origin = await this.#found(call, from, head);
+					if (origin.kind === "missing") throw missing();
+					const target = await this.#found(call, to, head);
+					let moved: ModedFileEntry[] = [];
+					if (origin.kind === "file") {
+						// A file replaces a file, as rename(2) does, but not a directory.
+						if (target.kind !== "missing" && target.kind !== "file") {
+							throw new FileError("is_directory", `is a directory: ${destinationPath}`, destinationPath);
+						}
+						moving.directory = false;
+						moved = [origin.entry];
+					} else {
+						// A directory replaces only a missing path or an empty directory, so it never merges into another.
+						if (target.kind === "file") {
+							throw new FileError("invalid", `a directory cannot replace a file: ${destinationPath}`, destinationPath);
+						}
+						if (target.kind === "directory") {
+							throw new FileError("invalid", `directory not empty: ${destinationPath}`, destinationPath);
+						}
+						moving.directory = true;
+						try {
+							moved = (await this.#listAll(call, from, { recursive: true, version: head })).filter(
+								(candidate) => candidate.kind === "file",
+							);
+						} catch (error) {
+							// A directory made here may have no file below it.
+							if (!isHarbourError(error, "not_found")) throw error;
+						}
+						if (moved.length === 0 && to.kind === "mount") {
+							// Nothing to commit, so no commit can refuse it.
+							throw new FileError("permission_denied", `mounts are read-only: ${destinationPath}`, destinationPath);
+						}
+					}
 					const changes: ModedChange[] = [];
 					for (const file of moved) {
 						const below = file.path === from.path ? "" : file.path.slice(from.path.length);
@@ -561,11 +705,26 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				},
 				`rename ${from.path} to ${to.path}`,
 			);
+			if (moving.directory && from.kind === "workspace" && to.kind === "workspace") this.#move(from.path, to.path);
 			return ok(undefined);
 		} catch (error) {
+			if (error instanceof FileError) return err(error);
 			if (isHarbourError(error, "not_found")) return err(toFileError(error, sourcePath));
 			return err(await this.#fileError(error, to, destinationPath, call));
 		}
+	}
+
+	/** What is at a location at `version`, counting the directories made here, for a rename. */
+	async #found(call: CallContext, location: Location, version: WorkspaceVersion): Promise<Found> {
+		try {
+			const entry: ModedFileEntry = await this.#stat(call, location, version);
+			// A directory in the workspace has a file below it, so it is never empty.
+			return entry.kind === "file" ? { kind: "file", entry } : { kind: "directory" };
+		} catch (error) {
+			if (!isHarbourError(error, "not_found")) throw error;
+		}
+		if (!this.#isMade(location)) return { kind: "missing" };
+		return this.#madeChildren(location).length === 0 ? { kind: "empty" } : { kind: "directory" };
 	}
 
 	async remove(
@@ -578,16 +737,17 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		const { location, call } = start.value;
 		if (isRoot(location)) return err(new FileError("permission_denied", "cannot remove the workspace root", path));
 		try {
-			let entry: FileEntry | undefined;
+			let found: FileEntry["kind"] | undefined;
 			try {
-				entry = await this.#stat(call, location);
+				found = (await this.#stat(call, location)).kind;
 			} catch (error) {
 				if (!isHarbourError(error, "not_found")) throw error;
 			}
-			if (entry === undefined) {
+			if (found === undefined && this.#isMade(location)) found = "directory";
+			if (found === undefined) {
 				return options?.force === true ? ok(undefined) : err(new FileError("not_found", `no such file: ${path}`, path));
 			}
-			const kind = entry.kind;
+			const kind = found;
 			if (kind === "directory" && options?.recursive !== true) {
 				return err(new FileError("is_directory", `is a directory: ${path}`, path));
 			}
@@ -595,13 +755,20 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				call,
 				async (head) => {
 					if (kind === "file") return [{ op: "delete", path: location.path }];
-					const below = await this.#listAll(call, location, { recursive: true, version: head });
+					let below: FileEntry[] = [];
+					try {
+						below = await this.#listAll(call, location, { recursive: true, version: head });
+					} catch (error) {
+						// A directory made here may have no file below it: nothing to commit.
+						if (!isHarbourError(error, "not_found")) throw error;
+					}
 					return below
 						.filter((candidate) => candidate.kind === "file")
 						.map((candidate): ModedChange => ({ op: "delete", path: candidate.path }));
 				},
 				`remove ${location.path}`,
 			);
+			if (kind === "directory" && location.kind === "workspace") this.#forget(location.path);
 			return ok(undefined);
 		} catch (error) {
 			if (options?.force === true && isHarbourError(error, "not_found")) return ok(undefined);
@@ -620,13 +787,14 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		if (location.kind === "mount") {
 			return err(new FileError("permission_denied", `mounts are read-only: ${path}`, path));
 		}
-		// Directories are implicit: succeed unless the path, or one of its ancestors, is a file.
+		// Succeed unless the path, or one of its ancestors, is a file; the directory is kept here, not committed.
 		if (isRoot(location)) return ok(undefined);
 		try {
 			const shape = await this.#shape(call, location);
 			if (shape === "file" || shape === "not_directory") {
 				return err(new FileError("not_directory", `a file is in the way: ${path}`, path));
 			}
+			this.#remember(location.path);
 			return ok(undefined);
 		} catch (error) {
 			return err(await this.#fileError(error, location, path, call));
@@ -635,17 +803,19 @@ class SandboxExecutionEnv implements ExecutionEnv {
 
 	async createTempDir(prefix: string | undefined, context: Context): Promise<Result<string, FileError>> {
 		if (context.abortSignal?.aborted === true) return err(new FileError("aborted", "aborted"));
-		const name = `${prefix ?? "tmp-"}${crypto.randomUUID()}`;
+		const name = tempName(prefix ?? "tmp-", "");
 		if (name.includes("/")) return err(new FileError("invalid", "a temporary directory prefix must not contain /"));
-		// Directories are implicit, so the directory exists once something is written in it.
-		return ok(this.#display({ kind: "workspace", path: `${TEMP_DIR}/${name}` }));
+		// Kept here, not committed, like any directory made by `createDir`.
+		const path = `${TEMP_DIR}/${name}`;
+		this.#remember(path);
+		return ok(this.#display({ kind: "workspace", path }));
 	}
 
 	async createTempFile(
 		options: { prefix?: string; suffix?: string } | undefined,
 		context: Context,
 	): Promise<Result<string, FileError>> {
-		const name = `${options?.prefix ?? ""}${crypto.randomUUID()}${options?.suffix ?? ""}`;
+		const name = tempName(options?.prefix ?? "", options?.suffix ?? "");
 		if (name.includes("/"))
 			return err(new FileError("invalid", "a temporary file prefix or suffix must not contain /"));
 		const path = this.#display({ kind: "workspace", path: `${TEMP_DIR}/${name}` });
@@ -660,8 +830,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	// ---- errors ------------------------------------------------------------------------------------------------------
 
 	/**
-	 * What is at a location: a file, a directory, missing, or `not_directory` when an ancestor is a file. Errors other
-	 * than `not_found` propagate.
+	 * What is at a location: a file, a directory (in the workspace or made here), missing, or `not_directory` when an
+	 * ancestor is a file. Errors other than `not_found` propagate.
 	 */
 	async #shape(call: CallContext, location: Location): Promise<Shape> {
 		if (isRoot(location)) return "directory";
@@ -670,6 +840,12 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		} catch (error) {
 			if (!isHarbourError(error, "not_found")) throw error;
 		}
+		return this.#shapeOfMissing(call, location);
+	}
+
+	/** What is at a location the workspace does not have: a directory made here, missing, or `not_directory`. */
+	async #shapeOfMissing(call: CallContext, location: Location): Promise<Exclude<Shape, "file">> {
+		if (this.#isMade(location)) return "directory";
 		if (location.kind === "workspace") {
 			const segments = location.path.split("/");
 			for (let depth = 1; depth < segments.length; depth++) {
@@ -685,17 +861,23 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		return "missing";
 	}
 
-	/** Maps an error to a `FileError`, telling an `invalid` directory or file-in-the-way apart from a bad path. */
+	/**
+	 * Maps an error to a `FileError`, telling an `invalid` or `not_found` directory or file-in-the-way apart from a bad
+	 * or missing path.
+	 */
 	async #fileError(error: unknown, location: Location, path: string, call: CallContext): Promise<FileError> {
-		if (isHarbourError(error, "invalid")) {
+		const missing = isHarbourError(error, "not_found");
+		if (missing || isHarbourError(error, "invalid")) {
 			let shape: Shape | undefined;
 			try {
-				shape = await this.#shape(call, location);
+				// The workspace has nothing at a path it reported missing, so only its ancestors are asked.
+				shape = missing ? await this.#shapeOfMissing(call, location) : await this.#shape(call, location);
 			} catch {
 				// Keep the original error.
 			}
-			if (shape === "directory") return new FileError("is_directory", `is a directory: ${path}`, path, error);
-			if (shape === "not_directory") return new FileError("not_directory", `not a directory: ${path}`, path, error);
+			const cause = asError(error);
+			if (shape === "directory") return new FileError("is_directory", `is a directory: ${path}`, path, cause);
+			if (shape === "not_directory") return new FileError("not_directory", `not a directory: ${path}`, path, cause);
 		}
 		return toFileError(error, path);
 	}
@@ -719,6 +901,24 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			}
 			timeoutMs = Math.ceil(options.timeout * 1000);
 		}
+		// Aborted when this call is aborted or times out, or by `cleanup`; the sandbox sees its signal.
+		const controller = new AbortController();
+		this.#running.add(controller);
+		try {
+			return await this.#run(command, options, timeoutMs, controller, context);
+		} finally {
+			this.#running.delete(controller);
+		}
+	}
+
+	async #run(
+		command: string | readonly string[],
+		options: ShellExecOptions | undefined,
+		timeoutMs: number | undefined,
+		controller: AbortController,
+		context: Context,
+	): Promise<Result<ShellExecResult, ExecutionError>> {
+		const signal = context.abortSignal;
 		const where = await this.#locate(options?.cwd ?? this.cwd);
 		if (!where.ok) return err(new ExecutionError("spawn_error", where.error.message, where.error));
 		if (where.value.kind !== "workspace") {
@@ -731,11 +931,9 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			...(options?.env === undefined ? {} : { env: options.env }),
 			...(timeoutMs === undefined ? {} : { timeoutMs }),
 		};
-		// Checked again: the signal may have fired while the working directory was being resolved.
-		if (isAborted(signal)) return err(new ExecutionError("aborted", "aborted"));
+		// Checked again: the signal, or `cleanup`, may have fired while the working directory was being resolved.
+		if (isAborted(signal) || isAborted(controller.signal)) return err(new ExecutionError("aborted", "aborted"));
 
-		// The sandbox sees a signal that aborts when this call is aborted or times out.
-		const controller = new AbortController();
 		const outer = this.#ctx.signal;
 		const call: CallContext = {
 			...this.#ctx,
@@ -748,7 +946,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				tool: "bash",
 				request,
 			}),
-			signal,
+			// `cleanup` stops the wait as an abort of the context does.
+			signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]),
 			timeoutMs,
 		);
 		if (outcome.kind === "aborted") {
@@ -767,17 +966,39 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		} catch (error) {
 			return err(new ExecutionError("callback_error", errorMessage(error), asError(error)));
 		}
+		if (typeof command !== "string" && result.exitCode === 127) {
+			// The sandbox's "command not found": the program did not start, so its output is not delivered.
+			const message = result.stderr.trim();
+			return err(new ExecutionError("spawn_error", message === "" ? `${command[0]}: command not found` : message));
+		}
+		const chunks = outputChunks(result);
 		try {
-			if (result.stdout !== "") options?.onOutput?.(result.stdout, context, { stream: "stdout" });
-			if (result.stderr !== "") options?.onOutput?.(result.stderr, context, { stream: "stderr" });
+			for (const chunk of chunks) options?.onOutput?.(chunk.text, context, { stream: chunk.stream });
 		} catch (error) {
 			return err(new ExecutionError("callback_error", errorMessage(error), asError(error)));
 		}
-		return ok({ exitCode: result.exitCode });
+		const spill = options?.spill;
+		const output = chunks.map((chunk) => chunk.text).join("");
+		if (spill === undefined || !exceedsSpill(output, spill)) return ok({ exitCode: result.exitCode });
+		const spilled = await this.#spill(output, context);
+		return spilled.ok ? ok({ exitCode: result.exitCode, spillPath: spilled.value }) : spilled;
+	}
+
+	/** Writes a command's complete output to a new file under `.tmp/` in one commit; its absolute path. */
+	async #spill(output: string, context: Context): Promise<Result<string, ExecutionError>> {
+		const path = this.#display({ kind: "workspace", path: `${TEMP_DIR}/${tempName("pi-output-", ".log")}` });
+		const written = await this.writeFile(path, output, context);
+		if (written.ok) return ok(path);
+		if (written.error.code === "aborted") return err(new ExecutionError("aborted", "aborted", written.error));
+		const message = `Failed to preserve complete shell output: ${written.error.message}`;
+		return err(new ExecutionError("unknown", message, written.error));
 	}
 
 	async cleanup(_context: Context): Promise<void> {
-		// Nothing to stop here: a session's leases end with the session (`Sandboxes.releaseSession`).
+		// Every command still running stops at once (its sandbox call's signal aborts); later commands run as usual.
+		// A session's leases end with the session (`Sandboxes.releaseSession`).
+		for (const controller of this.#running) controller.abort();
+		this.#running.clear();
 	}
 }
 
@@ -853,12 +1074,12 @@ type Raced<T> =
 	| { readonly kind: "aborted" }
 	| { readonly kind: "timeout" };
 
-/** Waits for `work`, an abort of `signal`, or `timeoutMs`, whichever comes first. */
 /** Read through a call so a check after an `await` is not narrowed away by an earlier one. */
 function isAborted(signal: AbortSignal | undefined): boolean {
 	return signal?.aborted === true;
 }
 
+/** Waits for `work`, an abort of `signal`, or `timeoutMs`, whichever comes first. */
 function race<T>(work: Promise<T>, signal: AbortSignal | undefined, timeoutMs: number | undefined): Promise<Raced<T>> {
 	return new Promise((resolve) => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -894,6 +1115,32 @@ function execRecord(command: string | readonly string[], cwd: string, result: Ex
 		durationMs: result.durationMs,
 		truncated: result.truncated === true,
 	};
+}
+
+interface OutputChunk {
+	readonly text: string;
+	readonly stream: "stdout" | "stderr";
+}
+
+/** A command's output as delivered: stdout, stderr, then a line saying the sandbox truncated it, if it did. */
+function outputChunks(result: ExecResult): OutputChunk[] {
+	const chunks: OutputChunk[] = [];
+	if (result.stdout !== "") chunks.push({ text: result.stdout, stream: "stdout" });
+	if (result.stderr !== "") chunks.push({ text: result.stderr, stream: "stderr" });
+	if (result.truncated === true) {
+		const last = chunks.at(-1)?.text ?? "";
+		const start = last === "" || last.endsWith("\n") ? "" : "\n";
+		chunks.push({ text: `${start}${TRUNCATED_LINE}\n`, stream: "stderr" });
+	}
+	return chunks;
+}
+
+/** Whether output is over either spill threshold: its UTF-8 bytes, or its lines counting an unterminated last one. */
+function exceedsSpill(output: string, spill: ShellSpillOptions): boolean {
+	if (new TextEncoder().encode(output).byteLength > spill.afterBytes) return true;
+	let lines = output === "" || output.endsWith("\n") ? 0 : 1;
+	for (let index = output.indexOf("\n"); index !== -1; index = output.indexOf("\n", index + 1)) lines++;
+	return lines > spill.afterLines;
 }
 
 function executionError(error: unknown): ExecutionError {
@@ -933,6 +1180,16 @@ function asError(error: unknown): Error | undefined {
 
 function isRoot(location: Location): boolean {
 	return location.kind === "workspace" && location.path === "";
+}
+
+/** A fresh temporary file or directory name. */
+function tempName(prefix: string, suffix: string): string {
+	return `${prefix}${crypto.randomUUID()}${suffix}`;
+}
+
+function compare(left: string, right: string): number {
+	if (left < right) return -1;
+	return left > right ? 1 : 0;
 }
 
 function basename(path: string): string {

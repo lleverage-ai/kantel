@@ -209,17 +209,135 @@ describe("createSandboxExecutionEnv: files", () => {
 		expect(codeOf(await env.remove(".", { recursive: true }, context))).toBe("permission_denied");
 	});
 
-	it("creates directories implicitly, refusing a file in the way", async () => {
+	it("creates directories without a commit, refusing a file in the way", async () => {
 		const { env, head } = await setUp();
 		const before = await head();
 		getOrThrow(await env.createDir("fresh/deeper", { recursive: true }, context));
 		getOrThrow(await env.createDir("docs", undefined, context));
 		getOrThrow(await env.createDir(".", undefined, context));
-		// Nothing is committed: the directory exists once a file is written in it.
+		// Nothing is committed: the environment keeps the directory.
 		expect(await head()).toBe(before);
-		expect(getOrThrow(await env.exists("fresh/deeper", context))).toBe(false);
+		expect(getOrThrow(await env.exists("fresh/deeper", context))).toBe(true);
 		expect(codeOf(await env.createDir("docs/one.md", undefined, context))).toBe("not_directory");
 		expect(codeOf(await env.createDir("docs/one.md/inner", undefined, context))).toBe("not_directory");
+	});
+
+	it("keeps the directories createDir and createTempDir make until they are removed or moved", async () => {
+		const { env, head } = await setUp();
+		const before = await head();
+		getOrThrow(await env.createDir("fresh/deeper", undefined, context));
+		expect(await head()).toBe(before);
+		expect(getOrThrow(await env.exists("fresh", context))).toBe(true);
+		expect(getOrThrow(await env.fileInfo("fresh/deeper", context))).toEqual({
+			name: "deeper",
+			path: "/workspace/fresh/deeper",
+			kind: "directory",
+			size: 0,
+			mtimeMs: 0,
+		});
+		expect(getOrThrow(await env.canonicalPath("fresh/deeper", context))).toBe("/workspace/fresh/deeper");
+		expect(getOrThrow(await env.listDir(".", context)).map((entry) => [entry.name, entry.kind])).toEqual([
+			["docs", "directory"],
+			["fresh", "directory"],
+		]);
+		expect(getOrThrow(await env.listDir("fresh/deeper", context))).toEqual([]);
+		const empty = getOrThrow(await env.openDirReader("fresh/deeper", context));
+		expect(getOrThrow(await empty.next(10, context))).toEqual({ entries: [], done: true });
+		await empty.close(context);
+
+		// It is a directory, not a file.
+		expect(codeOf(await env.readTextFile("fresh", context))).toBe("is_directory");
+		expect(codeOf(await env.openBinaryReader("fresh/deeper", undefined, context))).toBe("is_directory");
+		expect(codeOf(await env.writeFile("fresh/deeper", "x", context))).toBe("is_directory");
+		expect(codeOf(await env.appendFile("fresh/deeper", "x", context))).toBe("is_directory");
+		expect(codeOf(await env.truncateFile("fresh/deeper", 0, context))).toBe("is_directory");
+		expect(await head()).toBe(before);
+
+		// A file below one makes it a workspace directory, listed once beside the empty one.
+		getOrThrow(await env.writeFile("fresh/deeper/a.txt", "a", context));
+		getOrThrow(await env.createDir("fresh/other", undefined, context));
+		expect(getOrThrow(await env.listDir("fresh", context)).map((entry) => [entry.name, entry.kind])).toEqual([
+			["deeper", "directory"],
+			["other", "directory"],
+		]);
+		const reader = getOrThrow(await env.openDirReader("fresh", context));
+		const pages: string[][] = [];
+		for (let page = 0; page < 10; page++) {
+			const next = getOrThrow(await reader.next(1, context));
+			if (next.entries.length > 0) pages.push(next.entries.map((entry) => entry.name));
+			if (next.done) break;
+		}
+		await reader.close(context);
+		expect(pages).toEqual([["deeper"], ["other"]]);
+
+		// Removed, it is gone; nothing is committed for one with no file below it.
+		expect(codeOf(await env.remove("fresh/other", undefined, context))).toBe("is_directory");
+		let start = await head();
+		getOrThrow(await env.remove("fresh/other", { recursive: true }, context));
+		expect(await head()).toBe(start);
+		expect(getOrThrow(await env.exists("fresh/other", context))).toBe(false);
+		getOrThrow(await env.remove("fresh", { recursive: true }, context));
+		expect(await head()).toBe(start + 1);
+		expect(getOrThrow(await env.exists("fresh", context))).toBe(false);
+		expect(getOrThrow(await env.exists("fresh/deeper", context))).toBe(false);
+
+		// Renamed, it moves with what is below it.
+		getOrThrow(await env.createDir("made/inner", undefined, context));
+		start = await head();
+		getOrThrow(await env.renameFile("made", "moved", context));
+		expect(await head()).toBe(start);
+		expect(getOrThrow(await env.exists("made", context))).toBe(false);
+		expect(getOrThrow(await env.fileInfo("moved/inner", context))).toMatchObject({ kind: "directory" });
+		expect(codeOf(await env.renameFile("moved", "/project/moved", context))).toBe("permission_denied");
+
+		const temp = getOrThrow(await env.createTempDir("run-", context));
+		expect(getOrThrow(await env.fileInfo(temp, context))).toMatchObject({ path: temp, kind: "directory" });
+		const tempReader = getOrThrow(await env.openDirReader(temp, context));
+		expect(getOrThrow(await tempReader.next(10, context))).toEqual({ entries: [], done: true });
+		await tempReader.close(context);
+		expect(await head()).toBe(start);
+	});
+
+	it("renames a directory only onto a missing path or an empty directory, and a file onto a file", async () => {
+		const { env, head, readHead } = await setUp();
+		getOrThrow(await env.writeFile("src/a.txt", "new", context));
+		getOrThrow(await env.writeFile("dst/a.txt", "old", context));
+		getOrThrow(await env.writeFile("dst/keep.txt", "keep", context));
+		getOrThrow(await env.createDir("full/sub", undefined, context));
+		const before = await head();
+		expect(codeOf(await env.renameFile("src", "dst", context))).toBe("invalid");
+		expect(codeOf(await env.renameFile("src", "full", context))).toBe("invalid");
+		expect(codeOf(await env.renameFile("src", "docs/one.md", context))).toBe("invalid");
+		expect(codeOf(await env.renameFile("src", "src/inner", context))).toBe("invalid");
+		expect(codeOf(await env.renameFile("src/a.txt", "dst", context))).toBe("is_directory");
+		expect(codeOf(await env.renameFile("src/a.txt", "full", context))).toBe("is_directory");
+		expect(await head()).toBe(before);
+		expect(await readHead("dst/a.txt")).toBe("old");
+		expect(await readHead("src/a.txt")).toBe("new");
+
+		// A directory replaces an empty directory.
+		getOrThrow(await env.createDir("empty", undefined, context));
+		getOrThrow(await env.renameFile("src", "empty", context));
+		expect(await head()).toBe(before + 1);
+		expect(await readHead("empty/a.txt")).toBe("new");
+		expect(getOrThrow(await env.exists("src", context))).toBe(false);
+
+		// A file replaces a file, as rename(2) does.
+		getOrThrow(await env.renameFile("empty/a.txt", "dst/a.txt", context));
+		expect(await readHead("dst/a.txt")).toBe("new");
+		expect(await readHead("dst/keep.txt")).toBe("keep");
+	});
+
+	it("reports reads, stats and listings below a file as not_directory, and exists as false", async () => {
+		const { env } = await setUp();
+		expect(codeOf(await env.readTextFile("docs/one.md/child", context))).toBe("not_directory");
+		expect(codeOf(await env.readBinaryFile("docs/one.md/child", context))).toBe("not_directory");
+		expect(codeOf(await env.fileInfo("docs/one.md/child", context))).toBe("not_directory");
+		expect(codeOf(await env.listDir("docs/one.md/child", context))).toBe("not_directory");
+		expect(codeOf(await env.openDirReader("docs/one.md/child/deeper", context))).toBe("not_directory");
+		expect(getOrThrow(await env.exists("docs/one.md/child", context))).toBe(false);
+		expect(codeOf(await env.readTextFile("docs/missing/child", context))).toBe("not_found");
+		expect(codeOf(await env.fileInfo("missing/child", context))).toBe("not_found");
 	});
 
 	it("retries a write on a moved head, deriving the change again from the new head", async () => {
@@ -500,6 +618,125 @@ describe("createSandboxExecutionEnv: shell", () => {
 		});
 		expect(codeOf(await env.exec("true", undefined, context))).toBe("callback_error");
 	});
+
+	it("cleanup stops every command still running, and later commands run as usual", async () => {
+		const runs: CallContext[] = [];
+		let stall = true;
+		const { env } = await setUp({
+			wrapSandboxes: (inner) => ({
+				...inner,
+				async run(callCtx, input) {
+					runs.push(callCtx);
+					if (!stall) return inner.run(callCtx, input);
+					// Never finishes and ignores its signal, like a sandbox that cannot stop a command.
+					return new Promise<never>(() => {});
+				},
+			}),
+		});
+		const first = env.exec("sleep 5", undefined, context);
+		const second = env.exec(["sleep", "5"], { timeout: 60 }, context);
+		for (let wait = 0; wait < 200 && runs.length < 2; wait++) await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(runs.length).toBe(2);
+		await env.cleanup(context);
+		expect(codeOf(await first)).toBe("aborted");
+		expect(codeOf(await second)).toBe("aborted");
+		expect(runs.map((run) => run.signal?.aborted)).toEqual([true, true]);
+
+		stall = false;
+		expect(getOrThrow(await env.exec("echo hi", undefined, context)).exitCode).toBe(0);
+		expect(runs.at(-1)?.signal?.aborted).toBe(false);
+	});
+
+	it("spills output over either threshold to one new file under .tmp, still delivering every chunk", async () => {
+		const { env, head, readHead } = await setUp();
+		const lines = Array.from({ length: 10 }, (_, index) => `line ${index}\n`).join("");
+		getOrThrow(await env.writeFile("big.txt", lines, context));
+		let delivered = "";
+		const onOutput = (text: string) => {
+			delivered += text;
+		};
+
+		// At the thresholds, nothing is spilled.
+		let before = await head();
+		const spill = { afterBytes: lines.length, afterLines: 10 };
+		expect(getOrThrow(await env.exec("cat big.txt", { onOutput, spill }, context))).toEqual({ exitCode: 0 });
+		expect(await head()).toBe(before);
+		expect(delivered).toBe(lines);
+
+		// Over the lines threshold: the complete output is one new file, in one commit.
+		delivered = "";
+		const overLines = getOrThrow(
+			await env.exec("cat big.txt", { onOutput, spill: { afterBytes: 1_000_000, afterLines: 9 } }, context),
+		);
+		expect(overLines.exitCode).toBe(0);
+		expect(overLines.spillPath).toMatch(/^\/workspace\/\.tmp\/pi-output-.+\.log$/);
+		expect(await head()).toBe(before + 1);
+		expect(await readHead((overLines.spillPath ?? "").slice("/workspace/".length))).toBe(lines);
+		expect(delivered).toBe(lines);
+
+		// Over the bytes threshold: stdout then stderr, as delivered.
+		before = await head();
+		const overBytes = getOrThrow(
+			await env.exec("echo out && cat missing.txt", { spill: { afterBytes: 10, afterLines: 1000 } }, context),
+		);
+		expect(overBytes.exitCode).toBe(1);
+		expect(await head()).toBe(before + 1);
+		expect(getOrThrow(await env.readTextFile(overBytes.spillPath ?? "", context))).toBe(
+			"out\ncat: missing.txt: No such file or directory\n",
+		);
+
+		// Without spill options nothing is spilled, however long the output.
+		expect(getOrThrow(await env.exec("cat big.txt", undefined, context))).toEqual({ exitCode: 0 });
+		expect(await head()).toBe(before + 1);
+	});
+
+	it("says when the sandbox truncated the output, in the delivered output and in the spill", async () => {
+		const { env } = await setUp({
+			wrapSandboxes: (inner) => ({
+				...inner,
+				async run(callCtx, input) {
+					return { ...(await inner.run(callCtx, input)), truncated: true };
+				},
+			}),
+		});
+		const chunks: [string, string][] = [];
+		const onOutput = (text: string, _context: Context, info: { stream: string }) => {
+			chunks.push([info.stream, text]);
+		};
+		const spill = { afterBytes: 1000, afterLines: 1 };
+		const result = getOrThrow(await env.exec("printf partial", { onOutput, spill }, context));
+		expect(chunks).toEqual([
+			["stdout", "partial"],
+			["stderr", "\n[output truncated by the sandbox]\n"],
+		]);
+		expect(getOrThrow(await env.readTextFile(result.spillPath ?? "", context))).toBe(
+			"partial\n[output truncated by the sandbox]\n",
+		);
+
+		chunks.length = 0;
+		getOrThrow(await env.exec("echo whole", { onOutput }, context));
+		expect(chunks).toEqual([
+			["stdout", "whole\n"],
+			["stderr", "[output truncated by the sandbox]\n"],
+		]);
+	});
+
+	it("reports a missing argv program as a spawn error, and a string command's 127 as an exit code", async () => {
+		const { env, records } = await setUp();
+		const chunks: string[] = [];
+		const onOutput = (text: string) => {
+			chunks.push(text);
+		};
+		const missing = await env.exec(["no-such-program", "arg"], { onOutput }, context);
+		expect(codeOf(missing)).toBe("spawn_error");
+		expect(missing.ok ? undefined : missing.error.message).toBe("sh: no-such-program: command not found");
+		expect(chunks).toEqual([]);
+		expect(records.at(-1)).toMatchObject({ command: ["no-such-program", "arg"], exitCode: 127 });
+
+		const shell = getOrThrow(await env.exec("no-such-program", { onOutput }, context));
+		expect(shell.exitCode).toBe(127);
+		expect(chunks).toEqual(["sh: no-such-program: command not found\n"]);
+	});
 });
 
 /**
@@ -508,11 +745,6 @@ describe("createSandboxExecutionEnv: shell", () => {
  * skipped case, with why:
  */
 const SKIPPED: { readonly [name: string]: string } = {
-	"binary reader refuses directories, missing files and aborted opens":
-		"createDir makes no empty directory in a workspace, so `dir` is missing rather than a directory",
-	"directory reader pages every entry exactly once": "expects the empty directory `sub` that createDir cannot make",
-	"directory reader reports the end and refuses use after close":
-		"opens the empty directory `empty` that createDir cannot make (the same checks run on a non-empty one above)",
 	"watch reports a missing file's creation, changes, replacement and removal": "watch is not supported",
 	"watch reports a missing target whose ancestors are created": "watch is not supported",
 	"watch follows directories created together with their contents": "watch is not supported",
@@ -525,9 +757,7 @@ const SKIPPED: { readonly [name: string]: string } = {
 		"needs a real `sh -c` with positional parameters; the in-memory shell has no `sh` program or expansions",
 	"exec reports the stream of every chunk in both forms":
 		"needs `sh -c`, `;` and `>&2`, which the in-memory shell does not run",
-	"argv exec honors cwd and exit codes": "needs `sh -c` and `;`, and an empty directory made by createDir",
-	"argv exec reports missing programs and empty argv as spawn errors":
-		"the Sandboxes contract reports a missing program as exit code 127, not a spawn failure (empty argv is checked above)",
+	"argv exec honors cwd and exit codes": "needs `sh -c` and `;`, which the in-memory shell does not run",
 	"windowed exec keeps the exact tail and counts what it skips":
 		"needs a `sh -c` while loop with arithmetic, which the in-memory shell does not run",
 	"argv exec distinguishes timeout from abort":
