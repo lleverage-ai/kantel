@@ -163,6 +163,9 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../sql
       jose:
         specifier: 6.2.13
         version: 6.2.13
