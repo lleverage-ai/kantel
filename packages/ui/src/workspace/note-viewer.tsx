@@ -61,9 +61,9 @@ function NoteBody({ title, state }: { title: string; state: NoteViewState }) {
 
 /**
  * A Markdown note, read-only, at a readable measure: a header with the note's title (its file name), its folder and
- * when it was last updated, then the rendered note, scrolling within the viewer. Rendered by the transcript's
- * Markdown component (GitHub flavoured, raw HTML skipped, links open in a new tab). Presentational: the host reads
- * the note through the workspace read API and passes its state.
+ * when it was last updated, then the rendered note, scrolling within the viewer. Rendered by `NoteMarkdown`, which
+ * parses the note as one document in the transcript's Markdown styles (GitHub flavoured, raw HTML skipped, links
+ * open in a new tab). Presentational: the host reads the note through the workspace read API and passes its state.
  */
 export function NoteViewer({ path, state, onBack, actions }: NoteViewerProps) {
 	const id = useId();

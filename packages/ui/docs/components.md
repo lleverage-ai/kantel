@@ -150,7 +150,7 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
   empty states for the root, and inline Loading and error rows for a directory.
 - **`FileViewer`**: one file's text in mono with unselectable line numbers, Copy, and states for loading, error,
   empty, binary and too large. Renders at most 5,000 lines and says how many more there are.
-- **`NoteViewer`**: a Markdown note rendered with `Markdown` at the transcript's reading measure, with when it was
-  last updated.
+- **`NoteViewer`**: a Markdown note, parsed as one document in the transcript's Markdown styles at its reading
+  measure, with when it was last updated.
 - **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
   `formatBytes` and others), exported for hosts.
