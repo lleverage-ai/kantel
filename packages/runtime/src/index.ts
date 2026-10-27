@@ -28,6 +28,7 @@ import {
 import type { Usage } from "@harbour/protocol";
 
 export * from "./project.ts";
+export * from "./session-end.ts";
 
 /** Where a profile's model route resolves to in Pi's model collection. */
 export interface ResolvedModel {

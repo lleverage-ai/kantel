@@ -20,6 +20,8 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import {
+	type AccessCheck,
+	type Actor,
 	type AgentId,
 	type AgentProfile,
 	type AgentProfiles,
@@ -27,15 +29,20 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	createProjectAccess,
 	HarbourError,
 	type HostToolBridge,
 	type HostToolDefinition,
 	type HostToolHandler,
+	type IdentityDirectory,
 	type ModelChoice,
 	type OrganisationId,
+	type ProjectAccess,
 	type PromptInput,
 	type Sandboxes,
 	type SessionDirectory,
+	type SessionEnd,
+	type SessionEndHook,
 	type SessionId,
 	type SessionRecord,
 	type SessionRuntime,
@@ -45,6 +52,7 @@ import {
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
 import {
 	ConversationProjector,
+	createSessionEndHook,
 	harbourUserEntry,
 	hostToolAsPiTool,
 	joinPromptLayers,
@@ -62,7 +70,16 @@ export interface MemoryRuntimeOptions {
 	readonly models: Models;
 	/** Maps a profile's model route to a Pi model. Default: the first model of the first provider. */
 	readonly resolveModel?: (choice: ModelChoice) => ResolvedModel;
-	/** Released on abort (`aborted`) and close (`session_ended`). */
+	/**
+	 * Role bindings. When given, the runtime checks project access on every call, through `createProjectAccess` over
+	 * these and its own directory, and exposes that check as `access` for components to share. Without it the runtime
+	 * checks only the organisation; every target and every conformance run passes one.
+	 */
+	readonly identity?: Pick<IdentityDirectory, "roleOf">;
+	/**
+	 * Released on abort (`aborted`) and close (`session_ended`), as the `sandbox` teardown of the session-end hook.
+	 * Kept for existing wiring: a sandbox created with `sessionEnd: runtime.sessionEnd` registers itself instead.
+	 */
 	readonly sandboxes?: Pick<Sandboxes, "releaseSession">;
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
@@ -73,6 +90,13 @@ export interface MemoryRuntime {
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
+	/**
+	 * The session-end hook this runtime runs on close and abort. Components register their teardown with it, such as
+	 * `createMemoryBrowser({ sessionEnd })`.
+	 */
+	readonly sessionEnd: SessionEndHook;
+	/** The project-access check over this runtime's sessions, when `identity` was given; components can share it. */
+	readonly access?: ProjectAccess;
 	/** Closes every session's Harness. */
 	close(): Promise<void>;
 }
@@ -127,6 +151,31 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 	const audit = async (events: readonly AuditEventInput[]) => {
 		if (options.audit !== undefined) await options.audit.append(events);
 	};
+
+	const ends = createSessionEndHook({ ...(options.audit === undefined ? {} : { audit: options.audit }), clock });
+	const sandboxes = options.sandboxes;
+	if (sandboxes !== undefined) {
+		ends.hook.register("sandbox", (ctx, end) => sandboxes.releaseSession(ctx, end.sessionId, end.reason));
+	}
+
+	// The check reads sessions straight from the map: going through the checked directory would check itself.
+	const access: ProjectAccess | undefined =
+		options.identity === undefined
+			? undefined
+			: createProjectAccess({
+					identity: options.identity,
+					sessions: { get: async (ctx, sessionId) => requireSession(ctx, sessionId).record },
+					...(options.audit === undefined ? {} : { audit: options.audit }),
+					clock,
+				});
+
+	const check = async (ctx: CallContext, accessCheck: AccessCheck): Promise<void> => {
+		if (access !== undefined) await access.require(ctx, accessCheck);
+	};
+
+	/** Checks the caller may act on `sessionId` (already found in its organisation) with `needed`. */
+	const checkSession = (ctx: CallContext, sessionId: SessionId, needed: AccessCheck["needed"], operation: string) =>
+		check(ctx, { sessionId, needed, operation, subject: { kind: "session", id: sessionId } });
 
 	const requireProfile = (ctx: CallContext, agentId: AgentId): AgentProfile => {
 		const profile = profilesByKey.get(keyOf(ctx.organisationId, agentId));
@@ -230,8 +279,18 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		}
 	};
 
-	const releaseSandbox = async (ctx: CallContext, sessionId: SessionId, reason: "aborted" | "session_ended") => {
-		await options.sandboxes?.releaseSession(ctx, sessionId, reason);
+	const endOf = (session: SessionState, reason: SessionEnd["reason"], endedBy: Actor): SessionEnd => {
+		const { record } = session;
+		return {
+			sessionId: record.id,
+			organisationId: record.organisationId,
+			projectId: record.projectId,
+			agentId: record.agentId,
+			...(record.parentSessionId === undefined ? {} : { parentSessionId: record.parentSessionId }),
+			reason,
+			endedBy,
+			at: clock.now(),
+		};
 	};
 
 	const childrenOf = (organisationId: OrganisationId, sessionId: SessionId): SessionState[] =>
@@ -252,8 +311,9 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		}
 		await session.conversation.abort(piContext(ctx));
 		await sync(session);
-		await releaseSandbox(ctx, session.record.id, release);
-		session.aborts += 1;
+		const run = session.aborts + 1;
+		session.aborts = run;
+		await ends.run(endOf(session, release, ctx.actor), String(run));
 		await audit([
 			{
 				id: `session:${session.record.id}:aborted:${session.aborts}`,
@@ -278,6 +338,7 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		via: Submission["via"],
 	): Promise<Submission> => {
 		const session = requireSession(ctx, sessionId);
+		await checkSession(ctx, sessionId, "operator", `session.${via}`);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
 		if (input.text === "") throw new HarbourError("invalid", "A prompt needs text");
 		const pi = await session.conversation.submit(
@@ -325,6 +386,13 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 			const profile = requireProfile(ctx, input.agentId);
 			if (input.projectId === "") throw new HarbourError("invalid", "A session needs a project");
 			if (input.parentSessionId !== undefined) requireSession(ctx, input.parentSessionId);
+			// A child is in its parent's project, and an agent may create one only from its own session or its child.
+			await check(ctx, {
+				projectId: input.projectId,
+				...(input.parentSessionId === undefined ? {} : { sessionId: input.parentSessionId }),
+				needed: "operator",
+				operation: "session.create",
+			});
 			const now = clock.now();
 			const record: SessionRecord = {
 				id: crypto.randomUUID(),
@@ -407,10 +475,13 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		followUp: (ctx, sessionId, input) => submit(ctx, sessionId, input, "followUp"),
 		async abort(ctx, sessionId, reason) {
 			const session = requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "operator", "session.abort");
+			if (session.closed) return;
 			await stopWork(ctx, session, "aborted", reason);
 		},
 		async wait(ctx, sessionId, submissionId) {
 			const session = requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.wait");
 			const entry = session.submissions.get(submissionId);
 			if (entry === undefined) throw new HarbourError("not_found", `No submission ${submissionId}`);
 			const settled = await entry.pi.wait(piContext(ctx));
@@ -424,16 +495,19 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		},
 		async watch(ctx, sessionId, watchOptions, onFrame) {
 			const session = requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.watch");
 			await sync(session);
 			return session.stream.connect(watchOptions.after, onFrame);
 		},
 		async snapshot(ctx, sessionId) {
 			const session = requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.snapshot");
 			await sync(session);
 			return session.stream.snapshot();
 		},
 		async close(ctx, sessionId) {
 			const session = requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "operator", "session.close");
 			if (session.closed) return;
 			session.closed = true;
 			await stopWork(ctx, session, "session_ended", "closed");
@@ -446,18 +520,30 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 
 	const directory: SessionDirectory = {
 		async get(ctx, sessionId) {
-			return requireSession(ctx, sessionId).record;
+			const session = requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.get");
+			return session.record;
 		},
 		async list(ctx, filter, page) {
-			const records = [...sessions.values()]
+			if (filter?.projectId !== undefined) {
+				await check(ctx, { projectId: filter.projectId, needed: "viewer", operation: "session.list" });
+			}
+			const matching = [...sessions.values()]
 				.filter((session) => session.record.organisationId === ctx.organisationId)
 				.sort((left, right) => right.record.createdAt - left.record.createdAt || right.sequence - left.sequence)
 				.map((session) => session.record)
 				.filter((record) => matchesSessionFilter(record, filter));
+			const records: SessionRecord[] = [];
+			for (const record of matching) {
+				if (access === undefined || (await access.allows(ctx, { sessionId: record.id, needed: "viewer" }))) {
+					records.push(record);
+				}
+			}
 			return paginate(records, page);
 		},
 		async children(ctx, sessionId) {
 			requireSession(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.children");
 			return childrenOf(ctx.organisationId, sessionId).map((session) => session.record);
 		},
 	};
@@ -468,6 +554,13 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 				throw new HarbourError("forbidden", "A profile belongs to the caller's organisation");
 			}
 			if (profile.id === "") throw new HarbourError("invalid", "A profile needs an ID");
+			// A project's profile needs operator on it; an organisation-wide profile needs an organisation-wide role.
+			await check(ctx, {
+				...(profile.projectId === undefined ? {} : { projectId: profile.projectId }),
+				needed: "operator",
+				operation: "session.profiles.put",
+				subject: { kind: "session.profile", id: profile.id },
+			});
 			profilesByKey.set(keyOf(ctx.organisationId, profile.id), profile);
 			return profile;
 		},
@@ -491,6 +584,13 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 				}
 				names.add(tool.name);
 			}
+			// A host registers for the project its call names, or across the organisation.
+			await check(ctx, {
+				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+				needed: "operator",
+				operation: "session.hostTools.register",
+				subject: { kind: "session.host", id: hostId },
+			});
 			const key = keyOf(ctx.organisationId, hostId);
 			const registration: HostRegistration = { tools: [...tools], handler };
 			hosts.set(key, registration);
@@ -513,6 +613,8 @@ export function createMemoryRuntime(options: MemoryRuntimeOptions): MemoryRuntim
 		directory,
 		profiles,
 		hostTools,
+		sessionEnd: ends.hook,
+		...(access === undefined ? {} : { access }),
 		async close() {
 			for (const session of sessions.values()) {
 				session.stopWatching();
