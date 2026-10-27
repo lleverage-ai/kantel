@@ -3,8 +3,8 @@
  * class wraps. Portable to Workers: no Node modules and no workers-types, only the minimal `SqlStorageLike` below.
  *
  * A Durable Object runs one request's code at a time, and runs it synchronously between awaits. Each `commit` here
- * checks every write's condition and applies the writes in one synchronous step (inside `transactionSync` when given),
- * so nothing else in the object can run between the check and the write. That, with the engine's conditional commits
+ * checks every write's condition and applies the writes in one synchronous `transactionSync`, so nothing else in the
+ * object can run between the check and the write, and a write that does not apply rolls back the ones before it. That, with the engine's conditional commits
  * on record revisions, keeps the race rules: requests that interleave at their awaits still settle a proposal once and
  * never spend a grant past `maxUses`.
  */
@@ -39,10 +39,10 @@ export interface SqlStorageLike {
 
 export interface SqliteVaultStoreOptions {
 	/**
-	 * Runs `work` as one transaction, such as a Durable Object's `ctx.storage.transactionSync`. Without it a commit's
-	 * writes still run in one synchronous step, which a Durable Object's write coalescing stores together.
+	 * Runs `work` as one transaction, rolled back if it throws: a Durable Object's `ctx.storage.transactionSync`.
+	 * Required, because a commit is every write or none: a write that fails part-way must undo the ones before it.
 	 */
-	readonly transactionSync?: <T>(work: () => T) => T;
+	readonly transactionSync: <T>(work: () => T) => T;
 }
 
 export interface SqliteVaultStore extends VaultStore {
@@ -64,8 +64,11 @@ function toRow(raw: RawRow): VaultRow {
 	return { id: raw.id, organisationId: raw.organisation_id, revision: Number(raw.revision), data: raw.data };
 }
 
-export function createSqliteVaultStore(sql: SqlStorageLike, options: SqliteVaultStoreOptions = {}): SqliteVaultStore {
-	const transactionSync = options.transactionSync ?? (<T>(work: () => T): T => work());
+/** Thrown inside a commit's transaction to roll it back when a write does not apply; the commit then answers `false`. */
+class WriteDidNotApply extends Error {}
+
+export function createSqliteVaultStore(sql: SqlStorageLike, options: SqliteVaultStoreOptions): SqliteVaultStore {
+	const { transactionSync } = options;
 
 	const holds = (write: VaultWrite): boolean => {
 		const found = sql
@@ -112,28 +115,39 @@ export function createSqliteVaultStore(sql: SqlStorageLike, options: SqliteVault
 		},
 
 		async commit(writes) {
-			// Checked and applied in one synchronous step: nothing else in the object runs in between.
-			return transactionSync(() => {
-				if (!writes.every(holds)) return false;
-				for (const write of writes) {
-					if (write.kind === "insert") {
-						sql.exec(
-							`INSERT INTO ${tableName(write.table)} (id, organisation_id, revision, data) VALUES (?, ?, 1, ?)`,
-							write.id,
-							write.organisationId,
-							write.data,
-						);
-					} else {
-						sql.exec(
-							`UPDATE ${tableName(write.table)} SET revision = revision + 1, data = ? WHERE id = ? AND revision = ?`,
-							write.data,
-							write.id,
-							write.revision,
-						);
+			// Two writes to one row cannot both hold against the state read before either: refused before writing.
+			const targets = new Set(writes.map((write) => `${write.table}\u0000${write.id}`));
+			if (targets.size !== writes.length) return false;
+			// Checked and applied in one synchronous transaction: nothing else in the object runs in between, and a write
+			// that does not apply (or throws) rolls back every write before it.
+			try {
+				return transactionSync(() => {
+					if (!writes.every(holds)) return false;
+					for (const write of writes) {
+						const cursor =
+							write.kind === "insert"
+								? sql.exec(
+										`INSERT INTO ${tableName(write.table)} (id, organisation_id, revision, data) VALUES (?, ?, 1, ?)`,
+										write.id,
+										write.organisationId,
+										write.data,
+									)
+								: sql.exec(
+										`UPDATE ${tableName(write.table)} SET revision = revision + 1, data = ? WHERE id = ? AND revision = ?`,
+										write.data,
+										write.id,
+										write.revision,
+									);
+						// Zero means the write's row did not match. Durable Objects may count index rows in `rowsWritten`, so a
+						// write that applied can report more than one.
+						if (cursor.rowsWritten < 1) throw new WriteDidNotApply();
 					}
-				}
-				return true;
-			});
+					return true;
+				});
+			} catch (error) {
+				if (error instanceof WriteDidNotApply) return false;
+				throw error;
+			}
 		},
 	};
 }
@@ -141,8 +155,8 @@ export function createSqliteVaultStore(sql: SqlStorageLike, options: SqliteVault
 export interface VaultDurableObjectCoreOptions extends Omit<VaultOptions, "store" | "cipher"> {
 	/** The object's `ctx.storage.sql`. */
 	readonly sql: SqlStorageLike;
-	/** The object's `ctx.storage.transactionSync`, bound to its storage. */
-	readonly transactionSync?: <T>(work: () => T) => T;
+	/** The object's `ctx.storage.transactionSync`, bound to its storage. Required: see `SqliteVaultStoreOptions`. */
+	readonly transactionSync: <T>(work: () => T) => T;
 	/** The 256-bit key item values are sealed with: 32 bytes, or base64 (from a Worker secret). */
 	readonly cipherKey: Uint8Array | string;
 	/** Names the key in every sealed value; see `createAesGcmCipher`. */
@@ -165,7 +179,7 @@ export class VaultDurableObjectCore {
 
 	constructor(options: VaultDurableObjectCoreOptions) {
 		const { sql, transactionSync, cipherKey, cipherKeyId, authenticate, ...vaultOptions } = options;
-		this.store = createSqliteVaultStore(sql, transactionSync === undefined ? {} : { transactionSync });
+		this.store = createSqliteVaultStore(sql, { transactionSync });
 		this.store.migrate();
 		this.vault = createVault({
 			...vaultOptions,
