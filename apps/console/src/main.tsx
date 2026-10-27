@@ -27,6 +27,7 @@ function App() {
 		let host: FixtureHost | undefined;
 		let session: SessionClient | undefined;
 		let cancelled = false;
+		let playTimer: ReturnType<typeof setTimeout> | undefined;
 		void fetch(chosen.url)
 			.then((response) => {
 				if (!response.ok) throw new Error(`Could not load ${chosen.label} (${response.status})`);
@@ -40,7 +41,8 @@ function App() {
 				setClient(session);
 				// Give the first snapshot a moment on screen before the live part starts.
 				// With ?profile=1 the Profiler counts start here, with the rows already shown as the baseline.
-				setTimeout(() => {
+				playTimer = setTimeout(() => {
+					if (cancelled) return;
 					profileStore?.reset(session?.getState().transcript.items.map((item) => item.id));
 					host?.play();
 				}, Number(params.get("delay") ?? "1200"));
@@ -49,6 +51,7 @@ function App() {
 			.catch((reason: unknown) => setError(String(reason)));
 		return () => {
 			cancelled = true;
+			clearTimeout(playTimer);
 			host?.pause();
 			session?.stop();
 		};
