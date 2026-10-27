@@ -1,0 +1,1173 @@
+{
+	"format": "harbour-m0-session-fixture/2",
+	"recordedAt": "2026-10-27T13:25:53.722Z",
+	"scenario": "research-task",
+	"entries": [
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "text",
+							"text": "Done: the title of example.com is \"Example Domain\"; notes are in notes/x.md and committed in the container's git repository."
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 35,
+						"output": 31,
+						"cacheRead": 1116,
+						"cacheWrite": 35,
+						"totalTokens": 1217,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "stop",
+					"timestamp": 1793107553200,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 48,
+			"conversationId": 2,
+			"byTaskId": 47
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-8-try-0",
+					"toolName": "read",
+					"content": [
+						{
+							"type": "text",
+							"text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 636,
+					"timestamp": 1793107553200
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 46,
+			"conversationId": 2,
+			"byTaskId": 45
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-8-try-0",
+							"name": "read",
+							"arguments": {
+								"path": "/workspace/notes/x.md"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 28,
+						"output": 10,
+						"cacheRead": 1088,
+						"cacheWrite": 28,
+						"totalTokens": 1154,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107552564,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 44,
+			"conversationId": 2,
+			"byTaskId": 43
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-7-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "0e1097c research notes\n1\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 1184,
+					"timestamp": 1793107552564
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 42,
+			"conversationId": 2,
+			"byTaskId": 41
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-7-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "cat git-log.txt && wc -l < git-log.txt"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 63,
+						"output": 15,
+						"cacheRead": 1025,
+						"cacheWrite": 64,
+						"totalTokens": 1167,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107551380,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 40,
+			"conversationId": 2,
+			"byTaskId": 39
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-6-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "[vault:redacted]\n403\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 1026,
+					"timestamp": 1793107551380
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 38,
+			"conversationId": 2,
+			"byTaskId": 37
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-6-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "git --version > /dev/null && curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 102,
+						"output": 51,
+						"cacheRead": 923,
+						"cacheWrite": 102,
+						"totalTokens": 1178,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107550354,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 36,
+			"conversationId": 2,
+			"byTaskId": 35
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-5-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\n0e1097c research notes\n0\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 2148,
+					"timestamp": 1793107550354
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 34,
+			"conversationId": 2,
+			"byTaskId": 33
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-5-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "git init -q && cat notes/x.md && grep -c 'Example Domain' research/example.html && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 50,
+						"output": 70,
+						"cacheRead": 873,
+						"cacheWrite": 51,
+						"totalTokens": 1044,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107548206,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 32,
+			"conversationId": 2,
+			"byTaskId": 31
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-4-try-0",
+					"toolName": "write",
+					"content": [
+						{
+							"type": "text",
+							"text": "Successfully wrote to /workspace/notes/x.md"
+						}
+					],
+					"isError": false,
+					"durationMs": 756,
+					"timestamp": 1793107548206
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 30,
+			"conversationId": 2,
+			"byTaskId": 29
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-4-try-0",
+							"name": "write",
+							"arguments": {
+								"path": "/workspace/notes/x.md",
+								"content": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 31,
+						"output": 32,
+						"cacheRead": 842,
+						"cacheWrite": 31,
+						"totalTokens": 936,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107547450,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 28,
+			"conversationId": 2,
+			"byTaskId": 27
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-3-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "403\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 107,
+					"timestamp": 1793107547450
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 26,
+			"conversationId": 2,
+			"byTaskId": 25
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-3-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 36,
+						"output": 22,
+						"cacheRead": 806,
+						"cacheWrite": 37,
+						"totalTokens": 901,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107547343,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 24,
+			"conversationId": 2,
+			"byTaskId": 23
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-2-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "[vault:redacted]\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 417,
+					"timestamp": 1793107547343
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 22,
+			"conversationId": 2,
+			"byTaskId": 21
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-2-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 53,
+						"output": 25,
+						"cacheRead": 753,
+						"cacheWrite": 53,
+						"totalTokens": 884,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107546926,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 20,
+			"conversationId": 2,
+			"byTaskId": 19
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-1-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "<title>Example Domain</title>\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 1029,
+					"timestamp": 1793107546926
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 18,
+			"conversationId": 2,
+			"byTaskId": 17
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-1-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 42,
+						"output": 38,
+						"cacheRead": 711,
+						"cacheWrite": 42,
+						"totalTokens": 833,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107545897,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 16,
+			"conversationId": 2,
+			"byTaskId": 15
+		},
+		{
+			"model": [
+				{
+					"role": "toolResult",
+					"toolCallId": "step-0-try-0",
+					"toolName": "bash",
+					"content": [
+						{
+							"type": "text",
+							"text": "README.md\nbrief.txt\nFind the title of https://example.com and note it in notes/x.md.\n"
+						}
+					],
+					"isError": false,
+					"durationMs": 636,
+					"timestamp": 1793107545897
+				}
+			],
+			"data": {
+				"diagnostics": []
+			},
+			"kind": "pi.tool-result",
+			"id": 14,
+			"conversationId": 2,
+			"byTaskId": 13
+		},
+		{
+			"model": [
+				{
+					"role": "assistant",
+					"content": [
+						{
+							"type": "toolCall",
+							"id": "step-0-try-0",
+							"name": "bash",
+							"arguments": {
+								"command": "ls -1 /workspace && cat brief.txt"
+							}
+						}
+					],
+					"api": "faux:1793107545172:kdmwop1xrfc",
+					"provider": "harbour-script",
+					"model": "scripted",
+					"usage": {
+						"input": 711,
+						"output": 13,
+						"cacheRead": 0,
+						"cacheWrite": 711,
+						"totalTokens": 1435,
+						"cost": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"total": 0
+						}
+					},
+					"stopReason": "toolUse",
+					"timestamp": 1793107545261,
+					"durationMs": 0
+				}
+			],
+			"kind": "pi.assistant",
+			"id": 12,
+			"conversationId": 2,
+			"byTaskId": 10
+		},
+		{
+			"model": [
+				{
+					"role": "system",
+					"content": "",
+					"sections": {
+						"preamble": "You are a Harbour spike agent working in /workspace."
+					},
+					"toolsAdded": [
+						{
+							"name": "bash",
+							"description": "Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+							"parameters": {
+								"type": "object",
+								"required": ["command"],
+								"properties": {
+									"command": {
+										"type": "string",
+										"description": "Bash command to execute"
+									},
+									"timeout": {
+										"type": "number",
+										"description": "Timeout in seconds (optional, no default timeout)"
+									}
+								}
+							}
+						},
+						{
+							"name": "read",
+							"description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+							"parameters": {
+								"type": "object",
+								"required": ["path"],
+								"properties": {
+									"path": {
+										"type": "string",
+										"description": "Path to the file to read (relative or absolute)"
+									},
+									"offset": {
+										"type": "number",
+										"description": "Line number to start reading from (1-indexed)"
+									},
+									"limit": {
+										"type": "number",
+										"description": "Maximum number of lines to read"
+									}
+								}
+							}
+						},
+						{
+							"name": "write",
+							"description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+							"parameters": {
+								"type": "object",
+								"required": ["path", "content"],
+								"properties": {
+									"path": {
+										"type": "string",
+										"description": "Path to the file to write (relative or absolute)"
+									},
+									"content": {
+										"type": "string",
+										"description": "Content to write to the file"
+									}
+								}
+							}
+						},
+						{
+							"name": "edit",
+							"description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+							"parameters": {
+								"type": "object",
+								"required": ["path", "edits"],
+								"properties": {
+									"path": {
+										"type": "string",
+										"description": "Path to the file to edit (relative or absolute)"
+									},
+									"edits": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"required": ["oldText", "newText"],
+											"properties": {
+												"oldText": {
+													"type": "string",
+													"description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+												},
+												"newText": {
+													"type": "string",
+													"description": "Replacement text for this targeted edit."
+												}
+											}
+										},
+										"description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+									}
+								}
+							}
+						}
+					],
+					"timestamp": 1793107545261
+				}
+			],
+			"kind": "pi.system",
+			"id": 11,
+			"conversationId": 2,
+			"byTaskId": 10
+		},
+		{
+			"model": [
+				{
+					"role": "user",
+					"content": "Run the research task in brief.txt.",
+					"timestamp": 1793107545261
+				}
+			],
+			"kind": "pi.user",
+			"id": 8,
+			"conversationId": 2
+		}
+	],
+	"execs": [
+		{
+			"command": "ls -1 /workspace && cat brief.txt",
+			"tier": "isolate",
+			"exitCode": 0,
+			"leaseId": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4",
+			"base": 1,
+			"version": 1,
+			"timings": {
+				"isolate.manifest": 232,
+				"isolate.exec": 151,
+				"isolate.scan": 0,
+				"isolate.call": 491,
+				"isolate.total": 491
+			}
+		},
+		{
+			"command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html",
+			"tier": "isolate",
+			"exitCode": 0,
+			"leaseId": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4",
+			"base": 1,
+			"version": 2,
+			"timings": {
+				"isolate.manifest": 0,
+				"isolate.exec": 220,
+				"isolate.scan": 0,
+				"isolate.call": 220,
+				"isolate.commit": 657,
+				"isolate.total": 877
+			}
+		},
+		{
+			"command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'",
+			"tier": "isolate",
+			"exitCode": 0,
+			"leaseId": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4",
+			"base": 2,
+			"version": 2,
+			"timings": {
+				"isolate.manifest": 151,
+				"isolate.exec": 182,
+				"isolate.scan": 0,
+				"isolate.call": 333,
+				"isolate.total": 333
+			}
+		},
+		{
+			"command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
+			"tier": "isolate",
+			"exitCode": 0,
+			"leaseId": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4",
+			"base": 2,
+			"version": 2,
+			"timings": {
+				"isolate.manifest": 0,
+				"isolate.exec": 45,
+				"isolate.scan": 0,
+				"isolate.call": 45,
+				"isolate.total": 45
+			}
+		},
+		{
+			"command": "git init -q && cat notes/x.md && grep -c 'Example Domain' research/example.html && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true",
+			"tier": "container",
+			"exitCode": 0,
+			"leaseId": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa",
+			"base": 3,
+			"version": 3,
+			"timings": {
+				"container.start": 241,
+				"container.ready": 544,
+				"container.request": 672,
+				"container.sync": 13,
+				"container.exec": 340.6,
+				"container.scan": 2.1,
+				"container.call": 1967,
+				"container.total": 1967
+			}
+		},
+		{
+			"command": "git --version > /dev/null && curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
+			"tier": "container",
+			"exitCode": 0,
+			"leaseId": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa",
+			"base": 3,
+			"version": 3,
+			"timings": {
+				"container.request": 931,
+				"container.sync": 1.5,
+				"container.exec": 914.1,
+				"container.scan": 0.5,
+				"container.call": 958,
+				"container.total": 958
+			}
+		},
+		{
+			"command": "cat git-log.txt && wc -l < git-log.txt",
+			"tier": "isolate",
+			"exitCode": 0,
+			"leaseId": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4",
+			"base": 4,
+			"version": 4,
+			"timings": {
+				"isolate.manifest": 125,
+				"isolate.exec": 126,
+				"isolate.scan": 0,
+				"isolate.call": 251,
+				"isolate.total": 251
+			}
+		}
+	],
+	"events": [],
+	"leases": [
+		{
+			"id": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4",
+			"sessionId": "research-task-mvqpxnc7",
+			"workspaceId": "ws-research-task-mvqpxnc7",
+			"tier": "isolate",
+			"baseVersion": 1,
+			"acquiredAt": 1793107545346,
+			"expiresAt": 1793108445346,
+			"endedAt": 1793107553200,
+			"endReason": "released"
+		},
+		{
+			"id": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa",
+			"sessionId": "research-task-mvqpxnc7",
+			"workspaceId": "ws-research-task-mvqpxnc7",
+			"tier": "container",
+			"baseVersion": 3,
+			"acquiredAt": 1793107548311,
+			"expiresAt": 1793108448311,
+			"endedAt": 1793107553317,
+			"endReason": "released"
+		}
+	],
+	"audit": [
+		{
+			"at": 1793107545346,
+			"source": "sandbox",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"id": "sandbox:lease:lease_9eddfb80-0e16-4919-80e7-2733de7e42a4:acquired",
+			"type": "sandbox.lease.acquired",
+			"subject": {
+				"kind": "sandbox.lease",
+				"id": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4"
+			},
+			"data": {
+				"tier": "isolate",
+				"workspaceId": "ws-research-task-mvqpxnc7",
+				"baseVersion": 1,
+				"expiresAt": 1793108445346
+			}
+		},
+		{
+			"at": 1793107546926,
+			"source": "workspace",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"subject": {
+				"kind": "workspace",
+				"id": "ws-research-task-mvqpxnc7"
+			},
+			"id": "workspace:commit:ws-research-task-mvqpxnc7:2",
+			"type": "workspace.committed",
+			"data": {
+				"version": 2,
+				"changed": ["research/example.html"],
+				"leaseId": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4"
+			}
+		},
+		{
+			"at": 1793107548206,
+			"source": "workspace",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"subject": {
+				"kind": "workspace",
+				"id": "ws-research-task-mvqpxnc7"
+			},
+			"id": "workspace:commit:ws-research-task-mvqpxnc7:3",
+			"type": "workspace.committed",
+			"data": {
+				"version": 3,
+				"changed": ["notes/x.md"]
+			}
+		},
+		{
+			"at": 1793107548311,
+			"source": "sandbox",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"id": "sandbox:lease:lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa:acquired",
+			"type": "sandbox.lease.acquired",
+			"subject": {
+				"kind": "sandbox.lease",
+				"id": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa"
+			},
+			"data": {
+				"tier": "container",
+				"workspaceId": "ws-research-task-mvqpxnc7",
+				"baseVersion": 3,
+				"expiresAt": 1793108448311
+			}
+		},
+		{
+			"at": 1793107548311,
+			"source": "sandbox",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"id": "sandbox:escalated:org-harbour-m0:research-task-mvqpxnc7",
+			"type": "sandbox.escalated",
+			"subject": {
+				"kind": "session",
+				"id": "research-task-mvqpxnc7"
+			},
+			"data": {
+				"tool": "bash",
+				"leaseId": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa",
+				"workspaceId": "ws-research-task-mvqpxnc7"
+			}
+		},
+		{
+			"at": 1793107552217,
+			"source": "workspace",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"subject": {
+				"kind": "workspace",
+				"id": "ws-research-task-mvqpxnc7"
+			},
+			"id": "workspace:commit:ws-research-task-mvqpxnc7:4",
+			"type": "workspace.committed",
+			"data": {
+				"version": 4,
+				"changed": ["git-log.txt"],
+				"leaseId": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa"
+			}
+		},
+		{
+			"at": 1793107553200,
+			"source": "sandbox",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"id": "sandbox:lease:lease_9eddfb80-0e16-4919-80e7-2733de7e42a4:released",
+			"type": "sandbox.lease.released",
+			"subject": {
+				"kind": "sandbox.lease",
+				"id": "lease_9eddfb80-0e16-4919-80e7-2733de7e42a4"
+			},
+			"data": {
+				"tier": "isolate",
+				"reason": "released",
+				"heldMs": 7854,
+				"busyMs": 1997
+			}
+		},
+		{
+			"at": 1793107553350,
+			"source": "sandbox",
+			"actor": {
+				"kind": "agent",
+				"agentId": "agent-m0-cf1",
+				"sessionId": "research-task-mvqpxnc7"
+			},
+			"organisationId": "org-harbour-m0",
+			"projectId": "proj-m0-cf1",
+			"sessionId": "research-task-mvqpxnc7",
+			"agentId": "agent-m0-cf1",
+			"id": "sandbox:lease:lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa:released",
+			"type": "sandbox.lease.released",
+			"subject": {
+				"kind": "sandbox.lease",
+				"id": "lease_69ed49c0-5adb-4a6f-a37d-225cb695c4aa"
+			},
+			"data": {
+				"tier": "container",
+				"reason": "released",
+				"heldMs": 5006,
+				"busyMs": 2925
+			}
+		}
+	],
+	"vault": [
+		{
+			"at": 1793107546237,
+			"useId": "use_606f7aeb-8b3b-45d9-bf0c-570c88f3b706",
+			"sessionId": "research-task-mvqpxnc7",
+			"tier": "isolate",
+			"method": "GET",
+			"host": "example.com",
+			"path": "/",
+			"reason": "Allowed by policy policy_67f75358-9e5d-416c-9ad1-18c3c1eefe16",
+			"policyId": "policy_67f75358-9e5d-416c-9ad1-18c3c1eefe16",
+			"decision": "allowed",
+			"status": 200,
+			"redactions": 0,
+			"injected": {
+				"header": "X-Harbour-Vault",
+				"item": "research-canary"
+			}
+		},
+		{
+			"at": 1793107547195,
+			"useId": "use_c54718a1-1236-4200-be77-95170dfd8a51",
+			"sessionId": "research-task-mvqpxnc7",
+			"tier": "isolate",
+			"method": "GET",
+			"host": "postman-echo.com",
+			"path": "/headers",
+			"reason": "Allowed by policy policy_cb9488bc-8d56-40a1-8bdd-37acb553115e",
+			"policyId": "policy_cb9488bc-8d56-40a1-8bdd-37acb553115e",
+			"decision": "allowed",
+			"status": 200,
+			"redactions": 1,
+			"injected": {
+				"header": "X-Harbour-Vault",
+				"item": "research-canary"
+			}
+		},
+		{
+			"at": 1793107547437,
+			"useId": "use_b32789b6-a9b3-42c4-918e-4bc5865f2d28",
+			"sessionId": "research-task-mvqpxnc7",
+			"tier": "isolate",
+			"method": "GET",
+			"host": "api.github.com",
+			"path": "/zen",
+			"reason": "No active grant or policy allows GET api.github.com/zen",
+			"decision": "denied",
+			"status": 403
+		},
+		{
+			"at": 1793107551138,
+			"useId": "use_4e181f55-f81c-4c91-859d-1a263f96b590",
+			"sessionId": "research-task-mvqpxnc7",
+			"tier": "container",
+			"method": "GET",
+			"host": "postman-echo.com",
+			"path": "/headers",
+			"reason": "Allowed by policy policy_cb9488bc-8d56-40a1-8bdd-37acb553115e",
+			"policyId": "policy_cb9488bc-8d56-40a1-8bdd-37acb553115e",
+			"decision": "allowed",
+			"status": 200,
+			"redactions": 1,
+			"injected": {
+				"header": "X-Harbour-Vault",
+				"item": "research-canary"
+			}
+		},
+		{
+			"at": 1793107551363,
+			"useId": "use_5210787c-16ef-4f1c-836a-afe0e93f6745",
+			"sessionId": "research-task-mvqpxnc7",
+			"tier": "container",
+			"method": "GET",
+			"host": "api.github.com",
+			"path": "/zen",
+			"reason": "No active grant or policy allows GET api.github.com/zen",
+			"decision": "denied",
+			"status": 403
+		}
+	]
+}

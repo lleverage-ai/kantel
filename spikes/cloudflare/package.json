@@ -1,0 +1,35 @@
+{
+	"name": "@harbour/spike-cloudflare",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "M0-CF1: the Cloudflare spike (session Durable Object, isolate and container tiers, shared workspace, stub vault)",
+	"license": "Apache-2.0",
+	"scripts": {
+		"build:isolate": "node scripts/build-isolate.mjs",
+		"types": "wrangler types --include-runtime=false src/worker-configuration.d.ts",
+		"typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+		"test": "vitest run",
+		"deploy": "pnpm build:isolate && wrangler deploy",
+		"dev": "pnpm build:isolate && wrangler dev"
+	},
+	"dependencies": {
+		"@earendil-works/chord": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
+		"@harbour/vault": "workspace:*",
+		"@harbour/workspace": "workspace:*",
+		"just-bash": "3.6.0"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "5.20261027.1",
+		"@harbour/testing": "workspace:*",
+		"@types/node": "24.19.2",
+		"esbuild": "0.28.2",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12",
+		"wrangler": "4.153.0"
+	}
+}

@@ -1,0 +1,84 @@
+{
+	"name": "research-task",
+	"description": "M0 spike task (plan #spike): fetch a page through the vault, write notes/x.md, run one git command in the container, prove each tier sees the other's last write and that the canary never reaches the sandbox, then hand back.",
+	"seed": {
+		"README.md": "# Research workspace\n\nSeeded by the M0 spike scenario.\n",
+		"brief.txt": "Find the title of https://example.com and note it in notes/x.md.\n"
+	},
+	"steps": [
+		{
+			"label": "isolate-lists-workspace",
+			"tool": "bash",
+			"args": { "command": "ls -1 /workspace && cat brief.txt" },
+			"expect": { "tier": "isolate", "exitCode": 0, "stdoutIncludes": ["README.md", "brief.txt"] }
+		},
+		{
+			"label": "isolate-fetches-through-vault",
+			"tool": "bash",
+			"args": {
+				"command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html"
+			},
+			"expect": { "tier": "isolate", "exitCode": 0, "stdoutIncludes": ["<title>Example Domain</title>"] }
+		},
+		{
+			"label": "isolate-vault-injects-and-redacts",
+			"tool": "bash",
+			"args": { "command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'" },
+			"expect": { "tier": "isolate", "exitCode": 0, "stdoutIncludes": ["[vault:redacted]"], "canaryAbsent": true }
+		},
+		{
+			"label": "isolate-vault-denies-unlisted-host",
+			"tool": "bash",
+			"args": { "command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen" },
+			"expect": { "tier": "isolate", "stdoutIncludes": ["403"] }
+		},
+		{
+			"label": "write-tool-writes-notes",
+			"tool": "write",
+			"args": {
+				"path": "/workspace/notes/x.md",
+				"content": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n"
+			},
+			"expect": {}
+		},
+		{
+			"label": "container-sees-isolate-and-write-tool",
+			"tool": "bash",
+			"args": {
+				"command": "git init -q && cat notes/x.md && grep -c 'Example Domain' research/example.html && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true"
+			},
+			"expect": {
+				"tier": "container",
+				"exitCode": 0,
+				"stdoutIncludes": ["Example Domain", "research notes"],
+				"canaryAbsent": true
+			}
+		},
+		{
+			"label": "container-vault-injects-and-redacts",
+			"tool": "bash",
+			"args": {
+				"command": "git --version > /dev/null && curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen"
+			},
+			"expect": {
+				"tier": "container",
+				"exitCode": 0,
+				"stdoutIncludes": ["[vault:redacted]", "403"],
+				"canaryAbsent": true
+			}
+		},
+		{
+			"label": "isolate-sees-container-write",
+			"tool": "bash",
+			"args": { "command": "cat git-log.txt && wc -l < git-log.txt" },
+			"expect": { "tier": "isolate", "exitCode": 0, "stdoutIncludes": ["research notes"] }
+		},
+		{
+			"label": "read-tool-reads-notes",
+			"tool": "read",
+			"args": { "path": "/workspace/notes/x.md" },
+			"expect": { "stdoutIncludes": ["Example Domain"] }
+		}
+	],
+	"finalAnswer": "Done: the title of example.com is \"Example Domain\"; notes are in notes/x.md and committed in the container's git repository."
+}
