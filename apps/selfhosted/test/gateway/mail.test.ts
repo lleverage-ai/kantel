@@ -73,6 +73,21 @@ describe("the test SMTP client and Mailpit reader", () => {
 		}
 	});
 
+	it("answers undefined, not an error, when a responsive Mailpit has no message", async () => {
+		const { createServer } = await import("node:http");
+		const { latestMessageTo } = await import("./mailpit.ts");
+		const server = createServer((_request, response) => {
+			response.setHeader("content-type", "application/json");
+			response.end(JSON.stringify({ messages: [] }));
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as { port: number }).port;
+		for (const timeoutMs of [100, 450, 700]) {
+			await expect(latestMessageTo(`http://127.0.0.1:${port}`, "a@b", timeoutMs)).resolves.toBeUndefined();
+		}
+		await new Promise((resolve) => server.close(resolve));
+	});
+
 	it("bounds a stalled Mailpit API by its timeout", async () => {
 		const { createServer } = await import("node:http");
 		const { latestMessageTo } = await import("./mailpit.ts");

@@ -117,7 +117,8 @@ export async function latestMessageTo(
 				text: message.Text,
 			};
 		}
-		const left = deadline - Date.now();
+		// Leave time for one more search to answer; a search that starts after the deadline would only abort.
+		const left = deadline - Date.now() - 200;
 		if (left <= 0) return undefined;
 		await new Promise((resolve) => setTimeout(resolve, Math.min(200, left)));
 	}
