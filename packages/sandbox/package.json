@@ -1,0 +1,19 @@
+{
+	"name": "@harbour/sandbox",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Sandbox facade: tier routing, leases and exec over the workspace",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./memory": "./src/memory.ts"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/workspace": "workspace:*"
+	},
+	"devDependencies": {
+		"@harbour/testing": "workspace:*"
+	}
+}

@@ -1,0 +1,16 @@
+{
+	"name": "@harbour/testing",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Conformance suites for every Harbour contract, a manual clock and fixtures",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/protocol": "workspace:*"
+	}
+}

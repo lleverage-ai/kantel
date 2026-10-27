@@ -1,0 +1,15 @@
+{
+	"name": "@harbour/contracts",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Every Harbour contract as TypeScript interfaces; no runtime dependencies and no Pi types",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@harbour/protocol": "workspace:*"
+	}
+}

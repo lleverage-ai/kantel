@@ -1,0 +1,30 @@
+{
+	"name": "harbour",
+	"private": true,
+	"type": "module",
+	"description": "Harbour: an agent platform on Pi core and Pi Durable",
+	"license": "Apache-2.0",
+	"packageManager": "pnpm@10.34.9",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json && pnpm -r --parallel --if-present typecheck",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"test": "vitest run",
+		"check": "pnpm typecheck && pnpm lint && pnpm test"
+	},
+	"pnpm": {
+		"ignoredBuiltDependencies": [
+			"@google/genai",
+			"protobufjs"
+		]
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.3",
+		"@types/node": "24.19.2",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12"
+	}
+}

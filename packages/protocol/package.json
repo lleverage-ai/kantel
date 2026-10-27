@@ -1,0 +1,12 @@
+{
+	"name": "@harbour/protocol",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Harbour's client wire protocol: hello, snapshot, deltas, history and cards",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./memory": "./src/memory.ts"
+	}
+}
