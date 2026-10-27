@@ -22,6 +22,7 @@ import {
 	type SubmissionId,
 	section,
 	type ToolRegistration,
+	type Wake,
 } from "@earendil-works/pi-durable";
 import {
 	type AccessCheck,
@@ -36,6 +37,7 @@ import {
 	createProjectAccess,
 	HarbourError,
 	type HostToolBridge,
+	type HostToolDefinition,
 	type HostToolHandler,
 	type IdentityDirectory,
 	type ModelChoice,
@@ -67,7 +69,7 @@ import {
 	type ResolvedModel,
 	runResultOf,
 } from "./index.ts";
-import type { SessionStore, StoredHost, StoredSession } from "./store.ts";
+import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
 
 export interface SessionRuntimeOptions {
 	/** Directory, profiles, submissions and host registrations. */
@@ -101,6 +103,16 @@ export interface SessionRuntimeOptions {
 	readonly hostHandler?: (host: StoredHost) => HostToolHandler | undefined;
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
+	/** Told of each session `resume()` could not open. Default: ignored. */
+	readonly onResumeError?: (sessionId: SessionId, error: unknown) => void;
+	/** Told when storing a session's wake failed; the next change writes it again. Default: ignored. */
+	readonly onWakeError?: (sessionId: SessionId, error: unknown) => void;
+	/**
+	 * Told each time a session will next need a process at `at` (epoch ms), so a target whose process can be evicted
+	 * arms a wakeup for it (a Durable Object alarm) and calls `resume()` when it fires. In a process that stays up,
+	 * the runtime's own timers do this.
+	 */
+	readonly onWakeAt?: (at: number) => void;
 }
 
 export interface SessionRuntimeService {
@@ -115,8 +127,45 @@ export interface SessionRuntimeService {
 	readonly sessionEnd: SessionEndHook;
 	/** The project-access check over this runtime's sessions, when `identity` was given; components can share it. */
 	readonly access?: ProjectAccess;
+	/**
+	 * Host registrations kept in the store with their callback, so they outlive this process: a runtime opened later on
+	 * the same store serves them through `hostHandler`.
+	 */
+	readonly hosts: DurableHosts;
+	/**
+	 * Runs every session whose stored wake is due: work a previous process left mid-run (it marked the session before
+	 * admitting it), and sleeps (timers, retry backoffs) that have fallen due. Then arms this process's timer for the
+	 * next wake. Call it once after start, and from a target's alarm; says how many sessions it ran. A session that
+	 * fails to open is reported to `onResumeError` and skipped.
+	 */
+	resume(): Promise<number>;
 	/** Closes every open session's Harness. Their work stays in storage for a runtime that opens them again. */
 	close(): Promise<void>;
+}
+
+export interface DurableHostRegistration {
+	/** Names this registration: removing it needs the name, so a stale holder cannot remove its replacement. */
+	readonly registration: string;
+}
+
+/** Host registrations whose tools are served over a callback, stored so they survive a restart. */
+export interface DurableHosts {
+	/**
+	 * Registers (or replaces) the host's tools, served over `callback`. The same checks as `HostToolBridge.register`.
+	 * `owner` names who registered it; only the same owner may remove it.
+	 */
+	register(
+		ctx: CallContext,
+		hostId: string,
+		tools: readonly HostToolDefinition[],
+		callback: HostCallback,
+		owner: string,
+	): Promise<DurableHostRegistration>;
+	/**
+	 * Removes the registration if it is still the host's current one and `owner` made it. `not_found` when it is not
+	 * (it was replaced, or never was); `forbidden` when someone else made it.
+	 */
+	remove(ctx: CallContext, hostId: string, registration: string, owner: string): Promise<void>;
 }
 
 interface OpenSession {
@@ -148,6 +197,16 @@ interface OpenSession {
 	closed: boolean;
 	/** A close in progress; a second close waits for it. */
 	closing?: Promise<void>;
+	/** The wake last written (or queued) to the store. */
+	wakeAt?: number;
+	/** Wake writes, in order. */
+	waking: Promise<unknown>;
+	/** Resumes the Harness when its earliest sleep falls due. */
+	sleepTimer?: ReturnType<typeof setTimeout>;
+	/** Pi submits and aborts in progress; while any is, the stored wake stays due. */
+	admissions: number;
+	/** The Harness has closed (by this runtime, or itself after a storage failure). */
+	harnessClosed: boolean;
 	/** The store records the session as closed. */
 	durablyClosed: boolean;
 	stopWatching(): void;
@@ -263,6 +322,74 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				throw error;
 			}
 		});
+	};
+
+	/** Queues a write of when the session next needs a process, after the wake writes before it. */
+	const writeWake = (session: OpenSession, at: number | undefined): Promise<unknown> => {
+		if (session.wakeAt === at) return session.waking;
+		session.wakeAt = at;
+		session.waking = after(session.waking, () => store.setWake(session.record.id, at)).catch((error: unknown) => {
+			// What the store holds is unknown now: NaN equals nothing and is never due, so the next wake writes again.
+			if (session.wakeAt === at) session.wakeAt = Number.NaN;
+			throw error;
+		});
+		if (at !== undefined) options.onWakeAt?.(at);
+		return session.waking;
+	};
+
+	/**
+	 * Runs `admit` (a Pi submit or abort) with the session marked as needing a process: the mark is stored first, and
+	 * no wake from the Harness lowers it until `admit` has settled, so a process that dies between Pi's commit and the
+	 * Harness's next wake leaves the session where `resume()` finds it. Then the stored wake follows the Harness again.
+	 */
+	const admitting = async <T>(session: OpenSession, admit: () => Promise<T>): Promise<T> => {
+		session.admissions += 1;
+		try {
+			const now = clock.now();
+			const marked = session.wakeAt !== undefined && session.wakeAt <= now;
+			await (marked ? session.waking : writeWake(session, now));
+			return await admit();
+		} finally {
+			session.admissions -= 1;
+			if (session.admissions === 0 && !session.harnessClosed && !closed) {
+				try {
+					followWake(session, session.harness.wake());
+				} catch {
+					// The Harness is closing: the mark stays due, and the next opening sets the real wake.
+				}
+			}
+		}
+	};
+
+	/**
+	 * Follows the Harness's wake (`HarnessOptions.onWake`): stores it, and arms this process's timer for its earliest
+	 * sleep. With `onWake` set, Pi arms no timer of its own.
+	 */
+	const followWake = (session: OpenSession, wake: Wake) => {
+		if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
+		session.sleepTimer = undefined;
+		const now = clock.now();
+		const known = session.wakeAt !== undefined && Number.isFinite(session.wakeAt) ? session.wakeAt : now;
+		const at = wake.active ? Math.min(known, now) : wake.at;
+		// While input is being admitted the mark stays; `admitting` brings the wake up to date once it is in.
+		if (session.admissions === 0 || (at !== undefined && at <= now)) {
+			writeWake(session, at).catch((error: unknown) => options.onWakeError?.(session.record.id, error));
+		}
+		if (!wake.active && wake.at !== undefined && !session.closed && !session.harnessClosed && !closed) {
+			session.sleepTimer = setTimeout(
+				() => {
+					session.sleepTimer = undefined;
+					if (closed || session.harnessClosed || open.get(session.record.id) !== session) return;
+					try {
+						session.harness.resume();
+					} catch (error) {
+						options.onWakeError?.(session.record.id, error);
+					}
+				},
+				Math.max(0, wake.at - clock.now()),
+			);
+			(session.sleepTimer as { unref?: () => void }).unref?.();
+		}
 	};
 
 	const publish = (session: OpenSession, ops: readonly DeltaOp[]) => {
@@ -408,7 +535,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		registry.install(extensionFor({ profile }, []));
 		const context = BACKGROUND_CONTEXT;
 		const storage = await options.storage(record);
-		const harness = await Harness.open(storage, { models, registry, now: () => clock.now() }, context);
+		// Wakes go to the session once it exists; the first (from open) is read with `harness.wake()` below.
+		let onWake: (wake: Wake) => void = () => {};
+		const harness = await Harness.open(
+			storage,
+			{ models, registry, now: () => clock.now(), onWake: (wake) => onWake(wake) },
+			context,
+		);
 		let conversation: Conversation;
 		let view: AttachedReplicatedState<ConversationView>;
 		try {
@@ -448,11 +581,24 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			closed: stored.closed,
 			durablyClosed: stored.closed,
 			stopWatching: () => {},
+			...(stored.wakeAt === undefined ? {} : { wakeAt: stored.wakeAt }),
+			waking: Promise.resolve(),
+			admissions: 0,
+			harnessClosed: false,
 		};
+		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
 		const unsubscribe = view.subscribe(() => sync(session));
+		// The Harness closes itself after a failed storage call. Its timer goes with it; the session stays in `open`, so
+		// calls fail rather than racing a second opening against this one's queued writes and close.
+		const unsubscribeClose = harness.subscribeClose(() => {
+			session.harnessClosed = true;
+			if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
+			session.sleepTimer = undefined;
+		});
 		session.stopWatching = () => {
 			unsubscribe();
+			unsubscribeClose();
 			view.dispose();
 		};
 		try {
@@ -468,6 +614,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				harness.resume();
 				sync(session);
 			}
+			followWake(session, harness.wake());
 			await session.publishing;
 		} catch (error) {
 			open.delete(record.id);
@@ -518,7 +665,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				failure ??= { error };
 			}
 		}
-		await session.conversation.abort(piContext(ctx));
+		await admitting(session, () => session.conversation.abort(piContext(ctx)));
 		await sync(session);
 		const run = session.aborts + 1;
 		session.aborts = run;
@@ -556,15 +703,17 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		if (input.text === "") throw new HarbourError("invalid", "A prompt needs text");
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
-		const pi = await session.conversation.submit(
-			{
-				type: "input",
-				content: input.text,
-				whenBusy: via === "steer" ? "steer" : "followUp",
-				entry: harbourUserEntry(via, input.requestId),
-				...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-			},
-			piContext(ctx),
+		const pi = await admitting(session, () =>
+			session.conversation.submit(
+				{
+					type: "input",
+					content: input.text,
+					whenBusy: via === "steer" ? "steer" : "followUp",
+					entry: harbourUserEntry(via, input.requestId),
+					...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+				},
+				piContext(ctx),
+			),
 		);
 		const id = `${sessionId}/${pi.id}`;
 		const existing = await store.submission(sessionId, id);
@@ -807,37 +956,116 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		},
 	};
 
+	/**
+	 * Stores a registration that replaces the host's last, after the checks: unique tool names, and operator on the
+	 * project the call names (or across the organisation) and on the scope of the registration it replaces, so no one
+	 * takes over another project's tools.
+	 */
+	const putRegistration = async (
+		ctx: CallContext,
+		hostId: string,
+		tools: readonly HostToolDefinition[],
+		serve: { readonly handler: HostToolHandler } | { readonly callback: HostCallback; readonly owner: string },
+	): Promise<string> => {
+		const names = new Set<string>();
+		for (const tool of tools) {
+			if (tool.name === "" || names.has(tool.name)) {
+				throw new HarbourError("invalid", `Tool names must be unique and not empty: "${tool.name}"`);
+			}
+			names.add(tool.name);
+		}
+		const existing = await store.host(ctx.organisationId, hostId);
+		for (const projectId of new Set([ctx.projectId, ...(existing === undefined ? [] : [existing.projectId])])) {
+			await check(ctx, {
+				...(projectId === undefined ? {} : { projectId }),
+				needed: "operator",
+				operation: "session.hostTools.register",
+				subject: { kind: "session.host", id: hostId },
+			});
+		}
+		const registration = crypto.randomUUID();
+		if ("handler" in serve) localHandlers.set(registration, serve.handler);
+		if (existing !== undefined) localHandlers.delete(existing.registration);
+		await store.putHost({
+			organisationId: ctx.organisationId,
+			hostId,
+			tools: [...tools],
+			registration,
+			...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+			...("callback" in serve ? { callback: serve.callback, owner: serve.owner } : {}),
+		});
+		await refreshHostTools(ctx.organisationId, hostId);
+		return registration;
+	};
+
+	/** Arms this process's timer for the earliest wake of a session not open here. */
+	let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+	let resumeTimerAt: number | undefined;
+	const armResume = (at: number) => {
+		if (closed || (resumeTimerAt !== undefined && resumeTimerAt <= at)) return;
+		if (resumeTimer !== undefined) clearTimeout(resumeTimer);
+		resumeTimerAt = at;
+		resumeTimer = setTimeout(
+			() => {
+				resumeTimer = undefined;
+				resumeTimerAt = undefined;
+				void resume().catch(() => undefined);
+			},
+			Math.max(0, at - clock.now()),
+		);
+		(resumeTimer as { unref?: () => void }).unref?.();
+	};
+
+	const resume = async (): Promise<number> => {
+		let resumed = 0;
+		const now = clock.now();
+		for (const stored of await store.wakeable(now)) {
+			try {
+				const session = await ensureOpen(stored);
+				// Already open here: its sleep is due, or its work was cut off; either way, run it.
+				if (!session.closed) session.harness.resume();
+				resumed += 1;
+			} catch (error) {
+				options.onResumeError?.(stored.record.id, error);
+			}
+		}
+		// The earliest still to come: a due wake (a session running now) must not hide a later sleeper's.
+		const next = await store.nextWake(now);
+		if (next !== undefined) armResume(next);
+		return resumed;
+	};
+
+	const hosts: DurableHosts = {
+		async register(ctx, hostId, tools, callback, owner) {
+			return { registration: await putRegistration(ctx, hostId, tools, { callback, owner }) };
+		},
+		async remove(ctx, hostId, registration, owner) {
+			const current = await store.host(ctx.organisationId, hostId);
+			// A stale holder (its registration since replaced) finds nothing of its own to remove.
+			if (current === undefined || current.registration !== registration) {
+				throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+			}
+			if (current.owner !== owner) {
+				throw new HarbourError("forbidden", "Only whoever registered a host may remove it");
+			}
+			// And only while they may still register there: an owner who has lost the project loses its hosts too.
+			await check(ctx, {
+				...(current.projectId === undefined ? {} : { projectId: current.projectId }),
+				needed: "operator",
+				operation: "session.hostTools.remove",
+				subject: { kind: "session.host", id: hostId },
+			});
+			if (!(await store.deleteHost(ctx.organisationId, hostId, registration))) {
+				throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+			}
+			localHandlers.delete(registration);
+			await refreshHostTools(ctx.organisationId, hostId);
+		},
+	};
+
 	const hostTools: HostToolBridge = {
 		async register(ctx, hostId, tools, handler) {
-			const names = new Set<string>();
-			for (const tool of tools) {
-				if (tool.name === "" || names.has(tool.name)) {
-					throw new HarbourError("invalid", `Tool names must be unique and not empty: "${tool.name}"`);
-				}
-				names.add(tool.name);
-			}
-			// A host registers for the project its call names, or across the organisation. Replacing a host registered
-			// for another scope needs the same there, so no one takes over another project's tools.
-			const existing = await store.host(ctx.organisationId, hostId);
-			for (const projectId of new Set([ctx.projectId, ...(existing === undefined ? [] : [existing.projectId])])) {
-				await check(ctx, {
-					...(projectId === undefined ? {} : { projectId }),
-					needed: "operator",
-					operation: "session.hostTools.register",
-					subject: { kind: "session.host", id: hostId },
-				});
-			}
-			const registration = crypto.randomUUID();
-			localHandlers.set(registration, handler);
-			if (existing !== undefined) localHandlers.delete(existing.registration);
-			await store.putHost({
-				organisationId: ctx.organisationId,
-				hostId,
-				tools: [...tools],
-				registration,
-				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
-			});
-			await refreshHostTools(ctx.organisationId, hostId);
+			const registration = await putRegistration(ctx, hostId, tools, { handler });
 			return {
 				async close() {
 					localHandlers.delete(registration);
@@ -866,14 +1094,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		directory,
 		profiles,
 		hostTools,
+		hosts,
 		sessionEnd: ends.hook,
 		...(access === undefined ? {} : { access }),
+		resume,
 		async close() {
 			closed = true;
+			if (resumeTimer !== undefined) clearTimeout(resumeTimer);
 			await Promise.allSettled([...opening.values()]);
 			for (const session of [...open.values()]) {
 				open.delete(session.record.id);
+				if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
 				session.stopWatching();
+				await session.waking.catch(() => undefined);
 				await session.publishing.catch(() => undefined);
 				await session.harness.close(BACKGROUND_CONTEXT);
 			}

@@ -156,6 +156,19 @@ export function callbackHostToolHandler(options: CallbackHandlerOptions): HostTo
 	};
 }
 
+/**
+ * The runtime's `hostHandler` for durable registrations: each stored registration's callback is served by
+ * `callbackHostToolHandler` over its URL and secret. Pass the same options the session API calls hosts with.
+ */
+export function callbackHostHandlers(
+	options: Omit<CallbackHandlerOptions, "url" | "secret"> = {},
+): (host: { readonly callback?: { readonly url: string; readonly secret: string } }) => HostToolHandler | undefined {
+	return (host) =>
+		host.callback === undefined
+			? undefined
+			: callbackHostToolHandler({ ...options, url: host.callback.url, secret: host.callback.secret });
+}
+
 export interface HostToolEndpointOptions {
 	/** The secret the host registered; a function so it can rotate. */
 	readonly secret: string | (() => string | undefined);

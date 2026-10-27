@@ -26,6 +26,7 @@ import {
 	systemClock,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
+import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
 import {
@@ -47,6 +48,12 @@ export interface SessionApiOptions {
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
+	/**
+	 * Where host registrations are kept, when they should outlive this process: the runtime's `hosts`, with the runtime
+	 * given `hostHandler: callbackHostHandlers(…)`. Without it a registration lives in this API instance and ends with
+	 * it (or its `close()`).
+	 */
+	readonly hosts?: DurableHosts;
 	/** The deployment's authenticator, as every Harbour API takes it: `createAuthenticator` from `@harbour/identity`. */
 	readonly authenticator: Authenticator;
 	/** The prefix of every route. Default `/v1`. */
@@ -383,6 +390,23 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					throw new HarbourError("invalid", "projectId must be a string");
 				}
 				const generated = callback.secret === undefined ? randomSecret() : undefined;
+				const scoped: CallContext = body.projectId === undefined ? ctx : { ...ctx, projectId: body.projectId };
+				if (options.hosts !== undefined) {
+					const stored = await options.hosts.register(
+						scoped,
+						hostId,
+						tools,
+						{ url: target.href, secret: callback.secret ?? (generated as string) },
+						actorKey(ctx),
+					);
+					const response: RegisterHostResponse = {
+						hostId,
+						registration: stored.registration,
+						tools,
+						...(generated === undefined ? {} : { secret: generated }),
+					};
+					return json(response);
+				}
 				const handler = callbackHostToolHandler({
 					url: target.href,
 					secret: callback.secret ?? (generated as string),
@@ -390,7 +414,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 					...(options.callbackTimeoutMs === undefined ? {} : { timeoutMs: options.callbackTimeoutMs }),
 				});
-				const scoped: CallContext = body.projectId === undefined ? ctx : { ...ctx, projectId: body.projectId };
 				const subscription = await hostTools.register(scoped, hostId, tools, handler);
 				// The bridge replaced any earlier registration; closing that one now would change nothing.
 				const registration = randomSecret();
@@ -409,6 +432,10 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				const registration = registrations.get(key);
 				const named = url.searchParams.get("registration");
 				if (named === null || named === "") throw new HarbourError("invalid", "Name the registration to remove");
+				if (options.hosts !== undefined) {
+					await options.hosts.remove(ctx, hostId, named, actorKey(ctx));
+					return new Response(null, { status: 204 });
+				}
 				// A stale subscription (one since replaced) finds nothing of its own to remove.
 				if (registration === undefined || named !== registration.registration) {
 					throw new HarbourError("not_found", `No such registration for host ${hostId}`);

@@ -30,6 +30,12 @@ export interface StoredSession {
 	readonly aborts: number;
 	/** Closed for good; later input is refused. */
 	readonly closed: boolean;
+	/**
+	 * When the session next needs a process to run its work (epoch ms; anything not after now means right away), absent
+	 * when it needs none. Set before input is admitted and kept to what its Harness says (`Harness.wake()`), so a
+	 * process that starts finds every session a dead one left mid-run, and every sleep that falls due.
+	 */
+	readonly wakeAt?: number;
 }
 
 export interface StoredSubmission {
@@ -78,8 +84,14 @@ export interface SessionStore {
 		sessionId: SessionId,
 		change: Partial<Pick<StoredSession, "record" | "aborts" | "closed">>,
 	): Promise<void>;
-	/** Sessions not closed, oldest first: the ones a restarted runtime may have to resume. */
+	/** Sessions not closed, oldest first. */
 	openSessions(): Promise<readonly StoredSession[]>;
+	/** Sets (or, with `undefined`, clears) when the session next needs a process. */
+	setWake(sessionId: SessionId, at: number | undefined): Promise<void>;
+	/** Sessions not closed whose wake is at or before `before`, earliest first. */
+	wakeable(before: number): Promise<readonly StoredSession[]>;
+	/** The earliest wake after `after` of any session not closed. */
+	nextWake(after: number): Promise<number | undefined>;
 
 	submission(sessionId: SessionId, submissionId: string): Promise<StoredSubmission | undefined>;
 	/** Adds a submission; one already stored under its ID is kept. */
@@ -151,6 +163,25 @@ export function createMemorySessionStore(): SessionStore {
 		},
 		async openSessions() {
 			return [...sessions.values()].filter((session) => !session.closed).sort((l, r) => l.sequence - r.sequence);
+		},
+		async setWake(sessionId, at) {
+			const current = sessions.get(sessionId);
+			if (current === undefined) throw new Error(`Session ${sessionId} is not stored`);
+			const { wakeAt: _previous, ...rest } = current;
+			sessions.set(sessionId, at === undefined ? rest : { ...rest, wakeAt: at });
+		},
+		async wakeable(before) {
+			return [...sessions.values()]
+				.filter((session) => !session.closed && session.wakeAt !== undefined && session.wakeAt <= before)
+				.sort((l, r) => (l.wakeAt as number) - (r.wakeAt as number) || l.sequence - r.sequence);
+		},
+		async nextWake(after) {
+			let next: number | undefined;
+			for (const session of sessions.values()) {
+				if (session.closed || session.wakeAt === undefined || session.wakeAt <= after) continue;
+				if (next === undefined || session.wakeAt < next) next = session.wakeAt;
+			}
+			return next;
 		},
 		async submission(sessionId, submissionId) {
 			const stored = submissions.get(submissionId);

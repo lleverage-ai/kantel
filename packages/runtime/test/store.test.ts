@@ -94,6 +94,33 @@ describe.each(stores)("session store (%s)", (_name, open) => {
 		await close();
 	});
 
+	it("keeps each session's wake, lists the due ones earliest first, and leaves closed ones out", async () => {
+		const { store, close } = await open();
+		for (const id of ["w1", "w2", "w3", "w4"]) {
+			await store.createSession({ record: recordFor(id, 1), profile, aborts: 0, closed: false });
+		}
+		expect(await store.nextWake(0)).toBeUndefined();
+		await store.setWake("w1", 300);
+		await store.setWake("w2", 100);
+		await store.setWake("w3", 50);
+		await store.setWake("w4", 200);
+		await store.updateSession("w3", { closed: true });
+		expect((await store.wakeable(250)).map((s) => [s.record.id, s.wakeAt])).toEqual([
+			["w2", 100],
+			["w4", 200],
+		]);
+		expect(await store.nextWake(0)).toBe(100);
+		// Only wakes still to come.
+		expect(await store.nextWake(100)).toBe(200);
+		// Other updates keep the wake; clearing it takes the session out.
+		await store.updateSession("w2", { aborts: 1 });
+		expect((await store.session("w2"))?.wakeAt).toBe(100);
+		await store.setWake("w2", undefined);
+		expect((await store.session("w2"))?.wakeAt).toBeUndefined();
+		expect(await store.nextWake(0)).toBe(200);
+		await close();
+	});
+
 	it("keeps the first submission under an ID", async () => {
 		const { store, close } = await open();
 		await store.putSubmission({ submission: { id: "s1/1", sessionId: "s1", via: "prompt" }, piSubmissionId: 1 });

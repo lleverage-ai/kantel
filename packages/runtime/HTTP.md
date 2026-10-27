@@ -106,5 +106,7 @@ endpoint through `hostCallbacks.serve` before registering, and removes both when
 
 ## Not yet
 
-Registrations, like the in-memory runtime, live only as long as the process. History paging is not served (the
+Without the `hosts` option, registrations live only as long as the API instance. With it (the runtime's `hosts`, and
+the runtime given `hostHandler: callbackHostHandlers({ fetch })`), each one is stored with its callback and secret,
+survives restarts, and is removed only by `DELETE` from the same caller. History paging is not served (the
 runtime contract has no `history` yet). There is no CORS handling; serve the console from the same origin or proxy it.
