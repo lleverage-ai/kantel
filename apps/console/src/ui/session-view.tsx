@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import { ProfilePanel } from "./profile-panel.tsx";
-import { profiling } from "./profile.tsx";
+import { Profiled, profiling } from "./profile.tsx";
 import { Transcript } from "./transcript.tsx";
 
 function useNow(enabled: boolean): number {
@@ -91,7 +91,9 @@ export function SessionView({ client, fixtures, current }: { client: SessionClie
 				) : null}
 			</header>
 			<main className="main">
-				<Transcript items={state.transcript.items} hasOlder={state.before !== null} loadingOlder={state.loadingOlder} onLoadOlder={() => client.loadOlder()} />
+				<Profiled id="transcript-list">
+					<Transcript items={state.transcript.items} hasOlder={state.before !== null} loadingOlder={state.loadingOlder} onLoadOlder={client.loadOlder} />
+				</Profiled>
 			</main>
 			<footer className="composer">
 				<div className="column">

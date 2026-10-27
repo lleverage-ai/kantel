@@ -281,13 +281,13 @@ h1 {
 	margin: 0 auto;
 }
 
-/* virtua wraps every row in its own element, so the ends are marked by class, not :first-child. */
+/* virtua wraps every row in its own element, so the ends are marked explicitly, not with :first-child. */
 .row-first .column {
 	padding-top: 16px;
 }
 
-.row-last .column {
-	padding-bottom: 28px;
+.transcript-end {
+	height: 28px;
 }
 
 .turn-start .column {

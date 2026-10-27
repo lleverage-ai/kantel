@@ -147,12 +147,12 @@ export class SessionClient {
 		}, wait);
 	}
 
-	loadOlder(): void {
+	loadOlder = (): void => {
 		const { before, loadingOlder } = this.state;
 		if (before === null || loadingOlder || this.connection === undefined) return;
 		this.set({ loadingOlder: true });
 		this.send({ type: "history", sessionId: this.state.sessionId, before, limit: HISTORY_PAGE });
-	}
+	};
 
 	private receive(message: ServerMessage): void {
 		switch (message.type) {

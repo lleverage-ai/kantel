@@ -4,6 +4,7 @@ import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
 import { FixtureHost, parseRecording } from "./server-sim/fixture-host.ts";
 import { SessionClient } from "./state/session-client.ts";
+import { profileStore } from "./ui/profile.tsx";
 import { SessionView } from "./ui/session-view.tsx";
 import "./ui/styles.css";
 
@@ -38,7 +39,11 @@ function App() {
 				session.start();
 				setClient(session);
 				// Give the first snapshot a moment on screen before the live part starts.
-				setTimeout(() => host?.play(), Number(params.get("delay") ?? "1200"));
+				// With ?profile=1 the Profiler counts start here, with the rows already shown as the baseline.
+				setTimeout(() => {
+					profileStore?.reset(session?.getState().transcript.items.map((item) => item.id));
+					host?.play();
+				}, Number(params.get("delay") ?? "1200"));
 				Object.assign(window, { __harbour: { host, client: session } });
 			})
 			.catch((reason: unknown) => setError(String(reason)));

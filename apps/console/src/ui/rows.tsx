@@ -48,7 +48,7 @@ function NoticeRow({ item }: { item: NoticeItem }) {
 	return <div className={`notice notice-${item.tone}`}>{item.text}</div>;
 }
 
-export const Row = memo(function Row({ item, turnStart, edge }: { item: TranscriptItem; turnStart: boolean; edge?: "first" | "last" | undefined }) {
+export const Row = memo(function Row({ item, turnStart, first }: { item: TranscriptItem; turnStart: boolean; first: boolean }) {
 	let body;
 	switch (item.kind) {
 		case "user":
@@ -66,7 +66,7 @@ export const Row = memo(function Row({ item, turnStart, edge }: { item: Transcri
 	}
 	return (
 		<Profiled id={item.id}>
-			<div className={`row row-${item.kind}${turnStart ? " turn-start" : ""}${edge ? ` row-${edge}` : ""}`} data-item={item.id}>
+			<div className={`row row-${item.kind}${turnStart ? " turn-start" : ""}${first ? " row-first" : ""}`} data-item={item.id}>
 				<div className="column">{body}</div>
 			</div>
 		</Profiled>

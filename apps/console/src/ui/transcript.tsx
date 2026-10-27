@@ -9,6 +9,11 @@ import { Row } from "./rows.tsx";
 // place when that page is put in front.
 
 const AT_BOTTOM_PX = 48;
+
+// A fixed spacer always sits after the last item, so the bottom padding never belongs to a real row: if it did, the
+// row that was last would render again, to lose it, every time an item arrived.
+const END = { end: true } as const;
+type Entry = TranscriptItem | typeof END;
 const LOAD_OLDER_PX = 600;
 
 type Props = {
@@ -33,7 +38,7 @@ export function Transcript({ items, hasOlder, loadingOlder, onLoadOlder }: Props
 	const toBottom = useCallback(() => {
 		const handle = list.current;
 		if (handle === null || items.length === 0) return;
-		handle.scrollToIndex(items.length - 1, { align: "end" });
+		handle.scrollToIndex(items.length, { align: "end" });
 	}, [items.length]);
 
 	useLayoutEffect(() => {
@@ -70,15 +75,14 @@ export function Transcript({ items, hasOlder, loadingOlder, onLoadOlder }: Props
 
 	return (
 		<div className="transcript" ref={frame}>
-			<VList<TranscriptItem> ref={list} data={items as TranscriptItem[]} shift={prepended} onScroll={onScroll} className="vlist" bufferSize={600}>
-				{(item, index) => (
-					<Row
-						key={item.id}
-						item={item}
-						turnStart={item.kind === "user" && index > 0}
-						edge={index === 0 && !hasOlder ? "first" : index === items.length - 1 ? "last" : undefined}
-					/>
-				)}
+			<VList<Entry> ref={list} data={[...items, END]} shift={prepended} onScroll={onScroll} className="vlist" bufferSize={600}>
+				{(item, index) =>
+					"end" in item ? (
+						<div key="end" className="transcript-end" aria-hidden="true" />
+					) : (
+						<Row key={item.id} item={item} turnStart={item.kind === "user" && index > 0} first={index === 0 && !hasOlder} />
+					)
+				}
 			</VList>
 			{loadingOlder ? <div className="older">Loading earlier messages…</div> : null}
 			{showLatest ? (

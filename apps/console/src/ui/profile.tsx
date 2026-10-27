@@ -15,7 +15,9 @@ type ProfileStore = {
 	updates: Record<string, number>;
 	mounts: Record<string, number>;
 	resetAt: number;
-	reset(): void;
+	/** Rows that existed at the reset: the earlier turns. One of these rendering again is a regression. */
+	baseline: Set<string>;
+	reset(ids?: Iterable<string>): void;
 };
 
 function createStore(): ProfileStore {
@@ -24,10 +26,12 @@ function createStore(): ProfileStore {
 		updates: {},
 		mounts: {},
 		resetAt: 0,
-		reset() {
+		baseline: new Set(),
+		reset(ids) {
 			store.records = [];
 			store.updates = {};
 			store.mounts = {};
+			store.baseline = new Set(ids ?? []);
 			store.resetAt = performance.now();
 		},
 	};
