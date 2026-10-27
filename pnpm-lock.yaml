@@ -119,6 +119,9 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
+      "@harbour/identity":
+        specifier: workspace:*
+        version: link:../identity
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
