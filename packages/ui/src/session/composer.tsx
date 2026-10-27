@@ -162,19 +162,23 @@ export function Composer({
 		<div className={`hb-composer hb-composer-${state}`}>
 			{banner === undefined || banner === null ? null : <div className="hb-composer-banner">{banner}</div>}
 			<div className="hb-composer-surface" data-focus-surface="">
-				<textarea
-					ref={field}
-					className="hb-composer-input"
-					rows={1}
-					value={text}
-					onChange={change}
-					onKeyDown={keyDown}
-					placeholder={placeholder}
-					aria-label={label}
-					aria-describedby={showReason ? reasonId : undefined}
-					disabled={disabled}
-					enterKeyHint={coarse ? "enter" : "send"}
-				/>
+				{/* Disabled with a reason and nothing typed, the composer is one line: the reason and the action. An empty
+				    field, or an invitation to type, beside the reason would contradict it. A draft always stays visible. */}
+				{showReason && text === "" ? null : (
+					<textarea
+						ref={field}
+						className="hb-composer-input"
+						rows={1}
+						value={text}
+						onChange={change}
+						onKeyDown={keyDown}
+						placeholder={showReason ? undefined : placeholder}
+						aria-label={label}
+						aria-describedby={showReason ? reasonId : undefined}
+						disabled={disabled}
+						enterKeyHint={coarse ? "enter" : "send"}
+					/>
+				)}
 				<div className="hb-composer-bar">
 					<div className="hb-composer-footer">
 						{showReason ? (

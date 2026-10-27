@@ -22,7 +22,7 @@ parent's height.
 ```
 
 Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `loading`, `empty`, `error`,
-`onRowRender(id)`, `className`.
+`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `className`.
 
 **Not for** short lists of messages outside a session (a preview, a search result): render `UserMessage` and
 `AssistantMessage` directly. Not a live region: screen readers are not read every token.
@@ -47,8 +47,9 @@ Key the transcript by session. A different session's items would otherwise look 
 **Cost:** only the rows near the viewport are mounted (a 600px buffer each way), whatever the session's length.
 Rows come from `groupTranscript` and are memoised on their row object, so while one answer streams only its row
 renders. `renderCard` is a row prop: pass a stable function, or every row renders when it changes. `onRowRender` is
-read through a ref and never causes a render. One `ResizeObserver` on the list's content keeps the end in view while
-following.
+read through a ref and never causes a render; `apps/console` feeds it to its `?profile=1` panel. One `ResizeObserver`
+on the list's content and its viewport keeps the end in view while following, including when the viewport is
+resized (a phone's keyboard opening).
 
 ### groupTranscript
 

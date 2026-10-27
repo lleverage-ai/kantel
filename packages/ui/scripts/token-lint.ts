@@ -7,7 +7,7 @@
 // buttons or anywhere else in rendered text.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 export type Finding = { file: string; line: number; rule: string; text: string };
 
@@ -144,13 +144,30 @@ export function lintPackage(root: string): Finding[] {
 		.flatMap((path) => lintSource(path, readFileSync(join(root, path), "utf8")));
 }
 
+/**
+ * Lints a host app that builds on the library (apps/console): its CSS and TSX under src/, where its UI lives. Plain
+ * .ts there is the app's logic (timers, protocol numbers), not styling, so it is left alone.
+ */
+export function lintHost(root: string): Finding[] {
+	return files(root, "src")
+		.filter((path) => /\.(css|tsx)$/.test(path))
+		.flatMap((path) => lintSource(path, readFileSync(join(root, path), "utf8")));
+}
+
+// node scripts/token-lint.ts [host-app-dir ...]: the library itself, then each host app given.
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const root = new URL("..", import.meta.url).pathname;
-	const findings = lintPackage(root);
-	for (const finding of findings) {
-		console.log(
-			`${relative(process.cwd(), join(root, finding.file))}:${finding.line}  ${finding.rule}\n    ${finding.text}`,
-		);
+	const checked = [
+		{ root, findings: lintPackage(root) },
+		...process.argv.slice(2).map((dir) => ({ root: resolve(dir), findings: lintHost(resolve(dir)) })),
+	];
+	const findings = checked.flatMap((entry) => entry.findings);
+	for (const entry of checked) {
+		for (const finding of entry.findings) {
+			console.log(
+				`${relative(process.cwd(), join(entry.root, finding.file))}:${finding.line}  ${finding.rule}\n    ${finding.text}`,
+			);
+		}
 	}
 	console.log(
 		findings.length === 0 ? "Token and copy lint: clean" : `Token and copy lint: ${findings.length} findings`,

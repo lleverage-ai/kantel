@@ -86,6 +86,11 @@
 	padding: var(--hb-space-2) var(--hb-space-4) var(--hb-space-4) var(--hb-space-6);
 }
 
+/* Alone in the surface (disabled with a reason and no draft): even padding, one line. */
+.hb-composer-bar:first-child {
+	padding-top: var(--hb-space-4);
+}
+
 .hb-composer-footer {
 	display: flex;
 	flex: 1;

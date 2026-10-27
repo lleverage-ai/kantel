@@ -164,6 +164,16 @@ export const Error: Story = () => (
 				/>
 			</Column>
 		</Section>
+		<Section title="Disabled with a reason, keeping a draft">
+			<Column>
+				<Composer
+					state="disabled"
+					defaultValue="Now run the full suite and open a PR."
+					disabledReason="Offline. Your draft is kept and sends when you reconnect."
+					onSend={() => {}}
+				/>
+			</Column>
+		</Section>
 	</Sheet>
 );
 

@@ -160,10 +160,7 @@ export function Transcript({
 	// The render hook lives in a ref, so a new callback from the host never re-renders the rows.
 	const onRowRenderRef = useRef(onRowRender);
 	onRowRenderRef.current = onRowRender;
-	const report = useCallback(
-		(id: string, phase: RowRenderPhase) => onRowRenderRef.current?.(id, phase),
-		[],
-	);
+	const report = useCallback((id: string, phase: RowRenderPhase) => onRowRenderRef.current?.(id, phase), []);
 
 	const list = useRef<VListHandle>(null);
 	const frame = useRef<HTMLElement>(null);

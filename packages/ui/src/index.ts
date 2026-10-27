@@ -1,5 +1,7 @@
 // @harbour/ui: Harbour's component library. Importing anything from it brings in the tokens and the base styles; put
 // the `hb-app` class on the host's root element to opt the page into them. See README.md for what to use when.
+// This file is listed in package.json's sideEffects: without it a bundler sees only re-exports here and drops the two
+// imports below, and a production build ships the components without their tokens.
 
 import "./tokens/tokens.css";
 import "./tokens/base.css";

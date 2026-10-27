@@ -20,7 +20,13 @@ import { Button, ListRow, StatusLabel } from "@harbour/ui";
 
 Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source and plain CSS
 that each component imports itself, so a Vite app needs no extra configuration and pays only for the components it
-uses. React 19 is a peer dependency.
+uses. React 19 is a peer dependency. `src/index.ts` is listed in `sideEffects` because it imports the tokens and the
+base styles: keep it there, or a production build drops them while the dev server still shows them.
+
+`apps/console` is the reference host: its `src/ui/session-view.tsx` maps a session client's state onto
+`SessionHeader`, `Transcript` and `Composer`, and its only CSS is layout, in tokens. Lint a host's CSS and TSX
+with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`), or by hand:
+`node packages/ui/scripts/token-lint.ts apps/console`.
 
 ## Rules for frontend work
 
@@ -62,7 +68,8 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
 | Icons | 16px line icons in currentColor | Decoration |
 
-Session components (the transcript, tool-call chip, composer, session list item and approval cards) are in
-`src/session/`. Each component's purpose, when not to use it, its states and its cost are in
-[docs/components.md](docs/components.md). How components are improved is in
+Session components (the transcript, tool-call chip, composer, session header, session list and approval cards) are
+in `src/session/`, documented in [docs/session-transcript.md](docs/session-transcript.md),
+[docs/session-composer.md](docs/session-composer.md) and [docs/session-list-vault.md](docs/session-list-vault.md).
+Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
 [docs/design-loop.md](docs/design-loop.md).

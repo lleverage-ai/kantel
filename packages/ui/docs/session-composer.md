@@ -38,7 +38,7 @@ own field; the composer beside it is for telling the agent something else).
 | `running` | text | Steer (primary, "Steer"): calls `onSteer`, else `onSend` |
 | `running` | empty | Stop (danger, "Stop"): calls `onStop`; disabled without it |
 | `sending` | any | A spinner ("Sending"), not clickable |
-| `disabled` | any | Send, disabled; the field is disabled and `disabledReason` shows in the surface in muted text |
+| `disabled` | any | Send, disabled; `disabledReason` shows in the surface in muted text. With a reason and no draft the field folds away, so the composer is one line; a draft always stays visible |
 
 The field grows from about 48px to about 208px with its text, then scrolls. Type is 14px, and 16px under a coarse
 pointer so iOS doesn't zoom; the button is 32px, 36px under a coarse pointer.
