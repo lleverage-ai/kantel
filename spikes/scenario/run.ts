@@ -6,7 +6,8 @@
  *   HARBOUR_SPIKE_TOKEN=... HARBOUR_CANARY=... bun spikes/scenario/run.ts \
  *     --base-url https://harbour-m0-cf1.<subdomain>.workers.dev [--kill-after-exec 2] [--fixture out.json]
  *
- * Exit code 0 when every check passes. Prints one JSON report on stdout.
+ * Exit code 0 when every check passes. Prints one JSON report on stdout, and a short verdict on stderr that names
+ * every failed check with its detail, so a run whose stdout is redirected (CI) still says what failed.
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
@@ -149,19 +150,23 @@ if (canary !== undefined) {
 }
 const vault =
 	(await call<{ decision: string; tier: string; injected?: unknown; redactions?: number }[]>("GET", "vault")) ?? [];
+const vaultDetail = vault.map(({ tier, decision, redactions }) => ({ tier, decision, redactions }));
 check(
 	"vault allowed and injected for both tiers",
 	["isolate", "container"].every((t) =>
 		vault.some((u) => u.tier === t && u.decision === "allowed" && u.injected !== undefined),
 	),
+	vaultDetail,
 );
 check(
 	"vault denied for both tiers",
 	["isolate", "container"].every((t) => vault.some((u) => u.tier === t && u.decision === "denied")),
+	vaultDetail,
 );
 check(
 	"vault redacted echoed canary for both tiers",
 	["isolate", "container"].every((t) => vault.some((u) => u.tier === t && (u.redactions ?? 0) > 0)),
+	vaultDetail,
 );
 
 if (killAfterExec !== undefined) {
@@ -203,5 +208,10 @@ console.log(
 		null,
 		2,
 	),
+);
+const failed = checks.filter((c) => !c.ok);
+for (const c of failed) console.error(`FAIL ${c.name}: ${JSON.stringify(c.detail ?? null).slice(0, 2000)}`);
+console.error(
+	`${ok ? "PASS" : "FAIL"}: ${checks.length - failed.length}/${checks.length} checks, ${elapsedMs} ms (session ${sessionId}${killAfterExec === undefined ? "" : `, kill after exec ${killAfterExec}`})`,
 );
 process.exit(ok ? 0 : 1);

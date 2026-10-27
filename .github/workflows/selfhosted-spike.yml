@@ -69,21 +69,33 @@ jobs:
 
       # The scenario script shared with the Cloudflare target (M0-CF1, #3).
       # It needs the public internet: example.com, postman-echo.com, api.github.com.
+      # Each run prints its verdict and any failed checks on stderr; the full
+      # JSON reports are printed below if the job fails.
       - name: Shared scenario (spikes/scenario/run.ts), normal and crash
         if: hashFiles('spikes/scenario/run.ts') != ''
         env:
           HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
           HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 > /dev/null
-          bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 --kill-after-exec 2 > /dev/null
+          bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 > "$RUNNER_TEMP/shared-scenario.json"
+          bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"
 
       - name: Canary appears nowhere
         run: deploy/compose/scripts/check-canary.sh
 
+      - name: Shared scenario reports on failure
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/shared-scenario*.json; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
       - name: Logs on failure
         if: failure()
-        run: docker compose -f deploy/compose/compose.yaml logs --no-color --tail 300
+        run: docker compose -f deploy/compose/compose.yaml logs --no-color --timestamps --tail 300
 
       - name: Tear down
         if: always()
