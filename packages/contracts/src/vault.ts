@@ -56,6 +56,11 @@ export interface VaultItem {
 	/** Hosts the item is bound to. Nothing injects it anywhere else. */
 	readonly hosts: readonly string[];
 	readonly injection: InjectionRule;
+	/**
+	 * The stand-in a sandbox may hold, such as `harbour://github-token/4f91c2`. The egress proxy swaps it for the real
+	 * value only on the way to one of `hosts`.
+	 */
+	readonly placeholder: string;
 	/** Whether a value is stored. The value itself is never returned by any read. */
 	readonly hasValue: boolean;
 	readonly valueVersion: number;
@@ -232,6 +237,14 @@ export interface VaultUse {
 	readonly reason?: string;
 }
 
+/** What a refused request tells the agent: never a dead end, always the next step. */
+export interface EgressFix {
+	/** `propose` when a proposal could allow it; `none` when nothing can (outside the ceiling). */
+	readonly action: "propose" | "none";
+	/** Plain-language next step, such as "Ask for a route grant to api.github.com". Never includes a value. */
+	readonly message: string;
+}
+
 export interface EgressRequest {
 	readonly organisationId: OrganisationId;
 	readonly projectId?: ProjectId;
@@ -252,6 +265,8 @@ export interface EgressDecision {
 	readonly grantId?: string;
 	readonly policyId?: string;
 	readonly inject?: { readonly header: string; readonly value: string };
+	/** Present on every denial. */
+	readonly fix?: EgressFix;
 }
 
 /** Delivered to a waiting agent. Says plainly that no request has run. */
