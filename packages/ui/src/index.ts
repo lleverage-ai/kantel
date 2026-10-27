@@ -96,36 +96,6 @@ export {
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
-
-// Workspace components.
-export { FileTree, type FileTreeProps } from "./workspace/file-tree.tsx";
-export { FileViewer, type FileViewerProps, type FileViewState } from "./workspace/file-viewer.tsx";
-export { NoteViewer, type NoteViewerProps, type NoteViewState } from "./workspace/note-viewer.tsx";
-export {
-	compareEntries,
-	type DirectoryState,
-	entryName,
-	fileExtension,
-	fileKind,
-	fileViewerLineCap,
-	formatBytes,
-	isNote,
-	nextFocus,
-	noteTitle,
-	parentPath,
-	placeholderPath,
-	sortEntries,
-	type TreeMove,
-	type TreePlaceholderKind,
-	type TreeRow,
-	type TreeRowKind,
-	textLines,
-	visibleRows,
-	type WorkspaceEntry,
-	type WorkspaceEntryKind,
-	type WorkspaceFileKind,
-} from "./workspace/workspace-model.ts";
-
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
 export {
@@ -163,3 +133,31 @@ export {
 	type VaultRequest,
 	type Viewer,
 } from "./vault/vault-page-model.ts";
+// Workspace components.
+export { FileTree, type FileTreeProps } from "./workspace/file-tree.tsx";
+export { FileViewer, type FileViewerProps, type FileViewState } from "./workspace/file-viewer.tsx";
+export { NoteViewer, type NoteViewerProps, type NoteViewState } from "./workspace/note-viewer.tsx";
+export {
+	compareEntries,
+	type DirectoryState,
+	entryName,
+	fileExtension,
+	fileKind,
+	fileViewerLineCap,
+	formatBytes,
+	isNote,
+	nextFocus,
+	noteTitle,
+	parentPath,
+	placeholderPath,
+	sortEntries,
+	type TreeMove,
+	type TreePlaceholderKind,
+	type TreeRow,
+	type TreeRowKind,
+	textLines,
+	visibleRows,
+	type WorkspaceEntry,
+	type WorkspaceEntryKind,
+	type WorkspaceFileKind,
+} from "./workspace/workspace-model.ts";
