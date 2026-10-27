@@ -22,8 +22,14 @@ describe("deploy config", () => {
 		expect(() => deployValues({}, "deploy")).toThrow(
 			/Cannot deploy: set the repository variables CLOUDFLARE_ACCOUNT_ID/,
 		);
-		const { HARBOUR_ADMIN_EMAIL: _, ...withoutAdmin } = configured;
-		expect(() => deployValues({ ...withoutAdmin, HARBOUR_ADMIN_EMAIL: "  " }, "deploy")).toThrow(/HARBOUR_ADMIN_EMAIL/);
+		for (const name of DEPLOY_VARIABLES) {
+			const { [name]: _, ...without } = configured;
+			expect(() => deployValues(without, "deploy"), name).toThrow(
+				`Cannot deploy: set the repository variables ${name}`,
+			);
+			expect(() => deployValues({ ...configured, [name]: "  " }, "deploy"), name).toThrow(name);
+		}
+		expect(deployValues(configured, "deploy").placeholders).toEqual([]);
 	});
 
 	it("fills placeholders for a dry run before the account is set up, and names no account", () => {
@@ -43,7 +49,20 @@ describe("deploy config", () => {
 			expect(() => deployValues({ ...configured, HARBOUR_MODELS_VPC_SERVICE_ID: "sal-app" }, mode)).toThrow(
 				/HARBOUR_MODELS_VPC_SERVICE_ID/,
 			);
-			expect(() => deployValues({ ...configured, HARBOUR_ADMIN_EMAIL: "tom" }, mode)).toThrow(/HARBOUR_ADMIN_EMAIL/);
+			const malformed: Record<string, readonly string[]> = {
+				CLOUDFLARE_ACCOUNT_ID: ["0123", "my-account"],
+				HARBOUR_HOSTNAME: ["harbour", "harbour.example-", "harbour.myslop.app/v1"],
+				HARBOUR_ACCESS_TEAM_DOMAIN: ["team", "https://team.cloudflareaccess.com/login"],
+				HARBOUR_ACCESS_AUD: ["not hex", "abc"],
+				HARBOUR_ADMIN_EMAIL: ["tom", "admin@harbour..test", "a b@harbour.test", "@harbour.test", "admin@harbour"],
+			};
+			for (const [name, values] of Object.entries(malformed)) {
+				for (const value of values) {
+					expect(() => deployValues({ ...configured, [name]: value }, mode), `${name}=${value}`).toThrow(
+						`${name} must be`,
+					);
+				}
+			}
 		}
 	});
 
@@ -105,5 +124,6 @@ describe("access check", () => {
 			fails(/not the Access team domain/),
 		);
 		expect(accessVerdict(302, `https://${team}/somewhere`, team)).toEqual(fails(/not \/cdn-cgi/));
+		expect(accessVerdict(302, `https://${team}/cdn-cgi/access/login-elsewhere`, team)).toEqual(fails(/not \/cdn-cgi/));
 	});
 });

@@ -43,7 +43,16 @@ const PLACEHOLDERS: Readonly<Record<Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_
 	HARBOUR_ADMIN_EMAIL: "admin@example.com",
 };
 
-const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/i;
+/** A host name with at least two labels, each 1-63 letters, digits or inner hyphens, ending in a letter label. */
+const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+/** A plain address: a local part without spaces or a second @, at a valid host name. */
+function isEmail(value: string): boolean {
+	const at = value.lastIndexOf("@");
+	if (at <= 0) return false;
+	const local = value.slice(0, at);
+	return /^[^\s@]{1,64}$/.test(local) && HOST.test(value.slice(at + 1));
+}
 
 /** A team domain may be given as `https://team.cloudflareaccess.com/`, as `cloudflareAccessIssuer` accepts it. */
 export function hostOnly(value: string): string {
@@ -72,7 +81,7 @@ const CHECKS: Readonly<Record<DeployVariable, { readonly test: (value: string) =
 			test: (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
 			expect: "the Workers VPC service's ID (a UUID)",
 		},
-		HARBOUR_ADMIN_EMAIL: { test: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v), expect: "an email address" },
+		HARBOUR_ADMIN_EMAIL: { test: isEmail, expect: "an email address" },
 	};
 
 export interface DeployValues {

@@ -36,7 +36,7 @@ export function accessVerdict(status: number, location: string | null, teamDomai
 	if (target.protocol !== "https:" || target.host.toLowerCase() !== team) {
 		return { ok: false, reason: `redirected to ${target.origin}, not the Access team domain https://${team}` };
 	}
-	if (!target.pathname.startsWith("/cdn-cgi/access/login")) {
+	if (target.pathname !== "/cdn-cgi/access/login" && !target.pathname.startsWith("/cdn-cgi/access/login/")) {
 		return { ok: false, reason: `redirected to ${target.pathname} on the team domain, not /cdn-cgi/access/login` };
 	}
 	return { ok: true };
