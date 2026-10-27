@@ -1,5 +1,7 @@
+import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import type { AgentProfile, SessionRecord } from "@harbour/contracts";
+import type { ServerFrame } from "@harbour/protocol";
 import { createSessionRuntime } from "@harbour/runtime/core";
 import { createSqlSessionStore, piPrefixFor, sqlPiStorage } from "@harbour/runtime/sql";
 import { createMemorySessionStore, type SessionStore } from "@harbour/runtime/store";
@@ -164,4 +166,150 @@ describe("session runtime on SQL", () => {
 		await third.service.close();
 		await db.close();
 	});
+
+	it("answers a cursor from before a restart with a snapshot, not a resume that misses what happened since", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		const first = await openOn(db);
+		await first.service.profiles.put(ctx, profile);
+		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		const frames: ServerFrame[] = [];
+		const watching = await first.service.runtime.watch(ctx, session.id, {}, (frame) => frames.push(frame));
+		const seen = frames.find((frame) => frame.type === "hello");
+		await watching.close();
+		first.script.reply({ text: "Answered while away" });
+		const prompt = await first.service.runtime.prompt(ctx, session.id, { text: "Hello" });
+		await first.service.runtime.wait(ctx, session.id, prompt.id);
+		await first.service.close();
+
+		const second = await openOn(db);
+		const after: ServerFrame[] = [];
+		if (seen?.type !== "hello") throw new Error("no hello");
+		const again = await second.service.runtime.watch(ctx, session.id, { after: seen.cursor }, (frame) =>
+			after.push(frame),
+		);
+		expect(after[0]).toMatchObject({ type: "hello", resumed: false });
+		const snapshot = after.find((frame) => frame.type === "snapshot");
+		expect(snapshot?.type === "snapshot" && snapshot.snapshot.items.map((item) => item.kind)).toEqual([
+			"user",
+			"assistant",
+		]);
+		await again.close();
+		await second.service.close();
+		await db.close();
+	});
+
+	it("retries a close whose store write failed, and the session stays closed after a restart", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		let failClose = true;
+		const first = await openOn(db, (store) => ({
+			...store,
+			async updateSession(sessionId, change) {
+				if (change.closed === true && failClose) {
+					failClose = false;
+					throw new Error("store down");
+				}
+				return store.updateSession(sessionId, change);
+			},
+		}));
+		await first.service.profiles.put(ctx, profile);
+		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		await expect(first.service.runtime.close(ctx, session.id)).rejects.toThrow("store down");
+		await expect(first.service.runtime.prompt(ctx, session.id, { text: "More" })).rejects.toMatchObject({
+			code: "conflict",
+		});
+		await first.service.runtime.close(ctx, session.id);
+		await first.service.close();
+
+		const second = await openOn(db);
+		expect((await second.service.directory.get(ctx, session.id)).status).toBe("done");
+		await expect(second.service.runtime.prompt(ctx, session.id, { text: "More" })).rejects.toMatchObject({
+			code: "conflict",
+		});
+		await second.service.close();
+		await db.close();
+	});
+
+	it("carries on writing a session's record after one write fails", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		let failNext = false;
+		const first = await openOn(db, (store) => ({
+			...store,
+			async updateSession(sessionId, change) {
+				if (change.record !== undefined && failNext) {
+					failNext = false;
+					throw new Error("store blip");
+				}
+				return store.updateSession(sessionId, change);
+			},
+		}));
+		await first.service.profiles.put(ctx, profile);
+		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		failNext = true;
+		first.script.reply({ text: "One" });
+		const prompt = await first.service.runtime.prompt(ctx, session.id, { text: "Hello" }).catch(() => undefined);
+		if (prompt !== undefined) await first.service.runtime.wait(ctx, session.id, prompt.id).catch(() => undefined);
+		first.script.reply({ text: "Two" });
+		const next = await first.service.runtime.prompt(ctx, session.id, { text: "Again" });
+		expect(await first.service.runtime.wait(ctx, session.id, next.id)).toMatchObject({ answer: "Two" });
+		await first.service.runtime.snapshot(ctx, session.id);
+		await first.service.close();
+
+		const second = await openOn(db);
+		expect((await second.service.directory.get(ctx, session.id)).status).toBe("idle");
+		const items = (await second.service.runtime.snapshot(ctx, session.id)).items;
+		expect(items.filter((item) => item.kind === "assistant")).toHaveLength(2);
+		await second.service.close();
+		await db.close();
+	});
+
+	it("installs host tools registered while a session was still opening", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		const hosted = { ...profile, hostId: "sal", tools: ["lookup"] };
+		const first = await openOn(db);
+		await first.service.profiles.put(ctx, hosted);
+		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		await first.service.close();
+
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const second = await openOn(db, undefined, gate);
+		const opening = second.service.runtime.snapshot(ctx, session.id);
+		const calls: string[] = [];
+		await second.service.hostTools.register(
+			ctx,
+			"sal",
+			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
+			async (call) => {
+				calls.push(call.tool);
+				return { output: "found" };
+			},
+		);
+		release();
+		await opening;
+		second.script.reply({ toolCalls: [{ name: "lookup", args: {} }] }, { text: "Done" });
+		const prompt = await second.service.runtime.prompt(ctx, session.id, { text: "Look it up" });
+		expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ answer: "Done" });
+		expect(calls).toEqual(["lookup"]);
+		await second.service.close();
+		await db.close();
+	});
 });
+
+const ctx = { actor: { kind: "service", serviceId: "test" }, organisationId: ORG } as const;
+
+/** A runtime on `db`, its store optionally wrapped, its Pi storage optionally held until `gate` resolves. */
+async function openOn(db: SqliteDatabase, wrap?: (store: SessionStore) => SessionStore, gate?: Promise<void>) {
+	const { models, script } = createScriptedModel();
+	const store = await createSqlSessionStore(db);
+	const service = createSessionRuntime({
+		store: wrap === undefined ? store : wrap(store),
+		storage: async (session) => {
+			await gate;
+			return sqlPiStorage(db, session.id);
+		},
+		models,
+	});
+	return { service, script };
+}

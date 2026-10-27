@@ -53,6 +53,7 @@ import {
 	systemClock,
 	systemContext,
 } from "@harbour/contracts";
+import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
 import {
 	ConversationProjector,
@@ -128,11 +129,50 @@ interface OpenSession {
 	readonly view: AttachedReplicatedState<ConversationView>;
 	readonly stream: MemorySessionStream;
 	readonly projector: ConversationProjector;
-	/** Stream publishes and directory writes, in order. */
+	/**
+	 * Stream publishes and directory writes, in order. Each step runs whether or not the one before it failed; a failure
+	 * reaches whoever awaited that step.
+	 */
 	publishing: Promise<unknown>;
+	/** The stored record is behind `record` (its last write failed or is still queued). */
+	unsaved: boolean;
+	/** The record last queued for writing. */
+	saved: SessionRecord;
+	/** Names this opening of the session's stream in the cursors it gives out. */
+	readonly generation: string;
+	/** Bumped on every reinstall of the session's host tools, so an older, slower one never installs over a newer one. */
+	toolsVersion: number;
 	aborts: number;
 	closed: boolean;
+	/** A close in progress; a second close waits for it. */
+	closing?: Promise<void>;
+	/** The store records the session as closed. */
+	durablyClosed: boolean;
 	stopWatching(): void;
+}
+
+/** Runs `step` after `queue` settles, whether it resolved or rejected. */
+const after = (queue: Promise<unknown>, step: () => unknown): Promise<unknown> =>
+	queue.then(step, step) as Promise<unknown>;
+
+/**
+ * Cursors carry the generation of the stream that issued them: a stream is rebuilt from the transcript each time a
+ * runtime opens the session, so a cursor from an earlier generation names a position this stream never had, and the
+ * client gets a snapshot instead of a false resume.
+ */
+const cursorIn = (generation: string, cursor: string) => `${generation}.${cursor}`;
+
+function framesIn(generation: string, frame: ServerFrame): ServerFrame {
+	switch (frame.type) {
+		case "hello":
+			return { ...frame, cursor: cursorIn(generation, frame.cursor) };
+		case "snapshot":
+			return { ...frame, snapshot: { ...frame.snapshot, cursor: cursorIn(generation, frame.snapshot.cursor) } };
+		case "delta":
+			return { ...frame, delta: { ...frame.delta, cursor: cursorIn(generation, frame.delta.cursor) } };
+		default:
+			return frame;
+	}
 }
 
 export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntimeService {
@@ -205,24 +245,41 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		return profile;
 	};
 
-	/** Queues a write of the session's record after the writes before it. */
+	/**
+	 * Queues a write of the session's record after the writes before it. The step writes the record as it is when the
+	 * step runs, so a write that failed is made good by the next one.
+	 */
 	const persist = (session: OpenSession) => {
-		const record = session.record;
-		session.publishing = session.publishing.then(() => store.updateSession(record.id, { record }));
+		session.unsaved = true;
+		session.publishing = after(session.publishing, async () => {
+			if (!session.unsaved) return;
+			session.unsaved = false;
+			try {
+				await store.updateSession(session.record.id, { record: session.record });
+			} catch (error) {
+				session.unsaved = true;
+				throw error;
+			}
+		});
+	};
+
+	const publish = (session: OpenSession, ops: readonly DeltaOp[]) => {
+		if (ops.length > 0) session.publishing = after(session.publishing, () => session.stream.publish(ops));
 	};
 
 	const applyStatus = (session: OpenSession) => {
 		const status = session.projector.status;
-		if (session.record.status === status) return;
-		session.record = { ...session.record, status, updatedAt: clock.now() };
-		persist(session);
+		if (session.record.status !== status) session.record = { ...session.record, status, updatedAt: clock.now() };
+		if (session.record !== session.saved || session.unsaved) {
+			session.saved = session.record;
+			persist(session);
+		}
 	};
 
 	/** Brings the stream and the directory record up to the session's current view. */
 	const sync = (session: OpenSession): Promise<unknown> => {
-		const ops = session.projector.project(session.view.value);
+		publish(session, session.projector.project(session.view.value));
 		applyStatus(session);
-		if (ops.length > 0) session.publishing = session.publishing.then(() => session.stream.publish(ops));
 		return session.publishing;
 	};
 
@@ -297,11 +354,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		});
 	};
 
+	/** Installs the session's current host tools, unless a newer install started meanwhile. */
+	const reinstallTools = async (session: OpenSession) => {
+		session.toolsVersion += 1;
+		const version = session.toolsVersion;
+		const tools = await toolsFor(session);
+		if (version === session.toolsVersion) session.registry.install(extensionFor(session, tools));
+	};
+
 	/** Reinstalls each affected open session's host tools after a registration changes. */
 	const refreshHostTools = async (organisationId: OrganisationId, hostId: string) => {
 		for (const session of open.values()) {
 			if (session.record.organisationId !== organisationId || session.profile.hostId !== hostId) continue;
-			session.registry.install(extensionFor(session, await toolsFor(session)));
+			await reinstallTools(session);
 		}
 	};
 
@@ -322,7 +387,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const { record, profile } = stored;
 		const model = resolveModel(profile.model);
 		const registry = createRegistry();
-		registry.install(extensionFor({ profile }, await toolsFor({ profile, record })));
+		// No tools yet: they are installed once the session is open, where a registration change also reaches it.
+		registry.install(extensionFor({ profile }, []));
 		const context = BACKGROUND_CONTEXT;
 		const storage = await options.storage(record);
 		const harness = await Harness.open(storage, { models, registry, now: () => clock.now() }, context);
@@ -356,8 +422,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			}),
 			projector: new ConversationProjector({ now: () => clock.now() }),
 			publishing: Promise.resolve(),
+			unsaved: false,
+			saved: record,
+			toolsVersion: 0,
+			generation: crypto.randomUUID().slice(0, 8),
 			aborts: stored.aborts,
 			closed: stored.closed,
+			durablyClosed: stored.closed,
 			stopWatching: () => {},
 		};
 		open.set(record.id, session);
@@ -366,17 +437,24 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			unsubscribe();
 			view.dispose();
 		};
-		if (session.closed) {
-			sync(session);
-			const ops = session.projector.close();
-			if (ops.length > 0) session.publishing = session.publishing.then(() => session.stream.publish(ops));
-			applyStatus(session);
-		} else {
-			// Work a previous process left running (a model call, a tool call) carries on from its last commit.
-			harness.resume();
-			sync(session);
+		try {
+			await reinstallTools(session);
+			if (session.closed) {
+				publish(session, session.projector.project(view.value));
+				publish(session, session.projector.close());
+				applyStatus(session);
+			} else {
+				// Work a previous process left running (a model call, a tool call) carries on from its last commit.
+				harness.resume();
+				sync(session);
+			}
+			await session.publishing;
+		} catch (error) {
+			open.delete(record.id);
+			session.stopWatching();
+			await harness.close(context).catch(() => undefined);
+			throw error;
 		}
-		await session.publishing;
 		return session;
 	};
 
@@ -586,28 +664,42 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await checkSession(ctx, sessionId, "viewer", "session.watch");
 			const session = await requireOpen(ctx, sessionId);
 			await sync(session);
-			return session.stream.connect(watchOptions.after, onFrame);
+			const prefix = `${session.generation}.`;
+			const resumeFrom = watchOptions.after?.startsWith(prefix) ? watchOptions.after.slice(prefix.length) : undefined;
+			return session.stream.connect(resumeFrom, (frame) => onFrame(framesIn(session.generation, frame)));
 		},
 		async snapshot(ctx, sessionId) {
 			await requireStored(ctx, sessionId);
 			await checkSession(ctx, sessionId, "viewer", "session.snapshot");
 			const session = await requireOpen(ctx, sessionId);
 			await sync(session);
-			return session.stream.snapshot();
+			const snapshot = await session.stream.snapshot();
+			return { ...snapshot, cursor: cursorIn(session.generation, snapshot.cursor) };
 		},
 		async close(ctx, sessionId) {
 			const stored = await requireStored(ctx, sessionId);
 			await checkSession(ctx, sessionId, "operator", "session.close");
 			if (stored.closed) return;
 			const session = await ensureOpen(stored);
-			if (session.closed) return;
+			if (session.closing !== undefined) return session.closing;
+			if (session.durablyClosed) return;
+			// Input is refused from here on. A close that fails part way can be retried: teardowns are idempotent, and the
+			// session counts as closed only once the store says so.
 			session.closed = true;
-			await stopWork(ctx, session, "session_ended", "closed");
-			const ops = session.projector.close();
-			applyStatus(session);
-			if (ops.length > 0) session.publishing = session.publishing.then(() => session.stream.publish(ops));
-			await session.publishing;
-			await store.updateSession(sessionId, { record: session.record, closed: true });
+			const closing = (async () => {
+				await stopWork(ctx, session, "session_ended", "closed");
+				publish(session, session.projector.close());
+				applyStatus(session);
+				await session.publishing;
+				await store.updateSession(sessionId, { record: session.record, closed: true });
+				session.durablyClosed = true;
+			})();
+			session.closing = closing;
+			try {
+				await closing;
+			} finally {
+				session.closing = undefined;
+			}
 		},
 	};
 

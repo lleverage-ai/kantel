@@ -58,6 +58,10 @@ const migrations = (p: string) => [
 				pi_id INTEGER NOT NULL,
 				body TEXT NOT NULL
 			)`,
+			// One row per counter. Taking the next value is an UPDATE, which holds the row until commit, so two connections
+			// (as on Postgres) never take the same one.
+			`CREATE TABLE IF NOT EXISTS ${p}counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
+			`INSERT OR IGNORE INTO ${p}counters (name, value) VALUES ('session_seq', 0)`,
 			`CREATE TABLE IF NOT EXISTS ${p}hosts (
 				organisation_id TEXT NOT NULL,
 				host_id TEXT NOT NULL,
@@ -149,8 +153,10 @@ export async function createSqlSessionStore(
 		async createSession(session) {
 			const { record } = session;
 			return db.transaction(async (tx) => {
-				const top = await tx.get<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM ${p}sessions`);
-				const sequence = Number(top?.seq ?? 0) + 1;
+				await tx.run(`UPDATE ${p}counters SET value = value + 1 WHERE name = 'session_seq'`);
+				const counter = await tx.get<{ value: number }>(`SELECT value FROM ${p}counters WHERE name = 'session_seq'`);
+				if (counter === undefined) throw new Error("The session sequence counter is missing");
+				const sequence = Number(counter.value);
 				await tx.run(
 					`INSERT INTO ${p}sessions
 					   (id, seq, organisation_id, project_id, agent_id, parent_session_id, created_at, closed, aborts, record, profile)
@@ -229,16 +235,14 @@ export async function createSqlSessionStore(
 			);
 		},
 		async deleteHost(organisationId, hostId, registration) {
-			return db.transaction(async (tx) => {
-				const row = await tx.get<{ registration: string }>(
-					`SELECT registration FROM ${p}hosts WHERE organisation_id = ? AND host_id = ?`,
-					organisationId,
-					hostId,
-				);
-				if (row?.registration !== registration) return false;
-				await tx.run(`DELETE FROM ${p}hosts WHERE organisation_id = ? AND host_id = ?`, organisationId, hostId);
-				return true;
-			});
+			// One statement: a replacement that lands first leaves nothing for a stale registration to remove.
+			const removed = await db.all<{ host_id: string }>(
+				`DELETE FROM ${p}hosts WHERE organisation_id = ? AND host_id = ? AND registration = ? RETURNING host_id`,
+				organisationId,
+				hostId,
+				registration,
+			);
+			return removed.length > 0;
 		},
 		async hosts() {
 			const rows = await db.all<{ body: string }>(
