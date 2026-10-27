@@ -54,7 +54,10 @@ What replaces the props:
 
 - **Workspace.** The isolate has no `WS` binding. With every call the host passes a scope: an `RpcTarget` it
   builds for that session's workspace. The isolate can use only what it is handed; keeping the stub gains it
-  nothing, as it is its own workspace. About 3 ms a call.
+  nothing, as it is its own workspace. About 3 ms a call. This confinement holds only if the scope checks what
+  it forwards: today's `Workspace.read(sha)` in `images/isolate-host/src/loader.ts` puts the identifier into a
+  URL unchecked, so `../` segments could reach another workspace's blobs. That gap is inherited, not the pool's,
+  but the scope (and `Workspace` itself) must accept only 64-hex-digit SHA-256 digests.
 - **Egress.** Its `globalOutbound` carries only a slot ID. The host writes slot to session once, at hand-out,
   and the egress entrypoint looks the session up there. Before hand-out it refuses (the harness returns 403).
 

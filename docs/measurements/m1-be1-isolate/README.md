@@ -88,7 +88,9 @@ the raw file and in the table, marked.
   host; each reads the manifest from MinIO as `loader.ts` does.
 - Workspace: as `apps/selfhosted/src/measure.ts` seeds it, 300 files of 4 KB in 81 directories (381 entries),
   written to the compose stack's MinIO (127.0.0.1:59100, bucket `harbour`) under the key prefix
-  `m1-be1-isolate/`. Every object was deleted afterwards (301 per run; the prefix is empty).
+  `m1-be1-isolate/`. Every object was deleted afterwards (301 per run; the prefix is empty). Since these runs
+  the harness deletes only its own run's workspace (`m1-be1-isolate/workspaces/bench-<uuid>-ws/`), also on
+  SIGINT or SIGTERM, and refuses to start when `CI` is set.
 - Each batch gets a fresh workerd, one warm-up not recorded (for b, it loads the workspace's isolate; for c and
   g, the pool is filled first), then 50 runs. For c and g the next session arrives once the pool is full again,
   which is the case for any arrival rate below the refill rate.

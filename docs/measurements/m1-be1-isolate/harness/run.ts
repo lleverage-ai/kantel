@@ -28,6 +28,12 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { S3Client, type Subprocess } from "bun";
 
+// By hand only: it builds bundles, starts workerd and writes to a shared MinIO.
+if (process.env.CI) {
+	console.error("run.ts is a hand-run measurement harness; refusing to run under CI");
+	process.exit(1);
+}
+
 const { values } = parseArgs({
 	options: {
 		runs: { type: "string", default: "50" },
@@ -135,11 +141,14 @@ const client = new S3Client({
 	secretAccessKey: s3.secretAccessKey,
 	region: "us-east-1",
 });
-const tag = `bench-${Date.now().toString(36)}`;
+const tag = `bench-${crypto.randomUUID()}`;
 const workspaceId = `${tag}-ws`;
 const key = (path: string) => `${s3.prefix}/workspaces/${workspaceId}/${path}`;
 
 type Manifest = Record<string, { kind: "file"; sha: string; size: number; mode: number } | { kind: "dir" }>;
+
+/** Only this invocation's workspace: a concurrent run's objects are left alone. */
+const ours = `${s3.prefix}/workspaces/${workspaceId}/`;
 
 /** The same workspace as apps/selfhosted/src/measure.ts seeds. */
 async function seed(fileCount = 300, fileBytes = 4096): Promise<{ version: string; manifest: Manifest }> {
@@ -158,14 +167,16 @@ async function seed(fileCount = 300, fileBytes = 4096): Promise<{ version: strin
 	const sorted = Object.fromEntries(Object.entries(manifest).sort(([a], [b]) => a.localeCompare(b)));
 	const version = `v-${createHash("sha256").update(JSON.stringify(sorted)).digest("hex").slice(0, 16)}`;
 	writes.push(client.write(key(`manifests/${version}.json`), JSON.stringify(sorted)));
-	await Promise.all(writes);
+	// Every write settles before a failure surfaces, so clean-up never races an upload still in flight.
+	const failed = (await Promise.allSettled(writes)).find((write) => write.status === "rejected");
+	if (failed) throw failed.reason;
 	return { version, manifest: sorted };
 }
 
 async function cleanUp(): Promise<number> {
 	let deleted = 0;
 	for (;;) {
-		const page = await client.list({ prefix: `${s3.prefix}/`, maxKeys: 1000 });
+		const page = await client.list({ prefix: ours, maxKeys: 1000 });
 		const keys = (page.contents ?? []).map((object) => object.key);
 		if (keys.length === 0) return deleted;
 		await Promise.all(keys.map((name) => client.delete(name)));
@@ -336,10 +347,23 @@ async function batch(variant: Variant, seeded: { version: string; manifest: Mani
 	}
 }
 
-process.on("SIGINT", () => {
-	host?.kill("SIGTERM");
-	process.exit(130);
-});
+/** Stops workerd and deletes this run's objects, once, however the run ends. */
+let tearingDown: Promise<number> | undefined;
+const tearDown = () => {
+	tearingDown ??= (async () => {
+		await stopHost();
+		return cleanUp();
+	})();
+	return tearingDown;
+};
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+	process.on(signal, () => {
+		console.error(`${signal}: stopping workerd and deleting ${ours}`);
+		void tearDown()
+			.catch((error) => console.error("clean-up failed:", error))
+			.finally(() => process.exit(130));
+	});
+}
 
 const startedAt = new Date().toISOString();
 const batches: Awaited<ReturnType<typeof batch>>[] = [];
@@ -362,9 +386,8 @@ try {
 		}
 	}
 } finally {
-	await stopHost();
-	deleted = await cleanUp();
-	console.error(`deleted ${deleted} objects under ${s3.bucket}/${s3.prefix}/`);
+	deleted = await tearDown();
+	console.error(`deleted ${deleted} objects under ${s3.bucket}/${ours}`);
 }
 
 const out = join(harness, "../raw", `isolate-ready-${startedAt.replaceAll(":", "-").replace(/\..*/, "")}.json`);
@@ -385,7 +408,7 @@ await Bun.write(
 			bundles,
 			poolSize,
 			skew: { load1Above: skewLoad, load1DeltaAbove: skewDelta },
-			minio: { prefix: `${s3.bucket}/${s3.prefix}/`, deletedAfter: deleted },
+			minio: { prefix: `${s3.bucket}/${ours}`, deletedAfter: deleted },
 			batches,
 		},
 		null,
