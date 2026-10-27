@@ -142,6 +142,13 @@ async function previousDeployment(
 		const found = await identity.authenticateApiKey(BOOTSTRAP, previous.apiKey);
 		if (found.organisationId !== previous.organisationId) return undefined;
 		if (found.role !== "operator" || !(found.projectIds ?? []).includes(previous.projectId)) return undefined;
+		// A key names its projects but does not keep them alive: check the project is still there, as the key sees it.
+		const asKey: CallContext = {
+			actor: found.actor,
+			organisationId: previous.organisationId,
+			projectId: previous.projectId,
+		};
+		await identity.getProject(asKey, previous.projectId);
 		return { organisationId: previous.organisationId, projectId: previous.projectId, apiKey: previous.apiKey };
 	} catch (error) {
 		if (error instanceof HarbourError) return undefined;
