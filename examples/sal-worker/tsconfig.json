@@ -1,0 +1,8 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"types": ["node"]
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts", "scripts/harbour-sal.ts", "scripts/parity.ts", "vitest.config.ts"]
+}

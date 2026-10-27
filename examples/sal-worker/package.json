@@ -1,0 +1,26 @@
+{
+	"name": "@harbour/example-sal-worker",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "M1-BE4: a Sal worker's skills and memory on Harbour. Sal's OKF memory bundle and Git skill sources as Harbour snapshots and revisions, Sal's recall rendering, and a parity harness against a local Sal",
+	"license": "Apache-2.0",
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json",
+		"test": "vitest run",
+		"harbour": "node scripts/harbour-sal.ts",
+		"parity": "node scripts/parity.ts"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/memory": "workspace:*",
+		"@harbour/skills": "workspace:*",
+		"yaml": "2.9.1"
+	},
+	"devDependencies": {
+		"@harbour/workspace": "workspace:*",
+		"@types/node": "24.19.2",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12"
+	}
+}
