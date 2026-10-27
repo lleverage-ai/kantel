@@ -41,10 +41,16 @@ Open the console at <http://127.0.0.1:58090/> (`HARBOUR_GATEWAY_PORT` moves it).
 port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console still shows its recorded sessions until it gets a
 client for the session API (M1-FE1).
 
-Every component behind the gateway is the in-memory implementation for now (the runtime answers with an `echo`
-model), so the gateway's state lasts as long as its container. On each start it creates an organisation, a project,
-an `echo` agent profile, a workspace with a README and an operator API key on the project, and writes their IDs and
-the key to `/var/lib/harbour/bootstrap.json` in the container:
+The components behind the gateway are the real implementations (`apps/selfhosted/src/gateway/durable.ts`): the
+runtime's SQL session store and Pi Durable tables, the SQL audit store and identity directory, all on this Postgres in
+the `harbour_m1` schema (`HARBOUR_GATEWAY_SCHEMA`; M0 keeps `harbour`), and workspaces with their trees in MinIO under
+`m1/workspaces/`. The runtime still answers with an `echo` model until the model gateway lands. Without
+`HARBOUR_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests do.
+
+On its first start the gateway creates an organisation, a project and an operator API key on the project, and writes
+their IDs and the key to `/var/lib/harbour/bootstrap.json` in the container. On later starts it reads the file back
+and, while the key still works, keeps that deployment, its sessions and audit trail; it ensures the `echo` agent
+profile and a workspace with a README every time:
 
 ```bash
 docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
@@ -73,6 +79,7 @@ job runs it and puts the table in the job summary. A suite that skips for want o
 | Identity | SQL identity directory on Postgres | `packages/identity/test/sql.conformance.test.ts` |
 | Email one-time PIN | OTP sign-in, mail through Mailpit | `packages/identity/test/otp.mailpit.test.ts` |
 | Workspaces | Postgres and S3 (MinIO), keyed | `targets/selfhosted/workspace/test/conformance.stack.test.ts` |
+| Gateway | all of the above behind the gateway, across a restart | `apps/selfhosted/test/gateway/durable.stack.test.ts` |
 | Vault | engine on the Postgres vault store | `targets/selfhosted/vault/test/postgres.conformance.test.ts` |
 
 Each suite works in its own fresh schema (and object prefix) and drops it afterwards, so running it against a shared

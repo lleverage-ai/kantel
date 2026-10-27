@@ -187,6 +187,12 @@ importers:
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
+      "@harbour/selfhosted-workspace":
+        specifier: workspace:*
+        version: link:../../targets/selfhosted/workspace
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../../packages/sql
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
