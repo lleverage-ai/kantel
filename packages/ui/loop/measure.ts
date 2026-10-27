@@ -89,6 +89,14 @@ function split(renders: Collected["renders"], watched: readonly string[], change
 	return { wasted, needed };
 }
 
+/**
+ * The gap before the next input, lengthened by a random part of a frame (up to 17ms), so where in the frame each input
+ * lands is spread evenly on both sides of a comparison. With a fixed gap, the next input lands at the gap plus the
+ * last input's own cost, so a cheaper component shifts every later input to another point in the frame and its
+ * latency moves by whole frames for reasons that are not its own (round 3, docs/loop-results.md).
+ */
+const pause = (page: Page, ms: number) => page.waitForTimeout(ms + Math.random() * 17);
+
 // The interaction phase, as real input from Playwright. Returns the renders it should have caused, for wasted
 // renders: `undefined` when every render is needed.
 export const interactions: Record<string, (page: Page) => Promise<number | undefined>> = {
@@ -99,7 +107,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 		for (let i = 0; i < 20; i++) {
 			await page.mouse.wheel(0, -300);
-			await page.waitForTimeout(80);
+			await pause(page, 80);
 		}
 		return undefined;
 	},
@@ -108,7 +116,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		const count = await rows.count();
 		for (let i = 0; i < count; i++) {
 			await rows.nth(i).click();
-			await page.waitForTimeout(50);
+			await pause(page, 50);
 		}
 		return count;
 	},
@@ -122,7 +130,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		const rows = page.locator(".hb-session-rows-item > *");
 		for (let i = 1; i <= 20; i++) {
 			await rows.nth(i * 3).click();
-			await page.waitForTimeout(50);
+			await pause(page, 50);
 		}
 		return 40;
 	},
@@ -131,7 +139,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		await page.evaluate(() => (window as HarnessWindow).__hb?.reset());
 		for (let i = 0; i < 12; i++) {
 			await page.keyboard.press("ArrowRight");
-			await page.waitForTimeout(50);
+			await pause(page, 50);
 		}
 		return undefined;
 	},
