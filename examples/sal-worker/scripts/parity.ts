@@ -35,13 +35,23 @@ const local = new Map(
 );
 
 const withoutLocations = (prompt: string) => prompt.replace(/<location>[^<]*<\/location>/g, "<location/>");
+/**
+ * The prompt block as its text around the skills and its `<skill>` entries, sorted. Pi lists skills in the order its
+ * file system returns directory entries, which no pinned tree records, so the order is reported apart.
+ */
+const promptParts = (prompt: string) => {
+	const entries = withoutLocations(prompt).match(/ {2}<skill>[\s\S]*?<\/skill>\n?/g) ?? [];
+	const frame = entries.reduce((text, entry) => text.replace(entry, ""), withoutLocations(prompt));
+	const order = entries.map((entry) => /<name>([^<]*)<\/name>/.exec(entry)?.[1] ?? "");
+	return { frame, entries: entries.map((entry) => entry.replace(/\n$/, "")).sort(), order };
+};
 const ids = (list: readonly { readonly id: string; readonly reason: string }[]) =>
 	list.map((item) => `${item.id}:${item.reason}`).join(",");
 
 let failed = false;
 const lines = [
-	"| Task | Memory ref | Recalled (profile + match) | Recall text | Skipped | Skills | SKILL.md / package | Prompt block |",
-	"| --- | --- | --- | --- | --- | --- | --- | --- |",
+	"| Task | Memory ref | Recalled (profile + match) | Recall text | Skipped | Skills | SKILL.md / package | Prompt block | Prompt order |",
+	"| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 ];
 const details: string[] = [];
 for (const ours of harbour.tasks) {
@@ -84,18 +94,27 @@ for (const ours of harbour.tasks) {
 	const content = same(contentDiffs.length === 0, "skill content", () =>
 		contentDiffs.map((skill) => skill.name).join(", "),
 	);
+	const oursPrompt = promptParts(ours.skillsPrompt);
+	const theirsPrompt = promptParts(theirs.skillsPrompt);
 	const prompt = same(
-		withoutLocations(ours.skillsPrompt) === withoutLocations(theirs.skillsPrompt),
+		oursPrompt.frame === theirsPrompt.frame && oursPrompt.entries.join("\n") === theirsPrompt.entries.join("\n"),
 		"prompt",
-		() => "",
+		() =>
+			JSON.stringify({
+				frame: oursPrompt.frame === theirsPrompt.frame,
+				onlyHarbour: oursPrompt.entries.filter((entry) => !theirsPrompt.entries.includes(entry)),
+				onlySal: theirsPrompt.entries.filter((entry) => !oursPrompt.entries.includes(entry)),
+			}),
 	);
+	// Informational: never fails the run.
+	const order = oursPrompt.order.join(",") === theirsPrompt.order.join(",") ? "same" : "differs (file system order)";
 	const ref = same(
 		ours.memoryRevision === theirs.memoryRevision,
 		"memory ref",
 		() => `${ours.memoryRevision} vs ${theirs.memoryRevision}`,
 	);
 	lines.push(
-		`| ${ours.task} | ${ref} | ${recalled} (${profile} + ${matched}) | ${text} (${theirs.recall.bytes} bytes) | ${skipped} (${theirs.recall.skipped.length}) | ${skillSet} (${theirs.skills.length}) | ${content} | ${prompt} |`,
+		`| ${ours.task} | ${ref} | ${recalled} (${profile} + ${matched}) | ${text} (${theirs.recall.bytes} bytes) | ${skipped} (${theirs.recall.skipped.length}) | ${skillSet} (${theirs.skills.length}) | ${content} | ${prompt} (${theirsPrompt.entries.length}) | ${order} |`,
 	);
 }
 process.stdout.write(`${[...lines, "", ...(details.length === 0 ? ["No differences."] : details)].join("\n")}\n`);
