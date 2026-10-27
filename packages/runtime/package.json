@@ -1,0 +1,19 @@
+{
+	"name": "@harbour/runtime",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Session runtime on Pi Durable: directory, profiles, host tools and children",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./memory": "./src/memory.ts"
+	},
+	"dependencies": {
+		"@earendil-works/chord": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/protocol": "workspace:*"
+	}
+}

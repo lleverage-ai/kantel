@@ -1,0 +1,15 @@
+{
+	"name": "@harbour/workspace",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Versioned workspace, read-only mounts and seed specs",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./memory": "./src/memory.ts"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*"
+	}
+}

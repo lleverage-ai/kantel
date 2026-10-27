@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "targets/*"
+  - "targets/*/*"
+  - "deploy/*"
+  - "spikes/*"
+  - "examples/*"
+  - "images/*"
