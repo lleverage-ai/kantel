@@ -1,0 +1,101 @@
+/* The session's top bar: one compact row with a hairline under it. */
+
+.hb-session-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-5);
+	min-width: 0;
+	min-height: calc(var(--hb-control-md) + var(--hb-space-4) * 2);
+	padding: var(--hb-space-4) var(--hb-space-7);
+	padding-top: max(var(--hb-space-4), env(safe-area-inset-top));
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+	background: var(--hb-canvas);
+}
+
+.hb-session-header-back {
+	margin-left: calc(var(--hb-space-3) * -1);
+}
+
+/* The chevron points right everywhere else; mirrored, it says "back" without an arrow glyph. */
+.hb-session-header-back-icon {
+	transform: scaleX(-1);
+}
+
+.hb-session-header-status {
+	display: inline-flex;
+	flex: none;
+}
+
+/* A zero basis, so a long title truncates instead of wrapping the row. */
+.hb-session-header-title {
+	flex: 1 1 0;
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	color: var(--hb-text);
+	font-size: var(--hb-text-lg);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-session-header-skeleton {
+	display: block;
+	width: min(100%, 18em);
+}
+
+.hb-session-header-meta {
+	display: flex;
+	flex: 0 1 auto;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-1) var(--hb-space-5);
+	min-width: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-session-header-actions {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--hb-space-2);
+	margin-right: calc(var(--hb-space-3) * -1);
+}
+
+.hb-connection {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	gap: var(--hb-space-3);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+/* Connected says nothing on screen, so it takes no space in the row either. */
+.hb-connection-open {
+	position: absolute;
+}
+
+.hb-connection-offline {
+	color: var(--hb-status-error);
+}
+
+@media (max-width: 640px) {
+	.hb-session-header {
+		padding-right: var(--hb-space-6);
+		padding-left: var(--hb-space-6);
+	}
+
+	/* The facts take their own line under the title. */
+	.hb-session-header-meta {
+		flex-basis: 100%;
+		order: 1;
+	}
+}
