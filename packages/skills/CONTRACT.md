@@ -106,14 +106,8 @@ Portable glue a host uses around any `Skills`; no storage and no Node APIs. A ho
   escaped; empty for no skills. A host that keeps some skills out of the prompt (Pi's `disable-model-invocation`)
   filters the listings first; they stay pinned and mounted.
 
-## The skills mount (`@harbour/skills/mount`)
-
-`createSkillsMountSource(skills, { visibility })` is the `skills` `MountSource`. A session mounts it at `/skills`
-with its session ID as the `ref`, and reads `/skills/<name>/…` at exactly its pinned revisions. The mount version is
-`pins:<sha256>` over the session's sorted `skillId@revision` pins, so a version names one set of pins: another
-session's pins under it are `not_found`. The first read pins the session with `visibility`. Paths that leave the
-mount are `invalid` and unknown names or files are `not_found`. Listing gives sizes but no digests, so it never
-reads file bodies. Nothing writes through it.
+A session reads its pinned packages through the `skills` mount source in `@harbour/workspace/mounts`
+(`createSkillsMountSource`), at `/skills/<name>/…`, where the listings' paths point.
 
 The Sal worker example (`examples/sal-worker`) composes these for a Sal worker and checks it against a local Sal.
 
