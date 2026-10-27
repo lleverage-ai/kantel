@@ -239,23 +239,29 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 				}
 				throw error;
 			}
-			let closed = false;
-			return {
-				async close() {
-					if (closed) return;
-					closed = true;
-					if (serving.get(hostId) !== endpoint) return;
-					const path = `/hosts/${segment(hostId)}?registration=${segment(registered.registration)}`;
-					await call<void>(ctx, "DELETE", path).catch((error: unknown) => {
-						// Already gone, or replaced by someone else: nothing of ours is left to remove.
-						if (!(error instanceof HarbourError) || (error.code !== "not_found" && error.code !== "forbidden")) {
-							throw error;
-						}
-					});
-					if (serving.get(hostId) === endpoint) {
-						serving.delete(hostId);
-						callbacks.serve(hostId, undefined);
+			const path = `/hosts/${segment(hostId)}?registration=${segment(registered.registration)}`;
+			// Settles once the registration is gone; a failed attempt clears it, so closing again retries.
+			let closing: Promise<void> | undefined;
+			const remove = async () => {
+				if (serving.get(hostId) !== endpoint) return;
+				await call<void>(ctx, "DELETE", path).catch((error: unknown) => {
+					// Already gone, or replaced by someone else: nothing of ours is left to remove.
+					if (!(error instanceof HarbourError) || (error.code !== "not_found" && error.code !== "forbidden")) {
+						throw error;
 					}
+				});
+				if (serving.get(hostId) === endpoint) {
+					serving.delete(hostId);
+					callbacks.serve(hostId, undefined);
+				}
+			};
+			return {
+				close() {
+					closing ??= remove().catch((error: unknown) => {
+						closing = undefined;
+						throw error;
+					});
+					return closing;
 				},
 			};
 		},

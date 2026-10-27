@@ -282,14 +282,20 @@ describe("session API over HTTP", () => {
 			body: { tools, callback: { url: "https://sal.test/tools" } },
 		});
 		expect(generated.status).toBe(200);
-		const body = (await generated.json()) as { secret?: string };
+		const body = (await generated.json()) as { secret?: string; registration: string };
 		expect(body.secret?.length ?? 0).toBeGreaterThanOrEqual(32);
 		const listed = await request("GET", "/hosts/sal/tools", { token: "supervisor" });
 		expect(await listed.json()).toMatchObject({ items: [{ name: "review" }] });
-		expect((await request("DELETE", "/hosts/sal", { token: "other" })).status).toBe(403);
-		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(204);
+		const remove = `/hosts/sal?registration=${body.registration}`;
+		expect((await request("DELETE", remove, { token: "other" })).status).toBe(403);
+		// A removal must name the registration, so it can never take a newer one by accident.
+		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(400);
+		expect(await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()).toMatchObject({
+			items: [{ name: "review" }],
+		});
+		expect((await request("DELETE", remove, { token: "supervisor" })).status).toBe(204);
 		expect(await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()).toEqual({ items: [] });
-		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(404);
+		expect((await request("DELETE", remove, { token: "supervisor" })).status).toBe(404);
 	});
 });
 
@@ -302,10 +308,12 @@ describe("host registrations", () => {
 
 	it("lets only the API key that registered a host remove it, not another key of the same service", async () => {
 		const { request } = setUp();
-		expect((await register(request, "keyOne")).status).toBe(200);
-		expect((await request("DELETE", "/hosts/sal", { token: "keyTwo" })).status).toBe(403);
+		const registered = await register(request, "keyOne");
+		expect(registered.status).toBe(200);
+		const remove = `/hosts/sal?registration=${((await registered.json()) as { registration: string }).registration}`;
+		expect((await request("DELETE", remove, { token: "keyTwo" })).status).toBe(403);
 		expect(await toolCount(request)).toBe(1);
-		expect((await request("DELETE", "/hosts/sal", { token: "keyOne" })).status).toBe(204);
+		expect((await request("DELETE", remove, { token: "keyOne" })).status).toBe(204);
 		expect(await toolCount(request)).toBe(0);
 	});
 
@@ -343,6 +351,63 @@ describe("host registrations", () => {
 		await first.close();
 		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(1);
 		expect(served).toEqual(["a:on", "b:on", "a:off"]);
+	});
+
+	it("retries the removal when a subscription's first close fails", async () => {
+		const { api, memory } = setUp();
+		const served: string[] = [];
+		let failNextDelete = true;
+		const client = createSessionApiClient({
+			baseUrl: "https://harbour.test/v1",
+			credentials: bearer("supervisor"),
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				if (request.method === "DELETE" && failNextDelete) {
+					failNextDelete = false;
+					return new Response(JSON.stringify({ error: { code: "unavailable", message: "Down" } }), { status: 503 });
+				}
+				return api.fetch(request);
+			},
+			hostCallbacks: {
+				url: () => "https://sal.test/tools",
+				serve: (_hostId, endpoint) => {
+					served.push(endpoint === undefined ? "off" : "on");
+				},
+			},
+		});
+		const ctx = { actor: supervisor.actor, organisationId: ORG };
+		const subscription = await client.hostTools.register(ctx, "sal", TOOLS, async () => ({ output: "ok" }));
+		await expect(subscription.close()).rejects.toMatchObject({ code: "unavailable" });
+		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(1);
+		expect(served).toEqual(["on"]);
+		await subscription.close();
+		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(0);
+		expect(served).toEqual(["on", "off"]);
+		await subscription.close();
+		expect(served).toEqual(["on", "off"]);
+	});
+});
+
+describe("agent profiles", () => {
+	it("refuses a malformed profile and keeps the one stored", async () => {
+		const { request } = setUp();
+		expect((await request("PUT", "/profiles/worker", { token: "supervisor", body: profile })).status).toBe(200);
+		const before = await (await request("GET", "/profiles/worker", { token: "supervisor" })).json();
+		for (const body of [
+			{ id: "worker", organisationId: ORG },
+			{ ...(before as object), promptLayers: "be good" },
+			{ ...(before as object), model: { route: 7 } },
+			{ ...(before as object), sandbox: {} },
+		]) {
+			const response = await request("PUT", "/profiles/worker", { token: "supervisor", body });
+			expect(response.status).toBe(400);
+		}
+		expect(await (await request("GET", "/profiles/worker", { token: "supervisor" })).json()).toEqual(before);
+		const renamed = await request("PUT", "/profiles/worker", {
+			token: "supervisor",
+			body: { ...(before as object), name: "Renamed" },
+		});
+		expect(renamed.status).toBe(200);
 	});
 });
 

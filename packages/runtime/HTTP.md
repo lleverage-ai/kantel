@@ -93,9 +93,13 @@ minutes (`callbackTimeoutMs`).
 Callback URLs are `https:` only by default; a deployment should narrow `allowCallbackUrl` to its hosts, since Harbour
 calls whatever is registered. Only the credential that registered a host may `DELETE` it (for a service, the same
 API key, not just the same service); another operator on the project may replace it with `PUT`, as
-`hostTools.register` allows. Each `PUT` answers a new `registration` ID; `DELETE …?registration=<id>` removes the host
-only while that registration is the current one (404 otherwise), so an old client closing its subscription never
-removes the registration that replaced it.
+`hostTools.register` allows. Each `PUT` answers a new `registration` ID, which `DELETE` must name (400 without it):
+`DELETE …?registration=<id>` removes the host only while that registration is the current one (404 otherwise), so an
+old client closing its subscription never removes the registration that replaced it. A subscription whose close fails
+(the API unreachable) can be closed again to retry.
+
+`PUT /profiles/:agentId` checks the profile's shape (name, model route, prompt layers, tool, skill and memory-scope
+lists, sandbox tiers) and answers 400 for a malformed one, so it never reaches storage.
 
 The client's `hostTools.register(ctx, hostId, tools, handler)` does all of this: it makes a secret, serves the
 endpoint through `hostCallbacks.serve` before registering, and removes both when the subscription closes.

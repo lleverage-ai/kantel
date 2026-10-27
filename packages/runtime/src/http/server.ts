@@ -172,6 +172,45 @@ function validTools(tools: unknown): readonly HostToolDefinition[] {
 	return tools as HostToolDefinition[];
 }
 
+const isStringList = (value: unknown): value is string[] =>
+	Array.isArray(value) && value.every((item) => typeof item === "string");
+const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
+
+/** An agent profile's shape, so a malformed one never reaches storage and breaks the sessions that use it. */
+function validProfile(profile: Partial<AgentProfile>): AgentProfile {
+	const { model, sandbox, promptLayers } = profile;
+	const problems: string[] = [];
+	if (typeof profile.id !== "string" || typeof profile.organisationId !== "string") problems.push("id, organisationId");
+	if (typeof profile.name !== "string") problems.push("name");
+	if (!isOptionalString(profile.projectId) || !isOptionalString(profile.hostId)) problems.push("projectId, hostId");
+	if (
+		typeof model !== "object" ||
+		model === null ||
+		typeof model.route !== "string" ||
+		!isOptionalString(model.modelId) ||
+		(model.thinking !== undefined && !["off", "low", "medium", "high"].includes(model.thinking))
+	) {
+		problems.push("model");
+	}
+	if (
+		!Array.isArray(promptLayers) ||
+		!promptLayers.every(
+			(layer) =>
+				typeof layer === "object" && layer !== null && typeof layer.name === "string" && typeof layer.text === "string",
+		)
+	) {
+		problems.push("promptLayers");
+	}
+	if (!isStringList(profile.tools) || !isStringList(profile.skills) || !isStringList(profile.memoryScopes)) {
+		problems.push("tools, skills, memoryScopes");
+	}
+	if (typeof sandbox !== "object" || sandbox === null || !isStringList(sandbox.tiers)) problems.push("sandbox");
+	if (problems.length > 0) {
+		throw new HarbourError("invalid", `The profile is malformed: ${problems.join("; ")}`);
+	}
+	return profile as AgentProfile;
+}
+
 function randomSecret(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(32));
 	let text = "";
@@ -369,8 +408,9 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			case "DELETE ": {
 				const registration = registrations.get(key);
 				const named = url.searchParams.get("registration");
+				if (named === null || named === "") throw new HarbourError("invalid", "Name the registration to remove");
 				// A stale subscription (one since replaced) finds nothing of its own to remove.
-				if (registration === undefined || (named !== null && named !== registration.registration)) {
+				if (registration === undefined || named !== registration.registration) {
 					throw new HarbourError("not_found", `No such registration for host ${hostId}`);
 				}
 				if (registration.owner !== actorKey(ctx)) {
@@ -393,7 +433,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		if (more.length > 0) throw NOT_FOUND;
 		if (request.method === "GET") return json(await profiles.get(ctx, agentId));
 		if (request.method === "PUT") {
-			const body = await readJson<AgentProfile>(request);
+			const body = validProfile(await readJson<Partial<AgentProfile>>(request));
 			if (body.id !== agentId) throw new HarbourError("invalid", "The profile's id must match the path");
 			return json(await profiles.put(ctx, body));
 		}
