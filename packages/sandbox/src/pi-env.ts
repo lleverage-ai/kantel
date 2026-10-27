@@ -755,6 +755,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				`rename ${from.path} to ${to.path}`,
 			);
 			if (moving.directory && from.kind === "workspace" && to.kind === "workspace") this.#move(from.path, to.path);
+			// Nothing made here outlives a file moved away from its path.
+			else if (from.kind === "workspace") this.#forget(from.path);
 			return ok(undefined);
 		} catch (error) {
 			if (error instanceof FileError) return err(error);
@@ -767,6 +769,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	async #found(call: CallContext, location: Location, version: WorkspaceVersion): Promise<Found> {
 		try {
 			const entry: ModedFileEntry = await this.#stat(call, location, version);
+			// A file there (another writer may have committed it) wins over directories made here at or below it.
+			if (entry.kind === "file" && location.kind === "workspace") this.#forget(location.path);
 			// A directory in the workspace has a file below it, so it is never empty.
 			return entry.kind === "file" ? { kind: "file", entry } : { kind: "directory" };
 		} catch (error) {

@@ -390,6 +390,14 @@ describe("createSandboxExecutionEnv: files", () => {
 		await commitFile("c");
 		expect(codeOf(await env.renameFile("c/child", "moved", context))).toBe("not_directory");
 		expect(getOrThrow(await env.exists("moved", context))).toBe(false);
+
+		// Renaming the file itself, without asking about what is below it, leaves no made directory behind at its path.
+		getOrThrow(await env.createDir("d/child", undefined, context));
+		await commitFile("d");
+		getOrThrow(await env.renameFile("d", "e", context));
+		expect(getOrThrow(await env.exists("d", context))).toBe(false);
+		expect(getOrThrow(await env.exists("d/child", context))).toBe(false);
+		expect(getOrThrow(await env.fileInfo("e", context))).toMatchObject({ kind: "file" });
 	});
 
 	it("reports reads, stats and listings below a file as not_directory, and exists as false", async () => {
