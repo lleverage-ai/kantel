@@ -37,5 +37,11 @@
 		"react-dom": "19.3.1",
 		"typescript": "7.0.2",
 		"vitest": "5.0.5"
+	},
+	"dependencies": {
+		"@harbour/protocol": "workspace:*",
+		"react-markdown": "10.1.0",
+		"remark-gfm": "4.0.1",
+		"virtua": "0.53.6"
 	}
 }
