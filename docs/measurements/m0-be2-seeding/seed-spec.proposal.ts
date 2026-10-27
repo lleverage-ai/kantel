@@ -7,9 +7,10 @@
  *  1. Where the bytes come from is a host decision, not a spec decision. The same spec must seed from a
  *     node-local mirror on a self-hosted node and from a snapshot on Cloudflare. So the spec names *what*
  *     (repo, commit, cone, dependency key) and the host picks *how* (SeedMethod), and reports which it used.
- *  2. A prepared snapshot keyed by (repo commit, lockfile hash, image) is the only route under ~2 s for the
- *     large repo on Cloudflare; everything else pays a multi-second restore. So the spec carries a stable
- *     `cacheKey` derivation and an explicit `prepare` policy.
+ *  2. On Cloudflare, a prepared snapshot keyed by (repo commit, lockfile hash, image) is the only route that
+ *     has the large repo and its dependencies ready in seconds: 3.6 s p50, against about 45 s for an archive or
+ *     DirectoryBackup. It is cold about 12% of the time, though. So the spec carries a stable `cacheKey`
+ *     derivation and an explicit `prepare` policy, and the host never blocks on the snapshot.
  *  3. Readiness is staged. Source is ready seconds before dependencies on every host, so agents can read and
  *     run git while `deps` restores. #39's stages are enough if `files` is defined as "git status works in
  *     the cone"; no new stage is needed.
