@@ -1,4 +1,5 @@
 import { type CallContext, isHarbourError } from "@harbour/contracts";
+import { actors, contextFor, createDeps } from "@harbour/testing/harness";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
 import {
 	blobKey,
@@ -172,6 +173,169 @@ describe("createStoredWorkspaces", () => {
 		expect(head.head).toBe(1);
 		// The remount survived the commit.
 		expect(head.mounts[0]?.version).toBe("2");
+	});
+
+	it("keeps a remount and a commit that races it: the remount retries over the committed head", async () => {
+		const projectFiles = createMemoryProjectFiles();
+		const store = createMemoryWorkspaceStore();
+		const workspaces = createStoredWorkspaces({ store, sources: [projectFiles] });
+		await projectFiles.seed("proj-1", { "README.md": "one" });
+		const record = await workspaces.create(ctx, {
+			owner,
+			mounts: [{ path: "/project", source: "project-files", ref: "proj-1" }],
+		});
+		await projectFiles.seed("proj-1", { "README.md": "two" });
+		let raced = false;
+		const racing: WorkspaceStore = {
+			...store,
+			async update(current, next) {
+				if (!raced) {
+					raced = true;
+					await workspaces.commit(ctx, record.id, {
+						baseVersion: 0,
+						changes: [{ op: "put", path: "a", content: "x" }],
+					});
+				}
+				return store.update(current, next);
+			},
+		};
+		const remounter = createStoredWorkspaces({ store: racing, sources: [projectFiles] });
+		const remounted = await remounter.remount(ctx, record.id, {
+			path: "/project",
+			source: "project-files",
+			ref: "proj-1",
+		});
+		expect(remounted.head).toBe(1);
+		expect(remounted.mounts[0]?.version).toBe("2");
+		const fresh = createStoredWorkspaces({ store, sources: [projectFiles] });
+		expect(text((await fresh.read(ctx, record.id, "a")).content)).toBe("x");
+		expect((await fresh.get(ctx, record.id)).mounts[0]?.version).toBe("2");
+	});
+
+	it("round-trips awkward names, mode bits and old versions through a fresh instance", async () => {
+		const store = createMemoryWorkspaceStore();
+		const writer = createStoredWorkspaces({ store });
+		const record = await writer.create(ctx, { owner });
+		await writer.commit(ctx, record.id, {
+			baseVersion: 0,
+			changes: [
+				{ op: "put", path: "__proto__", content: "p" },
+				{ op: "put", path: "constructor/x", content: "c" },
+				{ op: "put", path: "bin/run", content: "r", mode: 0o755 },
+			],
+		});
+		await writer.commit(ctx, record.id, { baseVersion: 1, changes: [{ op: "delete", path: "__proto__" }] });
+		const reader = createStoredWorkspaces({ store });
+		const old = await listAll(reader, ctx, record.id, { version: 1 });
+		expect(old.filter((entry) => entry.kind === "file").map((entry) => [entry.path, entry.mode])).toEqual([
+			["__proto__", undefined],
+			["bin/run", 0o755],
+			["constructor/x", undefined],
+		]);
+		const proto = old.find((entry) => entry.path === "__proto__")!;
+		expect(text(await reader.readBlob(ctx, record.id, proto.digest!, { version: 1 }))).toBe("p");
+		expect(await codeOf(reader.readBlob(ctx, record.id, proto.digest!, { version: 2 }))).toBe("not_found");
+		expect(await codeOf(reader.read(ctx, record.id, "__proto__"))).toBe("not_found");
+	});
+
+	it("refuses a malformed stored tree as unavailable rather than listing it", async () => {
+		const store = createMemoryWorkspaceStore();
+		const writer = createStoredWorkspaces({ store });
+		const record = await writer.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "a.txt": "alpha" } }] },
+		});
+		const bad = [
+			{ "../x": { digest: "0".repeat(64), size: 1, version: 1 } },
+			{ "a.txt": { digest: "bad", size: 1, version: 1 } },
+			{ "a.txt": { digest: "0".repeat(64), size: -1, version: 1 } },
+			{ "a.txt": { digest: "0".repeat(64), size: 1, version: 1.5 } },
+			{ "a.txt": { digest: "0".repeat(64), size: 1, version: 1, mode: 0o17777 } },
+			{ a: { digest: "0".repeat(64), size: 1, version: 1 }, "a/b": { digest: "0".repeat(64), size: 1, version: 1 } },
+		];
+		for (const tree of bad) {
+			const corrupt: WorkspaceStore = {
+				...store,
+				async getObject(key) {
+					return key.includes("/trees/") ? new TextEncoder().encode(JSON.stringify(tree)) : store.getObject(key);
+				},
+			};
+			const reader = createStoredWorkspaces({ store: corrupt });
+			expect(await codeOf(reader.list(ctx, record.id)), JSON.stringify(tree)).toBe("unavailable");
+		}
+	});
+
+	it("does not keep a tree larger than the cache budget", async () => {
+		const store = createMemoryWorkspaceStore();
+		const files = { "a.txt": "a", "b.txt": "b", "c.txt": "c" };
+		const record = await createStoredWorkspaces({ store }).create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files }] },
+		});
+		const small = await createStoredWorkspaces({ store }).create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "x.txt": "x" } }] },
+		});
+		const reader = createStoredWorkspaces({ store, treeCacheEntries: 2 });
+		const before = store.counts.treeReads;
+		await reader.list(ctx, record.id);
+		await reader.list(ctx, record.id);
+		expect(store.counts.treeReads - before).toBe(2);
+		await reader.list(ctx, small.id);
+		await reader.list(ctx, small.id);
+		expect(store.counts.treeReads - before).toBe(3);
+	});
+
+	it("checks the loser of a contested ensure against the record that won, whichever wins", async () => {
+		const deps = createDeps();
+		const alice = contextFor(actors.human("alice"), "org-1", "proj-1");
+		const oscar = contextFor(actors.human("oscar"), "org-1", "proj-2");
+		deps.tenancy.bind(alice.actor, "org-1", "operator", "proj-1");
+		deps.tenancy.bind(oscar.actor, "org-1", "operator", "proj-2");
+		const projectOwner = (projectId: string) => ({ kind: "project", organisationId: "org-1", projectId }) as const;
+		for (const first of ["alice", "oscar"] as const) {
+			const store = createMemoryWorkspaceStore();
+			// Both lookups see no workspace, and `first` creates before the other tries: a real lost race.
+			let lookups = 0;
+			let release: () => void = () => {};
+			const bothLooked = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let created: () => void = () => {};
+			const firstCreated = new Promise<void>((resolve) => {
+				created = resolve;
+			});
+			const barrier = (who: "alice" | "oscar"): WorkspaceStore => ({
+				...store,
+				async load(id) {
+					const head = await store.load(id);
+					if (lookups < 2) {
+						lookups++;
+						if (lookups === 2) release();
+						await bothLooked;
+					}
+					return head;
+				},
+				async create(head, versions) {
+					if (who !== first) await firstCreated;
+					const won = await store.create(head, versions);
+					if (who === first) created();
+					return won;
+				},
+			});
+			const asAlice = createStoredWorkspaces({ store: barrier("alice"), access: deps.access });
+			const asOscar = createStoredWorkspaces({ store: barrier("oscar"), access: deps.access });
+			const [byAlice, byOscar] = await Promise.allSettled([
+				asAlice.ensure(alice, "pf_contested", { owner: projectOwner("proj-1") }),
+				asOscar.ensure(oscar, "pf_contested", { owner: projectOwner("proj-2") }),
+			]);
+			const [won, lost] = first === "alice" ? [byAlice, byOscar] : [byOscar, byAlice];
+			expect(won.status, first).toBe("fulfilled");
+			expect(lost.status, first).toBe("rejected");
+			expect(isHarbourError((lost as PromiseRejectedResult).reason, "forbidden"), first).toBe(true);
+			const owner = (await store.load("pf_contested"))?.record.owner;
+			expect(owner).toEqual(projectOwner(first === "alice" ? "proj-1" : "proj-2"));
+		}
 	});
 
 	it("pages history from the store, newest first", async () => {

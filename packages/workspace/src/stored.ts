@@ -70,6 +70,7 @@ import {
 	type Tree,
 	type TreeFile,
 	treeEntries,
+	treeShapeConflict,
 	workspaceAccess,
 } from "./tree.ts";
 
@@ -131,6 +132,8 @@ export interface StoredWorkspacesOptions {
 	readonly sources?: readonly MountSource[];
 	/** Project access (settled question 7). Without it the workspaces check only the organisation. */
 	readonly access?: ProjectAccess;
+	/** Parsed tree entries kept per instance; a larger tree is parsed for each call and not kept. */
+	readonly treeCacheEntries?: number;
 }
 
 /** Stored workspaces, plus what the sandbox tiers use beside the contract. */
@@ -161,7 +164,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 	const audit = options.audit;
 	const checks = workspaceAccess(options.access);
 	const sources = mountSources(options.sources);
-	const trees = new TreeCache(TREE_CACHE_ENTRIES);
+	const trees = new TreeCache(options.treeCacheEntries ?? TREE_CACHE_ENTRIES);
 
 	/** The head in the caller's organisation; another organisation's workspace looks exactly like a missing one. */
 	async function load(ctx: CallContext, id: WorkspaceId): Promise<LoadedHead> {
@@ -534,13 +537,22 @@ function parseTree(json: string, key: string): Tree {
 	}
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw corrupt();
 	const tree = new Map<string, TreeFile>();
+	const count = (field: unknown): field is number => Number.isSafeInteger(field) && (field as number) >= 0;
 	for (const [path, entry] of Object.entries(value) as [string, unknown][]) {
 		if (typeof entry !== "object" || entry === null) throw corrupt();
 		const { digest, size, version, mode } = entry as Record<string, unknown>;
-		if (typeof digest !== "string" || typeof size !== "number" || typeof version !== "number") throw corrupt();
-		if (mode !== undefined && typeof mode !== "number") throw corrupt();
+		if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest) || !count(size) || !count(version)) {
+			throw corrupt();
+		}
+		if (mode !== undefined && (!count(mode) || mode > 0o7777)) throw corrupt();
+		try {
+			if (normalizeWorkspacePath(path) !== path) throw corrupt();
+		} catch {
+			throw corrupt();
+		}
 		tree.set(path, { digest, size, version, ...(mode === undefined ? {} : { mode }) });
 	}
+	if (treeShapeConflict(tree.keys()) !== undefined) throw corrupt();
 	return tree;
 }
 
@@ -575,6 +587,8 @@ class TreeCache {
 	set(key: string, tree: Tree): Tree {
 		const existing = this.get(key);
 		if (existing !== undefined) return existing;
+		// A tree over the whole budget would stay cached alone, unbounded; it is used once and dropped instead.
+		if (tree.size > this.#limit) return tree;
 		this.#trees.set(key, tree);
 		this.#entries += tree.size;
 		for (const [oldest, evicted] of this.#trees) {
