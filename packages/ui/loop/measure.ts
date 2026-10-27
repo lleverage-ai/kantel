@@ -24,19 +24,6 @@ import { serve } from "../scripts/workbench-server.ts";
 import type { Collected, HarnessWindow } from "./harness/main.tsx";
 import { type ComponentSpec, specs } from "./specs.ts";
 
-const { values } = parseArgs({
-	options: {
-		only: { type: "string" },
-		runs: { type: "string", default: "5" },
-		warmup: { type: "string", default: "1" },
-		throttle: { type: "string", default: "4" },
-		label: { type: "string", default: "current" },
-		json: { type: "string" },
-		"no-build": { type: "boolean", default: false },
-		chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" },
-	},
-});
-
 /** This tree's packages/ui directory, with a trailing slash. */
 export const uiRoot = new URL("..", import.meta.url).pathname;
 /** Where a tree's harness build is written (loop/harness/vite.config.ts). */
@@ -284,6 +271,18 @@ export function table(results: readonly ScenarioResult[]): string {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+	const { values } = parseArgs({
+		options: {
+			only: { type: "string" },
+			runs: { type: "string", default: "5" },
+			warmup: { type: "string", default: "1" },
+			throttle: { type: "string", default: "4" },
+			label: { type: "string", default: "current" },
+			json: { type: "string" },
+			"no-build": { type: "boolean", default: false },
+			chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" },
+		},
+	});
 	const results = await measure({
 		...(values.only ? { only: values.only.split(",") } : {}),
 		runs: Number(values.runs),
