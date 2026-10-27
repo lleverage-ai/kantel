@@ -27,6 +27,7 @@ export type AuditSource =
 	| "capability"
 	| "skills"
 	| "memory"
+	| "access"
 	| "control";
 
 /**
@@ -41,6 +42,8 @@ export type KnownAuditEventType =
 	| "session.settled"
 	| "session.tool.started"
 	| "session.tool.finished"
+	| "session.teardown.failed"
+	| "access.denied"
 	| "sandbox.lease.acquired"
 	| "sandbox.lease.released"
 	| "sandbox.escalated"

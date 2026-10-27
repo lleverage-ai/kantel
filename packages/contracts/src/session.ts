@@ -112,8 +112,52 @@ export interface WatchOptions {
 	readonly after?: string;
 }
 
+/**
+ * Why the session-end hook runs: `aborted` (the session stays usable, and later input starts a new run) or
+ * `session_ended` (closed for good).
+ */
+export type SessionEndReason = "aborted" | "session_ended";
+
+/** What the session-end hook tells each teardown. */
+export interface SessionEnd {
+	readonly sessionId: SessionId;
+	readonly organisationId: OrganisationId;
+	readonly projectId: ProjectId;
+	readonly agentId: AgentId;
+	readonly parentSessionId?: SessionId;
+	readonly reason: SessionEndReason;
+	/** Who closed or aborted the session (for a child, whoever aborted its parent). */
+	readonly endedBy: Actor;
+	readonly at: Timestamp;
+}
+
+/**
+ * One component's teardown: it ends everything it holds for `end.sessionId`. `ctx` is a `system` context in the
+ * session's organisation, so a teardown never fails a permission check. A teardown must be idempotent: when the session
+ * holds nothing more in the component, it changes nothing and audits nothing.
+ */
+export type SessionTeardown = (ctx: CallContext, end: SessionEnd) => Promise<void>;
+
+/**
+ * Settled 27 Oct 2026 (open question 8): one session-end hook. The runtime runs it when a session is closed and when
+ * it is aborted (a parent's abort or close runs it for each child too). Components register their teardown once, at
+ * wiring time: the sandbox releases its leases, the browser closes its browser sessions and ends its grants (grants
+ * passed on from them end too), and the capability registry and the vault end the session's grants.
+ *
+ * Every registered teardown runs, in registration order, even when one before it fails. A failure is audited as
+ * `session.teardown.failed` with the teardown's name and error code, never its message, and does not fail `close` or
+ * `abort`. Closing a closed session runs nothing.
+ */
+export interface SessionEndHook {
+	/** Adds a teardown under a unique name (`conflict` if the name is taken). Closing the subscription removes it. */
+	register(name: string, teardown: SessionTeardown): Subscription;
+}
+
 export interface SessionRuntime {
-	/** Creates a session (idle, with no transcript). The actor needs operator on the project. */
+	/**
+	 * Creates a session (idle, with no transcript). The actor needs operator on the project; an agent may create one
+	 * only in its own session's project. A child session is in its parent's project.
+	 */
 	create(ctx: CallContext, input: CreateSessionInput): Promise<SessionRecord>;
 	/** Durably admits user input. Starts a run when idle; queues it when busy. */
 	prompt(ctx: CallContext, sessionId: SessionId, input: PromptInput): Promise<Submission>;
@@ -122,8 +166,9 @@ export interface SessionRuntime {
 	/** Queues input to run after the current run finishes. */
 	followUp(ctx: CallContext, sessionId: SessionId, input: PromptInput): Promise<Submission>;
 	/**
-	 * Stops the running turn, cascades to child sessions and releases the session's sandbox leases. The session stays
-	 * usable: a later prompt starts a new run.
+	 * Stops the running turn, cascades to child sessions and runs the session-end hook (`aborted`), so the session's
+	 * browsers, browser, capability and vault grants and sandbox leases end. The session stays usable: a later prompt
+	 * starts a new run. Aborting a closed session does nothing.
 	 */
 	abort(ctx: CallContext, sessionId: SessionId, reason?: string): Promise<void>;
 	/** Waits for the run that `submissionId` started or joined to end. */
@@ -136,7 +181,10 @@ export interface SessionRuntime {
 		onFrame: (frame: ServerFrame) => void,
 	): Promise<Subscription>;
 	snapshot(ctx: CallContext, sessionId: SessionId): Promise<SessionSnapshot>;
-	/** Ends the session for good: aborts work, releases leases, marks it done. Later prompts reject with `conflict`. */
+	/**
+	 * Ends the session for good: aborts work, runs the session-end hook (`session_ended`) and marks it done. Later
+	 * prompts reject with `conflict`; closing it again does nothing.
+	 */
 	close(ctx: CallContext, sessionId: SessionId): Promise<void>;
 }
 
