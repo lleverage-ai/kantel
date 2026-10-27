@@ -364,6 +364,7 @@ export function createVaultConformance(options: {
 			for (const narrowing of [
 				{ methods: ["GET", "DELETE"] as const },
 				{ pathPrefix: "/" },
+				{ pathPrefix: "/repositories" },
 				{ maxUses: 6 },
 				{ ttlMs: 120_000 },
 			]) {
@@ -429,6 +430,18 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await waiting).status, "expired");
 			assert.strictEqual((await vault.waitForOutcome(agent, proposal.id)).status, "expired");
 			assert.strictEqual(await grantCount(vault), 0);
+		}),
+
+		test("tells a waiting agent its proposal expired without anyone touching it", async (vault, deps) => {
+			const item = await putGithubToken(vault);
+			const proposal = await vault.propose(agent, termsFor(item.id, ["POST"], { maxUses: 1 }));
+			const waiting = vault.waitForOutcome(agent, proposal.id);
+			deps.clock.set(proposal.expiresAt + 1);
+			const outcome = await Promise.race([
+				waiting,
+				new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+			]);
+			assert.strictEqual(outcome?.status, "expired", "the wait resolves as expired on its own");
 		}),
 
 		test("denies egress without a grant and offers a proposal as the fix", async (vault) => {
@@ -629,6 +642,42 @@ export function createVaultConformance(options: {
 			await assert.rejectsWithCode(vault.decide(human, approval(proposal)), "conflict");
 			await assert.rejectsWithCode(vault.decide(human, { proposalId: proposal.id, outcome: "deny" }), "conflict");
 			assert.strictEqual(await grantCount(vault), 1);
+		}),
+
+		test("settles concurrent decisions on one proposal exactly once", async (vault) => {
+			for (const terms of [secretTerms, undefined]) {
+				const proposal =
+					terms === undefined
+						? await vault.propose(agent, termsFor((await putGithubToken(vault)).id, ["POST"], { maxUses: 1 }))
+						: await vault.propose(agent, terms);
+				const approve = approval(proposal, terms === undefined ? {} : { secretValue: CANARY_SECRET });
+				const waiting = vault.waitForOutcome(agent, proposal.id);
+				const results = await Promise.allSettled([
+					vault.decide(human, approve),
+					vault.decide(human, approve),
+					vault.decide(human, { proposalId: proposal.id, outcome: "deny" }),
+				]);
+				const won = results.filter((result) => result.status === "fulfilled");
+				assert.strictEqual(won.length, 1, "exactly one decision wins");
+				for (const result of results) {
+					if (result.status === "rejected") {
+						assert.strictEqual((result.reason as { code?: string }).code, "conflict", "the others are conflicts");
+					}
+				}
+				const stored = await vault.getProposal(human, proposal.id);
+				const outcome = await waiting;
+				assert.strictEqual(outcome.status, stored.status, "the waiting agent hears the stored outcome");
+			}
+			const grants = await grantCount(vault);
+			assert.ok(grants <= 2, "at most one grant per proposal");
+			assert.ok((await vault.listItems(human)).items.filter((item) => item.name === "linear-key").length <= 1);
+		}),
+
+		test("refuses a secret paste without a code", async (vault, deps) => {
+			const proposal = await vault.propose(agent, secretTerms);
+			const { pickedCode: _omitted, ...withoutCode } = approval(proposal, { secretValue: CANARY_SECRET });
+			await assertCodeRefused(vault, deps, proposal, withoutCode);
+			assert.strictEqual((await vault.listItems(human)).items.length, 0, "no item was created");
 		}),
 
 		test("lets the agent withdraw its own pending proposal", async (vault) => {

@@ -50,6 +50,8 @@ export interface MemoryVaultOptions {
 	readonly proposalTtlMs?: number;
 	/** Base of the vault page links; a proposal's link is `<linkBase>/proposals/<id>`. Default `/vault`. */
 	readonly linkBase?: string;
+	/** How often a waiting agent's proposal is checked against the clock for expiry. Default 25 ms. */
+	readonly expiryPollMs?: number;
 }
 
 const DEFAULT_PROPOSAL_TTL_MS = 15 * 60 * 1000;
@@ -122,6 +124,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 	const audit = options.audit;
 	const proposalTtlMs = options.proposalTtlMs ?? DEFAULT_PROPOSAL_TTL_MS;
 	const linkBase = options.linkBase ?? "/vault";
+	const expiryPollMs = options.expiryPollMs ?? 25;
 
 	const items = new Map<string, StoredItem>();
 	const values = new Map<string, string>();
@@ -132,6 +135,8 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 	const grants = new Map<string, StoredGrant>();
 	const uses: VaultUse[] = [];
 	const waiters = new Map<string, Set<Waiter>>();
+	/** Proposals being decided now: a second decision while one is in flight is a `conflict`, never a second outcome. */
+	const deciding = new Set<string>();
 
 	async function emit(event: Omit<AuditEventInput, "id" | "at" | "source"> & { readonly id?: string }): Promise<void> {
 		if (audit === undefined) return;
@@ -563,135 +568,143 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			forbidAgent(ctx, "decide proposals");
 			const proposal = proposalFor(ctx.organisationId, input.proposalId);
 			assertPending(proposal);
-			const now = clock.now();
-			const auditBase = {
-				actor: ctx.actor,
-				organisationId: ctx.organisationId,
-				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
-				...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
-				...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
-				subject: { kind: "vault.proposal", id: proposal.id },
-			};
+			if (deciding.has(proposal.id)) {
+				throw new HarbourError("conflict", `Proposal ${proposal.id} is already being decided`);
+			}
+			deciding.add(proposal.id);
+			try {
+				const now = clock.now();
+				const auditBase = {
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+					...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
+					...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
+					subject: { kind: "vault.proposal", id: proposal.id },
+				};
 
-			if (input.outcome === "deny") {
+				if (input.outcome === "deny") {
+					const decision: Decision = {
+						id: newId("decision"),
+						proposalId: proposal.id,
+						outcome: "denied",
+						decidedBy: ctx.actor,
+						decidedAt: now,
+						...(input.note === undefined ? {} : { note: input.note }),
+					};
+					decisions.set(decision.id, decision);
+					store({ ...proposal, status: "denied", decisionId: decision.id });
+					await emit({ ...auditBase, id: `vault:decision:${decision.id}`, type: "vault.decision.denied" });
+					return decision;
+				}
+
+				if (input.termsHash !== proposal.termsHash) {
+					throw new HarbourError("refused", "The decision cites terms other than the proposal's");
+				}
+				const codeRequired = CODE_REQUIRED_KINDS.includes(proposal.kind);
+				if ((codeRequired || input.pickedCode !== undefined) && input.pickedCode !== proposal.bindingCode) {
+					await emit({
+						...auditBase,
+						type: "vault.binding_code.mismatch",
+						data: { kind: proposal.kind, pickedCode: input.pickedCode ?? null },
+					});
+					throw new HarbourError("refused", "The picked code does not match the proposal's binding code");
+				}
+				const terms = narrow(proposal.terms, input.narrowing);
+				assertWithinCeiling(ctx.organisationId, terms.route);
+				const secret = terms.secret;
+				if (secret !== undefined) {
+					if (input.secretValue === undefined || input.secretValue.length === 0) {
+						throw new HarbourError("invalid", "Approving a secret proposal needs the pasted value");
+					}
+					if (terms.itemId !== undefined && itemFor(ctx.organisationId, terms.itemId).hasValue) {
+						throw new HarbourError("conflict", `Item ${terms.itemId} already has a value`);
+					}
+				}
+
+				let itemId: string;
+				if (secret === undefined) {
+					itemId = itemFor(ctx.organisationId, terms.itemId!).id;
+				} else if (terms.itemId !== undefined) {
+					const stored = items.get(terms.itemId)!;
+					stored.item = { ...stored.item, hasValue: true, valueVersion: stored.item.valueVersion + 1, updatedAt: now };
+					values.set(stored.item.id, input.secretValue!);
+					itemId = stored.item.id;
+				} else {
+					const owner: OwnerRef =
+						proposal.projectId === undefined
+							? { kind: "organisation", organisationId: ctx.organisationId }
+							: { kind: "project", organisationId: ctx.organisationId, projectId: proposal.projectId };
+					const item = createItem(ctx.organisationId, { ...secret, owner }, input.secretValue);
+					itemId = item.id;
+					await emit({
+						...auditBase,
+						id: `vault:item:${item.id}:created`,
+						type: "vault.item.created",
+						subject: { kind: "vault.item", id: item.id },
+						data: { name: item.name, hosts: [...item.hosts], hasValue: true, proposalId: proposal.id },
+					});
+				}
+
+				const effectiveTerms: EffectiveTerms = {
+					itemId,
+					route: terms.route,
+					...(terms.lifetime.ttlMs === undefined ? {} : { expiresAt: now + terms.lifetime.ttlMs }),
+					...(terms.lifetime.maxUses === undefined ? {} : { maxUses: terms.lifetime.maxUses }),
+				};
+				const decisionId = newId("decision");
+				const grantId = newId("grant");
+				const selector: PolicySelector = {
+					organisationId: ctx.organisationId,
+					...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+					...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
+					...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
+				};
+				grants.set(grantId, {
+					organisationId: ctx.organisationId,
+					grant: {
+						id: grantId,
+						proposalId: proposal.id,
+						decisionId,
+						itemId,
+						selector,
+						route: effectiveTerms.route,
+						...(effectiveTerms.expiresAt === undefined ? {} : { expiresAt: effectiveTerms.expiresAt }),
+						...(effectiveTerms.maxUses === undefined ? {} : { maxUses: effectiveTerms.maxUses }),
+						createdAt: now,
+					},
+					uses: 0,
+				});
 				const decision: Decision = {
-					id: newId("decision"),
+					id: decisionId,
 					proposalId: proposal.id,
-					outcome: "denied",
+					outcome: "approved",
 					decidedBy: ctx.actor,
 					decidedAt: now,
+					effectiveTerms,
+					grantId,
 					...(input.note === undefined ? {} : { note: input.note }),
 				};
-				decisions.set(decision.id, decision);
-				store({ ...proposal, status: "denied", decisionId: decision.id });
-				await emit({ ...auditBase, id: `vault:decision:${decision.id}`, type: "vault.decision.denied" });
+				decisions.set(decisionId, decision);
+				store({ ...proposal, status: "approved", decisionId });
+				await emit({
+					...auditBase,
+					id: `vault:decision:${decisionId}`,
+					type: "vault.decision.approved",
+					data: {
+						kind: proposal.kind,
+						termsHash: proposal.termsHash,
+						itemId,
+						grantId,
+						route: routeJson(effectiveTerms.route),
+						...(effectiveTerms.expiresAt === undefined ? {} : { expiresAt: effectiveTerms.expiresAt }),
+						...(effectiveTerms.maxUses === undefined ? {} : { maxUses: effectiveTerms.maxUses }),
+					},
+				});
 				return decision;
+			} finally {
+				deciding.delete(proposal.id);
 			}
-
-			if (input.termsHash !== proposal.termsHash) {
-				throw new HarbourError("refused", "The decision cites terms other than the proposal's");
-			}
-			const codeRequired = CODE_REQUIRED_KINDS.includes(proposal.kind);
-			if ((codeRequired || input.pickedCode !== undefined) && input.pickedCode !== proposal.bindingCode) {
-				await emit({
-					...auditBase,
-					type: "vault.binding_code.mismatch",
-					data: { kind: proposal.kind, pickedCode: input.pickedCode ?? null },
-				});
-				throw new HarbourError("refused", "The picked code does not match the proposal's binding code");
-			}
-			const terms = narrow(proposal.terms, input.narrowing);
-			assertWithinCeiling(ctx.organisationId, terms.route);
-			const secret = terms.secret;
-			if (secret !== undefined) {
-				if (input.secretValue === undefined || input.secretValue.length === 0) {
-					throw new HarbourError("invalid", "Approving a secret proposal needs the pasted value");
-				}
-				if (terms.itemId !== undefined && itemFor(ctx.organisationId, terms.itemId).hasValue) {
-					throw new HarbourError("conflict", `Item ${terms.itemId} already has a value`);
-				}
-			}
-
-			let itemId: string;
-			if (secret === undefined) {
-				itemId = itemFor(ctx.organisationId, terms.itemId!).id;
-			} else if (terms.itemId !== undefined) {
-				const stored = items.get(terms.itemId)!;
-				stored.item = { ...stored.item, hasValue: true, valueVersion: stored.item.valueVersion + 1, updatedAt: now };
-				values.set(stored.item.id, input.secretValue!);
-				itemId = stored.item.id;
-			} else {
-				const owner: OwnerRef =
-					proposal.projectId === undefined
-						? { kind: "organisation", organisationId: ctx.organisationId }
-						: { kind: "project", organisationId: ctx.organisationId, projectId: proposal.projectId };
-				const item = createItem(ctx.organisationId, { ...secret, owner }, input.secretValue);
-				itemId = item.id;
-				await emit({
-					...auditBase,
-					id: `vault:item:${item.id}:created`,
-					type: "vault.item.created",
-					subject: { kind: "vault.item", id: item.id },
-					data: { name: item.name, hosts: [...item.hosts], hasValue: true, proposalId: proposal.id },
-				});
-			}
-
-			const effectiveTerms: EffectiveTerms = {
-				itemId,
-				route: terms.route,
-				...(terms.lifetime.ttlMs === undefined ? {} : { expiresAt: now + terms.lifetime.ttlMs }),
-				...(terms.lifetime.maxUses === undefined ? {} : { maxUses: terms.lifetime.maxUses }),
-			};
-			const decisionId = newId("decision");
-			const grantId = newId("grant");
-			const selector: PolicySelector = {
-				organisationId: ctx.organisationId,
-				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
-				...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
-				...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
-			};
-			grants.set(grantId, {
-				organisationId: ctx.organisationId,
-				grant: {
-					id: grantId,
-					proposalId: proposal.id,
-					decisionId,
-					itemId,
-					selector,
-					route: effectiveTerms.route,
-					...(effectiveTerms.expiresAt === undefined ? {} : { expiresAt: effectiveTerms.expiresAt }),
-					...(effectiveTerms.maxUses === undefined ? {} : { maxUses: effectiveTerms.maxUses }),
-					createdAt: now,
-				},
-				uses: 0,
-			});
-			const decision: Decision = {
-				id: decisionId,
-				proposalId: proposal.id,
-				outcome: "approved",
-				decidedBy: ctx.actor,
-				decidedAt: now,
-				effectiveTerms,
-				grantId,
-				...(input.note === undefined ? {} : { note: input.note }),
-			};
-			decisions.set(decisionId, decision);
-			store({ ...proposal, status: "approved", decisionId });
-			await emit({
-				...auditBase,
-				id: `vault:decision:${decisionId}`,
-				type: "vault.decision.approved",
-				data: {
-					kind: proposal.kind,
-					termsHash: proposal.termsHash,
-					itemId,
-					grantId,
-					route: routeJson(effectiveTerms.route),
-					...(effectiveTerms.expiresAt === undefined ? {} : { expiresAt: effectiveTerms.expiresAt }),
-					...(effectiveTerms.maxUses === undefined ? {} : { maxUses: effectiveTerms.maxUses }),
-				},
-			});
-			return decision;
 		},
 
 		async withdraw(ctx, proposalId) {
@@ -704,6 +717,9 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 				throw new HarbourError("forbidden", "An agent can only withdraw its own proposals");
 			}
 			assertPending(proposal);
+			if (deciding.has(proposal.id)) {
+				throw new HarbourError("conflict", `Proposal ${proposal.id} is being decided`);
+			}
 			const withdrawn = store({ ...proposal, status: "withdrawn" });
 			await emit({
 				id: `vault:proposal:${proposalId}:withdrawn`,
@@ -724,12 +740,17 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			return new Promise<ProposalOutcome>((resolve, reject) => {
 				const set = waiters.get(proposalId) ?? new Set<Waiter>();
 				waiters.set(proposalId, set);
+				// Expiry has no event of its own: check the clock until the proposal leaves `pending`. Reading it through
+				// proposalFor marks it expired, which resolves every waiter.
+				const poll = setInterval(() => proposalFor(ctx.organisationId, proposalId), expiryPollMs);
 				const onAbort = () => {
+					clearInterval(poll);
 					set.delete(waiter);
 					reject(new HarbourError("aborted", "The wait was aborted"));
 				};
 				const waiter: Waiter = {
 					resolve(outcome) {
+						clearInterval(poll);
 						signal?.removeEventListener("abort", onAbort);
 						resolve(outcome);
 					},

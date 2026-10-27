@@ -40,7 +40,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
 | Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (15) | [workspace](../packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (14) | [sandbox](../packages/sandbox/CONTRACT.md) |
-| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (36) | [vault](../packages/vault/CONTRACT.md) |
+| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (39) | [vault](../packages/vault/CONTRACT.md) |
 | Audit | `AuditSink`, `AuditEventInput` | `RecordingAuditSink` in `@harbour/testing` | Checked inside every suite | [below](#audit) |
 
 Capability, browser, skills, memory and schedules contracts come in the second PR of M0-BE1.
@@ -54,7 +54,8 @@ These come from the plan and cannot be changed by a target.
   code is refused, changes nothing and is audited as `vault.binding_code.mismatch`. The proposal stays pending. The
   vault derives a proposal's kind from its terms, so an agent cannot avoid the code by calling a write a read.
 - **Agents never decide.** An agent actor cannot open the approval view, decide a proposal, or change items, policies
-  or the ceiling. Identity never authorises an agent actor; the runtime authorises agents through their session.
+  or the ceiling. Identity never authorises an agent actor. Agents are meant to be authorised through their session, but
+  the in-memory runtime and sandbox do not check that yet (open question 7).
 - **Browser contexts are chosen by a supervisor or a human.** The browser contract, which comes in the second PR,
   enforces this: an agent can use the context it is given, never pick one.
 - **Project files are a read-only mount.** `/project` (any absolute mount point) is pinned to a version and read-only.
@@ -64,7 +65,8 @@ These come from the plan and cannot be changed by a target.
   (`git`, `node`, `bun`, `python` and others) run in the container. The container sees the isolate's latest commit.
   Ending a session releases every lease it holds.
 - **Keys are scoped.** A host API key scoped to one project cannot act in another project of the same organisation, or
-  in another organisation. Its secret is returned once and stored only as a hash.
+  in another organisation. Its secret is returned once and stored only as a hash. Identity enforces this; workspace
+  mounts, vault items and sandbox leases do not yet check the caller's project (open question 7).
 
 ## Client wire protocol
 
@@ -141,3 +143,8 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
    and `session_ended` releases commit the container's changes.
 6. **Users across organisations.** `User` has no organisation, so which organisations can see a user is an
    implementation choice for now.
+7. **Project scoping beyond identity.** The in-memory workspace does not check that the caller owns a mount's ref.
+   The vault lets an agent propose against another project's item, although a human must still approve it with the
+   code. The sandbox and runtime do not check that an agent acts only in its own session. These checks need a shared
+   way to authorise a `CallContext` (identity plus the session directory) and suite cases in each contract, before any
+   target ships these services.

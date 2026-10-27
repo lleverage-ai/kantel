@@ -130,7 +130,7 @@ export function narrow(terms: ProposalTerms, narrowing: Narrowing | undefined): 
 		route = { ...route, methods: [...narrowing.methods] };
 	}
 	if (narrowing.pathPrefix !== undefined) {
-		if (!narrowing.pathPrefix.startsWith("/") || !narrowing.pathPrefix.startsWith(terms.route.pathPrefix)) {
+		if (!narrowing.pathPrefix.startsWith("/") || !pathUnder(narrowing.pathPrefix, terms.route.pathPrefix)) {
 			throw new HarbourError("invalid", `Narrowing must keep paths under ${terms.route.pathPrefix}`);
 		}
 		route = { ...route, pathPrefix: narrowing.pathPrefix };
