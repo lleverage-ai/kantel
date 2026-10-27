@@ -1,0 +1,81 @@
+.hb-session-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+.hb-session-group {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+/* Small, muted, sentence case: a shelf label, not a banner. The count is its own element. */
+.hb-session-group-heading {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-3);
+	margin: 0;
+	padding: 0 var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-session-group-count {
+	color: var(--hb-text-faint);
+	font-weight: var(--hb-weight-regular);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-session-rows {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-session-rows-item {
+	min-width: 0;
+}
+
+/* The project and the branch side by side, separated by a gap, never a dot. Each truncates on its own. */
+.hb-session-overline {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-session-project,
+.hb-session-branch {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-session-project {
+	flex: 0 1 auto;
+	max-width: 60%;
+	color: var(--hb-text-muted);
+}
+
+.hb-session-branch {
+	flex: 0 1 auto;
+	color: var(--hb-text-faint);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-2xs);
+}
+
+.hb-session-skeleton {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+}
