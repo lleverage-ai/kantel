@@ -89,6 +89,14 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 	return async (request) => {
 		const url = new URL(request.url);
 		if (url.pathname !== base && !url.pathname.startsWith(`${base}/`)) return null;
+		const response = await handle(request, url);
+		// A HEAD answer never has a body, errors included.
+		return request.method === "HEAD" && response.body !== null
+			? new Response(null, { status: response.status, headers: response.headers })
+			: response;
+	};
+
+	async function handle(request: Request, url: URL): Promise<Response> {
 		const segments = url.pathname
 			.slice(base.length + 1)
 			.split("/")
@@ -103,18 +111,17 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 			}
 			const ctx = await options.authenticate(request);
 			const query = url.searchParams;
-			const head = request.method === "HEAD";
 			switch (route) {
 				case undefined:
-					return json(await workspaces.get(ctx, id), head);
+					return json(await workspaces.get(ctx, id));
 				case "files":
-					return json(await workspaces.list(ctx, id, listOptions(query)), head);
+					return json(await workspaces.list(ctx, id, listOptions(query)));
 				case "stat":
-					return json(await workspaces.stat(ctx, id, requiredPath(query), atVersion(query)), head);
+					return json(await workspaces.stat(ctx, id, requiredPath(query), atVersion(query)));
 				case "history":
-					return json(await workspaces.history(ctx, id, pageRequest(query)), head);
+					return json(await workspaces.history(ctx, id, pageRequest(query)));
 				case "content":
-					return await content(ctx, id, query, request, head);
+					return await content(ctx, id, query, request);
 				default:
 					return errorResponse(404, "not_found", "no such route");
 			}
@@ -122,39 +129,46 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(500, "unavailable", "the workspace read API failed");
 		}
-	};
+	}
 
 	async function content(
 		ctx: CallContext,
 		id: WorkspaceId,
 		query: URLSearchParams,
 		request: Request,
-		head: boolean,
 	): Promise<Response> {
 		const path = requiredPath(query);
 		const version = atVersion(query);
+		const mounted = path.startsWith("/");
+		const tooLarge = () =>
+			errorResponse(413, "refused", `${path} is larger than the read API serves (${maxContentBytes} bytes)`);
 		const entry = await workspaces.stat(ctx, id, path, version);
 		if (entry.kind !== "file") throw new HarbourError("invalid", `${path} is a directory`, { path });
-		if (entry.size > maxContentBytes) {
-			return errorResponse(413, "refused", `${path} is larger than the read API serves (${maxContentBytes} bytes)`);
-		}
-		const pinned = version?.version !== undefined;
-		const etag = entry.digest === undefined ? undefined : `"${entry.digest}"`;
+		if (entry.size > maxContentBytes) return tooLarge();
+		// Only a workspace file at an explicit version is immutable: a mount path reads the mount's current pin, which
+		// `remount` moves without a new workspace version.
+		const immutable = version?.version !== undefined && !mounted;
 		const headers: Record<string, string> = {
 			...SAFE_HEADERS,
 			"Content-Type": contentTypeFor(path),
-			"Cache-Control": pinned ? "private, max-age=31536000, immutable" : "private, no-cache",
-			[VERSION_HEADER]: JSON.stringify(entry.version),
-			...(etag === undefined ? {} : { ETag: etag }),
+			"Cache-Control": immutable ? "private, max-age=31536000, immutable" : "private, no-cache",
 		};
-		if (etag !== undefined && matchesEtag(request.headers.get("If-None-Match"), etag)) {
+		const ifNoneMatch = request.headers.get("If-None-Match");
+		// For a workspace file, stat's version is the one read returns, so a match needs no read. A mount file's stat
+		// carries the version that last changed it, not the mount's pin that read reports, so mounts always read.
+		if (!mounted && entry.digest !== undefined && matchesEtag(ifNoneMatch, `"${entry.digest}"`)) {
+			headers.ETag = `"${entry.digest}"`;
+			headers[VERSION_HEADER] = JSON.stringify(entry.version);
 			return new Response(null, { status: 304, headers });
 		}
 		const file = await workspaces.read(ctx, id, path, version);
+		// The file may have grown in a commit between stat and read.
+		if (file.content.byteLength > maxContentBytes) return tooLarge();
 		headers.ETag = `"${file.digest}"`;
 		headers[VERSION_HEADER] = JSON.stringify(file.version);
+		if (matchesEtag(ifNoneMatch, headers.ETag)) return new Response(null, { status: 304, headers });
 		headers["Content-Length"] = String(file.content.byteLength);
-		return new Response(head ? null : (file.content as Uint8Array<ArrayBuffer>), { status: 200, headers });
+		return new Response(file.content as Uint8Array<ArrayBuffer>, { status: 200, headers });
 	}
 }
 
@@ -165,9 +179,8 @@ const SAFE_HEADERS = {
 	"Referrer-Policy": "no-referrer",
 } as const;
 
-function json(body: unknown, head: boolean): Response {
-	const text = JSON.stringify(body);
-	return new Response(head ? null : text, {
+function json(body: unknown): Response {
+	return new Response(JSON.stringify(body), {
 		status: 200,
 		headers: {
 			...SAFE_HEADERS,

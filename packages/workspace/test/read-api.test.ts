@@ -1,4 +1,10 @@
-import { type CallContext, HarbourError, isHarbourError, type WorkspaceRecord } from "@harbour/contracts";
+import {
+	type CallContext,
+	HarbourError,
+	isHarbourError,
+	type WorkspaceRecord,
+	type Workspaces,
+} from "@harbour/contracts";
 import { actors, type ConformanceDeps, contextFor, createDeps } from "@harbour/testing/harness";
 import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
 import {
@@ -31,6 +37,9 @@ interface Fixture {
 	readonly record: WorkspaceRecord;
 	readonly calls: string[];
 	readonly pinned: string;
+	readonly workspaces: Workspaces;
+	/** Runs between the content route's stat and its read, to change the workspace in between. */
+	betweenStatAndRead?: () => Promise<void>;
 }
 
 let fixture: Fixture;
@@ -43,9 +52,10 @@ async function setUp(maxContentBytes?: number): Promise<Fixture> {
 	deps.tenancy.bind(viewerOfWorkspaceOnly.actor, ORG, "viewer", PROJECT);
 	const projectFiles = createMemoryProjectFiles({ access: deps.access });
 	deps.tenancy.bind(alice.actor, ORG, "operator", SOURCE_PROJECT);
-	const pinned = (
-		await projectFiles.write!(alice, SOURCE_PROJECT, [{ op: "put", path: "README.md", content: "project readme" }])
-	).version;
+	await projectFiles.write!(alice, SOURCE_PROJECT, [{ op: "put", path: "README.md", content: "project readme" }]);
+	// A later source version that leaves README alone, so README's last change and the mount's pin differ.
+	const pinned = (await projectFiles.write!(alice, SOURCE_PROJECT, [{ op: "put", path: "OTHER.md", content: "other" }]))
+		.version;
 	const workspaces = createMemoryWorkspaces({
 		clock: deps.clock,
 		audit: deps.audit,
@@ -83,8 +93,9 @@ async function setUp(maxContentBytes?: number): Promise<Fixture> {
 			calls.push("stat");
 			return workspaces.stat(...args);
 		},
-		read: (...args) => {
+		read: async (...args) => {
 			calls.push("read");
+			await fixture?.betweenStatAndRead?.();
 			return workspaces.read(...args);
 		},
 		history: (...args) => {
@@ -102,7 +113,7 @@ async function setUp(maxContentBytes?: number): Promise<Fixture> {
 		},
 		...(maxContentBytes === undefined ? {} : { maxContentBytes }),
 	});
-	return { deps, api, record: (await workspaces.get(alice, record.id)) as WorkspaceRecord, calls, pinned };
+	return { deps, api, record: await workspaces.get(alice, record.id), calls, pinned, workspaces };
 }
 
 async function get(path: string, user = "alice", init: RequestInit = {}): Promise<Response> {
@@ -157,7 +168,7 @@ describe("workspace read API", () => {
 		const mount = (await (await get(route(fixture.record.id, "/files?path=/project"))).json()) as {
 			items: { path: string }[];
 		};
-		expect(mount.items.map((item) => item.path)).toEqual(["/project/README.md"]);
+		expect(mount.items.map((item) => item.path)).toEqual(["/project/OTHER.md", "/project/README.md"]);
 	});
 
 	it("serves a file's bytes with its digest and version, and older versions as immutable", async () => {
@@ -200,6 +211,44 @@ describe("workspace read API", () => {
 		const response = await get(route(fixture.record.id, "/content?path=/project/README.md"));
 		expect(await response.text()).toBe("project readme");
 		expect(JSON.parse(response.headers.get(VERSION_HEADER)!)).toBe(fixture.pinned);
+	});
+
+	it("never caches a mount read as immutable, and revalidates it with the mount's pin", async () => {
+		const first = await get(route(fixture.record.id, "/content?path=/project/README.md&version=2"));
+		expect(first.headers.get("Cache-Control")).toBe("private, no-cache");
+		const again = await get(route(fixture.record.id, "/content?path=/project/README.md"), "alice", {
+			headers: { "If-None-Match": first.headers.get("ETag")! },
+		});
+		expect(again.status).toBe(304);
+		expect(JSON.parse(again.headers.get(VERSION_HEADER)!)).toBe(fixture.pinned);
+	});
+
+	it("answers HEAD with headers and never a body, errors included", async () => {
+		const ok = await get(route(fixture.record.id, "/content?path=notes/x.md"), "alice", { method: "HEAD" });
+		expect(ok.status).toBe(200);
+		expect(ok.headers.get("Content-Length")).toBe("8");
+		expect(ok.body).toBeNull();
+		const bad = await get(route(fixture.record.id, "/content"), "alice", { method: "HEAD" });
+		expect(bad.status).toBe(400);
+		expect(bad.body).toBeNull();
+		const refused = await get(route(fixture.record.id), "", { method: "HEAD" });
+		expect(refused.status).toBe(403);
+		expect(refused.body).toBeNull();
+	});
+
+	it("refuses a file that grew past the limit between stat and read", async () => {
+		fixture = await setUp(16);
+		fixture.betweenStatAndRead = async () => {
+			fixture.betweenStatAndRead = undefined;
+			await fixture.workspaces.commit(alice, fixture.record.id, {
+				baseVersion: 2,
+				changes: [{ op: "put", path: "notes/x.md", content: "# much longer than sixteen bytes" }],
+			});
+		};
+		expect(await errorOf(await get(route(fixture.record.id, "/content?path=notes/x.md")))).toEqual({
+			status: 413,
+			code: "refused",
+		});
 	});
 
 	it("pages history newest first", async () => {

@@ -101,8 +101,9 @@ project-access checks, mount reads included. The host's `authenticate` turns the
 Errors are `{ "error": { "code", "message" } }`: `invalid` 400, `forbidden` and `refused` 403, `not_found` 404,
 `conflict` 409, `expired` 410, `exhausted` 429, `not_supported` 501, `unavailable` 503; a file over
 `maxContentBytes` (16 MiB) is 413. Content is never run by a browser: HTML and SVG go out as `text/plain`, and every
-response has `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. A read at an
-explicit `version` is cached as immutable. `createWorkspaceReadClient({ baseUrl, fetch?, headers? })` returns the same
+response has `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. A workspace file read
+at an explicit `version` is cached as immutable; a mount path never is, because `remount` moves its pin. `HEAD` answers
+carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, headers? })` returns the same
 types as `Workspaces` and rethrows error bodies as `HarbourError`.
 
 ## The in-memory implementation
