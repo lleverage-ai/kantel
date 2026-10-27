@@ -507,6 +507,34 @@ importers:
         specifier: 4.153.0
         version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
 
+  targets/cloudflare/runtime:
+    dependencies:
+      "@earendil-works/chord":
+        specifier: 1.4.0
+        version: 1.4.0
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      "@harbour/runtime":
+        specifier: workspace:*
+        version: link:../../../packages/runtime
+    devDependencies:
+      "@cloudflare/workers-types":
+        specifier: 5.20261027.1
+        version: 5.20261027.1
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
+
   targets/cloudflare/vault:
     dependencies:
       "@harbour/contracts":
@@ -556,6 +584,40 @@ importers:
       wrangler:
         specifier: 4.153.0
         version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
+
+  targets/selfhosted/runtime:
+    dependencies:
+      "@earendil-works/chord":
+        specifier: 1.4.0
+        version: 1.4.0
+      "@harbour/runtime":
+        specifier: workspace:*
+        version: link:../../../packages/runtime
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.11
+        version: 0.5.11
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      "@types/pg":
+        specifier: 8.15.5
+        version: 8.15.5
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
 
   targets/selfhosted/vault:
     dependencies:
