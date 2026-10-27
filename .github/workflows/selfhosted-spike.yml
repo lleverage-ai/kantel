@@ -58,9 +58,14 @@ jobs:
         run: bun spike/conformance/run.ts --target=selfhosted
 
       # The M1 gateway in the stack: sessions, workspace reads, audit queries and
-      # the console, over HTTP behind the API-key authenticator.
-      - name: M1 gateway end to end
-        run: bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58090
+      # the console, over HTTP behind the API-key authenticator; then mail: a
+      # message sent through the gateway's HARBOUR_SMTP_URL reaches Mailpit,
+      # where the email one-time PIN test will read its codes (#15).
+      - name: M1 gateway and Mailpit end to end
+        run: >
+          bun apps/selfhosted/test/gateway/stack.ts
+          --base-url http://127.0.0.1:58090
+          --mailpit-url http://127.0.0.1:58025
 
       - name: Scripted task
         run: bun spike/scenario/run.ts --base http://127.0.0.1:58081
