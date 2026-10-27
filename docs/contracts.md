@@ -206,3 +206,13 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
 10. **Agent supervisors and browsers. Settled: yes, as built (Tom, 27 Oct 2026).** An agent in the parent session
     counts as a supervisor. It may pass a context it holds to its child session, no wider, and the passed-on grant
     ends when its own does.
+11. **Reading through a mount.** Mounting another project's files into a workspace needs access to that project, but
+    later reads through the mount check only the workspace. Anyone who may read the workspace reads the mounted
+    files. Should every read check the mounted project too?
+12. **Existence within an organisation.** Lookups find a record before checking access, so a caller in the same
+    organisation can tell an existing ID it may not see (`forbidden`) from a missing one (`not_found`). A capability
+    call ID used by another session is `conflict`. Should these be `not_found` too, as across organisations?
+13. **Work done before the check.** Lazy expiry (vault proposals, browser timeouts) runs before a call's access check,
+    so a refused call can still expire records that were already due. The calls without a caller (`Schedules.tick`,
+    `claim`, `AuditSink.append`, `Vault.decideEgress`, `Browser.endSession`, the sandbox `sweep`) check nothing; a
+    target must keep them off any path a caller can reach.
