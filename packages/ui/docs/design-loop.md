@@ -7,8 +7,8 @@ it on the score without making anything measurably worse.
 It started from the brief's suggestion (gates, measurements, a judged rubric). The changes from that suggestion are
 marked **Change**, with the reason. Everything below is in place: the static gates (`scripts/token-lint.ts`), the
 browser and States gates (`loop/gates.ts`, `loop/specs.ts`), the measurement harness (`loop/harness/`,
-`loop/measure.ts`) and the score (`loop/score.ts`). Round 1 ran on five components and round 2 on four; the
-results are in [loop-results.md](loop-results.md) and every number and verdict behind them is in `loop/history/`.
+`loop/measure.ts`, `loop/ab.ts`) and the score (`loop/score.ts`). Round 1 ran on five components, round 2 on four
+and round 3 on the vault card alone; the results are in [loop-results.md](loop-results.md) and every number and verdict behind them is in `loop/history/`.
 
 ## Fitness
 
@@ -29,7 +29,8 @@ A variant that fails any gate is rejected before anything is measured or judged.
 ### 2. Measured (lower is better)
 
 Each component has a fixed scenario in `loop/harness/`, run in a production build with React's profiling build, in
-headless Chromium with the CPU throttled four times, five runs, median taken.
+headless Chromium with the CPU throttled four times. A run is one fresh page; garbage is collected before its
+update phase and again before its interactions, so a collection left over from earlier does not land in them.
 
 | Measure | Meaning | Scenario example |
 | --- | --- | --- |
@@ -38,10 +39,24 @@ headless Chromium with the CPU throttled four times, five runs, median taken.
 | Interaction latency | From the input event's timestamp to the end of the next frame, for real input from Playwright; median and p95 | Tool-call chip: expand. Composer: a keystroke. Vault card: pick a code |
 | Bundle cost | Minified and gzipped JS and CSS the component adds to a host app, excluding React | One entry per component, bundled with Vite |
 
+Also reported, not scored: **input work**, from the input event's timestamp to the end of its dispatch, which takes
+in the handlers and React's render and commit for it but not the wait for a frame. Latency waits for the next frame,
+so at four times throttling it moves in whole frames (about 16ms) with where in the frame an input lands; work does
+not, so it shows whether a change in latency comes from the component's cost or from frame timing.
+
 **Change:** a champion and its variants are measured interleaved (champion, variant 1, variant 2, then again, five
 rounds) rather than one tree after another. Round 1 ran on a shared host whose load moved between 1 and 20 over the
 hour; measured in sequence, that drift is larger than most of the effects. Interleaving gives each side the same
 conditions, and the median of the five runs is what is scored.
+
+**Change (round 3):** comparisons run in `loop/ab.ts`, in one browser, alternating the two trees' pages in ABBA
+order (C V V C C V ...) for 40 runs a side, after four warm-up runs a side that are thrown away. Rounds 1 and 2 ran
+each tree's run in its own process and browser, so every run was a fresh browser's first page, which runs cold;
+round 3 found those runs slower and noisier than warm ones (see [loop-results.md](loop-results.md#round-3)). The
+gap between inputs is lengthened by a random part of a frame (up to 17ms): with a fixed gap, a cheaper component
+shifts every later input to another point in the frame, and latency to the next frame moves by whole frames for
+that reason alone, which is what rejected round 2's vault variant. Every difference gets a noise band: the 95% bootstrap interval of the ratio of the two sides' median runs, from
+resampling each side's runs.
 
 **Change:** wasted renders are counted separately from render cost. Total milliseconds are noisy at this scale; a
 re-render count is exact and is what regresses when someone breaks memoisation.
@@ -82,6 +97,11 @@ For a variant V against the champion C:
 V replaces C when all gates pass, `S > 0.1`, and no single measure is more than 10% worse than C's (the
 measurement noise band). A variant that only moves the score inside the noise is not kept, so the loop does not
 wander. `loop/score.ts` is this rule, tested.
+
+**Change (round 3):** a measure whose noise band includes no change (a ratio of 1) counts as no change: it scores 0
+and cannot reject the variant, however far its median moved. Before, a measure more than 10% worse rejected the
+variant even when its runs could not tell the two sides apart, which is how round 2 rejected the vault card's
+variant. Bundle size is exact, so it has no band.
 
 **Change:** each measure has a floor (1ms for times, one render, 64 bytes), and both sides are raised to it before
 the log ratio. Without it a composer that renders in 0.0ms either way scores `log2(0 / 0)`, and one wasted render
@@ -126,9 +146,16 @@ node packages/ui/loop/measure.ts          # measures for the loop's components
 node packages/ui/scripts/shoot.ts         # screenshots for the judges
 ```
 
-To compare trees (the champion and each variant in its own worktree), build each tree's harness once, then run
-`node loop/measure.ts --only <scenario> --runs 1 --no-build --json <file>` in each tree in turn, five times round,
-and score the medians with `loop/score.ts`.
+To compare trees (the champion and each variant in its own worktree), run from either tree:
+
+```sh
+node packages/ui/loop/ab.ts --only vault-card --champion <champion>/packages/ui --variant <variant>/packages/ui \
+  --json ab.json
+```
+
+It builds both trees' harnesses, measures them alternately in one browser and prints each measure's ratio with its
+noise band and the measured gain `M` under the noise rule. A run of 40 a side on the vault card takes about 12
+minutes. Check a new scenario with the champion against itself first: every band should include 1.
 
 Results and history live in `loop/history/`; the latest summary is in `docs/loop-results.md`.
 

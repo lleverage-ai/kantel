@@ -3,6 +3,58 @@
 The latest rounds of the [design loop](design-loop.md). Every number, gate result and judge's verdict behind this
 page is in `loop/history/<scenario>.json`.
 
+## Round 3
+
+The vault approval card only: round 2's rejected variant, measured again with a harness that can tell its latency
+from noise. The champion is main after round 2. The variant moves the per-second clock into the Lifetime value
+alone, memoises the card and folds it to expired on a single timeout. It passed every gate (types, tests, Biome,
+token and copy lint, axe, keyboard and the 1px alignment gate on all 15 stories at 1280px and 420px, States), and its
+30 screenshots are pixel-identical to the champion's, so it was not judged (`J_V − J_C = 0`). On Playwright's fake
+clock it behaves as the champion does: "2 minutes left" in amber after six seconds, the fold to expired at zero, and
+"Start again" re-arming the card. **Selected:** `S = 0.922`. It would pass round 2's rule too: no measure is
+now more than 10% worse.
+
+| VaultApprovalCard | Render | Wasted | Latency median | Latency p95 | Input work | Input render | JS / CSS gz |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Champion | 19.7 (18.1–22.9) | 10 | 39.3 (35.1–44.2) | 58.7 (53.0–67.3) | 17.7 (16.1–20.4) | 41.0 (38.6–49.6) | 4.5 / 2.7 kB |
+| Lifetime ticks alone, card memoised | 3.7 (3.2–5.0) | 0 | 38.6 (35.5–44.7) | 57.2 (49.7–68.6) | 15.5 (14.5–18.2) | 24.3 (21.9–27.8) | 4.6 / 2.7 kB |
+| Variant / champion, with its 95% band | 0.19 (0.16–0.23) | 0.10 | 0.98 (0.90–1.09), noise | 0.97 (0.86–1.08), noise | 0.88 (0.80–0.96) | 0.59 (0.52–0.62) | 1.025 / 1.0 |
+
+Medians of 40 runs a side, with the interquartile range in brackets, after four warm-up runs a side that were
+thrown away; ms at 4x CPU throttling. Render, wasted renders and input render are clearly lower: the card does 81%
+less render work over five seconds on the clock, re-renders nothing it does not need to, and picking a binding code
+costs 41% less rendering. Input work, the time from a key press to the end of its handling, is 12% lower. Latency to
+the next frame is the same: both bands include no change, so neither scores. The variant's JS is 115 bytes larger
+(2.5%), which counts against it.
+
+**Was round 2's latency reading real?** No. The harness made it:
+
+- **The fixed gap between inputs.** Round 2 pressed a key every 50ms plus the time the last press took. A cheaper
+  card shortens that, so every later press lands at a different point in the frame, and latency, measured to the
+  end of the next frame, moves in whole frames (about 16ms at this throttling). Measured again with the fixed gap,
+  the variant came out 19% slower once more (44.0 against 37.0ms; band 1.00 to 1.25), with 46% of its inputs in the
+  later frame against the champion's 36%, while its input work was 15% lower. With each gap lengthened by a random
+  part of a frame, 39% and 38% of inputs land in the later frame and the difference is gone (0.98).
+- **Cold runs.** Round 2 ran each measurement in a fresh browser, so every run was a cold first page. Twelve runs a
+  side that way put the champion's latency median at 43.2ms against 37.0ms warm, and its input render at 44.3 against
+  39.3ms: cold pages are slower and noisier, which hides a 15% effect in five runs.
+
+The harness now fixes both (`loop/ab.ts`, `loop/measure.ts`): one browser, the two trees' pages alternated in ABBA
+order, warm-up runs thrown away, garbage collected before each phase, the gap between inputs varied by up to a
+frame, input work reported beside latency, and a 95% bootstrap band on every difference. A difference whose band
+includes no change now counts as no change ([design-loop.md](design-loop.md#score-and-acceptance)). The champion
+measured against itself, 30 runs a side, gave bands that all include 1 (latency median 0.88 to 1.17), so the band
+is not reporting differences that are not there. The other components' round-2 latencies came from the same
+harness; their decisions rest on effects of 2x or on the judges, so they stand.
+
+One quirk to know: `scripts/shoot.ts` renders some 420px stories (loading, long content, live) a sub-pixel
+differently depending on which stories it shot before them, in the champion as in the variant. Compare screenshots
+taken in the same run order, or one story at a time.
+
+Round 3 is the loop's last by its stop rule (three rounds). Tom chose on 27 Oct 2026 to keep Harbour's red circled
+X for a failed tool call, against T3 Code's tinted icon; that is now recorded in the
+[ToolCallChip docs](session-transcript.md#toolcallchip) as a deliberate difference.
+
 ## Round 2
 
 Four components (the composer has left the loop), one variant each, against champions that already carry Tom's two
@@ -53,7 +105,8 @@ should: render cost 16.0 to 4.0ms, wasted renders 10 to 0, and picking a code 35
 card no longer re-renders with its parent. The rule still rejects it, on latency: 44.3 against 37.3ms median. Both
 sides' runs fall in the same two clusters, about 29 to 33ms and 44 to 46ms, which look like whole frames at 4x
 throttling; the variant landed in the upper one three times out of five, the champion twice. Its p95 is lower
-(51.7 against 55.3ms). It is the first candidate for round 3, measured with more runs.
+(51.7 against 55.3ms). It is the first candidate for round 3, measured with more runs. (Round 3 found the latency
+reading was the harness's doing, not the card's, and selected the variant.)
 
 ## Round 1
 
@@ -165,12 +218,10 @@ Round 1 accepted variants, so by the loop's stop rule it continued. What became 
 - VaultApprovalCard: the countdown split, with the card memoised. The countdown is gone (Tom: the lifetime is said
   once, in the terms); the same idea, applied to the Lifetime term, was round 2's vault variant.
 
-## Round 3 candidates
-
-Round 2 accepted variants, so by the stop rule a third round may run:
+## Round 3 candidates (from round 2)
 
 - VaultApprovalCard: the Lifetime value ticking alone in a memoised card, measured with more runs, as its latency
-  sits on frame boundaries.
+  sits on frame boundaries. Selected in round 3.
 
 ## For Tom
 
@@ -178,8 +229,10 @@ Taste calls the loop could not settle, with what the judges said:
 
 - **Composer height** (for the composer rebuild). T3 Code rests its empty composer at about three lines; the judges agreed Harbour's shorter
   one is less faithful but preferred it 2 to 1 for density and the disabled and mobile states.
-- **Failed tool calls.** T3 Code keeps a failed call's own icon, tinted red, with a small X at the row's end; the
-  judges preferred Harbour's red circled X 3 to 0. Harbour keeps it, so here it departs from T3 on purpose.
+- **Failed tool calls: settled.** T3 Code keeps a failed call's own icon, tinted a faint red, with the label at the
+  finished rows' strength (pingdotgg/t3code at `1152e917`, `apps/web/src/components/chat/TimelineWorkEntryRow.tsx`
+  lines 344 to 362); Harbour shows a red circled X in the icon slot with the label at full strength. The judges
+  preferred Harbour's 3 to 0 in round 2, and Tom chose to keep it on 27 Oct 2026: a deliberate difference from T3.
 - **Settled in round 2 by Tom's calls:** tool durations (T3 Code's work log: the start time on hover or focus, the
   duration once per group) and the vault lifetime (once, in the terms; the approved-narrowed story now reads
   "30 days left").
