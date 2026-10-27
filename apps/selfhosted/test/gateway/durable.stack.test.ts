@@ -173,12 +173,19 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		});
 	});
 
+	test("reads a database URL as node-postgres does, a socket URL with no host included", () => {
+		const socket = withSearchPath("postgres://harbour@/harbour?host=%2Fvar%2Frun%2Fpostgresql", "harbour_m1");
+		expect(socket).toMatchObject({ user: "harbour", database: "harbour", host: "/var/run/postgresql" });
+		expect(socket.options).toBe("-c search_path=harbour_m1");
+	});
+
 	test("keeps its schema when the database URL brings options of its own", async () => {
 		// A URL `options` that sets the search path elsewhere must not move the gateway's tables out of its schema.
+		// Two `options` parameters: node-postgres takes the last, and so must the gateway.
 		const url = new URL(databaseUrl);
-		url.searchParams.set("options", "-c search_path=public -c statement_timeout=60000");
-		const merged = withSearchPath(url.toString(), config.schema);
-		const pool = new pg.Pool({ connectionString: merged, max: 1 });
+		url.searchParams.append("options", "-c statement_timeout=1000");
+		url.searchParams.append("options", "-c search_path=public -c statement_timeout=60000");
+		const pool = new pg.Pool({ ...withSearchPath(url.toString(), config.schema), max: 1 });
 		try {
 			const shown = await pool.query(
 				"SELECT current_setting('search_path') AS path, current_setting('statement_timeout') AS timeout",
