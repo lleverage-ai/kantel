@@ -3,9 +3,10 @@
 #   docker compose -f deploy/compose/compose.yaml up -d --build --wait
 #
 # Two session hosts (host-a, host-b) share one Postgres lease table, so killing
-# one moves its sessions to the other within a lease TTL. Sandboxes sit on
-# `harbour-sandbox`, an internal network whose only other member is the vault
-# proxy: nothing a sandbox sends can leave except through the vault.
+# one moves its sessions to the other within a lease TTL. Each sandbox
+# container gets its own internal network, created per command, whose only
+# other member is the vault proxy: nothing a sandbox sends can leave except
+# through the vault, and no sandbox can reach another.
 #
 # Runtimes: HARBOUR_ISOLATE_RUNTIME and HARBOUR_SANDBOX_RUNTIME pick the OCI
 # runtime for the workerd isolate host and for sandbox containers. Both
@@ -47,7 +48,9 @@ x-host: &host
     HARBOUR_ISOLATE_URL: http://isolate-host:8080
     HARBOUR_SANDBOX_IMAGE: harbour-sandbox:dev
     HARBOUR_SANDBOX_RUNTIME: ${HARBOUR_SANDBOX_RUNTIME:-runc}
-    HARBOUR_SANDBOX_NETWORK: harbour-sandbox
+    # Name prefix of the per-command sandbox networks.
+    HARBOUR_SANDBOX_NETWORK: harbour-sbx
+    HARBOUR_VAULT_CONTAINER: harbour-vault-proxy
     HARBOUR_VAULT_PROXY_URL: http://vault-proxy:3128
     HARBOUR_SPIKE_TOKEN: ${HARBOUR_SPIKE_TOKEN:-}
 
@@ -113,6 +116,8 @@ services:
       context: ../..
       dockerfile: apps/vault-proxy/Dockerfile
     image: harbour-vault-proxy:dev
+    # Fixed, because session hosts connect it to each sandbox network by name.
+    container_name: harbour-vault-proxy
     restart: unless-stopped
     environment:
       HARBOUR_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
@@ -126,11 +131,7 @@ services:
       # The CA the vault intercepts sandbox HTTPS with; kept so sandboxes
       # trust the same CA across vault restarts. Only the vault mounts it.
       - vaultca:/var/lib/harbour-vault
-    networks:
-      control: {}
-      upstream: {}
-      sandbox:
-        aliases: [vault-proxy]
+    networks: [control, upstream]
     depends_on:
       postgres: { condition: service_healthy }
       host-migrate: { condition: service_completed_successfully }
@@ -188,9 +189,6 @@ services:
 networks:
   control: {}
   upstream: {}
-  sandbox:
-    name: harbour-sandbox
-    internal: true
 
 volumes:
   pgdata: {}

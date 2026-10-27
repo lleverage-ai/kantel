@@ -24,6 +24,7 @@ import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
 import pg from "pg";
+import { assertRedactable, Redactor } from "./redact.ts";
 
 interface Route {
 	id: string;
@@ -50,13 +51,18 @@ const policy = JSON.parse(readFileSync(policyPath, "utf8")) as Policy;
 const isolateKey = env("VAULT_ISOLATE_KEY");
 const pool = new pg.Pool({ connectionString: env("HARBOUR_DATABASE_URL"), max: 5 });
 const port = Number(env("PORT", "3128"));
-const REDACTED = "[vault:redacted]";
 
 const secrets = new Map<string, string>();
 for (const route of policy.routes) {
-	if (route.inject) secrets.set(route.id, env(route.inject.secretEnv));
+	if (!route.inject) continue;
+	const secret = env(route.inject.secretEnv);
+	assertRedactable(route.inject.secretEnv, secret);
+	secrets.set(route.id, secret);
 }
-const secretValues = [...new Set(secrets.values())].filter((s) => s.length > 0);
+const redactor = new Redactor([...new Set(secrets.values())]);
+
+// A bug in one request must not take the vault down for every session.
+process.on("unhandledRejection", (error) => console.error("vault: unhandled rejection:", redactor.text(String(error)).text));
 
 // ------------------------------------------------------------------ the CA
 
@@ -171,34 +177,27 @@ async function audit(caller: Caller | undefined, kind: string, detail: Record<st
 }
 
 /** Never let a secret leave in a response, an error or a log line. */
-function redact(text: string): { text: string; count: number } {
-	let out = text;
-	let count = 0;
-	for (const secret of secretValues) {
-		const parts = out.split(secret);
-		count += parts.length - 1;
-		out = parts.join(REDACTED);
-	}
-	return { text: out, count };
+const redact = (text: string) => redactor.text(text);
+const redactBytes = (bytes: Buffer) => redactor.bytes(bytes);
+
+/** A CONNECT authority we will act on: a DNS name or IPv4 literal, and a port in range. */
+function parseAuthority(authority: string): { host: string; port: number } | undefined {
+	const match = /^([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?):([0-9]{1,5})$/.exec(authority);
+	if (match === null) return undefined;
+	const port = Number(match[2]);
+	if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+	return { host: match[1]!.toLowerCase(), port };
 }
 
-function redactBytes(bytes: Buffer): { bytes: Buffer; count: number } {
-	let out = bytes;
-	let count = 0;
-	for (const secret of secretValues) {
-		const needle = Buffer.from(secret);
-		if (out.indexOf(needle) === -1) continue;
-		const pieces: Buffer[] = [];
-		let from = 0;
-		for (let at = out.indexOf(needle); at !== -1; at = out.indexOf(needle, from)) {
-			pieces.push(out.subarray(from, at), Buffer.from(REDACTED));
-			from = at + needle.length;
-			count++;
-		}
-		pieces.push(out.subarray(from));
-		out = Buffer.concat(pieces);
+/** Run a request handler; any failure becomes a 502 for that request only. */
+async function guarded(res: http.ServerResponse, handle: () => Promise<void>) {
+	try {
+		await handle();
+	} catch (error) {
+		console.error("vault: request failed:", redact(String(error)).text);
+		if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+		res.end("harbour vault: internal error\n");
 	}
-	return { bytes: out, count };
 }
 
 function deny(res: http.ServerResponse, reason: string) {
@@ -267,7 +266,9 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 
 // Runs on Node, not Bun: workerd's proxy-style requests carry the full URL in
 // the request line and no Host header, which Bun's HTTP parser rejects.
-const server = http.createServer({ requireHostHeader: false }, async (req, res) => {
+const server = http.createServer({ requireHostHeader: false }, (req, res) => void guarded(res, () => serve(req, res)));
+
+async function serve(req: http.IncomingMessage, res: http.ServerResponse) {
 	if (req.url === "/healthz") {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ ok: true, routes: policy.routes.length }));
@@ -286,23 +287,38 @@ const server = http.createServer({ requireHostHeader: false }, async (req, res) 
 		return deny(res, "not a proxy request (absolute URL required)");
 	}
 	await proxy(req, res, target, await callerOf(req.headers));
-});
+}
 
 /** Requests inside intercepted CONNECT tunnels, keyed by their TLS socket. */
 const tunnels = new WeakMap<object, { caller: Caller; host: string; port: number }>();
-const intercepted = http.createServer(async (req, res) => {
-	const tunnel = tunnels.get(req.socket);
-	if (tunnel === undefined) return deny(res, "no tunnel");
-	const authority = tunnel.port === 443 ? tunnel.host : `${tunnel.host}:${tunnel.port}`;
-	await proxy(req, res, new URL(`https://${authority}${req.url ?? "/"}`), tunnel.caller);
+const intercepted = http.createServer((req, res) =>
+	void guarded(res, async () => {
+		const tunnel = tunnels.get(req.socket);
+		if (tunnel === undefined) return deny(res, "no tunnel");
+		if (!(req.url ?? "").startsWith("/")) return deny(res, "origin-form request expected inside a tunnel");
+		const authority = tunnel.port === 443 ? tunnel.host : `${tunnel.host}:${tunnel.port}`;
+		await proxy(req, res, new URL(`https://${authority}${req.url}`), tunnel.caller);
+	}),
+);
+
+server.on("connect", (req, socket: net.Socket, head) => {
+	socket.on("error", () => socket.destroy());
+	connect(req, socket, head).catch((error) => {
+		console.error("vault: CONNECT failed:", redact(String(error)).text);
+		socket.destroy();
+	});
 });
 
-server.on("connect", async (req, socket: net.Socket, head) => {
-	const [host = "", portText = "443"] = (req.url ?? "").split(":");
-	const portNumber = Number(portText);
+async function connect(req: http.IncomingMessage, socket: net.Socket, head: Buffer) {
 	const caller = await callerOf(req.headers);
+	const authority = parseAuthority(req.url ?? "");
+	if (authority === undefined) {
+		await audit(caller, "vault.deny", { method: "CONNECT", host: String(req.url ?? "").slice(0, 200), reason: "bad authority" });
+		socket.end("HTTP/1.1 400 Bad Request\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n");
+		return;
+	}
+	const { host, port: portNumber } = authority;
 	const where = { method: "CONNECT", host, port: portNumber };
-	socket.on("error", () => socket.destroy());
 	if (caller === undefined) {
 		await audit(undefined, "vault.deny", { ...where, reason: "unknown caller" });
 		socket.end("HTTP/1.1 403 Forbidden\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n");
@@ -341,6 +357,6 @@ server.on("connect", async (req, socket: net.Socket, head) => {
 	secure.on("error", () => secure.destroy());
 	tunnels.set(secure, { caller, host, port: portNumber });
 	intercepted.emit("connection", secure);
-});
+}
 
 server.listen(port, () => console.log(`vault proxy on ${port}: ${policy.routes.map((r) => r.id).join(", ")}`));

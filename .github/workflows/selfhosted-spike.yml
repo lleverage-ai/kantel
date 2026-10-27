@@ -30,6 +30,10 @@ jobs:
         working-directory: apps/selfhosted
         run: bun install --frozen-lockfile && bunx tsc -p .
 
+      - name: Vault redaction tests
+        working-directory: apps/vault-proxy
+        run: bun install --frozen-lockfile && bun test
+
       - name: Bring up the stack
         run: docker compose -f deploy/compose/compose.yaml up -d --build --wait
 

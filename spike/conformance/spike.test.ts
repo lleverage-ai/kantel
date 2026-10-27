@@ -127,6 +127,59 @@ describe(`spike conformance (${base})`, () => {
 	);
 
 	test(
+		"a sandbox cannot reach another session's sandbox directly",
+		async () => {
+			// A serves on a port for a while; B, at the same time, probes every
+			// address on its own /24 for that port. On a shared sandbox network B
+			// would find A; with per-sandbox networks it finds no one.
+			const serve = inContainer("(python3 -m http.server 8765 --bind 0.0.0.0 >/dev/null 2>&1 &) ; sleep 20; echo served");
+			const probe = inContainer(
+				`sleep 4; python3 -c "${[
+					"import socket, concurrent.futures as f",
+					"me = socket.gethostbyname(socket.gethostname()); net = me.rsplit('.', 1)[0]",
+					"def hit(h):",
+					"    s = socket.socket(); s.settimeout(0.5)",
+					"    try: return h if s.connect_ex((h, 8765)) == 0 else None",
+					"    finally: s.close()",
+					"hosts = [net + '.' + str(i) for i in range(1, 255) if net + '.' + str(i) != me]",
+					"found = [h for h in f.ThreadPoolExecutor(64).map(hit, hosts) if h]",
+					"print('peers:', ','.join(found) or 'none')",
+				].join("\n")}"`,
+			);
+			const [a, b] = await Promise.all([surface.run([bash(serve)]), surface.run([bash(probe)])]);
+			expect(a.state.toolResults[0]?.text).toContain("served");
+			expect(execOf(b.state, probe)?.tier).toBe("container");
+			expect(b.state.toolResults[0]?.text.trim()).toBe("peers: none");
+		},
+		T,
+	);
+
+	test(
+		"a malformed CONNECT is refused without taking the vault down",
+		async () => {
+			// Only where egress is an HTTP proxy (self-hosted); elsewhere it reports "no proxy".
+			const connect = inContainer(
+				`python3 -c "${[
+					"import base64, os, socket, urllib.parse as u",
+					"p = os.environ.get('HTTPS_PROXY')",
+					"if not p: print('no proxy'); raise SystemExit",
+					"p = u.urlsplit(p); auth = base64.b64encode(f'{p.username}:{p.password}'.encode()).decode()",
+					"s = socket.create_connection((p.hostname, p.port), 10)",
+					"s.sendall(f'CONNECT postman-echo.com:99999 HTTP/1.1\\\\r\\\\nProxy-Authorization: Basic {auth}\\\\r\\\\n\\\\r\\\\n'.encode())",
+					"print(s.recv(200).decode().splitlines()[0])",
+				].join("\n")}"`,
+			);
+			const commands = [connect, inContainer(ECHO)];
+			const { state } = await surface.run(commands.map(bash));
+			const status = state.toolResults[0]?.text.trim() ?? "";
+			expect(status === "no proxy" || /^HTTP\/1\.1 4\d\d/.test(status)).toBe(true);
+			expect(state.toolResults[1]?.isError).toBe(false);
+			expect(state.toolResults[1]?.text.trim()).toBe("[vault:redacted]");
+		},
+		T,
+	);
+
+	test(
 		"the canary secret reaches neither sandbox nor the transcript",
 		async () => {
 			const { state } = await surface.run([

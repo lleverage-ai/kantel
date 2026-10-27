@@ -35,6 +35,8 @@ export interface HostOptions {
 	leaseTtlMs: number;
 	/** How often to look for sessions whose owner died. */
 	takeoverPollMs: number;
+	/** Close an idle session (no work, no wake time) after this long, releasing its lease and connection. */
+	idleCloseMs: number;
 }
 
 interface OpenSession {
@@ -53,6 +55,12 @@ interface OpenSession {
 	killAfterExec?: number;
 	respond: (context: TranscriptContext) => AssistantMessage;
 	tools: ToolDeps;
+	/** The lease's immutable fence, which every metadata write checks too. */
+	fence: { sessionId: string; owner: string; fence: number };
+	/** Resumes the harness at its next sleep's due time (Pi arms no timer of its own when `onWake` is set). */
+	wakeTimer?: ReturnType<typeof setTimeout>;
+	/** Closes the session once it has been idle for `idleCloseMs`. */
+	idleTimer?: ReturnType<typeof setTimeout>;
 }
 
 const FAUX_STEPS = 200;
@@ -142,8 +150,9 @@ export class SessionHost {
 		]);
 		const lease = await this.leases.acquire(sessionId, this.owner, this.options.hostUrl, this.options.leaseTtlMs);
 		if (lease === undefined) return undefined;
-		const takeover = lease.fence > 1;
 		const previousOwner = before.rows[0]?.owner as string | undefined;
+		// Reopening a session this incarnation closed when idle is not a takeover.
+		const takeover = lease.fence > 1 && previousOwner !== this.owner;
 		const previousExpiresAt = before.rows[0] ? new Date(before.rows[0].expires_at).getTime() : undefined;
 		const acquiredAt = Date.now();
 		await this.audit.record(sessionId, "lease", takeover ? "takeover" : "acquire", {
@@ -162,7 +171,7 @@ export class SessionHost {
 			schema: row.pi_schema,
 			fence: (client) => this.leases.check(fence, client),
 		});
-		const session = { scenario: row.scenario ?? undefined } as OpenSession;
+		const session = { scenario: row.scenario ?? undefined, fence } as OpenSession;
 		session.respond = (ctx) =>
 			session.scenario !== undefined && !isSpecPrompt(ctx) ? stepsResponse(session.scenario, ctx) : scriptedResponse(ctx);
 		const faux = fauxProvider();
@@ -184,7 +193,7 @@ export class SessionHost {
 			{
 				models,
 				registry,
-				onWake: (wake) => void this.#onWake(sessionId, wake),
+				onWake: (wake) => void this.#onWake(session, wake),
 				onReport: (error, info) => {
 					console.error(`[${this.options.hostId}] ${sessionId} ${info.type}:`, error);
 				},
@@ -244,18 +253,53 @@ export class SessionHost {
 		process.exit(137);
 	}
 
-	async #onWake(sessionId: string, wake: Wake): Promise<void> {
-		await this.pool
-			.query(`UPDATE harbour.sessions SET status = $2, wake_at = $3, updated_at = now() WHERE id = $1`, [
-				sessionId,
-				wake.active ? "active" : "idle",
-				wake.at === undefined ? null : new Date(wake.at),
-			])
-			.catch((error) => console.error("wake update failed", error));
+	/**
+	 * Pi calls this instead of arming its own timer: persist the wake for crash
+	 * recovery, resume the harness locally when a sleep is due, and close the
+	 * session once it has nothing left to do.
+	 */
+	async #onWake(session: OpenSession, wake: Wake): Promise<void> {
+		clearTimeout(session.wakeTimer);
+		clearTimeout(session.idleTimer);
+		session.wakeTimer = session.idleTimer = undefined;
+		const live = () => this.#open.get(session.sessionId) === session;
+		if (wake.at !== undefined) {
+			session.wakeTimer = setTimeout(() => {
+				if (live()) session.harness.resume();
+			}, Math.max(0, wake.at - Date.now()));
+		} else if (!wake.active && this.options.idleCloseMs > 0) {
+			session.idleTimer = setTimeout(() => {
+				if (live()) void this.#close(session, "idle", true);
+			}, this.options.idleCloseMs);
+			session.idleTimer.unref?.();
+		}
+		await this.#fenced(session, `UPDATE harbour.sessions SET status = $2, wake_at = $3, updated_at = now() WHERE id = $1`, [
+			session.sessionId,
+			wake.active ? "active" : "idle",
+			wake.at === undefined ? null : new Date(wake.at),
+		]).catch((error) => console.error(`[${this.owner}] wake update for ${session.sessionId} failed:`, error));
+	}
+
+	/** A session metadata write that commits only while this owner still holds the lease. */
+	async #fenced(session: OpenSession, sql: string, params: unknown[]): Promise<void> {
+		const client = await this.pool.connect();
+		try {
+			await client.query("BEGIN");
+			await this.leases.check(session.fence, client);
+			await client.query(sql, params);
+			await client.query("COMMIT");
+		} catch (error) {
+			await client.query("ROLLBACK").catch(() => undefined);
+			throw error;
+		} finally {
+			client.release();
+		}
 	}
 
 	#forget(session: OpenSession, why: string) {
 		clearInterval(session.renew);
+		clearTimeout(session.wakeTimer);
+		clearTimeout(session.idleTimer);
 		if (this.#open.get(session.sessionId) === session) {
 			this.#open.delete(session.sessionId);
 			console.log(`[${this.options.hostId}] closed ${session.sessionId}: ${why}`);
@@ -319,7 +363,7 @@ export class SessionHost {
 	}
 
 	async prompt(session: OpenSession, text: string, requestId: string) {
-		await this.pool.query(`UPDATE harbour.sessions SET status = 'active', updated_at = now() WHERE id = $1`, [
+		await this.#fenced(session, `UPDATE harbour.sessions SET status = 'active', updated_at = now() WHERE id = $1`, [
 			session.sessionId,
 		]);
 		const root = await session.harness.root(context);
@@ -407,7 +451,7 @@ export class SessionHost {
 		if (!("session" in routed)) throw new Error(`session ${sessionId} is owned by another host`);
 		const session = routed.session;
 		if (scenario !== undefined) {
-			await this.pool.query(`UPDATE harbour.sessions SET scenario = $2 WHERE id = $1`, [sessionId, JSON.stringify(scenario)]);
+			await this.#fenced(session, `UPDATE harbour.sessions SET scenario = $2 WHERE id = $1`, [sessionId, JSON.stringify(scenario)]);
 			session.scenario = scenario;
 		}
 		let head = await this.workspace.head(created.workspaceId);

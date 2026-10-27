@@ -30,6 +30,7 @@ export function config() {
 		databaseUrl: env("HARBOUR_DATABASE_URL", "postgres://harbour:harbour@127.0.0.1:55432/harbour"),
 		leaseTtlMs: Number(env("HARBOUR_LEASE_TTL_MS", "10000")),
 		takeoverPollMs: Number(env("HARBOUR_TAKEOVER_POLL_MS", "500")),
+		idleCloseMs: Number(env("HARBOUR_IDLE_CLOSE_MS", "300000")),
 		s3: {
 			endpoint: env("S3_ENDPOINT", "http://127.0.0.1:59000"),
 			bucket: env("S3_BUCKET", "harbour"),
@@ -44,6 +45,7 @@ export function config() {
 			image: env("HARBOUR_SANDBOX_IMAGE", "harbour-sandbox:dev"),
 			runtime: env("HARBOUR_SANDBOX_RUNTIME", "runc"),
 			network: env("HARBOUR_SANDBOX_NETWORK", "harbour-sandbox"),
+			vaultContainer: env("HARBOUR_VAULT_CONTAINER", "harbour-vault-proxy"),
 			proxyUrl: env("HARBOUR_VAULT_PROXY_URL", "http://vault-proxy:3128"),
 			memoryBytes: Number(env("HARBOUR_SANDBOX_MEMORY_BYTES", String(512 * 1024 * 1024))),
 			nanoCpus: Number(env("HARBOUR_SANDBOX_NANO_CPUS", String(1_000_000_000))),
@@ -81,6 +83,7 @@ export async function build(cfg = config()) {
 			databaseUrl: cfg.databaseUrl,
 			leaseTtlMs: cfg.leaseTtlMs,
 			takeoverPollMs: cfg.takeoverPollMs,
+			idleCloseMs: cfg.idleCloseMs,
 		},
 		pool,
 		leases,
