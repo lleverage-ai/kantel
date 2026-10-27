@@ -11,10 +11,12 @@ import {
 	type Authentication,
 	type CallContext,
 	type Clock,
+	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
 	type IssuedApiKey,
 	type JsonValue,
+	normaliseEmail,
 	type Organisation,
 	type OrganisationId,
 	type Page,
@@ -29,6 +31,7 @@ import {
 	roleSatisfies,
 	type ServiceId,
 	type ServiceIdentity,
+	type SignIn,
 	systemClock,
 	systemContext,
 	type User,
@@ -73,6 +76,9 @@ function requireRoleValue(role: unknown): Role {
 	if (typeof role !== "string" || !ROLES.includes(role as Role)) throw new HarbourError("invalid", "unknown role");
 	return role as Role;
 }
+
+const normalisedEmail = (email: string | undefined): string | undefined =>
+	email === undefined ? undefined : normaliseEmail(email);
 
 const forbidden = (message: string): HarbourError => new HarbourError("forbidden", message);
 const notFound = (what: string): HarbourError => new HarbourError("not_found", `${what} not found`);
@@ -297,6 +303,14 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		async createUser(ctx, input) {
 			if (ctx.actor.kind !== "system") requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const name = requireName(input.name, "a user");
+			if (input.externalSubject !== undefined) {
+				if (typeof input.externalSubject !== "string" || input.externalSubject === "") {
+					throw new HarbourError("invalid", "an external subject must be a non-empty string");
+				}
+				if ([...users.values()].some((stored) => stored.user.externalSubject === input.externalSubject)) {
+					throw new HarbourError("conflict", "another user already has this external subject");
+				}
+			}
 			const user: User = Object.freeze({
 				id: newId("usr"),
 				name,
@@ -480,6 +494,54 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				projectIds: key.projectIds,
 				role: key.role,
 			};
+		},
+
+		async signIn(ctx, identity): Promise<SignIn> {
+			await requireSystem(ctx, "identity.signIn", { ...(audit === undefined ? {} : { audit }), clock });
+			if (
+				typeof identity?.issuer !== "string" ||
+				identity.issuer === "" ||
+				typeof identity.subject !== "string" ||
+				identity.subject === ""
+			) {
+				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
+			}
+			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
+			const bySubject = [...users.values()].filter((candidate) => candidate.user.externalSubject === externalSubject);
+			// Subjects are unique by construction; should two records ever share one, refuse rather than pick.
+			if (bySubject.length > 1) throw forbidden("no user matches this sign-in");
+			let stored = bySubject[0];
+			if (stored === undefined) {
+				const email = identity.emailVerified === true ? normalisedEmail(identity.email) : undefined;
+				const invited =
+					email === undefined || email === ""
+						? []
+						: [...users.values()].filter(
+								(candidate) =>
+									candidate.user.externalSubject === undefined && normalisedEmail(candidate.user.email) === email,
+							);
+				const only = invited.length === 1 ? invited[0] : undefined;
+				if (only === undefined) throw forbidden("no user matches this sign-in");
+				stored = { ...only, user: Object.freeze({ ...only.user, externalSubject }) };
+				users.set(stored.user.id, stored);
+				await emit(
+					// The person signing in links themselves; the authenticator only carried their token.
+					{ actor: { kind: "human", userId: stored.user.id }, organisationId: stored.createdInOrganisationId },
+					"identity.user.linked",
+					stored.createdInOrganisationId,
+					{ kind: "identity.user", id: stored.user.id },
+					{ issuer: identity.issuer },
+				);
+			}
+			const userId = stored.user.id;
+			const organisationIds = new Set<OrganisationId>();
+			if (organisations.has(stored.createdInOrganisationId)) organisationIds.add(stored.createdInOrganisationId);
+			for (const binding of bindings.values()) {
+				if (binding.principal.kind === "user" && binding.principal.userId === userId) {
+					organisationIds.add(binding.organisationId);
+				}
+			}
+			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {

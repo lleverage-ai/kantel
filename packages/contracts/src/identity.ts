@@ -100,6 +100,38 @@ export interface Authentication {
 	readonly role?: Role;
 }
 
+/**
+ * A person a sign-in provider vouched for: the verified claims of a Cloudflare Access or OIDC token. Only an
+ * authenticator that has checked the token's signature, issuer, audience and lifetime builds one.
+ */
+export interface ExternalIdentity {
+	/** The token's `iss`: the Access team domain or the OIDC issuer URL. */
+	readonly issuer: string;
+	/** The token's `sub`, unique at the issuer. */
+	readonly subject: string;
+	readonly email?: string;
+	/** Whether the provider verified the email. Only a verified email links an invited user. */
+	readonly emailVerified?: boolean;
+	readonly name?: string;
+}
+
+/** The `User.externalSubject` for a provider's subject: the issuer and subject, separated by a space. */
+export function externalSubjectOf(issuer: string, subject: string): string {
+	return `${issuer} ${subject}`;
+}
+
+/** How sign-in compares emails: trimmed and lower-cased. */
+export function normaliseEmail(email: string): string {
+	return email.trim().toLowerCase();
+}
+
+/** A signed-in person's user record and the organisations they may act in. */
+export interface SignIn {
+	readonly user: User;
+	/** Organisations the user was created in or holds a role in, in no particular order. */
+	readonly organisationIds: readonly OrganisationId[];
+}
+
 /** How a caller proved who it is. */
 export type AuthenticationMethod =
 	/** A host app's API key: `Authorization: Bearer hbr_…`. */
@@ -226,6 +258,19 @@ export interface IdentityDirectory {
 	 * `system` to learn who a request is from; any other actor is `forbidden`.
 	 */
 	authenticateApiKey(ctx: SystemContext, secret: string): Promise<Authentication>;
+
+	/**
+	 * Resolves a person a sign-in provider vouched for to their user (M1-BE7). Harbour is invite-only: an admin creates
+	 * the user first, and sign-in never creates one.
+	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
+	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
+	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
+	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
+	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
+	 * - Anyone else, an unverified email, or an email two unlinked users share, is `forbidden`.
+	 * A worker call (settled question 13): the authenticator makes it as `system`; any other actor is `forbidden`.
+	 */
+	signIn(ctx: SystemContext, identity: ExternalIdentity): Promise<SignIn>;
 
 	/**
 	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or undefined. A worker call
