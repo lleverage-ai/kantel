@@ -166,11 +166,13 @@ describe("the stack over durable storage", () => {
 
 	it("reads sessions the object stored before it hosted the session core", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harbour-sessions-"));
+		const file = join(dir, "object.sqlite");
+		// The object's own SQLite connection, which the core borrows and does not close.
+		const objectDb = new DatabaseSync(file);
 		try {
-			const file = join(dir, "object.sqlite");
 			const storage: StackStorage = {
 				...(await durableStorage()),
-				sessions: objectStorage(new DatabaseSync(file)),
+				sessions: objectStorage(objectDb),
 			};
 			const first = await start(storage);
 			const { organisation, project, admin } = first.stack;
@@ -206,9 +208,9 @@ describe("the stack over durable storage", () => {
 			expect(await after.stack.runtime.runtime.wait(admin, session.id, next.id)).toMatchObject({
 				answer: "Echo: again",
 			});
-			await after.stack.close();
-			opened.splice(opened.indexOf(after.stack), 1);
 		} finally {
+			for (const stack of opened.splice(0)) await stack.close();
+			objectDb.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
