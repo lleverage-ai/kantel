@@ -76,6 +76,21 @@ jobs:
       - name: Bindings against the stack
         run: bun apps/selfhosted/test/bindings.ts --markdown "$GITHUB_STEP_SUMMARY"
 
+      # The gateway runs on those bindings: restarted, it must keep its
+      # deployment (the bootstrap key still works), sessions and workspace.
+      - name: M1 gateway after a restart
+        run: |
+          compose="docker compose -f deploy/compose/compose.yaml"
+          before=$($compose exec -T gateway cat /var/lib/harbour/bootstrap.json)
+          $compose restart gateway
+          $compose up -d --wait --no-deps gateway
+          after=$($compose exec -T gateway cat /var/lib/harbour/bootstrap.json)
+          if [ "$before" != "$after" ]; then
+            echo "::error::the gateway set up a new deployment on restart instead of keeping its own"
+            exit 1
+          fi
+          bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58090 --mailpit-url http://127.0.0.1:58025
+
       - name: Scripted task
         run: bun spike/scenario/run.ts --base http://127.0.0.1:58081
 

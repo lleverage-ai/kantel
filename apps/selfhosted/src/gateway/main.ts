@@ -4,8 +4,13 @@
 //
 //   PORT                        default 8080
 //   HARBOUR_CONSOLE_DIR         the console's build; default apps/console/dist in this checkout
-//   HARBOUR_BOOTSTRAP_FILE      where the in-memory bootstrap's IDs and API key are written (mode 0600);
-//                               default .harbour/bootstrap.json under the working directory
+//   HARBOUR_BOOTSTRAP_FILE      where the bootstrap's IDs and API key are written (mode 0600), and read back on the
+//                               next start; default .harbour/bootstrap.json under the working directory
+//   HARBOUR_DATABASE_URL        Postgres for the real components (durable.ts); unset, everything is in memory
+//   HARBOUR_GATEWAY_SCHEMA      the schema their tables go in; default harbour_m1
+//   S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION
+//                               where workspace trees go; required with HARBOUR_DATABASE_URL
+//   HARBOUR_GATEWAY_S3_PREFIX   their key prefix in the bucket; default m1/workspaces/
 //   HARBOUR_ORGANISATION_NAME   default "Harbour"
 //   HARBOUR_PROJECT_NAME        default "default"
 //   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use; default any https: URL
@@ -13,10 +18,11 @@
 //   HARBOUR_MAIL_FROM           their From address; required with HARBOUR_SMTP_URL (see mail.ts)
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bootstrap, createGatewayComponents } from "./components.ts";
+import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
+import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
 import { describeMail, mailConfig } from "./mail.ts";
 import { listen } from "./node-http.ts";
@@ -34,6 +40,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		project: env.HARBOUR_PROJECT_NAME ?? "default",
 		callbackOrigins: origins,
 		mail: mailConfig(env),
+		durable: durableConfig(env),
 	};
 }
 
@@ -55,9 +62,49 @@ export async function writePrivateFile(path: string, content: string): Promise<v
 	}
 }
 
+/** The real components' configuration, or undefined (in memory) when HARBOUR_DATABASE_URL is unset. */
+export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConfig | undefined {
+	const databaseUrl = env.HARBOUR_DATABASE_URL?.trim() ?? "";
+	if (databaseUrl === "") return undefined;
+	const need = (name: string) => {
+		const value = env[name]?.trim() ?? "";
+		if (value === "") throw new Error(`${name} is required with HARBOUR_DATABASE_URL`);
+		return value;
+	};
+	const region = env.S3_REGION?.trim();
+	return {
+		databaseUrl,
+		schema: env.HARBOUR_GATEWAY_SCHEMA?.trim() || "harbour_m1",
+		s3: {
+			endpoint: need("S3_ENDPOINT"),
+			bucket: need("S3_BUCKET"),
+			accessKeyId: need("S3_ACCESS_KEY"),
+			secretAccessKey: need("S3_SECRET_KEY"),
+			...(region ? { region } : {}),
+			prefix: env.HARBOUR_GATEWAY_S3_PREFIX?.trim() || "m1/workspaces/",
+		},
+	};
+}
+
+/** What the last start wrote to the bootstrap file, if anything readable. */
+async function readBootstrap(path: string): Promise<Bootstrap | undefined> {
+	try {
+		const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<Bootstrap>;
+		const fields = ["organisationId", "projectId", "workspaceId", "apiKey"] as const;
+		return fields.every((field) => typeof parsed[field] === "string") ? (parsed as Bootstrap) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function serveGateway(cfg = gatewayConfig()) {
-	const components = createGatewayComponents();
-	const seeded = await bootstrap(components, { organisation: cfg.organisation, project: cfg.project });
+	const components =
+		cfg.durable === undefined ? createGatewayComponents() : await createDurableGatewayComponents(cfg.durable);
+	const seeded = await bootstrap(
+		components,
+		{ organisation: cfg.organisation, project: cfg.project },
+		await readBootstrap(cfg.bootstrapFile),
+	);
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
 	const gateway = createGateway({
