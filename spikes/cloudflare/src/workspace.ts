@@ -41,16 +41,15 @@ export class R2Workspace implements Workspace {
       const clean = normalisePath(path);
       entries[clean] = { path: clean, hash, size: bytes.byteLength, mode: 0o644 };
     }
-    const manifest: WorkspaceManifest = { workspaceId: this.id, version: "v1", entries };
-    // Both puts are create-only, so a losing concurrent creator cannot overwrite the winner's first manifest.
-    const wrote = await this.#bucket.put(`${this.#prefix}versions/v1.json`, JSON.stringify(manifest), {
-      onlyIf: { etagDoesNotMatch: "*" },
-    });
-    if (wrote === null) throw new Error(`workspace ${this.id} already exists`);
-    const created = await this.#bucket.put(`${this.#prefix}HEAD`, "v1", { onlyIf: { etagDoesNotMatch: "*" } });
+    // A unique first version, as for every commit: a losing concurrent creator cannot overwrite the winner's manifest,
+    // and a crash before HEAD exists leaves only an orphan, so a retry can still create the workspace.
+    const version = `v1.${randomSuffix()}`;
+    const manifest: WorkspaceManifest = { workspaceId: this.id, version, entries };
+    await this.#bucket.put(`${this.#prefix}versions/${version}.json`, JSON.stringify(manifest));
+    const created = await this.#bucket.put(`${this.#prefix}HEAD`, version, { onlyIf: { etagDoesNotMatch: "*" } });
     if (created === null) throw new Error(`workspace ${this.id} already exists`);
-    this.#manifests.set("v1", manifest);
-    return "v1";
+    this.#manifests.set(version, manifest);
+    return version;
   }
 
   async head(): Promise<WorkspaceVersion> {
@@ -95,8 +94,7 @@ export class R2Workspace implements Workspace {
       else entries[path] = { path, hash: change.hash, size: change.size, mode: change.mode };
     }
     // The suffix keeps two racing writers from overwriting each other's manifest; only one wins the HEAD swap.
-    const suffix = crypto.getRandomValues(new Uint8Array(3)).reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
-    const version = `v${Number.parseInt(base.slice(1), 10) + 1}.${suffix}`;
+    const version = `v${Number.parseInt(base.slice(1), 10) + 1}.${randomSuffix()}`;
     const manifest: WorkspaceManifest = { workspaceId: this.id, version, parent: base, entries };
     // A crash after this put and before HEAD leaves an orphaned manifest that nothing references.
     await this.#bucket.put(`${this.#prefix}versions/${version}.json`, JSON.stringify(manifest));
@@ -107,6 +105,10 @@ export class R2Workspace implements Workspace {
     this.#manifests.set(version, manifest);
     return version;
   }
+}
+
+function randomSuffix(): string {
+  return crypto.getRandomValues(new Uint8Array(3)).reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
 }
 
 export function normalisePath(path: string): string {

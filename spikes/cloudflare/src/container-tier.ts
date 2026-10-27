@@ -89,8 +89,9 @@ export class HarbourContainer extends DurableObject<Env> {
     const owner = `${args.sessionId}/${args.workspaceId}`;
     if (!this.#container().running) {
       this.#held = null;
-      timings = await this.#start(args.sessionId);
+      // Claimed before starting, so a call that interleaves with the start sees the right owner.
       await this.ctx.storage.put("owner", owner);
+      timings = await this.#start(args.sessionId);
     } else if ((await this.ctx.storage.get<string>("owner")) !== owner) {
       throw new Error("this container is in use by another session or workspace");
     }

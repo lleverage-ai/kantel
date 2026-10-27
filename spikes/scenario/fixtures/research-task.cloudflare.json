@@ -1,6 +1,6 @@
 {
   "format": "harbour-m0-session-fixture/1",
-  "recordedAt": "2026-10-27T09:48:33.561Z",
+  "recordedAt": "2026-10-27T10:16:32.333Z",
   "scenario": "research-task",
   "entries": [
     {
@@ -13,7 +13,7 @@
               "text": "Done: the title of example.com is \"Example Domain\"; notes are in notes/x.md and committed in the container's git repository."
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -31,7 +31,7 @@
             }
           },
           "stopReason": "stop",
-          "timestamp": 1793094512802,
+          "timestamp": 1793096192018,
           "durationMs": 0
         }
       ],
@@ -53,8 +53,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 119,
-          "timestamp": 1793094512802
+          "durationMs": 139,
+          "timestamp": 1793096192018
         }
       ],
       "data": {
@@ -79,7 +79,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -97,7 +97,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094512683,
+          "timestamp": 1793096191879,
           "durationMs": 0
         }
       ],
@@ -115,12 +115,12 @@
           "content": [
             {
               "type": "text",
-              "text": "b6e7b1b research notes\n1\n"
+              "text": "c696612 research notes\n1\n"
             }
           ],
           "isError": false,
-          "durationMs": 981,
-          "timestamp": 1793094512683
+          "durationMs": 239,
+          "timestamp": 1793096191879
         }
       ],
       "data": {
@@ -145,7 +145,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -163,7 +163,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094511702,
+          "timestamp": 1793096191640,
           "durationMs": 0
         }
       ],
@@ -185,8 +185,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 756,
-          "timestamp": 1793094511702
+          "durationMs": 791,
+          "timestamp": 1793096191640
         }
       ],
       "data": {
@@ -211,7 +211,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -229,7 +229,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094510946,
+          "timestamp": 1793096190849,
           "durationMs": 0
         }
       ],
@@ -247,12 +247,12 @@
           "content": [
             {
               "type": "text",
-              "text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\nb6e7b1b research notes\n0\n"
+              "text": "# Notes\n\n- example.com title: Example Domain (fetched through the vault)\n1\nc696612 research notes\n0\n"
             }
           ],
           "isError": false,
-          "durationMs": 2407,
-          "timestamp": 1793094510946
+          "durationMs": 2820,
+          "timestamp": 1793096190849
         }
       ],
       "data": {
@@ -277,7 +277,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -295,7 +295,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094508539,
+          "timestamp": 1793096188029,
           "durationMs": 0
         }
       ],
@@ -317,8 +317,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 1894,
-          "timestamp": 1793094508539
+          "durationMs": 879,
+          "timestamp": 1793096188029
         }
       ],
       "data": {
@@ -344,7 +344,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -362,7 +362,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094506645,
+          "timestamp": 1793096187150,
           "durationMs": 0
         }
       ],
@@ -384,8 +384,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 62,
-          "timestamp": 1793094506645
+          "durationMs": 205,
+          "timestamp": 1793096187150
         }
       ],
       "data": {
@@ -410,7 +410,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -428,7 +428,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094506583,
+          "timestamp": 1793096186945,
           "durationMs": 0
         }
       ],
@@ -450,8 +450,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 285,
-          "timestamp": 1793094506583
+          "durationMs": 2553,
+          "timestamp": 1793096186945
         }
       ],
       "data": {
@@ -476,7 +476,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -494,7 +494,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094506298,
+          "timestamp": 1793096184392,
           "durationMs": 0
         }
       ],
@@ -516,8 +516,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 1097,
-          "timestamp": 1793094506298
+          "durationMs": 1035,
+          "timestamp": 1793096184392
         }
       ],
       "data": {
@@ -542,7 +542,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -560,7 +560,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094505201,
+          "timestamp": 1793096183357,
           "durationMs": 0
         }
       ],
@@ -582,8 +582,8 @@
             }
           ],
           "isError": false,
-          "durationMs": 384,
-          "timestamp": 1793094505201
+          "durationMs": 300,
+          "timestamp": 1793096183357
         }
       ],
       "data": {
@@ -608,7 +608,7 @@
               }
             }
           ],
-          "api": "faux:1793094504649:21pfi49cp2i",
+          "api": "faux:1793096182950:uhjzjwtjp4b",
           "provider": "harbour-script",
           "model": "scripted",
           "usage": {
@@ -626,7 +626,7 @@
             }
           },
           "stopReason": "toolUse",
-          "timestamp": 1793094504817,
+          "timestamp": 1793096183057,
           "durationMs": 0
         }
       ],
@@ -748,7 +748,7 @@
               }
             }
           ],
-          "timestamp": 1793094504817
+          "timestamp": 1793096183057
         }
       ],
       "kind": "pi.system",
@@ -761,7 +761,7 @@
         {
           "role": "user",
           "content": "Run the research task in brief.txt.",
-          "timestamp": 1793094504817
+          "timestamp": 1793096183057
         }
       ],
       "kind": "pi.user",
@@ -774,112 +774,112 @@
       "command": "ls -1 /workspace && cat brief.txt",
       "tier": "isolate",
       "exitCode": 0,
-      "base": "v1",
-      "version": "v1",
+      "base": "v1.2165ad",
+      "version": "v1.2165ad",
       "timings": {
-        "isolate.manifest": 178,
-        "isolate.exec": 94,
+        "isolate.manifest": 136,
+        "isolate.exec": 77,
         "isolate.commit": 0,
-        "isolate.total": 272,
-        "isolate.call": 384
+        "isolate.total": 213,
+        "isolate.call": 300
       }
     },
     {
       "command": "mkdir -p research && curl -sS https://example.com/ -o research/example.html && grep -o '<title>[^<]*</title>' research/example.html",
       "tier": "isolate",
       "exitCode": 0,
-      "base": "v1",
-      "version": "v2.82ea90",
+      "base": "v1.2165ad",
+      "version": "v2.8978f7",
       "timings": {
         "isolate.manifest": 0,
-        "isolate.exec": 303,
-        "isolate.commit": 763,
-        "isolate.total": 1066,
-        "isolate.call": 1097
+        "isolate.exec": 157,
+        "isolate.commit": 864,
+        "isolate.total": 1021,
+        "isolate.call": 1035
       }
     },
     {
       "command": "curl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'",
       "tier": "isolate",
       "exitCode": 0,
-      "base": "v2.82ea90",
-      "version": "v2.82ea90",
+      "base": "v2.8978f7",
+      "version": "v2.8978f7",
       "timings": {
-        "isolate.manifest": 109,
-        "isolate.exec": 157,
+        "isolate.manifest": 87,
+        "isolate.exec": 889,
         "isolate.commit": 0,
-        "isolate.total": 266,
-        "isolate.call": 285
+        "isolate.total": 976,
+        "isolate.call": 2553
       }
     },
     {
       "command": "curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
       "tier": "isolate",
       "exitCode": 0,
-      "base": "v2.82ea90",
-      "version": "v2.82ea90",
+      "base": "v2.8978f7",
+      "version": "v2.8978f7",
       "timings": {
         "isolate.manifest": 0,
-        "isolate.exec": 44,
+        "isolate.exec": 196,
         "isolate.commit": 0,
-        "isolate.total": 44,
-        "isolate.call": 62
+        "isolate.total": 196,
+        "isolate.call": 205
       }
     },
     {
       "command": "cat notes/x.md && grep -c 'Example Domain' research/example.html && git init -q && git add -A && git -c user.name=harbour -c user.email=harbour@example.invalid commit -qm 'research notes' && git log --oneline | tee git-log.txt && env | grep -ci canary || true",
       "tier": "container",
       "exitCode": 0,
-      "base": "v3.de6fe4",
-      "version": "v4.9a8c6f",
+      "base": "v3.9e18e4",
+      "version": "v4.feda2f",
       "timings": {
-        "container.start": 256,
-        "container.ready": 343,
-        "container.diff": 275,
-        "container.request": 300,
-        "container.commit": 738,
-        "container.sync": 52,
-        "container.exec": 224.1,
-        "container.scan": 3,
-        "container.call": 2407
+        "container.start": 383,
+        "container.ready": 392,
+        "container.diff": 188,
+        "container.request": 162,
+        "container.commit": 547,
+        "container.sync": 6.7,
+        "container.exec": 133.9,
+        "container.scan": 1.6,
+        "container.call": 2820
       }
     },
     {
       "command": "# harbour:container\ncurl -sS https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]' && curl -sS -o /dev/null -w '%{http_code}\\n' https://api.github.com/zen",
       "tier": "container",
       "exitCode": 0,
-      "base": "v4.9a8c6f",
-      "version": "v4.9a8c6f",
+      "base": "v4.feda2f",
+      "version": "v4.feda2f",
       "timings": {
         "container.diff": 0,
-        "container.request": 713,
+        "container.request": 755,
         "container.commit": 0,
         "container.sync": 0.2,
-        "container.exec": 704.2,
-        "container.scan": 0.7,
-        "container.call": 756
+        "container.exec": 732.4,
+        "container.scan": 0.5,
+        "container.call": 791
       }
     },
     {
       "command": "cat git-log.txt && wc -l < git-log.txt",
       "tier": "isolate",
       "exitCode": 0,
-      "base": "v4.9a8c6f",
-      "version": "v4.9a8c6f",
+      "base": "v4.feda2f",
+      "version": "v4.feda2f",
       "timings": {
-        "isolate.manifest": 123,
-        "isolate.exec": 105,
+        "isolate.manifest": 71,
+        "isolate.exec": 156,
         "isolate.commit": 0,
-        "isolate.total": 228,
-        "isolate.call": 981
+        "isolate.total": 227,
+        "isolate.call": 239
       }
     }
   ],
   "events": [],
   "vault": [
     {
-      "at": 1793094505232,
-      "sessionId": "research-task-mvqi645n",
+      "at": 1793096183371,
+      "sessionId": "research-task-mvqj64fs",
       "tier": "isolate",
       "method": "GET",
       "host": "example.com",
@@ -893,8 +893,8 @@
       }
     },
     {
-      "at": 1793094506426,
-      "sessionId": "research-task-mvqi645n",
+      "at": 1793096186056,
+      "sessionId": "research-task-mvqj64fs",
       "tier": "isolate",
       "method": "GET",
       "host": "postman-echo.com",
@@ -908,8 +908,8 @@
       }
     },
     {
-      "at": 1793094506601,
-      "sessionId": "research-task-mvqi645n",
+      "at": 1793096186954,
+      "sessionId": "research-task-mvqj64fs",
       "tier": "isolate",
       "method": "GET",
       "host": "api.github.com",
@@ -918,8 +918,8 @@
       "status": 403
     },
     {
-      "at": 1793094511270,
-      "sessionId": "research-task-mvqi645n",
+      "at": 1793096191146,
+      "sessionId": "research-task-mvqj64fs",
       "tier": "container",
       "method": "GET",
       "host": "postman-echo.com",
@@ -933,8 +933,8 @@
       }
     },
     {
-      "at": 1793094511665,
-      "sessionId": "research-task-mvqi645n",
+      "at": 1793096191466,
+      "sessionId": "research-task-mvqj64fs",
       "tier": "container",
       "method": "GET",
       "host": "api.github.com",

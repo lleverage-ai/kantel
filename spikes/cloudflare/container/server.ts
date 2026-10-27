@@ -134,8 +134,8 @@ async function run(command: string, cwd: string, env: Record<string, string>, ti
     stderr: "pipe",
   });
   let timedOut = false;
-  let release: () => void = () => {};
-  const abandoned = new Promise<void>((resolve) => (release = resolve));
+  let abandon: ReturnType<typeof setTimeout> | undefined;
+  const readers = [child.stdout.getReader(), child.stderr.getReader()];
   const timer = setTimeout(() => {
     timedOut = true;
     try {
@@ -143,18 +143,35 @@ async function run(command: string, cwd: string, env: Record<string, string>, ti
     } catch {
       child.kill("SIGKILL");
     }
-    // Something that left the group (its own setsid, a daemon) may still hold the pipes: stop waiting for them.
-    setTimeout(release, 2_000);
+    // Something that left the group (its own setsid, a daemon) may still hold the pipes: stop reading them.
+    abandon = setTimeout(() => {
+      for (const reader of readers) reader.cancel().catch(() => {});
+    }, 2_000);
   }, timeoutMs);
-  const read = (stream: ReadableStream<Uint8Array>) =>
-    Promise.race([new Response(stream).text(), abandoned.then(() => "")]);
-  const [stdout, stderr, exitCode] = await Promise.all([read(child.stdout), read(child.stderr), child.exited]);
+  const [stdout, stderr, exitCode] = await Promise.all([drain(readers[0]), drain(readers[1]), child.exited]);
   clearTimeout(timer);
+  clearTimeout(abandon);
   return {
     stdout,
     stderr: timedOut ? `${stderr}timed out after ${timeoutMs} ms\n` : stderr,
     exitCode: timedOut ? 124 : exitCode,
   };
+}
+
+/** Reads a stream to the end, or to what was read when it is cancelled. */
+async function drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    // Cancelled after a timeout.
+  }
+  return text + decoder.decode();
 }
 
 function json(value: unknown, status = 200) {

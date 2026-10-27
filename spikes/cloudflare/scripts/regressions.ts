@@ -58,6 +58,12 @@ const started = Date.now();
 r = await call(a, "exec", { command: "sleep 600 & wait", tier: "container", timeoutMs: 3000 }) as typeof r;
 const elapsed = Date.now() - started;
 check("container timeout returns promptly", elapsed < 20_000 && r.body.exitCode === 124, { elapsed, r });
+const count = (args: string) =>
+  `for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -c '^sleep ${args} $' || true`;
+r = await exec(a, `sleep 7 >/dev/null 2>&1 & ${count("7")}`, "container");
+check("control: the process count sees a running sleep", r.body.stdout.trim() === "1", r);
+r = await exec(a, count("600"), "container");
+check("the background child was killed with its group", r.body.stdout.trim() === "0", r);
 
 // 4. Another session cannot use a container this session started.
 const b = `${run}-b`;

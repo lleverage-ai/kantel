@@ -54,14 +54,13 @@ client ── Worker (bearer token) ── SessionDO ── Pi Durable Harness (
    - Tool-result entries are not in call order by entry ID; order by the message timestamp.
 6. **Redaction is the weak point of header injection.** Any allowed host that reflects request headers is a way to read the secret back, and string matching cannot cover every encoding (a host could hash, split or compress it). The production vault should inject only into hosts that do not reflect headers, and treat redaction as a second line of defence.
 
-The review of PR #40 found six issues, all fixed and checked live by `scripts/regressions.ts`: JSON-escaped echoes defeated redaction; a directory replaced by a file broke container sync; a losing concurrent `create` could overwrite the first manifest; a container could be reused by another session or workspace; files created through a symlinked parent in the isolate were not committed; and a container timeout did not kill background children. The cold-start runs predate these fixes; the only change on that path is one Durable Object storage write when a container starts.
+The review of PR #40 found six issues (and a re-review four more in the fixes), all fixed and checked live by `scripts/regressions.ts`: JSON-escaped echoes defeated redaction; a directory replaced by a file broke container sync; a losing concurrent `create` could overwrite the first manifest; a container could be reused by another session or workspace; files created through a symlinked parent in the isolate were not committed; and a container timeout did not kill background children. The cold-start runs predate these fixes; the only change on that path is one Durable Object storage write when a container starts.
 
 ## Not done here
 
 - The git, monorepo and dependency rows of the cold-start table belong to M0-BE2 (#5).
 - No conformance suite: M0-BE1's suite was not on main. Pi Durable's `createEnvConformance` was not run against `HarbourEnv`, which implements only what Pi's coding tools use (`watch`, temp files, `rename`, line readers return `not_supported`).
 - The vault is a stub: static policies, one item, exact host match, no path scope, no proposals or approvals. Its echo hosts (`postman-echo.com`, `httpbin.org`) exist to prove injection and are exactly the reflecting hosts a real policy should refuse.
-- A crash between writing a new workspace's first manifest and creating its `HEAD` leaves that workspace ID unusable; acceptable for a spike, where IDs are per run.
 - Non-HTTP egress from the container (raw TCP, SSH) is blocked by `enableInternet: false` but was not tested.
 
 ## Reconciling with M0-BE1 (#2, PR #39)
