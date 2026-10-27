@@ -6,7 +6,6 @@
 
 import {
 	applyDelta,
-	type CardItem,
 	PROTOCOL_VERSION,
 	type ServerFrame,
 	type SessionSnapshot,
@@ -15,6 +14,7 @@ import {
 import type { SessionSummary } from "@harbour/ui";
 import type { Catalogue, RecordedSession } from "../recorded/catalogue.ts";
 import { FixtureHost, type HostOptions } from "../server-sim/fixture-host.ts";
+import { needsOf } from "../state/needs.ts";
 import type { Connection, Transport } from "../state/session-client.ts";
 import type { ConsoleActor, ConsoleClient, SessionControl, SessionListState } from "./client.ts";
 
@@ -31,19 +31,6 @@ type Entry = {
 	/** Opened at least once, so its live part has been started. */
 	opened: boolean;
 };
-
-/** What a waiting session is waiting on: the newest card still open. */
-function needsOf(snapshot: SessionSnapshot): SessionSummary["needs"] {
-	for (let index = snapshot.items.length - 1; index >= 0; index--) {
-		const item = snapshot.items[index];
-		if (item?.kind !== "card") continue;
-		const { card } = item as CardItem;
-		if (card.type === "vault.approval" && card.status === "pending") return "approval";
-		if (card.type === "browser.grant" && card.status === "pending") return "approval";
-		if (card.type === "question" && card.status === "open") return "answer";
-	}
-	return undefined;
-}
 
 /**
  * The list's status for a protocol status. A finished run is `idle` in the protocol; the list shows it as done (an
@@ -102,7 +89,7 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 			update(entry, {
 				title: state.title ?? entry.summary.title,
 				status: listStatus(state.status),
-				needs: state.status === "waiting" ? needsOf(state) : undefined,
+				needs: state.status === "waiting" ? needsOf(state.items) : undefined,
 				updatedAt: state.updatedAt,
 				startedAt: first?.at ?? entry.summary.startedAt,
 				// Finishing while nobody has it open makes it unread; markRead clears it.

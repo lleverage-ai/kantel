@@ -1,4 +1,4 @@
-import type { Cursor, SessionStatus } from "@harbour/protocol";
+import type { Cursor, SessionStatus, TranscriptItem } from "@harbour/protocol";
 import {
 	Button,
 	Composer,
@@ -11,6 +11,7 @@ import {
 	Transcript,
 } from "@harbour/ui";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import { composerState, type SessionActions } from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
@@ -29,6 +30,12 @@ const statusOf: Record<SessionStatus, Status> = {
 	failed: "error",
 	cancelled: "idle",
 };
+
+/** The header's status: a waiting session says whether it needs an approval or an answer, as the list does. */
+export function headerStatus(status: SessionStatus, items: readonly TranscriptItem[]): Status {
+	if (status === "waiting" && needsOf(items) === "approval") return "approval";
+	return statusOf[status];
+}
 
 function connectionOf(health: ConnectionHealth): ConnectionStateValue {
 	return health.status === "offline" ? { state: "offline", retryAt: health.retryAt } : { state: health.status };
@@ -102,7 +109,7 @@ export function SessionView({
 		<div className="console">
 			<SessionHeader
 				title={state.title}
-				status={statusOf[state.status]}
+				status={headerStatus(state.status, state.items)}
 				connection={connectionOf(state.connection)}
 				loading={state.freshness.state === "loading" && state.title === ""}
 				onBack={onBack}
