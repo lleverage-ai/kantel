@@ -267,6 +267,37 @@ export function measureAlignment(): Misalignment[] {
 			note.querySelectorAll(":scope > .hb-icon"),
 			false,
 		);
+	// Words beside the primary action (Send, Steer, Stop): a resting composer's one-line field and a disabled
+	// composer's one-line reason, level with the button. A field has no text node, so its first line is placed from its
+	// font: the line box starts at the content box's top, with the font's content area centred in it.
+	for (const composer of root.querySelectorAll(".hb-composer")) {
+		const action = composer.querySelector(".hb-composer-action");
+		if (action === null || !visible(action)) continue;
+		const field = composer.hasAttribute("data-rest") ? composer.querySelector("textarea") : null;
+		if (field !== null && visible(field)) {
+			const style = getComputedStyle(field);
+			canvas.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+			const metrics = canvas.measureText("H");
+			const line = Number.parseFloat(style.lineHeight);
+			const top =
+				field.getBoundingClientRect().top +
+				Number.parseFloat(style.paddingTop) +
+				Number.parseFloat(style.borderTopWidth) -
+				field.scrollTop;
+			const baseline = top + line / 2 + (metrics.fontBoundingBoxAscent - metrics.fontBoundingBoxDescent) / 2;
+			if (Number.isFinite(line))
+				compare("resting field", composer, baseline - metrics.actualBoundingBoxAscent / 2, centre(action));
+			else unmeasured("resting field", composer);
+		}
+		const reason = composer.querySelector(".hb-composer-reason-text");
+		if (reason !== null && visible(reason)) {
+			const line = textLine(reason);
+			const size = Number.parseFloat(getComputedStyle(reason).fontSize);
+			const oneLine = reason.getBoundingClientRect().height < size * 2;
+			if (line === null) unmeasured("disabled reason", composer);
+			else if (oneLine) compare("disabled reason", composer, line.centre, centre(action));
+		}
+	}
 	// The send hint: the key's word on the words beside it.
 	for (const hint of root.querySelectorAll(".hb-composer-hint")) {
 		const key = hint.querySelector(".hb-kbd");

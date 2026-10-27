@@ -67,6 +67,21 @@ export function sizesFieldByCss(css: CssLike): boolean {
 	return typeof css?.supports === "function" && css.supports("field-sizing", "content");
 }
 
+/** A font's vertical metrics in px, as canvas `measureText("H")` reports them. */
+export type FontMetrics = { ascent: number; descent: number; capHeight: number };
+
+/**
+ * How far to move a one-line field down so its words sit on the middle of their capitals, as a trimmed label's do
+ * (docs/components.md). A field's line is centred on the font's content area, whose middle is (ascent − descent) / 2
+ * above the baseline; the capitals' middle is capHeight / 2 above it. Rounded to a quarter pixel; 0 when unknown.
+ */
+export function capNudge(metrics: FontMetrics | undefined): number {
+	if (metrics === undefined) return 0;
+	const { ascent, descent, capHeight } = metrics;
+	if (![ascent, descent, capHeight].every(Number.isFinite) || capHeight <= 0) return 0;
+	return Math.round((capHeight / 2 - (ascent - descent) / 2) * 4) / 4;
+}
+
 /** The parts of a keyboard event the composer reads. A React KeyboardEvent's fields, with the native ones lifted. */
 export type KeyLike = {
 	key: string;

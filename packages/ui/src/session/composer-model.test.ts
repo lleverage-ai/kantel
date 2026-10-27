@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { attachmentKind } from "./composer-attachments.tsx";
 import {
 	atScrollEnd,
+	capNudge,
 	checkFiles,
 	countLines,
 	DEFAULT_PASTE_FOLD,
@@ -24,6 +25,24 @@ import {
 	wheelPixels,
 } from "./composer-model.ts";
 import { type ComposerModelOption, filterModels, selectedModel } from "./model-picker.tsx";
+
+describe("capNudge", () => {
+	it("moves a line down by the gap between its content area's middle and its capitals' middle", () => {
+		// The content area's middle 4px above the baseline, the capitals' 5px: the words sit 1px high, so move down 1px.
+		expect(capNudge({ ascent: 10, descent: 2, capHeight: 10 })).toBe(1);
+		// A deeper descent lowers the content area's middle, so the words sit higher still.
+		expect(capNudge({ ascent: 12, descent: 6, capHeight: 10 })).toBe(2);
+		// A tall ascent raises it past the capitals' middle: the words sit low, so move up.
+		expect(capNudge({ ascent: 14, descent: 3, capHeight: 10 })).toBe(-0.5);
+		expect(capNudge({ ascent: 10, descent: 2, capHeight: 8 })).toBe(0);
+	});
+
+	it("moves nothing when the metrics are unknown", () => {
+		expect(capNudge(undefined)).toBe(0);
+		expect(capNudge({ ascent: Number.NaN, descent: 2, capHeight: 8 })).toBe(0);
+		expect(capNudge({ ascent: 10, descent: 2, capHeight: 0 })).toBe(0);
+	});
+});
 
 describe("primaryAction", () => {
 	it("sends from idle once there is text", () => {

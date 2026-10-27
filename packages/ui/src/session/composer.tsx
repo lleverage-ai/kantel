@@ -31,8 +31,10 @@ import { useComposerDock } from "./composer-dock.ts";
 import {
 	type AttachmentLimits,
 	type ComposerState,
+	capNudge,
 	checkFiles,
 	DEFAULT_PASTE_FOLD,
+	type FontMetrics,
 	foldsPaste,
 	limitsSummary,
 	type PasteFold,
@@ -297,6 +299,25 @@ export function Composer({
 			element.setSelectionRange(element.value.length, element.value.length);
 		}
 	}, [text, coarse, rest, cssSizing]);
+
+	// Resting, the one-line field's words sit level with the buttons beside them, on the middle of their capitals. A
+	// field's text can't be trimmed to its capitals as a label's is, so its font is measured (once, and again when
+	// web fonts finish loading or the type size changes) and the field moved by the difference: --hb-composer-nudge.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: coarse changes the type size, so the font is measured again.
+	useLayoutEffect(() => {
+		const element = field.current;
+		const box = root.current;
+		if (!rest || element === null || box === null) return;
+		const measure = () => box.style.setProperty("--hb-composer-nudge", `${capNudge(fontMetrics(element))}px`);
+		measure();
+		let live = true;
+		document.fonts?.ready.then(() => {
+			if (live) measure();
+		});
+		return () => {
+			live = false;
+		};
+	}, [rest, coarse]);
 
 	// Width: narrow screens rest while the composer isn't in use.
 	useEffect(() => {
@@ -569,7 +590,7 @@ export function Composer({
 					)}
 					{folded ? (
 						<p id={reasonId} className="hb-composer-reason">
-							{disabledReason}
+							<span className="hb-composer-reason-text">{disabledReason}</span>
 						</p>
 					) : (
 						<textarea
@@ -594,7 +615,7 @@ export function Composer({
 				<div className="hb-composer-bar">
 					{showReason && !folded ? (
 						<p id={reasonId} className="hb-composer-reason">
-							{disabledReason}
+							<span className="hb-composer-reason-text">{disabledReason}</span>
 						</p>
 					) : hasControls ? (
 						<div className="hb-composer-controls">
@@ -656,6 +677,20 @@ export function Composer({
 			</p>
 		</div>
 	);
+}
+
+/** An element's font's metrics, from canvas. Undefined where there is no canvas (a test, the server). */
+function fontMetrics(element: Element): FontMetrics | undefined {
+	const context = document.createElement("canvas").getContext?.("2d");
+	if (context === null || context === undefined) return undefined;
+	const style = getComputedStyle(element);
+	context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+	const metrics = context.measureText("H");
+	return {
+		ascent: metrics.fontBoundingBoxAscent,
+		descent: metrics.fontBoundingBoxDescent,
+		capHeight: metrics.actualBoundingBoxAscent,
+	};
 }
 
 /** Resting, attachments show as up to three small squares and a count, beside the one-line field. */

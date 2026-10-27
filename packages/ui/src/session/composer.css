@@ -140,7 +140,13 @@
 	margin-left: auto;
 }
 
+/*
+ * The reason a composer is disabled, beside the action button. Its words are trimmed to their capitals, as a Button's
+ * label is, so centring them in the row puts them level with the button (a reason that wraps centres as a block).
+ */
 .hb-composer-reason {
+	display: flex;
+	align-items: center;
 	min-width: 0;
 	margin: 0;
 	padding-left: var(--hb-space-4);
@@ -148,6 +154,12 @@
 	font-size: var(--hb-text-sm);
 	line-height: var(--hb-leading);
 	overflow-wrap: anywhere;
+}
+
+.hb-composer-reason-text {
+	min-width: 0;
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
 }
 
 .hb-composer-hint {
@@ -510,6 +522,8 @@
 	line-height: var(--hb-composer-row);
 	overflow: hidden;
 	white-space: nowrap;
+	/* Level with the buttons: a field can't trim its words to their capitals, so composer.tsx measures the nudge. */
+	translate: 0 var(--hb-composer-nudge, 0);
 }
 
 @supports (field-sizing: content) {
@@ -519,8 +533,6 @@
 }
 
 .hb-composer[data-folded] .hb-composer-reason {
-	display: flex;
-	align-items: center;
 	min-height: var(--hb-composer-row);
 	padding-left: 0;
 }
