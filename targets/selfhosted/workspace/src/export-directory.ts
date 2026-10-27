@@ -8,10 +8,16 @@
  * and never one holding anything else), so a path that turns from a directory into a file can be written next.
  */
 import { lstat, mkdir, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { HarbourError } from "@harbour/contracts";
 import { normalizeWorkspacePath } from "@harbour/workspace";
 import type { ExportSink } from "@harbour/workspace/export";
+
+/** Whether `path` is strictly below the absolute `root`, whatever the root is (`/` included). */
+export function isStrictlyBelow(root: string, path: string): boolean {
+	const below = relative(root, path);
+	return below !== "" && below !== ".." && !below.startsWith(`..${sep}`) && !isAbsolute(below);
+}
 
 export function createDirectoryExportSink(root: string): ExportSink {
 	let resolvedRoot: Promise<string> | undefined;
@@ -68,7 +74,7 @@ export function createDirectoryExportSink(root: string): ExportSink {
 				if (error.code !== "ENOENT") throw error;
 			});
 			const top = await base();
-			for (let directory = dirname(file); directory.startsWith(`${top}/`); directory = dirname(directory)) {
+			for (let directory = dirname(file); isStrictlyBelow(top, directory); directory = dirname(directory)) {
 				const emptied = await rmdir(directory).then(
 					() => true,
 					// Not empty (the host's files or other notes), already gone, or not a directory: stop there.

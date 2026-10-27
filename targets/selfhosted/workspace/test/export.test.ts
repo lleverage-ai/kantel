@@ -5,6 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { type CallContext, isHarbourError } from "@harbour/contracts";
 import { syncExport } from "@harbour/workspace/export";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { isStrictlyBelow } from "../src/export-directory.ts";
 import {
 	createDirectoryExportSink,
 	createMemoryObjects,
@@ -155,6 +156,16 @@ describe("createDirectoryExportSink", () => {
 		});
 		expect(third).toMatchObject({ written: ["notes/a"], removed: ["notes/a/b.md"] });
 		expect(await readFile(join(root, "notes/a"), "utf8")).toBe("file again");
+	});
+
+	it("prunes strictly below the root, whatever the root is", () => {
+		expect(isStrictlyBelow("/", "/notes/a")).toBe(true);
+		expect(isStrictlyBelow("/", "/")).toBe(false);
+		expect(isStrictlyBelow("/srv/task", "/srv/task/notes")).toBe(true);
+		expect(isStrictlyBelow("/srv/task", "/srv/task")).toBe(false);
+		expect(isStrictlyBelow("/srv/task", "/srv")).toBe(false);
+		expect(isStrictlyBelow("/srv/task", "/srv/task-2/notes")).toBe(false);
+		expect(isStrictlyBelow("/srv/task", "/srv/task/..notes")).toBe(true);
 	});
 
 	it("never removes a directory the host keeps files in", async () => {
