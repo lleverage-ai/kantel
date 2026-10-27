@@ -38,14 +38,20 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
   each row once, while rows are appended between pages".
 - Organisation isolation: "never returns another organisation's rows, and get is not_found for them".
 - Agents cannot read the log or set retention: "refuses an agent querying, reading or setting retention".
+- Worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `store.append`,
+  `store.applyRetention`, `outbox.append`, `outbox.drain` and `outbox.pending` take a `SystemContext` and call
+  `requireSystem` first. Any other actor, or no caller, is `forbidden`, changes nothing, and is audited once as
+  `access.denied` with no secret: the store writes the refusal as its own row, and the outbox queues it. A refusal
+  with no caller goes under `PLATFORM_ORGANISATION`. Case: "worker calls: append, retention, drain and pending refuse
+  every caller but system, and change nothing".
 - Project access (settled question 7), through `ProjectAccess`, after the organisation lookup (another organisation's
   row stays `not_found`) and after the agent rule (agents stay `forbidden`, unaudited, whichever project their session
   is in). `query` naming a `projectId` or `sessionId` requires `viewer` on them (`audit.query`); without either it keeps
   only the rows the caller `allows`: viewer on a row's project, or an organisation-wide viewer role for a row without
   one, before the page is cut, so cursors stay stable. `get` requires viewer on the row's project, or organisation-wide
   for a row without one (`audit.get`, subject `{ kind: "audit.event", id }`). `setRetention` requires an
-  organisation-wide `admin` (`audit.setRetention`). `append`, `applyRetention` and the outbox take no context and are
-  unchanged. Refusals are audited by `ProjectAccess` to its own sink, not to this store. Cases: "project access: refuses
+  organisation-wide `admin` (`audit.setRetention`). `append`, `applyRetention` and the outbox are worker calls (see
+  below). Refusals are audited by `ProjectAccess` to its own sink, not to this store. Cases: "project access: refuses
   an operator outside the project its rows, and non-admins retention, changing nothing", "project access: refuses an
   agent before any project check, whichever project its session is in", "project access: a query without a project or
   session returns only rows the caller may see, paging stably", "project access: lets a viewer on the project query and

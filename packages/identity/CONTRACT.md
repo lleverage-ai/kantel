@@ -49,6 +49,10 @@ organisation. Host apps call with API keys scoped to projects.
   event contains a secret".
 - `listProjects` shows only projects the actor holds a role on — "listProjects shows only projects the actor holds a
   role on".
+- `authenticateApiKey` and `roleOf` are worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system
+  identity"): the gateway and `ProjectAccess` make them as `system`. Any other actor, an organisation admin included,
+  or no caller is `forbidden` and audited once as `access.denied`, never with the key's secret — "worker calls:
+  roleOf and authenticateApiKey refuse every caller but system".
 
 ## The in-memory implementation
 

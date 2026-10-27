@@ -91,6 +91,15 @@ nothing", "project access: refuses an agent whose session was closed", "project 
 session filter leave out another project's grants and journal entries", "project access: allows an operator on the
 project and an agent in its own session, and keeps organisation-wide calls for organisation-wide roles".
 
+## Existence (settled question 12)
+
+Settled by Tom on 27 Oct 2026: "Keep forbidden distinct." Within an organisation, a journal entry the caller may not
+see is `forbidden`, a missing one `not_found`, and a call ID another session used is a `conflict`. Across
+organisations an entry is `not_found` and the same call ID is free. Deliberate; don't change it. Case: "existence
+(settled question 12): in the organisation, a journal entry the caller may not see is forbidden, a missing one
+not_found, and a call ID another session used a conflict; across organisations both are not_found and the call ID is
+free".
+
 ## The in-memory implementation
 
 `createMemoryCapabilityRegistry({ clock?, audit?, access?, sessionEnd?, testing? })` keeps registrations, grants and the journal in maps keyed

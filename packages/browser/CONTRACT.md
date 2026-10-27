@@ -54,7 +54,11 @@ lists", "project access: lets an operator on the project and an agent in its own
 
 ## Session end (settled 27 Oct 2026, question 8)
 
-`endSession(sessionId, reason)` is the broker's teardown, registered as `browser` with the session-end hook. For
+`endSession(ctx, sessionId, reason)` is the broker's teardown, registered as `browser` with the session-end hook. It
+is a worker call (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `ctx` is a
+`SystemContext`, and any other actor, the session's own agent included, or no caller is `forbidden`, audited once as
+`access.denied`, and ends nothing ("worker calls: endSession refuses every caller but system, the session's own agent
+included, and ends nothing"). For
 `session_ended` or `aborted` it closes the session's open browser sessions with that end reason and ends its grants,
 and the grants passed on from them (closing their browsers with the same reason). Only `session_ended` declines pending
 requests; after `aborted` they stay pending and the session can be granted and open browsers again. A second run

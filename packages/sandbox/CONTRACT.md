@@ -53,7 +53,11 @@ workspace for `acquire` and `run`, the lease for the rest), each call requires t
   passes, so the teardown never fails a check).
 
 A session with no leases in the organisation lists nothing and reports zero usage, and `releaseSession` on a session
-with no live lease does nothing, all without a check or an audit. `route` and `sweep` take no context. An agent acts
+with no live lease does nothing, all without a check or an audit. `route` is a pure function and takes no context.
+`sweep` is a worker call (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): it takes a
+`SystemContext`, and no caller, a human, a service or an agent is `forbidden`, audited once as `access.denied`, and
+releases nothing ("worker calls: sweep refuses no caller, a human, a service and an agent, and releases nothing",
+run with `projectAccess`). An agent acts
 only from its own open session, or on a child session as its supervisor. Lists always name a session, so there is no
 unfiltered list. Cases (run with `projectAccess`): "project access: refuses an operator outside the project on every
 session call, and changes nothing", "... refuses an agent whose session belongs to another project, and changes

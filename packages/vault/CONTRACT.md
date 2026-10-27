@@ -75,7 +75,10 @@ session-end teardown.
   `waitForOutcome` need viewer and `withdraw` operator on the proposal's project and session; `approvalView` and
   `decide` operator on its project (agents are still `forbidden` first). `getGrant`, `listGrants`, `listUses` need
   viewer and `revokeGrant` operator on the grant's selector. A list filtered by session checks that session; otherwise
-  it keeps what the caller may view. `decideEgress` has no caller and is unchanged. Cases: "project access: refuses an
+  it keeps what the caller may view. `decideEgress` is a worker call (settled by Tom on 27 Oct 2026, question 13:
+  "Require a system identity"): only the egress gateway's `system` context may make it; no caller, a human, a service
+  or an agent is `forbidden`, audited once as `access.denied`, and records no use ("worker calls: decideEgress refuses
+  every caller but the gateway's system one, and records no use"). Cases: "project access: refuses an
   operator outside the project every change and read, and changes nothing", "project access: refuses an agent whose
   session belongs to another project, and changes nothing", "project access: refuses an agent whose session was
   closed", "project access: lists leave out another project's records for an operator outside it", "project access:

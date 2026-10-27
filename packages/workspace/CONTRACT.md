@@ -49,8 +49,10 @@ After the organisation lookup (another organisation's workspace stays `not_found
   `workspace.export`;
 - viewer on the project a `project-files` mount names in `ref`, as `workspace.mount`, for every such mount `create`
   (seed and input mounts) and `remount` pin;
+- viewer on that source project again, as `workspace.mount.read`, on every `read`, `stat` and `list` through the
+  mount (settled question 11, below);
 - `createMemoryProjectFiles({ access })`: `write` needs operator on `ref` as `workspace.files.write`. Its reads are
-  not checked, because the workspace already checked the mount.
+  not checked by the source itself, because the workspace checks the source project on every read through the mount.
 
 An agent passes only from its own open session in the project, and for a session-tied workspace only in that
 session or as its parent. There is no list of workspaces, so no list filtering. Cases (run with `projectAccess`):
@@ -59,6 +61,25 @@ a change but lets it read", "... refuses mounting another project's files, and c
 agent whose session belongs to another project, and changes nothing", "... refuses an agent acting on another
 session's workspace in its own project", "... refuses an agent whose session was closed", "... lets an operator on
 the project and an agent in its own session work".
+
+## Reads through a mount (settled question 11)
+
+Settled by Tom on 27 Oct 2026: "Check the source project on every read." A `read`, `stat` or `list` under a
+`project-files` mount point needs viewer on the project the files come from (the mount's `ref`), as well as on the
+workspace's own project. The check runs on every read and nothing caches a past allow, so a role revoked between two
+reads refuses the second. A caller who may read the workspace but not the source project gets `forbidden`, audited
+once as `access.denied` under the source project, with no file content or secret. The workspace's own files stay
+readable. Cases (run with `projectAccess`): "mount reads: a read through a mount passes when the caller may read the
+project the files come from", "mount reads: refuses a caller the source project, though it may read the workspace's
+own project", "mount reads: checks the source project again on every read, so access revoked between reads refuses
+the next".
+
+## Existence (settled question 12)
+
+Settled by Tom on 27 Oct 2026: "Keep forbidden distinct." Within an organisation, an existing workspace the caller
+may not see is `forbidden` and a missing one `not_found`; across organisations both are `not_found`, as before. Case:
+"existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one
+not_found; across organisations both are not_found".
 
 ## The in-memory implementation
 

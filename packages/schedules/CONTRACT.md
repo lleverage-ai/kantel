@@ -51,13 +51,17 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
   does not backfill paused time on resume".
 - Input is validated: "rejects an invalid time zone, a bad HH:MM, or both or neither of at and repeat as invalid".
 - Organisation isolation: "hides another organisation's schedules as not found".
+- Worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `tick`, `claim`, `complete`
+  and `reportCheck` take a `SystemContext`. No caller, a human, a service or an agent is `forbidden`, audited once as
+  `access.denied`, and changes nothing: no occurrence is materialised, claimed or settled. Case: "worker calls: tick,
+  claim, complete and reportCheck refuse every caller but system, and change nothing".
 - Project access (settled question 7): a schedule owned by `{ kind: "project" }` is checked against its `projectId`
   through `ProjectAccess.require`, after the organisation lookup (another organisation's schedule stays `not_found`) and
   after the agent rule (agents stay `forbidden` on changes, unaudited). `create`, `update`, `pause`, `resume` and `end`
   need `operator`; `get`, `preview` and `listOccurrences` need `viewer`. Operations are `schedules.<method>`, with
   subject `{ kind: "schedules.schedule", id }` once the schedule exists. `list` keeps a project's schedules only when
   the caller `allows` viewer on that project, before the page is cut. Organisation- and user-owned schedules have no
-  project check. `tick`, `claim`, `complete` and `reportCheck` take no context and are unchanged. Cases: "project
+  project check. `tick`, `claim`, `complete` and `reportCheck` are worker calls (below). Cases: "project
   access: refuses an operator outside the project every change and read of its schedule, changing nothing", "project
   access: refuses an agent whose session belongs to another project, changing nothing", "project access: refuses an
   agent whose session was closed", "project access: lists leave out another project's schedules, and pages hold only
