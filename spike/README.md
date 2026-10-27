@@ -16,9 +16,16 @@ On self-hosted, `kill` makes the owning host process exit right after the
 n-th command commits; another host takes the session over (event `reopen`)
 and Docker restarts the killed one. CI runs it once #40 is on main.
 
-What follows in this folder came first: this stream's own scenario, which
-also measures takeover against the lease TTL and kills the host from outside
-(`docker kill` or `docker pause`), and a conformance suite.
+**The conformance suite** (`conformance/`, 9 cases) speaks only that same
+surface (`conformance/shared.ts`), so it runs against either target:
+`bun spike/conformance/run.ts --target=cloudflare --base=https://...` with
+`HARBOUR_SPIKE_TOKEN` and `HARBOUR_CANARY` set. Its egress cases use the
+shared scenario's hosts and policy (postman-echo.com allowed with an injected
+header, api.github.com refused), so it needs no fixture inside either target.
+
+What follows in this folder came first: this stream's own scenario over a
+`/v0` API, which also measures takeover against the lease TTL and kills the
+host from outside (`docker kill` or `docker pause`).
 
 Shared by both targets (M0-CF1 Cloudflare, M0-SH1 self-hosted). Nothing here
 imports a target or a package: only `fetch` against the spike HTTP API.
@@ -26,7 +33,7 @@ imports a target or a package: only `fetch` against the spike HTTP API.
 - `contracts/` draft interfaces for what the spike exercises (workspace,
   sandbox tiers, session lease, spike API, scenario specs).
 - `scenario/run.ts` the scripted research task (plan §15), with `--crash`.
-- `conformance/` the target-agnostic suite; `run.ts --target=selfhosted|cloudflare --base=URL`.
+- `conformance/` the target-agnostic suite over the shared surface; `run.ts --target=selfhosted|cloudflare --base=URL`.
 - `fixtures/research-site/` the page the task fetches; it needs the injected header.
 
 ## The spike HTTP API

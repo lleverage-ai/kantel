@@ -1,129 +1,152 @@
-// The spike conformance suite: what both targets must do, checked only
-// through the spike HTTP API (spike/contracts), so it runs unchanged against
-// Cloudflare and self-hosted. Run it with spike/conformance/run.ts.
+// The spike conformance suite: what both M0 targets must do, checked only
+// through the scenario surface they both serve (M0-CF1's
+// spikes/scenario/README.md), so it runs unchanged against Cloudflare and
+// self-hosted. Run it with spike/conformance/run.ts.
 //
-// Every case drives the scripted model with an `exec` spec: a fixed list of
-// tool calls, so the result depends only on the platform.
+// Every case gives the scripted model a fixed list of tool calls, so the
+// result depends only on the platform. Egress uses the same public hosts and
+// policy as the shared scenario: postman-echo.com/headers is allowed with an
+// injected header, api.github.com is not.
 
 import { describe, expect, test } from "bun:test";
-import type { ExecSpec } from "../contracts/index.ts";
-import { SpikeClient } from "../scenario/client.ts";
+import { execOf, FINAL, SharedSurface, type Step } from "./shared.ts";
 
 const base = process.env.HARBOUR_TARGET_URL ?? "http://127.0.0.1:58081";
-const canary = process.env.HARBOUR_CANARY_SECRET ?? "harbour-canary-0000";
-const research = process.env.HARBOUR_RESEARCH_URL ?? "http://research-site/";
-const client = new SpikeClient(base);
-const T = 120_000;
+const canary = process.env.HARBOUR_CANARY ?? process.env.HARBOUR_CANARY_SECRET ?? "harbour-canary-0000";
+const surface = new SharedSurface(base);
+const T = 180_000;
 
-async function run(steps: ExecSpec["steps"], keepGoing = true) {
-	const session = await client.create();
-	await client.prompt(session.sessionId, { kind: "exec", steps, keepGoing });
-	const settled = await client.settle(session.sessionId, { timeoutMs: T });
-	expect(settled.done).toBe(true);
-	return { session, ...settled, results: settled.state.toolResults };
-}
-
-const bash = (command: string) => ({ tool: "bash" as const, args: { command } });
+const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+/** Force the container tier the portable way: the tool escalates any command that runs git. */
+const inContainer = (command: string) => `git --version >/dev/null && ${command}`;
+const ECHO = "curl -sS -f https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'";
 
 describe(`spike conformance (${base})`, () => {
 	test(
 		"the tool picks the tier: shell builtins in the isolate, git in a container",
 		async () => {
-			const { results } = await run([bash("echo hello"), bash("git --version")]);
-			expect(results[0]?.tier).toBe("isolate");
-			expect(results[0]?.output?.trim()).toBe("hello");
-			expect(results[1]?.tier).toBe("container");
-			expect(results[1]?.output).toContain("git version");
+			const { state } = await surface.run([bash("echo hello"), bash("git --version")]);
+			expect(state.submission?.status).toBe("done");
+			expect(state.answer).toBe(FINAL);
+			expect(execOf(state, "echo hello")?.tier).toBe("isolate");
+			expect(execOf(state, "git --version")?.tier).toBe("container");
+			expect(state.toolResults[0]?.text.trim()).toBe("hello");
+			expect(state.toolResults[1]?.text).toContain("git version");
 		},
 		T,
 	);
 
 	test(
-		"each tier sees the other's last write, and every command commits",
+		"each tier sees the other's last write, and every writing command makes a new version",
 		async () => {
-			const { results, state } = await run([
-				bash("mkdir -p d && echo one > d/f.txt"),
-				bash("git --version >/dev/null && cat d/f.txt && echo two >> d/f.txt"),
-				bash("cat d/f.txt && echo three >> d/f.txt"),
-				bash("git --version >/dev/null && cat d/f.txt"),
+			const commands = [
+				"mkdir -p d && echo one > d/f.txt",
+				inContainer("cat d/f.txt && echo two >> d/f.txt"),
+				"cat d/f.txt && echo three >> d/f.txt",
+				inContainer("cat d/f.txt"),
+			];
+			const { state } = await surface.run(commands.map(bash));
+			expect(commands.map((c) => execOf(state, c)?.tier)).toEqual(["isolate", "container", "isolate", "container"]);
+			const text = state.toolResults.map((r) => r.text.trim());
+			expect(text.slice(1)).toEqual(["one", "one\ntwo", "one\ntwo\nthree"]);
+			const execs = commands.map((c) => execOf(state, c)!);
+			// Each command starts on the version the previous one left.
+			for (let i = 1; i < execs.length; i++) expect(execs[i]!.base).toBe(execs[i - 1]!.version);
+			expect(execs.slice(0, 3).every((e) => e.version !== e.base)).toBe(true);
+			expect(state.workspace.head).toBe(execs[3]!.version);
+		},
+		T,
+	);
+
+	test(
+		"a read-only command, in either tier, does not create a workspace version",
+		async () => {
+			const commands = ["echo x > a.txt", "cat a.txt", "git --version"];
+			const { state } = await surface.run(commands.map(bash));
+			const [write, read, git] = commands.map((c) => execOf(state, c)!);
+			expect(write!.version).not.toBe(write!.base);
+			expect(read!.version).toBe(read!.base);
+			expect(git!.tier).toBe("container");
+			expect(git!.version).toBe(git!.base);
+		},
+		T,
+	);
+
+	test(
+		"the write and read tools see the sandboxes' files, and the sandboxes see theirs",
+		async () => {
+			const { state } = await surface.run([
+				{ tool: "write", args: { path: "/workspace/notes/n.md", content: "from the write tool\n" } },
+				bash("cat notes/n.md && echo from-isolate > i.txt"),
+				bash(inContainer("cat notes/n.md i.txt > both.txt")),
+				{ tool: "read", args: { path: "/workspace/both.txt" } },
 			]);
-			expect(results.map((r) => r.tier)).toEqual(["isolate", "container", "isolate", "container"]);
-			expect(results[1]?.output?.trim()).toBe("one");
-			expect(results[2]?.output?.trim()).toBe("one\ntwo");
-			expect(results[3]?.output?.trim()).toBe("one\ntwo\nthree");
-			// Three writing commands, three versions.
-			expect(state.workspace.seq).toBe(3);
+			expect(state.toolResults.map((r) => r.isError)).toEqual([false, false, false, false]);
+			expect(state.toolResults[1]?.text).toContain("from the write tool");
+			expect(state.toolResults[3]?.text).toContain("from the write tool");
+			expect(state.toolResults[3]?.text).toContain("from-isolate");
 		},
 		T,
 	);
 
 	test(
-		"a read-only command does not create a workspace version",
+		"isolate egress: the allowed route gets the injected header, redacted on the way back; everything else is refused",
 		async () => {
-			const { state } = await run([bash("echo x > a.txt"), bash("cat a.txt"), bash("git --version")]);
-			expect(state.workspace.seq).toBe(1);
+			const commands = [ECHO, "curl -sS -f http://api.github.com/zen", "curl -sS -f https://api.github.com/zen"];
+			const { sessionId, state } = await surface.run(commands.map(bash));
+			expect(commands.map((c) => execOf(state, c)?.tier)).toEqual(["isolate", "isolate", "isolate"]);
+			expect(state.toolResults.map((r) => r.isError)).toEqual([false, true, true]);
+			expect(state.toolResults[0]?.text.trim()).toBe("[vault:redacted]");
+			const uses = (await surface.vault(sessionId)).filter((u) => u.tier === "isolate");
+			expect(uses.some((u) => u.decision === "allowed" && u.injected !== undefined && (u.redactions ?? 0) > 0)).toBe(true);
+			expect(uses.filter((u) => u.decision === "denied").length).toBeGreaterThanOrEqual(2);
 		},
 		T,
 	);
 
 	test(
-		"isolate egress: allowed route gets the injected credential, everything else is refused",
+		"container egress: HTTPS too goes through the vault and its policy; there is no other route out",
 		async () => {
-			const { results } = await run([
-				bash(`curl -sS -f ${research} | grep -c 'Tides of the Harbour'`),
-				bash("curl -sS -f http://api.github.com/zen"),
-				bash("curl -sS -f https://api.github.com/zen"),
+			const commands = [
+				inContainer(ECHO),
+				inContainer("curl -sS -f --max-time 10 http://api.github.com/zen"),
+				inContainer("curl -sS -o /dev/null -w '%{http_code}\\n' --max-time 10 https://api.github.com/zen"),
+				// Bypassing the proxy must not work: no route out.
+				inContainer("curl -sS -f --max-time 5 --noproxy '*' http://1.1.1.1/"),
+			];
+			const { sessionId, state } = await surface.run(commands.map(bash));
+			expect(commands.map((c) => execOf(state, c)?.tier)).toEqual(["container", "container", "container", "container"]);
+			expect(state.toolResults.map((r) => r.isError)).toEqual([false, true, false, true]);
+			expect(state.toolResults[0]?.text.trim()).toBe("[vault:redacted]");
+			expect(state.toolResults[2]?.text.trim()).toBe("403");
+			const uses = (await surface.vault(sessionId)).filter((u) => u.tier === "container");
+			expect(uses.some((u) => u.decision === "allowed" && u.injected !== undefined && (u.redactions ?? 0) > 0)).toBe(true);
+			expect(uses.filter((u) => u.decision === "denied").length).toBeGreaterThanOrEqual(2);
+		},
+		T,
+	);
+
+	test(
+		"the canary secret reaches neither sandbox nor the transcript",
+		async () => {
+			const { state } = await surface.run([
+				bash(`${ECHO}; env`),
+				bash(inContainer(`${ECHO}; env; cat /proc/self/environ | tr '\\0' '\\n'`)),
 			]);
-			expect(results[0]?.isError).toBe(false);
-			expect(results[0]?.output?.trim()).toBe("1");
-			expect(results[1]?.isError).toBe(true);
-			expect(results[2]?.isError).toBe(true);
-		},
-		T,
-	);
-
-	test(
-		"container egress: allowed route gets the injected credential, everything else is refused",
-		async () => {
-			const { results } = await run([
-				bash(`git --version >/dev/null && curl -sS -f ${research} | grep -c 'Tides of the Harbour'`),
-				bash("git --version >/dev/null && curl -sS -f --max-time 10 http://api.github.com/zen"),
-				bash("git --version >/dev/null && curl -sS -f --max-time 10 https://api.github.com/zen"),
-				// Bypassing the proxy must not work either: no route out.
-				bash("git --version >/dev/null && curl -sS -f --max-time 5 --noproxy '*' http://1.1.1.1/"),
-			]);
-			expect(results.map((r) => r.tier)).toEqual(["container", "container", "container", "container"]);
-			expect(results[0]?.isError).toBe(false);
-			expect(results[0]?.output?.trim()).toBe("1");
-			expect(results[1]?.isError).toBe(true);
-			expect(results[2]?.isError).toBe(true);
-			expect(results[3]?.isError).toBe(true);
-		},
-		T,
-	);
-
-	test(
-		"the canary secret is in neither sandbox nor the transcript",
-		async () => {
-			const { results, state } = await run([
-				bash(`curl -sS -f ${research} > page.html; env; cat page.html`),
-				bash(`git --version >/dev/null && curl -sS -f -o page2.html ${research}; env; cat page2.html`),
-				bash("cat page.html page2.html | wc -c"),
-			]);
-			expect(Number(results[2]?.output?.trim())).toBeGreaterThan(100);
+			expect(state.toolResults.length).toBe(2);
 			expect(JSON.stringify(state)).not.toContain(canary);
-			for (const result of results) expect(result.output ?? "").not.toContain(canary);
 		},
 		T,
 	);
 
 	test(
-		"a failing command is an error result, and its exit status reaches the model",
+		"a failing command is an error result in either tier, and the run carries on",
 		async () => {
-			const { results, result } = await run([bash("exit 3"), bash("git --version >/dev/null && exit 4")]);
-			expect(results[0]?.isError).toBe(true);
-			expect(results[1]?.isError).toBe(true);
-			expect(result?.errors).toEqual([true, true]);
+			const { state } = await surface.run([bash("exit 3"), bash(inContainer("exit 4")), bash("echo after")]);
+			expect(state.toolResults.map((r) => r.isError)).toEqual([true, true, false]);
+			expect(execOf(state, "exit 3")?.exitCode).toBe(3);
+			expect(execOf(state, inContainer("exit 4"))?.exitCode).toBe(4);
+			expect(state.answer).toBe(FINAL);
 		},
 		T,
 	);
@@ -131,14 +154,17 @@ describe(`spike conformance (${base})`, () => {
 	test(
 		"resubmitting with the same request ID does not run the input twice",
 		async () => {
-			const session = await client.create();
-			const spec: ExecSpec = { kind: "exec", steps: [bash("echo once >> count.txt && cat count.txt")] };
-			const first = await client.prompt(session.sessionId, spec, "same-request");
-			const again = await client.prompt(session.sessionId, spec, "same-request");
-			expect(again.submissionId).toBe(first.submissionId);
-			const { state } = await client.settle(session.sessionId, { timeoutMs: T });
+			const sessionId = `conformance-${crypto.randomUUID().slice(0, 12)}`;
+			await surface.call("POST", sessionId, "setup", {
+				scenario: { name: "idempotency", seed: {}, steps: [bash("echo once >> count.txt && cat count.txt")], finalAnswer: FINAL },
+			});
+			const first = await surface.prompt(sessionId, "same-request");
+			const again = await surface.prompt(sessionId, "same-request");
+			expect(String(again.submissionId)).toBe(String(first.submissionId));
+			const state = await surface.settle(sessionId, first.submissionId);
 			expect(state.toolResults.length).toBe(1);
-			expect(state.toolResults[0]?.output?.trim()).toBe("once");
+			expect(state.toolResults[0]?.text.trim()).toBe("once");
+			expect(state.execs.length).toBe(1);
 		},
 		T,
 	);

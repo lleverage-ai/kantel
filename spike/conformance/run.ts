@@ -2,10 +2,11 @@
 // Run the spike conformance suite against one target.
 //
 //   bun spike/conformance/run.ts --target=selfhosted [--base=URL]
-//   bun spike/conformance/run.ts --target=cloudflare --base=https://...
+//   HARBOUR_SPIKE_TOKEN=... HARBOUR_CANARY=... \
+//     bun spike/conformance/run.ts --target=cloudflare --base=https://harbour-m0-cf1.<subdomain>.workers.dev
 //
-// The suite itself (spike.test.ts) knows nothing about targets; this only
-// picks the URL. Self-hosted extras (Pi Durable storage on Postgres, lease
+// The suite itself (spike.test.ts) knows nothing about targets: it speaks
+// only the scenario surface both serve (shared.ts). This only picks the URL. Self-hosted extras (Pi Durable storage on Postgres, lease
 // fencing) live in apps/selfhosted/test and run with the same command.
 
 import { parseArgs } from "node:util";
