@@ -20,7 +20,10 @@ connection the caller owns (a `pg.Client`, a `PoolClient` or PGlite). Everything
 statement or transaction at a time, with the schema on its `search_path`; a transaction is `BEGIN` … `COMMIT` on it,
 rolled back when its callback rejects. The SQLite dialect the store and Pi Durable emit is translated on the way
 (`translateSqliteToPostgres`): `STRICT` and `json_valid` checks dropped, `INTEGER` widened to `BIGINT`,
-`INSERT OR IGNORE` as `ON CONFLICT DO NOTHING`, `?` as `$n`. `int8` columns come back as numbers.
+`INSERT OR IGNORE` as `ON CONFLICT DO NOTHING`, `?` as `$n`, leaving literals, quoted identifiers and comments alone.
+`int8` columns come back as numbers. A pool's client that emits `error` (its connection lost) fails the database:
+later statements reject, and closing releases the client as broken. The process carries on; a new runtime opens a new
+database. A connection the caller owns is the caller's to watch.
 
 `createSelfhostedSessionRuntime` builds `createSessionRuntime` over that database and resumes, before it returns,
 every session a previous process left mid-run or whose sleep has fallen due.

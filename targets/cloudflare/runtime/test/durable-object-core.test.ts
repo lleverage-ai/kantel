@@ -126,6 +126,47 @@ describe("SessionRuntimeDurableObjectCore", () => {
 		expect(alarm.later).toEqual([]);
 	});
 
+	it("keeps a watchdog alarm while a run is in progress, after its alarm fires and after an alarm-driven restart", async () => {
+		const db = database();
+		const clock = new ManualClock();
+		const alarm = fakeAlarm();
+		let fail: (error: Error) => void = () => {};
+		const hung = new Promise<never>((_resolve, reject) => {
+			fail = reject;
+		});
+		hung.catch(() => undefined);
+		const firstModel = createScriptedModel();
+		const first = coreOn(db, firstModel.models, alarm, { clock, watchdogMs: 5_000 });
+		const service = await first.ready;
+		await service.profiles.put(ctx, profile);
+		const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		firstModel.script.reply(() => hung);
+		await service.runtime.prompt(ctx, session.id, { text: "Hello" });
+		await until(() => firstModel.script.requests.length === 1, "the model call");
+
+		// The admission's alarm fires mid call: the run is still going, so the alarm comes back after the watchdog.
+		await alarm.fire(first);
+		expect(alarm.armed).toBe(clock.now() + 5_000);
+
+		// Evicted mid call; the watchdog brings the next instance up, which resumes the run and keeps the watchdog.
+		fail(new Error("the object is gone"));
+		await first.close();
+		clock.advance(5_000);
+		const secondModel = createScriptedModel();
+		let failSecond: (error: Error) => void = () => {};
+		const hungAgain = new Promise<never>((_resolve, reject) => {
+			failSecond = reject;
+		});
+		hungAgain.catch(() => undefined);
+		secondModel.script.reply(() => hungAgain);
+		const second = track(coreOn(db, secondModel.models, alarm, { clock, watchdogMs: 5_000 }), () =>
+			failSecond(new Error("the test is over")),
+		);
+		await alarm.fire(second);
+		await until(() => secondModel.script.requests.length === 1, "the resumed model call");
+		expect(alarm.armed).toBe(clock.now() + 5_000);
+	});
+
 	it("never moves an alarm an earlier instance armed to a later wake", async () => {
 		const db = database();
 		const clock = new ManualClock();

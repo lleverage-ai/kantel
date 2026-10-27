@@ -23,6 +23,15 @@ describe("translateSqliteToPostgres", () => {
 			`SELECT "x?" FROM t WHERE a = $1 AND b = $2`,
 		);
 	});
+
+	it("leaves literals, quoted identifiers and comments as they are", () => {
+		expect(translateSqliteToPostgres("SELECT 'INTEGER' AS value, \"INTEGER\" FROM t")).toBe(
+			"SELECT 'INTEGER' AS value, \"INTEGER\" FROM t",
+		);
+		expect(translateSqliteToPostgres("SELECT ? /* ? */, ? -- ?\n, 'it''s ?', ?")).toBe(
+			"SELECT $1 /* ? */, $2 -- ?\n, 'it''s ?', $3",
+		);
+	});
 });
 
 describe("the Postgres session database (PGlite)", () => {

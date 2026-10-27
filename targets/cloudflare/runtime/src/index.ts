@@ -43,7 +43,14 @@ export interface SessionRuntimeDurableObjectCoreOptions
 	readonly prefix?: string;
 	/** Told when arming the alarm failed. Default: ignored; the next wake, request or alarm arms it again. */
 	readonly onAlarmError?: (error: unknown) => void;
+	/**
+	 * While a session is running, how long until the alarm fires again, so an object evicted mid-run is brought back to
+	 * resume it. Default 30 s.
+	 */
+	readonly watchdogMs?: number;
 }
+
+const DEFAULT_WATCHDOG_MS = 30_000;
 
 /**
  * Everything a session Durable Object needs, so its class (owned by the deployment) is a thin wrapper: construct this
@@ -65,6 +72,7 @@ export class SessionRuntimeDurableObjectCore {
 	readonly #setAlarm: (scheduledTime: number) => Promise<void>;
 	readonly #getAlarm: (() => Promise<number | null>) | undefined;
 	readonly #onAlarmError: ((error: unknown) => void) | undefined;
+	readonly #watchdogMs: number;
 	#store: SessionStore | undefined;
 	#api: SessionApi | undefined;
 	/** The alarm this instance last armed; cleared when it fires. */
@@ -86,6 +94,7 @@ export class SessionRuntimeDurableObjectCore {
 		this.#setAlarm = options.setAlarm;
 		this.#getAlarm = options.getAlarm;
 		this.#onAlarmError = options.onAlarmError;
+		this.#watchdogMs = options.watchdogMs ?? DEFAULT_WATCHDOG_MS;
 		this.ready = this.#start(options);
 		// Whoever awaits `ready` (fetch, alarm, the object's constructor) sees a failure; this only keeps it handled.
 		this.ready.catch(() => undefined);
@@ -98,6 +107,7 @@ export class SessionRuntimeDurableObjectCore {
 			setAlarm: _setAlarm,
 			getAlarm: _getAlarm,
 			onAlarmError: _onAlarmError,
+			watchdogMs: _watchdogMs,
 			authenticator,
 			api,
 			prefix,
@@ -166,13 +176,18 @@ export class SessionRuntimeDurableObjectCore {
 
 	/**
 	 * Arms the alarm for the earliest stored wake still to come (a session not open in this instance has no timer here
-	 * and tells the core nothing until it opens), or for `skipped` if that is earlier. Waits for every arming queued
-	 * before it.
+	 * and tells the core nothing until it opens), or for `skipped` if that is earlier. While a session's wake is due (it
+	 * is running), no later than the watchdog, so an object evicted mid-run comes back to resume it; the alarm that
+	 * brought it here is spent. Waits for every arming queued before it.
 	 */
 	async #armNext(skipped?: number): Promise<void> {
-		const next = await this.#store!.nextWake(this.#clock.now());
-		const at = next === undefined || skipped === undefined ? (next ?? skipped) : Math.min(next, skipped);
-		if (at !== undefined) this.#arm(at);
+		const now = this.#clock.now();
+		const store = this.#store!;
+		const running = (await store.wakeable(now)).length > 0;
+		const candidates = [await store.nextWake(now), skipped, running ? now + this.#watchdogMs : undefined].filter(
+			(at): at is number => at !== undefined,
+		);
+		if (candidates.length > 0) this.#arm(Math.min(...candidates));
 		await this.#arming;
 	}
 

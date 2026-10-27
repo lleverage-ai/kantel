@@ -55,8 +55,9 @@ rollback never takes someone else's write (or the alarm) with it.
 The runtime tells the core each session's next wake (`onWakeAt`). The core arms the alarm at the earliest, and never
 moves an alarm armed earlier (by this instance, or by an earlier one, read through `getAlarm`). A prompt's wake is
 due at once, so an object evicted mid run is woken again. `alarm()` resumes every session whose wake is due, then arms
-the alarm for the earliest stored wake still to come. Building the core over existing storage resumes what is due in
-`ready`.
+the alarm for the earliest stored wake still to come, and, while any session is still running, no later than the
+watchdog (`watchdogMs`, default 30 s), so an object evicted mid run later still comes back. Building the core over
+existing storage resumes what is due in `ready`.
 
 ## Tests
 
