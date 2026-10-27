@@ -194,12 +194,12 @@ export interface AuditDirectory {
 	item?(itemId: string): string | undefined;
 }
 
-/** Where rows link. Absent builders leave rows unlinked. */
+/** Where rows link. Absent builders, and undefined from one (a record the host can't open), leave rows unlinked. */
 export interface AuditLinks {
 	/** A session, at the turn an event came from when the event names one. */
-	session?(sessionId: string, turn?: string): string;
+	session?(sessionId: string, turn?: string): string | undefined;
 	/** The vault page for a proposal (its decision lives there too). */
-	proposal?(proposalId: string): string;
+	proposal?(proposalId: string): string | undefined;
 }
 
 export function actorName(actor: Actor, directory: AuditDirectory = {}): string {
@@ -242,22 +242,17 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 	const data = event.data ?? {};
 	const itemId = eventItemId(event);
 	const item = itemId === undefined ? "a credential" : (directory.item?.(itemId) ?? itemId);
-	const sessionLink =
-		event.sessionId === undefined || links.session === undefined
-			? undefined
-			: {
-					href: links.session(
-						event.sessionId,
-						event.subject?.kind === "session.submission" || event.subject?.kind === "session.tool"
-							? event.subject.id
-							: undefined,
-					),
-					label: directory.session?.(event.sessionId) ?? event.sessionId,
-				};
-	const proposalLink =
-		event.subject?.kind === "vault.proposal" && links.proposal !== undefined
-			? { href: links.proposal(event.subject.id), label: "Vault request" }
+	const turn =
+		event.subject?.kind === "session.submission" || event.subject?.kind === "session.tool"
+			? event.subject.id
 			: undefined;
+	const sessionHref = event.sessionId === undefined ? undefined : links.session?.(event.sessionId, turn);
+	const sessionLink =
+		sessionHref === undefined || event.sessionId === undefined
+			? undefined
+			: { href: sessionHref, label: directory.session?.(event.sessionId) ?? event.sessionId };
+	const proposalHref = event.subject?.kind === "vault.proposal" ? links.proposal?.(event.subject.id) : undefined;
+	const proposalLink = proposalHref === undefined ? undefined : { href: proposalHref, label: "Vault request" };
 	const withLink = (line: Omit<EventLine, "link">, link = proposalLink ?? sessionLink): EventLine =>
 		link === undefined ? line : { ...line, link };
 

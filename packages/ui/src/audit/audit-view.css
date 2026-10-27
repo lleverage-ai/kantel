@@ -125,11 +125,6 @@
 	overscroll-behavior: contain;
 }
 
-/* The list is focusable so the keyboard can scroll it; its ring sits inside the edge. */
-.hb-audit-list.hb-focusable:focus-visible {
-	outline-offset: calc(var(--hb-ring) * -1);
-}
-
 .hb-audit-day {
 	position: relative;
 	padding: var(--hb-space-6) var(--hb-space-6) var(--hb-space-3);

@@ -147,24 +147,33 @@ function fixtureAccess(): ProjectAccess {
 	};
 }
 
-export const describeRequester: DescribeRequester = (proposal) => {
-	const sessionId = proposal.requester.sessionId;
-	const session = sessionId === undefined ? undefined : sessions[sessionId];
-	const labels: RequesterLabels = {
-		organisation: "Harbour",
-		...(proposal.projectId === undefined ? {} : { project: projects[proposal.projectId] ?? proposal.projectId }),
-		...(session === undefined
-			? {}
-			: {
-					agent: session.agent,
-					session: session.title,
-					sessionHref: `#/sessions/${sessionId}`,
-					person: people[session.person].name,
-					personId: people[session.person].userId,
-				}),
+/** Names for a fixture proposal's requester. `sessionHref` links the session; none leaves it as text. */
+export const requesterDescriber =
+	(sessionHref?: (sessionId: SessionId) => string | undefined): DescribeRequester =>
+	(proposal) => {
+		const sessionId = proposal.requester.sessionId;
+		const session = sessionId === undefined ? undefined : sessions[sessionId];
+		const href = sessionId === undefined ? undefined : sessionHref?.(sessionId);
+		const labels: RequesterLabels = {
+			organisation: "Harbour",
+			...(proposal.projectId === undefined ? {} : { project: projects[proposal.projectId] ?? proposal.projectId }),
+			...(session === undefined
+				? {}
+				: {
+						agent: session.agent,
+						session: session.title,
+						...(href === undefined ? {} : { sessionHref: href }),
+						person: people[session.person].name,
+						personId: people[session.person].userId,
+					}),
+		};
+		return labels;
 	};
-	return labels;
-};
+
+/** A fixture session's title, for a host's session directory. */
+export const sessionTitle = (sessionId: string): string | undefined => sessions[sessionId]?.title;
+
+export const describeRequester: DescribeRequester = requesterDescriber((sessionId) => `#/sessions/${sessionId}`);
 
 const nameOf = (userId: UserId): string | undefined =>
 	Object.values(people).find((person) => person.userId === userId)?.name;
@@ -174,6 +183,10 @@ export interface ScenarioOptions {
 	readonly base?: number;
 	/** Let the vault's clock run on in real time from `base`. */
 	readonly live?: boolean;
+	/** The store the vault writes its audit trail to, such as one already holding older history; a new one when absent. */
+	readonly audit?: AuditStore;
+	/** Where a requester's session links; the workbench's `#/sessions/:id` when absent, and no link when it returns none. */
+	readonly sessionHref?: (sessionId: SessionId) => string | undefined;
 }
 
 export interface VaultScenario {
@@ -217,7 +230,8 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 			follow = undefined;
 		},
 	};
-	const audit = createMemoryAuditStore({ clock });
+	const audit = options.audit ?? createMemoryAuditStore({ clock });
+	const describe = options.sessionHref === undefined ? describeRequester : requesterDescriber(options.sessionHref);
 	const vault = createMemoryVault({
 		clock,
 		audit,
@@ -287,6 +301,8 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		});
 	};
 
+	// Each step runs at its own time, in time order, so the vault's audit trail reads in order too.
+
 	// Approved and narrowed: the agent asked for any write anywhere on Linear for 7 days, as often as needed; Tom
 	// narrowed it to POST under /graphql for a day, 20 uses. Used three times since.
 	const narrowed = await propose("ses_billing", -5 * HOUR, {
@@ -303,7 +319,6 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	});
 	await egress("ses_billing", "POST", "https://api.linear.app/graphql", -4 * HOUR);
 	await egress("ses_billing", "POST", "https://api.linear.app/graphql", -3 * HOUR);
-	await egress("ses_billing", "POST", "https://api.linear.app/graphql", -40 * MINUTE);
 
 	// Approved as asked: one write to GitHub.
 	const approved = await propose("ses_release", -3 * HOUR, {
@@ -344,6 +359,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		lifetime: { maxUses: 1 },
 		reason: "To retry the last stuck job after the deploy.",
 	});
+	await egress("ses_billing", "POST", "https://api.linear.app/graphql", -40 * MINUTE);
 
 	// Withdrawn by the agent.
 	const withdrawn = await propose("ses_release", -30 * MINUTE, {
@@ -355,7 +371,13 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	at(-28 * MINUTE);
 	await vault.withdraw(agentIn("ses_release"), withdrawn.id);
 
-	// Open: a route grant, a secret paste, a pending write running out of time, a read and a fresh write.
+	// Open: a pending write running out of time, a route grant, a secret paste, a read and a fresh write.
+	const pending = await propose("ses_billing", -13 * MINUTE - 30_000, {
+		itemId: linear.id,
+		route: route("api.linear.app", ["POST", "PUT"], "/graphql"),
+		lifetime: { ttlMs: 7 * DAY, maxUses: 1 },
+		reason: "To close the duplicate invoice bug the sweep filed twice.",
+	});
 	const routeGrant = await propose("ses_ops", -6 * MINUTE, {
 		itemId: staging.id,
 		route: route("admin.staging.harbour.dev", ["GET", "POST"], "/jobs"),
@@ -373,12 +395,6 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		lifetime: { ttlMs: 30 * DAY },
 		reason:
 			"To read the billing service's new errors each morning for the sweep. There is no Sentry token in the vault yet.",
-	});
-	const pending = await propose("ses_billing", -13 * MINUTE - 30_000, {
-		itemId: linear.id,
-		route: route("api.linear.app", ["POST", "PUT"], "/graphql"),
-		lifetime: { ttlMs: 7 * DAY, maxUses: 1 },
-		reason: "To close the duplicate invoice bug the sweep filed twice.",
 	});
 	const read = await propose("ses_release", -2 * MINUTE, {
 		itemId: github.id,
@@ -421,7 +437,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		ctxFor: human,
 		propose: (sessionId, terms) => vault.propose(agentIn(sessionId), terms),
 		load: (proposalId, viewer = people.tom) =>
-			loadVaultRequest(vault, human(viewer), proposalId, describeRequester, { decisions, decider }),
-		grants: (viewer = people.tom) => loadActiveGrants(vault, human(viewer), describeRequester),
+			loadVaultRequest(vault, human(viewer), proposalId, describe, { decisions, decider }),
+		grants: (viewer = people.tom) => loadActiveGrants(vault, human(viewer), describe),
 	};
 }

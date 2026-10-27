@@ -1,0 +1,40 @@
+// The vault page's and the audit view's seams to a Harbour host, beside `ConsoleClient`'s for sessions. Each is
+// optional: a console without one shows no link to its page. Until lane 5's decision API and lane 6's audit query
+// API land, `recorded/oversight.ts` serves both from the in-memory vault and audit store, in the page.
+
+import type { Decision, DecisionInput } from "@harbour/contracts";
+import type {
+	AuditDirectory,
+	AuditLinks,
+	AuditSource,
+	AuditViewProps,
+	GrantSummary,
+	PasskeyCheck,
+	VaultRequest,
+	Viewer,
+} from "@harbour/ui";
+
+/** The vault as the signed-in person sees it: one request to decide, and their active grants. */
+export interface ConsoleVault {
+	/** The vault's own host, shown in the page header so the approver can check it. */
+	readonly host: string;
+	readonly viewer: Viewer;
+	/** One request, read-only when the viewer may see it but not decide it. Throws the vault's `forbidden` or `not_found`. */
+	request(proposalId: string): Promise<VaultRequest>;
+	grants(): Promise<readonly GrantSummary[]>;
+	/** Approves or denies; the vault refuses a wrong binding code with `refused`. */
+	decide(input: DecisionInput): Promise<Decision>;
+	stop(grantId: string): Promise<void>;
+	/** Asks for a passkey before an approval: WebAuthn in a browser, behind the host's challenge and check. */
+	readonly passkey: PasskeyCheck;
+}
+
+/** The audit log as the signed-in person may read it, with names and links for what it shows. */
+export interface ConsoleAudit {
+	readonly source: AuditSource;
+	readonly directory: AuditDirectory;
+	readonly links: AuditLinks;
+	readonly choices: NonNullable<AuditViewProps["choices"]>;
+	/** Check for newer events this often (ms). */
+	readonly pollMs?: number;
+}

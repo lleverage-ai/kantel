@@ -2,8 +2,8 @@
 
 The page a vault card's **Open in vault** link opens: one request, in full, beside the approver's active grants. It is
 where a person narrows what an agent asked for, checks the binding code, confirms with a passkey, pastes a new secret,
-or denies. It lives in `@harbour/ui` under `packages/ui/src/vault/`; `apps/console` mounts it at the proposal links
-the vault makes (`<linkBase>/proposals/<id>`).
+or denies. It lives in `@harbour/ui` under `packages/ui/src/vault/`. `apps/console` mounts it at `/vault` (the
+active grants) and `/vault/requests/:proposalId` (one request), behind its `ConsoleVault` seam.
 
 ## What it shows
 
@@ -95,6 +95,9 @@ const grants = await loadActiveGrants(vault, ctx, describeRequester);
 `loadVaultRequest` uses only `Vault` contract calls (`approvalView`, `getProposal`, `getItem`, `getGrant`), so it
 works with the in-memory vault now and lane 5's decision API when it lands. A viewer without the operator role gets the
 request read-only instead of an error.
+
+Inside a page that has its own `main` landmark, as the console does, pass `embedded` so the request isn't wrapped in a
+second one. The page has no `h1` until a request loads (the request's title is it), so a host shows its own until then.
 
 ## Gaps in the contract
 

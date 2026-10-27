@@ -458,22 +458,67 @@ export interface AuditScenario {
 
 const viewer: CallContext = { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION };
 
+/** The fixture's credentials by name, for a host stand-in that maps them onto a real vault's items. */
+export const itemNames: Readonly<Record<string, string>> = Object.fromEntries(
+	Object.entries(items).map(([itemId, item]) => [itemId, item.name]),
+);
+
+/** The event with its vault item ID replaced through `itemIds`, wherever the event names one. */
+function remapItem(event: AuditEventInput, itemIds: Readonly<Record<string, string>>): AuditEventInput {
+	const itemId = event.data?.itemId;
+	const mappedData = typeof itemId === "string" && itemIds[itemId] !== undefined;
+	const mappedSubject = event.subject?.kind === "vault.item" && itemIds[event.subject.id] !== undefined;
+	if (!mappedData && !mappedSubject) return event;
+	return {
+		...event,
+		...(mappedData ? { data: { ...event.data, itemId: itemIds[itemId as string]! } } : {}),
+		...(mappedSubject ? { subject: { kind: "vault.item", id: itemIds[event.subject!.id]! } } : {}),
+	};
+}
+
+/**
+ * Appends `count` generated events ending at `end` to `store`, then the second organisation's smaller log. A host
+ * stand-in can fill a store with this history before its own components start writing to it; `itemIds` maps the
+ * fixture's item IDs onto that host's, so a credential filter finds both.
+ */
+export async function appendHistory(
+	store: AuditStore,
+	count: number,
+	end = FIXTURE_NOW,
+	itemIds: Readonly<Record<string, string>> = {},
+): Promise<number> {
+	const events = generateEvents(count, end).map((event) => remapItem(event, itemIds));
+	for (let index = 0; index < events.length; index += 5000) {
+		await store.append(systemContext("fixture"), events.slice(index, index + 5000));
+	}
+	// The second organisation's log: a tenth the size, from another seed, so its rows differ from the first's.
+	const labs = generateEvents(Math.max(50, Math.round(count / 10)), end, 11).map((event) => ({
+		...event,
+		organisationId: SECOND_ORGANISATION,
+	}));
+	await store.append(systemContext("fixture"), labs);
+	return events.length;
+}
+
+/** A source reading `store` as `viewer`, bound to the organisation each query names, as a host's would be. */
+export function storeSource(store: AuditStore, viewer: CallContext): AuditSource {
+	return {
+		query(query, page) {
+			// The store takes the organisation from the context, never the query.
+			const { organisationId, ...rest } = query;
+			return store.query(organisationId === undefined ? viewer : { ...viewer, organisationId }, rest, page);
+		},
+	};
+}
+
 /** A store holding `count` generated events, and a source reading it as Tom. */
 export async function createAuditScenario(
 	count = 4000,
 	options: { latencyMs?: number; failAfter?: number } = {},
 ): Promise<AuditScenario> {
 	const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
-	const events = generateEvents(count);
-	for (let index = 0; index < events.length; index += 5000) {
-		await store.append(systemContext("fixture"), events.slice(index, index + 5000));
-	}
-	// The second organisation's log: a tenth the size, from another seed, so its rows differ from the first's.
-	const labs = generateEvents(Math.max(50, Math.round(count / 10)), FIXTURE_NOW, 11).map((event) => ({
-		...event,
-		organisationId: SECOND_ORGANISATION,
-	}));
-	await store.append(systemContext("fixture"), labs);
+	const appended = await appendHistory(store, count);
+	const read = storeSource(store, viewer);
 	let calls = 0;
 	const source: AuditSource = {
 		async query(query, page) {
@@ -481,12 +526,10 @@ export async function createAuditScenario(
 			if (options.failAfter !== undefined && calls > options.failAfter)
 				throw new Error("The audit store is unreachable");
 			if (options.latencyMs !== undefined) await new Promise((resolve) => setTimeout(resolve, options.latencyMs));
-			// The store takes the organisation from the context, never the query, as a host binding its own would.
-			const { organisationId, ...rest } = query;
-			return store.query(organisationId === undefined ? viewer : { ...viewer, organisationId }, rest, page);
+			return read.query(query, page);
 		},
 	};
-	return { store, ctx: viewer, source, count: events.length };
+	return { store, ctx: viewer, source, count: appended };
 }
 
 /** A source that never answers, for the loading state. */

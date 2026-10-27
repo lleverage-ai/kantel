@@ -3,8 +3,8 @@
 A filterable timeline of who did what on Harbour: people, agents and the system, by organisation, project, agent and
 session. It covers credential uses, approvals and denials, policy changes, sandbox escalations, refused access and
 session lifecycle. Each row links to the session turn or vault request it came from, and the whole filtered log
-exports as JSONL. It lives in `@harbour/ui` under `packages/ui/src/audit/`; `apps/console` mounts it once the console
-shell lands.
+exports as JSONL. It lives in `@harbour/ui` under `packages/ui/src/audit/`. `apps/console` mounts it at `/audit`,
+behind its `ConsoleAudit` seam.
 
 ## Reading it
 
@@ -80,7 +80,8 @@ import { AuditView } from "@harbour/ui";
 ```
 
 `source` is the `AuditStore.query` bound to the viewer. Agents can't read the audit log, so the host only builds one
-for a person or the system. The directory turns IDs into names; an unknown ID shows as itself.
+for a person or the system. The directory turns IDs into names; an unknown ID shows as itself. A link builder that
+returns `undefined` leaves that row unlinked, for a record the host can't open.
 
 ## Gaps in the contract
 

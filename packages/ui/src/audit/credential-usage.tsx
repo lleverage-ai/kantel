@@ -106,13 +106,14 @@ export function CredentialUsagePanel({
 								session.projectId === undefined
 									? undefined
 									: (directory.project?.(session.projectId) ?? session.projectId);
+							const sessionHref = links.session?.(session.sessionId);
 							return (
 								<li key={session.sessionId} className="hb-audit-usage-row">
 									<div className="hb-audit-usage-session">
-										{links.session === undefined ? (
+										{sessionHref === undefined ? (
 											<span className="hb-audit-usage-name">{name}</span>
 										) : (
-											<a className="hb-audit-usage-name hb-focusable" href={links.session(session.sessionId)}>
+											<a className="hb-audit-usage-name hb-focusable" href={sessionHref}>
 												{name}
 											</a>
 										)}
@@ -142,11 +143,13 @@ export function CredentialUsagePanel({
 												);
 											const by = actorName(approval.approvedBy, directory);
 											const when = dayTime.format(approval.approvedAt);
+											const proposalHref =
+												approval.proposalId === undefined ? undefined : links.proposal?.(approval.proposalId);
 											return (
 												<span key={via}>
 													Approved by <span className="hb-audit-usage-approver">{by}</span>{" "}
-													{approval.proposalId !== undefined && links.proposal !== undefined ? (
-														<a className="hb-audit-usage-when hb-focusable" href={links.proposal(approval.proposalId)}>
+													{proposalHref !== undefined ? (
+														<a className="hb-audit-usage-when hb-focusable" href={proposalHref}>
 															{when}
 														</a>
 													) : (
