@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { okfConcept } from "../src/okf.ts";
 import { SAL_RECALL_PREAMBLE, salRecallRenderer } from "../src/recall-renderer.ts";
 import { gitSkillSource } from "../src/skill-sources.ts";
-import { prepareSalWorker, startSalWorkerSession } from "../src/worker.ts";
+import { prepareSalWorker, selectedConcepts, startSalWorkerSession } from "../src/worker.ts";
 import { conceptFile, source, tempRepo } from "./helpers.ts";
 
 const cleanups: (() => void)[] = [];
@@ -153,6 +153,26 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 		});
 		const read = await workspaces.read(host.ctx, workspace.id, session.listings[0]!.path);
 		expect(new TextDecoder().decode(read.content)).toContain("description: Run a bug sweep");
+
+		// A concept the brief names is selected ahead of recall with its exception for this task, so neither is recalled.
+		const named = await startSalWorkerSession(host, {
+			sessionId: "s-named",
+			task: "TASK-9",
+			brief: "Run the bug sweep for the Harbour project",
+			concepts: ["personal/bug-sweep-job"],
+		});
+		expect(named.recall.manifest.map((item) => item.conceptId)).toEqual([
+			"personal/timezone",
+			"projects/harbour/sweep-notes",
+		]);
+		expect(selectedConcepts(host.bundle, ["personal/bug-sweep-job"], "TASK-9", 5)).toEqual([
+			"personal/bug-sweep-job",
+			"personal/bug-sweep-exception",
+		]);
+		// Not for another task, not past the limit, and never another job's exception or an unknown concept.
+		expect(selectedConcepts(host.bundle, ["personal/bug-sweep-job"], "TASK-10", 5)).toEqual(["personal/bug-sweep-job"]);
+		expect(selectedConcepts(host.bundle, ["personal/bug-sweep-job"], "TASK-9", 1)).toEqual(["personal/bug-sweep-job"]);
+		expect(selectedConcepts(host.bundle, ["personal/bug-sweep-exception", "personal/none"], "TASK-10", 5)).toEqual([]);
 
 		// Another task does not get TASK-9's exception.
 		const other = await startSalWorkerSession(host, { sessionId: "s2", task: "TASK-10", brief: "Run the bug sweep" });

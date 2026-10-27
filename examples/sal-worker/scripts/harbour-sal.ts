@@ -7,22 +7,29 @@
  *
  * The config names the memory clone and commit, the skill sources in Pi's order and the tasks:
  *   { "memory": { "repo": "...", "ref": "<commit>" },
- *     "skills": [ { "id": "agent-toolkit", "git": "...", "paths": ["skills"], "ref": "<commit>" },
- *                 { "id": "pi-agent-skills", "dir": "..." } ],
+ *     "skills": [ { "id": "pi-agent-skills", "dir": "~/.pi/agent/skills" },
+ *                 { "id": "agent-toolkit", "git": "...", "paths": ["skills"], "ref": "<commit>", "mode": "agents" } ],
+ * `mode` is Pi's search mode for the root (default `pi`): `agents` for what Pi finds under `~/.agents/skills`.
  *     "tasks": [ { "task": "TASK-1", "brief": "<file>" } ], "now": "<ISO>" }
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { directorySkillSource, gitSkillSource, type SalSkillSource } from "../src/skill-sources.ts";
+import { type DiscoveryMode, directorySkillSource, gitSkillSource, type SalSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker, type SalRecallLimits, startSalWorkerSession } from "../src/worker.ts";
 
 interface ParityConfig {
 	readonly memory: { readonly repo: string; readonly ref: string; readonly bundleDir?: string };
 	readonly skills: readonly (
-		| { readonly id: string; readonly git: string; readonly paths: readonly string[]; readonly ref?: string }
-		| { readonly id: string; readonly dir: string; readonly ref?: string }
+		| {
+				readonly id: string;
+				readonly git: string;
+				readonly paths: readonly string[];
+				readonly ref?: string;
+				readonly mode?: DiscoveryMode;
+		  }
+		| { readonly id: string; readonly dir: string; readonly ref?: string; readonly mode?: DiscoveryMode }
 	)[];
 	readonly exclude?: readonly string[];
 	readonly limits?: SalRecallLimits;
@@ -40,8 +47,8 @@ const now = config.now === undefined ? Date.now() : Date.parse(config.now);
 const sources = config.skills.map((entry): { source: SalSkillSource; ref?: string } => {
 	const source =
 		"git" in entry
-			? gitSkillSource({ id: entry.id, repo: resolve(base, entry.git), paths: entry.paths })
-			: directorySkillSource({ id: entry.id, root: resolve(base, entry.dir) });
+			? gitSkillSource({ id: entry.id, repo: resolve(base, entry.git), paths: entry.paths, mode: entry.mode ?? "pi" })
+			: directorySkillSource({ id: entry.id, root: resolve(base, entry.dir), mode: entry.mode ?? "pi" });
 	return entry.ref === undefined ? { source } : { source, ref: entry.ref };
 });
 const host = await prepareSalWorker({
@@ -96,6 +103,7 @@ process.stdout.write(
 		{
 			pinned: host.pinned,
 			refusedConcepts: host.bundle.refused,
+			conceptWarnings: host.bundle.warnings,
 			published: {
 				revisions: host.published.revisions.length,
 				refused: host.published.refused,

@@ -1,12 +1,29 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-/** A throwaway Git repository; `commit` writes files (text or bytes) and returns the commit SHA. */
+/** A file to write: text, bytes, a symlink to `link`, or null to delete. */
+export type FixtureFile = string | Uint8Array | { readonly link: string } | null;
+
+/** Writes `files` under `dir`. */
+export function writeFixture(dir: string, files: Record<string, FixtureFile>): void {
+	for (const [path, content] of Object.entries(files)) {
+		const full = join(dir, path);
+		if (content === null) {
+			rmSync(full, { force: true });
+			continue;
+		}
+		mkdirSync(dirname(full), { recursive: true });
+		if (typeof content === "object" && "link" in content) symlinkSync(content.link, full);
+		else writeFileSync(full, content);
+	}
+}
+
+/** A throwaway Git repository; `commit` writes files (text, bytes or symlinks) and returns the commit SHA. */
 export function tempRepo(): {
 	readonly dir: string;
-	commit(files: Record<string, string | Uint8Array | null>): string;
+	commit(files: Record<string, FixtureFile>): string;
 	remove(): void;
 } {
 	const dir = mkdtempSync(join(tmpdir(), "harbour-sal-worker-"));
@@ -18,15 +35,7 @@ export function tempRepo(): {
 	return {
 		dir,
 		commit(files) {
-			for (const [path, content] of Object.entries(files)) {
-				const full = join(dir, path);
-				if (content === null) {
-					rmSync(full, { force: true });
-					continue;
-				}
-				mkdirSync(dirname(full), { recursive: true });
-				writeFileSync(full, content);
-			}
+			writeFixture(dir, files);
 			git("add", "-A");
 			git("commit", "-q", "--allow-empty", "-m", "change");
 			return git("rev-parse", "HEAD");

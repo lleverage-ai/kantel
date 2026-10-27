@@ -122,6 +122,24 @@ describe("okfConcept", () => {
 		expect(() => okfConcept("personal/x", "---\ntitle: x\n---\nBody")).toThrow("non-empty type");
 		expect(() => okfConcept("personal/x", "---\n- a\n---\nBody")).toThrow("mapping");
 	});
+
+	it("refuses, one concept at a time, what Sal reads but a Harbour snapshot cannot hold", () => {
+		expect(() => okfConcept("personal/x", conceptFile({ title: "X" }, ""))).toThrow("needs a statement");
+		expect(() => okfConcept("personal/x", conceptFile({ title: " " }, "Body"))).toThrow("needs a title");
+		expect(() =>
+			okfConcept("personal/x", conceptFile({ title: "X", sal: { applies_to: "TASK-1", overrides: "Not An ID" } }, "B")),
+		).toThrow("sal.overrides");
+		expect(() =>
+			okfConcept("personal/x", conceptFile({ title: "X", sal: { superseded_by: "personal/x" } }, "B")),
+		).toThrow("sal.superseded_by");
+		// An empty source resource is kept for rendering, not as a Harbour source.
+		const { concept } = okfConcept(
+			"personal/x",
+			conceptFile({ title: "X", sources: [source(""), source("slack:1")] }, "B"),
+		);
+		expect(concept.sources).toEqual(["slack:1"]);
+		expect(salExtension(concept)?.sources).toEqual(["", "slack:1"]);
+	});
 });
 
 describe("okfSnapshot", () => {
@@ -151,5 +169,43 @@ describe("okfSnapshot", () => {
 		});
 		const imported = await memory.importSnapshot(ctx, space.id, bundle.snapshot);
 		expect(imported.snapshot?.ref).toBe("abc");
+	});
+
+	it("imports the rest of a bundle when one concept cannot be held, and warns of timestamps Sal orders by text", async () => {
+		const bundle = okfSnapshot(
+			[
+				{
+					path: "personal/good.md",
+					text: conceptFile({ title: "Good", generated: { at: "2026-10-12T09:35:38.357Z" } }, "G"),
+				},
+				{ path: "personal/empty.md", text: conceptFile({ title: "Empty" }, "") },
+				{
+					path: "personal/offset.md",
+					text: conceptFile({ title: "O", generated: { at: "2026-01-01T00:00:00+02:00" } }, "O"),
+				},
+				// A bad byte, read as Sal reads it: the concept still parses.
+				{
+					path: "personal/bytes.md",
+					text: new TextDecoder().decode(
+						new Uint8Array([...new TextEncoder().encode(conceptFile({ title: "Bytes" }, "B")), 0xff]),
+					),
+				},
+			],
+			{ sourceId: "sal-memory", ref: "abc" },
+		);
+		expect(bundle.snapshot.concepts.map((concept) => concept.id)).toEqual([
+			"personal/bytes",
+			"personal/good",
+			"personal/offset",
+		]);
+		expect(bundle.refused.map((entry) => entry.path)).toEqual(["personal/empty.md"]);
+		expect(bundle.warnings.map((entry) => entry.path)).toEqual(["personal/offset.md"]);
+		const memory = createMemoryMemory();
+		const ctx = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org" } as const;
+		const space = await memory.createSpace(ctx, {
+			owner: { kind: "organisation", organisationId: "org" },
+			name: "Sal",
+		});
+		await expect(memory.importSnapshot(ctx, space.id, bundle.snapshot)).resolves.toBeDefined();
 	});
 });

@@ -54,9 +54,22 @@ export interface OkfSnapshot {
 	readonly profile: readonly string[];
 	/** Every project a concept is scoped to: a Sal worker's recall takes all of them, as Sal's does. */
 	readonly projects: readonly string[];
-	/** Files that are not concepts Sal would read, with why. Nothing is dropped silently. */
+	/**
+	 * Files left out, with why: ones Sal would not read as concepts, and the few Sal reads that Harbour's snapshot cannot
+	 * hold (an empty title or body, an `overrides` or `superseded_by` that is not a concept ID). Nothing is dropped
+	 * silently.
+	 */
 	readonly refused: readonly { readonly path: string; readonly reason: string }[];
+	/**
+	 * Concepts imported whose recall may not match Sal's: a `generated.at` that is not in the form YAML gives a date
+	 * (`2026-10-12T09:35:38.357Z`). Sal orders the profile by that text and Harbour by the time it names; the two agree
+	 * only when every timestamp has that form.
+	 */
+	readonly warnings: readonly { readonly path: string; readonly reason: string }[];
 }
+
+/** The text of a timestamp in the one form whose text order is its time order. */
+const CANONICAL_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -94,10 +107,25 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 	const appliesTo = typeof sal.applies_to === "string" ? sal.applies_to : null;
 	const overrides = typeof sal.overrides === "string" ? sal.overrides : null;
 	const supersededBy = typeof sal.superseded_by === "string" ? sal.superseded_by : null;
+	for (const [field, value] of [
+		["sal.overrides", appliesTo === null ? null : overrides],
+		["sal.superseded_by", supersededBy],
+	] as const) {
+		if (value !== null && (!CONCEPT_ID.test(value) || value === id)) {
+			throw new Error(
+				`Harbour needs ${field} to name another concept, not ${JSON.stringify(value)} (Sal would read it)`,
+			);
+		}
+	}
 	const forgotten = isRecord(sal.forgotten);
 	const generated = isRecord(frontmatter.generated) ? frontmatter.generated : {};
 	const updated = dateString(generated.at);
 	const staleAfter = time(dateString(frontmatter.stale_after));
+	if (typeof frontmatter.title === "string" && frontmatter.title.trim() === "") {
+		throw new Error("Harbour needs a title, and this concept's is empty (Sal would read it)");
+	}
+	if (body.trim() === "")
+		throw new Error("Harbour needs a statement, and this concept's body is empty (Sal would read it)");
 	const sources = (Array.isArray(frontmatter.sources) ? frontmatter.sources : [])
 		.filter((source): source is Record<string, unknown> => isRecord(source) && typeof source.resource === "string")
 		.slice(0, MAX_SOURCES)
@@ -137,8 +165,11 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 		// Harbour wants non-empty tags; Sal indexes an empty one as nothing, so leaving it out changes no score.
 		tags: tags.filter((tag) => tag.trim() !== ""),
 		scope,
-		// Harbour wants a source; a concept written by hand without one points at its own file.
-		sources: sources.length > 0 ? sources : [`okf:${id}`],
+		// Harbour wants non-empty sources; a concept written by hand without one points at its own file. The extension
+		// keeps Sal's list as it is, for rendering.
+		sources: sources.some((source) => source.trim() !== "")
+			? sources.filter((source) => source.trim() !== "")
+			: [`okf:${id}`],
 		setBy: learnedFrom === "owner" ? "owner" : "learned",
 		status:
 			forgotten || (status === "deprecated" && supersededBy === null)
@@ -168,6 +199,7 @@ export function okfSnapshot(
 	const profile: string[] = [];
 	const projects = new Set<string>();
 	const refused: { path: string; reason: string }[] = [];
+	const warnings: { path: string; reason: string }[] = [];
 	for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
 		const id = conceptIdOf(file.path);
 		if (id === null) {
@@ -177,6 +209,13 @@ export function okfSnapshot(
 		try {
 			const { concept, profile: inProfile } = okfConcept(id, file.text);
 			concepts.push(concept);
+			const updated = salExtension(concept)?.updated ?? null;
+			if (updated !== null && !CANONICAL_TIME.test(updated)) {
+				warnings.push({
+					path: file.path,
+					reason: `generated.at ${JSON.stringify(updated)} is not in the form 2026-10-12T09:35:38.357Z, so its place in the profile may differ from Sal's`,
+				});
+			}
 			if (inProfile) profile.push(id);
 			if (concept.scope.kind === "project") projects.add(concept.scope.project);
 		} catch (error) {
@@ -189,6 +228,7 @@ export function okfSnapshot(
 		profile,
 		projects: [...projects].sort(),
 		refused,
+		warnings,
 	};
 }
 
