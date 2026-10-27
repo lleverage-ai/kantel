@@ -44,7 +44,8 @@ a `fix`. `putItem`, `putPolicy`, `setCeiling`, `revokeGrant`, `revokePolicy` for
   agent actor".
 - Narrowing only tightens; the agent is told the narrowed terms: "applies a narrowing and tells the agent the narrowed
   terms", "refuses a narrowing that widens the terms".
-- Exactly one decision: "settles concurrent decisions on one proposal exactly once", "tells a waiting agent its
+- Exactly one decision: "settles concurrent decisions on one proposal exactly once", "keeps an approval that lands
+  as the proposal expires consistent", "refuses a narrowing to a sibling path that shares the prefix's letters", "tells a waiting agent its
   proposal expired without anyone touching it", "refuses a secret paste without a code".
 - Outcomes: "resolves waitForOutcome after a later decision and says no request has run", "yields a denied outcome and
   no grant for a denied proposal", "stops waiting when the caller's signal aborts", "refuses approving a pending proposal
@@ -65,10 +66,11 @@ a `fix`. `putItem`, `putPolicy`, `setCeiling`, `revokeGrant`, `revokePolicy` for
 
 ## The in-memory implementation
 
-`createMemoryVault({ clock?, audit?, proposalTtlMs?, linkBase? })` keeps everything in maps per organisation, values in
+`createMemoryVault({ clock?, audit?, proposalTtlMs?, linkBase?, expiryPollMs? })` keeps everything in maps per organisation, values in
 a private map. Expiry is read from the clock whenever a proposal or grant is read, and each pending wait checks the
 clock every `expiryPollMs` (default 25 ms), so a waiting agent hears of expiry on its own. Decisions on one proposal are
-serialised: a second `decide` or a `withdraw` while one is in flight is `conflict`. It leaves out
+serialised: a second `decide` or a `withdraw` while one is in flight is `conflict`, and `decide` makes every state
+change before its first await, so an expiry cannot land between them. It leaves out
 encryption at rest, durable waits, role checks beyond "not an agent", and value rotation.
 
 ## Open questions

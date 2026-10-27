@@ -137,6 +137,24 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 	const waiters = new Map<string, Set<Waiter>>();
 	/** Proposals being decided now: a second decision while one is in flight is a `conflict`, never a second outcome. */
 	const deciding = new Set<string>();
+	/**
+	 * Expiry has no event of its own, so a proposal with waiters is checked against the clock: reading it through
+	 * proposalFor marks it expired, which resolves every waiter. One unref'd timer per proposal, stopped when its last
+	 * waiter leaves.
+	 */
+	const polls = new Map<string, ReturnType<typeof setInterval>>();
+	function startPoll(organisationId: OrganisationId, proposalId: string): void {
+		if (polls.has(proposalId)) return;
+		const timer = setInterval(() => proposalFor(organisationId, proposalId), expiryPollMs);
+		(timer as { unref?: () => void }).unref?.();
+		polls.set(proposalId, timer);
+	}
+	function stopPoll(proposalId: string): void {
+		const timer = polls.get(proposalId);
+		if (timer === undefined) return;
+		clearInterval(timer);
+		polls.delete(proposalId);
+	}
 
 	async function emit(event: Omit<AuditEventInput, "id" | "at" | "source"> & { readonly id?: string }): Promise<void> {
 		if (audit === undefined) return;
@@ -622,6 +640,9 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 					}
 				}
 
+				// Every state change below happens before the first await, so nothing (an expiry, a withdrawal) can land
+				// between them. Audit events are written afterwards.
+				const afterwards: Parameters<typeof emit>[0][] = [];
 				let itemId: string;
 				if (secret === undefined) {
 					itemId = itemFor(ctx.organisationId, terms.itemId!).id;
@@ -637,7 +658,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 							: { kind: "project", organisationId: ctx.organisationId, projectId: proposal.projectId };
 					const item = createItem(ctx.organisationId, { ...secret, owner }, input.secretValue);
 					itemId = item.id;
-					await emit({
+					afterwards.push({
 						...auditBase,
 						id: `vault:item:${item.id}:created`,
 						type: "vault.item.created",
@@ -687,6 +708,7 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 				};
 				decisions.set(decisionId, decision);
 				store({ ...proposal, status: "approved", decisionId });
+				for (const event of afterwards) await emit(event);
 				await emit({
 					...auditBase,
 					id: `vault:decision:${decisionId}`,
@@ -740,22 +762,20 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			return new Promise<ProposalOutcome>((resolve, reject) => {
 				const set = waiters.get(proposalId) ?? new Set<Waiter>();
 				waiters.set(proposalId, set);
-				// Expiry has no event of its own: check the clock until the proposal leaves `pending`. Reading it through
-				// proposalFor marks it expired, which resolves every waiter.
-				const poll = setInterval(() => proposalFor(ctx.organisationId, proposalId), expiryPollMs);
 				const onAbort = () => {
-					clearInterval(poll);
 					set.delete(waiter);
+					if (set.size === 0) stopPoll(proposalId);
 					reject(new HarbourError("aborted", "The wait was aborted"));
 				};
 				const waiter: Waiter = {
 					resolve(outcome) {
-						clearInterval(poll);
+						stopPoll(proposalId);
 						signal?.removeEventListener("abort", onAbort);
 						resolve(outcome);
 					},
 				};
 				set.add(waiter);
+				startPoll(ctx.organisationId, proposalId);
 				signal?.addEventListener("abort", onAbort, { once: true });
 			});
 		},

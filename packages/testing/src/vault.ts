@@ -364,7 +364,6 @@ export function createVaultConformance(options: {
 			for (const narrowing of [
 				{ methods: ["GET", "DELETE"] as const },
 				{ pathPrefix: "/" },
-				{ pathPrefix: "/repositories" },
 				{ maxUses: 6 },
 				{ ttlMs: 120_000 },
 			]) {
@@ -430,6 +429,38 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await waiting).status, "expired");
 			assert.strictEqual((await vault.waitForOutcome(agent, proposal.id)).status, "expired");
 			assert.strictEqual(await grantCount(vault), 0);
+		}),
+
+		test("refuses a narrowing to a sibling path that shares the prefix's letters", async (vault) => {
+			const item = await putGithubToken(vault);
+			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos"));
+			for (const pathPrefix of ["/repositories", "/reposX/"]) {
+				await assert.rejectsWithCode(
+					vault.decide(human, approval(proposal, { narrowing: { pathPrefix } })),
+					"invalid",
+					`narrowing /repos to ${pathPrefix} is invalid`,
+				);
+			}
+			const decision = await vault.decide(human, approval(proposal, { narrowing: { pathPrefix: "/repos/harbour" } }));
+			assert.strictEqual(decision.effectiveTerms?.route.pathPrefix, "/repos/harbour");
+		}),
+
+		test("keeps an approval that lands as the proposal expires consistent", async (vault, deps) => {
+			const proposal = await vault.propose(agent, secretTerms);
+			const waiting = vault.waitForOutcome(agent, proposal.id);
+			const deciding = vault.decide(human, approval(proposal, { secretValue: CANARY_SECRET })).then(
+				(decision) => decision.outcome as string,
+				(error: { code?: string }) => error.code ?? "error",
+			);
+			deps.clock.set(proposal.expiresAt + 1);
+			const seen = (await vault.getProposal(human, proposal.id)).status;
+			const result = await deciding;
+			const stored = (await vault.getProposal(human, proposal.id)).status;
+			const heard = (await waiting).status;
+			assert.strictEqual(stored, seen, "a settled status never changes");
+			assert.strictEqual(heard, stored, "the waiting agent hears the stored outcome");
+			assert.strictEqual(result === "approved", stored === "approved", "decide reports what was stored");
+			assert.ok((await grantCount(vault)) === (stored === "approved" ? 1 : 0), "a grant exists only if approved");
 		}),
 
 		test("tells a waiting agent its proposal expired without anyone touching it", async (vault, deps) => {

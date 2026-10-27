@@ -40,7 +40,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
 | Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (15) | [workspace](../packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (14) | [sandbox](../packages/sandbox/CONTRACT.md) |
-| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (39) | [vault](../packages/vault/CONTRACT.md) |
+| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (41) | [vault](../packages/vault/CONTRACT.md) |
 | Audit | `AuditSink`, `AuditEventInput` | `RecordingAuditSink` in `@harbour/testing` | Checked inside every suite | [below](#audit) |
 
 Capability, browser, skills, memory and schedules contracts come in the second PR of M0-BE1.
