@@ -18,6 +18,8 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - `SessionRuntime`: `create`, `prompt`, `steer`, `followUp`, `abort`, `wait`, `watch`, `snapshot`, `close`.
 - `SessionDirectory`: `get`, `list` (newest first, filtered, paged), `children`.
 - `AgentProfiles`: `put`, `get`, `list`. `HostToolBridge`: `register` (returns a subscription), `list`.
+- `SessionEndHook`: `register(name, teardown)`. The runtime runs every registered teardown when a session is closed or
+  aborted; the in-memory components register as `sandbox`, `browser`, `capability` and `vault`.
 
 ## Rules and the suite cases that enforce them
 
@@ -52,9 +54,37 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - Close marks the session done and later input is `conflict` — "closing a session marks it done and refuses later
   prompts with conflict".
 
+### Session end (settled question 8)
+
+- Close runs every teardown once, in registration order, with a `system` context and a `SessionEnd` naming the
+  session, project, agent, reason `session_ended` and who ended it; another session keeps what it holds; closing or
+  aborting a closed session runs nothing — "session end: closing runs every registered teardown once for the session,
+  which then holds nothing, and closing again runs none".
+- Abort runs the teardowns (`aborted`) for each child, then the session, which stays usable — "session end: aborting
+  runs the teardowns for each child and the session, which stays usable, and a second abort changes nothing".
+- A failing teardown does not stop the others or fail the close; it is audited as `session.teardown.failed` with its
+  name and error code, never its message — "session end: a failing teardown does not stop the others or fail the
+  close, and is audited with its name and code but not its message".
+- A name registers once (`conflict` otherwise), and closing the registration removes it — "session end: a teardown
+  name is registered once, and closing its registration removes it".
+
+### Project access (settled question 7; `projectAccess: true`)
+
+Every call checks `ProjectAccess` before it acts. Reads (`get`, `list`, `children`, `wait`, `watch`, `snapshot`) need
+`viewer`; `create`, `prompt`, `steer`, `followUp`, `abort`, `close`, `profiles.put` and `hostTools.register` need
+`operator`. A project's profile is read with `viewer` on it; lists leave out what the caller may not see.
+
+- "project access: refuses an operator outside the project every call on its sessions and profiles, and changes
+  nothing".
+- "project access: refuses an agent whose session belongs to another project, and changes nothing".
+- An agent acts in its own session and on its children, not a sibling, and nowhere once its session is closed —
+  "project access: an agent acts in its own session and supervises its children, never a sibling, and nowhere once its
+  session is closed".
+- "project access: a viewer on the project reads its sessions but cannot change them".
+
 ## The in-memory implementation
 
-`createMemoryRuntime({ clock, audit, models, resolveModel, sandboxes, pageSize })` from `@harbour/runtime/memory`
+`createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@harbour/runtime/memory`
 opens one Harness per session on Pi Durable's `MemoryStorage`. The profile's prompt layers become one system prompt
 section, and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
 placed as a `harbour.user` entry recording how it was sent. `ConversationProjector` (`project.ts`) diffs Pi's committed
@@ -63,13 +93,18 @@ error, `idle` otherwise and `done` after close. Audit: `session.created`, `sessi
 `session.aborted`, `session.tool.started`, `session.tool.finished`, with stable ids. `createScriptedModel()` from
 `@harbour/runtime/testing` scripts pi-ai's faux provider for the suite.
 
-It leaves out: persistence across restarts, permission checks (the operator role on the project), skills, memory
+With `identity` (role bindings), it checks project access through `createProjectAccess`, reading sessions from its own
+map, and exposes that check as `access` for components to share. It exposes its session-end hook as `sessionEnd`
+(`createSessionEndHook` from `@harbour/runtime`); pass it to `createMemorySandboxes`, `createMemoryBrowser`,
+`createMemoryCapabilityRegistry` and `createMemoryVault`. The older `sandboxes` option registers the sandbox's
+`releaseSession` as the `sandbox` teardown, so don't pass both.
+
+It leaves out: persistence across restarts, skills, memory
 scopes, workspaces and sandbox routing beyond `releaseSession`, usage totals in snapshots, history paging through
 `watch`, and session titles changing after creation.
 
 ## Open questions
 
-- Who checks that the actor is an operator on the project: the runtime, or the gateway in front of it?
 - Should `close` also close child sessions, or only abort them as it does now?
 - Pi types appear in the exports of `@harbour/runtime` (the projector, `hostToolAsPiTool`) for targets to reuse; hosts
   should import only `@harbour/contracts`.
