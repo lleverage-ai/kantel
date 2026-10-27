@@ -78,20 +78,58 @@ creates the user, and sign-in never creates one.
 request's headers into an `AuthenticatedCaller` (an `Authentication` plus its `method`), and an API builds each
 call's `CallContext` from it with `callContextFor(caller, { projectId, requestId, signal })`.
 
-- Credentials: `Authorization: Bearer hbr_…` is a host app's API key (`api_key`). Human sign-in, a Cloudflare
+- Credentials: `Authorization: Bearer hbr_…` is a host app's API key (`api_key`). People sign in with a Cloudflare
   Access token in `Cf-Access-Jwt-Assertion` (`cloudflare_access`) or an OIDC token as a non-`hbr_` bearer (`oidc`),
-  is configured per deployment and lands in a later change. A human names the organisation they act in with the
-  `Harbour-Organisation` header (`ORGANISATION_HEADER`); a key's organisation is the key's.
+  whichever providers the deployment configures. The Access header is read first when an Access provider is
+  configured; then an `hbr_` bearer is a key; any other bearer goes to the OIDC provider (with several, the one whose
+  issuer the token's unverified `iss` names). A bearer token with no provider to verify it is `invalid`.
+- A verified token becomes an `ExternalIdentity`, and `signIn` (as `system`) finds the user; a `forbidden` from it
+  is `invalid`. The person names the organisation they act in with the `Harbour-Organisation` header
+  (`ORGANISATION_HEADER`), which must be one of theirs; without it, they must have exactly one. Anything else is
+  `organisation`. The caller is `{ method, actor: { kind: "human", userId }, organisationId }`, with no projects or
+  role: their roles decide per project. A key's organisation is the key's.
 - It authenticates and never authorises. A key's caller is `{ kind: "service", serviceId, keyId }`, so
   `ProjectAccess` (through `roleOf`) limits it to the key's projects and role, whatever its service's bindings.
 - Failures reject with `forbidden` and `details.authentication` (`AuthenticationFailure`): `missing` and `invalid`
   (HTTP 401) or `organisation` (HTTP 403). `authenticationFailureOf(error)` reads it. A failure says nothing about
   which keys or users exist and never echoes the credential. Other errors (a directory that is down) propagate.
-- `@harbour/identity/authenticator` has the implementation: `createAuthenticator({ identity })`,
+- `@harbour/identity/authenticator` has the implementation: `createAuthenticator({ identity, providers? })` (the
+  directory needs `signIn` when providers are given, else creation throws `invalid`),
   `withAuthentication(authenticator, handler)` for Fetch-style handlers (401 with `WWW-Authenticate: Bearer`, or 403,
   with a JSON `{ error: { code, failure, message } }` body), and `authenticationFailureResponse(error)` for routers
   that call `authenticate` themselves. Build tests against it with the in-memory directory: issue a key, send it as a
   bearer.
+
+### Sign-in providers
+
+`@harbour/identity/jwt` verifies tokens with `jose`. Each provider takes an optional `fetch` (default the global one),
+`clock` and `clockToleranceSeconds` (default 0), and needs `exp` in every token.
+
+- `cloudflareAccessProvider({ teamDomain, audience })`: `teamDomain` is the Access team domain, with or without
+  `https://`; `audience` is the Access application's AUD tag. Tokens must be RS256, issued by
+  `https://<teamDomain>`, for the AUD tag, signed by a key from `/cdn-cgi/access/certs`. Access verifies emails, so
+  the email counts as verified. A token without a subject or email (a service token) is `invalid`: host apps use API
+  keys.
+- `oidcProvider({ issuer, audience, jwksUri?, algorithms?, discovery? })`: `audience` is the client ID. Without
+  `jwksUri`, the discovery document (at `discovery`, default `<issuer>/.well-known/openid-configuration`) is fetched
+  once and must name exactly `issuer`; its `jwks_uri` gives the keys. `iss` must equal `issuer` exactly. Algorithms
+  default to RS256, ES256 and EdDSA; `none` and HMAC are refused at creation. The email is verified only when
+  `email_verified` is `true` (or `"true"`).
+- Keys are cached for 10 minutes. A token naming an unknown `kid` (the provider rotated its keys) refetches them once,
+  at most once every 30 seconds by the clock.
+- A token that does not verify is `invalid`, with a generic message that never holds the token. Keys or discovery
+  that cannot be fetched or read, or discovery naming another issuer, are `unavailable` (not 401): the provider is at
+  fault, not the caller.
+
+### The mock IdP for tests
+
+`@harbour/identity/testing` is portable and needs no network. `createMockIdp({ issuer, audience, algorithm?, clock? })`
+signs tokens (RS256 by default, or ES256) and answers discovery and its JWKS through its own `fetch`, which you pass
+to `oidcProvider`. `createMockAccess({ teamDomain, audience, clock? })` does the same for `/cdn-cgi/access/certs`.
+`sign(claims, { kid?, expiresInSeconds?, algorithm?, header? })` fills `iss`, `aud`, `sub`, `iat` and `exp` from the
+clock; a claim set to `undefined` is left out. `rotate()` adds new keys and keeps the old ones published until
+`removeOld()`. The identity suite also serves a mock IdP over real HTTP on 127.0.0.1 (`test/http-idp.ts`) for
+`oidcProvider` with the global fetch.
 
 ## The in-memory implementation
 
