@@ -123,6 +123,20 @@ describe("the recorded client", () => {
 		expect(known).not.toHaveBeenCalled();
 	});
 
+	it("drops frames still in flight at dispose", async () => {
+		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 50 });
+		const onChange = vi.fn();
+		client.watchSessions("harbour", onChange);
+		const receive = vi.fn();
+		client.transport("s-flaky").connect(receive).send(hello("s-flaky"));
+		await vi.advanceTimersByTimeAsync(10);
+		const lists = onChange.mock.calls.length;
+		client.dispose();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(receive).not.toHaveBeenCalled();
+		expect(onChange.mock.calls.length).toBe(lists);
+	});
+
 	it("stops calling a connected session back at dispose", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0, openDelayMs: 100 });
 		const receive = vi.fn();

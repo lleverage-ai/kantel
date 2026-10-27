@@ -146,9 +146,10 @@ export function App({
 	}
 
 	const pane = sessionId !== undefined || route.name === "not-found" || unknownProject ? "main" : "list";
-	// On a phone the list is the page, so it becomes the main landmark.
+	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
+	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
-	const Sidebar = listIsPage ? "main" : "aside";
+	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
 	const title =
 		route.name === "not-found" || unknownProject
@@ -162,7 +163,7 @@ export function App({
 
 	return (
 		<div className="shell hb-app" data-pane={pane}>
-			<Sidebar className="shell-sidebar" aria-label="Projects and sessions">
+			<div className="shell-sidebar" {...sidebarRole}>
 				{listIsPage ? heading : null}
 				<div className="shell-brand">
 					<span className="shell-wordmark">Harbour</span>
@@ -187,7 +188,7 @@ export function App({
 					<span className="shell-actor-name">{client.actor.name}</span>
 					{client.actor.stubbed ? <Badge>Sign-in stubbed</Badge> : null}
 				</div>
-			</Sidebar>
+			</div>
 			{listIsPage ? null : (
 				<main className="shell-main">
 					{heading}
