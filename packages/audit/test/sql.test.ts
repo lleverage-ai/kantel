@@ -2,7 +2,13 @@ import { PGlite } from "@electric-sql/pglite";
 import { createMemoryAuditOutbox } from "@harbour/audit/memory";
 import { startAuditRelay } from "@harbour/audit/relay";
 import { auditOutboxStatements, createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import { type AuditEventInput, type AuditSink, type CallContext, systemContext } from "@harbour/contracts";
+import {
+	type AuditEventInput,
+	type AuditSink,
+	type CallContext,
+	type ProjectAccess,
+	systemContext,
+} from "@harbour/contracts";
 import { sql } from "@harbour/sql";
 import { postgresClientDriver } from "@harbour/sql/postgres";
 import { nodeSqliteDatabase, testDatabaseKinds } from "@harbour/sql/testing";
@@ -88,6 +94,63 @@ for (const kind of testDatabaseKinds()) {
 				expect(stored).toHaveLength(151);
 				expect(new Set(stored).size).toBe(151);
 				expect(stored.filter((id) => id === "decision-1")).toHaveLength(1);
+			} finally {
+				await database.close();
+			}
+		});
+
+		it("matches a type prefix by characters, whatever the script", async () => {
+			const database = await kind.open();
+			try {
+				await migrateAudit(database.driver);
+				const store = createSqlAuditStore({ driver: database.driver });
+				await store.append(SYSTEM, [
+					event("rocket", { type: "custom.🚀.created" }),
+					event("ship", { type: "custom.🚢.created" }),
+				]);
+				const typed = async (type: string) => (await store.query(reader, { type })).items.map((row) => row.id);
+				expect(await typed("custom.🚀.")).toEqual(["rocket"]);
+				expect(await typed("custom.")).toEqual(["rocket", "ship"]);
+				expect(await typed("custom.🚀")).toEqual([]);
+			} finally {
+				await database.close();
+			}
+		});
+
+		it("never pages past a visible row whose project appeared while access was being checked", async () => {
+			const database = await kind.open();
+			try {
+				await migrateAudit(database.driver);
+				let release: () => void = () => undefined;
+				const gate = new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				let gated = true;
+				const access = {
+					async allows() {
+						if (gated) {
+							gated = false;
+							await gate;
+						}
+						return true;
+					},
+					async require(_ctx: CallContext, check: { projectId?: string }) {
+						return check.projectId === undefined ? {} : { projectId: check.projectId };
+					},
+				} as unknown as ProjectAccess;
+				const store = createSqlAuditStore({ driver: database.driver, access });
+				await store.append(SYSTEM, [event("a-1", { projectId: "proj-a" })]);
+
+				const reading = store.query(reader, {}, { limit: 1, cursor: "1" });
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				await store.append(SYSTEM, [event("b-1", { projectId: "proj-b" }), event("a-2", { projectId: "proj-a" })]);
+				release();
+				const page = await reading;
+				expect(page.items.map((row) => row.id)).toEqual([]);
+				expect(page.nextCursor).toBeUndefined();
+
+				const next = await store.query(reader, {}, { limit: 1, cursor: "1" });
+				expect(next.items.map((row) => row.id)).toEqual(["b-1"]);
 			} finally {
 				await database.close();
 			}
@@ -215,5 +278,34 @@ describe("startAuditRelay", () => {
 		expect(delivered).toEqual(["a", "b", "c"]);
 		expect(await relay.drainNow()).toBe(1);
 		expect(delivered).toEqual(["a", "b", "c", "d"]);
+	});
+
+	it("waits in stop for a drainNow still in progress", async () => {
+		const outbox = createMemoryAuditOutbox();
+		let unblock: () => void = () => undefined;
+		let blocking = false;
+		const sink: AuditSink = {
+			async append() {
+				if (blocking)
+					await new Promise<void>((resolve) => {
+						unblock = resolve;
+					});
+			},
+		};
+		const relay = startAuditRelay({ outbox, sink, intervalMs: 60_000 });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		blocking = true;
+		await outbox.append(SYSTEM, [event("late")]);
+		const manual = relay.drainNow();
+		let stopped = false;
+		const stopping = relay.stop().then(() => {
+			stopped = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(stopped).toBe(false);
+		unblock();
+		await stopping;
+		expect(await manual).toBe(1);
+		expect(stopped).toBe(true);
 	});
 });

@@ -77,9 +77,13 @@ function recording(driver: SqlDriver) {
 	return { driver: wrapped, plan };
 }
 
-/** Whether a plan reads the whole events table instead of an index. */
+/**
+ * Whether a plan walks the events table instead of seeking into it. SQLite must `SEARCH` it, never `SCAN` it, even by
+ * an index. Postgres must not `Seq Scan` it; it may walk the `seq` index under a `LIMIT` when the rows it wants are
+ * dense, as here, and its statistics decide that.
+ */
 function scansTable(plan: string): boolean {
-	return /Seq Scan on audit_events|SCAN audit_events(?! USING)/.test(plan);
+	return /Seq Scan on audit_events|SCAN audit_events\b/.test(plan);
 }
 
 async function timed<T>(run: () => Promise<T>): Promise<{ result: T; ms: number }> {
@@ -87,6 +91,19 @@ async function timed<T>(run: () => Promise<T>): Promise<{ result: T; ms: number 
 	const result = await run();
 	return { result, ms: performance.now() - started };
 }
+
+describe("scansTable", () => {
+	it("flags table and index scans, and passes index searches", () => {
+		expect(scansTable("Seq Scan on audit_events  (cost=0.00..2500.00 rows=1000 width=200)")).toBe(true);
+		expect(scansTable("SCAN audit_events")).toBe(true);
+		expect(scansTable("SCAN audit_events USING INDEX audit_events_by_time")).toBe(true);
+		expect(
+			scansTable("SEARCH audit_events USING INDEX audit_events_by_project (organisation_id=? AND project_id=?)"),
+		).toBe(false);
+		expect(scansTable("Index Scan using audit_events_by_session on audit_events")).toBe(false);
+		expect(scansTable("SCAN json_each VIRTUAL TABLE INDEX 1:")).toBe(false);
+	});
+});
 
 for (const kind of kinds) {
 	describe(`SQL audit store at ${EVENTS.toLocaleString("en-GB")} events on ${kind.name}`, () => {

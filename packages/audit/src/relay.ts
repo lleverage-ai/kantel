@@ -20,7 +20,7 @@ export interface AuditRelayOptions {
 export interface AuditRelay {
 	/** Drains once now, outside the timer, and resolves how many events it sent. */
 	drainNow(): Promise<number>;
-	/** Stops the timer and waits for a drain in progress. */
+	/** Stops the timer and waits for every drain in progress, `drainNow`'s included. */
 	stop(): Promise<void>;
 }
 
@@ -31,10 +31,20 @@ export function startAuditRelay(options: AuditRelayOptions): AuditRelay {
 	const ctx = options.context ?? systemContext("audit.relay");
 	let stopped = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	let running: Promise<unknown> = Promise.resolve();
+	/** Every drain this relay started that has not settled, the timer's and `drainNow`'s. */
+	const inFlight = new Set<Promise<unknown>>();
 	let waitMs = intervalMs;
 
-	const drain = () => options.outbox.drain(ctx, options.sink);
+	function drain(): Promise<number> {
+		const run = options.outbox.drain(ctx, options.sink);
+		const settled = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		inFlight.add(settled);
+		void settled.then(() => inFlight.delete(settled));
+		return run;
+	}
 
 	function tick(): void {
 		timer = undefined;
@@ -47,7 +57,6 @@ export function startAuditRelay(options: AuditRelayOptions): AuditRelay {
 				options.onError?.(error);
 			},
 		);
-		running = run;
 		void run.then(() => {
 			if (!stopped) timer = setTimeout(tick, waitMs);
 		});
@@ -59,7 +68,7 @@ export function startAuditRelay(options: AuditRelayOptions): AuditRelay {
 		async stop() {
 			stopped = true;
 			if (timer !== undefined) clearTimeout(timer);
-			await running;
+			await Promise.all(inFlight);
 		},
 	};
 }

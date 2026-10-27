@@ -227,8 +227,9 @@ function queryConditions(query: AuditQuery): { conditions: string[]; params: Sql
 	if (query.source !== undefined) equal("source", query.source);
 	if (query.type !== undefined) {
 		if (query.type.endsWith(".")) {
-			conditions.push("substr(type, 1, ?) = ?");
-			params.push(query.type.length, query.type);
+			// SQL counts characters, not UTF-16 units as JavaScript's `length` does, so the database measures the prefix.
+			conditions.push("substr(type, 1, length(CAST(? AS TEXT))) = ?");
+			params.push(query.type, query.type);
 		} else {
 			equal("type", query.type);
 		}
@@ -312,12 +313,21 @@ export function createSqlAuditStore(options: SqlAuditStoreOptions): AuditStore {
 			const { conditions, params } = queryConditions(query);
 			const where = ["organisation_id = ?", ...conditions];
 			const values: SqlValue[] = [ctx.organisationId, ...params];
-			if (checkedProject !== undefined) {
-				// Rows naming another project are left out, even when they name the session.
+			if (checkedProject !== undefined && query.projectId === undefined) {
+				// A session's rows naming another project are left out.
 				where.push("(project_id IS NULL OR project_id = ?)");
 				values.push(checkedProject);
 			}
 			if (access !== undefined && !scoped) {
+				// The page stops at the last row stored before the projects were read: a project whose first row lands
+				// while access is checked is not in the filter, and a cursor past its rows would skip them for good.
+				const [top] = await driver.query<{ high: unknown }>(
+					"SELECT MAX(seq) AS high FROM audit_events WHERE organisation_id = ?",
+					[ctx.organisationId],
+				);
+				if (top === undefined || top.high === null || top.high === undefined) return { items: [] };
+				where.push("seq <= ?");
+				values.push(sqlNumber(top.high));
 				const viewable = await viewableProjects(ctx, access);
 				const projects = viewable.filter((projectId) => projectId !== null);
 				const unprojected = viewable.includes(null);
