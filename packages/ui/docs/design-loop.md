@@ -19,7 +19,8 @@ A variant that fails any gate is rejected before anything is measured or judged.
 | Gate | What it checks | How |
 | --- | --- | --- |
 | Accessibility | No axe violations for WCAG 2.2 A and AA, on every story at 1280px and 420px | `loop/gates.ts`, axe-core in headless Chromium |
-| Keyboard | Every enabled control is reached by Tab, in order, shows a visible focus ring when reached, and nothing traps focus. Components with their own keys (the composer's Enter and Escape, the segmented control's arrows) add a scripted check | `loop/gates.ts`, plus the component's spec in `loop/specs.ts` |
+| Keyboard | Every enabled control is reached by Tab, in order, shows a visible focus ring when reached, and nothing traps focus. Components' own keys (the composer's Enter and Escape, a radio group's arrows) are not scripted in the gate yet; see [What it does not cover](#what-it-does-not-cover) | `loop/gates.ts` |
+| Alignment | Icons, status dots, badges and button labels are centred on their text within 1px: the middle of the capitals (baseline minus half the cap height, read from the font the browser used), not the line box. Checked on every story at both widths | `loop/align.ts`, run by `loop/gates.ts` |
 | Tokens | No raw colour or size outside `src/tokens/tokens.css`; font sizes and radii are tokens | `scripts/token-lint.ts`, also in CI through `pnpm test` |
 | Copy | No uppercase or tracked labels, no middle-dot meta strings, no arrows in rendered text | `scripts/token-lint.ts`. **Change:** the copy rules are made mechanical as a gate rather than left to the judge, because they are rules, not taste |
 | States | The component has a story for each state it can be in: loading, empty, streaming, error, long content and mobile, where they apply | `loop/specs.ts` lists the states each component owes. **Change:** added, so a variant cannot win by dropping a hard state |
@@ -34,7 +35,7 @@ headless Chromium with the CPU throttled four times, five runs, median taken.
 | --- | --- | --- |
 | Render cost | Total React `actualDuration` (ms) across the scenario | Transcript: 300 earlier items, then an answer streams 400 tokens in 200ms batches |
 | Wasted renders | Renders of a component instance whose output did not need to change | Transcript: renders of any row other than the streaming one. Session list: rows re-rendered when one row's status changes |
-| Interaction latency | Event to next paint (Event Timing API), median of 20 | Tool-call chip: expand. Composer: a keystroke. Vault card: pick a code |
+| Interaction latency | From the input event's timestamp to the end of the next frame, for real input from Playwright; median and p95 | Tool-call chip: expand. Composer: a keystroke. Vault card: pick a code |
 | Bundle cost | Minified and gzipped JS and CSS the component adds to a host app, excluding React | One entry per component, bundled with Vite |
 
 **Change:** a champion and its variants are measured interleaved (champion, variant 1, variant 2, then again, five
@@ -134,4 +135,9 @@ Results and history live in `loop/history/`; the latest summary is in `docs/loop
 ## What it does not cover
 
 Real-device feel (scroll physics on an iPhone, IME composition), screen-reader flows beyond what axe and the
-keyboard checks catch, and taste calls that need Tom. Those are listed with each round's results.
+keyboard checks catch, components' own keyboard handling (the gate checks Tab order and focus rings; Enter,
+Escape and arrow keys are covered only where a component's unit tests cover them), and taste calls that need Tom.
+Those are listed with each round's results.
+
+The composer left the loop after round 1: it is being rebuilt in its own task (model picker, attachments), and
+its round-1 record stays in `loop/history/composer.json` for that work.

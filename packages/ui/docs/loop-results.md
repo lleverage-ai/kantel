@@ -11,10 +11,11 @@ Five components, two variants each: one performance hypothesis and one visual on
 | Component | Selected | Why |
 | --- | --- | --- |
 | ToolCallChip | A running call's label at full strength | All three judges preferred it; nothing measurably worse |
-| SessionListItem | The title across the row's full width, the status at the right of the line above | All three judges preferred it; the largest judged gain of the round |
+| SessionListItem | The title across the row's full width, the status at the right of the line above | All three judges preferred it; judged gain 0.44 |
 | VaultApprovalCard | Who set the terms said once ("Proposed by the agent"), not as five amber badges | All three judges preferred it |
 
-Transcript and Composer keep their champions.
+Transcript and Composer keep their champions. The composer then left the loop: it is being rebuilt in its own
+task, and its round-1 record below is kept for that work.
 
 ### How to read the tables
 
@@ -115,7 +116,7 @@ Round 1 accepted variants, so by the loop's stop rule it continues:
 
 Taste calls the loop could not settle, with what the judges said:
 
-- **Composer height.** T3 Code rests its empty composer at about three lines; the judges agreed Harbour's shorter
+- **Composer height** (for the composer rebuild). T3 Code rests its empty composer at about three lines; the judges agreed Harbour's shorter
   one is less faithful but preferred it 2 to 1 for density and the disabled and mobile states.
 - **Tool durations.** Inline durations won 3 to 0, yet all three judges scored the champion's right-aligned column
   higher on consistency, as it matches the session list's right-aligned times. Round 2 will test it against the

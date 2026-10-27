@@ -63,6 +63,7 @@
 						"measured": 0.30115738274348175,
 						"score": 0.30115738274348175,
 						"worse": [],
+						"missing": [],
 						"accepted": true
 					}
 				},
@@ -126,6 +127,7 @@
 						"measured": -0.03241846960182772,
 						"score": 0.4050815303981723,
 						"worse": [],
+						"missing": [],
 						"accepted": true
 					}
 				}
