@@ -3,7 +3,14 @@ import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { skillDigest } from "@harbour/skills";
 import { afterEach, describe, expect, it } from "vitest";
-import { directorySkillSource, gitSkillSource, type SalSkillSource, skillFrontmatter } from "../src/skill-sources.ts";
+import { rootPath } from "../src/git.ts";
+import {
+	directorySkillSource,
+	gitSkillSource,
+	layerSalSources,
+	type SalSkillSource,
+	skillFrontmatter,
+} from "../src/skill-sources.ts";
 import { type FixtureFile, tempRepo, writeFixture } from "./helpers.ts";
 
 const cleanups: (() => void)[] = [];
@@ -126,6 +133,48 @@ describe("gitSkillSource", () => {
 			expect.arrayContaining(["skills/own/dangling", "skills/own/outside", "skills/own/loop"]),
 		);
 	});
+
+	it("stops a loop reached through another link at once, and keeps independent links to one place", async () => {
+		const repo = tempRepo();
+		cleanups.push(() => repo.remove());
+		const commit = repo.commit({
+			"library/SKILL.md": skillMd("library", "The library"),
+			"library/x": { link: "." },
+			"library/y": { link: "." },
+			"library/up": { link: "../skills" },
+			"skills/a": { link: "../library" },
+			"skills/b": { link: "../library" },
+		});
+		const source = gitSkillSource({ id: "loops", repo: repo.dir, paths: ["skills"] });
+		const started = Date.now();
+		const skills = await source.fetch(commit);
+		expect(Date.now() - started).toBeLessThan(5_000);
+		// skills/a and skills/b are one file: loaded once, as Pi does.
+		expect(skills.map((skill) => [skill.name, skill.files.map((file) => file.path)])).toEqual([
+			["library", ["SKILL.md"]],
+		]);
+		const reported = source.last.problems.map((problem) => problem.path);
+		expect(reported).toEqual(expect.arrayContaining(["skills/a/x", "skills/a/y", "skills/a/up"]));
+		expect(reported.every((path) => path.split("/").length <= 3)).toBe(true);
+	});
+
+	it("reads a hidden root and spells roots as given", async () => {
+		expect([".", "./", "./x/", ".pi/skills", "./.pi/skills", "x//"].map(rootPath)).toEqual([
+			"",
+			"",
+			"x",
+			".pi/skills",
+			".pi/skills",
+			"x",
+		]);
+		const repo = tempRepo();
+		cleanups.push(() => repo.remove());
+		const commit = repo.commit({ ".pi/skills/hidden/SKILL.md": skillMd("hidden", "In a hidden root") });
+		for (const path of [".pi/skills", "./.pi/skills"]) {
+			const skills = await gitSkillSource({ id: "hidden", repo: repo.dir, paths: [path] }).fetch(commit);
+			expect(skills.map((skill) => skill.name)).toEqual(["hidden"]);
+		}
+	});
 });
 
 describe("agents mode", () => {
@@ -166,6 +215,83 @@ describe("directorySkillSource", () => {
 		expect(await skillDigest(skills[0]!.files)).toHaveLength(64);
 		writeFileSync(join(root, "docs", "SKILL.md"), skillMd("docs", "Changed"));
 		await expect(source.fetch(pin)).rejects.toThrow("not the pinned");
+	});
+
+	it("skips a link that loops on itself, as Pi does, and keeps the rest", async () => {
+		const root = tempDir("harbour-eloop-");
+		writeFixture(root, {
+			"good/SKILL.md": skillMd("good", "Good"),
+			self: { link: "self" },
+			ping: { link: "pong" },
+			pong: { link: "ping" },
+		});
+		const source = directorySkillSource({ id: "eloop", root });
+		expect((await source.fetch(source.pin())).map((skill) => skill.name)).toEqual(["good"]);
+		expect(source.last.problems.map((problem) => problem.path)).toEqual(["ping", "pong", "self"]);
+	});
+
+	it("pins which paths are one file, since that decides what Pi loads twice", async () => {
+		const root = tempDir("harbour-alias-");
+		const one = tempDir("harbour-alias-one-");
+		const two = tempDir("harbour-alias-two-");
+		const unnamed = "---\ndescription: Unnamed\n---\n";
+		writeFixture(one, { "SKILL.md": unnamed });
+		writeFixture(two, { "SKILL.md": unnamed });
+		writeFixture(root, { a: { link: one }, b: { link: one } });
+		const source = directorySkillSource({ id: "alias", root });
+		const pin = source.pin();
+		expect((await source.fetch(pin)).map((skill) => skill.name)).toEqual(["a"]);
+		// Same paths, same bytes, but now two files: a different pin, and the old one is refused.
+		writeFixture(root, { b: null });
+		writeFixture(root, { b: { link: two } });
+		expect(source.pin()).not.toBe(pin);
+		await expect(source.fetch(pin)).rejects.toThrow("not the pinned");
+		expect((await source.fetch(source.pin())).map((skill) => skill.name)).toEqual(["a", "b"]);
+	});
+});
+
+describe("layerSalSources", () => {
+	it("loads a file once across sources, as Pi's one loadSkills call does, and lets the next of a name in", async () => {
+		const shared = tempDir("harbour-layer-shared-");
+		writeFixture(shared, { "SKILL.md": "---\ndescription: Shared\n---\n" });
+		const first = tempDir("harbour-layer-a-");
+		const second = tempDir("harbour-layer-b-");
+		writeFixture(first, { a: { link: shared } });
+		writeFixture(second, {
+			b: { link: shared },
+			// Shadowed within the source by b's file until b is left out.
+			"z/SKILL.md": skillMd("b", "Second b"),
+		});
+		const a = directorySkillSource({ id: "a", root: first });
+		const b = directorySkillSource({ id: "b", root: second });
+		const layered = await layerSalSources([
+			{ source: a, ref: a.pin() },
+			{ source: b, ref: b.pin() },
+		]);
+		expect(layered[0]!.ref).toBe(a.pin());
+		expect(layered[1]!.ref).toBe(`${b.pin()}?skip=b%2FSKILL.md`);
+		expect((await a.fetch(layered[0]!.ref)).map((skill) => skill.name)).toEqual(["a"]);
+		expect((await b.fetch(layered[1]!.ref)).map((skill) => [skill.name, skill.description])).toEqual([
+			["b", "Second b"],
+		]);
+		// The ref alone decides: fetched without the skip, b's own copy is back.
+		expect((await b.fetch(b.pin())).map((skill) => skill.description)).toEqual(["Shared"]);
+	});
+
+	it("compares a Git source's files where a checkout of it has them", async () => {
+		const repo = tempRepo();
+		cleanups.push(() => repo.remove());
+		const commit = repo.commit({ "skills/one/SKILL.md": skillMd("one", "One") });
+		const git = gitSkillSource({ id: "git", repo: repo.dir, paths: ["skills"] });
+		const linked = tempDir("harbour-layer-git-");
+		writeFixture(linked, { one: { link: join(repo.dir, "skills", "one") } });
+		const dir = directorySkillSource({ id: "dir", root: linked });
+		const layered = await layerSalSources([
+			{ source: git, ref: commit },
+			{ source: dir, ref: dir.pin() },
+		]);
+		expect(layered[1]!.ref).toBe(`${dir.pin()}?skip=one%2FSKILL.md`);
+		expect(await dir.fetch(layered[1]!.ref)).toEqual([]);
 	});
 });
 
@@ -279,5 +405,41 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 		const rename = (skills: [string, string, string, boolean][]) =>
 			skills.map((skill) => (skill[2] === "root-note.md" ? (["<root>", ...skill.slice(1)] as typeof skill) : skill));
 		expect(rename(gitSkills)).toEqual(rename(expected));
+	});
+
+	it("loads a file reached through several paths once, as Pi's loadSkills over those paths does", async () => {
+		const shared = tempDir("harbour-pi-shared-");
+		writeFixture(shared, { "SKILL.md": "---\ndescription: Shared\n---\n" });
+		const first = tempDir("harbour-pi-a-");
+		const second = tempDir("harbour-pi-b-");
+		writeFixture(first, { a: { link: shared }, "own/SKILL.md": skillMd("own", "Own") });
+		writeFixture(second, {
+			b: { link: shared },
+			"z/SKILL.md": skillMd("b", "Second b"),
+			loop: { link: "loop" },
+		});
+		const pi = (await import(PI_SKILLS_JS)) as { loadSkills(options: object): { skills: PiSkill[] } };
+		const expected = pi
+			.loadSkills({ cwd: first, agentDir: first, skillPaths: [first, second], includeDefaults: false })
+			.skills.map((skill) => [skill.name, skill.description])
+			.sort();
+		const sources = [directorySkillSource({ id: "a", root: first }), directorySkillSource({ id: "b", root: second })];
+		const layered = await layerSalSources(sources.map((source) => ({ source, ref: source.pin() })));
+		const ours: string[][] = [];
+		const names = new Set<string>();
+		for (const { source, ref } of layered) {
+			for (const skill of await source.fetch(ref)) {
+				// syncSkillSources: the first of a name across sources wins.
+				if (names.has(skill.name)) continue;
+				names.add(skill.name);
+				ours.push([skill.name, skill.description]);
+			}
+		}
+		expect(expected).toEqual([
+			["a", "Shared"],
+			["b", "Second b"],
+			["own", "Own"],
+		]);
+		expect(ours.sort()).toEqual(expected);
 	});
 });

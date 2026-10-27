@@ -71,8 +71,16 @@ function readBlobs(repo: string, objects: readonly string[]): Uint8Array[] {
 
 const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 const under = (path: string, root: string) => root === "" || path === root || path.startsWith(`${root}/`);
-/** Paths deeper than this are a symlink loop, not a skill. */
-const MAX_DEPTH = 32;
+/** More files than this through symlinks is not a skill source; the rest are left out and reported. */
+const MAX_LINKED_FILES = 100_000;
+
+/** A root path as given (`.`, `./x`, `x/`, `.pi/skills`) as a repository path: `""` for the whole tree. */
+export function rootPath(path: string): string {
+	let out = path;
+	while (out.startsWith("./")) out = out.slice(2);
+	out = out.replace(/\/+$/, "");
+	return out === "." ? "" : out;
+}
 
 /**
  * The repository path a path names once every symlink on the way is followed, as a checkout would resolve it; undefined
@@ -109,7 +117,7 @@ export function readTree(
 	commit: string,
 	paths: readonly string[],
 ): { readonly files: GitFile[]; readonly problems: TreeProblem[] } {
-	const roots = paths.map((path) => path.replace(/^\.\/?/, "").replace(/\/+$/, ""));
+	const roots = paths.map(rootPath);
 	const inScope = (path: string) => roots.some((root) => under(path, root));
 	const problems: TreeProblem[] = [];
 	const scoped = listTree(repo, commit, roots.includes("") ? [] : roots);
@@ -134,20 +142,27 @@ export function readTree(
 	// Virtual path -> the regular file it reads.
 	const files = new Map<string, string>();
 	for (const path of regular.keys()) if (inScope(path)) files.set(path, path);
-	const queue = linkEntries.map((entry) => entry.path).filter(inScope);
+	// Each queued link carries the links followed to reach it, by their place in the tree. A target holding one of them
+	// would reach it again, endlessly: that is a loop, however the path to it was spelt.
+	const queue: { virtual: string; real: string; chain: readonly string[] }[] = linkEntries
+		.map((entry) => entry.path)
+		.filter(inScope)
+		.map((path) => ({ virtual: path, real: path, chain: [] }));
 	const regularPaths = [...regular.keys()];
 	const linkPaths = [...links.keys()];
+	let linkedFiles = 0;
 	while (queue.length > 0) {
-		const link = queue.shift()!;
-		const target = canonical(link, links);
+		const { virtual: link, real, chain } = queue.shift()!;
+		const target = canonical(real, links);
 		if (target === undefined) {
 			problems.push({ path: link, reason: "a symlink that leaves the repository or loops" });
 			continue;
 		}
-		if (target === "" || under(link, target)) {
+		const followed = [...chain, real];
+		if (followed.some((path) => under(path, target))) {
 			problems.push({
 				path: link,
-				reason: `a symlink to ${target === "" ? "the repository root" : target}, which holds it`,
+				reason: `a symlink to ${target === "" ? "the repository root" : target}, which leads back to it`,
 			});
 			continue;
 		}
@@ -161,18 +176,14 @@ export function readTree(
 			problems.push({ path: link, reason: `a symlink to ${target}, which is not in the commit` });
 			continue;
 		}
-		for (const path of inside) {
-			const virtual = `${link}${path.slice(target.length)}`;
-			if (virtual.split("/").length > MAX_DEPTH) {
-				problems.push({ path: link, reason: "a symlink that loops" });
-				break;
-			}
-			files.set(virtual, path);
+		linkedFiles += inside.length;
+		if (linkedFiles > MAX_LINKED_FILES) {
+			problems.push({ path: link, reason: `more than ${MAX_LINKED_FILES} files through symlinks` });
+			break;
 		}
+		for (const path of inside) files.set(`${link}${path.slice(target.length)}`, path);
 		for (const path of nested) {
-			const virtual = `${link}${path.slice(target.length)}`;
-			if (virtual.split("/").length > MAX_DEPTH) continue;
-			queue.push(virtual);
+			queue.push({ virtual: `${link}${path.slice(target.length)}`, real: path, chain: followed });
 		}
 	}
 	const ordered = [...files.entries()].map(([path, real]) => ({ path, real })).sort(byPath);

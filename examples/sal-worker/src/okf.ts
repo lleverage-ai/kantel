@@ -71,6 +71,13 @@ export interface OkfSnapshot {
 /** The text of a timestamp in the one form whose text order is its time order. */
 const CANONICAL_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
+/** In the form Sal writes and YAML dates give, and a real time: then its text and its time sort alike. */
+function canonicalTime(value: string): boolean {
+	if (!CANONICAL_TIME.test(value)) return false;
+	const at = Date.parse(value);
+	return Number.isFinite(at) && new Date(at).toISOString() === value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -107,6 +114,9 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 	const appliesTo = typeof sal.applies_to === "string" ? sal.applies_to : null;
 	const overrides = typeof sal.overrides === "string" ? sal.overrides : null;
 	const supersededBy = typeof sal.superseded_by === "string" ? sal.superseded_by : null;
+	if (appliesTo !== null && appliesTo.trim() === "") {
+		throw new Error("Harbour needs sal.applies_to to name a job, and this concept's is empty (Sal would read it)");
+	}
 	for (const [field, value] of [
 		["sal.overrides", appliesTo === null ? null : overrides],
 		["sal.superseded_by", supersededBy],
@@ -210,7 +220,7 @@ export function okfSnapshot(
 			const { concept, profile: inProfile } = okfConcept(id, file.text);
 			concepts.push(concept);
 			const updated = salExtension(concept)?.updated ?? null;
-			if (updated !== null && !CANONICAL_TIME.test(updated)) {
+			if (updated !== null && !canonicalTime(updated)) {
 				warnings.push({
 					path: file.path,
 					reason: `generated.at ${JSON.stringify(updated)} is not in the form 2026-10-12T09:35:38.357Z, so its place in the profile may differ from Sal's`,

@@ -1,8 +1,9 @@
 /**
  * Compares what a Harbour Sal worker and a local Sal worker were given for the same tasks: the output of
  * `harbour-sal.ts` against one `sal-local.ts` output per task. Prints a Markdown report and exits 1 on any difference
- * in the recalled concepts, the recall text, the skill set, a skill's SKILL.md or package, or the prompt's skill block
- * (locations aside: Harbour mounts skills at /skills).
+ * in the recalled concepts, the recall text, the skill set, a skill's SKILL.md or package, or the entries of the
+ * prompt's skill block (locations aside: Harbour mounts skills at /skills). The entries' order is reported but never
+ * fails the run: Pi lists them in file system order, which no pinned tree records.
  *
  *   node examples/sal-worker/scripts/parity.ts --harbour harbour.json --sal TASK-1=sal-1.json --sal TASK-2=sal-2.json
  */
@@ -117,5 +118,7 @@ for (const ours of harbour.tasks) {
 		`| ${ours.task} | ${ref} | ${recalled} (${profile} + ${matched}) | ${text} (${theirs.recall.bytes} bytes) | ${skipped} (${theirs.recall.skipped.length}) | ${skillSet} (${theirs.skills.length}) | ${content} | ${prompt} (${theirsPrompt.entries.length}) | ${order} |`,
 	);
 }
-process.stdout.write(`${[...lines, "", ...(details.length === 0 ? ["No differences."] : details)].join("\n")}\n`);
+process.stdout.write(
+	`${[...lines, "", ...(details.length === 0 ? ["No differences in what is compared; the prompt order is reported above."] : details)].join("\n")}\n`,
+);
 process.exit(failed ? 1 : 0);

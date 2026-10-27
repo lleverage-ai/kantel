@@ -22,7 +22,7 @@ import { renderSkillListings, sessionSkillListings, syncSkillSources } from "@ha
 import { readTree, resolveCommit } from "./git.ts";
 import { type OkfSnapshot, okfSnapshot, salExtension } from "./okf.ts";
 import { salRecallRenderer } from "./recall-renderer.ts";
-import { type SalSkillSource, salSkillExtensions } from "./skill-sources.ts";
+import { layerSalSources, type SalSkillSource, salSkillExtensions } from "./skill-sources.ts";
 
 /** The skills Sal leaves out of a worker's set (tvdavies/sal `src/worker/sandbox.ts`
  * `WORKER_EXCLUDED_SKILLS`): they act as the owner or need tools a worker lacks. */
@@ -109,7 +109,8 @@ export async function prepareSalWorker(input: SalWorkerInput): Promise<SalWorker
 	const space = await memory.createSpace(ctx, { owner, name: "Sal memory" });
 	const imported = await memory.importSnapshot(ctx, space.id, bundle.snapshot);
 
-	const sources = input.skills.map(({ source, ref }) => ({ source, ref: ref ?? source.pin() }));
+	// One skill file loads once across the sources, as in Pi's one loadSkills call over all of them.
+	const sources = await layerSalSources(input.skills.map(({ source, ref }) => ({ source, ref: ref ?? source.pin() })));
 	const bySource = new Map(input.skills.map(({ source }) => [source.id, source]));
 	const published = await syncSkillSources(skills, ctx, {
 		sources,

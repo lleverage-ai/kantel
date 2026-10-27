@@ -87,7 +87,13 @@ function treeDigest(file: string): { digest: string; files: number } {
 		for (const entry of readdirSync(dir).sort()) {
 			if (entry.startsWith(".") || entry === "node_modules") continue;
 			const path = join(dir, entry);
-			const stat = statSync(path, { throwIfNoEntry: false });
+			let stat: ReturnType<typeof statSync>;
+			try {
+				stat = statSync(path, { throwIfNoEntry: false });
+			} catch {
+				// A link Pi cannot follow (a loop): skipped, as the Harbour side skips it.
+				continue;
+			}
 			if (stat?.isDirectory()) walk(path, inside);
 			else if (path === file) {
 				files.push({ path: "SKILL.md", content: lenient.decode(readFileSync(path)) });

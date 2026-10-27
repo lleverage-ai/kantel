@@ -6,8 +6,9 @@ given what a local Sal worker is given for the same task (issue #12).
 - `src/okf.ts`: Sal's memory bundle (OKF v0.2 concept files in tvdavies/sal-memory) as a `MemorySnapshot`. It reads
   status, scope, job exceptions, the `profile` tag and `learned_from` the way Sal's `summarise` does, and keeps what
   Harbour has no field for in the `sal` extension. A concept Sal reads but a snapshot cannot hold (an empty title or
-  body, an `overrides` that is not a concept ID) is refused on its own, and the rest of the bundle is still imported.
-  A `generated.at` not in the form YAML gives a date gets a warning, because Sal orders the profile by that text.
+  body, an empty `applies_to`, an `overrides` that is not a concept ID) is refused on its own, and the rest of the
+  bundle is still imported. A `generated.at` that is not a real time in the form YAML gives a date gets a warning,
+  because Sal orders the profile by that text.
 - `src/skill-sources.ts`: skill sources pinned per ref, either a Git repository at a commit (Tom's agent-toolkit, Sal's
   own skills) or a directory pinned by a digest of its contents (skills installed without Git). Discovery follows Pi's
   loader:
@@ -15,10 +16,14 @@ given what a local Sal worker is given for the same task (issue #12).
   - plain `.md` files count at the root (`pi` mode) or below it (`agents` mode, for `~/.agents/skills`)
   - ignore files apply
   - the first skill of a name wins
-  - symlinks are followed, within the commit for Git sources
+  - symlinks are followed, within the commit for Git sources. A link that dangles, leaves the commit or leads back to a
+    link already followed is left out and reported; so is an entry that cannot be read (a link to itself).
+  - a file reached through several paths loads once, across sources too. `layerSalSources` adds the skill files an
+    earlier source already loaded to a later source's ref (`<pin>?skip=...`), so a ref still gives one set of skills.
 
-  A test checks this against Pi's own `loadSkills`. Binary files are left out (a `SkillFile` is text) and recorded in
-  the revision's `sal.binaryLeftOut`.
+  A directory's digest covers which paths are one file, since that decides what loads. Tests check discovery against
+  Pi's own `loadSkills`, for one root and for several sharing files. Binary files are left out (a `SkillFile` is text)
+  and recorded in the revision's `sal.binaryLeftOut`.
 - `src/recall-renderer.ts`: a `RecallRenderer` that renders `<memory_recall>` exactly as a Sal worker receives it.
   Budgets count rendered bytes, so the same renderer gives the same selection.
 - `src/worker.ts`: `prepareSalWorker` imports the bundle and publishes the skills, each at its pinned ref, with Sal's

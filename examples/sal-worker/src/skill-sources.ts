@@ -10,7 +10,8 @@
  * - Hidden entries and `node_modules` are not searched, and `.gitignore`, `.ignore` and `.fdignore` rules apply.
  * - Frontmatter is YAML. A skill is named by its `name`, or else its directory; one without a description, or whose YAML
  *   does not parse, is not loaded and is reported.
- * - Within a source, the first skill of a name wins and a file reached twice through symlinks is loaded once.
+ * - The first skill of a name wins, and a file reached twice through symlinks is loaded once, across sources as Pi's
+ *   one `loadSkills` call does across its paths (see `layerSalSources`).
  *
  * A package is every file under the skill's directory but hidden ones and `node_modules`; a skill from a plain `.md`
  * file is that file as `SKILL.md`. Files that are not UTF-8 text are left out and recorded (`SkillFile` is text).
@@ -21,7 +22,7 @@ import { basename, join, relative, sep } from "node:path";
 import type { JsonValue, SkillFile, SkillSource } from "@harbour/contracts";
 import ignore, { type Ignore } from "ignore";
 import { parse } from "yaml";
-import { type GitFile, readTree, resolveCommit } from "./git.ts";
+import { type GitFile, readTree, resolveCommit, rootPath } from "./git.ts";
 
 /** Package files must be UTF-8 text; anything else is left out. */
 const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -41,6 +42,8 @@ export interface FoundSkill {
 	readonly disableModelInvocation: boolean;
 	/** Files left out because they are not UTF-8 text. */
 	readonly binary: readonly string[];
+	/** The skill file once symlinks are followed: what Pi compares to load a file once. */
+	readonly real: string;
 }
 
 export interface SkillProblem {
@@ -166,6 +169,8 @@ function hiddenOrDependency(path: string): boolean {
 export function findSkills(
 	roots: readonly SkillRoot[],
 	mode: DiscoveryMode,
+	/** Skill files (as reported, root `at` included) an earlier source already loaded. */
+	skip: ReadonlySet<string> = new Set(),
 ): { skills: FoundSkill[]; problems: SkillProblem[] } {
 	const skills: FoundSkill[] = [];
 	const problems: SkillProblem[] = [];
@@ -196,6 +201,11 @@ export function findSkills(
 			}
 			const real = file.real ?? at(path);
 			if (seenReal.has(real)) continue;
+			if (skip.has(at(path))) {
+				problems.push({ path: at(path), reason: "the same file as an earlier source's skill, so Pi loads it once" });
+				seenReal.add(real);
+				continue;
+			}
 			const name =
 				typeof frontmatter.name === "string" && frontmatter.name !== ""
 					? frontmatter.name
@@ -234,6 +244,7 @@ export function findSkills(
 				file: at(path),
 				disableModelInvocation: frontmatter["disable-model-invocation"] === true,
 				binary,
+				real,
 			});
 		}
 	}
@@ -246,6 +257,34 @@ export interface SalSkillSource extends SkillSource {
 	pin(): string;
 	/** The skills of the last fetch, with where they are and what was left out. */
 	readonly last: { skills: readonly FoundSkill[]; problems: readonly SkillProblem[] };
+	/** Where a found skill's file is on this host once symlinks are followed, to compare across sources. */
+	identity(skill: FoundSkill): string;
+}
+
+const SKIP = "?skip=";
+
+/**
+ * A ref is the source's own pin, then optionally `?skip=` and the skill files to leave out because an earlier source
+ * loaded the same files. The skips are in the ref so that one ref always gives one set of skills.
+ */
+export function skipRef(ref: string, skip: readonly string[]): string {
+	const base = splitRef(ref).base;
+	return skip.length === 0 ? base : `${base}${SKIP}${sorted(skip).map(encodeURIComponent).join(",")}`;
+}
+
+function splitRef(ref: string): { base: string; skip: Set<string> } {
+	const at = ref.indexOf(SKIP);
+	if (at === -1) return { base: ref, skip: new Set() };
+	return {
+		base: ref.slice(0, at),
+		skip: new Set(
+			ref
+				.slice(at + SKIP.length)
+				.split(",")
+				.filter((part) => part !== "")
+				.map(decodeURIComponent),
+		),
+	};
 }
 
 function sourceOf(
@@ -253,20 +292,48 @@ function sourceOf(
 	mode: DiscoveryMode,
 	pin: () => string,
 	load: (ref: string) => { roots: SkillRoot[]; problems: SkillProblem[] },
+	identity: (skill: FoundSkill) => string,
 ): SalSkillSource {
 	const last: { skills: FoundSkill[]; problems: SkillProblem[] } = { skills: [], problems: [] };
 	return {
 		id,
 		pin,
 		last,
+		identity,
 		async fetch(ref) {
-			const loaded = load(ref);
-			const found = findSkills(loaded.roots, mode);
+			const { base, skip } = splitRef(ref);
+			const loaded = load(base);
+			const found = findSkills(loaded.roots, mode, skip);
 			last.skills = found.skills;
 			last.problems = [...loaded.problems, ...found.problems];
 			return found.skills.map(({ name, description, files }) => ({ name, description, files }));
 		},
 	};
+}
+
+/**
+ * The refs to publish sources at, in Pi's order, so that a skill file an earlier source loaded is not loaded again by a
+ * later one, as Pi's one `loadSkills` call over all the paths does. Each later source's ref gains the skill files it
+ * leaves out (`skipRef`).
+ */
+export async function layerSalSources(
+	sources: readonly { readonly source: SalSkillSource; readonly ref: string }[],
+): Promise<{ source: SalSkillSource; ref: string }[]> {
+	const loaded = new Set<string>();
+	const out: { source: SalSkillSource; ref: string }[] = [];
+	for (const { source, ref } of sources) {
+		let current = skipRef(ref, []);
+		// Leaving a skill out can let a later one of the same name in, so look again until nothing changes.
+		for (;;) {
+			await source.fetch(current);
+			const again = source.last.skills.filter((skill) => loaded.has(source.identity(skill))).map((skill) => skill.file);
+			if (again.length === 0) break;
+			current = skipRef(current, [...splitRef(current).skip, ...again]);
+		}
+		for (const skill of source.last.skills) loaded.add(source.identity(skill));
+		out.push({ source, ref: current });
+	}
+	return out;
 }
 
 /**
@@ -280,13 +347,14 @@ export function gitSkillSource(input: {
 	readonly ref?: string;
 	readonly mode?: DiscoveryMode;
 }): SalSkillSource {
+	const checkout = realpathSync(input.repo);
 	return sourceOf(
 		input.id,
 		input.mode ?? "pi",
 		() => resolveCommit(input.repo, input.ref ?? "HEAD"),
 		(ref) => {
 			if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error(`${input.id}: pin a full commit, not ${ref}`);
-			const prefixes = input.paths.map((path) => path.replace(/^\.\/?/, "").replace(/\/+$/, ""));
+			const prefixes = input.paths.map(rootPath);
 			const tree = readTree(input.repo, ref, prefixes);
 			const roots = prefixes.map((prefix): SkillRoot => {
 				const files = tree.files
@@ -297,6 +365,8 @@ export function gitSkillSource(input: {
 			});
 			return { roots, problems: tree.problems };
 		},
+		// As in a checkout of the commit: where Pi would find the file.
+		(skill) => join(checkout, ...skill.real.split("/")),
 	);
 }
 
@@ -304,8 +374,10 @@ export function gitSkillSource(input: {
  * Every regular file under `root`, following symlinks as Pi does, with the ignore files Pi reads but no other hidden
  * entry and no `node_modules`. A directory already open further up (a symlink loop) is not entered again.
  */
-function readDirectory(root: string): GitFile[] {
+function readDirectory(root: string): { files: GitFile[]; problems: SkillProblem[] } {
 	const files: GitFile[] = [];
+	const problems: SkillProblem[] = [];
+	const at = (path: string) => relative(root, path).split(sep).join("/");
 	const walk = (dir: string, open: ReadonlySet<string>) => {
 		const real = realpathSync(dir);
 		if (open.has(real)) return;
@@ -313,30 +385,47 @@ function readDirectory(root: string): GitFile[] {
 		for (const entry of readdirSync(dir).sort()) {
 			if (entry === "node_modules" || (entry.startsWith(".") && !IGNORE_FILES.includes(entry))) continue;
 			const path = join(dir, entry);
-			const stat = statSync(path, { throwIfNoEntry: false });
+			// As Pi does, an entry that cannot be followed (a link loop, say) is skipped, not fatal.
+			let stat: ReturnType<typeof statSync>;
+			try {
+				stat = statSync(path, { throwIfNoEntry: false });
+			} catch (error) {
+				problems.push({ path: at(path), reason: (error as NodeJS.ErrnoException).code ?? String(error) });
+				continue;
+			}
 			if (stat === undefined) continue;
 			if (stat.isDirectory()) walk(path, inside);
 			else if (stat.isFile()) {
-				files.push({
-					path: relative(root, path).split(sep).join("/"),
-					bytes: new Uint8Array(readFileSync(path)),
-					real: realpathSync(path),
-				});
+				files.push({ path: at(path), bytes: new Uint8Array(readFileSync(path)), real: realpathSync(path) });
 			}
 		}
 	};
 	walk(root, new Set());
-	return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+	return { files: files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), problems };
 }
 
-/** SHA-256 over the files sorted by path, each as `path\0bytes\0`: a directory's ref. */
+/**
+ * SHA-256 over the files sorted by path, each as `path\0bytes\0`, then `alias\0` and the first path of each file
+ * reached by more than one: a directory's ref. Which paths are one file decides what Pi loads twice, so it is pinned.
+ */
 export function directoryDigest(files: readonly GitFile[]): string {
 	const hash = createHash("sha256");
+	const first = new Map<string, string>();
 	for (const file of files) {
 		hash.update(file.path);
 		hash.update("\0");
 		hash.update(file.bytes);
 		hash.update("\0");
+		const real = file.real ?? file.path;
+		const seen = first.get(real);
+		if (seen === undefined) first.set(real, file.path);
+		else {
+			hash.update("alias\0");
+			hash.update(file.path);
+			hash.update("\0");
+			hash.update(seen);
+			hash.update("\0");
+		}
 	}
 	return `sha256:${hash.digest("hex")}`;
 }
@@ -353,13 +442,14 @@ export function directorySkillSource(input: {
 	return sourceOf(
 		input.id,
 		input.mode ?? "pi",
-		() => directoryDigest(readDirectory(input.root)),
+		() => directoryDigest(readDirectory(input.root).files),
 		(ref) => {
-			const files = readDirectory(input.root);
+			const { files, problems } = readDirectory(input.root);
 			const digest = directoryDigest(files);
 			if (digest !== ref) throw new Error(`${input.id}: ${input.root} is now ${digest}, not the pinned ${ref}`);
-			return { roots: [{ files, name: basename(input.root) }], problems: [] };
+			return { roots: [{ files, name: basename(input.root) }], problems };
 		},
+		(skill) => skill.real,
 	);
 }
 

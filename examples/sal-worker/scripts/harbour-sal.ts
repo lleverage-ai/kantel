@@ -7,10 +7,11 @@
  *
  * The config names the memory clone and commit, the skill sources in Pi's order and the tasks:
  *   { "memory": { "repo": "...", "ref": "<commit>" },
- *     "skills": [ { "id": "pi-agent-skills", "dir": "~/.pi/agent/skills" },
+ *     "skills": [ { "id": "pi-agent-skills", "dir": "/home/me/.pi/agent/skills" },
  *                 { "id": "agent-toolkit", "git": "...", "paths": ["skills"], "ref": "<commit>", "mode": "agents" } ],
- * `mode` is Pi's search mode for the root (default `pi`): `agents` for what Pi finds under `~/.agents/skills`.
  *     "tasks": [ { "task": "TASK-1", "brief": "<file>" } ], "now": "<ISO>" }
+ * Paths are absolute or relative to the config file (`~` is not expanded). `mode` is Pi's search mode for the root
+ * (default `pi`): `agents` for what Pi finds under `~/.agents/skills`.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
