@@ -11,6 +11,7 @@
 // Pin @earendil-works/pi-durable exactly: a Pi upgrade can change its SQL, and
 // the suite is what tells us whether the translation still holds.
 
+import { createHash } from "node:crypto";
 import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
@@ -199,6 +200,6 @@ export async function openPostgresStorage(options: PostgresDatabaseOptions): Pro
 
 /** A stable, valid schema name for a session ID. */
 export function piSchemaFor(sessionId: string): string {
-	const hash = new Bun.CryptoHasher("sha256").update(sessionId).digest("hex").slice(0, 24);
+	const hash = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
 	return `pi_${hash}`;
 }
