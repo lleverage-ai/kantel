@@ -8,6 +8,7 @@ on:
       - "images/**"
       - "deploy/compose/**"
       - "spike/**"
+      - "spikes/scenario/**"
       - "packages/contracts/**"
       - "packages/sandbox/**"
       - "packages/workspace/**"
