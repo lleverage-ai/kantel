@@ -119,6 +119,36 @@ importers:
         specifier: 1.20261027.1
         version: 1.20261027.1
 
+  packages/audit:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+
+  packages/browser:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+
+  packages/codemode:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+
   packages/contracts:
     dependencies:
       "@harbour/protocol":
@@ -126,6 +156,16 @@ importers:
         version: link:../protocol
 
   packages/identity:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+
+  packages/memory:
     dependencies:
       "@harbour/contracts":
         specifier: workspace:*
@@ -167,6 +207,26 @@ importers:
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../workspace
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+
+  packages/schedules:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+
+  packages/skills:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       "@harbour/testing":
         specifier: workspace:*
