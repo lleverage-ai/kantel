@@ -32,8 +32,11 @@ const cssRules: { rule: string; test: (line: string) => boolean }[] = [
 		test: (line) => !/^\s*@media/.test(line) && /(?<![\w-])\d*\.?\d+(px|rem)\b/.test(line),
 	},
 	{
+		// Only where a duration can be: animation and transition declarations, not selectors or keyframe names.
 		rule: "raw duration: use a --hb-duration token",
-		test: (line) => !/^\s*@media/.test(line) && /(?<![\w.-])\d*\.?\d+m?s\b/.test(line),
+		test: (line) =>
+			/^\s*(animation|transition)[\w-]*\s*:/.test(line) &&
+			/(?<![\w.-])\d*\.?\d+m?s\b/.test(line.slice(line.indexOf(":") + 1)),
 	},
 	{
 		rule: "font-size must be a --hb-text token",
@@ -65,17 +68,19 @@ const tsxRules: { rule: string; test: (line: string) => boolean }[] = [
 	},
 	{
 		// React reads a bare number on these properties as px. Zero and unitless line heights are fine, and so is a
-		// Ladle story's `meta` (its viewport width, not a style).
+		// Ladle story's `meta` (its viewport width, not a style). Applied to .tsx only (see lintSource), where styles
+		// live, so plain data such as `{ left: 1, top: 2 }` in a .ts module is left alone.
 		rule: "raw numeric size in a style: use a --hb- size token",
 		test: (line) =>
 			!/\.meta\s*=/.test(line) &&
-			/\b(width|height|minWidth|maxWidth|minHeight|maxHeight|fontSize|padding\w*|margin\w*|gap|rowGap|columnGap|top|left|right|bottom|inset\w*|borderRadius|borderWidth|outlineWidth|outlineOffset)\s*:\s*-?(\d*\.\d*[1-9]|[1-9]\d*)\d*\s*[,}]/.test(
+			/\b(width|height|minWidth|maxWidth|minHeight|maxHeight|fontSize|padding\w*|margin\w*|gap|rowGap|columnGap|top|left|right|bottom|inset\w*|borderRadius|borderWidth|outlineWidth|outlineOffset)\s*:\s*-?([1-9]\d*(\.\d+)?|0?\.\d*[1-9]\d*)\s*[,}]/.test(
 				stripComment(line),
 			),
 	},
 	{
 		rule: "raw duration in TSX: use a --hb-duration token",
-		test: (line) => /\b(animation|transition)\w*\s*:\s*["'`][^"'`]*\d(ms|s)\b/.test(stripComment(line)),
+		test: (line) =>
+			/\b(animation|transition)(Duration|Delay)?\s*:\s*["'`][^"'`]*(?<![\w.-])\d*\.?\d+m?s\b/.test(stripComment(line)),
 	},
 	{ rule: "copy: no arrows or middle dots in rendered text", test: (line) => copyChars.test(stripComment(line)) },
 ];
@@ -99,7 +104,13 @@ function files(root: string, dir: string, out: string[] = []): string[] {
 /** Lints one file's text. `path` is relative to the package root. */
 export function lintSource(path: string, text: string): Finding[] {
 	if (path === TOKENS_FILE || path.endsWith(".test.ts") || path.endsWith(".d.ts")) return [];
-	const rules = path.endsWith(".css") ? cssRules : path.endsWith(".tsx") || path.endsWith(".ts") ? tsxRules : [];
+	const rules = path.endsWith(".css")
+		? cssRules
+		: path.endsWith(".tsx")
+			? tsxRules
+			: path.endsWith(".ts")
+				? tsxRules.filter((entry) => !entry.rule.startsWith("raw numeric size"))
+				: [];
 	const findings: Finding[] = [];
 	let inBlockComment = false;
 	text.split("\n").forEach((raw, index) => {

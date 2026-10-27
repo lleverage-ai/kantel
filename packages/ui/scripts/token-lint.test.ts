@@ -27,6 +27,8 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/x.css", "  transition: opacity 120ms;")).toHaveLength(1);
 		expect(lintSource("src/x.css", "  transition: opacity var(--hb-duration-fast) var(--hb-ease);")).toEqual([]);
 		expect(lintSource("src/x.css", ".hb-icons { display: flex; }")).toEqual([]);
+		expect(lintSource("src/x.css", '[data-label="2s"] { display: flex; }')).toEqual([]);
+		expect(lintSource("src/x.css", "@keyframes hb-spin-2s {")).toEqual([]);
 	});
 
 	it("requires token font sizes and radii", () => {
@@ -50,6 +52,10 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/x.tsx", "<div style={{ marginTop: 0.5, gap: 4 }} />")).toHaveLength(1);
 		expect(lintSource("src/x.tsx", "<div style={{ margin: 0, lineHeight: 1.4, flex: 1 }} />")).toEqual([]);
 		expect(lintSource("src/x.tsx", '<div style={{ transition: "opacity 200ms" }} />')).toHaveLength(1);
+		expect(lintSource("src/x.tsx", "<div style={{ padding: 12.0 }} />")).toHaveLength(1);
+		expect(lintSource("src/x.tsx", "<div style={{ opacity: 0.5, flex: 1 }} />")).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div style={{ animationName: "hb-spin-2s" }} />')).toEqual([]);
+		expect(lintSource("src/x.ts", "const point = { left: 1, top: 2 };")).toEqual([]);
 		expect(lintSource("src/x.tsx", "// a comment about 12px and → arrows")).toEqual([]);
 	});
 });
