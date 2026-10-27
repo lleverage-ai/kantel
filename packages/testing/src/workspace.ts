@@ -12,9 +12,11 @@ import type {
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
@@ -37,6 +39,10 @@ export const WORKSPACE_FIXTURE = {
 	organisationId: "org-harbour",
 	otherOrganisationId: "org-elsewhere",
 	projectId: "proj-harbour",
+	otherProjectId: "proj-elsewhere",
+	/** The agent session the cases use, in `projectId`. */
+	sessionId: "sess-1",
+	agentId: "agent-1",
 } as const;
 
 const ctx: CallContext = contextFor(
@@ -45,6 +51,37 @@ const ctx: CallContext = contextFor(
 	WORKSPACE_FIXTURE.projectId,
 );
 const otherCtx: CallContext = contextFor(actors.human("user-mallory"), WORKSPACE_FIXTURE.otherOrganisationId);
+/** An operator in the same organisation, on another project only. */
+const outsiderCtx: CallContext = contextFor(
+	actors.human("user-oscar"),
+	WORKSPACE_FIXTURE.organisationId,
+	WORKSPACE_FIXTURE.otherProjectId,
+);
+/** A viewer on the project. */
+const viewerCtx: CallContext = contextFor(
+	actors.human("user-victor"),
+	WORKSPACE_FIXTURE.organisationId,
+	WORKSPACE_FIXTURE.projectId,
+);
+const agentCtx: CallContext = contextFor(
+	actors.agent(WORKSPACE_FIXTURE.agentId, WORKSPACE_FIXTURE.sessionId),
+	WORKSPACE_FIXTURE.organisationId,
+);
+/** An agent whose session belongs to another project. */
+const strayAgentCtx: CallContext = contextFor(
+	actors.agent("agent-2", "sess-elsewhere"),
+	WORKSPACE_FIXTURE.organisationId,
+);
+/** An agent in another session of the project: it may act on the project, but not on `sessionId`'s records. */
+const siblingAgentCtx: CallContext = contextFor(
+	actors.agent("agent-4", "sess-sibling"),
+	WORKSPACE_FIXTURE.organisationId,
+);
+/** An agent in the project whose session the case closes. */
+const closingAgentCtx: CallContext = contextFor(
+	actors.agent("agent-3", "sess-closing"),
+	WORKSPACE_FIXTURE.organisationId,
+);
 const owner: OwnerRef = {
 	kind: "project",
 	organisationId: WORKSPACE_FIXTURE.organisationId,
@@ -53,6 +90,23 @@ const owner: OwnerRef = {
 
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array): string => decoder.decode(bytes);
+
+/** Records the roles and agent sessions the cases use, whether or not the project-access cases run. */
+function seedTenancy(deps: ConformanceDeps): void {
+	const { organisationId, projectId, otherProjectId } = WORKSPACE_FIXTURE;
+	deps.tenancy.bind(ctx.actor, organisationId, "operator", projectId);
+	deps.tenancy.bind(outsiderCtx.actor, organisationId, "operator", otherProjectId);
+	deps.tenancy.bind(viewerCtx.actor, organisationId, "viewer", projectId);
+	deps.tenancy.session({
+		id: WORKSPACE_FIXTURE.sessionId,
+		organisationId,
+		projectId,
+		agentId: WORKSPACE_FIXTURE.agentId,
+	});
+	deps.tenancy.session({ id: "sess-elsewhere", organisationId, projectId: otherProjectId, agentId: "agent-2" });
+	deps.tenancy.session({ id: "sess-closing", organisationId, projectId, agentId: "agent-3" });
+	deps.tenancy.session({ id: "sess-sibling", organisationId, projectId, agentId: "agent-4" });
+}
 
 /** Writes project files through the source's own tool, as a tool call does. */
 export async function writeProjectFiles(
@@ -68,10 +122,12 @@ export async function writeProjectFiles(
 export function createWorkspaceConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: WorkspaceConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const a = options.assertions;
 	const withSubject = (run: (subject: WorkspaceSubject, deps: ConformanceDeps) => Promise<void>) => async () => {
 		const deps = createDeps();
+		seedTenancy(deps);
 		await options.provider(deps, (subject) => run(subject, deps));
 	};
 	const project = WORKSPACE_FIXTURE.projectId;
@@ -88,13 +144,13 @@ export function createWorkspaceConformance(options: {
 		return { record, pinned };
 	}
 
-	return [
+	const cases: ConformanceCase[] = [
 		{
 			name: "creates a workspace at version 0 with no files",
 			run: withSubject(async ({ workspaces }) => {
-				const record = await workspaces.create(ctx, { owner, sessionId: "sess-1" });
+				const record = await workspaces.create(ctx, { owner, sessionId: WORKSPACE_FIXTURE.sessionId });
 				a.strictEqual(record.head, 0);
-				a.partialDeepEqual(record, { owner, sessionId: "sess-1", mounts: [] });
+				a.partialDeepEqual(record, { owner, sessionId: WORKSPACE_FIXTURE.sessionId, mounts: [] });
 				a.deepEqual(await workspaces.get(ctx, record.id), record);
 				a.deepEqual((await workspaces.list(ctx, record.id)).items, []);
 			}),
@@ -270,7 +326,7 @@ export function createWorkspaceConformance(options: {
 			name: "returns history newest first with the committing actor",
 			run: withSubject(async ({ workspaces }) => {
 				const record = await workspaces.create(ctx, { owner });
-				const bot = contextFor(actors.agent("agent-1", "sess-1"), WORKSPACE_FIXTURE.organisationId);
+				const bot = agentCtx;
 				await workspaces.commit(ctx, record.id, { baseVersion: 0, changes: [{ op: "put", path: "a", content: "1" }] });
 				await workspaces.commit(bot, record.id, {
 					baseVersion: 1,
@@ -413,7 +469,7 @@ export function createWorkspaceConformance(options: {
 				await workspaces.commit(ctx, record.id, {
 					baseVersion: 0,
 					changes: [{ op: "put", path: "a", content: "1" }],
-					writer: { sessionId: "sess-1", leaseId: "lease-1" },
+					writer: { sessionId: WORKSPACE_FIXTURE.sessionId, leaseId: "lease-1" },
 				});
 				const committed = deps.audit.ofType("workspace.committed");
 				a.strictEqual(committed.length, 1);
@@ -421,7 +477,7 @@ export function createWorkspaceConformance(options: {
 					source: "workspace",
 					actor: ctx.actor,
 					organisationId: WORKSPACE_FIXTURE.organisationId,
-					sessionId: "sess-1",
+					sessionId: WORKSPACE_FIXTURE.sessionId,
 					subject: { kind: "workspace", id: record.id },
 				});
 			}),
@@ -453,16 +509,256 @@ export function createWorkspaceConformance(options: {
 			}),
 		},
 	];
+	if (options.projectAccess !== true) return cases;
+
+	/** What the denial cases check stayed the same: the head, the mounts and the project files' latest version. */
+	async function snapshot(subject: WorkspaceSubject, id: string) {
+		const record = await subject.workspaces.get(ctx, id);
+		return {
+			head: record.head,
+			mounts: record.mounts,
+			files: await subject.projectFiles.latestVersion(ctx, project),
+		};
+	}
+	const projectMount = (subject: WorkspaceSubject, ref: string = project) => ({
+		path: "/project",
+		source: subject.projectFiles.kind,
+		ref,
+	});
+	const change = [{ op: "put", path: "a", content: "x" }] as const;
+
+	cases.push(
+		{
+			name: "project access: refuses an operator outside the project on every call, and changes nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces, projectFiles } = subject;
+				const { record } = await withProjectMount(subject);
+				const before = await snapshot(subject, record.id);
+				const denied = (call: Promise<unknown>, operation: string) => assertAccessDenied(a, deps, call, { operation });
+				await denied(workspaces.create(outsiderCtx, { owner }), "workspace.create");
+				await denied(
+					workspaces.create(outsiderCtx, {
+						owner: { kind: "organisation", organisationId: WORKSPACE_FIXTURE.organisationId },
+						mounts: [projectMount(subject)],
+					}),
+					"workspace.mount",
+				);
+				await denied(workspaces.get(outsiderCtx, record.id), "workspace.get");
+				await denied(workspaces.list(outsiderCtx, record.id), "workspace.list");
+				await denied(workspaces.stat(outsiderCtx, record.id, "/project/README.md"), "workspace.stat");
+				await denied(workspaces.read(outsiderCtx, record.id, "/project/README.md"), "workspace.read");
+				await denied(
+					workspaces.commit(outsiderCtx, record.id, { baseVersion: record.head, changes: change }),
+					"workspace.commit",
+				);
+				await denied(workspaces.history(outsiderCtx, record.id), "workspace.history");
+				await denied(workspaces.export(outsiderCtx, record.id, [""]), "workspace.export");
+				await denied(workspaces.remount(outsiderCtx, record.id, projectMount(subject)), "workspace.remount");
+				await denied(
+					writeProjectFiles(projectFiles, outsiderCtx, project, [{ op: "put", path: "README.md", content: "x" }]),
+					"workspace.files.write",
+				);
+				a.deepEqual(await snapshot(subject, record.id), before);
+				a.strictEqual(deps.audit.ofType("workspace.committed").length, 0);
+			}),
+		},
+		{
+			name: "project access: refuses a viewer a change but lets it read",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces, projectFiles } = subject;
+				const { record } = await withProjectMount(subject);
+				const before = await snapshot(subject, record.id);
+				a.strictEqual(
+					text((await workspaces.read(viewerCtx, record.id, "/project/README.md")).content),
+					"project readme v1",
+				);
+				a.strictEqual((await workspaces.history(viewerCtx, record.id)).items[0]?.version, record.head);
+				await assertAccessDenied(
+					a,
+					deps,
+					workspaces.commit(viewerCtx, record.id, { baseVersion: record.head, changes: change }),
+					{ operation: "workspace.commit" },
+				);
+				await assertAccessDenied(a, deps, workspaces.create(viewerCtx, { owner }), { operation: "workspace.create" });
+				await assertAccessDenied(a, deps, workspaces.remount(viewerCtx, record.id, projectMount(subject)), {
+					operation: "workspace.remount",
+				});
+				await assertAccessDenied(
+					a,
+					deps,
+					writeProjectFiles(projectFiles, viewerCtx, project, [{ op: "put", path: "README.md", content: "x" }]),
+					{ operation: "workspace.files.write" },
+				);
+				a.deepEqual(await snapshot(subject, record.id), before);
+			}),
+		},
+		{
+			name: "project access: refuses mounting another project's files, and changes nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const { record } = await withProjectMount(subject);
+				const before = await snapshot(subject, record.id);
+				const elsewhere = WORKSPACE_FIXTURE.otherProjectId;
+				await assertAccessDenied(
+					a,
+					deps,
+					workspaces.create(ctx, { owner, mounts: [projectMount(subject, elsewhere)] }),
+					{ operation: "workspace.mount" },
+				);
+				await assertAccessDenied(
+					a,
+					deps,
+					workspaces.create(ctx, {
+						owner,
+						seed: { name: "s", sources: [], mounts: [projectMount(subject, elsewhere)] },
+					}),
+					{ operation: "workspace.mount", message: "a seed mount is checked too" },
+				);
+				await assertAccessDenied(a, deps, workspaces.remount(ctx, record.id, projectMount(subject, elsewhere)), {
+					operation: "workspace.mount",
+				});
+				a.deepEqual(await snapshot(subject, record.id), before);
+			}),
+		},
+		{
+			name: "project access: refuses an agent whose session belongs to another project, and changes nothing",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const { record } = await withProjectMount(subject);
+				const tied = await workspaces.create(ctx, { owner, sessionId: WORKSPACE_FIXTURE.sessionId });
+				const before = await snapshot(subject, record.id);
+				const denied = (call: Promise<unknown>, operation: string, message: string) =>
+					assertAccessDenied(a, deps, call, { operation, message });
+				await denied(
+					workspaces.commit(strayAgentCtx, record.id, { baseVersion: record.head, changes: change }),
+					"workspace.commit",
+					"a commit to this project's workspace",
+				);
+				await denied(
+					workspaces.read(strayAgentCtx, record.id, "/project/README.md"),
+					"workspace.read",
+					"a read of this project's workspace",
+				);
+				await denied(
+					workspaces.get(strayAgentCtx, tied.id),
+					"workspace.get",
+					"a read of this project's session workspace",
+				);
+				await denied(
+					workspaces.create(strayAgentCtx, { owner, sessionId: WORKSPACE_FIXTURE.sessionId }),
+					"workspace.create",
+					"a workspace for this project's session",
+				);
+				await denied(
+					workspaces.create(strayAgentCtx, {
+						owner: { kind: "organisation", organisationId: WORKSPACE_FIXTURE.organisationId },
+						sessionId: WORKSPACE_FIXTURE.sessionId,
+					}),
+					"workspace.create",
+					"a workspace naming only this project's session",
+				);
+				a.deepEqual(await snapshot(subject, record.id), before);
+				a.strictEqual((await workspaces.get(ctx, tied.id)).head, 0);
+			}),
+		},
+		{
+			name: "project access: refuses an agent acting on another session's workspace in its own project",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const tied = await workspaces.create(ctx, {
+					owner: { kind: "organisation", organisationId: WORKSPACE_FIXTURE.organisationId },
+					sessionId: WORKSPACE_FIXTURE.sessionId,
+				});
+				await assertAccessDenied(a, deps, workspaces.get(siblingAgentCtx, tied.id), { operation: "workspace.get" });
+				await assertAccessDenied(
+					a,
+					deps,
+					workspaces.commit(siblingAgentCtx, tied.id, { baseVersion: 0, changes: change }),
+					{ operation: "workspace.commit" },
+				);
+				await assertAccessDenied(
+					a,
+					deps,
+					workspaces.create(siblingAgentCtx, { owner, sessionId: WORKSPACE_FIXTURE.sessionId }),
+					{ operation: "workspace.create" },
+				);
+				a.strictEqual((await workspaces.get(agentCtx, tied.id)).head, 0);
+			}),
+		},
+		{
+			name: "project access: refuses an agent whose session was closed",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const { record } = await withProjectMount(subject);
+				const first = await workspaces.commit(closingAgentCtx, record.id, {
+					baseVersion: record.head,
+					changes: change,
+				});
+				deps.tenancy.close("sess-closing");
+				await assertAccessDenied(
+					a,
+					deps,
+					workspaces.commit(closingAgentCtx, record.id, {
+						baseVersion: first.version,
+						changes: [{ op: "put", path: "b", content: "y" }],
+					}),
+					{ operation: "workspace.commit" },
+				);
+				await assertAccessDenied(a, deps, workspaces.read(closingAgentCtx, record.id, "a"), {
+					operation: "workspace.read",
+				});
+				await assertAccessDenied(a, deps, workspaces.create(closingAgentCtx, { owner }), {
+					operation: "workspace.create",
+				});
+				a.strictEqual((await workspaces.get(ctx, record.id)).head, first.version);
+			}),
+		},
+		{
+			name: "project access: lets an operator on the project and an agent in its own session work",
+			run: withSubject(async (subject) => {
+				const { workspaces } = subject;
+				const { record } = await withProjectMount(subject);
+				await workspaces.commit(ctx, record.id, { baseVersion: record.head, changes: change });
+				const own = await workspaces.create(agentCtx, {
+					owner,
+					sessionId: WORKSPACE_FIXTURE.sessionId,
+					mounts: [projectMount(subject)],
+				});
+				const committed = await workspaces.commit(agentCtx, own.id, { baseVersion: 0, changes: change });
+				a.strictEqual(committed.version, 1);
+				a.strictEqual(
+					text((await workspaces.read(agentCtx, own.id, "/project/README.md")).content),
+					"project readme v1",
+				);
+				a.strictEqual((await workspaces.list(agentCtx, own.id)).items.length, 1);
+				a.strictEqual((await workspaces.export(agentCtx, own.id, [""])).length, 1);
+				const next = await writeProjectFiles(subject.projectFiles, agentCtx, project, [
+					{ op: "put", path: "README.md", content: "project readme v2" },
+				]);
+				a.partialDeepEqual((await workspaces.remount(agentCtx, own.id, projectMount(subject))).mounts[0], {
+					version: next,
+				});
+				// An operator on the project reads the agent's session workspace.
+				a.strictEqual((await workspaces.get(ctx, own.id)).head, 1);
+			}),
+		},
+	);
+	return cases;
 }
 
 export function registerWorkspaceConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: WorkspaceConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
 	registerCases(
 		runner,
 		name,
-		createWorkspaceConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+		createWorkspaceConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
 	);
 }

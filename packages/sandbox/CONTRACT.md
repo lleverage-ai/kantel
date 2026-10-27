@@ -38,10 +38,38 @@ exec), `route`, `leases`, `releaseSession`, `sweep` and `usage`. Portable logic 
 | `run` reuses leases and audits escalation once | reuses the session's lease per tier in run and audits escalation once |
 | `release` is idempotent and audited once | releases idempotently and audits the release once |
 | Another organisation sees `not_found` | hides another organisation's leases as not_found |
+| The session-end teardown ends the session's live leases with its reason, audits each release once, leaves other sessions alone, and a second run changes nothing | session end: the teardown (session_ended) ends the session's leases once, and a second run changes nothing |
+| After `aborted` the session acquires and runs again | session end: the teardown (aborted) ends the session's leases once and leaves the session usable |
+
+## Project access (settled question 7)
+
+Every lease belongs to a session, and the session's project is the one checked. After the organisation lookup (the
+workspace for `acquire` and `run`, the lease for the rest), each call requires through `ProjectAccess`:
+
+- operator on `input.sessionId`: `sandbox.acquire`, `sandbox.run`; when the workspace is project-owned, the session
+  must belong to that project too;
+- operator on the lease's session: `sandbox.renew`, `sandbox.release`, `sandbox.exec`;
+- viewer on the session: `sandbox.leases`, `sandbox.usage`; operator on it: `sandbox.releaseSession` (`system`
+  passes, so the teardown never fails a check).
+
+A session with no leases in the organisation lists nothing and reports zero usage, and `releaseSession` on a session
+with no live lease does nothing, all without a check or an audit. `route` and `sweep` take no context. An agent acts
+only from its own open session, or on a child session as its supervisor. Lists always name a session, so there is no
+unfiltered list. Cases (run with `projectAccess`): "project access: refuses an operator outside the project on every
+session call, and changes nothing", "... refuses an agent whose session belongs to another project, and changes
+nothing", "... refuses an agent whose session was closed", "... lets an operator on the project and an agent in its
+own session work".
+
+## Session end (settled question 8)
+
+Given `sessionEnd`, the factory registers `releaseSession(ctx, end.sessionId, end.reason)` once as the `sandbox`
+teardown. Both reasons end the session's live leases (the reason becomes `endReason`); `aborted` leaves the session
+free to acquire again. A unit test in `test/memory.test.ts` checks the registration.
 
 ## The in-memory implementation
 
-`createMemorySandboxes({ workspaces, clock?, audit?, routes?, defaultTtlMs? })` (default TTL 15 minutes). There is no
+`createMemorySandboxes({ workspaces, clock?, audit?, routes?, defaultTtlMs?, access?, sessionEnd? })` (default TTL 15
+minutes; without `access` it checks only the organisation). There is no
 real shell: a small interpreter runs `printf`, `echo`, `cat`, `ls [path]`, `mkdir [-p]`, `cd`, `exit`, `true`,
 `false`, `>`/`>>` and `&&` lists, plus `git --version` in the container. Anything else it cannot model (pipes, `;`,
 `||`, expansions, globs) exits 2; unknown programs exit 127. Parent directories of written files are created

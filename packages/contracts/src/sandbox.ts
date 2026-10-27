@@ -152,7 +152,10 @@ export interface Sandboxes {
 		ctx: CallContext,
 		filter: { readonly sessionId: SessionId; readonly live?: boolean },
 	): Promise<readonly SandboxLease[]>;
-	/** Ends every live lease of a session (session end or abort). */
+	/**
+	 * Ends every live lease of a session (session end or abort); the `sandbox` session-end teardown. When the session
+	 * holds no live lease it changes nothing and audits nothing, so running it again is a no-op.
+	 */
 	releaseSession(ctx: CallContext, sessionId: SessionId, reason?: LeaseEndReason): Promise<void>;
 	/** Releases every lease past its TTL as `expired`; returns them. Hosts call this from an alarm. */
 	sweep(): Promise<readonly SandboxLease[]>;

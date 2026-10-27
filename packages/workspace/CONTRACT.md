@@ -37,19 +37,44 @@ a mount for an absolute path), `commit` (atomic, optimistic on `baseVersion`), `
 | Commits are audited | audits each commit as workspace.committed |
 | Another organisation sees `not_found` | hides another organisation's workspace as not_found |
 
+## Project access (settled question 7)
+
+A workspace is project-scoped through its owner (`{ kind: "project" }`) and/or its `sessionId`; both are checked when
+both are set. Workspaces owned by the organisation, a user or the platform with no session have no project check.
+After the organisation lookup (another organisation's workspace stays `not_found`), each call requires through
+`ProjectAccess`:
+
+- operator: `workspace.create`, `workspace.commit`, `workspace.remount`;
+- viewer: `workspace.get`, `workspace.list`, `workspace.stat`, `workspace.read`, `workspace.history`,
+  `workspace.export`;
+- viewer on the project a `project-files` mount names in `ref`, as `workspace.mount`, for every such mount `create`
+  (seed and input mounts) and `remount` pin;
+- `createMemoryProjectFiles({ access })`: `write` needs operator on `ref` as `workspace.files.write`. Its reads are
+  not checked, because the workspace already checked the mount.
+
+An agent passes only from its own open session in the project, and for a session-tied workspace only in that
+session or as its parent. There is no list of workspaces, so no list filtering. Cases (run with `projectAccess`):
+"project access: refuses an operator outside the project on every call, and changes nothing", "... refuses a viewer
+a change but lets it read", "... refuses mounting another project's files, and changes nothing", "... refuses an
+agent whose session belongs to another project, and changes nothing", "... refuses an agent acting on another
+session's workspace in its own project", "... refuses an agent whose session was closed", "... lets an operator on
+the project and an agent in its own session work".
+
 ## The in-memory implementation
 
-`createMemoryWorkspaces({ clock?, audit?, sources? })` keeps each version as an immutable map (copy-on-write).
-`createMemoryProjectFiles()` is a `project-files` source versioned per ref (`"0"` is empty), with a `seed` helper for
+`createMemoryWorkspaces({ clock?, audit?, sources?, access? })` keeps each version as an immutable map (copy-on-write).
+`createMemoryProjectFiles({ access? })` is a `project-files` source versioned per ref (`"0"` is empty), with a `seed` helper for
 tests. Paths inside a source are relative and `""` is its root. It also rejects a tree where a path is both a file and
 a directory (`invalid`), a delete of a missing file (`not_found`), an empty commit (`invalid`) and an owner in another
 organisation (`forbidden`). Seed mounts and input mounts are merged, the input winning on the same mount point.
 History includes version 0. It leaves out: fetching `git` and `objects` seeds (recorded at `seedReadiness:
-"metadata"`), dependency steps, durable storage and any org check inside the project files source.
+"metadata"`), dependency steps, durable storage and any org check inside the project files source. Without `access`, both check only
+the organisation.
 
 ## Open questions
 
-- How a mount source checks that the caller's organisation owns the ref; the memory source does not.
+- How a mount source checks that the caller's organisation owns the ref; the memory source does not. (Whether the
+  caller may read the ref is settled: the workspace requires viewer on it as `workspace.mount`.)
 - Whether deleting a missing path should be idempotent rather than `not_found`.
 - `git`/`objects` fetching and `SeedReport` for real targets (M2-BE1). The seed shape, readiness stages and
   methods are settled by M0-BE2's measurements (#5).

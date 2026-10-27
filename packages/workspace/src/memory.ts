@@ -21,6 +21,9 @@ import {
 	type OwnerRef,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
+	type ProjectId,
+	type Role,
 	type SeedReadiness,
 	type SeedSpec,
 	type SessionId,
@@ -62,11 +65,17 @@ export interface MemoryWorkspacesOptions {
 	readonly audit?: AuditSink;
 	/** Mountable sources, one per kind. */
 	readonly sources?: readonly MountSource[];
+	/**
+	 * Project access (settled question 7). Without it the workspaces check only the organisation; every target and
+	 * every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
 }
 
 export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): Workspaces {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
+	const access = options.access;
 	const sources = new Map<MountSourceKind, MountSource>();
 	for (const source of options.sources ?? []) {
 		if (sources.has(source.kind)) throw new HarbourError("invalid", `two mount sources of kind ${source.kind}`);
@@ -80,6 +89,36 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 			throw new HarbourError("not_found", `workspace ${id} not found`);
 		}
 		return state;
+	}
+
+	/** Requires `needed` on the workspace's project, when its owner or session ties it to one. */
+	async function requireWorkspace(
+		ctx: CallContext,
+		record: WorkspaceRecord,
+		needed: Role,
+		operation: string,
+	): Promise<void> {
+		const scope = projectScope(record.owner, record.sessionId);
+		if (access === undefined || scope === undefined) return;
+		await access.require(ctx, { ...scope, needed, operation, subject: { kind: "workspace", id: record.id } });
+	}
+
+	/** Requires viewer on the project each `project-files` mount names in its `ref`. */
+	async function requireMounts(
+		ctx: CallContext,
+		requests: Iterable<MountRequest>,
+		subject?: { readonly kind: "workspace"; readonly id: WorkspaceId },
+	): Promise<void> {
+		if (access === undefined) return;
+		for (const request of requests) {
+			if (request.source !== "project-files") continue;
+			await access.require(ctx, {
+				projectId: request.ref,
+				needed: "viewer",
+				operation: "workspace.mount",
+				...(subject === undefined ? {} : { subject }),
+			});
+		}
 	}
 
 	function treeAt(state: WorkspaceState, version: WorkspaceVersion | undefined): Tree {
@@ -134,6 +173,10 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 	return {
 		async create(ctx, input) {
 			checkOwner(ctx, input.owner);
+			const scope = projectScope(input.owner, input.sessionId);
+			if (access !== undefined && scope !== undefined) {
+				await access.require(ctx, { ...scope, needed: "operator", operation: "workspace.create" });
+			}
 			const seed = input.seed;
 			const seedFiles = new Map<string, string>();
 			for (const source of seed?.sources ?? []) {
@@ -146,6 +189,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 			const requests = new Map<string, MountRequest>();
 			for (const request of [...(seed?.mounts ?? []), ...(input.mounts ?? [])]) requests.set(request.path, request);
+			await requireMounts(ctx, requests.values());
 			const mounts: Mount[] = [];
 			for (const request of requests.values()) mounts.push(await resolveMount(ctx, request));
 			checkMountsDisjoint(mounts);
@@ -183,11 +227,14 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 		},
 
 		async get(ctx, id) {
-			return load(ctx, id).record;
+			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "viewer", "workspace.get");
+			return state.record;
 		},
 
 		async list(ctx, id, listOptions: ListOptions = {}) {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "viewer", "workspace.list");
 			const limit = pageLimit(listOptions.limit);
 			const after = decodeCursor(listOptions.cursor);
 			const path = listOptions.path ?? "";
@@ -206,6 +253,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 		async stat(ctx, id, path, statOptions) {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "viewer", "workspace.stat");
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state, path);
 				if (sourcePath === "") return { path: mount.path, kind: "directory", size: 0, version: mount.version };
@@ -220,6 +268,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 		async read(ctx, id, path, readOptions) {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "viewer", "workspace.read");
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state, path);
 				if (sourcePath === "") throw new HarbourError("invalid", `${path} is a directory`, { path });
@@ -232,6 +281,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 		async commit(ctx, id, request: CommitRequest): Promise<CommitResult> {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "operator", "workspace.commit");
 			const refused = request.changes
 				.map((change) => change.path)
 				.filter((path) => typeof path === "string" && path.startsWith("/") && isUnderMount(path, state.record.mounts));
@@ -285,6 +335,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 		async history(ctx, id, page: PageRequest = {}) {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "viewer", "workspace.history");
 			const limit = pageLimit(page.limit);
 			const after = decodeCursor(page.cursor);
 			let below = state.versions.length;
@@ -305,6 +356,8 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 		async remount(ctx, id, request) {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "operator", "workspace.remount");
+			await requireMounts(ctx, [request], { kind: "workspace", id });
 			const path = normalizeMountPoint(request.path);
 			const index = state.record.mounts.findIndex((mount) => mount.path === path);
 			if (index < 0) throw new HarbourError("not_found", `no mount at ${path}`, { path });
@@ -316,6 +369,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 
 		async export(ctx, id, prefixes) {
 			const state = load(ctx, id);
+			await requireWorkspace(ctx, state.record, "viewer", "workspace.export");
 			for (const prefix of prefixes) {
 				if (typeof prefix !== "string" || prefix.startsWith("/") || prefix.includes("\\")) {
 					throw new HarbourError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
@@ -344,11 +398,20 @@ export interface MemoryProjectFiles extends MountSource {
 	seed(ref: string, files: { readonly [path: string]: string | Uint8Array }): Promise<string>;
 }
 
+export interface MemoryProjectFilesOptions {
+	/**
+	 * Project access (settled question 7): `write` then needs operator on the project its `ref` names. Reads stay
+	 * unchecked; the workspace checks the caller may mount the ref. Without it the source checks nothing.
+	 */
+	readonly access?: ProjectAccess;
+}
+
 /**
  * A `project-files` mount source, versioned per ref (a project ID). Version `"0"` is the empty tree; each write adds
  * one version. Paths inside the source are relative, and `""` is the root.
  */
-export function createMemoryProjectFiles(): MemoryProjectFiles {
+export function createMemoryProjectFiles(options: MemoryProjectFilesOptions = {}): MemoryProjectFiles {
+	const access = options.access;
 	const projects = new Map<string, Tree[]>();
 
 	function versionsOf(ref: string): Tree[] {
@@ -388,6 +451,7 @@ export function createMemoryProjectFiles(): MemoryProjectFiles {
 			return new Uint8Array(readTree(treeAt(ref, version), normalizeWorkspacePath(path)).content);
 		},
 		async write(ctx, ref, changes) {
+			await access?.require(ctx, { projectId: ref, needed: "operator", operation: "workspace.files.write" });
 			if (changes.length === 0) throw new HarbourError("invalid", "a write needs at least one change");
 			return { version: await apply(ref, changes), actor: ctx.actor };
 		},
@@ -525,6 +589,19 @@ async function listMount(
 		}
 	}
 	return entries;
+}
+
+/** The project a workspace is scoped to, through a project owner, a session, or both; undefined when neither. */
+function projectScope(
+	owner: OwnerRef,
+	sessionId: SessionId | undefined,
+): { readonly projectId?: ProjectId; readonly sessionId?: SessionId } | undefined {
+	const projectId = owner.kind === "project" ? owner.projectId : undefined;
+	if (projectId === undefined && sessionId === undefined) return undefined;
+	return {
+		...(projectId === undefined ? {} : { projectId }),
+		...(sessionId === undefined ? {} : { sessionId }),
+	};
 }
 
 function checkOwner(ctx: CallContext, owner: OwnerRef): void {
