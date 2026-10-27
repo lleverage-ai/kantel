@@ -351,7 +351,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			return await admit();
 		} finally {
 			session.admissions -= 1;
-			if (session.admissions === 0 && !session.harnessClosed) followWake(session, session.harness.wake());
+			if (session.admissions === 0 && !session.harnessClosed && !closed) {
+				try {
+					followWake(session, session.harness.wake());
+				} catch {
+					// The Harness is closing: the mark stays due, and the next opening sets the real wake.
+				}
+			}
 		}
 	};
 
@@ -583,12 +589,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
 		const unsubscribe = view.subscribe(() => sync(session));
-		// The Harness closes itself after a failed storage call: the session is then opened afresh on next use.
+		// The Harness closes itself after a failed storage call. Its timer goes with it; the session stays in `open`, so
+		// calls fail rather than racing a second opening against this one's queued writes and close.
 		const unsubscribeClose = harness.subscribeClose(() => {
 			session.harnessClosed = true;
 			if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
 			session.sleepTimer = undefined;
-			if (open.get(record.id) === session) open.delete(record.id);
 		});
 		session.stopWatching = () => {
 			unsubscribe();
