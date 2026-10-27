@@ -1,0 +1,27 @@
+{
+	"name": "@harbour/models",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Model connectors and the model gateway: routes, resolution, pins, presets, catalogue, redaction and the pi-messages HTTP API",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./directory": "./src/directory.ts",
+		"./resolution": "./src/resolution.ts",
+		"./tokens": "./src/tokens.ts",
+		"./presets": "./src/presets.ts",
+		"./catalogue": "./src/catalogue.ts",
+		"./redact": "./src/redact.ts",
+		"./gateway": "./src/gateway.ts",
+		"./http": "./src/http.ts"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
+		"@harbour/contracts": "workspace:*"
+	},
+	"devDependencies": {
+		"@harbour/testing": "workspace:*",
+		"@harbour/vault": "workspace:*"
+	}
+}
