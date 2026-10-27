@@ -19,7 +19,8 @@ promise: each capability says how it may be replayed, and a call that began and 
 ## Key operations
 
 `register` and `discover`; `grant`, `revokeGrant`, `listGrants`; `invoke` (agents only); `journal` and `listJournal`;
-`resolve`, the operator path for a call that began and never committed. Portable helpers in `src/index.ts`:
+`resolve`, the operator path for a call that began and never committed; `endSession`, the session-end teardown.
+Portable helpers in `src/index.ts`:
 `canonicalJson`, `fingerprint`, `capabilityCovered`, `selectorMatches`.
 
 ## Rules and the suite cases that enforce them
@@ -57,21 +58,55 @@ promise: each capability says how it may be replayed, and a call that began and 
   entries and results from another session's agent".
 - Cancellation: a `safe` call aborted mid-run is `failed`, an `unsafe` one uncertain: "aborts the handler's signal
   when the caller's signal aborts, failing a safe call and leaving an unsafe one uncertain".
+- Session end (settled question 8): `endSession(ctx, sessionId, reason)` revokes every active grant whose
+  `selector.sessionId` is the session, audits `capability.grant.revoked` once each with `data.reason`, and leaves
+  grants selected only by project or agent, other sessions' grants and expired grants as they are. A second run
+  changes and audits nothing; after `aborted`, grants made for the session later work: "ends the session's grants at
+  session end (session_ended | aborted), leaving other sessions' grants and those selected only by project or agent,
+  and does nothing the second time". The factory registers it with `sessionEnd` as `capability`
+  (`test/session-end.test.ts`).
+
+## Project access (settled question 7)
+
+With `access`, every call below awaits `ProjectAccess.require` after the organisation lookup and the agent rules,
+before it reads or changes anything. A grant is project-scoped through `selector.projectId` and `selector.sessionId`,
+a journal entry through its `sessionId`.
+
+| Operation | Checks |
+| --- | --- |
+| `capability.register` | operator, organisation-wide |
+| `capability.discover` | agent: viewer on its own session; human or service: viewer, organisation-wide |
+| `capability.grant`, `capability.revokeGrant` | operator on the selector's project and session (organisation-wide when it names neither) |
+| `capability.invoke` | operator on the agent's own session and `ctx.projectId` together, before the journal is touched |
+| `capability.journal`, `capability.listJournal` | viewer on the entry's session (a `sessionId` filter is required) |
+| `capability.resolve`, `capability.endSession` | operator on the entry's or named session (`system` passes) |
+
+`listGrants` keeps a grant whose selector names a project or session only when the caller `allows` viewer there;
+unscoped grants list as before. `listJournal` without a `sessionId` filter keeps entries whose session the caller
+`allows`. An agent still lists only its own session's entries: a filter naming another session lists nothing rather
+than being refused. Cases: "project access: refuses an operator outside the project each grant, revocation, journal
+read, resolution and session end in it, and organisation-wide calls, changing nothing", "project access: refuses an
+agent whose session belongs to another project, acting on this project's records or naming its session, and changes
+nothing", "project access: refuses an agent whose session was closed", "project access: lists without a project or
+session filter leave out another project's grants and journal entries", "project access: allows an operator on the
+project and an agent in its own session, and keeps organisation-wide calls for organisation-wide roles".
 
 ## The in-memory implementation
 
-`createMemoryCapabilityRegistry({ clock?, audit?, testing? })` keeps registrations, grants and the journal in maps keyed
+`createMemoryCapabilityRegistry({ clock?, audit?, access?, sessionEnd?, testing? })` keeps registrations, grants and the journal in maps keyed
 by organisation. `invoke` awaits only the fingerprint, then checks the grant, the journal, the registration and the
 version and writes the `started` entry in one synchronous step. A `safe` or `idempotent` handler throw is journalled
 as `failed` with `{ output: <message>, isError: true }`; an `unsafe` one leaves the entry `started` and rethrows. A run that finishes after a newer run or a resolution returns the journalled
 result instead of overwriting it. Audit event IDs are keyed by organisation and call ID, so retries never duplicate
 a row. `testing.crashBeforeCommit(callId)` makes a call run its handler and then reject with `unavailable` without
-settling, as a crash would. It leaves out durability, schema validation of arguments and results, timeouts, and
-role checks beyond "not an agent".
+settling, as a crash would. Without `access` it checks only the organisation. It leaves out durability, schema validation
+of arguments and results, and timeouts.
 
 ## Open questions
 
-- System actors are treated like humans and services (allowed to register, grant, revoke and resolve). Should they be?
+- Settled by question 7: system actors pass every project-access check, and humans and services need the roles above.
+- `discover` checks an agent's own session only, so an agent naming another project in `ctx.projectId` still sees the
+  names of that project's selected grants (it cannot invoke them). Should discovery check `ctx.projectId` too?
 - Agents see only grants that apply to them in `listGrants`, and only their own session's journal. Is that the intended
   reading?
 - Reusing a call ID from another session is `conflict`, so one session never receives another's result.

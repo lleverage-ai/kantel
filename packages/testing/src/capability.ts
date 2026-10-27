@@ -1,22 +1,28 @@
 /**
  * Conformance suite for `CapabilityRegistry` (packages/contracts/src/capability.ts). Every target registers it with a
- * provider that builds a fresh registry on the suite's clock and audit sink, and a way to crash a call mid-flight.
+ * provider that builds a fresh registry on the suite's clock, audit sink and project access, and a way to crash a call
+ * mid-flight.
  */
 import type {
 	CallContext,
 	CapabilityDefinition,
+	CapabilityGrant,
 	CapabilityHandler,
 	CapabilityInvocation,
 	CapabilityRegistry,
 	CapabilityResult,
 	InvokeInput,
 	ReplayPolicy,
+	SessionEndReason,
 } from "@harbour/contracts";
 import {
 	actors,
+	assertAccessDenied,
+	CANARY_SECRET,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
+	type ConformanceOptions,
 	type ConformanceRunner,
 	contextFor,
 	createDeps,
@@ -50,7 +56,32 @@ const host = contextFor(actors.service("host-1", "key-1"), ORG, PROJECT);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG, PROJECT);
 const otherAgent = contextFor(actors.agent("agent-2", "session-2"), ORG, PROJECT);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG, PROJECT);
-const outsiderAgent = contextFor(actors.agent("agent-1", "session-1"), OTHER_ORG, PROJECT);
+const outsiderAgent = contextFor(actors.agent("agent-1", "session-b1"), OTHER_ORG, PROJECT);
+const SESSION_END_REASONS: readonly SessionEndReason[] = ["session_ended", "aborted"];
+/** The session-end hook's context: a system actor in the session's organisation. */
+const sessionEnder = contextFor(actors.system("session-end"), ORG);
+
+// For the project-access cases: an operator on the project only, an operator on another project only, and an agent
+// whose session is in another project but which names this one.
+const projectOperator = contextFor(actors.human("project-operator-1"), ORG, PROJECT);
+const stranger = contextFor(actors.human("stranger-1"), ORG, PROJECT);
+const strangerAgent = contextFor(actors.agent("agent-9", "session-9"), ORG, PROJECT);
+const strangerAgentAtHome = contextFor(actors.agent("agent-9", "session-9"), ORG, OTHER_PROJECT);
+
+/** The roles and agent sessions every case acts with, seeded whether or not the project-access cases run. */
+function seedTenancy(deps: ConformanceDeps): void {
+	const { tenancy } = deps;
+	tenancy.bind(operator.actor, ORG, "operator");
+	tenancy.bind(host.actor, ORG, "operator");
+	tenancy.bind(outsider.actor, OTHER_ORG, "operator");
+	tenancy.bind(projectOperator.actor, ORG, "operator", PROJECT);
+	tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
+	tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	tenancy.session({ id: "session-2", organisationId: ORG, projectId: PROJECT, agentId: "agent-2" });
+	tenancy.session({ id: "session-3", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
+	tenancy.session({ id: "session-9", organisationId: ORG, projectId: OTHER_PROJECT, agentId: "agent-9" });
+	tenancy.session({ id: "session-b1", organisationId: OTHER_ORG, projectId: PROJECT, agentId: "agent-1" });
+}
 
 function definition(name: string, replay: ReplayPolicy = "safe", version = "1"): CapabilityDefinition {
 	return {
@@ -88,9 +119,14 @@ function names(definitions: readonly CapabilityDefinition[]): string[] {
 	return definitions.map((entry) => entry.name).sort();
 }
 
+function statusById(grants: readonly CapabilityGrant[]): Record<string, CapabilityGrant["status"]> {
+	return Object.fromEntries(grants.map((grant) => [grant.id, grant.status]));
+}
+
 export function createCapabilityConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: CapabilityConformanceProvider;
+	projectAccess?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
 	const test = (
@@ -100,6 +136,7 @@ export function createCapabilityConformance(options: {
 		name,
 		run: async () => {
 			const deps = createDeps();
+			seedTenancy(deps);
 			await options.provider(deps, (subject) => body(subject, deps));
 		},
 	});
@@ -118,7 +155,377 @@ export function createCapabilityConformance(options: {
 		return { subscription, grant };
 	}
 
-	return [
+	/** Asserts, through `assertAccessDenied`, that a call is refused by project access. */
+	const deniedIn =
+		(deps: ConformanceDeps) =>
+		(call: Promise<unknown>, operation: string, message: string): Promise<void> =>
+			assertAccessDenied(assert, deps, call, { operation, message });
+
+	function sessionEndCase(reason: SessionEndReason): ConformanceCase {
+		return test(`ends the session's grants at session end (${reason}), leaving other sessions' grants and those selected only by project or agent, and does nothing the second time`, async ({
+			registry,
+		}, deps) => {
+			const handler = recorder();
+			await registry.register(
+				host,
+				["tool.session", "tool.exact", "tool.expiring", "tool.revoked", "tool.project", "tool.agent"].map((name) =>
+					definition(name),
+				),
+				handler.handler,
+			);
+			const own = await registry.grant(operator, {
+				selector: { sessionId: "session-1" },
+				capabilities: ["tool.session"],
+			});
+			const exact = await registry.grant(operator, {
+				selector: { projectId: PROJECT, agentId: "agent-1", sessionId: "session-1" },
+				capabilities: ["tool.exact"],
+			});
+			const expiring = await registry.grant(operator, {
+				selector: { sessionId: "session-1" },
+				capabilities: ["tool.expiring"],
+				ttlMs: 1_000,
+			});
+			const revoked = await registry.grant(operator, {
+				selector: { sessionId: "session-1" },
+				capabilities: ["tool.revoked"],
+			});
+			await registry.revokeGrant(operator, revoked.id);
+			const otherSession = await registry.grant(operator, {
+				selector: { sessionId: "session-2" },
+				capabilities: ["tool.session"],
+			});
+			const byProject = await registry.grant(operator, {
+				selector: { projectId: PROJECT },
+				capabilities: ["tool.project"],
+			});
+			const byAgent = await registry.grant(operator, {
+				selector: { agentId: "agent-1" },
+				capabilities: ["tool.agent"],
+			});
+			await registry.invoke(agent, { callId: "call-1", capability: "tool.session", args: {} });
+			deps.clock.advance(1_000);
+			const revokedBefore = deps.audit.ofType("capability.grant.revoked").length;
+
+			await registry.endSession(sessionEnder, "session-1", reason);
+
+			const statuses = statusById((await registry.listGrants(operator)).items);
+			assert.deepEqual(
+				statuses,
+				{
+					[own.id]: "revoked",
+					[exact.id]: "revoked",
+					[expiring.id]: "expired",
+					[revoked.id]: "revoked",
+					[otherSession.id]: "active",
+					[byProject.id]: "active",
+					[byAgent.id]: "active",
+				},
+				"the session's active grants are revoked; an expired one stays expired; every other grant stays active",
+			);
+			assert.deepEqual(
+				names(await registry.discover(agent)),
+				["tool.agent", "tool.project"],
+				"the session no longer discovers its ended grants",
+			);
+			assert.deepEqual(
+				names(await registry.discover(otherAgent)),
+				["tool.project", "tool.session"],
+				"another session keeps its grants",
+			);
+			await assert.rejectsWithCode(
+				registry.invoke(agent, { callId: "call-1", capability: "tool.session", args: {} }),
+				"forbidden",
+				"a retry under an ended grant is refused",
+			);
+			await assert.rejectsWithCode(
+				registry.invoke(agent, { callId: "call-2", capability: "tool.exact", args: {} }),
+				"forbidden",
+				"a new call under an ended grant is refused",
+			);
+			await registry.invoke(agent, { callId: "call-3", capability: "tool.project", args: {} });
+			await registry.invoke(otherAgent, { callId: "call-4", capability: "tool.session", args: {} });
+			assert.strictEqual(handler.calls.length, 3, "grants the session did not hold still work");
+
+			const ended = deps.audit.ofType("capability.grant.revoked").slice(revokedBefore);
+			assert.deepEqual(
+				ended.map((event) => event.subject?.id).sort(),
+				[own.id, exact.id].sort(),
+				"each grant the session ended is audited once",
+			);
+			for (const event of ended) {
+				assert.partialDeepEqual(event, {
+					source: "capability",
+					organisationId: ORG,
+					sessionId: "session-1",
+					actor: sessionEnder.actor,
+					data: { reason },
+				});
+			}
+
+			const eventsBefore = deps.audit.events.length;
+			await registry.endSession(sessionEnder, "session-1", reason);
+			await registry.endSession(sessionEnder, "session-1", reason === "aborted" ? "session_ended" : "aborted");
+			await registry.endSession(sessionEnder, "session-3", reason);
+			assert.strictEqual(deps.audit.events.length, eventsBefore, "a teardown with nothing left audits nothing");
+			assert.deepEqual(statusById((await registry.listGrants(operator)).items), statuses, "and changes nothing");
+
+			if (reason === "aborted") {
+				await registry.grant(operator, { selector: { sessionId: "session-1" }, capabilities: ["tool.session"] });
+				await registry.invoke(agent, { callId: "call-5", capability: "tool.session", args: {} });
+				assert.strictEqual(handler.calls.length, 4, "an aborted session's later grants work as usual");
+			}
+		});
+	}
+
+	function projectAccessCases(): ConformanceCase[] {
+		return [
+			test("project access: refuses an operator outside the project each grant, revocation, journal read, resolution and session end in it, and organisation-wide calls, changing nothing", async (subject, deps) => {
+				const { registry } = subject;
+				const denied = deniedIn(deps);
+				await registry.register(host, [definition("tool.run", "unsafe")], recorder().handler);
+				const bySession = await registry.grant(operator, {
+					selector: { sessionId: "session-1" },
+					capabilities: ["tool.run"],
+				});
+				const byProject = await registry.grant(operator, {
+					selector: { projectId: PROJECT },
+					capabilities: ["tool.run"],
+				});
+				await subject.crashMidCall({ ctx: agent, invoke: { callId: "call-1", capability: "tool.run", args: {} } });
+				const grantsBefore = (await registry.listGrants(operator)).items;
+				const entryBefore = await registry.journal(operator, "call-1");
+				const otherEvents = () => deps.audit.events.filter((event) => event.type !== "access.denied").length;
+				const eventsBefore = otherEvents();
+
+				const grantOf = (selector: Parameters<CapabilityRegistry["grant"]>[1]["selector"]) =>
+					registry.grant(stranger, { selector, capabilities: ["tool.run"] });
+				await denied(grantOf({ projectId: PROJECT }), "capability.grant", "a grant on the project");
+				await denied(grantOf({ sessionId: "session-1" }), "capability.grant", "a grant for the project's session");
+				await denied(
+					grantOf({ projectId: OTHER_PROJECT, sessionId: "session-1" }),
+					"capability.grant",
+					"a grant naming its own project and this project's session",
+				);
+				await denied(grantOf({ agentId: "agent-1" }), "capability.grant", "an organisation-wide grant");
+				await denied(
+					registry.revokeGrant(stranger, bySession.id),
+					"capability.revokeGrant",
+					"revoking a session grant",
+				);
+				await denied(
+					registry.revokeGrant(stranger, byProject.id),
+					"capability.revokeGrant",
+					"revoking a project grant",
+				);
+				await denied(registry.journal(stranger, "call-1"), "capability.journal", "reading a journal entry");
+				await denied(
+					registry.listJournal(stranger, { sessionId: "session-1" }),
+					"capability.listJournal",
+					"listing the session's journal",
+				);
+				await denied(
+					registry.resolve(stranger, "call-1", { output: CANARY_SECRET }),
+					"capability.resolve",
+					"resolving the session's call",
+				);
+				await denied(
+					registry.endSession(stranger, "session-1", "aborted"),
+					"capability.endSession",
+					"ending the session",
+				);
+				await denied(
+					registry.register(stranger, [definition("tool.new")], recorder().handler),
+					"capability.register",
+					"registering is organisation-wide",
+				);
+				await denied(registry.discover(stranger), "capability.discover", "discovering is organisation-wide");
+
+				assert.strictEqual(otherEvents(), eventsBefore, "nothing but the refusals was audited");
+				assert.deepEqual((await registry.listGrants(operator)).items, grantsBefore, "no grant changed");
+				assert.deepEqual(await registry.journal(operator, "call-1"), entryBefore, "the journal entry is unchanged");
+				assert.deepEqual(names(await registry.discover(operator)), ["tool.run"], "nothing was registered");
+			}),
+
+			test("project access: refuses an agent whose session belongs to another project, acting on this project's records or naming its session, and changes nothing", async ({
+				registry,
+			}, deps) => {
+				const denied = deniedIn(deps);
+				const handler = recorder();
+				await registry.register(host, [definition("tool.run")], handler.handler);
+				const open = await registry.grant(operator, { selector: {}, capabilities: ["tool.run"] });
+				await registry.grant(operator, { selector: { projectId: PROJECT }, capabilities: ["tool.run"] });
+				await registry.grant(operator, { selector: { sessionId: "session-1" }, capabilities: ["tool.run"] });
+				await registry.invoke(agent, { callId: "call-1", capability: "tool.run", args: {} });
+				const grantsBefore = (await registry.listGrants(operator)).items;
+
+				await denied(
+					registry.invoke(strangerAgent, { callId: "call-2", capability: "tool.run", args: { token: CANARY_SECRET } }),
+					"capability.invoke",
+					"a call naming this project",
+				);
+				await denied(
+					registry.endSession(strangerAgent, "session-1", "aborted"),
+					"capability.endSession",
+					"ending this project's session",
+				);
+				await denied(
+					registry.endSession(strangerAgentAtHome, "session-1", "aborted"),
+					"capability.endSession",
+					"ending this project's session from its own project",
+				);
+				assert.strictEqual(handler.calls.length, 1, "the handler never ran for it");
+				await assert.rejectsWithCode(
+					registry.journal(operator, "call-2"),
+					"not_found",
+					"the refused call is not journalled",
+				);
+				await assert.rejectsWithCode(registry.journal(strangerAgent, "call-1"), "not_found", "it reads no entry");
+				assert.strictEqual(
+					(await registry.listJournal(strangerAgent, { sessionId: "session-1" })).items.length,
+					0,
+					"it lists none of the session's entries",
+				);
+				assert.deepEqual(
+					(await registry.listGrants(strangerAgent)).items.map((grant) => grant.id),
+					[open.id],
+					"it lists no grant on this project, only the unscoped one",
+				);
+				assert.deepEqual((await registry.listGrants(operator)).items, grantsBefore, "no grant changed");
+				await registry.invoke(strangerAgentAtHome, { callId: "call-3", capability: "tool.run", args: {} });
+				assert.strictEqual(handler.calls.length, 2, "in its own project the unscoped grant works");
+			}),
+
+			test("project access: refuses an agent whose session was closed", async ({ registry }, deps) => {
+				const denied = deniedIn(deps);
+				const handler = recorder();
+				await registry.register(host, [definition("tool.run")], handler.handler);
+				const grant = await registry.grant(operator, {
+					selector: { sessionId: "session-1" },
+					capabilities: ["tool.run"],
+				});
+				await registry.invoke(agent, { callId: "call-1", capability: "tool.run", args: {} });
+				deps.tenancy.close("session-1");
+				await denied(
+					registry.invoke(agent, { callId: "call-1", capability: "tool.run", args: {} }),
+					"capability.invoke",
+					"a replay",
+				);
+				await denied(
+					registry.invoke(agent, { callId: "call-2", capability: "tool.run", args: {} }),
+					"capability.invoke",
+					"a new call",
+				);
+				await denied(registry.discover(agent), "capability.discover", "discovery");
+				await denied(registry.journal(agent, "call-1"), "capability.journal", "reading its journal entry");
+				await denied(
+					registry.listJournal(agent, { sessionId: "session-1" }),
+					"capability.listJournal",
+					"listing its journal",
+				);
+				assert.strictEqual((await registry.listJournal(agent, {})).items.length, 0, "an unfiltered list shows nothing");
+				assert.strictEqual(handler.calls.length, 1, "the handler never ran again");
+				await assert.rejectsWithCode(registry.journal(operator, "call-2"), "not_found", "nothing was journalled");
+				assert.strictEqual(
+					statusById((await registry.listGrants(operator)).items)[grant.id],
+					"active",
+					"the grant is untouched until the session-end teardown runs",
+				);
+			}),
+
+			test("project access: lists without a project or session filter leave out another project's grants and journal entries", async ({
+				registry,
+			}) => {
+				await registry.register(host, [definition("tool.run")], recorder().handler);
+				const grantOf = async (selector: Parameters<CapabilityRegistry["grant"]>[1]["selector"]) =>
+					(await registry.grant(operator, { selector, capabilities: ["tool.run"] })).id;
+				const open = await grantOf({});
+				const byAgent = await grantOf({ agentId: "agent-1" });
+				const onProject = await grantOf({ projectId: PROJECT });
+				const onSession = await grantOf({ sessionId: "session-1" });
+				const onOtherProject = await grantOf({ projectId: OTHER_PROJECT });
+				const onOtherSession = await grantOf({ sessionId: "session-9" });
+				await registry.invoke(agent, { callId: "call-1", capability: "tool.run", args: {} });
+				await registry.invoke(strangerAgentAtHome, { callId: "call-9", capability: "tool.run", args: {} });
+				const grantIds = async (ctx: CallContext) =>
+					(await registry.listGrants(ctx)).items.map((grant) => grant.id).sort();
+				const callIds = async (ctx: CallContext, filter: Parameters<CapabilityRegistry["listJournal"]>[1]) =>
+					(await registry.listJournal(ctx, filter)).items.map((entry) => entry.callId).sort();
+
+				assert.deepEqual(
+					await grantIds(stranger),
+					[open, byAgent, onOtherProject, onOtherSession].sort(),
+					"an operator on another project sees its grants and the unscoped ones",
+				);
+				assert.deepEqual(await callIds(stranger, {}), ["call-9"], "and only its project's journal entries");
+				assert.deepEqual(await callIds(stranger, { status: "committed" }), ["call-9"], "also with a status filter");
+				assert.deepEqual(
+					await grantIds(projectOperator),
+					[open, byAgent, onProject, onSession].sort(),
+					"an operator on this project sees this project's grants and the unscoped ones",
+				);
+				assert.deepEqual(await callIds(projectOperator, {}), ["call-1"]);
+				assert.deepEqual(
+					await grantIds(operator),
+					[open, byAgent, onProject, onSession, onOtherProject, onOtherSession].sort(),
+					"an organisation-wide operator sees every grant",
+				);
+				assert.deepEqual(await callIds(operator, {}), ["call-1", "call-9"]);
+			}),
+
+			test("project access: allows an operator on the project and an agent in its own session, and keeps organisation-wide calls for organisation-wide roles", async (subject, deps) => {
+				const { registry } = subject;
+				const denied = deniedIn(deps);
+				await registry.register(host, [definition("tool.run", "unsafe"), definition("tool.safe")], recorder().handler);
+				const bySession = await registry.grant(projectOperator, {
+					selector: { sessionId: "session-1" },
+					capabilities: ["tool.run"],
+				});
+				const byProject = await registry.grant(projectOperator, {
+					selector: { projectId: PROJECT, agentId: "agent-2" },
+					capabilities: ["tool.safe"],
+				});
+				assert.deepEqual(names(await registry.discover(agent)), ["tool.run"], "the agent discovers in its own session");
+				assert.deepEqual(names(await registry.discover(otherAgent)), ["tool.safe"]);
+				await subject.crashMidCall({ ctx: agent, invoke: { callId: "call-1", capability: "tool.run", args: {} } });
+				assert.strictEqual((await registry.journal(projectOperator, "call-1")).status, "started");
+				assert.strictEqual((await registry.journal(agent, "call-1")).status, "started");
+				assert.strictEqual((await registry.listJournal(projectOperator, { sessionId: "session-1" })).items.length, 1);
+				assert.strictEqual((await registry.listJournal(agent, { sessionId: "session-1" })).items.length, 1);
+				const resolution = { output: "settled by the project operator" };
+				assert.strictEqual((await registry.resolve(projectOperator, "call-1", resolution)).status, "resolved");
+				assert.deepEqual(
+					await registry.invoke(agent, { callId: "call-1", capability: "tool.run", args: {} }),
+					resolution,
+				);
+				await registry.invoke(otherAgent, { callId: "call-2", capability: "tool.safe", args: {} });
+				assert.strictEqual((await registry.revokeGrant(projectOperator, byProject.id)).status, "revoked");
+				await registry.endSession(projectOperator, "session-1", "session_ended");
+				assert.strictEqual(
+					statusById((await registry.listGrants(projectOperator)).items)[bySession.id],
+					"revoked",
+					"an operator on the project ends its session's grants",
+				);
+				await denied(
+					registry.grant(projectOperator, { selector: { agentId: "agent-1" }, capabilities: ["tool.run"] }),
+					"capability.grant",
+					"a grant naming no project or session needs an organisation-wide role",
+				);
+				await denied(
+					registry.register(projectOperator, [definition("tool.new")], recorder().handler),
+					"capability.register",
+					"registering needs an organisation-wide role",
+				);
+				await denied(
+					registry.discover(projectOperator),
+					"capability.discover",
+					"discovering as a human needs an organisation-wide role",
+				);
+			}),
+		];
+	}
+
+	const cases: ConformanceCase[] = [
 		test("shows an agent only the capabilities its grants cover, and a namespace grant covers its members but not a sibling namespace sharing its letters", async ({
 			registry,
 		}) => {
@@ -635,17 +1042,26 @@ export function createCapabilityConformance(options: {
 			assert.strictEqual((await registry.journal(operator, "call-2")).status, "started", "the call is uncertain");
 			await assert.rejectsWithCode(registry.invoke(agent, unsafeCall), "refused", "its retry is refused");
 		}),
+
+		...SESSION_END_REASONS.map((reason) => sessionEndCase(reason)),
 	];
+	if (options.projectAccess) cases.push(...projectAccessCases());
+	return cases;
 }
 
 export function registerCapabilityConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: CapabilityConformanceProvider,
+	options?: ConformanceOptions,
 ): void {
 	registerCases(
 		runner,
 		name,
-		createCapabilityConformance({ assertions: createExpectAssertions(runner.expect), provider }),
+		createCapabilityConformance({
+			assertions: createExpectAssertions(runner.expect),
+			provider,
+			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+		}),
 	);
 }

@@ -1,4 +1,5 @@
 import {
+	type AccessCheck,
 	type AgentId,
 	type AuditEventInput,
 	type AuditSink,
@@ -19,7 +20,9 @@ import {
 	type OrganisationId,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
 	type ProjectId,
+	type SessionEndHook,
 	type SessionId,
 	type Subscription,
 	systemClock,
@@ -36,6 +39,13 @@ import {
 export interface MemoryCapabilityRegistryOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
+	/**
+	 * Project access (settled question 7), checked on every project-scoped call. Without it the registry checks only the
+	 * organisation; every target and every conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
+	/** When given, the registry registers its session-end teardown (`endSession`) under the name `capability`, once. */
+	readonly sessionEnd?: SessionEndHook;
 	/** Test hooks; never set in production. */
 	readonly testing?: {
 		/**
@@ -104,6 +114,14 @@ function assertResult(result: unknown, label: string): CapabilityResult {
 	return isError === undefined ? { output } : { output, isError };
 }
 
+/** The project-scoped part of a grant's selector, as an access check; empty when it names neither project nor session. */
+function selectorScope(selector: CapabilitySelector): Pick<AccessCheck, "projectId" | "sessionId"> {
+	return {
+		...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
+		...(selector.sessionId === undefined ? {} : { sessionId: selector.sessionId }),
+	};
+}
+
 function selectorJson(selector: CapabilitySelector): JsonValue {
 	return {
 		...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
@@ -121,6 +139,24 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
 	const crashBeforeCommit = options.testing?.crashBeforeCommit;
+	const access = options.access;
+
+	async function requireAccess(ctx: CallContext, check: AccessCheck): Promise<void> {
+		if (access !== undefined) await access.require(ctx, check);
+	}
+
+	async function allowsAccess(ctx: CallContext, check: Omit<AccessCheck, "operation" | "subject">): Promise<boolean> {
+		return access === undefined || (await access.allows(ctx, check));
+	}
+
+	/** Viewer on each entry's session, asked once per session. */
+	async function visibleSessions(ctx: CallContext, sessionIds: Iterable<SessionId>): Promise<Set<SessionId>> {
+		const visible = new Set<SessionId>();
+		for (const sessionId of new Set(sessionIds)) {
+			if (await allowsAccess(ctx, { sessionId, needed: "viewer" })) visible.add(sessionId);
+		}
+		return visible;
+	}
 
 	/** Live registrations by organisation and capability name. */
 	const registered = new Map<string, StoredRegistration>();
@@ -271,9 +307,10 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		return result;
 	}
 
-	return {
+	const registry: CapabilityRegistry = {
 		async register(ctx, definitions, handler) {
 			forbidAgent(ctx, "register capabilities");
+			await requireAccess(ctx, { needed: "operator", operation: "capability.register" });
 			if (definitions.length === 0) throw new HarbourError("invalid", "Register at least one capability");
 			const names = new Set<CapabilityName>();
 			for (const definition of definitions) {
@@ -316,6 +353,11 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		},
 
 		async discover(ctx) {
+			await requireAccess(ctx, {
+				...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId } : {}),
+				needed: "viewer",
+				operation: "capability.discover",
+			});
 			const live = [...registered.values()]
 				.filter((registration) => registration.organisationId === ctx.organisationId)
 				.map((registration) => registration.definition);
@@ -332,6 +374,11 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 
 		async grant(ctx, input) {
 			forbidAgent(ctx, "grant capabilities");
+			await requireAccess(ctx, {
+				...selectorScope(input.selector),
+				needed: "operator",
+				operation: "capability.grant",
+			});
 			if (input.capabilities.length === 0) throw new HarbourError("invalid", "A grant needs at least one capability");
 			for (const pattern of input.capabilities) {
 				if (!isCapabilityPattern(pattern)) {
@@ -383,6 +430,12 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 			if (stored === undefined || stored.grant.organisationId !== ctx.organisationId) {
 				throw new HarbourError("not_found", `No capability grant ${grantId}`);
 			}
+			await requireAccess(ctx, {
+				...selectorScope(stored.grant.selector),
+				needed: "operator",
+				operation: "capability.revokeGrant",
+				subject: { kind: "capability.grant", id: grantId },
+			});
 			if (stored.revokedAt !== undefined) return grantView(stored);
 			stored.revokedAt = clock.now();
 			await emit({
@@ -397,9 +450,16 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 
 		async listGrants(ctx, page) {
 			const caller = agentCaller(ctx);
-			const visible = orgGrants(ctx.organisationId).filter(
+			const matching = orgGrants(ctx.organisationId).filter(
 				(grant) => caller === undefined || selectorMatches(grant.selector, caller),
 			);
+			// A grant whose selector names a project or session lists only for a viewer there; others list as before.
+			const visible: CapabilityGrant[] = [];
+			for (const grant of matching) {
+				const scope = selectorScope(grant.selector);
+				const scoped = scope.projectId !== undefined || scope.sessionId !== undefined;
+				if (!scoped || (await allowsAccess(ctx, { ...scope, needed: "viewer" }))) visible.push(grant);
+			}
 			return paginate(visible, page);
 		},
 
@@ -410,6 +470,14 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 				throw new HarbourError("invalid", "A call needs a call ID");
 			}
 			if (ctx.signal?.aborted) throw new HarbourError("aborted", "The call was aborted before it started");
+			// The agent's own session and the project it names, together: a call naming another project is refused.
+			await requireAccess(ctx, {
+				projectId: ctx.projectId,
+				sessionId: ctx.actor.sessionId,
+				needed: "operator",
+				operation: "capability.invoke",
+				subject: { kind: "capability.call", id: input.callId },
+			});
 			const caller: Caller = { agentId: ctx.actor.agentId, sessionId: ctx.actor.sessionId, projectId: ctx.projectId };
 			const inputFingerprint = await fingerprint(input.args);
 			// From here to the `started` write there is no await: checks and the write happen as one step.
@@ -498,12 +566,29 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		},
 
 		async journal(ctx, callId) {
-			return entryFor(ctx, callId).entry;
+			const stored = entryFor(ctx, callId);
+			await requireAccess(ctx, {
+				sessionId: stored.entry.sessionId,
+				needed: "viewer",
+				operation: "capability.journal",
+				subject: { kind: "capability.call", id: callId },
+			});
+			return stored.entry;
 		},
 
 		async listJournal(ctx, filter, page) {
 			const caller = agentCaller(ctx);
-			const visible = [...journalEntries.values()]
+			// An agent lists only its own session (the existing rule, first): naming another session lists nothing.
+			const checkFilter =
+				filter.sessionId !== undefined && (caller === undefined || filter.sessionId === caller.sessionId);
+			if (checkFilter) {
+				await requireAccess(ctx, {
+					sessionId: filter.sessionId,
+					needed: "viewer",
+					operation: "capability.listJournal",
+				});
+			}
+			const matching = [...journalEntries.values()]
 				.filter((stored) => stored.organisationId === ctx.organisationId)
 				.map((stored) => stored.entry)
 				.filter(
@@ -512,12 +597,26 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 						(filter.sessionId === undefined || entry.sessionId === filter.sessionId) &&
 						(filter.status === undefined || entry.status === filter.status),
 				);
-			return paginate(visible, page);
+			if (checkFilter) return paginate(matching, page);
+			const sessions = await visibleSessions(
+				ctx,
+				matching.map((entry) => entry.sessionId),
+			);
+			return paginate(
+				matching.filter((entry) => sessions.has(entry.sessionId)),
+				page,
+			);
 		},
 
 		async resolve(ctx, callId, result) {
 			forbidAgent(ctx, "resolve a call");
 			const stored = entryFor(ctx, callId);
+			await requireAccess(ctx, {
+				sessionId: stored.entry.sessionId,
+				needed: "operator",
+				operation: "capability.resolve",
+				subject: { kind: "capability.call", id: callId },
+			});
 			if (stored.entry.status !== "started") {
 				throw new HarbourError("conflict", `Call ${callId} is already ${stored.entry.status}`, { callId });
 			}
@@ -542,5 +641,33 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 			});
 			return stored.entry;
 		},
+
+		async endSession(ctx, sessionId, reason) {
+			await requireAccess(ctx, { sessionId, needed: "operator", operation: "capability.endSession" });
+			const now = clock.now();
+			const ended: StoredGrant[] = [];
+			for (const stored of grants.values()) {
+				if (stored.grant.organisationId !== ctx.organisationId || stored.grant.selector.sessionId !== sessionId)
+					continue;
+				if (grantView(stored).status !== "active") continue;
+				stored.revokedAt = now;
+				ended.push(stored);
+			}
+			for (const { grant } of ended) {
+				await emit({
+					id: `capability:${ctx.organisationId}:grant:${grant.id}:revoked`,
+					type: "capability.grant.revoked",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(grant.selector.projectId === undefined ? {} : { projectId: grant.selector.projectId }),
+					sessionId,
+					subject: { kind: "capability.grant", id: grant.id },
+					data: { reason },
+				});
+			}
+		},
 	};
+
+	options.sessionEnd?.register("capability", (ctx, end) => registry.endSession(ctx, end.sessionId, end.reason));
+	return registry;
 }
