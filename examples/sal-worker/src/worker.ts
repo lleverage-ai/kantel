@@ -17,8 +17,8 @@ import type {
 } from "@harbour/contracts";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createMemorySkills } from "@harbour/skills/memory";
-import { createSkillsMountSource } from "@harbour/skills/mount";
 import { renderSkillListings, sessionSkillListings, syncSkillSources } from "@harbour/skills/sources";
+import { createSkillsMountSource } from "@harbour/workspace/mounts";
 import { readTree, resolveCommit } from "./git.ts";
 import { type OkfSnapshot, okfSnapshot, salExtension } from "./okf.ts";
 import { salRecallRenderer } from "./recall-renderer.ts";
@@ -133,7 +133,8 @@ export async function prepareSalWorker(input: SalWorkerInput): Promise<SalWorker
 		published,
 		limits: input.limits ?? SAL_DEFAULT_RECALL_LIMITS,
 		ctx,
-		skillsMount: createSkillsMountSource(skills, { visibility: () => ({}) }),
+		// Sal's skills belong to the organisation, so a session sees them all.
+		skillsMount: createSkillsMountSource({ skills, visibility: async () => ({}) }),
 	};
 }
 
