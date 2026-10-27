@@ -98,7 +98,16 @@ export interface SessionRuntimeOptions {
 	 * Released on abort (`aborted`) and close (`session_ended`), as the `sandbox` teardown of the session-end hook.
 	 * Kept for existing wiring: a sandbox created with `sessionEnd: runtime.sessionEnd` registers itself instead.
 	 */
-	readonly sandboxes?: Pick<Sandboxes, "releaseSession">;
+	readonly sandboxes?: Pick<Sandboxes, "releaseSession"> & Partial<Pick<Sandboxes, "sweep">>;
+	/**
+	 * With `sandboxes.sweep`: how often this process sweeps expired leases while it holds a session open, as the alarm for
+	 * lease expiry. `resume()` (a target's alarm) sweeps too. Default 60 s.
+	 */
+	readonly leaseSweepMs?: number;
+	/** Told when a lease sweep failed; the next sweep tries again. Default: ignored. */
+	readonly onSweepError?: (error: unknown) => void;
+	/** How long `resume()` waits for its lease sweep before it recovers sessions anyway. Default 5 s. */
+	readonly sweepWaitMs?: number;
 	/**
 	 * Serves a durable registration's tools (one stored with a callback), such as `callbackHostToolHandler` over its URL
 	 * and secret. Without it only handlers registered in this process serve tools.
@@ -139,9 +148,15 @@ export interface SessionRuntimeService {
 	 * Runs every session whose stored wake is due: work a previous process left mid-run (it marked the session before
 	 * admitting it), and sleeps (timers, retry backoffs) that have fallen due. Then arms this process's timer for the
 	 * next wake. Call it once after start, and from a target's alarm; says how many sessions it ran. A session that
-	 * fails to open is reported to `onResumeError` and skipped.
+	 * fails to open is reported to `onResumeError` and skipped. It sweeps expired sandbox leases first (`sweepLeases`).
 	 */
 	resume(): Promise<number>;
+	/**
+	 * Releases every sandbox lease past its TTL through `sandboxes.sweep`, as the `session` component; says how many.
+	 * Without `sweep` it does nothing. The runtime calls it from `resume()` and, while this process holds a session
+	 * open, every `leaseSweepMs`; a failure goes to `onSweepError`.
+	 */
+	sweepLeases(): Promise<number>;
 	/** Closes every open session's Harness. Their work stays in storage for a runtime that opens them again. */
 	close(): Promise<void>;
 }
@@ -623,6 +638,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			}
 			followWake(session, harness.wake());
 			await session.publishing;
+			armSweep();
 		} catch (error) {
 			open.delete(record.id);
 			session.stopWatching();
@@ -1023,7 +1039,75 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		(resumeTimer as { unref?: () => void }).unref?.();
 	};
 
+	const reportSweepError = (error: unknown) => {
+		try {
+			options.onSweepError?.(error);
+		} catch {
+			// A reporter that throws must not take a sweep, recovery or the process down with it.
+		}
+	};
+
+	/** The sweep in progress: every caller (the timer, `resume()`, `sweepLeases()`) shares it, so sweeps never overlap. */
+	let sweeping: Promise<number> | undefined;
+	/** Releases every sandbox lease past its TTL (`Sandboxes.sweep`); how many it released. Never rejects. */
+	const sweepLeases = (): Promise<number> => {
+		if (sandboxes?.sweep === undefined || closed) return Promise.resolve(0);
+		sweeping ??= (async () => {
+			try {
+				// After a turn, so `sweeping` is set before the sweep can settle (one that throws at once included).
+				await undefined;
+				return (await sandboxes.sweep!(systemContext("session"))).length;
+			} catch (error) {
+				reportSweepError(error);
+				return 0;
+			} finally {
+				sweeping = undefined;
+			}
+		})();
+		return sweeping;
+	};
+
+	const sweepWaitMs = options.sweepWaitMs ?? 5_000;
+	// setTimeout's range: anything outside it would fire at once.
+	if (!Number.isFinite(sweepWaitMs) || sweepWaitMs < 0 || sweepWaitMs > 2_147_483_647) {
+		throw new HarbourError("invalid", "sweepWaitMs must be between 0 and 2147483647 milliseconds");
+	}
+
+	/** This process's alarm for lease expiry: a sweep every `leaseSweepMs` while it holds a session open. */
+	const leaseSweepMs = options.leaseSweepMs ?? 60_000;
+	if (!Number.isFinite(leaseSweepMs) || leaseSweepMs <= 0 || leaseSweepMs > 2_147_483_647) {
+		throw new HarbourError("invalid", "leaseSweepMs must be a positive number of milliseconds, at most 2147483647");
+	}
+	let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+	const armSweep = () => {
+		if (sandboxes?.sweep === undefined || closed || sweepTimer !== undefined || open.size === 0) return;
+		sweepTimer = setTimeout(() => {
+			// Held (not undefined) until the sweep settles, so nothing arms a second timer meanwhile.
+			const done = open.size === 0 ? Promise.resolve(0) : sweepLeases();
+			void done.finally(() => {
+				sweepTimer = undefined;
+				armSweep();
+			});
+		}, leaseSweepMs);
+		(sweepTimer as { unref?: () => void }).unref?.();
+	};
+
 	const resume = async (): Promise<number> => {
+		// A sweep that stalls (its sandbox host or audit sink hung) must not hold up recovering sessions.
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			sweepLeases(),
+			new Promise<void>((resolve) => {
+				bound = setTimeout(() => {
+					reportSweepError(
+						new HarbourError("unavailable", `The lease sweep took over ${sweepWaitMs} ms; resuming anyway`),
+					);
+					resolve();
+				}, sweepWaitMs);
+				// Referenced, unlike the background timer: a process awaiting resume() must live to recover its sessions.
+			}),
+		]);
+		clearTimeout(bound);
 		let resumed = 0;
 		const now = clock.now();
 		for (const stored of await store.wakeable(now)) {
@@ -1105,9 +1189,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		sessionEnd: ends.hook,
 		...(access === undefined ? {} : { access }),
 		resume,
+		sweepLeases,
 		async close() {
 			closed = true;
 			if (resumeTimer !== undefined) clearTimeout(resumeTimer);
+			if (sweepTimer !== undefined) clearTimeout(sweepTimer);
 			await Promise.allSettled([...opening.values()]);
 			for (const session of [...open.values()]) {
 				open.delete(session.record.id);

@@ -91,7 +91,7 @@ see.
 
 ## The runtime and its store
 
-`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, hostHandler, pageSize })`
+`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, pageSize })`
 from `@harbour/runtime/core` is the runtime every target runs. A target gives it two things:
 
 - `store`, a `SessionStore` (`@harbour/runtime/store`): the directory of sessions (each with the profile it was created
@@ -113,6 +113,14 @@ Durable carries its work on from the last commit, and arms a timer for the next 
 process can be evicted when to set its alarm. A model call cut off is sent again; a host tool call cut off reruns, with the same call ID, when the tool is `replay: "safe"`,
 and otherwise the model gets an interrupted result. Two processes must not run one session's storage at once: a target
 fences its storage (self-hosted) or has one owner by construction (a Durable Object).
+
+Sandbox leases expire by their TTL. With `sandboxes.sweep`, the runtime is their alarm: `resume()` sweeps first, and
+while its process holds a session open it sweeps every `leaseSweepMs` (default 60 s), as the `session` component.
+`sweepLeases()` sweeps on demand, and `onSweepError` hears of a failed sweep, which the next one retries. Sweeps never
+overlap: every caller shares the one in progress. `resume()` waits at most `sweepWaitMs` (default 5 s) for its sweep
+before recovering sessions anyway. A child's
+leases are released when it ends: aborting or closing a parent runs the session-end hook, `sandbox` teardown included,
+for each child too.
 
 A host registration made in this process (`hostTools.register` with a handler) offers its tools only while its handler
 lives. `hosts.register(ctx, hostId, tools, callback, owner)` stores the registration with its callback URL and HMAC
