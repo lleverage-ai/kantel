@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE_NOW as now, vaultCard } from "./fixtures.ts";
-import {
-	countdownFraction,
-	DEFAULT_WINDOW_MS,
-	isRouteGrant,
-	isUrgent,
-	lifetimeText,
-	methodText,
-	mustPickCode,
-	vaultHost,
-} from "./vault-model.ts";
+import { isRouteGrant, isUrgent, lifetimeText, methodText, mustPickCode, vaultHost } from "./vault-model.ts";
 
 const MINUTE = 60_000;
 
@@ -51,25 +42,6 @@ describe("isUrgent", () => {
 		expect(isUrgent(now + 1000, now)).toBe(true);
 		expect(isUrgent(now, now)).toBe(false);
 		expect(isUrgent(now - 1000, now)).toBe(false);
-	});
-});
-
-describe("countdownFraction", () => {
-	it("measures against 15 minutes when the start is unknown", () => {
-		expect(DEFAULT_WINDOW_MS).toBe(15 * MINUTE);
-		expect(countdownFraction(now + 15 * MINUTE, now)).toBe(1);
-		expect(countdownFraction(now + 7.5 * MINUTE, now)).toBeCloseTo(0.5);
-		expect(countdownFraction(now + 30 * MINUTE, now)).toBe(1);
-	});
-
-	it("measures against the real window when the start is known", () => {
-		expect(countdownFraction(now + 5 * MINUTE, now, now - 5 * MINUTE)).toBeCloseTo(0.5);
-		expect(countdownFraction(now + 60 * MINUTE, now, now)).toBe(1);
-	});
-
-	it("stays between 0 and 1", () => {
-		expect(countdownFraction(now - MINUTE, now)).toBe(0);
-		expect(countdownFraction(now + MINUTE, now, now + 2 * MINUTE)).toBe(0);
 	});
 });
 

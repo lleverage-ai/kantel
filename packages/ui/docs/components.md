@@ -121,13 +121,15 @@ the selected option, arrow keys move.
 `Spinner` for work of unknown shape; `Skeleton` for content whose shape is known (a list row, a card title). Neither
 for loads under about 300ms, which should show nothing. `Kbd` shows a key or chord in text.
 
-### RelativeTime and Elapsed
+### RelativeTime, Elapsed and ClockTime
 
 **For** times. `RelativeTime` says "now", "4m", "3h", "2d" (T3 Code's compact form, no "ago"), with the full date on
-hover. `Elapsed` says "3m 20s" and ticks while running.
+hover. `Elapsed` says "3m 20s" and ticks while running. `ClockTime` says when something happened by the clock, aware
+of the day: "16:38", "Yesterday at 16:38", "26/10 16:38", with the full date as its title. Use it for a moment in a
+timeline (a tool call's start), where an age would keep changing.
 
-**Cost:** both read one shared clock (`useNow`): one interval per period for the whole page, stopped when nothing
-listens. `RelativeTime` stops ticking once a time is a day old.
+**Cost:** `RelativeTime` and `Elapsed` read one shared clock (`useNow`): one interval per period for the whole page,
+stopped when nothing listens. `RelativeTime` stops ticking once a time is a day old. `ClockTime` never ticks.
 
 ### Icons
 

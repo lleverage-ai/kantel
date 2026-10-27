@@ -3,11 +3,8 @@
 
 import { DAY, duration, HOUR, MINUTE } from "../primitives/format.ts";
 
-/** The countdown turns urgent (amber) with less than this left. */
+/** The Lifetime term turns urgent (amber) with less than this left. */
 export const URGENT_MS = 2 * MINUTE;
-
-/** The window a countdown is measured against when the card does not say when the request started. */
-export const DEFAULT_WINDOW_MS = 15 * MINUTE;
 
 /** The vault's host from the card's link ("vault.harbour.dev"), or undefined when the link is not a URL. */
 export function vaultHost(link: string): string | undefined {
@@ -21,7 +18,7 @@ export function vaultHost(link: string): string | undefined {
 
 /**
  * How long the terms last, coarsely, for the Lifetime term: "15 minutes left", "2h 10m left", "3 days left". The
- * countdown says the seconds; this says the order of magnitude without ticking every second in the reader's ear.
+ * card's one statement of time left: the order of magnitude, without ticking every second in the reader's ear.
  */
 export function lifetimeText(expiresAt: number, now: number): string {
 	const left = expiresAt - now;
@@ -40,16 +37,6 @@ export function lifetimeText(expiresAt: number, now: number): string {
 export function isUrgent(expiresAt: number, now: number): boolean {
 	const left = expiresAt - now;
 	return left > 0 && left < URGENT_MS;
-}
-
-/**
- * How much of the window is left, from 1 (just opened) to 0 (expired), for the countdown bar. The window runs from
- * `startedAt` when known, otherwise it is the 15 minutes before `expiresAt`.
- */
-export function countdownFraction(expiresAt: number, now: number, startedAt?: number): number {
-	const total = startedAt === undefined ? DEFAULT_WINDOW_MS : expiresAt - startedAt;
-	if (total <= 0) return 0;
-	return Math.min(1, Math.max(0, (expiresAt - now) / total));
 }
 
 /** "POST", "GET, POST", or "Any method" for an empty list or a wildcard. */

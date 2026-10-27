@@ -25,7 +25,15 @@
 	color: var(--hb-text);
 }
 
+/* Trimmed to its capitals, as a Button's label is, so the chevron and the words share one centre. */
+.hb-disclosure-text {
+	min-width: 0;
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
+}
+
 .hb-disclosure-chevron {
+	flex: none;
 	color: var(--hb-text-faint);
 	transition: transform var(--hb-duration) var(--hb-ease);
 }

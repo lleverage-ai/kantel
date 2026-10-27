@@ -117,6 +117,51 @@ export function measureAlignment(): Misalignment[] {
 		if (extra !== null && visible(extra) && valueLine !== null)
 			compare("field extra", row, centre(extra), valueLine.centre);
 	}
+	// Tool-call rows: the icon (or spinner) and the chevron on the label's line, and the start time on the label's
+	// baseline. The time shows only on hover or focus, so a hidden one is shown for the measure (the two properties its
+	// hover rule sets) and put back: every row's time is checked, not just a hovered one's. A part that is missing or
+	// unmeasurable fails, rather than passing unchecked.
+	for (const row of root.querySelectorAll(".hb-tool-row")) {
+		if (!visible(row)) continue;
+		const icon = row.querySelector(".hb-tool-icon > :not(.hb-sr-only)");
+		const label = row.querySelector(".hb-tool-label");
+		const line = label === null ? null : textLine(label);
+		if (line === null) {
+			unmeasured("tool icon", row);
+			continue;
+		}
+		if (icon !== null && visible(icon)) compare("tool icon", row, centre(icon), line.centre);
+		else unmeasured("tool icon", row);
+		const chevron = row.querySelector(".hb-tool-chevron");
+		if (chevron !== null && visible(chevron)) compare("tool chevron", row, centre(chevron), line.centre);
+		else unmeasured("tool chevron", row);
+		const stamp = row.querySelector<HTMLElement>(".hb-tool-stamp");
+		if (stamp === null) {
+			unmeasured("tool time", row);
+			continue;
+		}
+		const hidden = getComputedStyle(stamp).opacity === "0";
+		if (hidden) {
+			stamp.style.position = "static";
+			stamp.style.opacity = "1";
+		}
+		const stampLine = textLine(stamp);
+		const shownLine = hidden ? textLine(label as Element) : line;
+		if (hidden) {
+			stamp.style.removeProperty("position");
+			stamp.style.removeProperty("opacity");
+		}
+		if (stampLine === null || shownLine === null) unmeasured("tool time", row);
+		else compare("tool time", row, stampLine.baseline, shownLine.baseline);
+	}
+	// Disclosures: the chevron on the summary's words.
+	for (const summary of root.querySelectorAll(".hb-disclosure-summary")) {
+		const chevron = summary.querySelector(".hb-disclosure-chevron");
+		if (chevron === null || !visible(chevron)) continue;
+		const line = textLine(summary);
+		if (line === null) unmeasured("disclosure chevron", summary);
+		else compare("disclosure chevron", summary, centre(chevron), line.centre);
+	}
 	// Notices: the icon on the first line of text.
 	for (const notice of root.querySelectorAll(".hb-notice")) {
 		const icon = notice.querySelector(":scope > .hb-icon");

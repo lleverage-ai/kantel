@@ -47,7 +47,7 @@ export function Disclosure({
 				}}
 			>
 				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
-				{summary}
+				<span className="hb-disclosure-text">{summary}</span>
 			</button>
 			{open ? (
 				<div id={id} className="hb-disclosure-detail">
