@@ -74,17 +74,26 @@ on the host:
 #    containerd-shim-runsc-v1, plus the sentry in a gvisor-bin/ directory
 #    beside them. Then register it:
 sudo runsc install            # adds "runsc" to /etc/docker/daemon.json
+# On bare metal with /dev/kvm, also register the KVM platform:
+sudo runsc install --runtime runsc-kvm -- --platform=kvm
 sudo systemctl reload docker  # or restart
-# 2. Start the stack on it:
-HARBOUR_ISOLATE_RUNTIME=runsc HARBOUR_SANDBOX_RUNTIME=runsc \
+# 2. Start the stack on it (runsc-kvm on bare metal, runsc in a VM):
+HARBOUR_ISOLATE_RUNTIME=runsc-kvm HARBOUR_SANDBOX_RUNTIME=runsc-kvm \
   docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
+
+`runsc` uses gVisor's default platform, systrap. `runsc-kvm` is the same
+binary with `--platform=kvm`: on bare metal it is the fastest gVisor config
+for both tiers (a new isolate about 170 ms p50 against 220 ms on systrap and
+140 ms on runc, and real container work about 30% faster than systrap), so it
+is the recommended self-hosted default where the host has `/dev/kvm`. Inside a
+VM, gVisor recommends systrap.
 
 The session host passes the runtime name to the Docker API for every sandbox
 container. Keep both variables exported for every later `docker compose`
 command (including `up host-a` after a kill): compose recreates a service whose
 runtime differs, so a bare `up` quietly puts it back on runc. The cold-start
-numbers for both runtimes are in `docs/measurements/m0-sh1-selfhosted/`.
+numbers for runc, runsc and runsc-kvm are in `docs/measurements/m0-sh1-selfhosted/`.
 
 Two things work differently under gVisor, and the stack allows for both:
 
