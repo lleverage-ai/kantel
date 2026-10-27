@@ -14,12 +14,14 @@ export function SessionScreen({
 	sessionId,
 	project,
 	onBack,
+	onFiles,
 	onOpen,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
 	project?: string;
 	onBack?: () => void;
+	onFiles?: () => void;
 	/** Told about each session client as it starts; the evidence script reads it from the page. */
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
@@ -75,5 +77,5 @@ export function SessionScreen({
 		onStop: () => void run(() => client.cancel(sessionId)),
 	};
 
-	return <SessionView client={session} project={project} actions={actions} onBack={onBack} />;
+	return <SessionView client={session} project={project} actions={actions} onBack={onBack} onFiles={onFiles} />;
 }

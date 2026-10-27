@@ -3,8 +3,10 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
 import type { SessionClient } from "../state/session-client.ts";
+import { FilesScreen } from "./files-screen.tsx";
 import {
 	AUDIT_PATH,
+	filesPath,
 	interceptLinks,
 	navigate,
 	parseRoute,
@@ -134,8 +136,9 @@ export function App({
 	const narrow = useMedia(NARROW_QUERY);
 	const { projects, error: projectsError } = useProjects(client);
 
-	const projectId = route.name === "project" || route.name === "session" ? route.projectId : undefined;
-	const sessionId = route.name === "session" ? route.sessionId : undefined;
+	const projectId =
+		route.name === "project" || route.name === "session" || route.name === "files" ? route.projectId : undefined;
+	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
 	const sessionProject = useSessionProject(client, sessionId);
@@ -151,6 +154,10 @@ export function App({
 
 	const hrefFor = useCallback((id: string) => sessionPath(projectId ?? "", id), [projectId]);
 	const back = useCallback(() => navigate(projectPath(projectId ?? "")), [projectId]);
+	const toFiles = useCallback(
+		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
+		[projectId, sessionId],
+	);
 
 	if (projectsError !== undefined)
 		return (
@@ -233,6 +240,18 @@ export function App({
 				</EmptyState>
 			</div>
 		);
+	} else if (route.name === "files") {
+		main = (
+			<FilesScreen
+				key={route.sessionId}
+				client={client}
+				projectId={route.projectId}
+				sessionId={route.sessionId}
+				project={project?.name}
+				path={route.path}
+				narrow={narrow}
+			/>
+		);
 	} else if (sessionId !== undefined) {
 		main = (
 			<SessionScreen
@@ -241,6 +260,7 @@ export function App({
 				sessionId={sessionId}
 				project={project?.name}
 				onBack={narrow ? back : undefined}
+				onFiles={toFiles}
 				onOpen={onOpen}
 			/>
 		);

@@ -1,7 +1,7 @@
 # @harbour/console
 
-Harbour's session interface (M1-FE1, issue #6): a project's sessions grouped by what they need from you, and the live
-session view with its transcript and composer. Built from `@harbour/ui`; this app only decides what goes where.
+Harbour's session interface (M1-FE1, issue #6): a project's sessions grouped by what they need from you, the live
+session view with its transcript and composer, and a session's workspace files, read-only. Built from `@harbour/ui`; this app only decides what goes where.
 
 ```sh
 pnpm --filter @harbour/cloudflare dev          # the gateway with the session API, on http://127.0.0.1:8787
@@ -23,6 +23,8 @@ serves the console itself, and Cloudflare Access signs the calls in.
 | `/vault` | The vault page: your active grants, each with Stop |
 | `/vault/requests/:proposalId` | One vault request to narrow, check the binding code, approve with a passkey or deny, beside your grants |
 | `/audit` | The audit log: filter, follow a row to its vault request, export JSONL |
+| `/projects/:projectId/sessions/:sessionId/files` | The session's workspace files: the tree, and the open file beside it |
+| `/projects/:projectId/sessions/:sessionId/files/:path` | One file open, its whole path as one encoded segment (`notes%2Fplan.md`) |
 
 The vault page and the audit log are the organisation's, so the sidebar lists them under Organisation and shows no
 project's sessions beside them. On a phone each fills the screen with *Back to sessions*.
@@ -35,7 +37,7 @@ opened recording's live part plays.
 
 Every screen talks to a host through `ConsoleClient` (`src/api/client.ts`): the actor, the projects, a project's
 sessions followed live, one session's protocol transport (hello, a snapshot or the deltas after a cursor, history
-pages), and prompt, steer, follow-up and cancel. `SessionClient` (`src/state/session-client.ts`) keeps one session's
+pages), prompt, steer, follow-up and cancel, and the session's workspace (`workspace(sessionId)`), read-only. `SessionClient` (`src/state/session-client.ts`) keeps one session's
 transcript over that transport, with connection health and data freshness tracked apart.
 
 Two implementations:
@@ -45,11 +47,15 @@ Two implementations:
   reconnects with backoff and resumes after the last cursor it applied. Prompt, steer, follow-up and abort are POSTs
   with a request id, so a retry sends once. While the agent runs, the composer's button steers and "Send after this
   run" queues a follow-up. The API has no projects list, no "who am I" and no list events yet, so the projects are
-  the ones the caller's sessions are in, named by id, and a project's list is polled every 3 seconds.
+  the ones the caller's sessions are in, named by id, and a project's list is polled every 3 seconds. A session's
+  files come from the workspace read API (`@harbour/workspace/read-api`, `/v1/workspaces/:id/files` and `/content`),
+  for the `workspaceId` on the session's record; it has only GET routes and no way to a sandbox.
 - `createRecordedClient` (`src/api/recorded.ts`): the catalogue in `src/recorded/catalogue.ts`, three projects and a
   session in every state the list shows, each served by an in-page stand-in for the session host
   (`src/server-sim/fixture-host.ts`). Recorded sessions can't be steered; the composer says so, and sign-in is a
-  stubbed actor.
+  stubbed actor. Every recorded session but the weekly digest has the same stand-in workspace
+  (`src/recorded/workspace.ts`), with a note, source, a log over the viewer's line cap, an image and a file over the
+  read API's size limit.
 
 The vault page and the audit log have seams of their own beside it, `ConsoleVault` and `ConsoleAudit`
 (`src/api/oversight.ts`); without one the console doesn't list its page. They follow the source:
@@ -71,3 +77,13 @@ a scripted model holding runs open: listing, unread, streaming, steer, follow-up
 a dropped stream. `node scripts/evidence.ts` gathers the long-session render and resume evidence against a running build.
 `node scripts/oversight-check.ts <out-dir>`, after a build, runs axe over the vault and audit routes at 1280 px and
 420 px (on `source=recorded`), checks each has one `h1` and one main landmark with no page errors, and saves screenshots.
+
+## Files
+
+Files in the session header opens the session's workspace: `FileTree` beside `FileViewer` (or `NoteViewer` for
+Markdown) on a desktop, the tree and then the file with Back on a phone. Directories are listed when first opened,
+and a file is read when opened. A file whose name says it isn't text (an image, an archive), or that the listing says
+is over the read API's 16 MiB limit, is shown as such without being read; bytes that aren't UTF-8 are shown as not
+text. `src/ui/files-model.ts` decides which viewer and state. `src/api/workspace.test.ts` browses a whole workspace
+through the real read API and session API, with every component auditing into one store, and checks the audit log
+has no sandbox event, beside a control where acquiring a sandbox does leave one.

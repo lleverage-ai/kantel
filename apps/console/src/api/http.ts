@@ -9,15 +9,26 @@
 //   the actor is whoever Access signed in. Identity's HTTP API (M1-BE7) will answer both.
 // - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
 // - No history pages: the snapshot is the whole transcript, so a history request is answered with an empty page.
+// - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
+//   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
 
 import type { HistoryPage, ServerFrame, SessionStatus } from "@harbour/protocol";
-import type { SessionSummary } from "@harbour/ui";
+import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
-import type { ConsoleClient, ProjectSummary, SendOptions, SessionControl } from "./client.ts";
+import type {
+	ConsoleClient,
+	ProjectSummary,
+	SendOptions,
+	SessionControl,
+	WorkspaceFiles,
+	WorkspaceListing,
+} from "./client.ts";
 import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
 const LIST_LIMIT = 100;
+/** The most entries the console reads from one directory; past it the tree says some aren't shown. */
+export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
 
 /** A session as the API lists it: the parts of `SessionRecord` (`@harbour/contracts`) the console reads. */
@@ -26,6 +37,7 @@ type SessionRecord = {
 	readonly projectId: string;
 	readonly title?: string;
 	readonly status: SessionStatus;
+	readonly workspaceId?: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 };
@@ -53,6 +65,7 @@ export class ApiError extends Error {
 
 async function errorOf(response: Response): Promise<ApiError> {
 	if (response.status === 401) return new ApiError("unauthenticated", "You're signed out. Reload the page to sign in.");
+	if (response.status === 413) return new ApiError("too_large", "This file is too large to show here.");
 	try {
 		const body = (await response.json()) as { error?: { code?: string; message?: string } };
 		if (body.error?.message !== undefined) return new ApiError(body.error.code ?? "unavailable", body.error.message);
@@ -105,7 +118,8 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		if (!response.ok) throw await errorOf(response);
 		return response;
 	};
-	const getJson = async <T>(path: string): Promise<T> => (await (await call(path)).json()) as T;
+	const getJson = async <T>(path: string, signal?: AbortSignal): Promise<T> =>
+		(await (await call(path, signal === undefined ? {} : { signal })).json()) as T;
 	const post = async (path: string, body: unknown, requestId?: string): Promise<void> => {
 		await call(path, {
 			method: "POST",
@@ -149,6 +163,42 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			startedAt: record.createdAt,
 			updatedAt: record.updatedAt,
 			...(unread ? { unread: true } : {}),
+		};
+	};
+
+	/** A workspace through the read API's GET routes; there is nothing else to call. */
+	const workspaceFiles = (id: string): WorkspaceFiles => {
+		const url = (route: string, query: URLSearchParams) =>
+			`${base}/workspaces/${encodeURIComponent(id)}/${route}?${query}`;
+		return {
+			id,
+			async list(path, signal): Promise<WorkspaceListing> {
+				const entries: WorkspaceEntry[] = [];
+				let cursor: string | undefined;
+				do {
+					const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
+					if (path !== "") query.set("path", path);
+					if (cursor !== undefined) query.set("cursor", cursor);
+					const page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					entries.push(...page.items);
+					cursor = page.nextCursor;
+				} while (cursor !== undefined && entries.length < DIRECTORY_CAP);
+				return { entries, truncated: cursor !== undefined };
+			},
+			async read(path, signal) {
+				const response = await call(
+					url("content", new URLSearchParams({ path })),
+					signal === undefined ? {} : { signal },
+				);
+				const content = new Uint8Array(await response.arrayBuffer());
+				let version: number | string = "";
+				try {
+					version = JSON.parse(response.headers.get("harbour-version") ?? '""') as number | string;
+				} catch {
+					// Not the read API's header; the version is only shown.
+				}
+				return { content, version, contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+			},
 		};
 	};
 
@@ -292,6 +342,11 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 					.catch(() => {})
 					.finally(() => count(leaving, sessionId, -1));
 			};
+		},
+
+		async workspace(sessionId) {
+			const record = await getJson<SessionRecord>(sessionUrl(sessionId));
+			return record.workspaceId === undefined ? undefined : workspaceFiles(record.workspaceId);
 		},
 	};
 }

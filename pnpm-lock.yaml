@@ -90,6 +90,12 @@ importers:
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
+      "@harbour/sandbox":
+        specifier: workspace:*
+        version: link:../../packages/sandbox
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../../packages/workspace
       "@types/node":
         specifier: 26.6.5
         version: 26.6.5

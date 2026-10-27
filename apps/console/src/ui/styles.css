@@ -187,6 +187,12 @@ body {
 }
 
 /* The session options menu: a floating panel under its button. */
+.console-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-2);
+}
+
 .console-menu-root {
 	position: relative;
 }
@@ -300,4 +306,82 @@ body {
 .profile-list code {
 	font-family: var(--hb-font-mono);
 	font-size: var(--hb-text-2xs);
+}
+
+/* A session's files: a header, then the tree beside the open file; on a phone, the tree or the file. The tree and
+   the viewers are @harbour/ui's and scroll within themselves. */
+.files {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.files-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-5);
+	min-height: calc(var(--hb-control-md) + var(--hb-space-4) * 2);
+	padding: var(--hb-space-4) var(--hb-space-7);
+	padding-top: max(var(--hb-space-4), env(safe-area-inset-top));
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.files-title {
+	margin: 0;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+}
+
+.files-meta {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.files-body {
+	display: grid;
+	flex: 1;
+	grid-template-columns: var(--hb-sidebar-width) minmax(0, 1fr);
+	min-height: 0;
+}
+
+.files-tree {
+	min-height: 0;
+	padding: var(--hb-space-4) var(--hb-space-3);
+	border-right: var(--hb-hairline) solid var(--hb-border);
+	overflow-y: auto;
+}
+
+.files-retry {
+	display: flex;
+	padding: var(--hb-space-4) var(--hb-space-3);
+}
+
+.files-viewer {
+	min-width: 0;
+	min-height: 0;
+}
+
+.files-message {
+	display: grid;
+	height: 100%;
+	place-items: center;
+	padding: var(--hb-space-7);
+}
+
+.files[data-pane="tree"] .files-body,
+.files[data-pane="file"] .files-body {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.files[data-pane="tree"] .files-tree {
+	border-right: 0;
+}
+
+@media (max-width: 640px) {
+	.files-header {
+		padding-right: var(--hb-space-6);
+		padding-left: var(--hb-space-6);
+	}
 }
