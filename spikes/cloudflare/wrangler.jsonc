@@ -1,31 +1,31 @@
 {
-  // Harbour M0-CF1 spike. Every resource is named harbour-m0-*; see README.md for removal commands.
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "harbour-m0-cf1",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
-  "preview_urls": false,
-  "observability": { "enabled": true },
-  "rules": [{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true }],
-  "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-m0-workspaces" }],
-  "worker_loaders": [{ "binding": "LOADER" }],
-  "durable_objects": {
-    "bindings": [
-      { "name": "SESSION", "class_name": "SessionDO" },
-      { "name": "VAULT", "class_name": "VaultDO" },
-      { "name": "CONTAINER", "class_name": "HarbourContainer" }
-    ]
-  },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionDO", "VaultDO", "HarbourContainer"] }],
-  "containers": [
-    {
-      "name": "harbour-m0-cf1-sandbox",
-      "class_name": "HarbourContainer",
-      // The Durable Object picks the image and instance size at start (src/container-tier.ts).
-      "scheduling_policy": "durable_object",
-      "images": { "sandbox": { "dockerfile": "./container/Dockerfile", "build_context": "./container" } }
-    }
-  ]
+	// Harbour M0-CF1 spike. Every resource is named harbour-m0-*; see README.md for removal commands.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "harbour-m0-cf1",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": { "enabled": true },
+	"rules": [{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true }],
+	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-m0-workspaces" }],
+	"worker_loaders": [{ "binding": "LOADER" }],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "SESSION", "class_name": "SessionDO" },
+			{ "name": "VAULT", "class_name": "VaultDO" },
+			{ "name": "CONTAINER", "class_name": "HarbourContainer" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionDO", "VaultDO", "HarbourContainer"] }],
+	"containers": [
+		{
+			"name": "harbour-m0-cf1-sandbox",
+			"class_name": "HarbourContainer",
+			// The Durable Object picks the image and instance size at start (src/container-tier.ts).
+			"scheduling_policy": "durable_object",
+			"images": { "sandbox": { "dockerfile": "./container/Dockerfile", "build_context": "./container" } }
+		}
+	]
 }

@@ -1,0 +1,12 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"target": "ES2024",
+		"lib": ["ES2024", "DOM"],
+		"types": ["node"]
+	},
+	// The tests run the platform-neutral modules (workspace, sandbox, isolate shell) in Node. Nothing they import may
+	// reach cloudflare:workers or the Env bindings.
+	"include": ["test/**/*.ts", "vitest.config.ts"]
+}

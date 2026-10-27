@@ -1,50 +1,55 @@
 # M0-CF1 cold-start measurements (Cloudflare)
 
-Raw numbers: [`cold-start-2026-10-27T09-42-17-084Z.json`](cold-start-2026-10-27T09-42-17-084Z.json), 50 runs per row, recorded 27 Oct 2026 against the deployed `harbour-m0-cf1` Worker. Script: [`spikes/cloudflare/scripts/bench.ts`](../../../spikes/cloudflare/scripts/bench.ts).
+Two runs, 50 per row, recorded 27 Oct 2026 against the deployed `harbour-m0-cf1` Worker with [`spikes/cloudflare/scripts/bench.ts`](../../../spikes/cloudflare/scripts/bench.ts):
+
+- [`cold-start-2026-10-27T12-00-58-435Z.json`](cold-start-2026-10-27T12-00-58-435Z.json): **current**, after the spike was moved onto M0-BE1's contracts (`ObjectStoreWorkspaces`, `CloudflareSandboxes`).
+- [`cold-start-2026-10-27T09-42-17-084Z.json`](cold-start-2026-10-27T09-42-17-084Z.json): the first run, on the spike's draft contracts.
 
 ## Results against the plan's targets (table 6)
 
-| Row | Target p50 / p95 | Measured p50 / p95 (min–max) | Verdict |
-| --- | --- | --- | --- |
-| Isolate session ready, workspace listed | 100 ms / 300 ms | **1,011 ms / 2,025 ms** (718–4,007) | Misses by about 10× |
-| Container on the same workspace version, warm image | 3 s / 8 s | **2,384 ms / 3,169 ms** (1,750–9,391) | Meets |
-| Small repo worktree, large monorepo, dependencies | — | Not measured here: M0-BE2 (#5) owns these rows | — |
+| Row | Target p50 / p95 | Current p50 / p95 (min–max) | First run p50 / p95 | Verdict |
+| --- | --- | --- | --- | --- |
+| Isolate session ready, workspace listed | 100 ms / 300 ms | **1,246 ms / 2,969 ms** (858–4,444), 49 of 50 runs | 1,011 ms / 2,025 ms | Misses by about 10× |
+| Container on the same workspace version, warm image | 3 s / 8 s | **2,694 ms / 3,619 ms** (2,168–3,856) | 2,384 ms / 3,169 ms | Meets |
+| Small repo worktree, large monorepo, dependencies | — | Not measured here: M0-BE2 (#5) owns these rows | — | — |
 
 Warm references (not plan rows):
 
-| Row | p50 / p95 |
-| --- | --- |
-| Next command in an already-loaded isolate (client wall time, includes the round trip from Sal's host) | 56 ms / 104 ms |
-| Next command in a running container, same version (server) | 41 ms / 57 ms |
+| Row | Current p50 / p95 | First run |
+| --- | --- | --- |
+| Next command in an already-loaded isolate (client wall time, includes the round trip from Sal's host) | 110 ms / 224 ms | 56 ms / 104 ms |
+| Next command in a running container, same version (server) | 43 ms / 138 ms | 41 ms / 57 ms |
+
+One isolate run in the current file failed with a Cloudflare 1101 error page and is listed under `failures`. Runs fired back to back create many new SessionDOs within a minute; twice, while benchmarking, new SessionDOs then failed on their first SQLite statement with `out of memory: SQLITE_NOMEM` until the load stopped for a few minutes. Production session creation would not look like this, but it is worth knowing before a pool of pre-created objects is tried.
 
 ## Where the time goes
 
-**Isolate session ready (p50 1,011 ms).** Timed in the routing Worker around three calls to a Durable Object that has never existed:
+**Isolate session ready (current p50 1,246 ms).** Timed in the routing Worker around three calls to a Durable Object that has never existed:
 
 | Phase | p50 | p95 |
 | --- | --- | --- |
-| First contact with a new SessionDO (placement and creation, no storage work) | 470 | 1,331 |
-| Setup: workspace exists check in R2 (58), Pi Durable `Harness.open` on empty SQLite (60), create conversation | 205 | 473 |
-| List: load a Dynamic Worker never seen before (1.25 MiB just-bash bundle), read the manifest from R2 through the workspace binding (134), run `ls -1R` | 304 | 771 |
+| First contact with a new SessionDO (placement and creation, no storage work) | 467 | 1,773 |
+| Setup: workspace lookup in R2 (113), Pi Durable `Harness.open` on empty SQLite, create conversation | 201 | 371 |
+| List: load a Dynamic Worker never seen before (1.25 MiB just-bash bundle), read the head and manifest from R2 through the workspace binding (201), run `ls -1R` | 513 | 1,207 |
 
-Pi Durable itself is cheap (60 ms to open). The cost is a brand-new Durable Object (about half), then R2 round trips. To get near the target: pre-create session objects (a pool of named, idle SessionDOs, so a new session never pays for creation), keep the workspace head and manifest in Durable Object storage instead of R2 (read locally, passed to the isolate with the call), and leave only blobs in R2. An estimate, not measured: 150–250 ms p50.
+The contracts version reads the head and then the manifest (two R2 reads where the draft read one), which accounts for most of the difference from the first run. Pi Durable itself is cheap. The cost is a brand-new Durable Object (about a third to a half), then R2 round trips. Ways to get near the target, not tried here: pre-create session objects (a pool of named, idle SessionDOs, so a new session never pays for creation), keep the workspace head and manifest in Durable Object storage instead of R2 (read locally, passed to the isolate with the call), and leave only blobs in R2. Whether to change the target or build these is an open decision.
 
-**Container ready (p50 2,384 ms).** Timed in the SessionDO around the call to a container Durable Object never used before:
+**Container ready (current p50 2,694 ms).** Timed in the SessionDO around the call to a container Durable Object never used before:
 
 | Phase | p50 | p95 |
 | --- | --- | --- |
-| `ctx.container.start()` plus turning on egress interception | 362 | 617 |
-| Agent listening on port 8080 | 425 | 596 |
-| Full sync of the 61-file workspace from R2 (parallel reads, base64 over the port) | 848 | 1,337 |
-| Exec (`cat marker.txt && git --version`) and change scan | 127 | 209 |
-| New container Durable Object and RPC (the remainder) | about 600 | — |
+| `ctx.container.start()` plus turning on egress interception | 238 | 358 |
+| Agent listening on port 8080 | 311 | 563 |
+| Request: full sync of the 61-file workspace read from R2 and sent over the port (base64), exec of `cat marker.txt && git --version`, change scan | 1,589 | 2,318 |
+| New container Durable Object, lease and RPC (the remainder) | about 550 | — |
 
-One run in 50 took 9.4 s: its start phase was 7.5 s. The first runs after each new image digest took 8–12 s (image not yet on the host), so "warm image" matters: the image must be distributed before sessions need it. All 50 runs saw the isolate's write from the version before.
+All 50 runs saw the isolate's write from the version before. After a deploy with a new image digest, the first starts take 5–12 s (image not yet on the host), so "warm image" matters: the image must be distributed before sessions need it.
 
 ## Method
 
 - **Isolate row:** `POST /bench/isolate-ready` (spikes/cloudflare/src/index.ts). Each run uses a new session ID (new SessionDO, empty storage) and a new Worker Loader ID (an isolate never loaded before), over one shared 61-file workspace `harbour-m0-bench`.
-- **Container row:** in one bench session, the isolate writes `marker.txt` (a new workspace version), then a container under a new name runs on that version, then the container is destroyed. Instance `standard-1`, `durable_object` scheduling policy, image built from `spikes/cloudflare/container/Dockerfile` (Debian, bun, git, python3, curl, jq).
-- Server timings come from inside Cloudflare (Worker or Durable Object), so they leave out the round trip from where the script runs. Client wall times are in the raw file.
+- **Container row:** in one bench session, the isolate writes `marker.txt` (a new workspace version), then a container under a new name runs on that version, then the lease is released and the container destroyed. Instance `standard-1`, `durable_object` scheduling policy, image built from `spikes/cloudflare/container/Dockerfile` (Debian, bun, git, python3, curl, jq).
+- A failed run is recorded under `failures` and left out of the percentiles; runs are not retried. (The first run's script stopped at the first error; it had none.)
+- Server timings come from inside Cloudflare (Worker or Durable Object), so they leave out the round trip from where the script runs. Client wall times are in the raw files.
 - **Caveat:** Workers clocks only advance on I/O, so phases that are pure CPU (just-bash running `ls`, a warm isolate call that does no I/O) read 0 ms server-side. The cold isolate row is not affected (every phase does I/O); the warm isolate row is reported from the client.
 - The script ran from Sal's host against the `lleverage` workers.dev subdomain; Durable Objects were created near the receiving colo.

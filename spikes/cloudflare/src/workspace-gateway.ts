@@ -1,32 +1,37 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { WorkspaceChange, WorkspaceManifest, WorkspaceVersion } from "./contracts.ts";
-import { R2Workspace } from "./workspace.ts";
+import type { FileEntry } from "@harbour/contracts";
+import { sessionContext } from "./identity.ts";
+import type { WorkspacePort } from "./isolate/shell.ts";
+import { workspacePort } from "./port.ts";
+import { r2Store } from "./r2.ts";
+import { type ModedFileEntry, ObjectStoreWorkspaces } from "./workspace.ts";
 
-type Props = { readonly workspaceId: string };
+type Props = { readonly workspaceId: string; readonly sessionId: string };
 
 /**
- * The isolate's only handle on storage: one workspace, chosen by the loader through props. The isolate never gets the
- * R2 binding, a key, or another workspace's ID.
+ * The isolate's only handle on storage: a read-only view of one workspace, chosen by the loader through props. The
+ * isolate never gets the R2 binding, a write path, or another workspace's ID. What a command changes goes back to
+ * the session's sandbox, which commits it.
  */
-export class WorkspaceGateway extends WorkerEntrypoint<Env, Props> {
-  #workspace(): R2Workspace {
-    return new R2Workspace(this.env.WORKSPACES, this.ctx.props.workspaceId);
-  }
+export class WorkspaceGateway extends WorkerEntrypoint<Env, Props> implements WorkspacePort {
+	#port(): WorkspacePort {
+		const workspaces = new ObjectStoreWorkspaces({ store: r2Store(this.env.WORKSPACES) });
+		return workspacePort(workspaces, sessionContext(this.ctx.props.sessionId), this.ctx.props.workspaceId);
+	}
 
-  async manifest(version: WorkspaceVersion): Promise<WorkspaceManifest> {
-    return this.#workspace().manifest(version);
-  }
+	async entries(version: number): Promise<readonly ModedFileEntry[]> {
+		return this.#port().entries(version);
+	}
 
-  async readBlob(hash: string): Promise<Uint8Array | null> {
-    return this.#workspace().readBlob(hash);
-  }
+	async mountEntries(path: string): Promise<readonly FileEntry[]> {
+		return this.#port().mountEntries(path);
+	}
 
-  /** Hashes on this side: the isolate's own hash is never trusted. */
-  async putBlob(bytes: Uint8Array): Promise<string> {
-    return this.#workspace().putBlob(bytes);
-  }
+	async readBlob(digest: string): Promise<Uint8Array> {
+		return this.#port().readBlob(digest);
+	}
 
-  async commit(base: WorkspaceVersion, changes: readonly WorkspaceChange[]): Promise<WorkspaceVersion> {
-    return this.#workspace().commit(base, changes);
-  }
+	async readMount(path: string): Promise<Uint8Array> {
+		return this.#port().readMount(path);
+	}
 }

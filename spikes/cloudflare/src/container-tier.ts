@@ -1,23 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
-import type { ExecRequest, ExecResult, WorkspaceChange, WorkspaceVersion } from "./contracts.ts";
-import { diffManifests, R2Workspace } from "./workspace.ts";
+import type { CallContext, ExecRequest } from "@harbour/contracts";
+import { r2Store } from "./r2.ts";
+import { listAll, type ModedChange, type ModedFileEntry, ObjectStoreWorkspaces } from "./workspace.ts";
+
+/** What every call carries: the lease it is for and the workspace head to re-base on. */
+export type ContainerCall = {
+	readonly leaseId: string;
+	readonly sessionId: string;
+	readonly workspaceId: string;
+	readonly head: number;
+	readonly ctx: CallContext;
+};
 
 type Put = { path: string; mode: number; content: string };
+type Sync = { from: number | null; to: number; put: Put[]; remove: string[] };
 type ContainerExecBody = {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-  base: string;
-  changes: { put: Put[]; remove: string[] };
-  timings: Record<string, number>;
-  container: { bootedAt: number; execs: number };
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+	dirty: number;
+	timings: Record<string, number>;
+	container: { bootedAt: number; execs: number };
 };
-
-export type ContainerExecArgs = ExecRequest & {
-  readonly sessionId: string;
-  readonly workspaceId: string;
-  readonly base: WorkspaceVersion;
-};
+type Owner = { leaseId: string; workspaceId: string };
 
 const PORT = 8080;
 const INACTIVITY_MS = 3 * 60_000;
@@ -29,172 +34,239 @@ const SYNC_CONCURRENCY = 32;
  * The container tier: one Durable Object per container, using the Durable Object Container API directly
  * (`durable_object` scheduling policy, so the object picks the image and instance size at start).
  *
+ * The container keeps a working copy of one workspace. Before every command the object re-bases it on the workspace
+ * head (the container's own uncommitted changes win), so it sees the isolate's last write. Its changes stay in the
+ * container until the sandbox commits them: on lease release, or before an isolate command (see src/sandbox.ts).
+ *
+ * A running container belongs to one live lease at a time. Calls are serialised, so a re-base, a command and a commit
+ * never interleave.
+ *
  * No internet: `enableInternet: false`, and every HTTP and HTTPS request the container makes is intercepted and handed
  * to VaultGateway with tier "container", which applies the same policies as for the isolate.
  */
 export class HarbourContainer extends DurableObject<Env> {
-  /** The version the container's working copy matches, as far as this object knows. Lost on eviction, which is safe. */
-  #held: WorkspaceVersion | null = null;
+	/** The version the working copy is based on, as far as this object knows. Lost on eviction, which is safe. */
+	#held: number | null = null;
+	#queue: Promise<unknown> = Promise.resolve();
 
-  #container(): Container {
-    const container = this.ctx.container;
-    if (container === undefined) throw new Error("no container attached to this Durable Object");
-    return container;
-  }
+	#serial<T>(work: () => Promise<T>): Promise<T> {
+		const next = this.#queue.then(work, work);
+		this.#queue = next.catch(() => undefined);
+		return next;
+	}
 
-  async #start(sessionId: string): Promise<Record<string, number>> {
-    const container = this.#container();
-    const timings: Record<string, number> = {};
-    let at = performance.now();
-    const image = container.images.sandbox;
-    if (image === undefined) throw new Error("image 'sandbox' missing from ctx.container.images");
-    container.start({ image, instance: INSTANCE, enableInternet: false } as ContainerStartupOptions);
-    this.ctx.waitUntil(container.monitor().catch((error) => console.error(JSON.stringify({ message: "container exited", error: String(error) }))));
-    // Route all egress through the vault before the agent can make a request.
-    const vault = this.ctx.exports.VaultGateway({ props: { sessionId, tier: "container" } });
-    await container.interceptAllOutboundHttp(vault);
-    await container.interceptOutboundHttps("*", vault);
-    await container.setInactivityTimeout(INACTIVITY_MS);
-    timings["container.start"] = round(performance.now() - at);
-    at = performance.now();
-    const port = container.getTcpPort(PORT);
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const response = await port.fetch("http://container/health");
-        if (response.ok) break;
-      } catch {
-        // Not listening yet.
-      }
-      if (performance.now() - at > 60_000) throw new Error("container did not become ready within 60 s");
-      await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 50 : 250));
-    }
-    timings["container.ready"] = round(performance.now() - at);
-    return timings;
-  }
+	#container(): Container {
+		const container = this.ctx.container;
+		if (container === undefined) throw new Error("no container attached to this Durable Object");
+		return container;
+	}
 
-  async #fetch(path: string, body?: unknown): Promise<Response> {
-    return this.#container()
-      .getTcpPort(PORT)
-      .fetch(`http://container${path}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: body === undefined ? "{}" : JSON.stringify(body),
-      });
-  }
+	async exec(call: ContainerCall & { readonly request: ExecRequest }) {
+		return this.#serial(async () => {
+			const timings = await this.#claim(call);
+			let at = performance.now();
+			const step = (phase: string) => {
+				const now = performance.now();
+				timings[phase] = round(now - at);
+				at = now;
+			};
+			const body = (await this.#withSync(call, "/exec", (sync) => ({
+				sync,
+				command: call.request.command,
+				cwd: call.request.cwd,
+				env: call.request.env,
+				stdin: call.request.stdin,
+				timeoutMs: call.request.timeoutMs,
+			}))) as ContainerExecBody;
+			step("container.request");
+			return {
+				exitCode: body.exitCode,
+				stdout: body.stdout,
+				stderr: body.stderr,
+				timings: { ...timings, ...body.timings },
+				container: { ...body.container, dirty: body.dirty },
+			};
+		});
+	}
 
-  async exec(args: ContainerExecArgs): Promise<ExecResult & { container: ContainerExecBody["container"] }> {
-    let timings: Record<string, number> = {};
-    // A running container belongs to the session and workspace that started it: its working copy and its egress
-    // audit are theirs. Stored durably, since this object can be evicted while the container keeps running.
-    const owner = `${args.sessionId}/${args.workspaceId}`;
-    if (!this.#container().running) {
-      this.#held = null;
-      // Claimed before starting, so a call that interleaves with the start sees the right owner.
-      await this.ctx.storage.put("owner", owner);
-      timings = await this.#start(args.sessionId);
-    } else if ((await this.ctx.storage.get<string>("owner")) !== owner) {
-      throw new Error("this container is in use by another session or workspace");
-    }
-    let at = performance.now();
-    const step = (phase: string) => {
-      const now = performance.now();
-      timings[phase] = round(now - at);
-      at = now;
-    };
+	/** Re-bases on the head and returns the container's uncommitted changes, for the sandbox to commit. */
+	async pending(call: ContainerCall): Promise<ModedChange[]> {
+		return this.#serial(async () => {
+			const owner = await this.ctx.storage.get<Owner>("owner");
+			if (owner?.leaseId !== call.leaseId || !this.#container().running) return [];
+			const body = (await this.#withSync(call, "/changes", (sync) => ({ sync }))) as {
+				put: Put[];
+				remove: string[];
+			};
+			return [
+				...body.put.map(
+					(file): ModedChange => ({ op: "put", path: file.path, content: fromBase64(file.content), mode: file.mode }),
+				),
+				...body.remove.map((path): ModedChange => ({ op: "delete", path })),
+			];
+		});
+	}
 
-    const workspace = new R2Workspace(this.env.WORKSPACES, args.workspaceId);
-    let body: ContainerExecBody | undefined;
-    for (let attempt = 0; attempt < 2 && body === undefined; attempt += 1) {
-      const sync = await this.#sync(workspace, this.#held, args.base);
-      step(attempt === 0 ? "container.diff" : "container.resync");
-      const response = await this.#fetch("/exec", {
-        sync,
-        command: args.command,
-        cwd: args.cwd,
-        env: args.env,
-        timeoutMs: args.timeoutMs,
-      });
-      if (response.status === 409) {
-        const { have } = (await response.json()) as { have: string | null };
-        if (have === null) await this.#fetch("/reset");
-        this.#held = have;
-        continue;
-      }
-      if (!response.ok) throw new Error(`container exec failed: ${response.status} ${await response.text()}`);
-      body = (await response.json()) as ContainerExecBody;
-      this.#held = args.base;
-    }
-    if (body === undefined) throw new Error("container stayed out of sync after a full resync");
-    step("container.request");
+	/** The pending changes are committed as `version`: the working copy now matches it. */
+	async committed(args: { leaseId: string; version: number }): Promise<void> {
+		return this.#serial(async () => {
+			const owner = await this.ctx.storage.get<Owner>("owner");
+			if (owner?.leaseId !== args.leaseId || !this.#container().running) return;
+			await this.#post("/ack", { version: args.version });
+			this.#held = args.version;
+		});
+	}
 
-    const changes: WorkspaceChange[] = [];
-    for (const file of body.changes.put) {
-      const bytes = Uint8Array.from(atob(file.content), (char) => char.charCodeAt(0));
-      const hash = await workspace.putBlob(bytes);
-      changes.push({ kind: "put", path: file.path, hash, size: bytes.byteLength, mode: file.mode });
-    }
-    for (const path of body.changes.remove) changes.push({ kind: "delete", path });
-    let version = args.base;
-    if (changes.length > 0) {
-      try {
-        version = await workspace.commit(args.base, changes);
-      } catch (error) {
-        await this.#fetch("/reset");
-        this.#held = null;
-        throw error;
-      }
-      await this.#fetch("/ack", { base: args.base, version });
-      this.#held = version;
-    }
-    step("container.commit");
+	/** The lease ended. The container keeps running (warm) for the next lease; a discarded lease's changes are dropped. */
+	async ended(args: { leaseId: string; discard: boolean }): Promise<void> {
+		return this.#serial(async () => {
+			const owner = await this.ctx.storage.get<Owner>("owner");
+			if (owner?.leaseId !== args.leaseId) return;
+			if (args.discard && this.#container().running) {
+				await this.#post("/reset");
+				this.#held = null;
+			}
+			await this.ctx.storage.put("owner", { ...owner, leaseId: "" });
+		});
+	}
 
-    return {
-      tier: "container",
-      exitCode: body.exitCode,
-      stdout: body.stdout,
-      stderr: body.stderr,
-      base: args.base,
-      version,
-      changed: changes.length,
-      timings: { ...timings, ...body.timings },
-      container: body.container,
-    };
-  }
+	/** Stops the container now, as the cold-start harness needs. */
+	async stop(): Promise<void> {
+		return this.#serial(async () => {
+			this.#held = null;
+			const container = this.ctx.container;
+			if (container?.running) await container.destroy();
+			await this.ctx.storage.delete("owner");
+		});
+	}
 
-  /** Stops the container now, as the cold-start harness needs. */
-  async release(): Promise<void> {
-    this.#held = null;
-    const container = this.ctx.container;
-    if (container?.running) await container.destroy();
-    await this.ctx.storage.delete("owner");
-  }
+	// ---- internals ---------------------------------------------------------------------------------------------------
 
-  async #sync(workspace: R2Workspace, from: WorkspaceVersion | null, to: WorkspaceVersion) {
-    if (from === to) return { from, to, put: [], remove: [] };
-    const target = await workspace.manifest(to);
-    const source = from === null ? undefined : await workspace.manifest(from);
-    const diff = diffManifests(source, target);
-    const put: Put[] = [];
-    // R2 reads in parallel batches: one at a time costs a round trip per file.
-    for (let i = 0; i < diff.put.length; i += SYNC_CONCURRENCY) {
-      const batch = diff.put.slice(i, i + SYNC_CONCURRENCY);
-      const bodies = await Promise.all(batch.map((entry) => workspace.readBlob(entry.hash)));
-      for (const [j, entry] of batch.entries()) {
-        const bytes = bodies[j];
-        if (bytes === null || bytes === undefined) throw new Error(`missing blob ${entry.hash} for ${entry.path}`);
-        put.push({ path: entry.path, mode: entry.mode, content: toBase64(bytes) });
-      }
-    }
-    return { from, to, put, remove: diff.remove };
-  }
+	/** Starts the container if needed and makes `call.leaseId` its owner. */
+	async #claim(call: ContainerCall): Promise<Record<string, number>> {
+		const owner = await this.ctx.storage.get<Owner>("owner");
+		const claim: Owner = { leaseId: call.leaseId, workspaceId: call.workspaceId };
+		if (!this.#container().running) {
+			this.#held = null;
+			// Claimed before starting, so a call that interleaves with the start sees the right owner.
+			await this.ctx.storage.put("owner", claim);
+			return this.#start(call.sessionId);
+		}
+		if (owner !== undefined && owner.leaseId !== "" && owner.leaseId !== call.leaseId) {
+			throw new Error("this container is in use by another lease");
+		}
+		if (owner === undefined || owner.workspaceId !== call.workspaceId) {
+			// A warm container that last held another workspace starts from an empty working copy.
+			await this.#post("/reset");
+			this.#held = null;
+		}
+		await this.ctx.storage.put("owner", claim);
+		return {};
+	}
+
+	async #start(sessionId: string): Promise<Record<string, number>> {
+		const container = this.#container();
+		const timings: Record<string, number> = {};
+		let at = performance.now();
+		const image = container.images.sandbox;
+		if (image === undefined) throw new Error("image 'sandbox' missing from ctx.container.images");
+		container.start({ image, instance: INSTANCE, enableInternet: false } as ContainerStartupOptions);
+		this.ctx.waitUntil(
+			container
+				.monitor()
+				.catch((error) => console.error(JSON.stringify({ message: "container exited", error: String(error) }))),
+		);
+		// Route all egress through the vault before the agent can make a request.
+		const vault = this.ctx.exports.VaultGateway({ props: { sessionId, tier: "container" } });
+		await container.interceptAllOutboundHttp(vault);
+		await container.interceptOutboundHttps("*", vault);
+		await container.setInactivityTimeout(INACTIVITY_MS);
+		timings["container.start"] = round(performance.now() - at);
+		at = performance.now();
+		const port = container.getTcpPort(PORT);
+		for (let attempt = 0; ; attempt += 1) {
+			try {
+				const response = await port.fetch("http://container/health");
+				if (response.ok) break;
+			} catch {
+				// Not listening yet.
+			}
+			if (performance.now() - at > 60_000) throw new Error("container did not become ready within 60 s");
+			await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 50 : 250));
+		}
+		timings["container.ready"] = round(performance.now() - at);
+		return timings;
+	}
+
+	/** Posts to the agent with a sync from the held version to the head; resyncs once if the agent disagrees. */
+	async #withSync(call: ContainerCall, path: string, body: (sync: Sync) => unknown): Promise<unknown> {
+		const workspaces = new ObjectStoreWorkspaces({ store: r2Store(this.env.WORKSPACES) });
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const sync = await this.#sync(workspaces, call, this.#held, call.head);
+			const response = await this.#post(path, body(sync));
+			if (response.status === 409) {
+				const { have } = (await response.json()) as { have: number | null };
+				if (have === null) await this.#post("/reset");
+				this.#held = have;
+				continue;
+			}
+			if (!response.ok) throw new Error(`container ${path} failed: ${response.status} ${await response.text()}`);
+			this.#held = call.head;
+			return response.json();
+		}
+		throw new Error("container stayed out of sync after a full resync");
+	}
+
+	async #post(path: string, body?: unknown): Promise<Response> {
+		return this.#container()
+			.getTcpPort(PORT)
+			.fetch(`http://container${path}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: body === undefined ? "{}" : JSON.stringify(body),
+			});
+	}
+
+	async #sync(workspaces: ObjectStoreWorkspaces, call: ContainerCall, from: number | null, to: number): Promise<Sync> {
+		if (from === to) return { from, to, put: [], remove: [] };
+		const files = async (version: number) =>
+			new Map(
+				(await listAll(workspaces, call.ctx, call.workspaceId, { version }))
+					.filter((entry) => entry.kind === "file")
+					.map((entry) => [entry.path, entry]),
+			);
+		const target = await files(to);
+		const source = from === null ? new Map<string, ModedFileEntry>() : await files(from);
+		const changed = [...target.values()].filter((entry) => {
+			const before = source.get(entry.path);
+			return before === undefined || before.digest !== entry.digest || (before.mode ?? 0o644) !== (entry.mode ?? 0o644);
+		});
+		const remove = [...source.keys()].filter((path) => !target.has(path));
+		const put: Put[] = [];
+		// R2 reads in parallel batches: one at a time costs a round trip per file.
+		for (let i = 0; i < changed.length; i += SYNC_CONCURRENCY) {
+			const batch = changed.slice(i, i + SYNC_CONCURRENCY);
+			const bodies = await Promise.all(
+				batch.map((entry) => workspaces.readBlob(call.ctx, call.workspaceId, entry.digest ?? "")),
+			);
+			for (const [j, entry] of batch.entries()) {
+				put.push({ path: entry.path, mode: entry.mode ?? 0o644, content: toBase64(bodies[j]!) });
+			}
+		}
+		return { from, to, put, remove };
+	}
 }
 
 function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
+	let binary = "";
+	for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	return btoa(binary);
+}
+
+function fromBase64(text: string): Uint8Array {
+	return Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 }
 
 function round(ms: number) {
-  return Math.round(ms * 10) / 10;
+	return Math.round(ms * 10) / 10;
 }
