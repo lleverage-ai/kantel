@@ -11,7 +11,7 @@
 //   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use; default any https: URL
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bootstrap, createGatewayComponents } from "./components.ts";
@@ -33,11 +33,28 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	};
 }
 
+/**
+ * Writes `content` to `path` readable by its owner only, whatever was there before: a new file with mode 0600 in the
+ * same directory, renamed over the old one, so the secret never sits in a file with wider permissions.
+ */
+export async function writePrivateFile(path: string, content: string): Promise<void> {
+	await mkdir(dirname(path), { recursive: true });
+	const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	try {
+		await writeFile(temporary, content, { mode: 0o600, flag: "wx" });
+		// The mode passed to writeFile is masked by the umask; set it outright.
+		await chmod(temporary, 0o600);
+		await rename(temporary, path);
+	} catch (error) {
+		await rm(temporary, { force: true });
+		throw error;
+	}
+}
+
 export async function serveGateway(cfg = gatewayConfig()) {
 	const components = createGatewayComponents();
 	const seeded = await bootstrap(components, { organisation: cfg.organisation, project: cfg.project });
-	await mkdir(dirname(cfg.bootstrapFile), { recursive: true });
-	await writeFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`, { mode: 0o600 });
+	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
 	const gateway = createGateway({
 		components,
