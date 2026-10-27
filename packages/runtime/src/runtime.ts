@@ -142,6 +142,8 @@ interface OpenSession {
 	readonly generation: string;
 	/** Bumped on every reinstall of the session's host tools, so an older, slower one never installs over a newer one. */
 	toolsVersion: number;
+	/** The latest reinstall of the session's host tools. */
+	installing: Promise<void>;
 	aborts: number;
 	closed: boolean;
 	/** A close in progress; a second close waits for it. */
@@ -355,11 +357,24 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	};
 
 	/** Installs the session's current host tools, unless a newer install started meanwhile. */
-	const reinstallTools = async (session: OpenSession) => {
+	const reinstallTools = (session: OpenSession): Promise<void> => {
 		session.toolsVersion += 1;
 		const version = session.toolsVersion;
-		const tools = await toolsFor(session);
-		if (version === session.toolsVersion) session.registry.install(extensionFor(session, tools));
+		const installing = (async () => {
+			const tools = await toolsFor(session);
+			if (version === session.toolsVersion) session.registry.install(extensionFor(session, tools));
+		})();
+		session.installing = installing;
+		return installing;
+	};
+
+	/** Waits until the latest install of the session's host tools is in, following any that supersede it meanwhile. */
+	const toolsInstalled = async (session: OpenSession) => {
+		for (;;) {
+			const latest = session.installing;
+			await latest;
+			if (latest === session.installing) return;
+		}
 	};
 
 	/** Reinstalls each affected open session's host tools after a registration changes. */
@@ -427,6 +442,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			unsaved: false,
 			saved: record,
 			toolsVersion: 0,
+			installing: Promise.resolve(),
 			generation: crypto.randomUUID().slice(0, 8),
 			aborts: stored.aborts,
 			closed: stored.closed,
@@ -440,7 +456,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			view.dispose();
 		};
 		try {
-			await reinstallTools(session);
+			// A registration change may start a newer install meanwhile; opening finishes once the latest is in.
+			void reinstallTools(session);
+			await toolsInstalled(session);
 			if (session.closed) {
 				publish(session, session.projector.project(view.value));
 				publish(session, session.projector.close());

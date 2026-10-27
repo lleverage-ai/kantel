@@ -359,6 +359,79 @@ describe("session runtime opening", () => {
 	});
 });
 
+describe("session runtime opening, superseded", () => {
+	it("finishes opening only once a host-tool install that superseded its own is in", async () => {
+		const db = await openNodeSqliteDatabase(":memory:");
+		const hosted = { ...profile, hostId: "sal", tools: ["lookup"] };
+		const first = await openOn(db);
+		await first.service.profiles.put(ctx, hosted);
+		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		await first.service.close();
+
+		// Each held host lookup waits for its own release.
+		const held: { reached: () => void; release: Promise<void> }[] = [];
+		const lookups: { entered: Promise<void>; release: () => void }[] = [];
+		for (let i = 0; i < 2; i += 1) {
+			let reached: () => void = () => {};
+			let release: () => void = () => {};
+			const entered = new Promise<void>((resolve) => {
+				reached = resolve;
+			});
+			const released = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			held.push({ reached, release: released });
+			lookups.push({ entered, release });
+		}
+		let holding = false;
+		const second = await openOn(db, (store) => ({
+			...store,
+			async host(organisationId, hostId) {
+				const found = await store.host(organisationId, hostId);
+				// The first gate holds the opening's lookup (no registration yet); the second, the refresh after the
+				// registration lands (register's own check for an existing one, which finds none, passes).
+				const gate = !holding ? undefined : held.length === 2 || found !== undefined ? held.shift() : undefined;
+				if (gate !== undefined) {
+					gate.reached();
+					await gate.release;
+				}
+				return found;
+			},
+		}));
+		holding = true;
+		const opening = second.service.runtime.snapshot(ctx, session.id);
+		await lookups[0]!.entered;
+		const calls: string[] = [];
+		const registering = second.service.hostTools.register(
+			ctx,
+			"sal",
+			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
+			async (call) => {
+				calls.push(call.tool);
+				return { output: "found" };
+			},
+		);
+		await lookups[1]!.entered;
+		holding = false;
+		let opened = false;
+		void opening.then(() => {
+			opened = true;
+		});
+		lookups[0]!.release();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(opened).toBe(false);
+		lookups[1]!.release();
+		await opening;
+		await registering;
+		second.script.reply({ toolCalls: [{ name: "lookup", args: {} }] }, { text: "Done" });
+		const prompt = await second.service.runtime.prompt(ctx, session.id, { text: "Look it up" });
+		expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ answer: "Done" });
+		expect(calls).toEqual(["lookup"]);
+		await second.service.close();
+		await db.close();
+	});
+});
+
 const ctx = { actor: { kind: "service", serviceId: "test" }, organisationId: ORG } as const;
 
 /**
