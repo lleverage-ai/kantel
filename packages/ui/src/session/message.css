@@ -1,5 +1,6 @@
 /* Messages. The user's bubble after T3 Code's: right-aligned, 80% at most, rounded-2xl on the message surface. The
-   assistant's answer has no box at all. The streaming caret and the working dots are the only things that move. */
+   assistant's answer has no box at all. The streaming caret is the only thing that moves; the working row's timer
+   only counts. */
 
 .hb-user-message {
 	display: flex;
@@ -62,36 +63,23 @@
 	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
 }
 
-/* Three dots while the agent works before its first word. */
+/* "Working for 12s" while the agent works before its first word, after T3 Code's working row: muted, small, tabular
+   numbers so the timer does not shift as it counts. One line as tall as the answer's first line, so nothing moves
+   when the first word replaces it. Not flex: the space in "Working for " must stay between the words and the time. */
 .hb-working {
-	display: inline-flex;
-	align-items: center;
-	gap: var(--hb-space-2);
-	height: calc(var(--hb-text-md) * var(--hb-leading-prose));
-}
-
-.hb-working-dot {
-	width: var(--hb-dot);
-	height: var(--hb-dot);
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-text-faint);
-	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
-}
-
-.hb-working-dot:nth-child(2) {
-	animation-delay: calc(var(--hb-duration-pulse) / 6);
-}
-
-.hb-working-dot:nth-child(3) {
-	animation-delay: calc(var(--hb-duration-pulse) / 3);
+	min-width: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: calc(var(--hb-text-md) * var(--hb-leading-prose));
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: reduce) {
 	.hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, table, blockquote, hr):last-child::after,
 	.hb-assistant-message-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
 	.hb-assistant-message-streaming .hb-markdown > pre:last-child > code::after,
-	.hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after,
-	.hb-working-dot {
+	.hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after {
 		animation: none;
 	}
 }

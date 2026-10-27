@@ -61,11 +61,12 @@ const streamed =
 		.split(" ")
 		.filter((word) => word !== "");
 
-/** About 400 words, one every 60ms, after a second of the working dots. */
+/** About 400 words, one every 60ms, after a second of the working row. */
 function StreamingDemo() {
+	// The prompt is re-based on the real clock, so the working row's timer reads "Working for 30s".
 	const [items, setItems] = useState<TranscriptItem[]>(() => [
 		...finishedTurn,
-		user("su", "Now run the full suite and open a PR.", 30),
+		{ ...user("su", "Now run the full suite and open a PR."), at: Date.now() - 30_000 },
 		assistant("sa", "", { streaming: true, secondsAgo: 1 }),
 	]);
 	useEffect(() => {
@@ -92,7 +93,7 @@ function StreamingDemo() {
 	return (
 		<Sheet
 			title="Transcript streaming"
-			intro="An answer streams in a word every 60ms, about 400 words. Only the streaming row renders; the list follows the end unless you scroll up, which brings up Scroll to end."
+			intro="After a second of Working for 30s, an answer streams in a word every 60ms, about 400 words. Only the streaming row renders; the list follows the end unless you scroll up, which brings up Scroll to end."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} />
@@ -102,6 +103,27 @@ function StreamingDemo() {
 }
 
 export const Streaming: Story = () => <StreamingDemo />;
+
+/** The turn's prompt was sent 12 seconds ago and the answer has no words yet. */
+function WorkingDemo() {
+	const [items] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("wu", "Now run the full suite and open a PR."), at: Date.now() - 12_000 },
+		assistant("wa", "", { streaming: true, secondsAgo: 1 }),
+	]);
+	return (
+		<Sheet
+			title="Transcript working"
+			intro="Not one of the required states: the turn before the answer's first word. The transcript ends with Working for 12s, timed from the prompt and counting each second."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} />
+			</div>
+		</Sheet>
+	);
+}
+
+export const Working: Story = () => <WorkingDemo />;
 
 const failed: TranscriptItem[] = [
 	user("eu", "Run the billing migration against staging.", 120),

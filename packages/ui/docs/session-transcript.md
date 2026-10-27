@@ -37,6 +37,9 @@ Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `
 - *Loading:* `loading` with no items shows two skeleton turns. With items, `loading` is ignored and the list shows.
 - *Empty:* no items and not loading shows `empty`, or "No messages yet" with "Send a message to start the session."
 - *Error:* `error` shows in an error `Notice` above the list; the list stays usable below it.
+- *Working:* while the last answer streams with no words and no thought yet, the transcript ends with "Working for
+  12s" (`AssistantMessage`'s working row), timed from when the turn started: the last message the person sent before
+  the answer, other than a steer. When that message is not loaded (it is in an older page), it says "Working".
 - Cards render through `renderCard`, with the host's handlers. Without it they show read-only, from the same
   components: a vault request's terms and binding code, a question and its options, a browser request's reason,
   each waiting with nothing to press. A card is never reduced to its type.
@@ -48,7 +51,9 @@ Key the transcript by session. A different session's items would otherwise look 
 
 **Cost:** only the rows near the viewport are mounted (a 600px buffer each way), whatever the session's length.
 Rows come from `groupTranscript` and are memoised on their row object, so while one answer streams only its row
-renders. `renderCard` is a row prop: pass a stable function, or every row renders when it changes. `onRowRender` is
+renders. Each streaming answer's turn start is found in the same pass over the rows and passed as a number, so it
+never renders a row on its own. `renderCard` is a row prop: pass a stable function, or every row renders when it
+changes. `onRowRender` is
 read through a ref and never causes a render; `apps/console` feeds it to its `?profile=1` panel. One `ResizeObserver`
 on the list's content and its viewport keeps the end in view while following, including when the viewport is
 resized (a phone's keyboard opening).
@@ -138,18 +143,25 @@ sent while the agent was working (`via` is `steer` or `followUp`). `UserMessage(
 
 ### AssistantMessage
 
-**For** the agent's answer, unboxed on the canvas, its text as `Markdown`. `AssistantMessage({ item })`.
+**For** the agent's answer, unboxed on the canvas, its text as `Markdown`.
+`AssistantMessage({ item, turnStartedAt? })`; `turnStartedAt` is when the answer's turn started, which `Transcript`
+passes.
 
 **States:** a thought (`item.thinking`) sits behind a disclosure, "Thinking" while streaming with no text yet and
 "Thought it through" after. While streaming with text, a soft caret sits after the last word. While streaming with
-no text and no thought, three dots (`role="img"`, "Working") say the agent is working.
+no text and no thought, the working row says the agent is working, after T3 Code's (`TimelineWorkGroupRows.tsx`,
+`WorkingTimelineRow`): "Working for 12s" in muted `--hb-text-sm` with tabular numbers, the time an `Elapsed` from
+`turnStartedAt`; "Working" with no time when there is no `turnStartedAt`. It is one line as tall as the answer's
+first line, so the first word takes its place without the row moving. With a time it is a `role="timer"` named
+"Working", whose implicit `aria-live` is off: screen readers can read it but are not told every second.
 
 **Not for** host notices (`NoticeRow`) or tool output (`ToolCallChip`).
 
 **Keyboard:** the thought's disclosure is a button with `aria-expanded`. Links in the answer open in a new tab.
 
-**Cost:** memoised on `item`; Markdown re-parses only the last block as text streams. The caret and the dots are the
-only animations, CSS only, and stop under reduced motion (the caret stays, still).
+**Cost:** memoised on `item` and `turnStartedAt`; Markdown re-parses only the last block as text streams. The caret
+is the only animation, CSS only, and stops under reduced motion (it stays, still). The working row's timer is an
+`Elapsed` on the shared one-second clock: only that leaf renders each second, never the message or its row.
 
 ### NoticeRow
 

@@ -1,7 +1,59 @@
 # Design loop results
 
-The latest round of the [design loop](design-loop.md). Every number, gate result and judge's verdict behind this
+The latest rounds of the [design loop](design-loop.md). Every number, gate result and judge's verdict behind this
 page is in `loop/history/<scenario>.json`.
+
+## Round 2
+
+Four components (the composer has left the loop), one variant each, against champions that already carry Tom's two
+calls from round 1: tool calls follow T3 Code's work log (no per-call duration; the start time on hover or focus;
+"Worked for" on every finished group) and the vault card says its lifetime once, in the terms. Round 1's carried
+inline duration and countdown split no longer apply as they stood: the first is what Tom ruled out, the second
+split a countdown that is gone, so it was reworked around the Lifetime term. Every variant passed every gate.
+Two were selected:
+
+| Component | Selected | Why |
+| --- | --- | --- |
+| Transcript | "Working for 12s" in place of the three dots while a turn works | All three judges preferred it; judged gain 0.50 |
+| SessionListItem | `content-visibility: auto` on rows (carried from round 1) | Selection latency halved again; looks the same |
+
+ToolCallChip and VaultApprovalCard keep their champions. Measures and scores are read as in round 1 (below):
+medians of five interleaved runs at 4x CPU throttling, `S = ΔJ + M`, accepted at S > 0.1 with no measure more
+than 10% worse.
+
+| Component | | Render | Wasted | Latency median / p95 | Input render | JS / CSS gz | J | S | Decision |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Transcript | Champion | 285.8 | 0 | 73.7 / 86.4 | 310.5 | 70.8 / 4.8 kB | 3.75 | | replaced |
+| | Working row | 301.8 | 0 | 75.8 / 90.0 | 317.0 | 71.0 / 4.7 kB | 4.25 | **0.472** | **selected** |
+| ToolCallChip | Champion | 16.5 | 0 | 32.5 / 65.8 | 21.5 | 2.9 / 1.5 kB | 4.38 | | kept |
+| | Failed call as in T3 | 16.8 | 0 | 31.8 / 53.9 | 20.7 | 2.9 / 1.5 kB | 4.13 | −0.204 | rejected: all three judges preferred the champion |
+| SessionListItem | Champion | 90.9 | 0 | 69.3 / 131.6 | 57.5 | 3.6 / 2.1 kB | | | replaced |
+| | `content-visibility: auto` | 86.1 | 0 | 32.5 / 67.4 | 51.8 | 3.6 / 2.1 kB | not judged | **0.324** | **selected** |
+| VaultApprovalCard | Champion | 16.0 | 10 | 37.3 / 55.3 | 35.2 | 4.6 / 2.8 kB | | | kept |
+| | Lifetime ticks alone, card memoised | 4.0 | 0 | 44.3 / 51.7 | 21.1 | 4.8 / 2.8 kB | not judged | 0.838 | rejected: latency median 19% worse |
+
+**Transcript.** Before its first word, a turn now ends with a muted "Working for 30s", timed from the person's
+last message (a steer joins the turn under way), after T3 Code's working row; without that time it says "Working".
+Only the `Elapsed` leaf ticks. All three judges preferred it on states, fidelity, consistency and copy: it tells how
+long the agent has worked, where the dots told nothing, and it pairs with "Worked for" above it. It also puts back,
+at turn level, the live duration the tool rows gave up. Render cost rose 5.6%, inside the noise band (the variant's
+runs spread from 271 to 396ms).
+
+**ToolCallChip.** The variant made a failed call look like T3 Code's: its own tool icon tinted red, the label at
+the finished rows' strength, a small red X before the chevron. All three judges preferred the champion's red
+circled X in the icon slot: it matches the interrupted call's amber icon, so status always sits in the same place,
+and the variant marked one failure twice, 500px apart, where it is easier to miss. Round 1's reservation (a failed
+label as bright as the running one) stands, and the judges judged it the smaller problem.
+
+**SessionListItem.** As in round 1, containing rows halved selection latency (69.3 to 32.5ms median, 131.6 to
+67.4ms p95). The screenshots match the champion's to sub-pixel offsets, checked by eye, so ΔJ = 0.
+
+**VaultApprovalCard.** Moving the per-second clock into the Lifetime value and memoising the card did what it
+should: render cost 16.0 to 4.0ms, wasted renders 10 to 0, and picking a code 35.2 to 21.1ms of rendering, as the
+card no longer re-renders with its parent. The rule still rejects it, on latency: 44.3 against 37.3ms median. Both
+sides' runs fall in the same two clusters, about 29 to 33ms and 44 to 46ms, which look like whole frames at 4x
+throttling; the variant landed in the upper one three times out of five, the champion twice. Its p95 is lower
+(51.7 against 55.3ms). It is the first candidate for round 3, measured with more runs.
 
 ## Round 1
 
@@ -104,13 +156,21 @@ The tree with the three selections passes every check: typecheck, Biome on 311 f
 | SessionListItem | 89.7 | 0 | 51.1 / 113.2 | 51.5 | 3.4 / 1.9 kB |
 | VaultApprovalCard | 15.2 | 5 | 23.0 / 34.9 | 29.2 | 4.6 / 2.7 kB |
 
-## Round 2 candidates
+## Round 2 candidates (from round 1)
 
-Round 1 accepted variants, so by the loop's stop rule it continues:
+Round 1 accepted variants, so by the loop's stop rule it continued. What became of its candidates:
 
-- SessionListItem: `content-visibility: auto` on rows, against the full-width-title champion.
-- ToolCallChip: the duration after the label, against the running-emphasis champion.
-- VaultApprovalCard: the countdown split, with the card memoised.
+- SessionListItem: `content-visibility: auto` on rows, against the full-width-title champion. Selected in round 2.
+- ToolCallChip: the duration after the label. Dropped: Tom chose T3 Code's work log, which has no per-call duration.
+- VaultApprovalCard: the countdown split, with the card memoised. The countdown is gone (Tom: the lifetime is said
+  once, in the terms); the same idea, applied to the Lifetime term, was round 2's vault variant.
+
+## Round 3 candidates
+
+Round 2 accepted variants, so by the stop rule a third round may run:
+
+- VaultApprovalCard: the Lifetime value ticking alone in a memoised card, measured with more runs, as its latency
+  sits on frame boundaries.
 
 ## For Tom
 
@@ -118,9 +178,8 @@ Taste calls the loop could not settle, with what the judges said:
 
 - **Composer height** (for the composer rebuild). T3 Code rests its empty composer at about three lines; the judges agreed Harbour's shorter
   one is less faithful but preferred it 2 to 1 for density and the disabled and mobile states.
-- **Tool durations.** Inline durations won 3 to 0, yet all three judges scored the champion's right-aligned column
-  higher on consistency, as it matches the session list's right-aligned times. Round 2 will test it against the
-  new champion; it is a call between reading each row and scanning the column.
-- **Two things the vault judges flagged outside this round's hypotheses**, each by two of the three: the lifetime
-  appears twice (the "15 minutes left" term and the "14:59 left" bar), and the approved-narrowed story reads
-  "720h left" where days would be clearer.
+- **Failed tool calls.** T3 Code keeps a failed call's own icon, tinted red, with a small X at the row's end; the
+  judges preferred Harbour's red circled X 3 to 0. Harbour keeps it, so here it departs from T3 on purpose.
+- **Settled in round 2 by Tom's calls:** tool durations (T3 Code's work log: the start time on hover or focus, the
+  duration once per group) and the vault lifetime (once, in the terms; the approved-narrowed story now reads
+  "30 days left").

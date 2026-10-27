@@ -163,6 +163,104 @@
 			"accepted": ["tool-inline-duration", "tool-running-emphasis"],
 			"selected": "tool-running-emphasis",
 			"carried": ["tool-inline-duration"]
+		},
+		{
+			"round": 2,
+			"champion": {
+				"gates": {
+					"typecheck": true,
+					"tests": true,
+					"lint": true,
+					"browser": {
+						"runs": 16,
+						"failed": []
+					},
+					"passed": true
+				},
+				"measures": {
+					"renderMs": 16.5,
+					"wasted": 0,
+					"latencyMedian": 32.5,
+					"latencyP95": 65.79999995231628,
+					"inputRenderMs": 21.5,
+					"bundleJs": 2860,
+					"bundleCss": 1461
+				},
+				"spread": {
+					"renderMs": [15.600000143051147, 18.499999284744263],
+					"latencyMedian": [31.399999856948853, 35.09999990463257]
+				},
+				"runs": 5
+			},
+			"variants": [
+				{
+					"variant": "tool-failed-quiet",
+					"hypothesis": "Hierarchy and fidelity: a failed call keeps its own tool icon tinted red, its label at the finished rows' strength and a small red X at the row's end, as in T3 Code, so the running call is the one bright row.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 16,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 16.800000190734863,
+						"wasted": 0,
+						"latencyMedian": 31.800000190734863,
+						"latencyP95": 53.90000009536743,
+						"inputRenderMs": 20.700000286102295,
+						"bundleJs": 2899,
+						"bundleCss": 1469
+					},
+					"spread": {
+						"renderMs": [14.800000667572021, 17.300000190734863],
+						"latencyMedian": [30.09999990463257, 34.5]
+					},
+					"judged": {
+						"champion": 4.375,
+						"variant": 4.125,
+						"criteria": {
+							"champion": [4, 4.5, 4, 4.5, 4.5, 4.5, 4.5, 4.5],
+							"variant": [3.5, 4.5, 4, 4, 4, 4.5, 4.5, 4]
+						},
+						"prefer": ["champion", "champion", "champion"],
+						"verdicts": [
+							{
+								"judge": 1,
+								"championWas": "B",
+								"prefer": "B",
+								"reasons": "The versions differ only in how a failed call looks. The long-content and streaming stories are pixel-identical, and the other rows, open panels, spacing and type match. In A's default and mobile stories, the failed 'Ran pnpm migrate --env staging' row keeps a dimmed red terminal icon and a muted label. Its small red X sits next to the chevron at the far right, about 500px from the label at 1280px. The failure is easy to miss and is shown twice in two places, which adds cost without making it clearer. B swaps the kind icon for a red circled X in the leading slot and keeps the label readable. That matches the amber circle icon used for the interrupted '--retry' row, so status always lives in the same leading position, like the coloured dot-and-label status in Harbour's session list. In B's 'Collapsed, with a failed step' group and 420px stories, the failed step under 'Worked for 50s, 4 steps' is visible at a glance, and nothing extra crowds the chevron target on a phone. B's one cost is that the failed label is as bright as the running row's, so 'Running pnpm test' no longer stands alone as the brightest item. That is a smaller problem than A hiding the failure."
+							},
+							{
+								"judge": 2,
+								"championWas": "A",
+								"prefer": "A",
+								"reasons": "The streaming and long-content stories look the same in A and B, and so do the kinds rows and the open-call panel; the two versions differ only in how a failed call looks. A swaps the kind icon for a red circled X and keeps the label bright. In the 'Collapsed, with a failed step' group story and the 420px mobile story, that failed row is the first thing you see under the 'Worked for 50s, 4 steps' summary, and that is right because it is the one thing the person has to act on. B tints the terminal icon dim red, mutes the label to the same grey as finished rows, and adds a small red X near the far-right chevron. That is calmer, but the failure is harder to spot, and it marks the failure twice, once at each end of the row. B is also less consistent with itself: the interrupted call still uses a circled amber status icon in place of the kind icon, while a failed call keeps its kind icon and adds a trailing X, so the two problem states use different patterns. In A's Statuses section both the running row and the failed row are bright, which competes slightly, but both are rows that need attention. Everything else, including the 420px layouts and their tap targets, matches."
+							},
+							{
+								"judge": 3,
+								"championWas": "A",
+								"prefer": "A",
+								"reasons": "The two versions are the same except for how a failed call is shown. The streaming and long-content stories and every non-failed row are identical. In A (default, error, group and mobile stories), a failed call swaps its kind icon for a red circled X and keeps a bright label. That matches the amber circled icon on the interrupted '--retry' row and the circle-and-colour status language in Harbour's session list, so it is clear at a glance. The cost is that in the Statuses list the failed row is as bright as the running row. B keeps the running row as the only bright label, which is quieter and closer to T3's restraint. But B marks the failure twice: a dim red '>_' icon that is hard to spot at 1280, and a small red X about 500px away from the label next to the chevron. B also mixes two systems: an interrupted call swaps its icon, while a failed call tints its icon and adds a trailing mark. At 420px both versions work, and B's X sits in a comfortable spot next to the chevron. B's error story description is longer and narrates styling ('dimmed red', 'small red X before the chevron') instead of saying what happened. Overall, A's single, consistent failure icon is clearer and costs less than B's quieter double signal."
+							}
+						]
+					},
+					"decision": {
+						"judged": -0.25,
+						"measured": 0.045786784921760526,
+						"score": -0.20421321507823947,
+						"worse": [],
+						"missing": [],
+						"accepted": false
+					}
+				}
+			],
+			"accepted": [],
+			"selected": null,
+			"carried": []
 		}
 	]
 }

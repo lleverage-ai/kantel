@@ -135,6 +135,76 @@
 			"accepted": ["list-content-visibility", "list-full-title"],
 			"selected": "list-full-title",
 			"carried": ["list-content-visibility"]
+		},
+		{
+			"round": 2,
+			"champion": {
+				"gates": {
+					"typecheck": true,
+					"tests": true,
+					"lint": true,
+					"browser": {
+						"runs": 16,
+						"failed": []
+					},
+					"passed": true
+				},
+				"measures": {
+					"renderMs": 90.89999985694885,
+					"wasted": 0,
+					"latencyMedian": 69.29999995231628,
+					"latencyP95": 131.59999990463257,
+					"inputRenderMs": 57.500001430511475,
+					"bundleJs": 3559,
+					"bundleCss": 2105
+				},
+				"spread": {
+					"renderMs": [89.50000071525574, 106.10000014305115],
+					"latencyMedian": [69, 81.5]
+				},
+				"runs": 5
+			},
+			"variants": [
+				{
+					"variant": "list-content-visibility-r2",
+					"hypothesis": "Performance (carried from round 1): content-visibility: auto on each row, so selecting a row restyles a screenful rather than all 200 rows; now against the full-width-title champion.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 16,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 86.10000038146973,
+						"wasted": 0,
+						"latencyMedian": 32.5,
+						"latencyP95": 67.39999985694885,
+						"inputRenderMs": 51.799999713897705,
+						"bundleJs": 3559,
+						"bundleCss": 2131
+					},
+					"spread": {
+						"renderMs": [83.89999842643738, 94.89999794960022],
+						"latencyMedian": [29.800000190734863, 33.700000047683716]
+					},
+					"judged": "pixel-identical, not judged",
+					"decision": {
+						"judged": 0,
+						"measured": 0.32413160258716206,
+						"score": 0.32413160258716206,
+						"worse": [],
+						"missing": [],
+						"accepted": true
+					}
+				}
+			],
+			"accepted": ["list-content-visibility-r2"],
+			"selected": "list-content-visibility-r2",
+			"carried": []
 		}
 	]
 }

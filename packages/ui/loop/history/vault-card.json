@@ -135,6 +135,76 @@
 			"accepted": ["vault-one-source"],
 			"selected": "vault-one-source",
 			"carried": []
+		},
+		{
+			"round": 2,
+			"champion": {
+				"gates": {
+					"typecheck": true,
+					"tests": true,
+					"lint": true,
+					"browser": {
+						"runs": 30,
+						"failed": []
+					},
+					"passed": true
+				},
+				"measures": {
+					"renderMs": 16,
+					"wasted": 10,
+					"latencyMedian": 37.299999952316284,
+					"latencyP95": 55.299999952316284,
+					"inputRenderMs": 35.19999957084656,
+					"bundleJs": 4610,
+					"bundleCss": 2813
+				},
+				"spread": {
+					"renderMs": [12.700000047683716, 22.799999952316284],
+					"latencyMedian": [31.5, 45.59999990463257]
+				},
+				"runs": 5
+			},
+			"variants": [
+				{
+					"variant": "vault-lifetime-leaf",
+					"hypothesis": "Performance (round 1's countdown split, reworked): the per-second clock moves into the Lifetime value alone, the card is memoised and folds on one expiry timeout, so neither a tick nor picking a code re-renders the card.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 30,
+							"failed": []
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 3.999999761581421,
+						"wasted": 0,
+						"latencyMedian": 44.299999952316284,
+						"latencyP95": 51.700000047683716,
+						"inputRenderMs": 21.100000143051147,
+						"bundleJs": 4758,
+						"bundleCss": 2813
+					},
+					"spread": {
+						"renderMs": [2.1999998092651367, 5.699999570846558],
+						"latencyMedian": [28.800000190734863, 45.799999952316284]
+					},
+					"judged": "pixel-identical, not judged",
+					"decision": {
+						"judged": 0,
+						"measured": 0.8376651701548823,
+						"score": 0.8376651701548823,
+						"worse": ["latencyMedian"],
+						"missing": [],
+						"accepted": false
+					}
+				}
+			],
+			"accepted": [],
+			"selected": null,
+			"carried": []
 		}
 	]
 }
