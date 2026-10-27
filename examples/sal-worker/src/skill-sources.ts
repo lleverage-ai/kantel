@@ -169,7 +169,7 @@ function hiddenOrDependency(path: string): boolean {
 export function findSkills(
 	roots: readonly SkillRoot[],
 	mode: DiscoveryMode,
-	/** Skill files (as reported, root `at` included) an earlier source already loaded. */
+	/** Skill files (as reported, root `at` included) to leave out as if absent: an earlier source loaded the file or name. */
 	skip: ReadonlySet<string> = new Set(),
 ): { skills: FoundSkill[]; problems: SkillProblem[] } {
 	const skills: FoundSkill[] = [];
@@ -199,13 +199,15 @@ export function findSkills(
 				if (declared) problems.push({ path: at(path), reason: "no description, so Pi does not load it" });
 				continue;
 			}
-			const real = file.real ?? at(path);
-			if (seenReal.has(real)) continue;
 			if (skip.has(at(path))) {
-				problems.push({ path: at(path), reason: "the same file as an earlier source's skill, so Pi loads it once" });
-				seenReal.add(real);
+				problems.push({
+					path: at(path),
+					reason: "an earlier source loaded this file or a skill of this name, so Pi does not load it here",
+				});
 				continue;
 			}
+			const real = file.real ?? at(path);
+			if (seenReal.has(real)) continue;
 			const name =
 				typeof frontmatter.name === "string" && frontmatter.name !== ""
 					? frontmatter.name
@@ -312,25 +314,33 @@ function sourceOf(
 }
 
 /**
- * The refs to publish sources at, in Pi's order, so that a skill file an earlier source loaded is not loaded again by a
- * later one, as Pi's one `loadSkills` call over all the paths does. Each later source's ref gains the skill files it
- * leaves out (`skipRef`).
+ * The refs to publish sources at, in Pi's order, so that the sources together load what Pi's one `loadSkills` call over
+ * all their paths loads. Pi takes skill files in order: one whose file an accepted skill already has is dropped, one
+ * whose name is taken is dropped without claiming its file, and the rest are accepted. Within a source `findSkills` does
+ * this; across sources each later source's ref gains the skill files it must leave out (`skipRef`), so that a file or
+ * name an earlier source took claims nothing here.
  */
 export async function layerSalSources(
 	sources: readonly { readonly source: SalSkillSource; readonly ref: string }[],
 ): Promise<{ source: SalSkillSource; ref: string }[]> {
-	const loaded = new Set<string>();
+	const files = new Set<string>();
+	const names = new Set<string>();
 	const out: { source: SalSkillSource; ref: string }[] = [];
 	for (const { source, ref } of sources) {
 		let current = skipRef(ref, []);
-		// Leaving a skill out can let a later one of the same name in, so look again until nothing changes.
+		// Leaving a skill out frees its name and file in this source, which can let another in: look again until none is.
 		for (;;) {
 			await source.fetch(current);
-			const again = source.last.skills.filter((skill) => loaded.has(source.identity(skill))).map((skill) => skill.file);
-			if (again.length === 0) break;
-			current = skipRef(current, [...splitRef(current).skip, ...again]);
+			const taken = source.last.skills
+				.filter((skill) => names.has(skill.name) || files.has(source.identity(skill)))
+				.map((skill) => skill.file);
+			if (taken.length === 0) break;
+			current = skipRef(current, [...splitRef(current).skip, ...taken]);
 		}
-		for (const skill of source.last.skills) loaded.add(source.identity(skill));
+		for (const skill of source.last.skills) {
+			names.add(skill.name);
+			files.add(source.identity(skill));
+		}
 		out.push({ source, ref: current });
 	}
 	return out;

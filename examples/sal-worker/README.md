@@ -16,10 +16,13 @@ given what a local Sal worker is given for the same task (issue #12).
   - plain `.md` files count at the root (`pi` mode) or below it (`agents` mode, for `~/.agents/skills`)
   - ignore files apply
   - the first skill of a name wins
-  - symlinks are followed, within the commit for Git sources. A link that dangles, leaves the commit or leads back to a
-    link already followed is left out and reported; so is an entry that cannot be read (a link to itself).
-  - a file reached through several paths loads once, across sources too. `layerSalSources` adds the skill files an
-    earlier source already loaded to a later source's ref (`<pin>?skip=...`), so a ref still gives one set of skills.
+  - symlinks are followed. In a Git source, a link that dangles, leaves the commit or leads back to a link already
+    followed is left out and reported, and so is a fan-out past 100,000 paths. In a directory, as in Pi, a dangling
+    link is passed over and a directory already open is not entered again; an entry that cannot be read (a link to
+    itself) is passed over and reported.
+  - a file reached through several paths loads once, and a name is taken once, across sources too. `layerSalSources`
+    adds the skill files a later source must leave out to its ref (`<pin>?skip=...`), so a ref still gives one set of
+    skills. Such a skill is reported among the source's problems, not as shadowed.
 
   A directory's digest covers which paths are one file, since that decides what loads. Tests check discovery against
   Pi's own `loadSkills`, for one root and for several sharing files. Binary files are left out (a `SkillFile` is text)
