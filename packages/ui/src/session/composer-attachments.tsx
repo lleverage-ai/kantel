@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileIcon, RetryIcon, TextFileIcon, XIcon } from "../primitives/icons.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
-import { formatBytes, isImage } from "./composer-model.ts";
+import { formatBytes } from "../workspace/workspace-model.ts";
+import { isImage } from "./composer-model.ts";
 
 /** What an attachment is, which decides how the composer shows it. */
 export type ComposerAttachmentKind =

@@ -50,7 +50,6 @@ export {
 	type ComposerState,
 	checkFiles,
 	DEFAULT_PASTE_FOLD,
-	formatBytes,
 	limitsSummary,
 	type PasteFold,
 	type PrimaryAction,

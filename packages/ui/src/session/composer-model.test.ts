@@ -7,7 +7,6 @@ import {
 	countLines,
 	DEFAULT_PASTE_FOLD,
 	foldsPaste,
-	formatBytes,
 	hasText,
 	limitsSummary,
 	pastedTextName,
@@ -25,6 +24,9 @@ import {
 	wheelPixels,
 } from "./composer-model.ts";
 import { type ComposerModelOption, filterModels, selectedModel } from "./model-picker.tsx";
+
+/** Sizes are binary, as formatBytes shows them (workspace-model.ts): 1 MB is 1,048,576 bytes. */
+const MB = 1024 * 1024;
 
 describe("capNudge", () => {
 	it("moves a line down by the gap between its content area's middle and its capitals' middle", () => {
@@ -237,9 +239,9 @@ describe("checkFiles", () => {
 	});
 
 	it("applies the image limit to images and the file limit to the rest", () => {
-		const limits = { maxImageBytes: 5_000_000, maxFileBytes: 20_000_000 };
+		const limits = { maxImageBytes: 5 * MB, maxFileBytes: 20 * MB };
 		const { accepted, rejected } = checkFiles(
-			[png("big.png", 6_000_000), pdf("big.pdf", 6_000_000), pdf("huge.pdf", 30_000_000)],
+			[png("big.png", 6 * MB), pdf("big.pdf", 6 * MB), pdf("huge.pdf", 30 * MB)],
 			limits,
 			0,
 		);
@@ -290,17 +292,10 @@ describe("checkFiles", () => {
 
 	it("summarises the limits plainly", () => {
 		expect(limitsSummary({})).toBe("");
-		expect(limitsSummary({ maxImageBytes: 5_000_000, maxFileBytes: 20_000_000, maxFiles: 10 })).toBe(
+		expect(limitsSummary({ maxImageBytes: 5 * MB, maxFileBytes: 20 * MB, maxFiles: 10 })).toBe(
 			"Images up to 5 MB, files up to 20 MB, 10 at most",
 		);
-		expect(limitsSummary({ maxFileBytes: 1_000 })).toBe("Files up to 1 KB");
-	});
-
-	it("formats sizes as file managers do", () => {
-		expect(formatBytes(980)).toBe("980 B");
-		expect(formatBytes(39_200)).toBe("39 KB");
-		expect(formatBytes(4_210_000)).toBe("4.2 MB");
-		expect(formatBytes(2_500_000_000)).toBe("2.5 GB");
+		expect(limitsSummary({ maxFileBytes: 1024 })).toBe("Files up to 1 KB");
 	});
 
 	it("tells images, pasted text and other files apart", () => {

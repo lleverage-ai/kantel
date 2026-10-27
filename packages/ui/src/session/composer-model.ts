@@ -4,6 +4,8 @@
 // composer-logic.ts, composerScrollGesture.ts, composerPromptHistory.ts, composerAttachmentFiles.ts and
 // packages/client-runtime/src/textPaste.ts.
 
+import { formatBytes } from "../workspace/workspace-model.ts";
+
 /** What the session lets the composer do. */
 export type ComposerState = "idle" | "running" | "sending" | "disabled";
 
@@ -307,20 +309,6 @@ export function limitsSummary(limits: AttachmentLimits): string {
 	if (limits.maxFiles !== undefined) parts.push(`${limits.maxFiles} at most`);
 	const text = parts.join(", ");
 	return text === "" ? "" : `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
-}
-
-/** Bytes in the units people use: "980 B", "39 KB", "4.2 MB". Decimal, as file managers show them. */
-export function formatBytes(bytes: number): string {
-	if (bytes < 1000) return `${bytes} B`;
-	const units = ["KB", "MB", "GB"];
-	let value = bytes / 1000;
-	let unit = 0;
-	while (value >= 1000 && unit < units.length - 1) {
-		value /= 1000;
-		unit += 1;
-	}
-	const rounded = value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
-	return `${rounded} ${units[unit]}`;
 }
 
 // Pasted text. T3 Code turns a paste of 32 KiB or more into a pasted-text.txt attachment; Claude does the same at a

@@ -60,8 +60,8 @@ const models: ComposerModelOption[] = [
 
 const limits: AttachmentLimits = {
 	maxFiles: 10,
-	maxFileBytes: 20_000_000,
-	maxImageBytes: 5_000_000,
+	maxFileBytes: 20 * 1024 * 1024,
+	maxImageBytes: 5 * 1024 * 1024,
 };
 
 const longDraft = `Before you open the PR, three things.
@@ -283,7 +283,7 @@ export const Error: Story = () => (
 			</Column>
 		</Section>
 		<Section title="A file turned away (try attaching a large file)">
-			<Live attachmentLimits={{ maxFileBytes: 1_000, accept: [".txt", ".md", "image/*"] }} />
+			<Live attachmentLimits={{ maxFileBytes: 1024, accept: [".txt", ".md", "image/*"] }} />
 		</Section>
 		<Section title="An image the chosen model can't read">
 			<Column>
