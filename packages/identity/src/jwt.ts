@@ -34,6 +34,9 @@ export interface SignInProvider {
 	verify(token: string): Promise<ExternalIdentity>;
 }
 
+/** How long a key or discovery fetch may take before the provider counts as unavailable. */
+const FETCH_TIMEOUT_MILLISECONDS = 5_000;
+
 /** How long fetched keys are trusted before they are fetched again. */
 export const JWKS_CACHE_MILLISECONDS = 10 * 60 * 1000;
 /** The least time between two key fetches caused by tokens naming a key the cached set does not have. */
@@ -55,7 +58,10 @@ function unavailable(message: string): HarbourError {
 async function fetchJson(fetchImpl: Fetch, url: string, what: string): Promise<unknown> {
 	let response: Response;
 	try {
-		response = await fetchImpl(url, { headers: { accept: "application/json" } });
+		response = await fetchImpl(url, {
+			headers: { accept: "application/json" },
+			signal: AbortSignal.timeout(FETCH_TIMEOUT_MILLISECONDS),
+		});
 	} catch {
 		throw unavailable(`The sign-in provider's ${what} could not be fetched`);
 	}

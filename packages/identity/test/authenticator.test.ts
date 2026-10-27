@@ -242,6 +242,12 @@ describe("createAuthenticator with sign-in providers", () => {
 
 		const key = await authenticator.authenticate(request({ authorization: `Bearer ${issued.secret}` }));
 		expect(key).toMatchObject({ method: "api_key", actor: { kind: "service", serviceId: service.id } });
+		// A host app behind Access carries an Access service token as well: its API key still decides.
+		const serviceToken = await access.sign({ sub: "", common_name: "host" });
+		const behindAccess = await authenticator.authenticate(
+			request({ authorization: `Bearer ${issued.secret}`, "cf-access-jwt-assertion": serviceToken }),
+		);
+		expect(behindAccess).toMatchObject({ method: "api_key", actor: { kind: "service", serviceId: service.id } });
 
 		const viaOidc = await idp.sign({ sub: "both-oidc", email: "alice@example.com", email_verified: true });
 		expect(await authenticator.authenticate(request({ authorization: `Bearer ${viaOidc}` }))).toEqual({

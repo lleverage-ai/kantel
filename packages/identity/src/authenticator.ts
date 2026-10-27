@@ -111,12 +111,12 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 
 	return {
 		async authenticate(request) {
-			const accessToken = accessProviders[0]?.token(request);
-			if (accessToken !== undefined) return human(request, accessProviders, accessToken);
-
+			// An API key comes first: a host app behind Cloudflare Access may also carry an Access service token.
 			const token = bearerToken(request);
-			if (token === undefined) throw authenticationError("missing", "This call needs credentials");
-			if (!token.startsWith(API_KEY_SECRET_PREFIX)) {
+			if (token === undefined || !token.startsWith(API_KEY_SECRET_PREFIX)) {
+				const accessToken = accessProviders[0]?.token(request);
+				if (accessToken !== undefined) return human(request, accessProviders, accessToken);
+				if (token === undefined) throw authenticationError("missing", "This call needs credentials");
 				if (oidcProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
 				return human(request, oidcProviders, token);
 			}
