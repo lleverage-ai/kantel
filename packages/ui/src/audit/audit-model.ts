@@ -365,12 +365,14 @@ export async function* readAll(
 	options: { credential?: string; pageSize?: number; signal?: AbortSignal } = {},
 ): AsyncGenerator<AuditEvent[], void, void> {
 	let cursor: string | undefined;
+	const cancelled = () => options.signal?.aborted === true;
 	do {
-		if (options.signal?.aborted === true) return;
+		if (cancelled()) return;
 		const page = await source.query(query, {
 			limit: options.pageSize ?? 500,
 			...(cursor === undefined ? {} : { cursor }),
 		});
+		if (cancelled()) return;
 		yield page.items.filter((event) => matchesCredential(event, options.credential));
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);

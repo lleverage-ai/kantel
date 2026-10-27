@@ -134,6 +134,29 @@ describe("which sessions used the Linear key yesterday, and who approved it", ()
 		// Every grant used has its approval, so no row says "Approval not in this log".
 		for (const session of usage.sessions) for (const via of session.via) expect(usage.approvals.has(via)).toBe(true);
 	});
+
+	it("is read from the organisation the timeline shows", async () => {
+		const scenario = await createAuditScenario(4000);
+		const sessionsIn = async (organisationId: string) => {
+			const ids = new Set<string>();
+			for await (const page of readAll(
+				scenario.source,
+				{ organisationId, type: "vault.use." },
+				{ credential: "itm_github" },
+			))
+				for (const event of page) if (event.sessionId !== undefined) ids.add(event.sessionId);
+			return ids;
+		};
+		const found: Set<string>[] = [];
+		for (const organisationId of [ORGANISATION, SECOND_ORGANISATION]) {
+			const expected = await sessionsIn(organisationId);
+			const usage = await credentialUsage(scenario.source, { itemId: "itm_github", organisationId });
+			expect(expected.size).toBeGreaterThan(0);
+			expect(new Set(usage.sessions.map((session) => session.sessionId))).toEqual(expected);
+			found.push(expected);
+		}
+		expect(found[0]).not.toEqual(found[1]);
+	});
 });
 
 describe("export", () => {
@@ -148,6 +171,26 @@ describe("export", () => {
 		expect(jsonl.endsWith("\n")).toBe(true);
 		// Oldest first, as read: seq only increases.
 		expect(events.every((event, index) => index === 0 || event.seq > events[index - 1]!.seq)).toBe(true);
+	});
+
+	it("yields nothing more once cancelled, even from a page already in flight", async () => {
+		const scenario = await createAuditScenario(500);
+		const controller = new AbortController();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const slow: typeof scenario.source = {
+			async query(query, page) {
+				await gate;
+				return scenario.source.query(query, page);
+			},
+		};
+		const pages = readAll(slow, {}, { signal: controller.signal });
+		const first = pages.next();
+		controller.abort();
+		release();
+		expect(await first).toEqual({ done: true, value: undefined });
 	});
 });
 

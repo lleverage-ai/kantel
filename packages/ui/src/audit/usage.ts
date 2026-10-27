@@ -54,13 +54,15 @@ interface Building {
 
 export async function credentialUsage(
 	source: AuditSource,
-	request: { itemId: string; from?: number; to?: number; signal?: AbortSignal },
+	request: { itemId: string; organisationId?: string; from?: number; to?: number; signal?: AbortSignal },
 ): Promise<CredentialUsage> {
 	const bySession = new Map<string, Building>();
 	const grants = new Set<string>();
 	const policies = new Set<string>();
 	let unattributed = 0;
+	const scope = request.organisationId === undefined ? {} : { organisationId: request.organisationId };
 	const range = {
+		...scope,
 		...(request.from === undefined ? {} : { from: request.from }),
 		...(request.to === undefined ? {} : { to: request.to }),
 	};
@@ -105,7 +107,7 @@ export async function credentialUsage(
 	const approvals = new Map<string, Approval>();
 	if (grants.size > 0) {
 		// A grant used in the range was approved before its end, perhaps long before its start.
-		const before = request.to === undefined ? {} : { to: request.to };
+		const before = { ...scope, ...(request.to === undefined ? {} : { to: request.to }) };
 		for await (const page of readAll(
 			source,
 			{ type: "vault.decision.approved", ...before },

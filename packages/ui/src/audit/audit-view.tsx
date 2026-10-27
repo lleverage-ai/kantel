@@ -363,6 +363,8 @@ export function AuditView({
 		abort.current = controller;
 		setExporting({ phase: "running", count: 0 });
 		const events: AuditEvent[] = [];
+		// A cancelled export, or one a newer export replaced, never touches the state again.
+		const mine = () => abort.current === controller && !controller.signal.aborted;
 		try {
 			// Oldest first in the file, as a log reads.
 			for await (const page of readAll(
@@ -371,19 +373,18 @@ export function AuditView({
 				{ ...(filters.credential === undefined ? {} : { credential: filters.credential }), signal: controller.signal },
 			)) {
 				events.push(...page);
-				setExporting({ phase: "running", count: events.length });
+				if (mine()) setExporting({ phase: "running", count: events.length });
 			}
-			if (controller.signal.aborted) {
-				setExporting({ phase: "idle" });
-				return;
-			}
+			if (!mine()) return;
 			const jsonl = toJsonl(events);
 			const name = exportName(filters, now);
 			if (onExport === undefined) download(jsonl, name);
 			else onExport(jsonl, name, events.length);
 			setExporting({ phase: "idle" });
 		} catch {
-			setExporting({ phase: "failed" });
+			if (mine()) setExporting({ phase: "failed" });
+		} finally {
+			if (abort.current === controller) abort.current = undefined;
 		}
 	}, [source, query, filters, now, onExport]);
 	const cancelExport = useCallback(() => {
@@ -527,6 +528,7 @@ export function AuditView({
 				<CredentialUsagePanel
 					source={source}
 					itemId={filters.credential}
+					{...(filters.organisationId === undefined ? {} : { organisationId: filters.organisationId })}
 					title={`${credentialLabel ?? filters.credential}, ${rangeLabel.toLowerCase()}`}
 					{...(from === undefined ? {} : { from })}
 					{...(to === undefined ? {} : { to })}
@@ -572,6 +574,24 @@ export function AuditView({
 				>
 					Couldn't read the audit log. Nothing in it has changed; try again.
 				</Notice>
+			) : feed.events.length === 0 && feed.hasMore ? (
+				// A credential filter read a bounded run of pages without a match; older pages may still hold one.
+				<EmptyState
+					title="No matches yet"
+					action={
+						<Button
+							size="sm"
+							variant="secondary"
+							onClick={feed.loadMore}
+							aria-busy={feed.loadingMore || undefined}
+							{...(feed.loadingMore ? { icon: <Spinner size="sm" /> } : {})}
+						>
+							{feed.loadingMore ? "Reading older events" : "Look further back"}
+						</Button>
+					}
+				>
+					None of the {count.format(feed.scanned)} most recent events match. Older ones may.
+				</EmptyState>
 			) : feed.events.length === 0 ? (
 				<EmptyState title={isFiltered(filters) ? "No events match these filters" : "Nothing happened in this time"}>
 					{isFiltered(filters) ? "Widen the time or clear a filter." : "Pick a longer time to see older events."}

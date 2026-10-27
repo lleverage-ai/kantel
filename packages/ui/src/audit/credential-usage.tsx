@@ -22,6 +22,8 @@ const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Dat
 export interface CredentialUsagePanelProps {
 	readonly source: AuditSource;
 	readonly itemId: string;
+	/** The organisation whose log to read, as the timeline's; the host's current one when left out. */
+	readonly organisationId?: string;
 	/** "Linear API key, yesterday". */
 	readonly title: string;
 	readonly from?: number;
@@ -38,6 +40,7 @@ type State =
 export function CredentialUsagePanel({
 	source,
 	itemId,
+	organisationId,
 	title,
 	from,
 	to,
@@ -52,6 +55,7 @@ export function CredentialUsagePanel({
 		setState({ phase: "loading" });
 		credentialUsage(source, {
 			itemId,
+			...(organisationId === undefined ? {} : { organisationId }),
 			...(from === undefined ? {} : { from }),
 			...(to === undefined ? {} : { to }),
 			signal: controller.signal,
@@ -64,7 +68,7 @@ export function CredentialUsagePanel({
 			},
 		);
 		return () => controller.abort();
-	}, [source, itemId, from, to, attempt]);
+	}, [source, itemId, organisationId, from, to, attempt]);
 
 	const at = (when: number, reference: number) => (sameDay(when, reference) ? time.format(when) : dayTime.format(when));
 

@@ -90,7 +90,8 @@ this, and lane 6's query API should close it:
 1. **No credential filter.** Credential uses and approvals name the vault item only in `data.itemId`. The view reads
    pages of the chosen kind and matches the item itself. A narrow filter over a long range may read many pages for a
    few rows (the status line says how many were read), and the view stops after 25 pages per *Load older events*.
-   An `itemId` filter would make it exact.
+   When those pages hold no match, the view says none of the events it read match and offers *Look further back*,
+   not an empty log. An `itemId` filter would make it exact.
 2. **No grant filter.** The summary finds each grant's approval by reading `vault.decision.approved` events up to the
    range's end. A `grantId` filter (or `data` match) would make that one read.
 3. **One type per query.** A kind such as "policy changes" can't cover both `vault.policy.*` and
@@ -99,7 +100,8 @@ this, and lane 6's query API should close it:
 ## Stories and checks
 
 Every state has a story under **Audit/Audit view**: default, loading, empty, empty with filters, error, an error on a
-later page, long content, mobile, streaming (new events arriving), *Large* (100k), and the definition-of-done story
+later page, long content, mobile, streaming (new events arriving), *Large* (100k), *Sparse matches* (a credential
+last used behind more than one load of other events), and the definition-of-done story
 *Linear key yesterday*, plus approvals, refused access, one project's sandbox events and one person's actions.
 
 ```sh

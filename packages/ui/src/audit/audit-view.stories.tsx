@@ -1,7 +1,8 @@
+import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { systemContext } from "@harbour/contracts";
 import { useEffect, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
-import type { AuditFilters, AuditSource } from "./audit-model.ts";
+import { type AuditFilters, type AuditSource, matchesCredential } from "./audit-model.ts";
 import { AuditView, type AuditViewProps } from "./audit-view.tsx";
 import {
 	type AuditScenario,
@@ -11,6 +12,7 @@ import {
 	emptySource,
 	FIXTURE_NOW,
 	failingSource,
+	generateEvents,
 	links,
 	ORGANISATION,
 	pendingSource,
@@ -136,6 +138,39 @@ export const Empty: Story = () => (
 
 const nothingMatches: AuditFilters = { range: "hour", kind: "identity", credential: "itm_slack" };
 export const EmptyFiltered: Story = () => <ScenarioView filters={nothingMatches} />;
+
+/**
+ * The Linear key was last used weeks ago, behind more than a load's worth of other events: the view says none of the
+ * recent ones match and offers to look further back, rather than claiming nothing does.
+ */
+const sparseSource: AuditSource = (() => {
+	const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
+	const events = generateEvents(8000).sort((a, b) => a.at - b.at);
+	const recent = events
+		.slice(-6000)
+		.filter((event) => !matchesCredential({ ...event, seq: 0, recordedAt: event.at }, "itm_linear"));
+	const ready = store.append(systemContext("fixture"), [...events.slice(0, -6000), ...recent]);
+	const viewer = { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION } as const;
+	return {
+		async query({ organisationId: _organisationId, ...query }, page) {
+			await ready;
+			return store.query(viewer, query, page);
+		},
+	};
+})();
+const linearAllTime: AuditFilters = { range: "all", kind: "all", credential: "itm_linear" };
+export const SparseMatches: Story = () => (
+	<div className="audit-story">
+		<AuditView
+			source={sparseSource}
+			directory={directory}
+			links={links}
+			choices={choices}
+			now={FIXTURE_NOW}
+			initialFilters={linearAllTime}
+		/>
+	</div>
+);
 
 // biome-ignore lint/suspicious/noShadowRestrictedNames: every component's error state is the story named Error.
 export const Error: Story = () => (
