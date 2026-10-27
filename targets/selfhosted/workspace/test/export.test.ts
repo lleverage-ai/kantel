@@ -136,4 +136,21 @@ describe("createDirectoryExportSink", () => {
 		// Removing a file that is already gone is not an error.
 		await sink.remove("notes/never.md");
 	});
+
+	it("follows a root that is itself a symlink, and leaves no temporary files after writes or a refusal", async () => {
+		const real = join(dir, "real");
+		await mkdir(real);
+		await symlink(real, join(dir, "root-link"));
+		const sink = createDirectoryExportSink(join(dir, "root-link"));
+		const bytes = new TextEncoder().encode("x");
+		for (let index = 0; index < 20; index++) await sink.write(`notes/${index}.md`, bytes, "");
+		// A write refused because the host has a directory there leaves nothing behind either.
+		await mkdir(join(real, "notes/taken/inside"), { recursive: true });
+		await expect(createDirectoryExportSink(real).write("notes/taken", bytes, "")).rejects.toMatchObject({
+			code: "invalid",
+		});
+		const names = await readdir(join(real, "notes"));
+		expect(names.filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		expect(names).toHaveLength(21);
+	});
 });

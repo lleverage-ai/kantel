@@ -185,6 +185,7 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 					page = await workspaces.list(ctx, id, {
 						...(dir === "" ? {} : { path: dir }),
 						recursive: true,
+						limit: 1000,
 						...(cursor === undefined ? {} : { cursor }),
 					});
 				} catch (error) {

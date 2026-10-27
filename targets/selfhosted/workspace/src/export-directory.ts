@@ -1,8 +1,10 @@
 /**
  * An `ExportSink` that keeps exported files under a directory on the node, such as a task's notes directory. Paths stay
  * inside the root: a path is a normalised relative workspace path, and a symlink anywhere on the way (root excepted) is
- * refused, so a link planted in the host directory cannot redirect a write. Each file is written to a temporary name
- * and renamed into place, so a reader never sees half a file.
+ * refused, so a link planted in the host directory cannot redirect a write. The root itself may be a symlink: it is
+ * resolved once, as the host chose it. The check is not atomic with the write, so the directory must not be shared with
+ * an untrusted writer while a sync runs. Each file is written to a temporary name and renamed into place, so a reader
+ * never sees half a file.
  */
 import { lstat, mkdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -54,7 +56,8 @@ export function createDirectoryExportSink(root: string): ExportSink {
 				await writeFile(temporary, content, { flag: "wx" });
 				await rename(temporary, file);
 			} catch (error) {
-				await rm(temporary, { force: true });
+				// The write's own error is the one worth reporting.
+				await rm(temporary, { force: true }).catch(() => {});
 				throw error;
 			}
 		},

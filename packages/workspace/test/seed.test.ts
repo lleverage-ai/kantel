@@ -201,7 +201,10 @@ describe("createGitHubTarballFetcher", () => {
 		expect(await codeOf(fetcher.fetch(ctx, { kind: "git", repo: "tvdavies/site", ref: "x", commit: "abc" }))).toBe(
 			"invalid",
 		);
-		expect(() => gitHubRepo("../etc")).toThrow();
+		for (const repo of ["../etc", "./repo", "owner/.", "owner/..", "https://github.com/owner/..", "a/b/c"]) {
+			expect(() => gitHubRepo(repo), repo).toThrow();
+		}
+		expect(gitHubRepo("https://github.com/o.k/re-po.git")).toEqual(["o.k", "re-po"]);
 	});
 
 	it("refuses a tarball over its byte or file budget", async () => {

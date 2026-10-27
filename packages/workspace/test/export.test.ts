@@ -1,6 +1,6 @@
 import { type CallContext, HarbourError, isHarbourError } from "@harbour/contracts";
 import { createMemoryExportSink, syncExport } from "@harbour/workspace/export";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
 import { createWorkspaceReadApi, createWorkspaceReadClient } from "@harbour/workspace/read-api";
 import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
 import { describe, expect, it } from "vitest";
@@ -188,5 +188,46 @@ describe("the read API's export route", () => {
 		const head = await send("?prefix=src/", "HEAD");
 		expect(head.status).toBe(200);
 		expect(head.body).toBeNull();
+	});
+
+	it("sizes an export across pages, for directory and partial prefixes, without listing a mount", async () => {
+		const projectFiles = createMemoryProjectFiles();
+		await projectFiles.write!(ctx, "proj", [{ op: "put", path: "notes/big.md", content: "x".repeat(10_000) }]);
+		const workspaces = createMemoryWorkspaces({ sources: [projectFiles] });
+		const notes: Record<string, string> = {};
+		for (let index = 0; index < 1_050; index++) notes[`notes/n${String(index).padStart(4, "0")}.md`] = "n";
+		const record = await workspaces.create(ctx, {
+			owner,
+			mounts: [{ path: "/project", source: "project-files", ref: "proj" }],
+			seed: { name: "s", sources: [{ kind: "files", files: { ...notes, "a/b/c.txt": "abc", "notesx.md": "xx" } }] },
+		});
+		const listed: (string | undefined)[] = [];
+		let exports = 0;
+		const api = createWorkspaceReadApi({
+			workspaces: {
+				...workspaces,
+				list: async (...args) => {
+					listed.push(args[2]?.path);
+					return workspaces.list(...args);
+				},
+				export: async (...args) => {
+					exports++;
+					return workspaces.export(...args);
+				},
+			},
+			authenticate: async () => ctx,
+			maxContentBytes: 1_040,
+		});
+		const status = async (query: string) =>
+			(await api(new Request(`https://harbour.test/v1/workspaces/${record.id}/export${query}`)))!.status;
+		// 1,050 one-byte notes: only a sizing that pages past the first 1,000 sees the budget broken.
+		expect(await status("?prefix=notes/")).toBe(413);
+		expect(await status("?prefix=notes")).toBe(413);
+		expect(await status("?prefix=notes/n00")).toBe(200);
+		expect(await status("?prefix=a/b/")).toBe(200);
+		expect(await status("?prefix=a/b/c")).toBe(200);
+		expect(exports).toBe(3);
+		expect(listed.every((path) => path === undefined || !path.startsWith("/"))).toBe(true);
+		expect(new Set(listed)).toEqual(new Set(["notes", undefined, "a/b"]));
 	});
 });
