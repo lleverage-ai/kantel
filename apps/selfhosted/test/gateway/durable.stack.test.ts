@@ -179,6 +179,15 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		expect(socket.options).toBe("-c search_path=harbour_m1");
 	});
 
+	test("leaves TLS settings for node-postgres to read, as it would from the URL", () => {
+		const noVerify = new pg.Client(withSearchPath("postgres://u:p@db.example/harbour?ssl=no-verify", "harbour_m1"));
+		expect((noVerify as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toEqual({
+			rejectUnauthorized: false,
+		});
+		const required = new pg.Client(withSearchPath("postgres://u:p@db.example/harbour?sslmode=require", "harbour_m1"));
+		expect((required as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toBeTruthy();
+	});
+
 	test("keeps its schema when the database URL brings options of its own", async () => {
 		// A URL `options` that sets the search path elsewhere must not move the gateway's tables out of its schema.
 		// Two `options` parameters: node-postgres takes the last, and so must the gateway.

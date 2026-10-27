@@ -22,7 +22,7 @@ import {
 } from "@harbour/selfhosted-workspace";
 import { postgresPoolDriver } from "@harbour/sql/postgres";
 import pg from "pg";
-import { parseIntoClientConfig } from "pg-connection-string";
+import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents } from "./components.ts";
 
@@ -46,14 +46,16 @@ const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
 
 /**
  * The connection settings for `databaseUrl`, with `search_path` set for every connection: audit's and identity's tables
- * are unqualified. The URL is parsed as node-postgres parses it, and the search path appended to its own `options`
- * (the last `-c` wins), because node-postgres lets a URL's `options` replace one passed beside the URL.
+ * are unqualified. node-postgres lets a URL's `options` replace one passed beside the URL, so this does what it does
+ * with a URL (parse it into the settings, unconverted, and let the client interpret them, `ssl=no-verify` included),
+ * then appends the search path to the URL's own `options`, where the last `-c` wins.
  */
-export function withSearchPath(databaseUrl: string, schema: string): pg.ClientConfig {
+export function withSearchPath(databaseUrl: string, schema: string): pg.PoolConfig {
 	if (!SCHEMA.test(schema)) throw new Error(`invalid schema name ${JSON.stringify(schema)}`);
-	const parsed = parseIntoClientConfig(databaseUrl);
+	const parsed = parse(databaseUrl);
 	const options = [parsed.options?.trim(), `-c search_path=${schema}`].filter(Boolean).join(" ");
-	return { ...parsed, options };
+	// The parsed settings are what pg.Client itself reads from a URL; their nulls mean "unset", as there.
+	return { ...(parsed as pg.PoolConfig), options };
 }
 
 export async function createDurableGatewayComponents(config: DurableConfig): Promise<GatewayComponents> {
