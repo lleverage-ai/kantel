@@ -168,7 +168,7 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 			};
 		},
 
-		projectOf: (sessionId) => entries.get(sessionId)?.recorded.projectId,
+		projectOf: async (sessionId) => entries.get(sessionId)?.recorded.projectId,
 
 		transport(sessionId): Transport {
 			return {

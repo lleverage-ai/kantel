@@ -4,8 +4,14 @@ Harbour's session interface (M1-FE1, issue #6): a project's sessions grouped by 
 session view with its transcript and composer. Built from `@harbour/ui`; this app only decides what goes where.
 
 ```sh
-pnpm --filter @harbour/console dev    # http://127.0.0.1:5173
+pnpm --filter @harbour/cloudflare dev          # the gateway with the session API, on http://127.0.0.1:8787
+pnpm --filter @harbour/console dev             # http://127.0.0.1:5173, on that gateway
+pnpm --filter @harbour/console dev:recorded    # http://127.0.0.1:5173, on recorded sessions, no backend
 ```
+
+`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`) and signs each call in
+as the dev admin with a token from the gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway
+serves the console itself, and Cloudflare Access signs the calls in.
 
 ## Routes
 
@@ -15,6 +21,7 @@ pnpm --filter @harbour/console dev    # http://127.0.0.1:5173
 | `/projects/:projectId` | The project's sessions: Needs you, Working, Done |
 | `/projects/:projectId/sessions/:sessionId` | The session, beside the list on a desktop; on its own with Back on a phone |
 
+`?source=recorded` or `?source=api` picks the source for the tab (the default is `api`, or `VITE_HARBOUR_SOURCE`).
 `?profile=1` adds the render profiler, `?speed=2` plays recordings faster and `?delay=1500` waits longer before an
 opened recording's live part plays.
 
@@ -25,12 +32,22 @@ sessions followed live, one session's protocol transport (hello, a snapshot or t
 pages), and prompt, steer, follow-up and cancel. `SessionClient` (`src/state/session-client.ts`) keeps one session's
 transcript over that transport, with connection health and data freshness tracked apart.
 
-Until the session API (M1-BE1) lands, `createRecordedClient` (`src/api/recorded.ts`) serves the catalogue in
-`src/recorded/catalogue.ts`: three projects and a session in every state the list shows, each served by an in-page
-stand-in for the session host (`src/server-sim/fixture-host.ts`). Recorded sessions can't be steered; the composer
-says so. Sign-in is a stubbed actor until identity (M1-BE7).
+Two implementations:
+
+- `createApiClient` (`src/api/http.ts`): the session API under `/v1` on the console's origin. A session's frames come
+  as server-sent events (`/v1/sessions/:id/events?after=<cursor>`); when the stream drops, `SessionClient`
+  reconnects with backoff and resumes after the last cursor it applied. Prompt, steer, follow-up and abort are POSTs
+  with a request id, so a retry sends once. While the agent runs, the composer's button steers and "Send after this
+  run" queues a follow-up. The API has no projects list, no "who am I" and no list events yet, so the projects are
+  the ones the caller's sessions are in, named by id, and a project's list is polled every 3 seconds.
+- `createRecordedClient` (`src/api/recorded.ts`): the catalogue in `src/recorded/catalogue.ts`, three projects and a
+  session in every state the list shows, each served by an in-page stand-in for the session host
+  (`src/server-sim/fixture-host.ts`). Recorded sessions can't be steered; the composer says so, and sign-in is a
+  stubbed actor.
 
 ## Checks
 
 `pnpm --filter @harbour/console test` runs the console's tests, including the token and copy lint over its CSS and
-TSX. `node scripts/evidence.ts` gathers the long-session render and resume evidence against a running build.
+TSX. `src/api/http.test.ts` runs the API client against the real session API handler over the in-memory runtime, with
+a scripted model holding runs open: listing, unread, streaming, steer, follow-up, cancel, refusals and resuming after
+a dropped stream. `node scripts/evidence.ts` gathers the long-session render and resume evidence against a running build.

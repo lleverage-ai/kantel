@@ -10,6 +10,8 @@
 		"fixtures:check": "node scripts/project-fixtures.ts --check",
 		"predev": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
 		"dev": "vite",
+		"predev:recorded": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
+		"dev:recorded": "VITE_HARBOUR_SOURCE=recorded vite",
 		"prebuild": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
 		"build": "tsc --noEmit -p tsconfig.json && vite build",
 		"build:profiling": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts && vite build --mode profiling",
@@ -26,6 +28,8 @@
 		"react-dom": "19.3.1"
 	},
 	"devDependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/runtime": "workspace:*",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",
 		"@types/react-dom": "19.3.0",

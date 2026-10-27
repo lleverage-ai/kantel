@@ -24,13 +24,16 @@ export const COALESCE_MS = 200;
 export const RECONNECT_MS = [500, 1000, 2000, 4000];
 export const HISTORY_PAGE = 120;
 
-/** A socket to the session host. The fixture host implements it in M0; a WebSocket or SSE client will in M1. */
+/** A connection to the session host: the session API's event stream (`api/http.ts`) or a recorded host. */
 export type Connection = {
 	send(frame: ClientFrame): void;
 	/** Drop the connection without a goodbye, as a network failure would. */
 	close(): void;
 };
-export type Transport = { connect(receive: (frame: ServerFrame) => void): Connection };
+export type Transport = {
+	/** `lost` is called when the connection drops on its own, never after `close()`; the client reconnects. */
+	connect(receive: (frame: ServerFrame) => void, lost?: () => void): Connection;
+};
 
 export type ConnectionHealth =
 	| { status: "connecting" }
@@ -143,7 +146,11 @@ export class SessionClient {
 
 	private open(): void {
 		this.set({ connection: { status: "connecting" } });
-		this.connection = this.transport.connect((frame) => this.receive(frame));
+		const connection: Connection = this.transport.connect(
+			(frame) => this.receive(frame),
+			() => this.lost(connection),
+		);
+		this.connection = connection;
 		this.resumeFrom = this.received;
 		this.send({
 			type: "hello",
@@ -164,6 +171,14 @@ export class SessionClient {
 		this.connection.close();
 		this.connection = undefined;
 		this.scheduleReconnect(offlineMs);
+	}
+
+	/** The connection dropped by itself (the stream ended or the network went): reconnect with backoff. */
+	private lost(connection: Connection): void {
+		if (this.stopped || this.connection !== connection) return;
+		this.flush();
+		this.connection = undefined;
+		this.scheduleReconnect();
 	}
 
 	private scheduleReconnect(delay?: number): void {

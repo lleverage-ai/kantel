@@ -1,12 +1,12 @@
 // The console's one seam to a Harbour host. Everything the screens need goes through `ConsoleClient`: who is signed
 // in, the projects, a project's sessions, the live connection to one session, and the controls. Two implementations:
-// the recorded-session client (`recorded.ts`, in the page, no backend) and, from M1-BE1, the session API over HTTP.
+// the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
 import type { SessionSummary } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
-/** Who the console acts as. Sign-in is stubbed until identity (M1-BE7) lands. */
+/** Who the console acts as. Stubbed for recorded sessions; the API client is whoever Access signed in. */
 export type ConsoleActor = {
 	readonly id: string;
 	readonly name: string;
@@ -47,8 +47,8 @@ export interface ConsoleClient {
 	watchSessions(projectId: string, onChange: (state: SessionListState) => void): () => void;
 	/** The protocol connection to one session: hello, a snapshot or the deltas after a cursor, history pages. */
 	transport(sessionId: string): Transport;
-	/** The project a session belongs to, or undefined when the session is unknown. */
-	projectOf(sessionId: string): string | undefined;
+	/** The project a session belongs to, or undefined when there's no such session. */
+	projectOf(sessionId: string): Promise<string | undefined>;
 	control(sessionId: string): SessionControl;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;
