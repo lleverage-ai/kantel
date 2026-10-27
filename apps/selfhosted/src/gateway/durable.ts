@@ -43,6 +43,19 @@ export interface DurableConfig {
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
 
+/**
+ * The URL with `search_path` set for every connection: audit's and identity's tables are unqualified. It goes into the
+ * URL's own `options`, after any it already has (the last `-c` wins), because node-postgres lets a URL's `options`
+ * replace one passed beside it.
+ */
+export function withSearchPath(databaseUrl: string, schema: string): string {
+	if (!SCHEMA.test(schema)) throw new Error(`invalid schema name ${JSON.stringify(schema)}`);
+	const url = new URL(databaseUrl);
+	const existing = url.searchParams.get("options")?.trim();
+	url.searchParams.set("options", [existing, `-c search_path=${schema}`].filter(Boolean).join(" "));
+	return url.toString();
+}
+
 export async function createDurableGatewayComponents(config: DurableConfig): Promise<GatewayComponents> {
 	if (!SCHEMA.test(config.schema)) throw new Error(`invalid schema name ${JSON.stringify(config.schema)}`);
 	const log = config.log ?? ((message: string) => console.error(message));
@@ -59,11 +72,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		} finally {
 			await setup.end();
 		}
-		const pool = new pg.Pool({
-			connectionString: config.databaseUrl,
-			max: 10,
-			options: `-c search_path=${config.schema}`,
-		});
+		const pool = new pg.Pool({ connectionString: withSearchPath(config.databaseUrl, config.schema), max: 10 });
 		closers.push(() => pool.end());
 		pool.on("error", (error) => log(`[gateway] idle Postgres connection failed: ${error.message}`));
 

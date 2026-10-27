@@ -2,15 +2,16 @@
 // then a restart on the same schema that must keep the deployment, its sessions, workspace and audit trail.
 //
 // Runs when HARBOUR_TEST_POSTGRES_URL and HARBOUR_TEST_S3_ENDPOINT are set (bindings.ts sets them in CI). Each run gets
-// a fresh schema, dropped afterwards, and its own object prefix.
+// fresh schemas and its own object prefix, all removed afterwards.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CallContext } from "@harbour/contracts";
+import { AwsClient } from "aws4fetch";
 import pg from "pg";
 import { afterAll, describe, expect, test } from "vitest";
 import { type Bootstrap, bootstrap, type GatewayComponents } from "../../src/gateway/components.ts";
-import { createDurableGatewayComponents, type DurableConfig } from "../../src/gateway/durable.ts";
+import { createDurableGatewayComponents, type DurableConfig, withSearchPath } from "../../src/gateway/durable.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
 import { runGatewayE2e } from "./e2e.ts";
@@ -18,6 +19,7 @@ import { runGatewayE2e } from "./e2e.ts";
 const databaseUrl = process.env.HARBOUR_TEST_POSTGRES_URL ?? "";
 const s3Endpoint = process.env.HARBOUR_TEST_S3_ENDPOINT ?? "";
 const run = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+const prefix = `m1-sh1/${run}`;
 const config: DurableConfig = {
 	databaseUrl,
 	schema: `m1sh_gateway_${run}`,
@@ -26,23 +28,78 @@ const config: DurableConfig = {
 		bucket: process.env.HARBOUR_TEST_S3_BUCKET ?? "harbour-m1-sh1",
 		accessKeyId: process.env.HARBOUR_TEST_S3_ACCESS_KEY ?? "harbour",
 		secretAccessKey: process.env.HARBOUR_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
-		prefix: `m1-sh1/${run}/`,
+		prefix,
 	},
 	log: () => {},
 };
 const names = { organisation: "Durable", project: "durable" };
+const schemas: string[] = [];
 
-async function serve(components: GatewayComponents, seeded: Bootstrap, consoleDir: string) {
+async function sql(text: string): Promise<pg.QueryResult> {
+	const client = new pg.Client({ connectionString: databaseUrl });
+	await client.connect();
+	try {
+		return await client.query(text);
+	} finally {
+		await client.end();
+	}
+}
+
+/** Deletes this run's objects, and only them. */
+async function deleteRunObjects(): Promise<void> {
+	const client = new AwsClient({
+		accessKeyId: config.s3.accessKeyId,
+		secretAccessKey: config.s3.secretAccessKey,
+		service: "s3",
+		region: "us-east-1",
+	});
+	const bucket = `${s3Endpoint.replace(/\/+$/, "")}/${encodeURIComponent(config.s3.bucket)}`;
+	for (;;) {
+		const listed = await client.fetch(`${bucket}?${new URLSearchParams({ "list-type": "2", prefix: `${prefix}/` })}`);
+		const listing = await listed.text();
+		if (!listed.ok) throw new Error(`listing ${prefix} failed with ${listed.status}`);
+		const keys = [...listing.matchAll(/<Key>([^<]+)<\/Key>/g)]
+			.map((match) => (match[1] ?? "").replaceAll("&amp;", "&"))
+			.filter((key) => key.startsWith(`${prefix}/`));
+		if (keys.length === 0) return;
+		for (const key of keys) {
+			const response = await client.fetch(`${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`, {
+				method: "DELETE",
+			});
+			await response.body?.cancel();
+			if (!response.ok) throw new Error(`deleting ${key} failed with ${response.status}`);
+		}
+	}
+}
+
+/** Components for `schema`, closed when `work` ends however it ends. */
+async function withComponents<T>(schema: string, work: (components: GatewayComponents) => Promise<T>): Promise<T> {
+	schemas.push(schema);
+	const components = await createDurableGatewayComponents({ ...config, schema });
+	try {
+		return await work(components);
+	} finally {
+		await components.close();
+	}
+}
+
+async function withGateway<T>(
+	components: GatewayComponents,
+	seeded: Bootstrap,
+	consoleDir: string,
+	work: (target: Parameters<typeof runGatewayE2e>[0]) => Promise<T>,
+): Promise<T> {
 	const gateway = createGateway({ components, consoleDir });
-	const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
-	return {
-		target: { baseUrl: server.url, ...seeded },
-		close: async () => {
-			await gateway.close();
+	try {
+		const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
+		try {
+			return await work({ baseUrl: server.url, ...seeded });
+		} finally {
 			await server.close();
-			await components.close();
-		},
-	};
+		}
+	} finally {
+		await gateway.close();
+	}
 }
 
 describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgres and S3", () => {
@@ -50,69 +107,85 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 
 	afterAll(async () => {
 		if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
-		const client = new pg.Client({ connectionString: databaseUrl });
-		await client.connect();
-		try {
-			await client.query(`DROP SCHEMA IF EXISTS ${config.schema} CASCADE`);
-		} finally {
-			await client.end();
-		}
+		for (const schema of schemas) await sql(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+		await deleteRunObjects();
 	});
 
 	test("serves every API end to end, and keeps its deployment across a restart", { timeout: 120_000 }, async () => {
-		scratch = await mkdtemp(join(tmpdir(), "harbour-durable-"));
-		await writeFile(join(scratch, "index.html"), '<!doctype html><div id="root"></div>');
+		const consoleDir = await mkdtemp(join(tmpdir(), "harbour-durable-"));
+		scratch = consoleDir;
+		await writeFile(join(consoleDir, "index.html"), '<!doctype html><div id="root"></div>');
 
-		const first = await createDurableGatewayComponents(config);
-		expect(first.bindings).toMatchObject({ identity: "postgres", audit: "postgres", workspaces: "postgres + s3" });
-		const seeded = await bootstrap(first, names);
-		const one = await serve(first, seeded, scratch);
-		let sessionsBefore: number;
-		let auditBefore: number;
-		const ctx: CallContext = {
+		let seeded: Bootstrap | undefined;
+		let sessionsBefore = 0;
+		let auditBefore = 0;
+		const inProject = (deployment: Bootstrap): CallContext => ({
 			actor: { kind: "system", component: "durable-test" },
-			organisationId: seeded.organisationId,
-			projectId: seeded.projectId,
-		};
-		try {
-			const checks = await runGatewayE2e(one.target);
-			expect(checks.filter((check) => !check.ok)).toEqual([]);
-			sessionsBefore = (await first.runtime.directory.list(ctx, { projectId: seeded.projectId })).items.length;
-			auditBefore = (await first.audit.query(ctx, { projectId: seeded.projectId }, { limit: 500 })).items.length;
+			organisationId: deployment.organisationId,
+			projectId: deployment.projectId,
+		});
+
+		await withComponents(config.schema, async (first) => {
+			expect(first.bindings).toMatchObject({ identity: "postgres", audit: "postgres", workspaces: "postgres + s3" });
+			const deployment = await bootstrap(first, names);
+			seeded = deployment;
+			await withGateway(first, deployment, consoleDir, async (target) => {
+				const checks = await runGatewayE2e(target);
+				expect(checks.filter((check) => !check.ok)).toEqual([]);
+			});
+			const ctx = inProject(deployment);
+			sessionsBefore = (await first.runtime.directory.list(ctx, { projectId: deployment.projectId })).items.length;
+			auditBefore = (await first.audit.query(ctx, { projectId: deployment.projectId }, { limit: 500 })).items.length;
 			expect(sessionsBefore).toBeGreaterThan(0);
 			expect(auditBefore).toBeGreaterThan(0);
-		} finally {
-			await one.close();
-		}
+		});
+		if (seeded === undefined) throw new Error("no deployment");
+		const previous = seeded;
 
 		// A new process on the same database: the bootstrap finds its deployment instead of making another.
-		const second = await createDurableGatewayComponents(config);
-		const again = await bootstrap(second, names, seeded);
-		expect(again).toEqual(seeded);
-		const two = await serve(second, again, scratch);
-		try {
-			const sessions = await second.runtime.directory.list(ctx, { projectId: seeded.projectId });
+		await withComponents(config.schema, async (second) => {
+			const again = await bootstrap(second, names, previous);
+			expect(again).toEqual(previous);
+			const ctx = inProject(again);
+			const sessions = await second.runtime.directory.list(ctx, { projectId: again.projectId });
 			expect(sessions.items.length).toBe(sessionsBefore);
-			const audit = await second.audit.query(ctx, { projectId: seeded.projectId }, { limit: 500 });
+			const audit = await second.audit.query(ctx, { projectId: again.projectId }, { limit: 500 });
 			expect(audit.items.length).toBeGreaterThanOrEqual(auditBefore);
 			// The README went in once: the restart's bootstrap did not commit it again.
-			expect((await second.workspaces.get(ctx, seeded.workspaceId)).head).toBe(1);
-			const checks = await runGatewayE2e(two.target);
-			expect(checks.filter((check) => !check.ok)).toEqual([]);
-		} finally {
-			await two.close();
-		}
+			expect((await second.workspaces.get(ctx, again.workspaceId)).head).toBe(1);
+			await withGateway(second, again, consoleDir, async (target) => {
+				const checks = await runGatewayE2e(target);
+				expect(checks.filter((check) => !check.ok)).toEqual([]);
+			});
+		});
 
-		// A key that no longer authenticates (here, a fresh schema) starts the deployment over.
-		const other = await createDurableGatewayComponents({ ...config, schema: `${config.schema}_b` });
+		// The key still authenticates but its project is gone: the bootstrap starts over.
+		await sql(`DELETE FROM ${config.schema}.identity_projects WHERE id = '${previous.projectId}'`);
+		await withComponents(config.schema, async (third) => {
+			const fresh = await bootstrap(third, names, previous);
+			expect(fresh.projectId).not.toBe(previous.projectId);
+		});
+
+		// A key that does not authenticate at all (here, a fresh schema): the bootstrap starts over.
+		await withComponents(`${config.schema}_b`, async (other) => {
+			const fresh = await bootstrap(other, names, previous);
+			expect(fresh.organisationId).not.toBe(previous.organisationId);
+		});
+	});
+
+	test("keeps its schema when the database URL brings options of its own", async () => {
+		// A URL `options` that sets the search path elsewhere must not move the gateway's tables out of its schema.
+		const url = new URL(databaseUrl);
+		url.searchParams.set("options", "-c search_path=public -c statement_timeout=60000");
+		const merged = withSearchPath(url.toString(), config.schema);
+		const pool = new pg.Pool({ connectionString: merged, max: 1 });
 		try {
-			const fresh = await bootstrap(other, names, seeded);
-			expect(fresh.organisationId).not.toBe(seeded.organisationId);
+			const shown = await pool.query(
+				"SELECT current_setting('search_path') AS path, current_setting('statement_timeout') AS timeout",
+			);
+			expect(shown.rows[0]).toEqual({ path: config.schema, timeout: "1min" });
 		} finally {
-			await other.close();
-			const client = new pg.Client({ connectionString: databaseUrl });
-			await client.connect();
-			await client.query(`DROP SCHEMA IF EXISTS ${config.schema}_b CASCADE`).finally(() => client.end());
+			await pool.end();
 		}
 	});
 });
