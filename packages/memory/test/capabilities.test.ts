@@ -1,4 +1,4 @@
-import type { CallContext, CapabilityInvocation, JsonValue } from "@harbour/contracts";
+import { type CallContext, type CapabilityInvocation, HarbourError, type JsonValue } from "@harbour/contracts";
 import {
 	MEMORY_READ_CAPABILITY,
 	MEMORY_SEARCH_CAPABILITY,
@@ -23,11 +23,10 @@ function invocation(capability: string, args: JsonValue, organisationId = "org-a
 	};
 }
 
-async function setup() {
-	const memory = createMemoryMemory();
+async function addSpace(memory: ReturnType<typeof createMemoryMemory>, name: string, statement: string) {
 	const space = await memory.createSpace(service, {
 		owner: { kind: "organisation", organisationId: "org-a" },
-		name: "Sal memory",
+		name,
 	});
 	await memory.importSnapshot(service, space.id, {
 		sourceId: "sal-memory",
@@ -37,7 +36,7 @@ async function setup() {
 				id: "personal/pr-review-timing",
 				title: "PR review timing",
 				description: "When Tom reviews",
-				statement: "Tom reviews pull requests after lunch.",
+				statement,
 				scope: { kind: "global" },
 				sources: ["slack:T1/C1/1"],
 				setBy: "owner",
@@ -46,8 +45,14 @@ async function setup() {
 			},
 		],
 	});
+	return space;
+}
+
+async function setup() {
+	const memory = createMemoryMemory();
+	const space = await addSpace(memory, "Sal memory", "Tom reviews pull requests after lunch.");
 	const handler = memoryCapabilityHandler({ memory, spaceIds: () => [space.id], now: () => 2 });
-	return { handler, space };
+	return { handler, space, memory };
 }
 
 describe("memory capabilities", () => {
@@ -76,6 +81,75 @@ describe("memory capabilities", () => {
 		expect(missing).toMatchObject({ isError: true, output: { text: "No concept personal/missing." } });
 		const bad = await handler(invocation(MEMORY_SEARCH_CAPABILITY, { limit: 3 }), signal);
 		expect(bad.isError).toBe(true);
+	});
+
+	it("refuses arguments of the wrong type or unknown ones", async () => {
+		const { handler } = await setup();
+		const signal = new AbortController().signal;
+		const cases: JsonValue[] = [
+			{ query: "review", limit: "1" },
+			{ query: "review", limit: 0 },
+			{ query: "review", limit: 1.5 },
+			{ query: "review", includeInactive: "true" },
+			{ query: "review", extra: 1 },
+		];
+		for (const args of cases) {
+			expect((await handler(invocation(MEMORY_SEARCH_CAPABILITY, args), signal)).isError).toBe(true);
+		}
+		const read = await handler(invocation(MEMORY_READ_CAPABILITY, { concept: "personal/x", space: 3 }), signal);
+		expect(read.isError).toBe(true);
+	});
+
+	it("names the space of each hit when a session reads several, and reads from the one named", async () => {
+		const memory = createMemoryMemory();
+		const first = await addSpace(memory, "A", "Tom reviews pull requests after lunch.");
+		const second = await addSpace(memory, "B", "Tom batches kubernetes upgrades.");
+		const handler = memoryCapabilityHandler({ memory, spaceIds: () => [first.id, second.id], now: () => 2 });
+		const signal = new AbortController().signal;
+		const search = await handler(invocation(MEMORY_SEARCH_CAPABILITY, { query: "kubernetes" }), signal);
+		expect(search.output).toMatchObject({ ids: ["personal/pr-review-timing"], spaces: [second.id] });
+		expect((search.output as { text: string }).text).toContain(`space ${second.id}`);
+		const fromFirst = await handler(
+			invocation(MEMORY_READ_CAPABILITY, { concept: "personal/pr-review-timing" }),
+			signal,
+		);
+		expect((fromFirst.output as { text: string }).text).toContain("after lunch");
+		const fromSecond = await handler(
+			invocation(MEMORY_READ_CAPABILITY, { concept: "personal/pr-review-timing", space: second.id }),
+			signal,
+		);
+		expect((fromSecond.output as { text: string }).text).toContain("kubernetes");
+		const other = await handler(
+			invocation(MEMORY_READ_CAPABILITY, { concept: "personal/pr-review-timing", space: "space-elsewhere" }),
+			signal,
+		);
+		expect(other.isError).toBe(true);
+	});
+
+	it("returns a HarbourError from resolving the session's spaces as an error result", async () => {
+		const { memory } = await setup();
+		const signal = new AbortController().signal;
+		const failing = [
+			() => {
+				throw new HarbourError("forbidden", "no memory for this session");
+			},
+			async () => {
+				throw new HarbourError("not_found", "session not found");
+			},
+		];
+		for (const spaceIds of failing) {
+			const handler = memoryCapabilityHandler({ memory, spaceIds, now: () => 2 });
+			const result = await handler(invocation(MEMORY_SEARCH_CAPABILITY, { query: "pr" }), signal);
+			expect(result.isError).toBe(true);
+		}
+		const crashing = memoryCapabilityHandler({
+			memory,
+			spaceIds: () => {
+				throw new Error("bug");
+			},
+			now: () => 2,
+		});
+		await expect(crashing(invocation(MEMORY_SEARCH_CAPABILITY, { query: "pr" }), signal)).rejects.toThrow("bug");
 	});
 
 	it("reports another organisation's space as an error result, not a crash", async () => {

@@ -55,7 +55,13 @@ export const memoryCapabilities: readonly CapabilityDefinition[] = [
 			"Read one concept from curated memory by its ID, e.g. personal/pr-review-timing, with its status, freshness and sources.",
 		inputSchema: {
 			type: "object",
-			properties: { concept: { type: "string", description: "Concept ID, the path without .md" } },
+			properties: {
+				concept: { type: "string", description: "Concept ID, the path without .md" },
+				space: {
+					type: "string",
+					description: "The space a search hit named, when more than one holds the ID (default: the first)",
+				},
+			},
 			required: ["concept"],
 			additionalProperties: false,
 		},
@@ -83,27 +89,39 @@ export function memoryCapabilityHandler(options: MemoryCapabilityOptions): Capab
 			signal,
 		};
 		const args = isObject(invocation.args) ? invocation.args : {};
-		const spaceIds = await options.spaceIds(invocation);
 		try {
 			if (invocation.capability === MEMORY_SEARCH_CAPABILITY) {
-				if (typeof args.query !== "string") return failure("memory.search needs a query");
-				const limit = typeof args.limit === "number" ? args.limit : undefined;
+				const problem = argumentProblem(args, { query: "string", limit: "integer", includeInactive: "boolean" });
+				if (problem !== undefined || typeof args.query !== "string") {
+					return failure(`memory.search needs a query: ${problem ?? "query is missing"}`);
+				}
+				const spaceIds = await options.spaceIds(invocation);
 				const hits = await options.memory.search(ctx, {
 					spaceIds,
 					query: args.query,
-					...(limit === undefined ? {} : { limit }),
+					...(typeof args.limit === "number" ? { limit: args.limit } : {}),
 					...(args.includeInactive === true ? { includeInactive: true } : {}),
 				});
+				const showSpace = spaceIds.length > 1;
 				return {
 					output: {
-						text: hits.length === 0 ? "No matching concepts." : hits.map(searchLine).join("\n"),
+						text:
+							hits.length === 0 ? "No matching concepts." : hits.map((hit) => searchLine(hit, showSpace)).join("\n"),
 						ids: hits.map((hit) => hit.concept.id),
+						spaces: hits.map((hit) => hit.concept.spaceId),
 					},
 				};
 			}
 			if (invocation.capability === MEMORY_READ_CAPABILITY) {
-				if (typeof args.concept !== "string") return failure("memory.read needs a concept ID");
-				for (const spaceId of spaceIds) {
+				const problem = argumentProblem(args, { concept: "string", space: "string" });
+				if (problem !== undefined || typeof args.concept !== "string") {
+					return failure(`memory.read needs a concept ID: ${problem ?? "concept is missing"}`);
+				}
+				const configured = await options.spaceIds(invocation);
+				if (typeof args.space === "string" && !configured.includes(args.space)) {
+					return failure(`This session does not read space ${args.space}.`);
+				}
+				for (const spaceId of typeof args.space === "string" ? [args.space] : configured) {
 					try {
 						const concept = await options.memory.getConcept(ctx, spaceId, args.concept);
 						return { output: { text: readText(concept, options.now()), spaceId, version: concept.version } };
@@ -119,6 +137,27 @@ export function memoryCapabilityHandler(options: MemoryCapabilityOptions): Capab
 			throw error;
 		}
 	};
+}
+
+/** The first argument that is unknown or of the wrong type, if any. */
+function argumentProblem(
+	args: { readonly [key: string]: JsonValue },
+	types: { readonly [key: string]: "string" | "integer" | "boolean" },
+): string | undefined {
+	for (const [key, value] of Object.entries(args)) {
+		const type = types[key];
+		if (type === undefined) return `unknown argument ${key}`;
+		const ok =
+			type === "integer"
+				? typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_SEARCH_RESULTS
+				: typeof value === type;
+		if (!ok) {
+			return type === "integer"
+				? `${key} must be an integer from 1 to ${MAX_SEARCH_RESULTS}`
+				: `${key} must be a ${type}`;
+		}
+	}
+	return undefined;
 }
 
 function isObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
@@ -142,11 +181,12 @@ function labels(concept: Concept, stale: boolean): string[] {
 	];
 }
 
-function searchLine(hit: MemorySearchHit): string {
+function searchLine(hit: MemorySearchHit, showSpace: boolean): string {
 	const { concept } = hit;
 	const description =
 		concept.description === undefined || concept.description === "" ? "" : ` - ${concept.description}`;
-	return `- ${concept.id}: ${concept.title}${description} [${labels(concept, hit.stale).join("; ")}]\n  ${hit.snippet}`;
+	const tags = [...(showSpace ? [`space ${concept.spaceId}`] : []), ...labels(concept, hit.stale)];
+	return `- ${concept.id}: ${concept.title}${description} [${tags.join("; ")}]\n  ${hit.snippet}`;
 }
 
 function readText(concept: Concept, now: number): string {

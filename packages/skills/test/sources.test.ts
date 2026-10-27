@@ -48,6 +48,32 @@ describe("syncSkillSource", () => {
 			extensions: () => ({ sal: { path: "skills/general/pr-review" } }),
 		});
 		expect(next.revisions[0]).toMatchObject({ revision: 2, extensions: { sal: { path: "skills/general/pr-review" } } });
+
+		// Going back to a ref imported before does not make it current again, and says so.
+		const back = await syncSkillSource(skills, service, { source, ref: "a1", owner });
+		expect(back.revisions).toEqual([]);
+		expect(back.refused.find((entry) => entry.name === "pr-review")?.reason).toContain("revision 2 is current");
+	});
+
+	it("reports a winner that is not current when source order changes back", async () => {
+		const skills = createMemorySkills();
+		const a = sourceOf({ a1: [{ name: "dev", description: "A", files: [skillMd("dev", "A")] }] }, "a");
+		const b = sourceOf({ b1: [{ name: "dev", description: "B", files: [skillMd("dev", "B")] }] }, "b");
+		const order = (first: SkillSource, firstRef: string, second: SkillSource, secondRef: string) =>
+			syncSkillSources(skills, service, {
+				owner,
+				sources: [
+					{ source: first, ref: firstRef },
+					{ source: second, ref: secondRef },
+				],
+			});
+		await syncSkillSource(skills, service, { source: a, ref: "a1", owner });
+		expect((await order(b, "b1", a, "a1")).revisions.map((revision) => revision.revision)).toEqual([2]);
+		const result = await order(a, "a1", b, "b1");
+		expect(result.revisions).toEqual([]);
+		expect(result.refused).toMatchObject([{ name: "dev" }]);
+		const [pin] = await skills.pinForSession(service, "session-new", {});
+		expect((await skills.getRevision(service, pin!.skillId, pin!.revision)).source?.sourceId).toBe("b");
 	});
 });
 

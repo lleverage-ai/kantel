@@ -95,8 +95,10 @@ Portable glue a host uses around any `Skills`; no storage and no Node APIs. A ho
 - `syncSkillSources(skills, ctx, { sources, owner, exclude?, extensions? })` publishes several sources as one set
   through `importRevision`, in priority order: on a name more than one offers, the first source's skill is published
   and the rest are reported in `shadowed`, as Pi does when it layers skill directories. Excluded names are reported
-  in `excluded`; a skill the store refuses (`invalid` or `conflict`) is reported in `refused`. Nothing is skipped
-  silently. Every revision records its own `{ sourceId, ref }`. `syncSkillSource` is the one-source form.
+  in `excluded`; a skill the store refuses (`invalid` or `conflict`) is reported in `refused`, and so is a winner
+  whose `(sourceId, ref)` was imported before but is not the latest revision any more (importing it again returns the
+  old revision and leaves the latest current, so new sessions would not get it; a new ref brings it back). Nothing is
+  skipped silently. Every revision records its own `{ sourceId, ref }`. `syncSkillSource` is the one-source form.
 - `sessionSkillListings(skills, ctx, sessionId, visibility, mountRoot?)` pins the session (or returns its existing
   pins) and returns the listings and revisions of those pins, so later publishing never changes what a running
   session sees.
@@ -110,7 +112,8 @@ Portable glue a host uses around any `Skills`; no storage and no Node APIs. A ho
 with its session ID as the `ref`, and reads `/skills/<name>/…` at exactly its pinned revisions. The mount version is
 `pins:<sha256>` over the session's sorted `skillId@revision` pins, so a version names one set of pins: another
 session's pins under it are `not_found`. The first read pins the session with `visibility`. Paths that leave the
-mount are `invalid` and unknown names or files are `not_found`. Nothing writes through it.
+mount are `invalid` and unknown names or files are `not_found`. Listing gives sizes but no digests, so it never
+reads file bodies. Nothing writes through it.
 
 The Sal worker example (`examples/sal-worker`) composes these for a Sal worker and checks it against a local Sal.
 

@@ -93,18 +93,13 @@ export function createSkillsMountSource(skills: Skills, options: SkillsMountOpti
 				const slash = child.indexOf("/");
 				const entryPath = `${name}/${prefix}${slash === -1 ? child : child.slice(0, slash)}`;
 				if (entries.has(entryPath)) continue;
-				entries.set(
-					entryPath,
-					slash === -1
-						? {
-								path: entryPath,
-								kind: "file",
-								size: file.size,
-								digest: await sha256(await skills.readFile(ctx, revision.skillId, revision.revision, file.path)),
-								version: `${revision.revision}`,
-							}
-						: { path: entryPath, kind: "directory", size: 0, version: `${revision.revision}` },
-				);
+				// No digest: a revision lists sizes, not per-file digests, and listing never reads file bodies.
+				entries.set(entryPath, {
+					path: entryPath,
+					kind: slash === -1 ? "file" : "directory",
+					size: slash === -1 ? file.size : 0,
+					version: `${revision.revision}`,
+				});
 			}
 			if (entries.size === 0) throw new HarbourError("not_found", `${path} not found`);
 			return [...entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));

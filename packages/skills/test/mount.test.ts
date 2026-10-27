@@ -99,6 +99,29 @@ describe("createSkillsMountSource", () => {
 		);
 	});
 
+	it("lists and stats without reading file bodies", async () => {
+		const { skills } = await setup();
+		let reads = 0;
+		const counting: typeof skills = {
+			...skills,
+			readFile: async (...args) => {
+				reads += 1;
+				return skills.readFile(...args);
+			},
+		};
+		const mount = createSkillsMountSource(counting, { visibility: () => ({}) });
+		const workspaces = createMemoryWorkspaces({ sources: [mount] });
+		const record = await workspaces.create(service, {
+			owner,
+			mounts: [{ path: "/skills", source: "skills", ref: "session-1" }],
+		});
+		await workspaces.list(service, record.id, { path: "/skills", recursive: true });
+		await workspaces.stat(service, record.id, "/skills/pr-review/SKILL.md");
+		expect(reads).toBe(0);
+		await workspaces.read(service, record.id, "/skills/pr-review/SKILL.md");
+		expect(reads).toBe(1);
+	});
+
 	it("mounts read-only at /skills in a workspace, pinned to the session's revisions", async () => {
 		const { mount } = await setup();
 		const workspaces = createMemoryWorkspaces({ sources: [mount] });

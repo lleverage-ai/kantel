@@ -29,7 +29,11 @@ export interface SyncSkillSourceInput {
 
 export interface SyncSkillSourceResult {
 	readonly revisions: readonly SkillRevision[];
-	/** Skills the store refused (an invalid name or path, say), with why. Nothing is skipped silently. */
+	/**
+	 * Skills not current after the sync, with why: ones the store refused (an invalid name or path, say), and ones whose
+	 * `(sourceId, ref)` was imported before but is no longer the latest revision, so new sessions would not get it
+	 * (publish a new ref to bring it back). Nothing is skipped silently.
+	 */
 	readonly refused: readonly { readonly name: string; readonly reason: string }[];
 }
 
@@ -81,16 +85,24 @@ export async function syncSkillSources(
 			winners.set(skill.name, source.id);
 			const extensions = input.extensions?.({ name: skill.name, sourceId: source.id });
 			try {
-				revisions.push(
-					await skills.importRevision(ctx, {
-						owner: input.owner,
+				const revision = await skills.importRevision(ctx, {
+					owner: input.owner,
+					name: skill.name,
+					description: skill.description,
+					files: skill.files,
+					source: { sourceId: source.id, ref },
+					...(extensions === undefined ? {} : { extensions }),
+				});
+				// Importing a ref seen before returns its old revision and leaves the latest one current.
+				const latest = (await skills.get(ctx, revision.skillId)).latestRevision;
+				if (latest !== revision.revision) {
+					refused.push({
 						name: skill.name,
-						description: skill.description,
-						files: skill.files,
-						source: { sourceId: source.id, ref },
-						...(extensions === undefined ? {} : { extensions }),
-					}),
-				);
+						reason: `${source.id}@${ref} is revision ${revision.revision}, imported before; revision ${latest} is current, so new sessions get that one. Publish a new ref to make ${source.id} current again`,
+					});
+					continue;
+				}
+				revisions.push(revision);
 			} catch (error) {
 				if (!isHarbourError(error, "invalid") && !isHarbourError(error, "conflict")) throw error;
 				refused.push({ name: skill.name, reason: error.message });
