@@ -127,8 +127,12 @@ only the organisation (and "not an agent"); with `sessionEnd` it registers `endS
 - **Races across processes.** Every decision reads the store, and every change that races is one conditional commit,
   so two vault instances over one store behave as one. A decision, a withdrawal, a session-end withdrawal and an expiry
   each settle a proposal by a compare-and-set on its record, together with the decision, the grant and any pasted
-  value or new item: exactly one wins, and a loser reads again and answers `conflict` (or `expired`). A decision that
-  lands at the clock's expiry commits only before it. Spending a grant's or policy's use, and revoking one, are
+  value or new item: exactly one wins, and a loser reads again and answers `conflict` (or `expired`). A decision
+  is taken only while the clock reads before the proposal's expiry (`decidedAt` is that reading). Its commit is
+  conditional on the proposal row alone, not on the clock, so a commit already under way when expiry passes may still
+  land; an expiry stored first (by any reader) makes it lose. A grant's lifetime counts from `decidedAt`, so a late
+  commit never extends it. Session teardown withdraws pending proposals before it revokes the session's grants, so an
+  approval racing teardown either loses to the withdrawal or has its grant revoked. Spending a grant's or policy's use, and revoking one, are
   compare-and-sets too, so `maxUses` is never exceeded and a revocation through one instance holds for the next
   decision through any other. Within one instance a second `decide` or a `withdraw` while a decision is in flight is
   still `conflict` at once. Cases: the suite above on every target, and the `races:` proof.

@@ -931,8 +931,9 @@ export function createVault(options: VaultOptions): HarbourVault {
 				};
 				/**
 				 * Commits the settlement and everything that comes with it at once, only while the proposal is still the
-				 * pending one read above and has not expired by the clock: one decision ever wins, and a decision landing as
-				 * the proposal expires either wins before the expiry is stored or loses to it.
+				 * pending one read above and the clock reads before its expiry: one decision ever wins. The commit's condition
+				 * is the row's revision, not the clock, so a commit already under way as the expiry passes may land; an expiry
+				 * stored first makes it lose (CONTRACT.md, "Races across processes").
 				 */
 				const settle = async (settled: Proposal, writes: readonly VaultWrite[]): Promise<void> => {
 					if (clock.now() >= proposal.expiresAt) await lostSettlement(ctx.organisationId, proposal.id);
@@ -990,6 +991,11 @@ export function createVault(options: VaultOptions): HarbourVault {
 				} else if (terms.itemId !== undefined) {
 					// The pasted value goes onto the valueless item, conditional on its row being the one read here.
 					const existing = await itemRecord(ctx.organisationId, terms.itemId);
+					// Checked again on the very row the conditional update is built from: another approval may have given the
+					// item a value since the check above, and that value must not be overwritten.
+					if (existing.value.item.hasValue) {
+						throw new HarbourError("conflict", `Item ${terms.itemId} already has a value`);
+					}
 					const valueVersion = existing.value.item.valueVersion + 1;
 					const item: VaultItem = { ...existing.value.item, hasValue: true, valueVersion, updatedAt: now };
 					const sealed = await cipher.seal(input.secretValue!, { itemId: item.id, valueVersion });
@@ -1246,24 +1252,13 @@ export function createVault(options: VaultOptions): HarbourVault {
 			}
 			// Each change is its own conditional commit, so a grant or proposal another call ends first is left to it and
 			// audited once, by whoever ended it. Audit events are written after every change.
+			//
+			// Pending proposals are withdrawn before the grants are scanned, never after: an approval racing the teardown
+			// either loses its conditional commit to the withdrawal, or wins it and so has stored its grant before the
+			// scan below reads the grants, which then revokes it. Scanning grants first would let an approval landing
+			// between the two phases escape both.
 			const now = clock.now();
 			const afterwards: Parameters<typeof emit>[0][] = [];
-			for (const { value } of await readAll<StoredGrant>("grants", ctx.organisationId)) {
-				const { id, selector } = value.grant;
-				if (selector.sessionId !== sessionId || grantView(value).status !== "active") continue;
-				if (!(await revokeIfActive(id, now)).revoked) continue;
-				afterwards.push({
-					id: `vault:grant:${id}:revoked`,
-					type: "vault.grant.revoked",
-					actor: ctx.actor,
-					organisationId: ctx.organisationId,
-					...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
-					sessionId,
-					...(selector.agentId === undefined ? {} : { agentId: selector.agentId }),
-					subject: { kind: "vault.grant", id },
-					data: { reason },
-				});
-			}
 			if (reason === "session_ended") {
 				for (const { value: candidate } of await readAll<Proposal>("proposals", ctx.organisationId)) {
 					if (candidate.requester.sessionId !== sessionId || candidate.status !== "pending") continue;
@@ -1286,6 +1281,22 @@ export function createVault(options: VaultOptions): HarbourVault {
 						data: { reason },
 					});
 				}
+			}
+			for (const { value } of await readAll<StoredGrant>("grants", ctx.organisationId)) {
+				const { id, selector } = value.grant;
+				if (selector.sessionId !== sessionId || grantView(value).status !== "active") continue;
+				if (!(await revokeIfActive(id, now)).revoked) continue;
+				afterwards.push({
+					id: `vault:grant:${id}:revoked`,
+					type: "vault.grant.revoked",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
+					sessionId,
+					...(selector.agentId === undefined ? {} : { agentId: selector.agentId }),
+					subject: { kind: "vault.grant", id },
+					data: { reason },
+				});
 			}
 			for (const event of afterwards) await emit(event);
 		},
@@ -1360,11 +1371,13 @@ export function createVault(options: VaultOptions): HarbourVault {
 				}
 				// The use is spent by a conditional commit: if another decision spent the last one (or a revocation
 				// landed) first, this candidate no longer applies and the next is tried.
+				// The value is opened first, so a cipher that cannot open it (a wrong or missing key) fails the decision
+				// without spending a use the grant or policy cannot get back.
 				const grantId = candidate.grant?.grant.id;
 				const policyId = candidate.policy?.policy.id;
+				const value = await cipher.open(sealed, { itemId: item.id, valueVersion: item.valueVersion });
 				const spent = grantId !== undefined ? await spendGrant(grantId) : await spendPolicy(policyId!);
 				if (!spent) continue;
-				const value = await cipher.open(sealed, { itemId: item.id, valueVersion: item.valueVersion });
 				const reason = grantId !== undefined ? `Allowed by grant ${grantId}` : `Allowed by policy ${policyId}`;
 				const use = await recordUse(request, {
 					...target,

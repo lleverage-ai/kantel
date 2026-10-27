@@ -29,6 +29,29 @@ function twoInstances(): { readonly store: VaultStore; readonly a: HarbourVault;
 	return { store, a: open(), b: open() };
 }
 
+/**
+ * Two instances over one store, where instance A's reads go through `hook` first: a test uses it to land a change
+ * through B at an exact point between two of A's reads.
+ */
+function hookedInstances(hook: (table: string, op: "get" | "list", id?: string) => Promise<void>) {
+	const store = createMemoryVaultStore();
+	const key = randomCipherKey();
+	const hooked: VaultStore = {
+		async get(table, id) {
+			await hook(table, "get", id);
+			return store.get(table, id);
+		},
+		async list(table, organisationId) {
+			await hook(table, "list");
+			return store.list(table, organisationId);
+		},
+		commit: (writes) => store.commit(writes),
+	};
+	const a = createVault({ store: hooked, cipher: createAesGcmCipher({ key }), expiryPollMs: 5 });
+	const b = createVault({ store, cipher: createAesGcmCipher({ key }), expiryPollMs: 5 });
+	return { store, a, b };
+}
+
 async function tokenItem(vault: HarbourVault) {
 	return vault.putItem(human, {
 		owner: { kind: "organisation", organisationId: "org-a" },
@@ -98,6 +121,112 @@ describe("createVault over one store from two instances", () => {
 		);
 		expect(decisions.filter((result) => result.allow)).toHaveLength(3);
 		expect(await a.getGrant(human, decision.grantId!)).toMatchObject({ uses: 3, status: "exhausted" });
+	});
+
+	it("revokes a grant approved through another instance while the session is being torn down", async () => {
+		let armed = false;
+		let approve: (() => Promise<unknown>) | undefined;
+		const { a, b } = hookedInstances(async (table, op) => {
+			// The approval lands just as teardown starts reading the session's proposals.
+			if (armed && table === "proposals" && op === "list" && approve !== undefined) {
+				const run = approve;
+				approve = undefined;
+				await run();
+			}
+		});
+		const item = await tokenItem(b);
+		const proposal = await b.propose(agent, {
+			itemId: item.id,
+			route: { host: "api.github.com", methods: ["GET"], pathPrefix: "/" },
+			lifetime: {},
+			reason: "Read",
+		});
+		approve = () =>
+			b.decide(human, {
+				proposalId: proposal.id,
+				outcome: "approve",
+				termsHash: proposal.termsHash,
+				pickedCode: proposal.bindingCode,
+			});
+		armed = true;
+		await a.endSession(human, "session-1", "session_ended");
+		armed = false;
+		expect(approve).toBeUndefined();
+		expect(await b.getProposal(human, proposal.id)).toMatchObject({ status: "approved" });
+		expect((await b.decideEgress(gateway, egress)).allow).toBe(false);
+		for (const grant of (await b.listGrants(human)).items) expect(grant.status).toBe("revoked");
+	});
+
+	it("never overwrites a value another instance's approval pasted onto the same item", async () => {
+		let itemReads = 0;
+		let second: (() => Promise<unknown>) | undefined;
+		const { a, b } = hookedInstances(async (table, op) => {
+			// B's approval commits between A's check of the item and the read its conditional update is built from.
+			if (table === "items" && op === "get" && second !== undefined && ++itemReads === 2) {
+				const run = second;
+				second = undefined;
+				await run();
+			}
+		});
+		const item = await b.putItem(human, {
+			owner: { kind: "organisation", organisationId: "org-a" },
+			name: "linear-key",
+			hosts: ["api.linear.app"],
+			injection: { header: "Authorization", template: "Bearer {key}" },
+		});
+		const terms = {
+			itemId: item.id,
+			secret: {
+				name: "linear-key",
+				hosts: ["api.linear.app"],
+				injection: { header: "Authorization", template: "Bearer {key}" },
+			},
+			route: { host: "api.linear.app", methods: ["POST"], pathPrefix: "/graphql" },
+			lifetime: {},
+			reason: "Paste the Linear key",
+		} as const;
+		const first = await b.propose(agent, terms);
+		const other = await b.propose(agent, terms);
+		const approval = (proposal: typeof first, secretValue: string) => ({
+			proposalId: proposal.id,
+			outcome: "approve" as const,
+			termsHash: proposal.termsHash,
+			pickedCode: proposal.bindingCode,
+			secretValue,
+		});
+		second = () => b.decide(human, approval(other, "value-from-b"));
+		await expect(a.decide(human, approval(first, "value-from-a"))).rejects.toMatchObject({ code: "conflict" });
+		expect(second).toBeUndefined();
+		expect(await b.getItem(human, item.id)).toMatchObject({ hasValue: true, valueVersion: 1 });
+		expect(await b.getProposal(human, first.id)).toMatchObject({ status: "pending" });
+		const decision = await b.decideEgress(gateway, {
+			...egress,
+			method: "POST",
+			url: "https://api.linear.app/graphql",
+		});
+		expect(decision.inject?.value).toBe("Bearer value-from-b");
+	});
+
+	it("spends no use when the value cannot be opened", async () => {
+		const store = createMemoryVaultStore();
+		const good = createVault({ store, cipher: createAesGcmCipher({ key: randomCipherKey() }) });
+		const wrongKey = createVault({ store, cipher: createAesGcmCipher({ key: randomCipherKey() }) });
+		const item = await tokenItem(good);
+		const proposal = await good.propose(agent, {
+			itemId: item.id,
+			route: { host: "api.github.com", methods: ["GET"], pathPrefix: "/" },
+			lifetime: { maxUses: 1 },
+			reason: "Read once",
+		});
+		const decision = await good.decide(human, {
+			proposalId: proposal.id,
+			outcome: "approve",
+			termsHash: proposal.termsHash,
+			pickedCode: proposal.bindingCode,
+		});
+		await expect(wrongKey.decideEgress(gateway, egress)).rejects.toMatchObject({ code: "unavailable" });
+		expect(await good.getGrant(human, decision.grantId!)).toMatchObject({ uses: 0, status: "active" });
+		expect((await good.decideEgress(gateway, egress)).allow).toBe(true);
 	});
 
 	it("resolves a wait on one instance for a decision made through the other", async () => {
