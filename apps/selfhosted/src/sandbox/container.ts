@@ -7,9 +7,14 @@
 //   member is the vault proxy (connected for the command, as `vault-proxy`),
 //   so a sandbox can reach neither the internet nor another sandbox.
 //   HTTP(S)_PROXY carries a per-sandbox token the vault resolves to the
-//   session; the token is not a credential for anything.
+//   session; the token is not a credential for anything. The sandbox finds
+//   the vault by address (an /etc/hosts entry), not through Docker's DNS,
+//   which gVisor cannot reach on a user-defined network.
 // - Workspace: copied in and out through Docker's archive API, so no host path
-//   is shared with the sandbox.
+//   is shared with the sandbox. /workspace is an anonymous volume, removed with
+//   the container: gVisor keeps root filesystem writes inside the sandbox
+//   (overlay2 root:self), where the archive API cannot see them, but writes
+//   a volume through to the host.
 // - TLS: the vault intercepts HTTPS, so the vault's CA goes in with the
 //   workspace and every TLS client is pointed at it.
 
@@ -101,7 +106,7 @@ export class ContainerRunner implements SandboxTierRunner {
 		};
 		for (const container of list) {
 			if (!(await dead(container.Labels["harbour.owner"]))) continue;
-			await this.docker(`/containers/${container.Id}?force=1`, { method: "DELETE" }).catch(() => undefined);
+			await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" }).catch(() => undefined);
 			removed++;
 		}
 		for (const network of await this.#networks({ label: ["harbour.owner"] })) {
@@ -114,7 +119,7 @@ export class ContainerRunner implements SandboxTierRunner {
 	async reap(sessionId: string): Promise<number> {
 		const filters = encodeURIComponent(JSON.stringify({ label: [`harbour.session=${sessionId}`] }));
 		const list = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as { Id: string }[];
-		for (const container of list) await this.docker(`/containers/${container.Id}?force=1`, { method: "DELETE" });
+		for (const container of list) await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" });
 		for (const network of await this.#networks({ label: [`harbour.session=${sessionId}`] }))
 			await this.#removeNetwork(network.Id);
 		return list.length;
@@ -128,8 +133,11 @@ export class ContainerRunner implements SandboxTierRunner {
 		}[];
 	}
 
-	/** A new internal network for one command, with the vault on it as `vault-proxy`. */
-	async #createNetwork(sessionId: string, token: string): Promise<string> {
+	/**
+	 * A new internal network for one command, with the vault on it as
+	 * `vault-proxy`. Returns the network and the vault's address on it.
+	 */
+	async #createNetwork(sessionId: string, token: string): Promise<{ id: string; vaultIp: string }> {
 		const created = (await (
 			await this.docker("/networks/create", {
 				method: "POST",
@@ -146,11 +154,19 @@ export class ContainerRunner implements SandboxTierRunner {
 				method: "POST",
 				json: { Container: this.options.vaultContainer, EndpointConfig: { Aliases: ["vault-proxy"] } },
 			});
+			// Docker's embedded DNS (127.0.0.11) is unreachable from a runsc sandbox,
+			// so the container gets the vault's address as an /etc/hosts entry.
+			const inspected = (await (await this.docker(`/networks/${created.Id}`)).json()) as {
+				Containers?: Record<string, { Name: string; IPv4Address: string }>;
+			};
+			const vault = Object.values(inspected.Containers ?? {}).find((c) => c.Name === this.options.vaultContainer);
+			const vaultIp = vault?.IPv4Address.split("/")[0];
+			if (!vaultIp) throw new Error(`vault ${this.options.vaultContainer} has no address on ${created.Id}`);
+			return { id: created.Id, vaultIp };
 		} catch (error) {
 			await this.#removeNetwork(created.Id);
 			throw error;
 		}
-		return created.Id;
 	}
 
 	async #removeNetwork(id: string): Promise<void> {
@@ -218,13 +234,14 @@ export class ContainerRunner implements SandboxTierRunner {
 		);
 		const pendingNetwork = this.#createNetwork(request.sessionId, token);
 		pendingNetwork.catch(() => undefined); // awaited below; mark handled while the tar builds
-		let network: string | undefined;
+		let network: { id: string; vaultIp: string } | undefined;
 		let id: string | undefined;
 		try {
 			const archive = await this.#tarOf(request.workspaceId, manifest);
 			mark("workspaceTarMs");
 			network = await pendingNetwork;
 			mark("networkMs");
+			const vaultHost = new URL(this.options.proxyUrl).hostname;
 			const created = (await (
 				await this.docker(`/containers/create`, {
 					method: "POST",
@@ -247,7 +264,9 @@ export class ContainerRunner implements SandboxTierRunner {
 						],
 						Labels: { "harbour.session": request.sessionId, "harbour.owner": this.owner, "harbour.tier": "container" },
 						HostConfig: {
-							NetworkMode: network,
+							NetworkMode: network.id,
+							ExtraHosts: [`${vaultHost}:${network.vaultIp}`],
+							Mounts: [{ Type: "volume", Target: "/workspace" }],
 							Runtime: this.options.runtime,
 							Memory: this.options.memoryBytes,
 							NanoCpus: this.options.nanoCpus,
@@ -315,9 +334,10 @@ export class ContainerRunner implements SandboxTierRunner {
 			mark("uploadMs");
 			return { tier: "container", exitCode: StatusCode, ...logs, manifest: next, changed, timings: marks };
 		} finally {
-			if (id !== undefined) await this.docker(`/containers/${id}?force=1`, { method: "DELETE" }).catch(() => undefined);
+			if (id !== undefined)
+				await this.docker(`/containers/${id}?force=1&v=1`, { method: "DELETE" }).catch(() => undefined);
 			const made = network ?? (await pendingNetwork.catch(() => undefined));
-			if (made !== undefined) await this.#removeNetwork(made);
+			if (made !== undefined) await this.#removeNetwork(made.id);
 			await this.pool.query(`DELETE FROM harbour.sandbox_tokens WHERE token = $1`, [token]).catch(() => undefined);
 		}
 	}
