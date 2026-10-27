@@ -47,12 +47,28 @@ function sha256(bytes: Uint8Array): string {
 
 async function applySync(body: { from: string | null; to: string; put: Put[]; remove: string[] }) {
   if (body.from !== version || pending !== null) return { ok: false as const, have: pending === null ? version : null };
+  try {
+    await applyChanges(body);
+  } catch (error) {
+    // A half-applied sync: forget the working copy so the next exec starts from a full sync.
+    version = null;
+    index = new Map();
+    throw error;
+  }
+  version = body.to;
+  return { ok: true as const };
+}
+
+async function applyChanges(body: { put: Put[]; remove: string[] }) {
   for (const path of body.remove) {
     await rm(join(ROOT, path), { force: true, recursive: true });
     index.delete(path);
   }
   for (const file of body.put) {
     const absolute = join(ROOT, file.path);
+    // A directory replaced by a file (the removes above leave the emptied directory behind).
+    const existing = await lstat(absolute).catch(() => null);
+    if (existing?.isDirectory()) await rm(absolute, { recursive: true, force: true });
     await mkdir(dirname(absolute), { recursive: true });
     const bytes = Buffer.from(file.content, "base64");
     await writeFile(absolute, bytes);
@@ -60,8 +76,6 @@ async function applySync(body: { from: string | null; to: string; put: Put[]; re
     const stat = await lstat(absolute);
     index.set(file.path, { hash: sha256(bytes), mode: file.mode, size: stat.size, mtimeMs: stat.mtimeMs });
   }
-  version = body.to;
-  return { ok: true as const };
 }
 
 async function changedFiles() {
@@ -112,22 +126,29 @@ async function trustEgressCa(): Promise<Record<string, string>> {
 
 async function run(command: string, cwd: string, env: Record<string, string>, timeoutMs: number) {
   const caEnv = await trustEgressCa();
-  const child = Bun.spawn(["bash", "-c", command], {
+  // setsid: the command gets its own process group, so a timeout kills what it started in the background too.
+  const child = Bun.spawn(["setsid", "bash", "-c", command], {
     cwd,
     env: { ...process.env, ...caEnv, HOME: ROOT, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
   let timedOut = false;
+  let release: () => void = () => {};
+  const abandoned = new Promise<void>((resolve) => (release = resolve));
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill("SIGKILL");
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+    // Something that left the group (its own setsid, a daemon) may still hold the pipes: stop waiting for them.
+    setTimeout(release, 2_000);
   }, timeoutMs);
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const read = (stream: ReadableStream<Uint8Array>) =>
+    Promise.race([new Response(stream).text(), abandoned.then(() => "")]);
+  const [stdout, stderr, exitCode] = await Promise.all([read(child.stdout), read(child.stderr), child.exited]);
   clearTimeout(timer);
   return {
     stdout,

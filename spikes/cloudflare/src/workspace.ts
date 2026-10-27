@@ -42,7 +42,11 @@ export class R2Workspace implements Workspace {
       entries[clean] = { path: clean, hash, size: bytes.byteLength, mode: 0o644 };
     }
     const manifest: WorkspaceManifest = { workspaceId: this.id, version: "v1", entries };
-    await this.#bucket.put(`${this.#prefix}versions/v1.json`, JSON.stringify(manifest));
+    // Both puts are create-only, so a losing concurrent creator cannot overwrite the winner's first manifest.
+    const wrote = await this.#bucket.put(`${this.#prefix}versions/v1.json`, JSON.stringify(manifest), {
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    if (wrote === null) throw new Error(`workspace ${this.id} already exists`);
     const created = await this.#bucket.put(`${this.#prefix}HEAD`, "v1", { onlyIf: { etagDoesNotMatch: "*" } });
     if (created === null) throw new Error(`workspace ${this.id} already exists`);
     this.#manifests.set("v1", manifest);

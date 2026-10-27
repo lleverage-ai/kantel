@@ -1,5 +1,8 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { SandboxTier, Vault, VaultPolicy, VaultUse } from "./contracts.ts";
+import { containsSecret, REDACTED, redactText } from "./redact.ts";
+
+export { REDACTED };
 
 /**
  * Stub vault for the spike. Static policies, one item (a canary secret held as a Worker secret), one injected header.
@@ -14,8 +17,6 @@ export const VAULT_POLICIES: readonly VaultPolicy[] = [
   { host: "postman-echo.com", methods: ["GET"], inject: { header: "X-Harbour-Vault", item: "research-canary" } },
   { host: "httpbin.org", methods: ["GET"], inject: { header: "X-Harbour-Vault", item: "research-canary" } },
 ];
-
-export const REDACTED = "[vault:redacted]";
 
 export type VaultCaller = { readonly sessionId: string; readonly tier: SandboxTier };
 
@@ -81,19 +82,31 @@ async function record(env: Env, use: VaultUse): Promise<void> {
 async function redact(upstream: Response, secret: string | undefined): Promise<{ response: Response; redactions: number }> {
   const type = upstream.headers.get("content-type") ?? "";
   const textual = /^(text\/|application\/(json|xml|javascript)|.*\+json)/.test(type);
-  const headers = new Headers(upstream.headers);
-  headers.delete("content-length");
-  headers.delete("content-encoding");
-  headers.set("x-harbour-vault", "allowed");
-  if (secret === undefined || !textual || upstream.body === null) {
-    return { response: new Response(upstream.body, { status: upstream.status, headers }), redactions: 0 };
+  const headers = new Headers();
+  let redactions = 0;
+  for (const [name, value] of upstream.headers) {
+    if (name === "content-length" || name === "content-encoding") continue;
+    const clean = secret === undefined ? { text: value, redactions: 0 } : redactText(value, secret);
+    redactions += clean.redactions;
+    headers.append(name, clean.text);
   }
-  const text = await upstream.text();
-  const parts = text.split(secret);
-  return {
-    response: new Response(parts.join(REDACTED), { status: upstream.status, headers }),
-    redactions: parts.length - 1,
-  };
+  headers.set("x-harbour-vault", "allowed");
+  if (secret === undefined || upstream.body === null) {
+    return { response: new Response(upstream.body, { status: upstream.status, headers }), redactions };
+  }
+  if (!textual) {
+    // A binary body cannot be rewritten safely; withhold it if the secret is in it.
+    const bytes = new Uint8Array(await upstream.arrayBuffer());
+    if (containsSecret(bytes, secret)) {
+      return {
+        response: new Response("harbour vault: response withheld, it contains a vault secret\n", { status: 502, headers }),
+        redactions: redactions + 1,
+      };
+    }
+    return { response: new Response(bytes, { status: upstream.status, headers }), redactions };
+  }
+  const clean = redactText(await upstream.text(), secret);
+  return { response: new Response(clean.text, { status: upstream.status, headers }), redactions: redactions + clean.redactions };
 }
 
 /** Audit store for vault uses: one object for the spike. */

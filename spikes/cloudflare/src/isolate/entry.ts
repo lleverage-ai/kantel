@@ -120,7 +120,20 @@ async function collectChanges(
   touched: ReadonlySet<string>,
 ): Promise<WorkspaceChange[]> {
   const changes: WorkspaceChange[] = [];
-  const touchedPrefixes = [...touched].map((path) => path.replace(/\/+$/, ""));
+  // A write through a symlinked parent lands at the resolved path, so track that too.
+  const resolved = new Set<string>();
+  for (const path of touched) {
+    resolved.add(path);
+    const clean = path.replace(/\/+$/, "");
+    const slash = clean.lastIndexOf("/");
+    if (slash <= 0) continue;
+    try {
+      resolved.add(`${await fs.realpath(clean.slice(0, slash))}/${clean.slice(slash + 1)}`);
+    } catch {
+      // The parent is gone (removed by the command): nothing to resolve.
+    }
+  }
+  const touchedPrefixes = [...resolved].map((path) => path.replace(/\/+$/, ""));
   const isTouched = (absolute: string) =>
     touchedPrefixes.some((prefix) => absolute === prefix || absolute.startsWith(`${prefix}/`));
 

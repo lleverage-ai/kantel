@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkspaceManifest } from "../src/contracts.ts";
+import { containsSecret, REDACTED, redactText } from "../src/redact.ts";
 import { commandWords, routeCommand } from "../src/sandbox.ts";
 import { diffManifests, normalisePath } from "../src/workspace.ts";
 
@@ -46,5 +47,39 @@ describe("workspace helpers", () => {
     const diff = diffManifests(manifest("v1", { a: "1", b: "2", c: "3" }), manifest("v2", { a: "1", b: "9", d: "4" }));
     expect(diff.put.map((e) => e.path).sort()).toEqual(["b", "d"]);
     expect(diff.remove).toEqual(["c"]);
+  });
+
+  test("diffManifests for a directory replaced by a file", () => {
+    const diff = diffManifests(manifest("v1", { "dir/file.txt": "1" }), manifest("v2", { dir: "2" }));
+    expect(diff.remove).toEqual(["dir/file.txt"]);
+    expect(diff.put.map((e) => e.path)).toEqual(["dir"]);
+  });
+});
+
+describe("vault redaction", () => {
+  const secret = 'canary"with\\escapes&<x>';
+  const html = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  test("redacts the literal value", () => {
+    expect(redactText(`a ${secret} b`, secret)).toEqual({ text: `a ${REDACTED} b`, redactions: 1 });
+  });
+
+  test("redacts a JSON echo, which escapes quotes and backslashes", () => {
+    const echoed = JSON.stringify({ headers: { "x-harbour-vault": secret } });
+    const clean = redactText(echoed, secret);
+    expect(clean.redactions).toBe(1);
+    expect(JSON.parse(clean.text).headers["x-harbour-vault"]).toBe(REDACTED);
+  });
+
+  test("redacts URL, base64 and HTML encodings", () => {
+    const encoded = [encodeURIComponent(secret), btoa(secret), html(secret)];
+    expect(redactText(encoded.join(" "), secret).text).toBe([REDACTED, REDACTED, REDACTED].join(" "));
+  });
+
+  test("finds the value in a binary body", () => {
+    const bytes = new Uint8Array([0, 1, ...new TextEncoder().encode(JSON.stringify(secret)), 255]);
+    expect(containsSecret(bytes, secret)).toBe(true);
+    expect(containsSecret(new Uint8Array([0, 1, 2]), secret)).toBe(false);
   });
 });

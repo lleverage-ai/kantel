@@ -302,7 +302,11 @@ export class SessionDO extends DurableObject<Env> {
     const meta = this.#requireMeta();
     await this.#open();
     const sandbox = this.#sandbox(meta, body);
-    const result = await sandbox.exec({ command: body.command, ...(body.tier ? { tier: body.tier } : {}) });
+    const result = await sandbox.exec({
+      command: body.command,
+      ...(body.tier ? { tier: body.tier } : {}),
+      ...(body.timeoutMs ? { timeoutMs: body.timeoutMs } : {}),
+    });
     await this.#recordExec({ command: body.command, tier: result.tier, exitCode: result.exitCode, base: result.base, version: result.version, timings: result.timings });
     return result;
   }
@@ -398,7 +402,7 @@ export class SessionDO extends DurableObject<Env> {
 }
 
 type SetupBody = { sessionId: string; workspaceId?: string; scenario?: Scenario; isolateGeneration?: string };
-type ExecBody = { command: string; tier?: "isolate" | "container"; containerName?: string; isolateGeneration?: string };
+type ExecBody = { command: string; tier?: "isolate" | "container"; timeoutMs?: number; containerName?: string; isolateGeneration?: string };
 
 function isInterrupted(message: Message): boolean {
   if (message.role !== "toolResult" || !message.isError) return false;

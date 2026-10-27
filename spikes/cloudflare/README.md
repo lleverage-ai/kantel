@@ -44,7 +44,7 @@ client ── Worker (bearer token) ── SessionDO ── Pi Durable Harness (
 
 1. **Crash mid tool call works as Pi Durable documents it.** The DO is aborted right after a command's workspace commit lands and before its tool result is recorded. The alarm reopens it about 1.8 s later; the Harness writes `Tool bash was interrupted and may have partially run`, and the scripted model reissues the call. The rerun starts on the already-committed version and changes nothing. Pi's `bash` is not `replay: "safe"`, so Harbour gets the "may have partially run" path, not a silent rerun: the agent decides. Commands that are not idempotent (appends, pushes) need that path surfaced to the model, as here.
 2. **Each tier sees the other's last write**: the container reads `notes/x.md` written by the write tool and the page the isolate fetched; the isolate reads `git-log.txt` the container wrote. All 50 container cold-start runs saw the isolate's marker.
-3. **The vault holds for both tiers.** Allowed hosts get the header injected (an echo service shows it arrived); the value is redacted from the response before the sandbox sees it; an unlisted host gets 403; every use is audited with the header name and item, never the value. The canary appears in none of: tool results, the recorded fixture, or 2,225 lines of `wrangler tail` taken during a run.
+3. **The vault holds for both tiers.** Allowed hosts get the header injected (an echo service shows it arrived); the value is redacted from the response before the sandbox sees it, in response headers and in literal, JSON-escaped, URL, base64 and HTML forms, and a binary body containing it is withheld; an unlisted host gets 403; every use is audited with the header name and item, never the value. The canary appears in none of: tool results, the recorded fixture, or 2,225 lines of `wrangler tail` taken during a run.
 4. **Cold starts:** container ready p50 2.4 s / p95 3.2 s against a 3 s / 8 s target (meets); isolate session ready p50 1.0 s / p95 2.0 s against 100 / 300 ms (misses). About half the isolate figure is creating a never-seen Durable Object; most of the rest is R2 round trips. See the measurements page for the breakdown and the proposed fixes (a pool of pre-created session objects; head and manifest in DO storage).
 5. **Gotchas worth keeping:**
    - just-bash turns its private-range check on whenever `process` exists, as under `nodejs_compat`, and the check needs DNS pinning Workers cannot do: every `curl` fails until `denyPrivateRanges: false` is set. The vault is the policy point anyway.
@@ -52,12 +52,16 @@ client ── Worker (bearer token) ── SessionDO ── Pi Durable Harness (
    - The egress CA (`/etc/cloudflare/certs/cloudflare-containers-ca.crt`) appears only after HTTPS interception is turned on, after the container process starts, so an entrypoint cannot install it. The agent appends it to a copy of the system bundle before the first command (`update-ca-certificates` cost about 2 s on `standard-1`).
    - Workers clocks advance only on I/O, so CPU-only phases read 0 ms server-side.
    - Tool-result entries are not in call order by entry ID; order by the message timestamp.
+6. **Redaction is the weak point of header injection.** Any allowed host that reflects request headers is a way to read the secret back, and string matching cannot cover every encoding (a host could hash, split or compress it). The production vault should inject only into hosts that do not reflect headers, and treat redaction as a second line of defence.
+
+The review of PR #40 found six issues, all fixed and checked live by `scripts/regressions.ts`: JSON-escaped echoes defeated redaction; a directory replaced by a file broke container sync; a losing concurrent `create` could overwrite the first manifest; a container could be reused by another session or workspace; files created through a symlinked parent in the isolate were not committed; and a container timeout did not kill background children. The cold-start runs predate these fixes; the only change on that path is one Durable Object storage write when a container starts.
 
 ## Not done here
 
 - The git, monorepo and dependency rows of the cold-start table belong to M0-BE2 (#5).
 - No conformance suite: M0-BE1's suite was not on main. Pi Durable's `createEnvConformance` was not run against `HarbourEnv`, which implements only what Pi's coding tools use (`watch`, temp files, `rename`, line readers return `not_supported`).
-- The vault is a stub: static policies, one item, exact host match, no path scope, no proposals or approvals.
+- The vault is a stub: static policies, one item, exact host match, no path scope, no proposals or approvals. Its echo hosts (`postman-echo.com`, `httpbin.org`) exist to prove injection and are exactly the reflecting hosts a real policy should refuse.
+- A crash between writing a new workspace's first manifest and creating its `HEAD` leaves that workspace ID unusable; acceptable for a spike, where IDs are per run.
 - Non-HTTP egress from the container (raw TCP, SSH) is blocked by `enableInternet: false` but was not tested.
 
 ## Reconciling with M0-BE1 (#2, PR #39)
@@ -78,6 +82,7 @@ The real contracts in `packages/contracts` are richer than the drafts here. When
 cd spikes/cloudflare
 bun install
 bun run typecheck && bun test test
+HARBOUR_SPIKE_TOKEN=$TOKEN bun scripts/regressions.ts --base-url https://harbour-m0-cf1.<subdomain>.workers.dev
 bun run deploy                      # builds dist/isolate.bundle.txt, the container image, and deploys
 printf %s "$TOKEN"  | npx wrangler secret put HARBOUR_SPIKE_TOKEN
 printf %s "$CANARY" | npx wrangler secret put VAULT_CANARY

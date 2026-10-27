@@ -84,9 +84,15 @@ export class HarbourContainer extends DurableObject<Env> {
 
   async exec(args: ContainerExecArgs): Promise<ExecResult & { container: ContainerExecBody["container"] }> {
     let timings: Record<string, number> = {};
+    // A running container belongs to the session and workspace that started it: its working copy and its egress
+    // audit are theirs. Stored durably, since this object can be evicted while the container keeps running.
+    const owner = `${args.sessionId}/${args.workspaceId}`;
     if (!this.#container().running) {
       this.#held = null;
       timings = await this.#start(args.sessionId);
+      await this.ctx.storage.put("owner", owner);
+    } else if ((await this.ctx.storage.get<string>("owner")) !== owner) {
+      throw new Error("this container is in use by another session or workspace");
     }
     let at = performance.now();
     const step = (phase: string) => {
@@ -159,6 +165,7 @@ export class HarbourContainer extends DurableObject<Env> {
     this.#held = null;
     const container = this.ctx.container;
     if (container?.running) await container.destroy();
+    await this.ctx.storage.delete("owner");
   }
 
   async #sync(workspace: R2Workspace, from: WorkspaceVersion | null, to: WorkspaceVersion) {
