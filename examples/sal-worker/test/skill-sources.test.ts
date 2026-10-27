@@ -179,6 +179,25 @@ describe("gitSkillSource", () => {
 		expect(source.last.problems.map((problem) => problem.reason)).toContain("more than 100000 paths through symlinks");
 	});
 
+	it("stops a chain of links where a checkout would, at 40 on one path", async () => {
+		const repo = tempRepo();
+		cleanups.push(() => repo.remove());
+		const chain = (length: number, prefix: string) => {
+			const files: Record<string, FixtureFile> = {
+				[`skills/${prefix}`]: { link: `../${prefix}/d0` },
+				[`${prefix}/d${length}/SKILL.md`]: skillMd(prefix, `After ${length} links`),
+			};
+			for (let depth = 0; depth < length; depth++) files[`${prefix}/d${depth}/next`] = { link: `../d${depth + 1}` };
+			return files;
+		};
+		// 1 + 39 links on the way opens; 1 + 40 does not.
+		const commit = repo.commit({ ...chain(39, "short"), ...chain(40, "long"), ...chain(2_000, "huge") });
+		const source = gitSkillSource({ id: "chain", repo: repo.dir, paths: ["skills"] });
+		const skills = await source.fetch(commit);
+		expect(skills.map((skill) => skill.name)).toEqual(["short"]);
+		expect(source.last.problems.filter((problem) => problem.reason.includes("40 symlinks"))).toHaveLength(2);
+	});
+
 	it("reads a hidden root and spells roots as given", async () => {
 		expect([".", "./", "./x/", ".pi/skills", "./.pi/skills", "x//"].map(rootPath)).toEqual([
 			"",
