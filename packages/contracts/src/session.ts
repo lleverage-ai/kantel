@@ -22,6 +22,7 @@ import type {
 	Timestamp,
 	WorkspaceId,
 } from "./common.ts";
+import type { ModelThinking } from "./models.ts";
 import type { SandboxPolicy } from "./sandbox.ts";
 
 export type { SessionStatus } from "@harbour/protocol";
@@ -84,10 +85,86 @@ export interface CreateSessionInput {
 	readonly parentSessionId?: SessionId;
 }
 
+/**
+ * A file a person attached to a prompt (the composer's picker, a drop or a paste), already uploaded by the host. The
+ * host owns the upload: where the bytes are stored, scanning and size limits. The prompt carries only this reference.
+ *
+ * Proposed (27 Oct 2026, alongside `@harbour/ui`'s composer): the reference runtime doesn't read attachments yet, and
+ * how it reads one through the host that uploaded it is open question 14 in docs/contracts.md.
+ */
+export interface PromptAttachment {
+	/** The host's ID for the upload. Unique within the prompt. */
+	readonly id: string;
+	/** The file's name as the person saw it, such as `invoice.pdf` or `pasted-text.txt`. */
+	readonly name: string;
+	/** The MIME type, such as `image/png` or `text/plain`. */
+	readonly type: string;
+	/** In bytes. */
+	readonly size: number;
+	/**
+	 * `image`: a PNG, JPEG, GIF or WebP a model can look at; `file`: any other file; `text`: a large paste the composer
+	 * folded into a file instead of the prompt's text.
+	 */
+	readonly kind: "image" | "file" | "text";
+}
+
 export interface PromptInput {
+	/** The prompt's words. Proposed: may be empty when `attachments` has at least one item. */
 	readonly text: string;
 	/** Retrying with the same requestId returns the same submission instead of submitting twice. */
 	readonly requestId?: string;
+	/** Proposed: files the host uploaded for this prompt, in the order the person attached them. */
+	readonly attachments?: readonly PromptAttachment[];
+	/**
+	 * Proposed: a `ModelOption.id` from `SessionModels.listModels`, which this input's run and the session's later runs
+	 * use (a steer's from the run's next model call). Absent keeps the session's current model. An ID the session can't
+	 * use is `invalid`, and one with a
+	 * `disabledReason` is `refused`; an image attachment for a model whose `capabilities.images` is `false` is `invalid`.
+	 */
+	readonly model?: string;
+}
+
+/**
+ * One model a person may choose for a session: one of the models `ModelGateway.config` lists for it (a route, or a
+ * route's model override), as the composer's model picker shows it. The organisation's and project's configuration
+ * (connectors, routes and the project's policy, see models.ts) decide the list; this only describes it.
+ */
+export interface ModelOption {
+	/** `ModelGatewayModel.id`: a route name such as `default`, or `<route>:<modelId>` for an override. */
+	readonly id: string;
+	/** What a person reads, such as `Claude Sonnet 4.5`. */
+	readonly label: string;
+	/** Who serves the model, for grouping the list, such as `Anthropic`. */
+	readonly provider?: string;
+	/** One short line, such as `Fast, for small edits`. */
+	readonly description?: string;
+	/** What the model takes. A field left out is unknown, and clients act only on what is given. */
+	readonly capabilities?: {
+		/** Reads images: `ModelGatewayModel.input` includes `image`. */
+		readonly images?: boolean;
+		/** The thinking levels it supports: the levels `ModelGatewayModel.thinkingLevelMap` doesn't map to `null`. */
+		readonly thinking?: readonly ModelThinking[];
+	};
+	/**
+	 * The model the session runs with when a prompt names none: its agent profile's route, until a prompt names
+	 * another. At most one option.
+	 */
+	readonly default?: boolean;
+	/** Set when the model is listed but can't be chosen now, with the reason a person reads. Shown dimmed, not hidden. */
+	readonly disabledReason?: string;
+}
+
+/**
+ * Proposed (27 Oct 2026): the models a session's prompts may name, for a client's model picker. A separate interface so
+ * that no existing `SessionRuntime` has to change to adopt it.
+ */
+export interface SessionModels {
+	/**
+	 * The models the session may use, in the order to show them: what the gateway's `config` lists for the session,
+	 * after the project's policy, with exactly one `default` when the session's own route is among them. The caller needs
+	 * viewer on the session's project; another organisation's session is `not_found`.
+	 */
+	listModels(ctx: CallContext, sessionId: SessionId): Promise<readonly ModelOption[]>;
 }
 
 export interface Submission {
