@@ -163,4 +163,30 @@ describe("the read API's export route", () => {
 		const response = (await bare(new Request(`https://harbour.test/v1/workspaces/${record.id}/export?prefix=notes/`)))!;
 		expect(response.status).toBe(501);
 	});
+
+	it("refuses an export over the budget from listings alone, before any body is loaded", async () => {
+		const { workspaces, record } = await setUp();
+		const exported: string[][] = [];
+		const api = createWorkspaceReadApi({
+			workspaces: {
+				...workspaces,
+				export: async (...args) => {
+					exported.push([...args[2]]);
+					return workspaces.export(...args);
+				},
+			},
+			authenticate: async () => ctx,
+			maxContentBytes: 3,
+		});
+		const send = async (query: string, method = "GET") =>
+			(await api(new Request(`https://harbour.test/v1/workspaces/${record.id}/export${query}`, { method })))!;
+		expect((await send("?prefix=notes/")).status).toBe(413);
+		expect((await send("?prefix=notes/a&prefix=notes/a.md")).status).toBe(200);
+		expect((await send("?prefix=src/&prefix=missing/")).status).toBe(200);
+		expect((await send("?prefix=src/x.ts/")).status).toBe(200);
+		expect(exported).toEqual([["notes/a", "notes/a.md"], ["src/", "missing/"], ["src/x.ts/"]]);
+		const head = await send("?prefix=src/", "HEAD");
+		expect(head.status).toBe(200);
+		expect(head.body).toBeNull();
+	});
 });

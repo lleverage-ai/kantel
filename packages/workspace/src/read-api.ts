@@ -36,6 +36,7 @@ import {
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
 } from "@harbour/contracts";
+import { checkExportPrefixes } from "./tree.ts";
 
 export const WORKSPACE_READ_API_BASE = "/v1/workspaces";
 
@@ -154,11 +155,14 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 		if (prefixes.length === 0 || prefixes.includes("")) {
 			throw new HarbourError("invalid", "name at least one prefix, such as prefix=notes/");
 		}
+		checkExportPrefixes(prefixes);
+		const tooLarge = () =>
+			errorResponse(413, "refused", `the export is larger than the read API sends (${maxContentBytes} bytes)`);
+		// Sizes come from listings, which read no bodies, so an export over the budget is refused before it is loaded.
+		if ((await exportSize(ctx, id, prefixes)) > maxContentBytes) return tooLarge();
 		const files = await workspaces.export(ctx, id, prefixes);
-		const total = files.reduce((sum, file) => sum + file.content.byteLength, 0);
-		if (total > maxContentBytes) {
-			return errorResponse(413, "refused", `the export is larger than the read API sends (${maxContentBytes} bytes)`);
-		}
+		// A commit between the listing and the export may have grown it.
+		if (files.reduce((sum, file) => sum + file.content.byteLength, 0) > maxContentBytes) return tooLarge();
 		const body: ExportedFile[] = files.map((file) => ({
 			path: file.path,
 			digest: file.digest,
@@ -167,6 +171,38 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 			content: toBase64(file.content),
 		}));
 		return json({ files: body });
+	}
+
+	/** Bytes under `prefixes` at head, from recursive listings of the directories that hold them. */
+	async function exportSize(ctx: CallContext, id: WorkspaceId, prefixes: readonly string[]): Promise<number> {
+		const sizes = new Map<string, number>();
+		const dirs = new Set(prefixes.map((prefix) => prefix.slice(0, Math.max(prefix.lastIndexOf("/"), 0))));
+		for (const dir of dirs) {
+			let cursor: string | undefined;
+			do {
+				let page: Page<FileEntry>;
+				try {
+					page = await workspaces.list(ctx, id, {
+						...(dir === "" ? {} : { path: dir }),
+						recursive: true,
+						...(cursor === undefined ? {} : { cursor }),
+					});
+				} catch (error) {
+					// No such directory, or a file where the prefix's directory would be: nothing to export there.
+					if (isHarbourError(error) && (error.code === "not_found" || error.code === "invalid") && dir !== "") break;
+					throw error;
+				}
+				for (const entry of page.items) {
+					if (entry.kind === "file" && prefixes.some((prefix) => entry.path.startsWith(prefix))) {
+						sizes.set(entry.path, entry.size);
+					}
+				}
+				cursor = page.nextCursor;
+			} while (cursor !== undefined);
+		}
+		let total = 0;
+		for (const size of sizes.values()) total += size;
+		return total;
 	}
 
 	async function content(

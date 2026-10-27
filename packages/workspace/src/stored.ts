@@ -255,7 +255,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		for (const request of requests.values()) mounts.push(await sources.resolve(ctx, request));
 		checkMountsDisjoint(mounts);
 
-		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock);
+		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock, mounts);
 		const prepared = await prepareChanges(
 			[...seeded.files].map(([path, file]) => ({
 				op: "put",

@@ -97,7 +97,7 @@ project-access checks, mount reads included. The host's `authenticate` turns the
 | `/:id/stat?path=&version=` | one `FileEntry` |
 | `/:id/content?path=&version=` | the bytes, `ETag` (the digest, `If-None-Match` answers 304), `Harbour-Version` (JSON) |
 | `/:id/history?cursor=&limit=` | `Page<WorkspaceVersionInfo>`, newest first |
-| `/:id/export?prefix=notes/` | `{ files }`, each file under the prefixes at head with its bytes base64 (`prefix` repeats; the total is capped at `maxContentBytes`, 413 above it) |
+| `/:id/export?prefix=notes/` | `{ files }`, each file under the prefixes at head with its bytes base64 (`prefix` repeats; the total is capped at `maxContentBytes` and checked from listings before any body is read, 413 above it) |
 
 Errors are `{ "error": { "code", "message" } }`: `invalid` 400, `forbidden` and `refused` 403, `not_found` 404,
 `conflict` 409, `expired` 410, `exhausted` 429, `not_supported` 501, `unavailable` 503; a file over
@@ -116,13 +116,14 @@ the `GitFetcher` the host passes as `seeders: { git }` to `createMemoryWorkspace
 at the resolved commit, cut to `sparse` and placed under `into`, becomes part of version 1, with executable bits kept by
 stored workspaces. The record then carries a `SeedReport` (`method: "clone"`, the resolved commit per source,
 `indexState: "refreshed"` because the tree arrives without `.git`, timings, and a `cacheKey` that is equal for equal
-resolved sources and mounts). A fetch failure fails the create with the fetcher's code. Without a fetcher, or with an
+resolved sources and pinned mounts, sorted by mount point). A fetch failure fails the create with the fetcher's code. Without a fetcher, or with an
 `objects` source, the workspace waits at `metadata` as before.
 
 `@harbour/workspace/git-tarball` has `createGitHubTarballFetcher({ fetch?, apiBase?, codeloadBase?, maxBytes?,
 maxFiles? })`, which runs anywhere `fetch` and `DecompressionStream` do (a Worker or a node): it resolves the ref with
 the commits API (skipped for a pinned commit) and reads the commit's tarball from codeload. Pass the vault's egress
-`fetch` for private repositories; the spec never carries credentials. Symlinks and submodules are skipped; over
+`fetch` for private repositories; the spec never carries credentials. Symlinks and submodules are skipped; an archive cut short
+(mid-body, mid-header or before its end block) or with a bad header checksum is `unavailable`, never a partial tree; over
 `maxBytes` (512 MiB uncompressed) or `maxFiles` (100,000) is `exhausted`. History, dependency steps, mirrors, snapshots
 and `objects` sources stay with M2-BE1.
 

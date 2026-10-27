@@ -12,6 +12,7 @@ import {
 	type Clock,
 	type GitSeedSource,
 	HarbourError,
+	type Mount,
 	type ResolvedSeedSource,
 	type SeedReadiness,
 	type SeedReport,
@@ -53,12 +54,16 @@ export interface ResolvedSeed {
 	readonly report?: SeedReport;
 }
 
-/** Fetches and merges the seed's sources, in order. A source that cannot be resolved leaves the seed at `metadata`. */
+/**
+ * Fetches and merges the seed's sources, in order. A source that cannot be resolved leaves the seed at `metadata`.
+ * `mounts` are the workspace's pinned mounts, which the cache key includes.
+ */
 export async function resolveSeed(
 	ctx: CallContext,
 	seed: SeedSpec | undefined,
 	seeders: Seeders,
 	clock: Clock,
+	mounts: readonly Mount[] = [],
 ): Promise<ResolvedSeed> {
 	const files = new Map<string, { content: string | Uint8Array; mode?: number }>();
 	if (seed === undefined) return { files, readiness: "files" };
@@ -115,7 +120,7 @@ export async function resolveSeed(
 	if (!fetchedGit) return { files, readiness: "files" };
 	const report: SeedReport = {
 		method: "clone",
-		cacheKey: await cacheKey(resolved, seed),
+		cacheKey: await cacheKey(resolved, mounts),
 		sources: resolved,
 		timings: { files: clock.now() - started },
 	};
@@ -128,14 +133,20 @@ async function filesDigest(entries: readonly [string, string][]): Promise<string
 	return sha256Hex(toBytes(JSON.stringify(sorted)));
 }
 
-/** sha256 over the canonical JSON of (sources without indexState, depsKey, mounts, image digest). */
-async function cacheKey(resolved: readonly ResolvedSeedSource[], seed: SeedSpec): Promise<string> {
+/**
+ * sha256 over the canonical JSON of (sources without indexState, depsKey, pinned mounts, image digest). The mounts are
+ * the effective ones, sorted by mount point, each with the version it is pinned to.
+ */
+async function cacheKey(resolved: readonly ResolvedSeedSource[], mounts: readonly Mount[]): Promise<string> {
 	const sources = resolved.map((source) => {
 		if (source.kind !== "git") return source;
 		const { indexState: _indexState, ...rest } = source;
 		return rest;
 	});
-	return sha256Hex(toBytes(canonical({ sources, depsKey: null, mounts: seed.mounts ?? [], image: null })));
+	const pinned = [...mounts]
+		.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+		.map(({ path, source, ref, version }) => ({ path, source, ref, version }));
+	return sha256Hex(toBytes(canonical({ sources, depsKey: null, mounts: pinned, image: null })));
 }
 
 /** JSON with object keys sorted, so equal values hash equally. */

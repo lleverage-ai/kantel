@@ -33,7 +33,7 @@ export function gitHubRepo(repo: string): [string, string] {
 	const match =
 		/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repo) ??
 		/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(repo);
-	if (match === null || match[1] === ".." || match[2] === "..") {
+	if (match === null || /^\.+$/.test(match[1]!) || /^\.+$/.test(match[2]!)) {
 		throw new HarbourError("not_supported", `the GitHub fetcher cannot fetch ${repo}`, { repo });
 	}
 	return [match[1]!, match[2]!];
@@ -84,11 +84,16 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 			const tar = await readAll(response.body.pipeThrough(new DecompressionStream("gzip")), maxBytes);
 			skipped.symlinks = 0;
 			skipped.other = 0;
-			const files = [...parseTar(tar, skipped)].map((file) => ({ ...file, path: stripTopDirectory(file.path) }));
-			if (files.length > maxFiles) {
-				throw new HarbourError("exhausted", `${source.repo} has more than ${maxFiles} files`, { files: files.length });
+			const files: SeedFile[] = [];
+			for (const file of parseTar(tar, skipped)) {
+				const path = stripTopDirectory(file.path);
+				if (path === "") continue;
+				if (files.length === maxFiles) {
+					throw new HarbourError("exhausted", `${source.repo} has more than ${maxFiles} files`);
+				}
+				files.push({ ...file, path });
 			}
-			return { commit, files: files.filter((file) => file.path !== "") };
+			return { commit, files };
 		},
 	};
 }
@@ -131,35 +136,48 @@ function octal(block: Uint8Array, start: number, length: number): number {
 	return Number.parseInt(text, 8);
 }
 
-/** pax extended header records, `<length> <key>=<value>\n`. */
+/** pax extended header records, `<length> <key>=<value>\n`, where the length counts bytes of the whole record. */
 function paxRecords(data: Uint8Array): Map<string, string> {
 	const records = new Map<string, string>();
-	const text = decoder.decode(data);
 	let offset = 0;
-	while (offset < text.length) {
-		const space = text.indexOf(" ", offset);
-		if (space < 0) break;
-		const length = Number(text.slice(offset, space));
-		if (!Number.isInteger(length) || length <= 0) break;
-		const record = text.slice(space + 1, offset + length - 1);
-		const equals = record.indexOf("=");
-		if (equals > 0) records.set(record.slice(0, equals), record.slice(equals + 1));
+	while (offset < data.length) {
+		const space = data.indexOf(0x20, offset);
+		const digits = space < 0 ? "" : decoder.decode(data.subarray(offset, space));
+		const length = Number(digits);
+		if (!/^[0-9]+$/.test(digits) || length <= space - offset + 1 || offset + length > data.length) {
+			throw new HarbourError("unavailable", "the tarball has a malformed pax header");
+		}
+		if (data[offset + length - 1] !== 0x0a)
+			throw new HarbourError("unavailable", "the tarball has a malformed pax header");
+		const record = data.subarray(space + 1, offset + length - 1);
+		const equals = record.indexOf(0x3d);
+		if (equals > 0)
+			records.set(decoder.decode(record.subarray(0, equals)), decoder.decode(record.subarray(equals + 1)));
 		offset += length;
 	}
 	return records;
 }
 
-/** The regular files of a ustar/pax tarball, with their modes. */
+/**
+ * The regular files of a ustar/pax tarball, with their modes. An archive that ends before its end-of-archive block,
+ * mid-header or mid-body, is `unavailable`: a partial tree never seeds a workspace.
+ */
 export function* parseTar(tar: Uint8Array, skipped = { symlinks: 0, other: 0 }): Generator<SeedFile> {
 	let offset = 0;
 	let longName: string | undefined;
-	while (offset + 512 <= tar.length) {
+	for (;;) {
+		if (offset + 512 > tar.length) throw new HarbourError("unavailable", "the tarball is truncated");
 		const header = tar.subarray(offset, offset + 512);
-		if (header.every((byte) => byte === 0)) break;
+		if (header.every((byte) => byte === 0)) return;
+		let sum = 0;
+		for (let index = 0; index < 512; index++) sum += index >= 148 && index < 156 ? 0x20 : header[index]!;
+		if (sum !== octal(header, 148, 8)) throw new HarbourError("unavailable", "the tarball has a bad header checksum");
 		const size = octal(header, 124, 12);
 		const type = String.fromCharCode(header[156] ?? 0);
 		const dataStart = offset + 512;
-		if (dataStart + size > tar.length) throw new HarbourError("unavailable", "the tarball is truncated");
+		if (dataStart + Math.ceil(size / 512) * 512 > tar.length) {
+			throw new HarbourError("unavailable", "the tarball is truncated");
+		}
 		const data = tar.subarray(dataStart, dataStart + size);
 		offset = dataStart + Math.ceil(size / 512) * 512;
 		if (type === "x") {

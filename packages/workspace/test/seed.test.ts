@@ -1,7 +1,7 @@
 import { type CallContext, type GitSeedSource, isHarbourError } from "@harbour/contracts";
 import { createGitHubTarballFetcher, gitHubRepo, parseTar } from "@harbour/workspace/git-tarball";
 import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import type { GitFetcher } from "@harbour/workspace/seed";
+import { type GitFetcher, resolveSeed } from "@harbour/workspace/seed";
 import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
 import { describe, expect, it } from "vitest";
 
@@ -65,11 +65,12 @@ function tar(entries: readonly TarEntry[]): Uint8Array {
 	return out;
 }
 
+/** One pax record; its length counts UTF-8 bytes, digits included. */
 function pax(path: string): string {
-	const record = ` path=${path}\n`;
-	let length = record.length;
-	length += String(length + String(length).length).length;
-	return `${length}${record}`;
+	const bytes = encoder.encode(` path=${path}\n`).length;
+	let length = bytes + 1;
+	while (String(length).length + bytes !== length) length = String(length).length + bytes;
+	return `${length} path=${path}\n`;
 }
 
 async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
@@ -125,12 +126,40 @@ describe("parseTar", () => {
 		expect(skipped).toEqual({ symlinks: 1, other: 0 });
 	});
 
-	it("rejects a truncated archive and a malformed size", () => {
-		const whole = tar([{ name: "a/b", body: "x".repeat(600) }]);
+	it("reads a pax path with non-ASCII characters by its byte length", () => {
+		const name = "top/docs/café-ünïcødé-日本語.md";
+		const files = [
+			...parseTar(
+				tar([
+					{ name: "PaxHeader", type: "x", body: pax(name) },
+					{ name: "top/x", body: "é" },
+				]),
+			),
+		];
+		expect(files.map((file) => file.path)).toEqual([name]);
+		const broken = tar([
+			{ name: "PaxHeader", type: "x", body: `99 path=${name}\n` },
+			{ name: "top/x", body: "" },
+		]);
+		expect(() => [...parseTar(broken)]).toThrow(/pax/);
+	});
+
+	it("rejects an archive truncated mid-body, mid-header or before its end, a bad checksum and a malformed size", () => {
+		const whole = tar([
+			{ name: "a/b", body: "x".repeat(600) },
+			{ name: "a/c", body: "y" },
+		]);
 		expect(() => [...parseTar(whole.subarray(0, 700))]).toThrow(/truncated/);
+		// Ends cleanly after the first file's padding: no end-of-archive block.
+		expect(() => [...parseTar(whole.subarray(0, 512 + 1024))]).toThrow(/truncated/);
+		expect(() => [...parseTar(whole.subarray(0, 512 + 1024 + 100))]).toThrow(/truncated/);
+		expect(() => [...parseTar(new Uint8Array(0))]).toThrow(/truncated/);
+		const corrupt = tar([{ name: "a/b", body: "x" }]);
+		corrupt[0] = "z".charCodeAt(0);
+		expect(() => [...parseTar(corrupt)]).toThrow(/checksum/);
 		const bad = tar([{ name: "a/b", body: "x" }]);
 		bad.set(encoder.encode("zzzzzzzzzzz"), 124);
-		expect(() => [...parseTar(bad)]).toThrow(/malformed/);
+		expect(() => [...parseTar(bad)]).toThrow(/malformed|checksum/);
 	});
 });
 
@@ -240,6 +269,20 @@ describe.each(Object.entries(subjects))("git-ref seeding on %s workspaces", (_na
 		expect(again.seedReport?.cacheKey).toBe(first.seedReport?.cacheKey);
 		expect(moved.seedReport?.cacheKey).not.toBe(first.seedReport?.cacheKey);
 		expect(moved.seedReport?.sources[0]).toMatchObject({ commit: OTHER, into: "" });
+	});
+
+	it("keys the cache on the pinned mounts, whichever request pinned them", async () => {
+		const github = createGitHubTarballFetcher({ fetch: fakeGitHub().fetch });
+		const seed = { name: "s", sources: [{ kind: "git" as const, repo: "tvdavies/site", ref: "main" }] };
+		const clock = { now: () => 0 };
+		const mount = (version: string) =>
+			({ path: "/project", source: "project-files", ref: "p", version, readOnly: true }) as const;
+		const keyOf = async (mounts: Parameters<typeof resolveSeed>[4]) =>
+			(await resolveSeed(ctx, seed, { git: github }, clock, mounts)).report?.cacheKey;
+		const skills = { path: "/skills", source: "skills", ref: "s", version: "pins:", readOnly: true } as const;
+		expect(await keyOf([mount("1"), skills])).toBe(await keyOf([skills, mount("1")]));
+		expect(await keyOf([mount("1")])).not.toBe(await keyOf([mount("2")]));
+		expect(await keyOf([])).not.toBe(await keyOf([mount("1")]));
 	});
 
 	it("fetches nothing for a caller who may not create, and fails the create when the fetch fails", async () => {
