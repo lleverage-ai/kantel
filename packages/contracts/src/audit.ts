@@ -3,7 +3,18 @@
  * `AuditSink`, which is idempotent by event id so outbox retries never duplicate a row. Event data never holds a
  * secret value.
  */
-import type { Actor, AgentId, JsonValue, OrganisationId, ProjectId, SessionId, Timestamp } from "./common.ts";
+import type {
+	Actor,
+	AgentId,
+	CallContext,
+	JsonValue,
+	OrganisationId,
+	Page,
+	PageRequest,
+	ProjectId,
+	SessionId,
+	Timestamp,
+} from "./common.ts";
 
 export type AuditSource =
 	| "session"
@@ -13,6 +24,9 @@ export type AuditSource =
 	| "browser"
 	| "identity"
 	| "schedules"
+	| "capability"
+	| "skills"
+	| "memory"
 	| "control";
 
 /**
@@ -49,7 +63,20 @@ export type KnownAuditEventType =
 	| "identity.key.issued"
 	| "identity.key.revoked"
 	| "identity.role.granted"
-	| "identity.role.revoked";
+	| "identity.role.revoked"
+	| "capability.registered"
+	| "capability.grant.created"
+	| "capability.grant.revoked"
+	| "capability.call.started"
+	| "capability.call.settled"
+	| "capability.call.refused"
+	| "capability.call.resolved"
+	| "skills.revision.published"
+	| "memory.proposal.created"
+	| "memory.proposal.applied"
+	| "memory.proposal.rejected"
+	| "schedules.schedule.created"
+	| "schedules.finding.raised";
 
 export type AuditEventType = KnownAuditEventType | (string & {});
 
@@ -73,4 +100,53 @@ export interface AuditEventInput {
 /** Where components send audit events. Implementations must be idempotent by `id`. */
 export interface AuditSink {
 	append(events: readonly AuditEventInput[]): Promise<void>;
+}
+
+/** A stored event: the input plus the store's own order. */
+export interface AuditEvent extends AuditEventInput {
+	/** Increases with every stored row, across the whole store; queries return rows in this order. */
+	readonly seq: number;
+	readonly recordedAt: Timestamp;
+}
+
+/** Every field narrows; absent fields match anything. The organisation always comes from the call context. */
+export interface AuditQuery {
+	readonly projectId?: ProjectId;
+	readonly sessionId?: SessionId;
+	readonly agentId?: AgentId;
+	/** Events by this actor, compared by kind and ID. */
+	readonly actor?: Actor;
+	readonly source?: AuditSource;
+	/** An exact type, or a prefix ending in `.` (`vault.` matches every vault event). */
+	readonly type?: string;
+	readonly subject?: { readonly kind: string; readonly id: string };
+	/** Inclusive lower bound on `at`. */
+	readonly from?: Timestamp;
+	/** Exclusive upper bound on `at`. */
+	readonly to?: Timestamp;
+	/** Newest first instead of oldest first. */
+	readonly newestFirst?: boolean;
+}
+
+/**
+ * The append-only audit store. Rows are never changed or deleted by anything but retention, and deleting a session or
+ * any other record leaves its rows in place. Agents cannot query it (`forbidden`).
+ */
+export interface AuditStore extends AuditSink {
+	query(ctx: CallContext, query: AuditQuery, page?: PageRequest): Promise<Page<AuditEvent>>;
+	get(ctx: CallContext, eventId: string): Promise<AuditEvent>;
+	/** How long an organisation's rows are kept. System and humans or services only. */
+	setRetention(ctx: CallContext, retentionMs: number): Promise<void>;
+	/** Removes rows older than each organisation's retention, as of the clock. Returns how many were removed. */
+	applyRetention(): Promise<number>;
+}
+
+/**
+ * An outbox: components write events into it inside their own transaction, and a relay drains it to the store with
+ * retries. Draining twice never duplicates a row, because the store is idempotent by event id.
+ */
+export interface AuditOutbox extends AuditSink {
+	/** Sends every pending event to `sink`; events stay pending if the sink throws. Returns how many were sent. */
+	drain(sink: AuditSink): Promise<number>;
+	pending(): Promise<number>;
 }
