@@ -133,10 +133,12 @@ export class SessionClient {
 
 	stop(): void {
 		this.stopped = true;
+		// Apply what was received but still coalescing, so a later start() resumes from a cursor that is on screen.
+		this.flush();
 		this.connection?.close();
 		this.connection = undefined;
-		clearTimeout(this.flushTimer);
 		clearTimeout(this.retryTimer);
+		this.retryTimer = undefined;
 	}
 
 	private open(): void {
@@ -273,7 +275,8 @@ export class SessionClient {
 			this.set({ error: String(reason) });
 			this.received = undefined;
 			this.connection?.close();
-			this.open();
+			this.connection = undefined;
+			if (!this.stopped) this.open();
 			return;
 		}
 		this.view = next;

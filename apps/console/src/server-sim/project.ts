@@ -177,7 +177,19 @@ export class Projector {
 		for (const entry of snapshot.entries) this.entryItems(entry, items);
 		const ops: DeltaOp[] = [];
 		if (snapshot.generation?.message !== undefined) this.startAssistant(snapshot.generation.message, at, ops);
-		for (const op of ops) if (op.op === "append") items.push(op.item);
+		// The generation's content so far arrives as appends followed by text ops; fold both into the items.
+		for (const op of ops) {
+			if (op.op === "append") items.push(op.item);
+			else if (op.op === "text") {
+				const position = items.findIndex((candidate) => candidate.id === op.itemId);
+				const item = items[position];
+				if (item?.kind !== "assistant") continue;
+				items[position] =
+					op.field === "thinking"
+						? { ...item, thinking: (item.thinking ?? "") + op.append }
+						: { ...item, text: item.text + op.append };
+			}
+		}
 		for (const slot of snapshot.tools) {
 			const item = this.tools.get(slot.callId);
 			if (item === undefined || slot.status === "done") continue;
@@ -367,7 +379,9 @@ export class Projector {
 					// The chip's clock started when execution did; the result's duration ends it.
 					const started = this.tools.get(event.toolCallId)?.at ?? at;
 					const ended = message.durationMs === undefined ? at : started + message.durationMs;
-					ops.push({ op: "replace", item: this.finishTool(message, ended, started) });
+					const known = this.tools.has(event.toolCallId);
+					// A result for a call the stream never showed adds the tool rather than replacing nothing.
+					ops.push({ op: known ? "replace" : "append", item: this.finishTool(message, ended, started) });
 				} else {
 					this.updateTool(event.toolCallId, { status: "interrupted", endedAt: at }, ops);
 				}

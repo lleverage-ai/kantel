@@ -105,6 +105,72 @@ describe("projector", () => {
 		expect(second).toMatchObject([{ op: "replace", item: { output: "two\nthree\n", label: "Running make" } }]);
 	});
 
+	it("keeps the text a generation already has when the recording starts mid-generation", () => {
+		const projector = new Projector();
+		const { items } = projector.fromSnapshot(
+			{
+				type: "snapshot",
+				entries: [],
+				run: { inputs: [1] },
+				generation: {
+					attempt: 1,
+					message: {
+						...started,
+						content: [
+							{ type: "thinking", thinking: "Plan first." },
+							{ type: "text", text: "Half a sent" },
+						],
+					},
+				},
+				tools: [],
+				nestedTools: [],
+				compactions: [],
+				inbox: [],
+				agent: {},
+				usage: {},
+			},
+			at,
+		);
+		expect(items).toMatchObject([
+			{ kind: "assistant", id: "a:live:1", text: "Half a sent", thinking: "Plan first.", streaming: true },
+		]);
+		const next = projector.batch(
+			[{ type: "message_update", usage, changes: [{ type: "text_delta", contentIndex: 1, delta: "ence." }] }],
+			at,
+		);
+		expect(next).toEqual([{ op: "text", itemId: "a:live:1", append: "ence." }]);
+	});
+
+	it("adds a tool item for a result whose call the stream never showed", () => {
+		const projector = new Projector();
+		const ops = projector.batch(
+			[
+				{
+					type: "tool_execution_end",
+					toolCallId: "c9",
+					toolName: "read",
+					entry: {
+						id: 9,
+						conversationId: 1,
+						kind: "pi.tool-result",
+						model: [
+							{
+								role: "toolResult",
+								toolCallId: "c9",
+								toolName: "read",
+								content: [{ type: "text", text: "ok" }],
+								isError: false,
+								timestamp: at,
+							},
+						],
+					},
+				},
+			],
+			at,
+		);
+		expect(ops).toMatchObject([{ op: "append", item: { id: "tool:c9", status: "done", output: "ok" } }]);
+	});
+
 	it("starts a new assistant item for text written after a tool call, so order is kept", () => {
 		const projector = new Projector();
 		const ops = projector.batch(
@@ -214,26 +280,60 @@ describe("resume after a disconnect", () => {
 		expect(flaky.getState().freshness).toEqual({ state: "current" });
 	});
 
-	it("falls back to a snapshot when the host no longer holds the deltas after the cursor", async () => {
+	it("falls back to a snapshot when the host has dropped the deltas after a cursor it issued", async () => {
+		const host = new FixtureHost(long, { latencyMs: 5, retainDeltas: 50 });
+		const client = new SessionClient(host, host.sessionId);
+		client.start();
+		await vi.advanceTimersByTimeAsync(100);
+		const issued = client.getState().cursor!;
+		client.simulateDisconnect(1_000);
+		// While it's away, the host publishes far more than it keeps.
+		host.drain();
+		await vi.advanceTimersByTimeAsync(1_200);
+		const resume = client.getState().resumes.at(-1)!;
+		expect(resume).toMatchObject({ from: issued, how: "snapshot" });
+		expect(client.getState().cursor).toBe(host.head);
+		expect(shape(client.getState().items)).toEqual(shape((await host.snapshot()).items));
+		expect(client.getState().hasEarlier).toBe(true);
+	});
+
+	it("falls back to a snapshot for a cursor the host never issued", async () => {
 		const host = new FixtureHost(long, { latencyMs: 5 });
 		host.drain();
-		const stale = new SessionClient(claimingOldCursor(host), host.sessionId);
+		const stale = new SessionClient(claimingCursor(host, "c-forgotten"), host.sessionId);
 		stale.start();
 		await vi.advanceTimersByTimeAsync(100);
 		expect(stale.getState().resumes.at(-1)?.how).toBe("snapshot");
 		expect(stale.getState().cursor).toBe(host.head);
-		expect(shape(stale.getState().items)).toEqual(shape((await host.snapshot()).items));
-		expect(stale.getState().hasEarlier).toBe(true);
+	});
+
+	it("applies deltas still coalescing when stopped, so a restart resumes from what is on screen", async () => {
+		const host = new FixtureHost(long, { latencyMs: 5 });
+		const steady = new SessionClient(host, host.sessionId);
+		const client = new SessionClient(host, host.sessionId);
+		steady.start();
+		client.start();
+		await vi.advanceTimersByTimeAsync(100);
+		host.play();
+		// Stop in the middle of the long answer's token stream, inside a coalescing window.
+		await vi.advanceTimersByTimeAsync(20_050);
+		client.stop();
+		const stoppedAt = client.getState().cursor;
+		client.start();
+		while (!host.finished) await vi.advanceTimersByTimeAsync(50);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(client.getState().resumes.at(-1)).toMatchObject({ from: stoppedAt, how: "deltas" });
+		expect(shape(client.getState().items)).toEqual(shape(steady.getState().items));
 	});
 });
 
-/** A transport whose hello claims a cursor the host never issued (or has long since dropped). */
-function claimingOldCursor(host: FixtureHost): Transport {
+/** A transport whose hello claims the given cursor. */
+function claimingCursor(host: FixtureHost, after: string): Transport {
 	return {
 		connect: (receive) => {
 			const connection = host.connect(receive);
 			return {
-				send: (frame) => connection.send(frame.type === "hello" ? { ...frame, after: "c-forgotten" } : frame),
+				send: (frame) => connection.send(frame.type === "hello" ? { ...frame, after } : frame),
 				close: () => connection.close(),
 			};
 		},

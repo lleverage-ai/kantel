@@ -36,6 +36,8 @@ export type HostOptions = {
 	speed?: number;
 	/** One-way latency of every frame, in ms. */
 	latencyMs?: number;
+	/** Deltas kept for resuming; DELTA_RETENTION by default. */
+	retainDeltas?: number;
 	timers?: Timers;
 };
 
@@ -74,7 +76,7 @@ export class FixtureHost implements Transport {
 		this.stream = createMemorySessionStream({
 			sessionId: snapshot.sessionId,
 			pageSize: SNAPSHOT_PAGE,
-			retainDeltas: DELTA_RETENTION,
+			retainDeltas: options.retainDeltas ?? DELTA_RETENTION,
 			...(snapshot.title === undefined ? {} : { title: snapshot.title }),
 			now: () => this.clock,
 		});
