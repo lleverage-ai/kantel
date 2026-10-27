@@ -53,6 +53,7 @@ export function Markdown({ text }: { text: string }) {
 	return (
 		<div className="md">
 			{blocks.map((block, index) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional; only the last one changes while text streams.
 				<Block key={index} text={block} />
 			))}
 		</div>

@@ -1,15 +1,17 @@
+import { parseFixture } from "@harbour/protocol";
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
-import { FixtureHost, parseRecording } from "./server-sim/fixture-host.ts";
+import { FixtureHost } from "./server-sim/fixture-host.ts";
 import { SessionClient } from "./state/session-client.ts";
 import { profileStore } from "./ui/profile.tsx";
 import { SessionView } from "./ui/session-view.tsx";
 import "./ui/styles.css";
 
-// M0: no backend. The page loads a recorded session, starts an in-page stand-in for the session host on it, and
-// connects the console to that host exactly as it will connect to the real one.
+// M0: no backend. The page loads a recorded session as protocol frames (fixtures/sessions), starts an in-page
+// stand-in for the session host on it, and connects the console to that host exactly as it will connect to the real
+// one.
 
 const fixtures = [
 	{ id: "long", label: "Platform migration (2,000 turns)", url: longUrl },
@@ -35,17 +37,20 @@ function App() {
 			})
 			.then((text) => {
 				if (cancelled) return;
-				host = new FixtureHost(parseRecording(text), { speed });
+				host = new FixtureHost(parseFixture(text), { speed });
 				session = new SessionClient(host, host.sessionId);
 				session.start();
 				setClient(session);
 				// Give the first snapshot a moment on screen before the live part starts.
 				// With ?profile=1 the Profiler counts start here, with the rows already shown as the baseline.
-				playTimer = setTimeout(() => {
-					if (cancelled) return;
-					profileStore?.reset(session?.getState().transcript.items.map((item) => item.id));
-					host?.play();
-				}, Number(params.get("delay") ?? "1200"));
+				playTimer = setTimeout(
+					() => {
+						if (cancelled) return;
+						profileStore?.reset(session?.getState().items.map((item) => item.id));
+						host?.play();
+					},
+					Number(params.get("delay") ?? "1200"),
+				);
 				Object.assign(window, { __harbour: { host, client: session } });
 			})
 			.catch((reason: unknown) => setError(String(reason)));

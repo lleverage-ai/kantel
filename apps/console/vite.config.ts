@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
-// Recorded sessions live at the repo root in fixtures/sessions, outside this app.
+// Recorded sessions, as protocol frames, live at the repo root in fixtures/sessions, outside this app.
 const fixtures = fileURLToPath(new URL("../../fixtures/sessions", import.meta.url));
 
 export default defineConfig(({ mode }) => ({

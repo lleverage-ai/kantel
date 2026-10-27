@@ -1,6 +1,6 @@
+import type { TranscriptItem } from "@harbour/protocol";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
-import type { TranscriptItem } from "../protocol-local/index.ts";
 import { Row } from "./rows.tsx";
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
@@ -75,12 +75,24 @@ export function Transcript({ items, hasOlder, loadingOlder, onLoadOlder }: Props
 
 	return (
 		<div className="transcript" ref={frame}>
-			<VList<Entry> ref={list} data={[...items, END]} shift={prepended} onScroll={onScroll} className="vlist" bufferSize={600}>
+			<VList<Entry>
+				ref={list}
+				data={[...items, END]}
+				shift={prepended}
+				onScroll={onScroll}
+				className="vlist"
+				bufferSize={600}
+			>
 				{(item, index) =>
 					"end" in item ? (
 						<div key="end" className="transcript-end" aria-hidden="true" />
 					) : (
-						<Row key={item.id} item={item} turnStart={item.kind === "user" && index > 0} first={index === 0 && !hasOlder} />
+						<Row
+							key={item.id}
+							item={item}
+							turnStart={item.kind === "user" && index > 0}
+							first={index === 0 && !hasOlder}
+						/>
 					)
 				}
 			</VList>
@@ -97,7 +109,14 @@ export function Transcript({ items, hasOlder, loadingOlder, onLoadOlder }: Props
 				>
 					Latest
 					<svg viewBox="0 0 16 16" aria-hidden="true">
-						<path d="M8 3v10M4 9l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+						<path
+							d="M8 3v10M4 9l4 4 4-4"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.5"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+						/>
 					</svg>
 				</button>
 			) : null}

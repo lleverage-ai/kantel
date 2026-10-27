@@ -24,8 +24,12 @@ export function ProfilePanel({ client }: { client: SessionClient }) {
 		<aside className={`profile${open ? "" : " profile-closed"}`} aria-label="React Profiler">
 			<div className="profile-head">
 				<strong>React Profiler</strong>
-				<button type="button" onClick={() => store.reset(state.transcript.items.map((item) => item.id))}>Reset</button>
-				<button type="button" onClick={() => setOpen((value) => !value)}>{open ? "Hide" : "Show"}</button>
+				<button type="button" onClick={() => store.reset(state.items.map((item) => item.id))}>
+					Reset
+				</button>
+				<button type="button" onClick={() => setOpen((value) => !value)}>
+					{open ? "Hide" : "Show"}
+				</button>
 			</div>
 			{open ? (
 				<>

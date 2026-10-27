@@ -7,7 +7,12 @@ import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
 
 export const profiling = typeof location !== "undefined" && new URLSearchParams(location.search).has("profile");
 
-export type RenderRecord = { id: string; phase: "mount" | "update" | "nested-update"; actualMs: number; commitAt: number };
+export type RenderRecord = {
+	id: string;
+	phase: "mount" | "update" | "nested-update";
+	actualMs: number;
+	commitAt: number;
+};
 
 type ProfileStore = {
 	records: RenderRecord[];
@@ -44,7 +49,8 @@ declare global {
 	}
 }
 
-export const profileStore: ProfileStore | undefined = profiling ? (window.__harbourProfile = createStore()) : undefined;
+export const profileStore: ProfileStore | undefined = profiling ? createStore() : undefined;
+if (profileStore !== undefined) window.__harbourProfile = profileStore;
 
 const onRender: ProfilerOnRenderCallback = (id, phase, actualDuration, _base, _start, commitTime) => {
 	const store = profileStore;

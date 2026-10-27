@@ -1,38 +1,40 @@
 {
-  "name": "@harbour/console",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "description": "Harbour's session console. M0 prototype: renders one recorded Pi Durable session with no backend.",
-  "license": "Apache-2.0",
-  "scripts": {
-    "predev": "node scripts/generate-fixture.ts",
-    "dev": "vite",
-    "prebuild": "node scripts/generate-fixture.ts",
-    "build": "tsc --noEmit -p tsconfig.json && vite build",
-    "build:profiling": "node scripts/generate-fixture.ts && vite build --mode profiling",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "pretest": "node scripts/generate-fixture.ts",
-    "test": "vitest run",
-    "fixture": "node scripts/generate-fixture.ts",
-    "evidence": "node scripts/evidence.ts"
-  },
-  "dependencies": {
-    "react": "19.3.1",
-    "react-dom": "19.3.1",
-    "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1",
-    "virtua": "0.53.6"
-  },
-  "devDependencies": {
-    "@types/node": "26.6.5",
-    "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.2",
-    "playwright-core": "1.64.1",
-    "typescript": "7.0.2",
-    "vite": "8.3.5",
-    "vitest": "5.0.5"
-  }
+	"name": "@harbour/console",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "Harbour's session console. M0 prototype: renders one recorded Pi Durable session with no backend.",
+	"license": "Apache-2.0",
+	"scripts": {
+		"fixtures": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
+		"fixtures:check": "node scripts/project-fixtures.ts --check",
+		"predev": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
+		"dev": "vite",
+		"prebuild": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
+		"build": "tsc --noEmit -p tsconfig.json && vite build",
+		"build:profiling": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts && vite build --mode profiling",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"pretest": "node scripts/generate-fixture.ts && node scripts/project-fixtures.ts",
+		"test": "vitest run",
+		"evidence": "node scripts/evidence.ts"
+	},
+	"dependencies": {
+		"@harbour/protocol": "workspace:*",
+		"react": "19.3.1",
+		"react-dom": "19.3.1",
+		"react-markdown": "10.1.0",
+		"remark-gfm": "4.0.1",
+		"virtua": "0.53.6"
+	},
+	"devDependencies": {
+		"@types/node": "26.6.5",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"@vitejs/plugin-react": "6.1.2",
+		"playwright-core": "1.64.1",
+		"typescript": "7.0.2",
+		"vite": "8.3.5",
+		"vitest": "5.0.5"
+	}
 }

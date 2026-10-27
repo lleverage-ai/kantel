@@ -137,7 +137,7 @@ export type AgentEvent =
 	| { type: "task_failed"; taskId: TaskId; kind: string; message: string };
 
 /**
- * One line of a recorded session (fixtures/sessions/*.jsonl). Pi's `watchEvents()` stream calls its listener once per
+ * One line of a recorded session (fixtures/pi-durable/*.jsonl). Pi's `watchEvents()` stream calls its listener once per
  * commit with that commit's batch of events, after a first `snapshot`; the recorder writes each call as one line and
  * adds `seq`, the batch's position in the stream (0 for the snapshot), and `at`, milliseconds since the recording
  * started, so the stream can be replayed at its recorded pace. The events themselves are Pi's, unchanged.

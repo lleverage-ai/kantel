@@ -1,21 +1,24 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { applyFrames, parseFixture, type ServerFrame, serializeFixture, type TranscriptItem } from "@harbour/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TranscriptItem } from "../protocol-local/index.ts";
-import { DELTA_RETENTION, FixtureHost, parseRecording, type Recording } from "../server-sim/fixture-host.ts";
+import type { AssistantMessage, Usage } from "../pi-durable/events.ts";
+import { FixtureHost } from "../server-sim/fixture-host.ts";
+import { parseRecording, toFrames } from "../server-sim/frames.ts";
+import { Projector } from "../server-sim/project.ts";
 import { splitBlocks } from "../ui/markdown.tsx";
-import { COALESCE_MS, SessionClient } from "./session-client.ts";
-import { applyOps, fromItems } from "./transcript.ts";
+import { COALESCE_MS, SessionClient, type Transport } from "./session-client.ts";
 
-const fixture = (name: string): Recording =>
-	parseRecording(readFileSync(new URL(`../../../../fixtures/sessions/${name}.jsonl`, import.meta.url), "utf8"));
+const root = new URL("../../../../fixtures/", import.meta.url);
+const read = (path: string): string => readFileSync(new URL(path, root), "utf8");
+const frames = (name: string): ServerFrame[] => parseFixture(read(`sessions/${name}.jsonl`));
 
-const small = fixture("small");
-const long = fixture("long-2000");
+const small = frames("small");
+const long = frames("long-2000");
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
-/** Run the host's whole recording with `client` attached, advancing fake time in small steps. */
+/** Run the host's whole fixture with clients attached, advancing fake time in small steps. */
 async function playOut(host: FixtureHost, step = 37): Promise<void> {
 	host.play();
 	while (!host.finished) await vi.advanceTimersByTimeAsync(step);
@@ -24,52 +27,118 @@ async function playOut(host: FixtureHost, step = 37): Promise<void> {
 
 const shape = (items: readonly TranscriptItem[]) => items.map((item) => JSON.stringify(item));
 
-describe("applyOps", () => {
-	const items: TranscriptItem[] = [
-		{ kind: "user", id: "u:1", text: "hi", at: 0 },
-		{ kind: "assistant", id: "a:1", parts: [{ kind: "text", text: "Hel" }], status: "streaming", at: 0 },
-		{ kind: "tool", id: "tool:c1", callId: "c1", name: "bash", args: {}, status: "running", output: "", at: 0 },
-	];
-
-	it("replaces only the item an op names and keeps every other item's identity", () => {
-		const before = fromItems(items);
-		const { transcript, changed } = applyOps(before, [{ op: "text.append", id: "a:1", part: 0, text: "lo" }]);
-		expect(transcript.items[0]).toBe(items[0]);
-		expect(transcript.items[2]).toBe(items[2]);
-		expect(transcript.items[1]).not.toBe(items[1]);
-		expect(transcript.items[1]).toMatchObject({ parts: [{ kind: "text", text: "Hello" }] });
-		expect([...changed]).toEqual(["a:1"]);
-		// The input is untouched.
-		expect(items[1]).toMatchObject({ parts: [{ text: "Hel" }] });
+describe("frame fixtures", () => {
+	it("small.jsonl is exactly what the projector makes of the small Pi recording", () => {
+		const projected = serializeFixture(toFrames(parseRecording(read("pi-durable/small.jsonl"))));
+		expect(read("sessions/small.jsonl")).toBe(projected);
 	});
 
-	it("returns the same transcript when nothing changed", () => {
-		const before = fromItems(items);
-		expect(applyOps(before, [{ op: "run", state: "idle" }]).transcript).toBe(before);
+	it("every fixture in fixtures/sessions parses and applies cleanly with @harbour/protocol", () => {
+		const names = readdirSync(new URL("sessions/", root)).filter((name) => name.endsWith(".jsonl"));
+		expect(names).toContain("small.jsonl");
+		for (const name of names) {
+			const list = parseFixture(read(`sessions/${name}`));
+			expect(list[0]?.type).toBe("hello");
+			expect(list[1]?.type).toBe("snapshot");
+			const cursors = list.flatMap((frame) => (frame.type === "delta" ? [frame.delta.cursor] : []));
+			expect(new Set(cursors).size).toBe(cursors.length);
+			const state = applyFrames(list);
+			expect(state?.cursor).toBe(cursors.at(-1));
+			// Nothing is left streaming once a recording ends.
+			expect(state?.items.filter((item) => item.kind === "assistant" && item.streaming)).toEqual([]);
+		}
 	});
 
-	it("applies tool output as a front trim then an append, like Pi's tool updates", () => {
-		const before = fromItems(items);
-		let { transcript } = applyOps(before, [{ op: "tool.update", id: "tool:c1", output: { append: "one\ntwo\n" } }]);
-		({ transcript } = applyOps(transcript, [{ op: "tool.update", id: "tool:c1", output: { trimStart: 4, append: "three\n" } }]));
-		expect(transcript.items[2]).toMatchObject({ output: "two\nthree\n" });
+	it("projects the small recording into the turns, tools and final texts Pi committed", () => {
+		const items = applyFrames(small)!.items;
+		expect(items.map((item) => item.kind)).toEqual([
+			"user",
+			"assistant",
+			"tool",
+			"assistant",
+			"user",
+			"assistant",
+			"tool",
+			"assistant",
+		]);
+		const tools = items.filter((item) => item.kind === "tool");
+		expect(tools.map((tool) => [tool.label, tool.status, tool.args])).toEqual([
+			["Ran ls -la docs", "done", { command: "ls -la docs" }],
+			["Read docs/release-notes.md", "done", { path: "docs/release-notes.md" }],
+		]);
+		const last = items.at(-1);
+		expect(last?.kind === "assistant" && last.text).toMatch(/^The notes bury/);
 	});
 });
 
-describe("projection of the small recording", () => {
-	it("ends with the turns, tools and final texts Pi committed", async () => {
-		const host = new FixtureHost(small);
-		host.drain();
-		const items = host.snapshot().items;
-		expect(items.map((item) => item.kind)).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant"]);
-		const tools = items.filter((item) => item.kind === "tool");
-		expect(tools.map((tool) => [tool.name, tool.status, tool.args])).toEqual([
-			["bash", "done", { command: "ls -la docs" }],
-			["read", "done", { path: "docs/release-notes.md" }],
+describe("projector", () => {
+	const at = 1_000;
+	const usage: Usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const started: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "faux",
+		provider: "faux",
+		model: "faux-1",
+		usage,
+		stopReason: "pending",
+		timestamp: at,
+	};
+
+	it("replaces a tool item whole as Pi trims and appends its output window", () => {
+		const projector = new Projector();
+		const call = { toolCallId: "c1", toolName: "bash" };
+		projector.batch([{ type: "tool_execution_start", ...call, args: { command: "make" } }], at);
+		const first = projector.batch([{ type: "tool_execution_update", ...call, output: { append: "one\ntwo\n" } }], at);
+		const second = projector.batch(
+			[{ type: "tool_execution_update", ...call, output: { trimStart: 4, append: "three\n" } }],
+			at,
+		);
+		expect(first).toMatchObject([{ op: "replace", item: { output: "one\ntwo\n", status: "running" } }]);
+		expect(second).toMatchObject([{ op: "replace", item: { output: "two\nthree\n", label: "Running make" } }]);
+	});
+
+	it("starts a new assistant item for text written after a tool call, so order is kept", () => {
+		const projector = new Projector();
+		const ops = projector.batch(
+			[
+				{ type: "message_start", message: started },
+				{
+					type: "message_update",
+					usage,
+					changes: [
+						{ type: "text_start", contentIndex: 0, block: { type: "text", text: "Looking." } },
+						{
+							type: "toolcall_start",
+							contentIndex: 1,
+							block: { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.md" } },
+						},
+						{ type: "text_start", contentIndex: 2, block: { type: "text", text: "Done" } },
+						{ type: "text_delta", contentIndex: 2, delta: "." },
+					],
+				},
+			],
+			at,
+		);
+		expect(
+			ops.map((op) =>
+				op.op === "text" ? `text ${op.itemId} ${op.append}` : `${op.op} ${"item" in op ? op.item.id : ""}`,
+			),
+		).toEqual([
+			"append a:live:1",
+			"text a:live:1 Looking.",
+			"append tool:c1",
+			"append a:live:1:1",
+			"text a:live:1:1 Done",
+			"text a:live:1:1 .",
 		]);
-		const last = items.at(-1);
-		expect(last?.kind === "assistant" && last.status).toBe("done");
-		expect(last?.kind === "assistant" && last.parts[0]?.kind === "text" && last.parts[0].text).toMatch(/^The notes bury/);
 	});
 });
 
@@ -82,10 +151,10 @@ describe("streaming", () => {
 		const before = client.getState().flushes;
 		await playOut(host);
 		const renders = client.getState().flushes - before;
-		const deltas = host.head;
 		// The live run is about 35 s of recorded time and some 650 commits.
-		expect(deltas).toBeGreaterThan(600);
-		expect(renders).toBeLessThan(deltas / 3);
+		expect(host.published).toBeGreaterThan(600);
+		expect(client.getState().cursor).toBe(host.head);
+		expect(renders).toBeLessThan(host.published / 3);
 		expect(renders).toBeLessThan((35_000 / COALESCE_MS) * 1.5);
 	});
 
@@ -94,12 +163,27 @@ describe("streaming", () => {
 		const client = new SessionClient(host, host.sessionId);
 		client.start();
 		await vi.advanceTimersByTimeAsync(100);
-		const atStart = client.getState().transcript.items;
+		const atStart = client.getState().items;
 		await playOut(host);
-		const atEnd = client.getState().transcript.items;
+		const atEnd = client.getState().items;
 		const kept = atStart.filter((item, index) => atEnd[index] === item).length;
 		expect(kept).toBe(atStart.length);
 		expect(atEnd.length).toBeGreaterThan(atStart.length);
+	});
+
+	it("pages earlier items in front without touching the ones it holds", async () => {
+		const host = new FixtureHost(long, { latencyMs: 5 });
+		const client = new SessionClient(host, host.sessionId);
+		client.start();
+		await vi.advanceTimersByTimeAsync(100);
+		const page = client.getState().items;
+		expect(client.getState().hasEarlier).toBe(true);
+		client.loadOlder();
+		await vi.advanceTimersByTimeAsync(100);
+		const after = client.getState().items;
+		expect(after.length).toBeGreaterThan(page.length);
+		expect(after.slice(after.length - page.length)).toEqual(page);
+		expect(after.at(-page.length)).toBe(page[0]);
 	});
 });
 
@@ -113,47 +197,43 @@ describe("resume after a disconnect", () => {
 		await vi.advanceTimersByTimeAsync(100);
 		host.play();
 		await vi.advanceTimersByTimeAsync(8_000);
-		const appliedBefore = flaky.getState().cursor!;
 		flaky.simulateDisconnect(3_000);
 		// Dropping flushes what was received but still coalescing, so the cursor is everything the client got.
 		const cursorAtDrop = flaky.getState().cursor!;
-		expect(cursorAtDrop).toBeGreaterThanOrEqual(appliedBefore);
-		expect(cursorAtDrop).toBeGreaterThan(10);
+		expect(host.published).toBeGreaterThan(10);
 		expect(flaky.getState().connection.status).toBe("offline");
 		expect(flaky.getState().freshness.state).toBe("stale");
 		await vi.advanceTimersByTimeAsync(3_200);
 		const resume = flaky.getState().resumes.at(-1)!;
 		expect(resume).toMatchObject({ from: cursorAtDrop, how: "deltas" });
-		expect(resume.head).toBeGreaterThan(cursorAtDrop);
+		expect(resume.head).not.toBe(cursorAtDrop);
 		while (!host.finished) await vi.advanceTimersByTimeAsync(50);
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(flaky.getState().cursor).toBe(host.head);
-		expect(shape(flaky.getState().transcript.items)).toEqual(shape(steady.getState().transcript.items));
-		expect(flaky.getState().freshness).toEqual({ state: "current", provisional: false });
+		expect(shape(flaky.getState().items)).toEqual(shape(steady.getState().items));
+		expect(flaky.getState().freshness).toEqual({ state: "current" });
 	});
 
 	it("falls back to a snapshot when the host no longer holds the deltas after the cursor", async () => {
 		const host = new FixtureHost(long, { latencyMs: 5 });
 		host.drain();
-		// One recording is shorter than the host's window, so the client claims a cursor from before it.
 		const stale = new SessionClient(claimingOldCursor(host), host.sessionId);
 		stale.start();
 		await vi.advanceTimersByTimeAsync(100);
 		expect(stale.getState().resumes.at(-1)?.how).toBe("snapshot");
 		expect(stale.getState().cursor).toBe(host.head);
-		expect(shape(stale.getState().transcript.items)).toEqual(shape(host.snapshot().items));
-		expect(stale.getState().before).not.toBeNull();
+		expect(shape(stale.getState().items)).toEqual(shape((await host.snapshot()).items));
+		expect(stale.getState().hasEarlier).toBe(true);
 	});
 });
 
-/** A transport whose hello claims a cursor below the host's retained window. */
-function claimingOldCursor(host: FixtureHost) {
+/** A transport whose hello claims a cursor the host never issued (or has long since dropped). */
+function claimingOldCursor(host: FixtureHost): Transport {
 	return {
-		connect: (receive: Parameters<FixtureHost["connect"]>[0]) => {
+		connect: (receive) => {
 			const connection = host.connect(receive);
 			return {
-				send: (message: Parameters<typeof connection.send>[0]) =>
-					connection.send(message.type === "hello" ? { ...message, cursor: -DELTA_RETENTION } : message),
+				send: (frame) => connection.send(frame.type === "hello" ? { ...frame, after: "c-forgotten" } : frame),
 				close: () => connection.close(),
 			};
 		},

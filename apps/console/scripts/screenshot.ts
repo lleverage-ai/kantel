@@ -7,7 +7,10 @@ import { chromium } from "playwright-core";
 
 const { values, positionals } = parseArgs({
 	allowPositionals: true,
-	options: { wait: { type: "string", default: "4000" }, chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" } },
+	options: {
+		wait: { type: "string", default: "4000" },
+		chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" },
+	},
 });
 const [url, prefix] = positionals;
 if (url === undefined || prefix === undefined) throw new Error("usage: screenshot.ts <url> <out-prefix>");

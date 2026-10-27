@@ -59,7 +59,7 @@ body,
 body {
 	background: var(--bg);
 	color: var(--ink);
-	font: 15px/1.6 var(--sans);
+	font: 15px / 1.6 var(--sans);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
 }
@@ -79,7 +79,6 @@ button {
 .app {
 	display: flex;
 	flex-direction: column;
-	height: 100%;
 	height: 100dvh;
 }
 
@@ -126,8 +125,13 @@ h1 {
 	color: var(--ink-3);
 }
 
-.run-working {
+.run-running,
+.run-waiting {
 	color: var(--accent);
+}
+
+.run-failed {
+	color: var(--bad);
 }
 
 .meta {
@@ -315,12 +319,6 @@ h1 {
 	overflow-wrap: anywhere;
 }
 
-.assistant-error {
-	margin: 4px 0;
-	color: var(--bad);
-	font-size: 14px;
-}
-
 .thinking {
 	margin: 2px 0 6px;
 	color: var(--ink-3);
@@ -390,8 +388,44 @@ h1 {
 	font-size: 13px;
 }
 
-.notice-warn {
+.notice-warning {
 	border-color: var(--warn);
+}
+
+.notice-error {
+	border-color: var(--bad);
+	color: var(--bad);
+}
+
+.card {
+	margin: 6px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	background: var(--surface);
+	font-size: 14px;
+}
+
+.card p {
+	margin: 4px 0 0;
+}
+
+.card-kicker {
+	font-size: 11px;
+	color: var(--ink-3);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.card-why,
+.card-answer {
+	color: var(--ink-2);
+}
+
+.card-code {
+	margin-top: 6px;
+	font: 12.5px var(--mono);
+	color: var(--ink-2);
 }
 
 /* Markdown */
@@ -439,7 +473,7 @@ h1 {
 }
 
 .md code {
-	font: 0.88em/1.5 var(--mono);
+	font: 0.88em / 1.5 var(--mono);
 	padding: 0.1em 0.35em;
 	border-radius: 4px;
 	background: var(--code-bg);
@@ -523,19 +557,10 @@ h1 {
 .tool-words {
 	flex: 1;
 	min-width: 0;
+	color: var(--ink);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-}
-
-.tool-verb {
-	color: var(--ink-2);
-}
-
-.tool-object {
-	color: var(--ink);
-	font-family: var(--mono);
-	font-size: 12.5px;
 }
 
 .tool-time {
@@ -569,6 +594,10 @@ h1 {
 
 .icon-error {
 	color: var(--bad);
+}
+
+.icon-interrupted {
+	color: var(--warn);
 }
 
 .spin {
@@ -608,7 +637,7 @@ h1 {
 	margin: 0 0 10px;
 	max-height: 260px;
 	overflow: auto;
-	font: 12.5px/1.5 var(--mono);
+	font: 12.5px / 1.5 var(--mono);
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 	color: var(--ink);
@@ -756,8 +785,11 @@ h1 {
 	*,
 	*::before,
 	*::after {
+		/* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every component's animation. */
 		animation-duration: 0.01ms !important;
+		/* biome-ignore lint/complexity/noImportantStyles: as above. */
 		animation-iteration-count: 1 !important;
+		/* biome-ignore lint/complexity/noImportantStyles: as above. */
 		transition-duration: 0.01ms !important;
 	}
 }
