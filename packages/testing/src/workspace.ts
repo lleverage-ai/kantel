@@ -88,6 +88,9 @@ const owner: OwnerRef = {
 	projectId: WORKSPACE_FIXTURE.projectId,
 };
 
+/** A third project of the organisation, whose files a case mounts into a workspace of `projectId`. */
+const SOURCE_PROJECT = "proj-source";
+
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array): string => decoder.decode(bytes);
 
@@ -527,6 +530,22 @@ export function createWorkspaceConformance(options: {
 	});
 	const change = [{ op: "put", path: "a", content: "x" }] as const;
 
+	/**
+	 * A workspace of the project with another project's files mounted at `/source`. Alice, its operator, gets viewer on
+	 * the source project to mount it (and operator to write its files first); nobody else gets a role there.
+	 */
+	async function withSourceMount(subject: WorkspaceSubject, deps: ConformanceDeps): Promise<WorkspaceRecord> {
+		deps.tenancy.bind(ctx.actor, WORKSPACE_FIXTURE.organisationId, "operator", SOURCE_PROJECT);
+		await writeProjectFiles(subject.projectFiles, ctx, SOURCE_PROJECT, [
+			{ op: "put", path: "README.md", content: "source readme" },
+		]);
+		return subject.workspaces.create(ctx, {
+			owner,
+			sessionId: WORKSPACE_FIXTURE.sessionId,
+			mounts: [{ path: "/source", source: subject.projectFiles.kind, ref: SOURCE_PROJECT }],
+		});
+	}
+
 	cases.push(
 		{
 			name: "project access: refuses an operator outside the project on every call, and changes nothing",
@@ -740,6 +759,73 @@ export function createWorkspaceConformance(options: {
 				});
 				// An operator on the project reads the agent's session workspace.
 				a.strictEqual((await workspaces.get(ctx, own.id)).head, 1);
+			}),
+		},
+		{
+			name: "mount reads: a read through a mount passes when the caller may read the project the files come from",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const record = await withSourceMount(subject, deps);
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "/source/README.md")).content), "source readme");
+				a.deepEqual(
+					(await workspaces.list(ctx, record.id, { path: "/source" })).items.map((entry) => entry.path),
+					["/source/README.md"],
+				);
+				a.strictEqual((await workspaces.stat(ctx, record.id, "/source/README.md")).kind, "file");
+				a.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
+			}),
+		},
+		{
+			name: "mount reads: refuses a caller the source project, though it may read the workspace's own project",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const record = await withSourceMount(subject, deps);
+				await workspaces.commit(ctx, record.id, { baseVersion: record.head, changes: change });
+				// The viewer and the project's agent may read the workspace, but not the project mounted into it.
+				for (const [caller, label] of [
+					[viewerCtx, "a viewer on the workspace's project"],
+					[agentCtx, "an agent in the workspace's project"],
+				] as const) {
+					a.strictEqual(text((await workspaces.read(caller, record.id, "a")).content), "x", `${label} reads its files`);
+					for (const [call, what] of [
+						[() => workspaces.read(caller, record.id, "/source/README.md"), "read"],
+						[() => workspaces.list(caller, record.id, { path: "/source" }), "list"],
+						[() => workspaces.stat(caller, record.id, "/source/README.md"), "stat"],
+					] as const) {
+						await assertAccessDenied(a, deps, call(), {
+							operation: "workspace.mount.read",
+							message: `${label} may not ${what} the source project through the mount`,
+						});
+					}
+				}
+				const [refusal] = deps.audit.ofType("access.denied");
+				a.strictEqual(refusal?.projectId, SOURCE_PROJECT, "the refusal names the source project");
+			}),
+		},
+		{
+			name: "mount reads: checks the source project again on every read, so access revoked between reads refuses the next",
+			run: withSubject(async (subject, deps) => {
+				const { workspaces } = subject;
+				const record = await withSourceMount(subject, deps);
+				a.strictEqual(text((await workspaces.read(ctx, record.id, "/source/README.md")).content), "source readme");
+				deps.tenancy.unbind(ctx.actor, WORKSPACE_FIXTURE.organisationId, SOURCE_PROJECT);
+				await assertAccessDenied(a, deps, workspaces.read(ctx, record.id, "/source/README.md"), {
+					operation: "workspace.mount.read",
+					message: "the second read, after the source role was revoked",
+				});
+				// The workspace's own files stay readable: only the mounted project's role went.
+				a.strictEqual((await workspaces.get(ctx, record.id)).id, record.id);
+			}),
+		},
+		{
+			name: "existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one not_found; across organisations both are not_found",
+			run: withSubject(async (subject) => {
+				const { workspaces } = subject;
+				const { record } = await withProjectMount(subject);
+				await a.rejectsWithCode(workspaces.get(outsiderCtx, record.id), "forbidden", "an existing ID it may not see");
+				await a.rejectsWithCode(workspaces.get(outsiderCtx, "ws-missing"), "not_found", "a missing ID");
+				await a.rejectsWithCode(workspaces.get(otherCtx, record.id), "not_found", "another organisation's ID");
+				await a.rejectsWithCode(workspaces.get(otherCtx, "ws-missing"), "not_found", "a missing ID elsewhere");
 			}),
 		},
 	);

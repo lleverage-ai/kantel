@@ -107,6 +107,20 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 		await access.require(ctx, { ...scope, needed, operation, subject: { kind: "workspace", id: record.id } });
 	}
 
+	/**
+	 * Requires viewer on the project a `project-files` mount's files come from, on every read through it (settled
+	 * question 11). Nothing is cached: a role revoked since the last read refuses the next one.
+	 */
+	async function requireMountRead(ctx: CallContext, record: WorkspaceRecord, mount: Mount): Promise<void> {
+		if (access === undefined || mount.source !== "project-files") return;
+		await access.require(ctx, {
+			projectId: mount.ref,
+			needed: "viewer",
+			operation: "workspace.mount.read",
+			subject: { kind: "workspace", id: record.id },
+		});
+	}
+
 	/** Requires viewer on the project each `project-files` mount names in its `ref`. */
 	async function requireMounts(
 		ctx: CallContext,
@@ -246,6 +260,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 			let entries: FileEntry[];
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state, path);
+				await requireMountRead(ctx, state.record, mount);
 				entries = await listMount(ctx, sourceFor(mount.source), mount, sourcePath, recursive);
 			} else {
 				const dir = path === "" ? "" : normalizeWorkspacePath(path);
@@ -260,6 +275,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 			await requireWorkspace(ctx, state.record, "viewer", "workspace.stat");
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state, path);
+				await requireMountRead(ctx, state.record, mount);
 				if (sourcePath === "") return { path: mount.path, kind: "directory", size: 0, version: mount.version };
 				const parent = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
 				const siblings = await sourceFor(mount.source).list(ctx, mount.ref, mount.version, parent);
@@ -275,6 +291,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): W
 			await requireWorkspace(ctx, state.record, "viewer", "workspace.read");
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state, path);
+				await requireMountRead(ctx, state.record, mount);
 				if (sourcePath === "") throw new HarbourError("invalid", `${path} is a directory`, { path });
 				const content = toBytes(await sourceFor(mount.source).read(ctx, mount.ref, mount.version, sourcePath));
 				return { path, content, version: mount.version, digest: await sha256Hex(content) };

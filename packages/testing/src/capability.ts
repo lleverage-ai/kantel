@@ -523,6 +523,35 @@ export function createCapabilityConformance(options: {
 					"discovering as a human needs an organisation-wide role",
 				);
 			}),
+
+			// Settled by Tom on 27 Oct 2026 (question 12): kept on purpose, so don't "fix" it into not_found.
+			test("existence (settled question 12): in the organisation, a journal entry the caller may not see is forbidden, a missing one not_found, and a call ID another session used a conflict; across organisations both are not_found and the call ID is free", async ({
+				registry,
+			}) => {
+				const handler = recorder();
+				await registry.register(host, [definition("tool.run")], handler.handler);
+				await registry.grant(operator, { selector: {}, capabilities: ["tool.run"] });
+				const call = { callId: "call-1", capability: "tool.run", args: {} };
+				await registry.invoke(agent, call);
+				await assert.rejectsWithCode(
+					registry.journal(stranger, "call-1"),
+					"forbidden",
+					"an existing entry it may not see",
+				);
+				await assert.rejectsWithCode(registry.journal(stranger, "call-missing"), "not_found", "a missing entry");
+				await assert.rejectsWithCode(registry.invoke(otherAgent, call), "conflict", "a call ID another session used");
+				await assert.rejectsWithCode(registry.journal(outsider, "call-1"), "not_found", "another organisation's entry");
+				await assert.rejectsWithCode(
+					registry.journal(outsider, "call-missing"),
+					"not_found",
+					"a missing entry elsewhere",
+				);
+				const theirs = recorder();
+				await registry.register(outsider, [definition("tool.run")], theirs.handler);
+				await registry.grant(outsider, { selector: {}, capabilities: ["tool.run"] });
+				await registry.invoke(outsiderAgent, call);
+				assert.strictEqual(theirs.calls.length, 1, "the same call ID is free in another organisation");
+			}),
 		];
 	}
 
