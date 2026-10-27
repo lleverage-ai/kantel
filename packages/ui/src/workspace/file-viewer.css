@@ -1,0 +1,93 @@
+/* A file's text: the header, then mono text with a line-number gutter, scrolling both ways inside the viewer. The
+   viewer fills the height its host gives it; the text never wraps. */
+
+.hb-file-viewer {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-width: 0;
+	min-height: 0;
+	background: var(--hb-canvas);
+	color: var(--hb-text);
+}
+
+.hb-file-viewer-body {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+}
+
+.hb-file-viewer-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+}
+
+.hb-file-viewer-scroll:focus-visible {
+	outline-offset: calc(var(--hb-ring) * -1);
+}
+
+/* As wide as the longest line, and at least as wide as the viewer, so the gutter's hairline runs the full height. */
+.hb-file-viewer-code {
+	display: flex;
+	width: max-content;
+	min-width: 100%;
+	min-height: 100%;
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	line-height: var(--hb-leading);
+}
+
+.hb-file-viewer-gutter,
+.hb-file-viewer-text {
+	margin: 0;
+	padding-top: var(--hb-space-5);
+	padding-bottom: var(--hb-space-5);
+	font: inherit;
+	white-space: pre;
+}
+
+/* Held at the left while the text scrolls sideways. Not selectable, so a selection copies only the text. */
+.hb-file-viewer-gutter {
+	position: sticky;
+	left: 0;
+	flex: none;
+	padding-right: var(--hb-space-5);
+	padding-left: var(--hb-space-6);
+	border-right: var(--hb-hairline) solid var(--hb-border);
+	background: var(--hb-canvas);
+	color: var(--hb-text-faint);
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	user-select: none;
+}
+
+.hb-file-viewer-text {
+	flex: 1 0 auto;
+	padding-right: var(--hb-space-7);
+	padding-left: var(--hb-space-6);
+	color: var(--hb-text);
+	tab-size: 4;
+	user-select: text;
+}
+
+.hb-file-viewer-text code {
+	font: inherit;
+}
+
+.hb-file-viewer-cap,
+.hb-file-viewer-message {
+	flex: none;
+	padding: var(--hb-space-6) var(--hb-space-6) 0;
+}
+
+.hb-file-viewer-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	padding: var(--hb-space-6);
+}

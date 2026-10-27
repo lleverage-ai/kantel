@@ -3,6 +3,10 @@
 What each component is for, when not to use it, its states and what it costs. Stories for each are in the
 workbench (`pnpm --filter @harbour/ui dev`).
 
+The session components are documented in [session-transcript.md](session-transcript.md),
+[session-composer.md](session-composer.md) and [session-list-vault.md](session-list-vault.md); the workspace
+components in [workspace.md](workspace.md).
+
 ## Primitives
 
 ### Centring on text
@@ -135,3 +139,18 @@ stopped when nothing listens. `RelativeTime` stops ticking once a time is a day 
 
 16px line icons in `currentColor`. Decorative unless given a `label`. The arrow-shaped `SendIcon` is only for the
 composer's icon-only send button.
+
+## Workspace
+
+Read-only views of a workspace's files, fed by the host from the workspace read API (`@harbour/workspace/read-api`,
+GET routes only); they never fetch, write or acquire a sandbox. Details, keyboard behaviour and costs are in
+[workspace.md](workspace.md).
+
+- **`FileTree`**: a workspace's files as a WAI-ARIA tree, one Tab stop with arrow-key navigation. Loading, error and
+  empty states for the root, and inline Loading and error rows for a directory.
+- **`FileViewer`**: one file's text in mono with unselectable line numbers, Copy, and states for loading, error,
+  empty, binary and too large. Renders at most 5,000 lines and says how many more there are.
+- **`NoteViewer`**: a Markdown note rendered with `Markdown` at the transcript's reading measure, with when it was
+  last updated.
+- **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
+  `formatBytes` and others), exported for hosts.

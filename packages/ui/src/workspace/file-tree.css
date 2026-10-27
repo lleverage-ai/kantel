@@ -1,0 +1,139 @@
+/* The workspace file tree: compact rows in the list's type, indented one step per level, a chevron for directories
+   and a file icon for files in one leading column, the name truncating before a file's quiet size. */
+
+.hb-file-tree {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-file-tree-item,
+.hb-file-tree-skeleton-row {
+	/* --hb-file-tree-depth is set on each row: 0 for the root's children. */
+	--hb-file-tree-indent: calc(var(--hb-file-tree-depth, 0) * var(--hb-space-6));
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	min-height: var(--hb-control-sm);
+	padding: 0 var(--hb-space-5) 0 calc(var(--hb-space-3) + var(--hb-file-tree-indent));
+	border-radius: var(--hb-radius-sm);
+}
+
+.hb-file-tree-item {
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+	text-decoration: none;
+	cursor: pointer;
+	user-select: none;
+}
+
+.hb-file-tree-item:hover {
+	background: var(--hb-hover);
+}
+
+.hb-file-tree-item:focus-visible {
+	outline-offset: calc(var(--hb-ring) * -1);
+}
+
+.hb-file-tree-selected,
+.hb-file-tree-selected:hover {
+	background: var(--hb-selected);
+}
+
+/* The skeleton's bar starts where a row's name would. */
+.hb-file-tree-skeleton-row {
+	padding-left: calc(var(--hb-space-3) * 2 + var(--hb-file-tree-indent) + var(--hb-icon-md));
+}
+
+/*
+ * One line tall, with an invisible character for a baseline, as ListRow's leading slot: the icon sits on the name's
+ * baseline, then moves up onto the middle of its capitals (see --hb-on-cap).
+ */
+.hb-file-tree-lead {
+	display: inline-flex;
+	flex: none;
+	align-items: baseline;
+	justify-content: center;
+	width: var(--hb-icon-md);
+	height: calc(var(--hb-text-sm) * var(--hb-leading));
+	color: var(--hb-text-faint);
+}
+
+.hb-file-tree-lead::before {
+	content: "\200b";
+}
+
+.hb-file-tree-lead > * {
+	translate: 0 var(--hb-on-cap);
+}
+
+.hb-file-tree-chevron {
+	transition: transform var(--hb-duration) var(--hb-ease);
+}
+
+.hb-file-tree-item[aria-expanded="true"] .hb-file-tree-chevron {
+	transform: rotate(90deg);
+}
+
+/* The name and a file's size share a baseline; the name gives way first. */
+.hb-file-tree-text {
+	display: flex;
+	flex: 1;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-file-tree-name {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-file-tree-size {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+/* Rows that stand in for a directory's children: quieter, and nothing to choose. */
+.hb-file-tree-loading,
+.hb-file-tree-error,
+.hb-file-tree-empty,
+.hb-file-tree-truncated {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	cursor: default;
+}
+
+.hb-file-tree-loading:hover,
+.hb-file-tree-error:hover,
+.hb-file-tree-empty:hover,
+.hb-file-tree-truncated:hover {
+	background: none;
+}
+
+.hb-file-tree-loading .hb-file-tree-lead,
+.hb-file-tree-error .hb-file-tree-lead,
+.hb-file-tree-empty .hb-file-tree-lead,
+.hb-file-tree-truncated .hb-file-tree-lead {
+	height: calc(var(--hb-text-xs) * var(--hb-leading));
+}
+
+.hb-file-tree-error .hb-file-tree-lead {
+	color: var(--hb-status-error);
+}
+
+/* A coarse pointer gets the touch size for every row. */
+@media (pointer: coarse) {
+	.hb-file-tree-item,
+	.hb-file-tree-skeleton-row {
+		min-height: var(--hb-control-lg);
+	}
+}

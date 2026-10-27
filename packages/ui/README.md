@@ -68,9 +68,14 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
 | `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
 | Icons | 16px line icons in currentColor | Decoration |
+| `FileTree` | A workspace's files as a keyboard-navigable tree, read-only | Choosing where to write, or flat search results (use `ListRow`) |
+| `FileViewer` | One file's text with line numbers, read-only | Notes people read (use `NoteViewer`), images, diffs |
+| `NoteViewer` | A Markdown note from a workspace, rendered at a reading measure | Editing, or Markdown in a session (use the transcript) |
 
 Session components (the transcript, tool-call chip, composer, session header, session list and approval cards) are
 in `src/session/`, documented in [docs/session-transcript.md](docs/session-transcript.md),
 [docs/session-composer.md](docs/session-composer.md) and [docs/session-list-vault.md](docs/session-list-vault.md).
+Workspace components (the file tree, file viewer and note viewer) are in `src/workspace/`, documented in
+[docs/workspace.md](docs/workspace.md); they are read-only and fed by the host from the workspace read API.
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
 [docs/design-loop.md](docs/design-loop.md).
