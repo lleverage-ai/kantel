@@ -148,8 +148,40 @@ instance. It reads time only from the clock (key expiry is `now >= expiresAt`) a
 - `listRoleBindings` with a project lists that project's bindings (viewer on it needed); without, all of the
   organisation's (organisation-wide viewer needed).
 
-Left out: persistence, listing services,
+Left out: persistence (in the durable implementation below), listing services,
 deleting records, rate limits on `authenticateApiKey`, and a guard against revoking the last organisation admin.
+
+## The durable implementation
+
+`@harbour/identity/sql` runs on any `SqlDriver` from `@harbour/sql`: Postgres (`postgresPoolDriver(pool)` over `pg`) for
+the self-hosted target, and D1 (`d1Driver(env.DB)`) or another SQLite for Cloudflare. It passes the whole suite on
+PGlite, `node:sqlite`, D1 in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres, and behaves as the
+in-memory directory, with the same choices, errors and audit events.
+
+- `migrateIdentity(driver)` creates the tables if they are missing; `identitySchema(dialect)` gives the statements for
+  a target's own migrations. Tables: `identity_organisations`, `identity_projects`, `identity_users` (with the
+  normalised email sign-in matches on, and `UNIQUE` on `external_subject`), `identity_services`,
+  `identity_role_bindings` (`UNIQUE` per organisation, principal and scope, `*` for organisation-wide) and
+  `identity_api_keys` (the hex SHA-256 of the secret, `UNIQUE` and looked up by, never the secret; the projects as a
+  JSON list). Times are numbers, IDs text.
+- `createSqlIdentity({ driver, clock?, audit? })` holds no state of its own, so any number of instances (workers) share
+  one database: a key issued or revoked on one is honoured on the others at once. There are no interactive
+  transactions: an organisation and its first admin are one `batch`; a grant is one `INSERT … ON CONFLICT DO UPDATE`
+  that replaces the binding for the same principal and scope; revoking a key sets `revoked_at` only where it is unset,
+  so one revocation is audited. Uniqueness races are settled by the constraints: two users racing for one external
+  subject leave one, and the other is `conflict`; linking by email updates only a user still unlinked, and a first
+  sign-in that loses that race finds the user by subject.
+- Grants and revocations are checked against the caller's role and then written, with no transaction between. So
+  that a grant checked just before its granter was revoked cannot write after the revocation and bring the binding
+  back, each reads the organisation's `roles_version` before its check, and its batch moves the version on only if
+  it is unchanged; otherwise the batch fails whole and the call is `conflict` (try again). A grant or revocation that
+  races another in the same organisation can therefore be refused, never applied out of order ("a grant checked
+  before its granter was revoked does not bring the revoked binding back").
+- `listProjects` pages in creation order (`nextCursor` is the last project's ID, as in memory). Lists bind as one JSON
+  parameter, so no statement meets D1's 100-parameter cap. Audit events go to the sink after the write.
+- On Postgres each `createProject` takes an advisory lock first, so projects commit in creation order and a reader
+  paging by cursor never skips one that commits late.
+- Differences from memory: `createUser` refuses an `email` that is not a string (`invalid`).
 
 ## Open questions
 
