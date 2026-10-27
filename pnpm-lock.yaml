@@ -55,6 +55,10 @@ importers:
       "@harbour/protocol":
         specifier: workspace:*
         version: link:../protocol
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
 
   packages/sandbox:
     dependencies:
