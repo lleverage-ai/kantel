@@ -396,10 +396,9 @@ export interface ModelCallRecord {
 export interface ModelGateway {
 	/**
 	 * The session's routes as pi models, each with the metadata of the upstream model it is (or would be) pinned to.
-	 * Overrides are listed too, as `<route>:<modelId>` with that model's own metadata, for each model the route's
-	 * connector offers from a finite list (its `catalogue.include`, or the project policy's `models`) that the project's
-	 * policy allows; a connector offering everything its upstream lists has no listed overrides. A model ID the runtime
-	 * sends must be one listed here.
+	 * Overrides are listed too, as `<route>:<modelId>` with that model's own metadata, for every other model the route's
+	 * connector offers (its catalogue as last refreshed, limited by `catalogue.include`) that the project's policy
+	 * allows. A model ID the runtime sends must be one listed here.
 	 */
 	config(session: ModelCallScope, signal?: AbortSignal): Promise<ModelGatewayConfig>;
 	/**
