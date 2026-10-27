@@ -66,8 +66,8 @@ These come from the plan and cannot be changed by a target.
 - **Browser contexts are chosen by a supervisor or a human.** Only a human, a service, or an agent acting in the
   parent session may grant a context to a session. An agent granting to its own session, or to an unrelated one, is
   `refused` and audited. A parent-session agent may only pass on a context it already holds through an active grant,
-  never wider (persistence, timeout and sites), and the passed-on grant ends when its own does. Whether parent agents
-  should grant at all is open question 10. An agent cannot list or create contexts. It asks with a request that names no context, and
+  never wider (persistence, timeout and sites), and the passed-on grant ends when its own does. Tom confirmed this
+  rule on 27 Oct 2026 (settled question 10). An agent cannot list or create contexts. It asks with a request that names no context, and
   opening with a context its grant does not hold is `refused`. It receives only a session-scoped CDP URL, never the
   provider's context ID. Only one persisting browser session may be open per context, and ending the agent session
   closes every browser and ends its grants.
@@ -183,6 +183,6 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
    other calls belong in M1-BE1, behind one session-end hook.
 9. **Reading browser requests.** The browser contract has no read for an agent's requests, so "granted" is visible only
    through audit. `getRequest` and `listRequests` are the likely additions, with a way to decline.
-10. **Agent supervisors and browsers.** Tom's rule names "a supervisor or a human". Here an agent in the parent
-    session counts as a supervisor, capped at what it holds. If supervisors are meant to be humans and services only,
-    `isSupervisor` drops the agent case and the suite's "parent can pass on" case flips to a refusal.
+10. **Agent supervisors and browsers. Settled: yes, as built (Tom, 27 Oct 2026).** An agent in the parent session
+    counts as a supervisor. It may pass a context it holds to its child session, no wider, and the passed-on grant
+    ends when its own does.
