@@ -1075,8 +1075,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	/** This process's alarm for lease expiry: a sweep every `leaseSweepMs` while it holds a session open. */
 	const leaseSweepMs = options.leaseSweepMs ?? 60_000;
-	if (!Number.isFinite(leaseSweepMs) || leaseSweepMs <= 0) {
-		throw new HarbourError("invalid", "leaseSweepMs must be a positive number of milliseconds");
+	if (!Number.isFinite(leaseSweepMs) || leaseSweepMs <= 0 || leaseSweepMs > 2_147_483_647) {
+		throw new HarbourError("invalid", "leaseSweepMs must be a positive number of milliseconds, at most 2147483647");
 	}
 	let sweepTimer: ReturnType<typeof setTimeout> | undefined;
 	const armSweep = () => {
@@ -1104,7 +1104,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 					);
 					resolve();
 				}, sweepWaitMs);
-				(bound as { unref?: () => void }).unref?.();
+				// Referenced, unlike the background timer: a process awaiting resume() must live to recover its sessions.
 			}),
 		]);
 		clearTimeout(bound);

@@ -5,7 +5,7 @@ import type { AgentProfile, SystemContext } from "@harbour/contracts";
 import { createSessionRuntime, type SessionRuntimeService } from "@harbour/runtime/core";
 import { createMemorySessionStore } from "@harbour/runtime/store";
 import { createScriptedModel } from "@harbour/runtime/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ORG = "org-sweep";
 const ctx = { actor: { kind: "service", serviceId: "test" }, organisationId: ORG } as const;
@@ -144,7 +144,18 @@ describe("lease sweeps", () => {
 		await store.createSession({ record, profile, aborts: 0, closed: false });
 		await store.setWake(record.id, now - 1);
 		const { service, errors } = setUp(() => new Promise<never>(() => {}), undefined, { store, sweepWaitMs: 30 });
-		expect(await service.resume()).toBe(1);
+		const timers: ReturnType<typeof setTimeout>[] = [];
+		const real = globalThis.setTimeout;
+		const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+			const timer = real(fn, ms);
+			if (ms === 30) timers.push(timer);
+			return timer;
+		}) as typeof setTimeout);
+		const resumed = service.resume();
+		// The deadline keeps a process that awaits resume() alive until it fires.
+		expect(timers.map((timer) => (timer as { hasRef?: () => boolean }).hasRef?.() ?? true)).toEqual([true]);
+		spy.mockRestore();
+		expect(await resumed).toBe(1);
 		expect(errors).toMatchObject([{ code: "unavailable" }]);
 	});
 
@@ -221,7 +232,7 @@ describe("lease sweeps", () => {
 	});
 
 	it("refuses an interval that isn't a positive number", () => {
-		for (const leaseSweepMs of [0, -5, Number.NaN]) {
+		for (const leaseSweepMs of [0, -5, Number.NaN, 2 ** 31]) {
 			expect(() => setUp(async () => [], leaseSweepMs)).toThrow(/leaseSweepMs/);
 		}
 	});
