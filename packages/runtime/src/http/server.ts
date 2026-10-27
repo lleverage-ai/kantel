@@ -6,8 +6,12 @@
 import {
 	type AgentProfile,
 	type AgentProfiles,
+	type AuthenticatedCaller,
+	type Authenticator,
+	authenticationFailureOf,
 	type CallContext,
 	type Clock,
+	callContextFor,
 	HarbourError,
 	type HostToolBridge,
 	type HostToolDefinition,
@@ -22,7 +26,6 @@ import {
 	systemClock,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
-import type { Authenticator } from "./auth.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
 import {
@@ -44,7 +47,8 @@ export interface SessionApiOptions {
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
-	readonly authenticate: Authenticator;
+	/** The deployment's authenticator, as every Harbour API takes it: `createAuthenticator` from `@harbour/identity`. */
+	readonly authenticator: Authenticator;
 	/** The prefix of every route. Default `/v1`. */
 	readonly basePath?: string;
 	readonly clock?: Clock;
@@ -429,18 +433,23 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				} catch {
 					throw new HarbourError("invalid", "The path is not valid");
 				}
-				const authentication = await options.authenticate(request);
-				if (authentication === undefined) return unauthenticated();
+				let caller: AuthenticatedCaller;
+				try {
+					caller = await options.authenticator.authenticate(request);
+				} catch (error) {
+					const failure = authenticationFailureOf(error);
+					if (failure === "organisation") {
+						return errorResponse(new HarbourError("forbidden", "Not a member of this organisation"));
+					}
+					if (failure !== undefined) return unauthenticated();
+					throw error;
+				}
 				// Harbour's own components call the runtime directly, never over HTTP.
-				if (authentication.actor.kind === "system") return unauthenticated();
+				if (caller.actor.kind === "system") return unauthenticated();
 				const requestId = request.headers.get(HEADERS.requestId);
 				// The request's signal is not the call's: a run admitted by a prompt must outlive the request that sent
 				// it. Only the result wait and the event stream end with their request.
-				const ctx: CallContext = {
-					actor: authentication.actor,
-					organisationId: authentication.organisationId,
-					...(requestId === null || requestId === "" ? {} : { requestId }),
-				};
+				const ctx: CallContext = callContextFor(caller, requestId === null || requestId === "" ? {} : { requestId });
 				return await route(ctx, request, url, segments);
 			} catch (error) {
 				return errorResponse(error);

@@ -3,8 +3,8 @@
 // an aborted callback reach the other side as a dropped connection.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Authentication, CallContext } from "@harbour/contracts";
-import { type Authenticator, bearerToken, createSessionApi, createSessionApiClient } from "@harbour/runtime/http";
+import { type Authentication, type Authenticator, authenticationError, type CallContext } from "@harbour/contracts";
+import { bearerToken, createSessionApi, createSessionApiClient } from "@harbour/runtime/http";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { registerRuntimeConformance } from "@harbour/testing/session";
@@ -69,9 +69,12 @@ async function serve(handler: FetchHandler): Promise<{ readonly url: string; clo
 const tokenFor = (ctx: CallContext): string =>
 	btoa(JSON.stringify({ actor: ctx.actor, organisationId: ctx.organisationId }));
 
-const contextAuthenticator: Authenticator = async (request) => {
-	const token = bearerToken(request);
-	return token === undefined ? undefined : (JSON.parse(atob(token)) as Authentication);
+const contextAuthenticator: Authenticator = {
+	async authenticate(request) {
+		const token = bearerToken(request);
+		if (token === undefined) throw authenticationError("missing", "No credentials");
+		return { ...(JSON.parse(atob(token)) as Authentication), method: "api_key" };
+	},
 };
 
 registerRuntimeConformance(
@@ -100,7 +103,7 @@ registerRuntimeConformance(
 			directory: memory.directory,
 			profiles: memory.profiles,
 			hostTools: memory.hostTools,
-			authenticate: contextAuthenticator,
+			authenticator: contextAuthenticator,
 			allowCallbackUrl: (url) => url.origin === host.url,
 		});
 		const harbour = await serve(api.fetch);

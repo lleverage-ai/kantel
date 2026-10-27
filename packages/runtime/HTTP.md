@@ -6,9 +6,11 @@ contracts over it. It imports only `@harbour/contracts` and `@harbour/protocol`,
 Durable Object, Bun or Node, and a host app can import the client and the callback endpoint on their own.
 
 ```ts
-import { apiKeyAuthenticator, createSessionApi } from "@harbour/runtime/http";
+import { createAuthenticator } from "@harbour/identity/authenticator";
+import { createSessionApi } from "@harbour/runtime/http";
 
-const api = createSessionApi({ runtime, directory, profiles, hostTools, authenticate: apiKeyAuthenticator(identity) });
+const authenticator = createAuthenticator({ identity });
+const api = createSessionApi({ runtime, directory, profiles, hostTools, authenticator });
 Bun.serve({ fetch: api.fetch }); // or `export default { fetch: api.fetch }` in a Worker
 ```
 
@@ -17,15 +19,17 @@ The conformance suite runs through the client against the in-memory runtime twic
 
 ## Who is calling
 
-The server takes the caller from an injected `Authenticator` (`(request) => Promise<Authentication | undefined>`). It
-never reads an actor or organisation from the request itself. `apiKeyAuthenticator(identity)` resolves
-`Authorization: Bearer <secret>` with `IdentityDirectory.authenticateApiKey`, so it works with the in-memory identity
-store now and identity v0 (M1-BE7) when it lands; human sign-in will be another authenticator, and
-`firstAuthenticator(...)` chains them. `staticTokenAuthenticator` is for tests and local development.
+The server takes the caller from the deployment's `Authenticator`, the contract every Harbour API takes (M1-BE7):
+`createAuthenticator` from `@harbour/identity/authenticator` in production. It never reads an actor or organisation
+from the request itself. `staticTokenAuthenticator` is for tests and local development.
 
-A missing or refused credential is 401. A `system` actor is refused too: Harbour's own components call the runtime
-directly. Every other check is the runtime's own project-access check, so deploy the API only over a runtime given
-`identity`. `harbour-request-id` becomes the call's `requestId`.
+A missing or invalid credential is 401 with a `WWW-Authenticate` challenge; an organisation the caller may not act in
+is 403. A `system` actor is refused with 401 too: Harbour's own components call the runtime directly. Every other
+check is the runtime's own project-access check, so deploy the API only over a runtime given `identity`.
+`harbour-request-id` becomes the call's `requestId`.
+
+A call's context does not carry the request's abort signal: a run a prompt admits outlives the request that sent it.
+Only `result` (its wait stops, answering `aborted`) and `events` (its watch closes) end with their request.
 
 ## Routes
 
@@ -45,9 +49,9 @@ Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 M
 | `GET /sessions/:id/events?after=<cursor>` | `runtime.watch` | `text/event-stream` |
 | `PUT /profiles/:agentId` | `profiles.put` (body `AgentProfile`) | `AgentProfile` |
 | `GET /profiles/:agentId`, `GET /profiles?limit&cursor` | `profiles.get`, `profiles.list` | `AgentProfile`, `Page` |
-| `PUT /hosts/:hostId` | `hostTools.register` (body below) | `{ hostId, tools, secret? }` |
+| `PUT /hosts/:hostId` | `hostTools.register` (body below) | `{ hostId, registration, tools, secret? }` |
 | `GET /hosts/:hostId/tools` | `hostTools.list` | `{ items }` |
-| `DELETE /hosts/:hostId` | closes the registration | 204 |
+| `DELETE /hosts/:hostId?registration=<id>` | closes the registration | 204 |
 
 Errors are `{ error: { code, message, details? } }` with the HarbourError code: `invalid` 400, `forbidden` 403,
 `not_found` 404, `conflict` and `aborted` 409, `expired` 410, `refused` 422, `exhausted` 429, `not_supported` 501,
@@ -87,8 +91,11 @@ with an error status or is unreachable fails the call (the model gets an error r
 minutes (`callbackTimeoutMs`).
 
 Callback URLs are `https:` only by default; a deployment should narrow `allowCallbackUrl` to its hosts, since Harbour
-calls whatever is registered. Only whoever registered a host may `DELETE` it; another operator on the project may
-replace it with `PUT`, as `hostTools.register` allows.
+calls whatever is registered. Only the credential that registered a host may `DELETE` it (for a service, the same
+API key, not just the same service); another operator on the project may replace it with `PUT`, as
+`hostTools.register` allows. Each `PUT` answers a new `registration` ID; `DELETE …?registration=<id>` removes the host
+only while that registration is the current one (404 otherwise), so an old client closing its subscription never
+removes the registration that replaced it.
 
 The client's `hostTools.register(ctx, hostId, tools, handler)` does all of this: it makes a secret, serves the
 endpoint through `hostCallbacks.serve` before registering, and removes both when the subscription closes.

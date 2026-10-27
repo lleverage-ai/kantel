@@ -1,8 +1,8 @@
 // The session conformance suite through the HTTP API: the in-memory runtime behind `createSessionApi`, reached only
 // through `createSessionApiClient`, with host tools served over signed callbacks. Requests never leave the process:
 // the client's fetch calls the API's handler, and the API's callback fetch calls the host's endpoint.
-import type { Authentication, CallContext } from "@harbour/contracts";
-import { type Authenticator, bearerToken, createSessionApi, createSessionApiClient } from "@harbour/runtime/http";
+import { type Authentication, type Authenticator, authenticationError, type CallContext } from "@harbour/contracts";
+import { bearerToken, createSessionApi, createSessionApiClient } from "@harbour/runtime/http";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { registerRuntimeConformance } from "@harbour/testing/session";
@@ -12,9 +12,12 @@ import { describe, expect, it } from "vitest";
 const tokenFor = (ctx: CallContext): string =>
 	btoa(JSON.stringify({ actor: ctx.actor, organisationId: ctx.organisationId }));
 
-const contextAuthenticator: Authenticator = async (request) => {
-	const token = bearerToken(request);
-	return token === undefined ? undefined : (JSON.parse(atob(token)) as Authentication);
+const contextAuthenticator: Authenticator = {
+	async authenticate(request) {
+		const token = bearerToken(request);
+		if (token === undefined) throw authenticationError("missing", "No credentials");
+		return { ...(JSON.parse(atob(token)) as Authentication), method: "api_key" };
+	},
 };
 
 registerRuntimeConformance(
@@ -39,7 +42,7 @@ registerRuntimeConformance(
 			directory: memory.directory,
 			profiles: memory.profiles,
 			hostTools: memory.hostTools,
-			authenticate: contextAuthenticator,
+			authenticator: contextAuthenticator,
 			fetch: async (input, init) => {
 				const request = new Request(input, init);
 				const endpoint = endpoints.get(new URL(request.url).pathname);

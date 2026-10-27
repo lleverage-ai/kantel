@@ -3,13 +3,13 @@
 import {
 	type AgentProfile,
 	type Authentication,
+	authenticationError,
 	HarbourError,
 	type HostToolCall,
 	type SessionRuntime,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
 import {
-	apiKeyAuthenticator,
 	bearer,
 	callbackHostToolHandler,
 	createHostToolEndpoint,
@@ -61,7 +61,7 @@ function setUp(outbound?: typeof fetch) {
 		directory: memory.directory,
 		profiles: memory.profiles,
 		hostTools: memory.hostTools,
-		authenticate: staticTokenAuthenticator({ supervisor, other, system, keyOne, keyTwo }),
+		authenticator: staticTokenAuthenticator({ supervisor, other, system, keyOne, keyTwo }),
 		keepAliveMs: 60_000,
 		...(outbound === undefined ? {} : { fetch: outbound }),
 	});
@@ -126,8 +126,10 @@ describe("session API over HTTP", () => {
 		expect(bad.status).toBe(400);
 		const failing = createSessionApi({
 			...setUp().memory,
-			authenticate: async () => {
-				throw new Error("database password is hunter2");
+			authenticator: {
+				authenticate: async () => {
+					throw new Error("database password is hunter2");
+				},
 			},
 		});
 		const hidden = await failing.fetch(new Request("https://harbour.test/v1/sessions"));
@@ -144,22 +146,19 @@ describe("session API over HTTP", () => {
 		expect(response.status).toBe(400);
 	});
 
-	it("authenticates API keys through the identity directory and treats a refused key as unauthenticated", async () => {
-		const asked: string[] = [];
-		const authenticate = apiKeyAuthenticator({
-			async authenticateApiKey(ctx, secret) {
-				expect(ctx.actor.kind).toBe("system");
-				asked.push(secret);
-				if (secret === "hk_good") return supervisor;
-				throw new HarbourError("forbidden", "The API key is not valid");
+	it("answers 403 when the authenticator refuses the organisation, without saying more", async () => {
+		const api = createSessionApi({
+			...setUp().memory,
+			authenticator: {
+				authenticate: async () => {
+					throw authenticationError("organisation", "Not in org-secret-name");
+				},
 			},
 		});
-		const withKey = (key: string) =>
-			new Request("https://harbour.test/v1/sessions", { headers: { authorization: `Bearer ${key}` } });
-		expect(await authenticate(withKey("hk_good"))).toEqual(supervisor);
-		expect(await authenticate(withKey("hk_bad"))).toBeUndefined();
-		expect(await authenticate(new Request("https://harbour.test/v1/sessions"))).toBeUndefined();
-		expect(asked).toEqual(["hk_good", "hk_bad"]);
+		const response = await api.fetch(new Request("https://harbour.test/v1/sessions"));
+		expect(response.status).toBe(403);
+		expect(response.headers.get("www-authenticate")).toBeNull();
+		expect(await response.text()).not.toContain("org-secret-name");
 	});
 
 	it("streams hello, a snapshot with its cursor as the event ID and ready, then resumes from Last-Event-ID", async () => {
@@ -354,7 +353,7 @@ describe("requests that go away", () => {
 			directory: {} as never,
 			profiles: {} as never,
 			hostTools: {} as never,
-			authenticate: staticTokenAuthenticator({ supervisor }),
+			authenticator: staticTokenAuthenticator({ supervisor }),
 			keepAliveMs: 5,
 		});
 
