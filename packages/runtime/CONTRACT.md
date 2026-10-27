@@ -89,10 +89,29 @@ see.
   session is closed".
 - "project access: a viewer on the project reads its sessions but cannot change them".
 
+## The runtime and its store
+
+`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, hostHandler, pageSize })`
+from `@harbour/runtime/core` is the runtime every target runs. A target gives it two things:
+
+- `store`, a `SessionStore` (`@harbour/runtime/store`): the directory of sessions (each with the profile it was created
+  with, its sequence, abort count and whether it is closed), agent profiles, submissions and host registrations.
+  `createMemorySessionStore()` keeps them in maps; `createSqlSessionStore(db, { prefix })` from `@harbour/runtime/sql`
+  keeps them in any database behind chord's `SqliteDatabase` facade: Node's SQLite, a Durable Object's SQLite, or
+  Postgres through the self-hosted target's translation of the SQLite dialect.
+- `storage(record)`, which opens a session's Pi Durable storage. `sqlPiStorage(db, sessionId)` puts it in the same
+  database under the session's own table prefix (`pi_<uuid without dashes>_`).
+
+Sessions open on first use. A runtime opened on a store that already holds sessions reopens each one when it is next
+used: its profile, transcript, submissions and host tools carry on, and `resume()` lets work left in its storage
+continue. A host registration made in this process (`register` with a handler) offers its tools only while its handler
+lives; one stored with a callback is served through `hostHandler` in any process.
+
 ## The in-memory implementation
 
 `createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@harbour/runtime/memory`
-opens one Harness per session on Pi Durable's `MemoryStorage`. The profile's prompt layers become one system prompt
+is `createSessionRuntime` over `createMemorySessionStore()`, with one Harness per session on Pi Durable's
+`MemoryStorage`. The profile's prompt layers become one system prompt
 section, and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
 placed as a `harbour.user` entry recording how it was sent. `ConversationProjector` (`project.ts`) diffs Pi's committed
 view into protocol ops on a `createMemorySessionStream`; status is `running` while Pi has a run, `failed` after a model
