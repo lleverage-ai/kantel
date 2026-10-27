@@ -36,6 +36,7 @@ import {
 	createProjectAccess,
 	HarbourError,
 	type HostToolBridge,
+	type HostToolDefinition,
 	type HostToolHandler,
 	type IdentityDirectory,
 	type ModelChoice,
@@ -67,7 +68,7 @@ import {
 	type ResolvedModel,
 	runResultOf,
 } from "./index.ts";
-import type { SessionStore, StoredHost, StoredSession } from "./store.ts";
+import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
 
 export interface SessionRuntimeOptions {
 	/** Directory, profiles, submissions and host registrations. */
@@ -101,6 +102,8 @@ export interface SessionRuntimeOptions {
 	readonly hostHandler?: (host: StoredHost) => HostToolHandler | undefined;
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
+	/** Told of each session `resume()` could not open. Default: ignored. */
+	readonly onResumeError?: (sessionId: SessionId, error: unknown) => void;
 }
 
 export interface SessionRuntimeService {
@@ -115,8 +118,44 @@ export interface SessionRuntimeService {
 	readonly sessionEnd: SessionEndHook;
 	/** The project-access check over this runtime's sessions, when `identity` was given; components can share it. */
 	readonly access?: ProjectAccess;
+	/**
+	 * Host registrations kept in the store with their callback, so they outlive this process: a runtime opened later on
+	 * the same store serves them through `hostHandler`.
+	 */
+	readonly hosts: DurableHosts;
+	/**
+	 * Opens every session a previous process left mid-run (running or waiting in the directory), so its work carries on
+	 * from its last commit without waiting for someone to touch the session. Call it once after start; says how many it
+	 * opened. A session that fails to open is reported to `onResumeError` and skipped.
+	 */
+	resume(): Promise<number>;
 	/** Closes every open session's Harness. Their work stays in storage for a runtime that opens them again. */
 	close(): Promise<void>;
+}
+
+export interface DurableHostRegistration {
+	/** Names this registration: removing it needs the name, so a stale holder cannot remove its replacement. */
+	readonly registration: string;
+}
+
+/** Host registrations whose tools are served over a callback, stored so they survive a restart. */
+export interface DurableHosts {
+	/**
+	 * Registers (or replaces) the host's tools, served over `callback`. The same checks as `HostToolBridge.register`.
+	 * `owner` names who registered it; only the same owner may remove it.
+	 */
+	register(
+		ctx: CallContext,
+		hostId: string,
+		tools: readonly HostToolDefinition[],
+		callback: HostCallback,
+		owner: string,
+	): Promise<DurableHostRegistration>;
+	/**
+	 * Removes the registration if it is still the host's current one and `owner` made it. `not_found` when it is not
+	 * (it was replaced, or never was); `forbidden` when someone else made it.
+	 */
+	remove(ctx: CallContext, hostId: string, registration: string, owner: string): Promise<void>;
 }
 
 interface OpenSession {
@@ -807,37 +846,72 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		},
 	};
 
+	/**
+	 * Stores a registration that replaces the host's last, after the checks: unique tool names, and operator on the
+	 * project the call names (or across the organisation) and on the scope of the registration it replaces, so no one
+	 * takes over another project's tools.
+	 */
+	const putRegistration = async (
+		ctx: CallContext,
+		hostId: string,
+		tools: readonly HostToolDefinition[],
+		serve: { readonly handler: HostToolHandler } | { readonly callback: HostCallback; readonly owner: string },
+	): Promise<string> => {
+		const names = new Set<string>();
+		for (const tool of tools) {
+			if (tool.name === "" || names.has(tool.name)) {
+				throw new HarbourError("invalid", `Tool names must be unique and not empty: "${tool.name}"`);
+			}
+			names.add(tool.name);
+		}
+		const existing = await store.host(ctx.organisationId, hostId);
+		for (const projectId of new Set([ctx.projectId, ...(existing === undefined ? [] : [existing.projectId])])) {
+			await check(ctx, {
+				...(projectId === undefined ? {} : { projectId }),
+				needed: "operator",
+				operation: "session.hostTools.register",
+				subject: { kind: "session.host", id: hostId },
+			});
+		}
+		const registration = crypto.randomUUID();
+		if ("handler" in serve) localHandlers.set(registration, serve.handler);
+		if (existing !== undefined) localHandlers.delete(existing.registration);
+		await store.putHost({
+			organisationId: ctx.organisationId,
+			hostId,
+			tools: [...tools],
+			registration,
+			...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+			...("callback" in serve ? { callback: serve.callback, owner: serve.owner } : {}),
+		});
+		await refreshHostTools(ctx.organisationId, hostId);
+		return registration;
+	};
+
+	const hosts: DurableHosts = {
+		async register(ctx, hostId, tools, callback, owner) {
+			return { registration: await putRegistration(ctx, hostId, tools, { callback, owner }) };
+		},
+		async remove(ctx, hostId, registration, owner) {
+			const current = await store.host(ctx.organisationId, hostId);
+			// A stale holder (its registration since replaced) finds nothing of its own to remove.
+			if (current === undefined || current.registration !== registration) {
+				throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+			}
+			if (current.owner !== owner) {
+				throw new HarbourError("forbidden", "Only whoever registered a host may remove it");
+			}
+			if (!(await store.deleteHost(ctx.organisationId, hostId, registration))) {
+				throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+			}
+			localHandlers.delete(registration);
+			await refreshHostTools(ctx.organisationId, hostId);
+		},
+	};
+
 	const hostTools: HostToolBridge = {
 		async register(ctx, hostId, tools, handler) {
-			const names = new Set<string>();
-			for (const tool of tools) {
-				if (tool.name === "" || names.has(tool.name)) {
-					throw new HarbourError("invalid", `Tool names must be unique and not empty: "${tool.name}"`);
-				}
-				names.add(tool.name);
-			}
-			// A host registers for the project its call names, or across the organisation. Replacing a host registered
-			// for another scope needs the same there, so no one takes over another project's tools.
-			const existing = await store.host(ctx.organisationId, hostId);
-			for (const projectId of new Set([ctx.projectId, ...(existing === undefined ? [] : [existing.projectId])])) {
-				await check(ctx, {
-					...(projectId === undefined ? {} : { projectId }),
-					needed: "operator",
-					operation: "session.hostTools.register",
-					subject: { kind: "session.host", id: hostId },
-				});
-			}
-			const registration = crypto.randomUUID();
-			localHandlers.set(registration, handler);
-			if (existing !== undefined) localHandlers.delete(existing.registration);
-			await store.putHost({
-				organisationId: ctx.organisationId,
-				hostId,
-				tools: [...tools],
-				registration,
-				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
-			});
-			await refreshHostTools(ctx.organisationId, hostId);
+			const registration = await putRegistration(ctx, hostId, tools, { handler });
 			return {
 				async close() {
 					localHandlers.delete(registration);
@@ -866,8 +940,23 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		directory,
 		profiles,
 		hostTools,
+		hosts,
 		sessionEnd: ends.hook,
 		...(access === undefined ? {} : { access }),
+		async resume() {
+			let resumed = 0;
+			for (const stored of await store.openSessions()) {
+				const status = stored.record.status;
+				if (status !== "running" && status !== "waiting") continue;
+				try {
+					await ensureOpen(stored);
+					resumed += 1;
+				} catch (error) {
+					options.onResumeError?.(stored.record.id, error);
+				}
+			}
+			return resumed;
+		},
 		async close() {
 			closed = true;
 			await Promise.allSettled([...opening.values()]);
