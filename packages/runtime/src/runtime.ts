@@ -1051,11 +1051,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	let sweeping: Promise<number> | undefined;
 	/** Releases every sandbox lease past its TTL (`Sandboxes.sweep`); how many it released. Never rejects. */
 	const sweepLeases = (): Promise<number> => {
-		const sweep = sandboxes?.sweep;
-		if (sweep === undefined || closed) return Promise.resolve(0);
+		if (sandboxes?.sweep === undefined || closed) return Promise.resolve(0);
 		sweeping ??= (async () => {
 			try {
-				return (await sweep(systemContext("session"))).length;
+				// After a turn, so `sweeping` is set before the sweep can settle (one that throws at once included).
+				await undefined;
+				return (await sandboxes.sweep!(systemContext("session"))).length;
 			} catch (error) {
 				reportSweepError(error);
 				return 0;
@@ -1067,6 +1068,10 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	};
 
 	const sweepWaitMs = options.sweepWaitMs ?? 5_000;
+	// setTimeout's range: anything outside it would fire at once.
+	if (!Number.isFinite(sweepWaitMs) || sweepWaitMs < 0 || sweepWaitMs > 2_147_483_647) {
+		throw new HarbourError("invalid", "sweepWaitMs must be between 0 and 2147483647 milliseconds");
+	}
 
 	/** This process's alarm for lease expiry: a sweep every `leaseSweepMs` while it holds a session open. */
 	const leaseSweepMs = options.leaseSweepMs ?? 60_000;

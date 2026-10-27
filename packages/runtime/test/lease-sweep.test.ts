@@ -188,6 +188,38 @@ describe("lease sweeps", () => {
 		expect(sweeps).toBe(0);
 	});
 
+	it("retries after a sweep that throws at once, and calls sweep on its sandboxes", async () => {
+		class Sandboxes {
+			calls = 0;
+			async releaseSession() {}
+			sweep(): Promise<readonly never[]> {
+				this.calls += 1;
+				if (this.calls === 1) throw new Error("thrown before any promise");
+				return Promise.resolve([]);
+			}
+		}
+		const sandboxes = new Sandboxes();
+		const errors: unknown[] = [];
+		const service = createSessionRuntime({
+			store: createMemorySessionStore(),
+			storage: () => new MemoryStorage(),
+			models: createScriptedModel().models,
+			sandboxes,
+			onSweepError: (error) => errors.push(error),
+		});
+		services.push(service);
+		expect(await service.sweepLeases()).toBe(0);
+		expect(await service.sweepLeases()).toBe(0);
+		expect(sandboxes.calls).toBe(2);
+		expect(errors).toMatchObject([{ message: "thrown before any promise" }]);
+	});
+
+	it("refuses a sweep wait outside setTimeout's range", () => {
+		for (const sweepWaitMs of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31]) {
+			expect(() => setUp(async () => [], undefined, { sweepWaitMs })).toThrow(/sweepWaitMs/);
+		}
+	});
+
 	it("refuses an interval that isn't a positive number", () => {
 		for (const leaseSweepMs of [0, -5, Number.NaN]) {
 			expect(() => setUp(async () => [], leaseSweepMs)).toThrow(/leaseSweepMs/);
