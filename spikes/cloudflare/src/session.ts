@@ -51,8 +51,13 @@ type Meta = {
 	killAfterExec?: number;
 	/** Isolate generation: a new value loads a fresh Dynamic Worker. */
 	isolateGeneration?: string;
-	/** A prompted run is in progress: when the harness next settles, end the session's leases. */
-	settleOnIdle?: boolean;
+	/**
+	 * Prompted runs so far, and how many of them have had their leases ended. While `settledRuns < promptedRuns`, the
+	 * next time the harness settles ends the session's leases. Counters, not a flag, so a prompt that arrives while an
+	 * earlier run's leases are being released is not marked settled with it.
+	 */
+	promptedRuns?: number;
+	settledRuns?: number;
 };
 
 type ToolResult = { toolCallId: string; toolName: string; isError: boolean; text: string };
@@ -288,10 +293,13 @@ export class SessionDO extends DurableObject<Env> {
 		// A prompted run has settled: commit and end the session's leases (a container's changes land in the workspace
 		// here). A wake with no run (setup's, a retention timer) leaves the leases alone, so it cannot release a lease
 		// that a direct /exec is using. The flag is in storage, so a run that crashed still ends its leases on resume.
-		const settled = this.#meta();
-		if (settled?.settleOnIdle === true) {
+		const target = this.#meta()?.promptedRuns ?? 0;
+		if (target > (this.#meta()?.settledRuns ?? 0)) {
 			await sandboxes.releaseSession(this.#ctx(meta), meta.sessionId, "released");
-			this.#setMeta({ ...settled, settleOnIdle: false });
+			// Re-read: a prompt may have arrived during the release. Only the runs counted before it are settled; a later
+			// one keeps `settledRuns` below `promptedRuns`, and its own alarm ends its leases.
+			const current = this.#requireMeta();
+			this.#setMeta({ ...current, settledRuns: Math.max(current.settledRuns ?? 0, target) });
 		}
 		// Expire any lease past its TTL.
 		await sandboxes.sweep();
@@ -394,7 +402,8 @@ export class SessionDO extends DurableObject<Env> {
 			BACKGROUND_CONTEXT,
 		);
 		// Drive the run from the alarm handler, which keeps the object alive and is retried after a crash.
-		this.#setMeta({ ...this.#requireMeta(), settleOnIdle: true });
+		const current = this.#requireMeta();
+		this.#setMeta({ ...current, promptedRuns: (current.promptedRuns ?? 0) + 1 });
 		await this.ctx.storage.setAlarm(Date.now());
 		return { submissionId: submission.id };
 	}
