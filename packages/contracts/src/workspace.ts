@@ -266,8 +266,9 @@ export interface Workspaces {
 	/**
 	 * Applies changes atomically as one new version. Rejects with `conflict` when `baseVersion` is not the head, with
 	 * `refused` for any path under a mount point (and audits `workspace.write.refused`), and with `invalid` for a path
-	 * that is not a normalised relative path. When `ctx.signal` has fired by the time the head would move, rejects with
-	 * `aborted` and commits nothing.
+	 * that is not a normalised relative path. An implementation that honours cancellation (`@harbour/workspace`'s do;
+	 * the conformance suite's `cancellation` case checks it) rejects with `aborted` and commits nothing when `ctx.signal`
+	 * has fired by the time the head would move.
 	 */
 	commit(ctx: CallContext, id: WorkspaceId, request: CommitRequest): Promise<CommitResult>;
 

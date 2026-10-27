@@ -772,16 +772,30 @@ class Tiered implements TieredSandboxes {
 		row: LeaseRow,
 		request: Omit<CommitRequest, "changes"> & { readonly changes: readonly ModedChange[] },
 	): Promise<CommitResult> {
-		const fence = this.#fence(row.lease.id).signal;
-		const signal = ctx.signal === undefined ? fence : AbortSignal.any([ctx.signal, fence]);
+		const id = row.lease.id;
+		const fence = this.#fence(id).signal;
+		// The TTL passing mid-commit stops it too, even before a sweep notices: a timer on the host clock, re-armed when
+		// the lease was renewed meanwhile.
+		const ttl = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const arm = () => {
+			const current = this.#leases.get(id) ?? row;
+			const left = current.lease.expiresAt - this.#clock.now();
+			if (left <= 0) ttl.abort();
+			else timer = setTimeout(arm, left);
+		};
+		arm();
+		const signals = [fence, ttl.signal, ...(ctx.signal === undefined ? [] : [ctx.signal])];
+		const signal = AbortSignal.any(signals);
 		try {
 			return await this.#workspaces.commit({ ...ctx, signal }, row.lease.workspaceId, request);
 		} catch (error) {
-			if (isHarbourError(error, "aborted") && fence.aborted) {
-				throw new HarbourError("expired", `lease ${row.lease.id} ended before its changes were committed`);
+			if (isHarbourError(error, "aborted") && (fence.aborted || ttl.signal.aborted)) {
+				throw new HarbourError("expired", `lease ${id} ended before its changes were committed`);
 			}
-			if (isHarbourError(error, "aborted")) requireNotCancelled({ ...ctx, signal }, row.lease.id);
 			throw error;
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
 		}
 	}
 

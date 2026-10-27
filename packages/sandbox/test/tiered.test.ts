@@ -483,6 +483,26 @@ describe("tiered sandboxes: cancellation", () => {
 		expect(container.endedCalls).toEqual([{ leaseId: lease.id, discard: true }]);
 	});
 
+	it("commits nothing when the lease's TTL passes while its commit writes its objects, before any sweep", async () => {
+		const paused = gate();
+		const armed = { on: false };
+		const { sandboxes, acquire, head, clock, workspaces, workspaceId } = await setUp({
+			store: pausingTreeWrites(paused, armed),
+		});
+		const lease = await acquire("isolate", 50);
+		const before = await head();
+		armed.on = true;
+		const running = sandboxes.exec(ctx, lease.id, { command: "printf t > t.txt" });
+		await paused.reached;
+		// The fence's timer runs on real time; the manual clock says the TTL has passed when it fires.
+		clock.advance(100);
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		paused.open();
+		await expect(running).rejects.toMatchObject({ code: "expired" });
+		expect(await head()).toBe(before);
+		await expect(workspaces.read(ctx, workspaceId, "t.txt")).rejects.toMatchObject({ code: "not_found" });
+	});
+
 	it("commits nothing for an isolate command whose caller cancelled as the backend returned", async () => {
 		const controller = new AbortController();
 		const { sandboxes, acquire, head, workspaces, workspaceId } = await setUp({

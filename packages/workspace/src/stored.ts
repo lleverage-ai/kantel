@@ -105,8 +105,17 @@ export interface WorkspaceStore {
 	load(id: WorkspaceId): Promise<LoadedHead | undefined>;
 	/** Creates a workspace with its first versions (0, and 1 when seeded); false when the ID is taken. */
 	create(head: StoredHead, versions: readonly StoredVersion[]): Promise<boolean>;
-	/** Moves the head from `current` to `next` and records `version`; false when the head changed meanwhile. */
-	advance(current: LoadedHead, next: StoredHead, version: StoredVersion): Promise<boolean>;
+	/**
+	 * Moves the head from `current` to `next` and records `version`; false when the head changed meanwhile. When
+	 * `options.signal` has fired by the time the head write starts (or, in a transaction, before it commits), rejects
+	 * with `aborted` and moves nothing.
+	 */
+	advance(
+		current: LoadedHead,
+		next: StoredHead,
+		version: StoredVersion,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<boolean>;
 	/** Replaces the record without a new version (a remount); false when the head changed meanwhile. */
 	update(current: LoadedHead, next: StoredHead): Promise<boolean>;
 	/** The tree key of `version` (below the head's), null for an empty tree, undefined when the store has none. */
@@ -445,7 +454,13 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				// The last moment a cancelled caller (or an ended sandbox lease) can stop the commit: nothing refers to the
 				// objects written so far.
 				requireNotAborted(ctx);
-				if (await store.advance(head, next, { info, tree: treeKey })) break;
+				const advanced = await store.advance(
+					head,
+					next,
+					{ info, tree: treeKey },
+					ctx.signal === undefined ? undefined : { signal: ctx.signal },
+				);
+				if (advanced) break;
 				// The head changed: a commit that won is a conflict; a remount that only moved the token is retried.
 				const reloaded = await load(ctx, id);
 				if (reloaded.record.head !== request.baseVersion || attempt >= HEAD_ATTEMPTS) {
@@ -659,7 +674,8 @@ export function createMemoryWorkspaceStore(): MemoryWorkspaceStore {
 			rows.set(head.record.id, { head, revision: 1, versions: [...versions] });
 			return true;
 		},
-		async advance(head, next, version) {
+		async advance(head, next, version, options) {
+			if (options?.signal?.aborted === true) throw new HarbourError("aborted", "the commit was cancelled");
 			const row = current(head);
 			if (row === undefined) return false;
 			row.head = next;

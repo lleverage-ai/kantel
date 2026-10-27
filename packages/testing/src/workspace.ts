@@ -38,6 +38,11 @@ export interface KeyedWorkspacesLike extends Workspaces {
 export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	/** Runs the keyed cases: `subject.workspaces` must implement `ensure`. */
 	readonly keyed?: boolean;
+	/**
+	 * Runs the cancellation case: a commit whose `ctx.signal` fired commits nothing. Defaults to `keyed`, since
+	 * `@harbour/workspace`'s implementations do both and older ones (apps/selfhosted, the Cloudflare spike) neither.
+	 */
+	readonly cancellation?: boolean;
 }
 
 export type WorkspaceConformanceProvider = (
@@ -137,8 +142,44 @@ export function createWorkspaceConformance(options: {
 	provider: WorkspaceConformanceProvider;
 	projectAccess?: boolean;
 	keyed?: boolean;
+	cancellation?: boolean;
 }): readonly ConformanceCase[] {
-	return [...baseCases(options), ...(options.keyed === true ? keyedCases(options) : [])];
+	return [
+		...baseCases(options),
+		...(options.keyed === true ? keyedCases(options) : []),
+		...((options.cancellation ?? options.keyed) === true ? cancellationCases(options) : []),
+	];
+}
+
+/** A cancelled commit (a caller gone, a sandbox lease ended) leaves the head where it was. */
+function cancellationCases(options: {
+	assertions: ConformanceAssertions;
+	provider: WorkspaceConformanceProvider;
+}): ConformanceCase[] {
+	const a = options.assertions;
+	return [
+		{
+			name: "cancellation: a commit whose signal fired rejects with aborted and commits nothing",
+			run: async () => {
+				const deps = createDeps();
+				seedTenancy(deps);
+				await options.provider(deps, async ({ workspaces }) => {
+					const record = await workspaces.create(ctx, { owner });
+					const controller = new AbortController();
+					controller.abort();
+					await a.rejectsWithCode(
+						workspaces.commit({ ...ctx, signal: controller.signal }, record.id, {
+							baseVersion: record.head,
+							changes: [{ op: "put", path: "late.txt", content: "late" }],
+						}),
+						"aborted",
+					);
+					a.strictEqual((await workspaces.get(ctx, record.id)).head, record.head);
+					await a.rejectsWithCode(workspaces.read(ctx, record.id, "late.txt"), "not_found");
+				});
+			},
+		},
+	];
 }
 
 /** `ensure`: one workspace per ID, the first creation wins, and the loser is checked against the winner. */
@@ -968,6 +1009,7 @@ export function registerWorkspaceConformance(
 			provider,
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
 			...(options?.keyed === undefined ? {} : { keyed: options.keyed }),
+			...(options?.cancellation === undefined ? {} : { cancellation: options.cancellation }),
 		}),
 	);
 }
