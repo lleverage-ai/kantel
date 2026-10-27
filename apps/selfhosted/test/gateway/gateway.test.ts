@@ -86,10 +86,16 @@ test("a request whose body never finishes is cut off, but an event stream outliv
 				`POST /v1/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"pro`,
 			);
 		});
+		const watchdog = setTimeout(() => {
+			socket.destroy();
+			reject(new Error("the stalled request was never cut off"));
+		}, REQUEST_TIMEOUT_MS * 10);
 		socket.on("data", () => {});
-		socket.on("close", () => resolve(Date.now() - started));
+		socket.on("close", () => {
+			clearTimeout(watchdog);
+			resolve(Date.now() - started);
+		});
 		socket.on("error", () => {});
-		setTimeout(() => reject(new Error("the stalled request was never cut off")), REQUEST_TIMEOUT_MS * 10);
 	});
 	expect(closedAfter).toBeLessThan(REQUEST_TIMEOUT_MS * 10);
 
