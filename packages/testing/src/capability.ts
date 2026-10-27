@@ -240,6 +240,15 @@ export function createCapabilityConformance(options: {
 				data: { capability: "tool.run" },
 			});
 			await assert.rejectsWithCode(
+				registry.invoke(agent, { callId: "call-1", capability: "tool.other", args: { a: 1 } }),
+				"forbidden",
+			);
+			assert.strictEqual(
+				deps.audit.ofType("capability.call.refused").length,
+				2,
+				"refusals for two capabilities under one call ID are two rows",
+			);
+			await assert.rejectsWithCode(
 				registry.journal(operator, "call-1"),
 				"not_found",
 				"a refused call is not journalled",
@@ -305,11 +314,11 @@ export function createCapabilityConformance(options: {
 			assert.strictEqual(deps.audit.ofType("capability.call.settled").length, 1, "one settled event per call ID");
 		}),
 
-		test("replays a failed call's failure without calling the handler again", async ({ registry }) => {
+		test("replays a safe call's failure without calling the handler again", async ({ registry }) => {
 			const handler = recorder(async () => {
 				throw new Error("the upstream said no");
 			});
-			await registerAndGrant(registry, [definition("tool.run")], handler.handler);
+			await registerAndGrant(registry, [definition("tool.run", "safe")], handler.handler);
 			const call = { callId: "call-1", capability: "tool.run", args: {} };
 			const first = await registry.invoke(agent, call);
 			assert.deepEqual(first, { output: "the upstream said no", isError: true }, "a thrown handler is an error result");
@@ -318,6 +327,46 @@ export function createCapabilityConformance(options: {
 			assert.strictEqual(entry.error, "the upstream said no");
 			assert.deepEqual(await registry.invoke(agent, call), first, "the retry replays the failure");
 			assert.strictEqual(handler.calls.length, 1, "the handler ran once");
+		}),
+
+		test("leaves an unsafe call whose handler throws uncertain, refuses its retry, and lets an operator resolve it", async ({
+			registry,
+		}, deps) => {
+			const thrown = new Error("the connection dropped mid-charge");
+			const handler = recorder(async () => {
+				throw thrown;
+			});
+			await registerAndGrant(registry, [definition("payments.charge", "unsafe")], handler.handler);
+			const call = { callId: "call-1", capability: "payments.charge", args: { amount: 10 } };
+			let caught: unknown;
+			try {
+				await registry.invoke(agent, call);
+			} catch (error) {
+				caught = error;
+			}
+			assert.strictEqual(caught, thrown, "the caller gets the handler's own error");
+			const entry = await registry.journal(operator, "call-1");
+			assert.strictEqual(entry.status, "started", "the call is left uncertain");
+			assert.strictEqual(entry.result, undefined, "with no result");
+			const settled = deps.audit.ofType("capability.call.settled");
+			assert.strictEqual(settled.length, 1);
+			assert.strictEqual(settled[0]!.data?.outcome, "uncertain", "the audit says uncertain");
+			await assert.rejectsWithCode(registry.invoke(agent, call), "refused", "a retry is refused");
+			assert.strictEqual(handler.calls.length, 1, "the refused retry did not run the handler");
+			const resolution = { output: { charged: true } };
+			assert.strictEqual((await registry.resolve(operator, "call-1", resolution)).status, "resolved");
+			assert.deepEqual(await registry.invoke(agent, call), resolution, "a later retry returns the resolution");
+			assert.strictEqual(handler.calls.length, 1);
+
+			const answered = recorder(async () => ({ output: "declined", isError: true }));
+			await registerAndGrant(registry, [definition("payments.refund", "unsafe")], answered.handler);
+			const refund = await registry.invoke(agent, { callId: "call-2", capability: "payments.refund", args: {} });
+			assert.deepEqual(refund, { output: "declined", isError: true });
+			assert.strictEqual(
+				(await registry.journal(operator, "call-2")).status,
+				"committed",
+				"an unsafe handler that returns an error result is committed",
+			);
 		}),
 
 		test("treats the same call ID with other arguments or another capability as a conflict", async ({ registry }) => {
@@ -545,7 +594,9 @@ export function createCapabilityConformance(options: {
 			assert.strictEqual(handler.calls.length, 1);
 		}),
 
-		test("aborts the handler's signal when the caller's signal aborts", async ({ registry }) => {
+		test("aborts the handler's signal when the caller's signal aborts, failing a safe call and leaving an unsafe one uncertain", async ({
+			registry,
+		}) => {
 			let handlerSignal: AbortSignal | undefined;
 			const handler = recorder(
 				(_invocation, signal) =>
@@ -554,7 +605,11 @@ export function createCapabilityConformance(options: {
 						signal.addEventListener("abort", () => reject(new Error("the handler was aborted")), { once: true });
 					}),
 			);
-			await registerAndGrant(registry, [definition("tool.wait")], handler.handler);
+			await registerAndGrant(
+				registry,
+				[definition("tool.wait", "safe"), definition("tool.wait_unsafe", "unsafe")],
+				handler.handler,
+			);
 			const controller = new AbortController();
 			const caller = contextFor(agent.actor, ORG, PROJECT, { signal: controller.signal });
 			const pending = registry.invoke(caller, { callId: "call-1", capability: "tool.wait", args: {} });
@@ -563,8 +618,22 @@ export function createCapabilityConformance(options: {
 			controller.abort();
 			assert.strictEqual(handlerSignal!.aborted, true, "aborting the caller aborts the handler");
 			const result = await pending;
-			assert.strictEqual(result.isError, true, "the aborted call settles as an error");
+			assert.strictEqual(result.isError, true, "the aborted safe call settles as an error");
 			assert.strictEqual((await registry.journal(operator, "call-1")).status, "failed");
+
+			handlerSignal = undefined;
+			const unsafeController = new AbortController();
+			const unsafeCaller = contextFor(agent.actor, ORG, PROJECT, { signal: unsafeController.signal });
+			const unsafeCall = { callId: "call-2", capability: "tool.wait_unsafe", args: {} };
+			const unsafePending = registry.invoke(unsafeCaller, unsafeCall).then(
+				() => "resolved",
+				(error: unknown) => (error instanceof Error ? error.message : String(error)),
+			);
+			await eventually(() => handlerSignal !== undefined, 1_000, "the unsafe handler to start");
+			unsafeController.abort();
+			assert.strictEqual(await unsafePending, "the handler was aborted", "the caller gets the handler's error");
+			assert.strictEqual((await registry.journal(operator, "call-2")).status, "started", "the call is uncertain");
+			await assert.rejectsWithCode(registry.invoke(agent, unsafeCall), "refused", "its retry is refused");
 		}),
 	];
 }

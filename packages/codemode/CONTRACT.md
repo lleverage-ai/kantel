@@ -33,11 +33,16 @@ promise: each capability says how it may be replayed, and a call that began and 
   Agents never resolve: "refuses retrying a crashed unsafe call until an operator resolves it, and only an operator may
   resolve".
 - Only agents invoke; without a covering grant the call is `forbidden` and audited: "refuses an invoke without a
-  covering grant as forbidden and audits it".
+  covering grant as forbidden and audits it". A refusal's audit id names the session and the capability as well as
+  the call ID, so refusals for different capabilities under one call ID each keep a row (same case).
 - Grants are checked on every call, retries included: "refuses a retry with the same call ID once the grant is revoked
   or expired".
 - Committed and failed calls replay without the handler: "replays a committed call's result without calling the handler
-  again", "replays a failed call's failure without calling the handler again".
+  again", "replays a safe call's failure without calling the handler again".
+- An `unsafe` handler that throws, or is aborted, leaves the call `started` (uncertain): the caller gets the handler's
+  own error, `capability.call.settled` is audited with `outcome: "uncertain"`, a retry is `refused` and an operator
+  can resolve it. An `unsafe` handler that returns `isError: true` is still `committed`: "leaves an unsafe call whose
+  handler throws uncertain, refuses its retry, and lets an operator resolve it".
 - Same call ID, other arguments or capability: "treats the same call ID with other arguments or another capability as a
   conflict".
 - An uncertain `unsafe` call is `refused` until resolved; `safe` and `idempotent` ones rerun: "refuses retrying a
@@ -50,14 +55,15 @@ promise: each capability says how it may be replayed, and a call that began and 
   session and status".
 - Isolation: "hides another organisation's capabilities, grants and journal entries", "hides one session's journal
   entries and results from another session's agent".
-- Cancellation: "aborts the handler's signal when the caller's signal aborts".
+- Cancellation: a `safe` call aborted mid-run is `failed`, an `unsafe` one uncertain: "aborts the handler's signal
+  when the caller's signal aborts, failing a safe call and leaving an unsafe one uncertain".
 
 ## The in-memory implementation
 
 `createMemoryCapabilityRegistry({ clock?, audit?, testing? })` keeps registrations, grants and the journal in maps keyed
 by organisation. `invoke` awaits only the fingerprint, then checks the grant, the journal, the registration and the
-version and writes the `started` entry in one synchronous step. A handler throw is journalled as `failed` with
-`{ output: <message>, isError: true }`. A run that finishes after a newer run or a resolution returns the journalled
+version and writes the `started` entry in one synchronous step. A `safe` or `idempotent` handler throw is journalled
+as `failed` with `{ output: <message>, isError: true }`; an `unsafe` one leaves the entry `started` and rethrows. A run that finishes after a newer run or a resolution returns the journalled
 result instead of overwriting it. Audit event IDs are keyed by organisation and call ID, so retries never duplicate
 a row. `testing.crashBeforeCommit(callId)` makes a call run its handler and then reject with `unavailable` without
 settling, as a crash would. It leaves out durability, schema validation of arguments and results, timeouts, and
@@ -72,3 +78,5 @@ role checks beyond "not an agent".
 - A replayed committed, failed or resolved call returns its result even if the capability has since been unregistered,
   and `expectVersion` is not checked on replay.
 - `resolve` on an entry that is not `started` is `conflict`.
+- An `unsafe` handler that ignores the abort and returns a result is `committed`: only a throw makes the call
+  uncertain. Is that the intended reading of "aborted"?

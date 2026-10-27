@@ -11,6 +11,7 @@ import {
 	type BrowserSession,
 	type CallContext,
 	type Clock,
+	type GrantBrowserInput,
 	HarbourError,
 	type OrganisationId,
 	type Page,
@@ -19,7 +20,7 @@ import {
 	type SessionId,
 	systemClock,
 } from "@harbour/contracts";
-import { assertValidSite, isSupervisor, type ParentOf, siteAllowed } from "./index.ts";
+import { assertValidSite, isSupervisor, type ParentOf, siteAllowed, siteCovered } from "./index.ts";
 
 export interface MemoryBrowserOptions {
 	readonly clock?: Clock;
@@ -43,26 +44,49 @@ export interface FakeBrowserProvider {
 	opened(): readonly FakeProviderSession[];
 	/** Provider session IDs opened and not yet released. */
 	live(): readonly string[];
+	/** Makes the next `times` releases throw, leaving their sessions live. */
+	failReleases(times: number): void;
+	/** Makes the next `open` wait until the returned function is called. */
+	holdNextOpen(): () => void;
 }
 
 /** A provider that opens nothing real. Its CDP URLs are `wss://browser.invalid/<providerSessionId>`. */
 export function createFakeBrowserProvider(): FakeBrowserProvider {
 	const opened: FakeProviderSession[] = [];
 	const live = new Set<string>();
+	let releasesToFail = 0;
+	let hold: Promise<void> | undefined;
 	return {
 		provider: {
 			async open(input) {
+				const held = hold;
+				hold = undefined;
+				if (held !== undefined) await held;
 				const providerSessionId = `fake_${crypto.randomUUID()}`;
 				opened.push({ providerSessionId, providerContextId: input.providerContextId, persist: input.persist });
 				live.add(providerSessionId);
 				return { providerSessionId, cdpUrl: `wss://browser.invalid/${providerSessionId}` };
 			},
 			async release(providerSessionId) {
+				if (releasesToFail > 0) {
+					releasesToFail -= 1;
+					throw new Error(`The fake provider failed to release ${providerSessionId}`);
+				}
 				live.delete(providerSessionId);
 			},
 		},
 		opened: () => [...opened],
 		live: () => [...live],
+		failReleases(times) {
+			releasesToFail = times;
+		},
+		holdNextOpen() {
+			let release!: () => void;
+			hold = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			return release;
+		},
 	};
 }
 
@@ -86,8 +110,22 @@ interface StoredSession {
 	readonly agentId: AgentId;
 }
 
+/** A provider session to release, with what its audit rows name. */
+interface PendingRelease {
+	readonly providerSessionId: string;
+	readonly browserSessionId: string;
+	readonly organisationId: OrganisationId;
+	readonly projectId: ProjectId;
+	readonly sessionId: SessionId;
+	readonly agentId: AgentId;
+	/** Release attempts so far; each failed one is audited once. */
+	attempts: number;
+}
+
 type EndReason = NonNullable<BrowserSession["endReason"]>;
 type AgentActor = Extract<Actor, { readonly kind: "agent" }>;
+/** Why `grant` refused, as audited in `browser.grant.refused`. */
+type GrantRefusal = "own_session" | "not_supervisor" | "no_parent_grant" | "wider_than_parent";
 
 const BROKER_ACTOR: Actor = { kind: "system", component: "browser" };
 
@@ -118,6 +156,15 @@ function assertNonEmpty(value: string, label: string): void {
 	if (value.trim().length === 0) throw new HarbourError("invalid", `${label} cannot be empty`);
 }
 
+/** Whether a grant of `input` would be no wider than `parent`: persist, timeout and sites. */
+function noWiderThan(parent: BrowserGrant, input: GrantBrowserInput): boolean {
+	return (
+		(!input.persist || parent.persist) &&
+		input.timeoutMs <= parent.timeoutMs &&
+		input.allowedSites.every((site) => siteCovered(parent.allowedSites, site))
+	);
+}
+
 /**
  * The reference `Browser` broker: everything in maps. Provider context IDs stay in the context records, which only
  * humans and services can list; agents see grants and browser sessions, neither of which carries one.
@@ -134,6 +181,8 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	const sessions = new Map<string, StoredSession>();
 	/** `<organisationId> <contextId>` → the browser session holding the context's one persisting slot. */
 	const persistingSlots = new Map<string, string>();
+	/** Provider sessions whose release failed, by provider session ID; every sweep retries them. */
+	const pendingReleases = new Map<string, PendingRelease>();
 
 	const slotKey = (organisationId: OrganisationId, contextId: string) => `${organisationId} ${contextId}`;
 
@@ -142,9 +191,38 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		await audit.append([{ ...event, at: clock.now(), source: "browser" }]);
 	}
 
-	/** A retry of the same call (same `requestId`) keeps one refusal row; calls without one each get a row. */
-	function refusalId(ctx: CallContext, what: string): string {
-		return `browser:${what}:refused:${ctx.requestId ?? crypto.randomUUID()}`;
+	/**
+	 * A retry of the same call (same `requestId`) refused for the same session, operation and target keeps one row;
+	 * calls without a `requestId` each get a row.
+	 */
+	function refusalId(ctx: CallContext, operation: string, sessionId: SessionId, target: string): string {
+		return `browser:${operation}:refused:${sessionId}:${target}:${ctx.requestId ?? crypto.randomUUID()}`;
+	}
+
+	/**
+	 * Releases a provider session. A failure never reaches the caller: it is audited once per attempt as
+	 * `browser.session.release_failed` and the session waits in `pendingReleases` for the next sweep.
+	 */
+	async function release(pending: PendingRelease): Promise<void> {
+		pending.attempts += 1;
+		const attempt = pending.attempts;
+		try {
+			await provider.release(pending.providerSessionId);
+			return;
+		} catch {
+			pendingReleases.set(pending.providerSessionId, pending);
+		}
+		await emit({
+			id: `browser:session:${pending.browserSessionId}:release_failed:${attempt}`,
+			type: "browser.session.release_failed",
+			actor: BROKER_ACTOR,
+			organisationId: pending.organisationId,
+			projectId: pending.projectId,
+			sessionId: pending.sessionId,
+			agentId: pending.agentId,
+			subject: { kind: "browser.session", id: pending.browserSessionId },
+			data: { attempt },
+		});
 	}
 
 	function grantFields(grant: BrowserGrant): Pick<AuditEventInput, "projectId" | "sessionId" | "agentId"> {
@@ -161,7 +239,15 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		const key = slotKey(session.organisationId, session.contextId);
 		if (persistingSlots.get(key) === session.id) persistingSlots.delete(key);
 		return async () => {
-			await provider.release(stored.providerSessionId);
+			await release({
+				providerSessionId: stored.providerSessionId,
+				browserSessionId: session.id,
+				organisationId: session.organisationId,
+				projectId: stored.projectId,
+				sessionId: session.sessionId,
+				agentId: stored.agentId,
+				attempts: 0,
+			});
 			await emit({
 				id: `browser:session:${session.id}:closed`,
 				type: "browser.session.closed",
@@ -176,14 +262,55 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		};
 	}
 
+	/** Runs every step, each independently of the others' failures, then rethrows the first failure if any. */
 	async function runAll(work: readonly (() => Promise<void>)[]): Promise<void> {
-		for (const step of work) await step();
+		const results = await Promise.allSettled(work.map((step) => step()));
+		const failed = results.find((result) => result.status === "rejected");
+		if (failed !== undefined) throw failed.reason;
 	}
 
-	/** Closes every open browser session past its `expiresAt` as `timeout`. Runs at the start of every call. */
+	/**
+	 * Ends a grant as `revoked` or `ended` and, transitively, every active grant passed on from it, closing their open
+	 * browser sessions. Every state change happens here, synchronously; the returned work releases and audits.
+	 */
+	function endGrant(stored: StoredGrant, status: "revoked" | "ended", actor: Actor): (() => Promise<void>)[] {
+		stored.grant = { ...stored.grant, status };
+		const ended = stored.grant;
+		const endReason: EndReason = status === "revoked" ? "revoked" : "session_ended";
+		const work: (() => Promise<void>)[] = [];
+		for (const session of sessions.values()) {
+			if (session.session.grantId === ended.id && session.session.status === "open") {
+				work.push(closeSession(session, endReason, actor));
+			}
+		}
+		work.push(() =>
+			emit({
+				id: `browser:grant:${ended.id}:${status}`,
+				type: `browser.grant.${status}`,
+				actor,
+				organisationId: ended.organisationId,
+				...grantFields(ended),
+				subject: { kind: "browser.grant", id: ended.id },
+				...(ended.parentGrantId === undefined ? {} : { data: { parentGrantId: ended.parentGrantId } }),
+			}),
+		);
+		for (const child of grants.values()) {
+			if (child.grant.parentGrantId === ended.id && child.grant.status === "active") {
+				work.push(...endGrant(child, status, actor));
+			}
+		}
+		return work;
+	}
+
+	/**
+	 * Retries failed provider releases and closes every open browser session past its `expiresAt` as `timeout`. Runs
+	 * at the start of every call.
+	 */
 	async function sweep(): Promise<void> {
 		const now = clock.now();
 		const work: (() => Promise<void>)[] = [];
+		for (const pending of pendingReleases.values()) work.push(() => release(pending));
+		pendingReleases.clear();
 		for (const stored of sessions.values()) {
 			if (stored.session.status === "open" && now >= stored.session.expiresAt) {
 				work.push(closeSession(stored, "timeout", BROKER_ACTOR));
@@ -285,24 +412,24 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 
 		async grant(ctx, input) {
 			await sweep();
-			if (!isSupervisor(ctx.actor, input.sessionId, parentOf)) {
+			const refuse = async (reason: GrantRefusal, message: string): Promise<never> => {
 				await emit({
-					id: refusalId(ctx, "grant"),
+					id: refusalId(ctx, "grant", input.sessionId, `context:${input.contextId}`),
 					type: "browser.grant.refused",
 					actor: ctx.actor,
 					organisationId: ctx.organisationId,
 					projectId: input.projectId,
 					sessionId: input.sessionId,
 					agentId: input.agentId,
-					data: {
-						contextId: input.contextId,
-						reason:
-							ctx.actor.kind === "agent" && ctx.actor.sessionId === input.sessionId
-								? "An agent cannot grant a browser context to its own session"
-								: "Only a human, a service or an agent in the parent session can grant a browser context",
-					},
+					data: { contextId: input.contextId, reason },
 				});
-				throw new HarbourError("refused", "Only a supervisor can choose a browser context for a session");
+				throw new HarbourError("refused", message);
+			};
+			if (!isSupervisor(ctx.actor, input.sessionId, parentOf)) {
+				return refuse(
+					ctx.actor.kind === "agent" && ctx.actor.sessionId === input.sessionId ? "own_session" : "not_supervisor",
+					"Only a supervisor can choose a browser context for a session",
+				);
 			}
 			const context = contexts.get(input.contextId);
 			if (context === undefined || context.organisationId !== ctx.organisationId) {
@@ -316,6 +443,28 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			}
 			if (input.allowedSites.length === 0) throw new HarbourError("invalid", "A grant needs at least one site");
 			for (const site of input.allowedSites) assertValidSite(site);
+			// An agent supervisor passes on, no wider, a context it holds through an active grant of its own.
+			let parentGrant: BrowserGrant | undefined;
+			if (ctx.actor.kind === "agent") {
+				const holder = ctx.actor;
+				const held = [...grants.values()]
+					.map((stored) => stored.grant)
+					.filter(
+						(grant) =>
+							grant.organisationId === ctx.organisationId &&
+							grant.sessionId === holder.sessionId &&
+							grant.agentId === holder.agentId &&
+							grant.contextId === input.contextId &&
+							grant.status === "active",
+					);
+				if (held.length === 0) {
+					return refuse("no_parent_grant", "An agent can only pass on a browser context it holds");
+				}
+				parentGrant = held.find((grant) => noWiderThan(grant, input));
+				if (parentGrant === undefined) {
+					return refuse("wider_than_parent", "An agent cannot pass on a browser grant wider than its own");
+				}
+			}
 			let answered: StoredRequest | undefined;
 			if (input.requestId !== undefined) {
 				answered = requests.get(input.requestId);
@@ -346,6 +495,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				createdAt: clock.now(),
 				status: "active",
 				...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+				...(parentGrant === undefined ? {} : { parentGrantId: parentGrant.id }),
 			};
 			grants.set(grant.id, { grant });
 			if (answered !== undefined) answered.request = { ...answered.request, status: "granted" };
@@ -362,6 +512,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					timeoutMs: grant.timeoutMs,
 					allowedSites: [...grant.allowedSites],
 					...(grant.requestId === undefined ? {} : { requestId: grant.requestId }),
+					...(grant.parentGrantId === undefined ? {} : { parentGrantId: grant.parentGrantId }),
 				},
 			});
 			if (answered !== undefined) {
@@ -385,22 +536,8 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				throw new HarbourError("forbidden", "Only a supervisor can revoke a browser grant");
 			}
 			if (stored.grant.status !== "active") return stored.grant;
-			stored.grant = { ...stored.grant, status: "revoked" };
-			const work: (() => Promise<void>)[] = [];
-			for (const session of sessions.values()) {
-				if (session.session.grantId === grantId && session.session.status === "open") {
-					work.push(closeSession(session, "revoked", ctx.actor));
-				}
-			}
+			const work = endGrant(stored, "revoked", ctx.actor);
 			const revoked = stored.grant;
-			await emit({
-				id: `browser:grant:${grantId}:revoked`,
-				type: "browser.grant.revoked",
-				actor: ctx.actor,
-				organisationId: ctx.organisationId,
-				...grantFields(revoked),
-				subject: { kind: "browser.grant", id: grantId },
-			});
 			await runAll(work);
 			return revoked;
 		},
@@ -434,7 +571,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			if (grant.status !== "active") throw new HarbourError("expired", `Browser grant ${grant.id} is ${grant.status}`);
 			if (input.contextId !== undefined && input.contextId !== grant.contextId) {
 				await emit({
-					id: refusalId(ctx, "session"),
+					id: refusalId(ctx, "session", actor.sessionId, `grant:${grant.id}`),
 					type: "browser.session.refused",
 					actor,
 					organisationId: ctx.organisationId,
@@ -471,7 +608,15 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			const current = stored.grant;
 			if (current.status !== "active") {
 				freeSlot();
-				await provider.release(opened.providerSessionId);
+				await release({
+					providerSessionId: opened.providerSessionId,
+					browserSessionId: id,
+					organisationId: grant.organisationId,
+					projectId: grant.projectId,
+					sessionId: grant.sessionId,
+					agentId: grant.agentId,
+					attempts: 0,
+				});
 				throw new HarbourError("expired", `Browser grant ${grant.id} is ${current.status}`);
 			}
 			const openedAt = clock.now();
@@ -537,19 +682,9 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				}
 			}
 			for (const stored of grants.values()) {
-				if (stored.grant.sessionId !== sessionId || stored.grant.status !== "active") continue;
-				stored.grant = { ...stored.grant, status: "ended" };
-				const ended = stored.grant;
-				work.push(() =>
-					emit({
-						id: `browser:grant:${ended.id}:ended`,
-						type: "browser.grant.ended",
-						actor: BROKER_ACTOR,
-						organisationId: ended.organisationId,
-						...grantFields(ended),
-						subject: { kind: "browser.grant", id: ended.id },
-					}),
-				);
+				if (stored.grant.sessionId === sessionId && stored.grant.status === "active") {
+					work.push(...endGrant(stored, "ended", BROKER_ACTOR));
+				}
 			}
 			for (const stored of requests.values()) {
 				if (stored.request.sessionId === sessionId && stored.request.status === "pending") {

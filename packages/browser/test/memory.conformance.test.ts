@@ -17,5 +17,7 @@ registerBrowserConformance({ describe, expect, it }, "in-memory browser broker",
 		setParent: (child, parent) => {
 			parents.set(child, parent);
 		},
+		failReleases: (times) => fake.failReleases(times),
+		holdNextOpen: () => fake.holdNextOpen(),
 	});
 });

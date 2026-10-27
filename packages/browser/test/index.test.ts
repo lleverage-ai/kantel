@@ -1,4 +1,4 @@
-import { assertValidSite, isSupervisor, siteAllowed } from "@harbour/browser";
+import { assertValidSite, isSupervisor, siteAllowed, siteCovered } from "@harbour/browser";
 import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
 import { isHarbourError } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
@@ -33,6 +33,29 @@ describe("assertValidSite", () => {
 			expect(() => assertValidSite(site), site).toThrow();
 		}
 	});
+	it("rejects a wildcard over a single label and accepts one over two, with no public suffix list", () => {
+		for (const site of ["*.com", "*", "*.localhost"]) expect(() => assertValidSite(site), site).toThrow();
+		expect(() => assertValidSite("*.co.uk")).not.toThrow();
+	});
+});
+
+describe("siteCovered", () => {
+	const parent = ["github.com", "*.api.github.com"];
+	it("covers an exact host in the list or under one of its wildcards", () => {
+		expect(siteCovered(parent, "github.com")).toBe(true);
+		expect(siteCovered(parent, "v3.api.github.com")).toBe(true);
+		expect(siteCovered(parent, "api.github.com")).toBe(false);
+		expect(siteCovered(parent, "gitlab.com")).toBe(false);
+		expect(siteCovered(parent, "evilapi.github.com")).toBe(false);
+	});
+	it("covers a wildcard equal to or under one of its wildcards, never under an exact host", () => {
+		expect(siteCovered(parent, "*.api.github.com")).toBe(true);
+		expect(siteCovered(parent, "*.eu.api.github.com")).toBe(true);
+		expect(siteCovered(parent, "*.github.com")).toBe(false);
+		expect(siteCovered(parent, "*.evilapi.github.com")).toBe(false);
+		expect(siteCovered(["github.com"], "*.github.com")).toBe(false);
+		expect(siteCovered([], "github.com")).toBe(false);
+	});
 });
 
 describe("isSupervisor", () => {
@@ -65,6 +88,29 @@ describe("createFakeBrowserProvider", () => {
 		await fake.provider.release(opened.providerSessionId);
 		expect(fake.live()).toEqual([]);
 		expect(fake.opened()).toHaveLength(1);
+	});
+	it("fails the next releases it is told to, leaving those sessions live", async () => {
+		const fake = createFakeBrowserProvider();
+		const opened = await fake.provider.open({ providerContextId: "ctx-1", persist: false, timeoutMs: 1000 });
+		fake.failReleases(1);
+		await expect(fake.provider.release(opened.providerSessionId)).rejects.toThrow();
+		expect(fake.live()).toEqual([opened.providerSessionId]);
+		await fake.provider.release(opened.providerSessionId);
+		expect(fake.live()).toEqual([]);
+	});
+	it("holds the next open until released", async () => {
+		const fake = createFakeBrowserProvider();
+		const letOpen = fake.holdNextOpen();
+		let done = false;
+		const pending = fake.provider.open({ providerContextId: "ctx-1", persist: false, timeoutMs: 1000 }).then(() => {
+			done = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(done).toBe(false);
+		expect(fake.live()).toEqual([]);
+		letOpen();
+		await pending;
+		expect(fake.live()).toHaveLength(1);
 	});
 });
 

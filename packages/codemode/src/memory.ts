@@ -192,7 +192,8 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		message: string,
 	): Promise<never> {
 		await emit({
-			id: eventId(ctx.organisationId, input.callId, `refused:${reason}`),
+			// Session and capability too, so refusals for different capabilities or sessions under one call ID each keep a row.
+			id: eventId(ctx.organisationId, input.callId, `refused:${caller.sessionId}:${input.capability}:${reason}`),
 			type: "capability.call.refused",
 			...callFields(ctx, caller, input.callId),
 			data: { capability: input.capability, reason },
@@ -200,7 +201,10 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		throw new HarbourError(code, message, { callId: input.callId, capability: input.capability });
 	}
 
-	/** Runs the handler for a `started` entry, then settles it unless a newer run or a resolution got there first. */
+	/**
+	 * Runs the handler for a `started` entry, then settles it unless a newer run or a resolution got there first. An
+	 * `unsafe` handler that throws (aborted or not) may have run, so its entry stays `started` and the error is rethrown.
+	 */
 	async function runHandler(
 		ctx: CallContext,
 		caller: Caller,
@@ -225,9 +229,11 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		if (ctx.signal?.aborted) forwardAbort();
 		let result: CapabilityResult;
 		let error: string | undefined;
+		let thrownError: unknown;
 		try {
 			result = assertResult(await registration.handler(invocation, controller.signal), "A handler result");
 		} catch (thrown) {
+			thrownError = thrown;
 			error = thrown instanceof Error ? thrown.message : String(thrown);
 			result = { output: error, isError: true };
 		} finally {
@@ -239,6 +245,15 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		if (stored.attempt !== attempt || stored.entry.status !== "started") {
 			// A newer run or an operator settled it while this run was out: the journal holds the answer.
 			return stored.entry.result ?? result;
+		}
+		if (error !== undefined && stored.entry.replay === "unsafe") {
+			await emit({
+				id: eventId(ctx.organisationId, invocation.callId, "settled"),
+				type: "capability.call.settled",
+				...callFields(ctx, caller, invocation.callId),
+				data: { capability: invocation.capability, status: stored.entry.status, outcome: "uncertain" },
+			});
+			throw thrownError;
 		}
 		stored.entry = {
 			...stored.entry,

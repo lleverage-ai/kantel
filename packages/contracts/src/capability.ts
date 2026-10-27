@@ -79,9 +79,14 @@ export interface CapabilityResult {
 export type CapabilityHandler = (invocation: CapabilityInvocation, signal: AbortSignal) => Promise<CapabilityResult>;
 
 export type JournalStatus =
-	/** The handler has been called and has not returned. After a crash this means the call may have run. */
+	/**
+	 * Uncertain: the handler has been called and has not returned, or, for an `unsafe` capability, it threw or the call
+	 * was aborted. The call may have run.
+	 */
 	| "started"
+	/** The handler returned a result, `isError` or not. */
 	| "committed"
+	/** A `safe` or `idempotent` handler threw. */
 	| "failed"
 	/** Settled by an operator after a call that began and never committed. */
 	| "resolved";
@@ -143,7 +148,8 @@ export interface CapabilityRegistry {
 	 * Replay by call ID: a committed or failed call returns its journalled result without calling the handler again.
 	 * The same call ID with different arguments or capability is `conflict`. A call still `started`, for an `unsafe`
 	 * capability, is `refused` (it may have run; an operator resolves it); for `safe` and `idempotent` ones the handler
-	 * is called again with the same call ID.
+	 * is called again with the same call ID. An `unsafe` handler that throws, or is aborted, rejects with its error and
+	 * leaves the call `started`.
 	 */
 	invoke(ctx: CallContext, input: InvokeInput): Promise<CapabilityResult>;
 	journal(ctx: CallContext, callId: string): Promise<JournalEntry>;

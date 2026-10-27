@@ -1,6 +1,6 @@
 /**
- * Portable browser-broker logic shared by every target: site matching and the supervisor rule. No storage and no clock
- * here.
+ * Portable browser-broker logic shared by every target: site matching, site coverage and the supervisor rule. No
+ * storage and no clock here.
  */
 import { type Actor, HarbourError, type SessionId } from "@harbour/contracts";
 
@@ -9,11 +9,31 @@ export type ParentOf = (sessionId: SessionId) => SessionId | undefined;
 
 const HOST_PATTERN = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/;
 
-/** Rejects with `invalid` unless `site` is a lower-case host (`github.com`) or a leading wildcard (`*.github.com`). */
+/**
+ * Rejects with `invalid` unless `site` is a lower-case host (`github.com`) or a leading wildcard (`*.github.com`). A
+ * wildcard must sit over at least two labels, so `*.com` is invalid. There is no public suffix list, so `*.co.uk` is
+ * accepted.
+ */
 export function assertValidSite(site: string): void {
 	if (!HOST_PATTERN.test(site)) {
 		throw new HarbourError("invalid", `"${site}" is not a lower-case host or a *.host wildcard`);
 	}
+	if (site.startsWith("*.") && !site.slice(2).includes(".")) {
+		throw new HarbourError("invalid", `"${site}" is a wildcard over a single label`);
+	}
+}
+
+/**
+ * Whether `site` (a valid site) is no wider than `parentSites`. An exact host must be in the list or under one of its
+ * wildcards; a wildcard must equal one of its wildcards or sit under one.
+ */
+export function siteCovered(parentSites: readonly string[], site: string): boolean {
+	const host = site.startsWith("*.") ? site.slice(2) : site;
+	return parentSites.some((parent) => {
+		if (!parent.startsWith("*.")) return parent === site;
+		const suffix = parent.slice(1);
+		return site === parent || (host.length > suffix.length && host.endsWith(suffix));
+	});
 }
 
 /**

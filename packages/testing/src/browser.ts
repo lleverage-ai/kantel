@@ -1,8 +1,9 @@
 /**
  * Conformance suite for `Browser` (packages/contracts/src/browser.ts). Its centre is one settled rule: a browser
- * context is chosen by a supervisor (a human, a service, or an agent in the parent session) and never by the agent
- * that uses it. Every target registers it with a provider that builds a fresh broker on the suite's clock and audit
- * sink, wires `parentOf` to `setParent`, and reports which provider sessions are still live.
+ * context is chosen by a supervisor or a human and never by an agent. An agent in the parent session may only pass on,
+ * no wider, a context it already holds. Every target registers it with a provider that builds a fresh broker on the
+ * suite's clock and audit sink, wires `parentOf` to `setParent`, reports which provider sessions are still live, and
+ * can make the provider fail releases or hold an open.
  */
 import type {
 	Actor,
@@ -31,6 +32,10 @@ export interface BrowserSubject {
 	providerLive(): readonly string[];
 	/** Records `parent` as the parent session of `child`; the broker's `parentOf` must read it. */
 	setParent(child: SessionId, parent: SessionId): void;
+	/** Makes the provider's next `times` releases throw, leaving their sessions live at the provider. */
+	failReleases(times: number): void;
+	/** Makes the provider's next `open` wait until the returned function is called. */
+	holdNextOpen(): () => void;
 }
 
 export type BrowserConformanceProvider = (
@@ -43,15 +48,19 @@ const OTHER_ORG = "org-b";
 const PROJECT = "proj-a";
 const SESSION = "session-child";
 const PARENT_SESSION = "session-parent";
+const GRANDCHILD_SESSION = "session-grandchild";
 const UNRELATED_SESSION = "session-unrelated";
 const AGENT = "agent-child";
+const PARENT_AGENT = "agent-parent";
+const GRANDCHILD_AGENT = "agent-grandchild";
 /** A distinctive provider context ID; it must never appear in anything an agent sees. */
 const PROVIDER_CONTEXT_ID = "brwsr-ctx-9c41e07a-never-show-agents";
 
 const human = contextFor(actors.human("supervisor-1"), ORG, PROJECT);
 const service = contextFor(actors.service("sal", "key-1"), ORG, PROJECT);
 const agent = contextFor(actors.agent(AGENT, SESSION), ORG, PROJECT);
-const parentAgent = contextFor(actors.agent("agent-parent", PARENT_SESSION), ORG, PROJECT);
+const parentAgent = contextFor(actors.agent(PARENT_AGENT, PARENT_SESSION), ORG, PROJECT);
+const grandchildAgent = contextFor(actors.agent(GRANDCHILD_AGENT, GRANDCHILD_SESSION), ORG, PROJECT);
 const unrelatedAgent = contextFor(actors.agent("agent-unrelated", UNRELATED_SESSION), ORG, PROJECT);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 
@@ -74,6 +83,20 @@ function grantInput(contextId: string, extra: Partial<GrantBrowserInput> = {}): 
 		allowedSites: ["github.com", "*.github.com"],
 		...extra,
 	};
+}
+
+/** A human's grant of `contextId` to the parent session's agent, so it has something to pass on. */
+function grantToParent(
+	browser: Browser,
+	contextId: string,
+	extra: Partial<GrantBrowserInput> = {},
+): Promise<BrowserGrant> {
+	return browser.grant(human, grantInput(contextId, { sessionId: PARENT_SESSION, agentId: PARENT_AGENT, ...extra }));
+}
+
+/** Waits one macrotask, so every pending microtask has run and a call in flight has reached the provider. */
+function settle(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function grantFresh(
@@ -105,21 +128,58 @@ export function createBrowserConformance(options: {
 		},
 	});
 
-	/** Asserts that `ctx` granting to `sessionId` is refused, audited with the actor, and leaves no grant. */
+	/**
+	 * Asserts that `ctx` granting `input` is refused, audited with the actor (and `reason`, if given), and adds no
+	 * grant.
+	 */
 	async function assertGrantRefused(
 		browser: Browser,
 		deps: ConformanceDeps,
 		ctx: CallContext,
 		input: GrantBrowserInput,
+		reason?: string,
 	): Promise<void> {
 		const before = deps.audit.ofType("browser.grant.refused").length;
+		const grantsBefore = (await browser.listGrants(human, {})).length;
+		const createdBefore = deps.audit.ofType("browser.grant.created").length;
 		await assert.rejectsWithCode(browser.grant(ctx, input), "refused", "the grant is refused");
 		const refusals = deps.audit.ofType("browser.grant.refused");
 		assert.strictEqual(refusals.length, before + 1, "the refusal is audited");
 		assert.deepEqual(refusals.at(-1)!.actor, ctx.actor, "the refusal names the actor");
 		assert.strictEqual(refusals.at(-1)!.sessionId, input.sessionId, "the refusal names the target session");
-		assert.strictEqual((await browser.listGrants(human, {})).length, 0, "no grant exists");
-		assert.strictEqual(deps.audit.ofType("browser.grant.created").length, 0, "no grant was audited as created");
+		if (reason !== undefined) assert.strictEqual(refusals.at(-1)!.data?.reason, reason, "the refusal names why");
+		assert.strictEqual((await browser.listGrants(human, {})).length, grantsBefore, "no grant was added");
+		assert.strictEqual(
+			deps.audit.ofType("browser.grant.created").length,
+			createdBefore,
+			"no grant was audited as created",
+		);
+	}
+
+	/** Holds the provider's next open, starts `open`, ends the grant with `end` mid-open, then lets the open finish. */
+	async function assertOpenInFlightExpires(
+		subject: BrowserSubject,
+		end: (browser: Browser, grant: BrowserGrant) => Promise<unknown>,
+	): Promise<void> {
+		const { browser } = subject;
+		const { context, grant } = await grantFresh(browser, { persist: true });
+		const letOpen = subject.holdNextOpen();
+		const outcome = assert.rejectsWithCode(
+			browser.open(agent, { grantId: grant.id }),
+			"expired",
+			"the open in flight fails as expired",
+		);
+		await settle();
+		await end(browser, grant);
+		letOpen();
+		await outcome;
+		assert.strictEqual(subject.providerLive().length, 0, "nothing is live at the provider");
+		const fresh = await browser.grant(
+			human,
+			grantInput(context.id, { sessionId: UNRELATED_SESSION, agentId: "agent-unrelated", persist: true }),
+		);
+		const next = await browser.open(unrelatedAgent, { grantId: fresh.id });
+		assert.strictEqual(next.persisting, true, "the context's persisting slot is free");
 	}
 
 	return [
@@ -143,22 +203,34 @@ export function createBrowserConformance(options: {
 			await assertGrantRefused(browser, deps, agent, grantInput(context.id, { sessionId: PARENT_SESSION }));
 			const harbour = contextFor(actors.system("sweeper"), ORG, PROJECT);
 			await assertGrantRefused(browser, deps, harbour, grantInput(context.id));
+			const other = await putContext(browser, "lleverage-staging", "brwsr-ctx-other");
+			const retried = contextFor(unrelatedAgent.actor, ORG, PROJECT, { requestId: "req-shared" });
+			const before = deps.audit.ofType("browser.grant.refused").length;
+			await assert.rejectsWithCode(browser.grant(retried, grantInput(context.id)), "refused");
+			await assert.rejectsWithCode(browser.grant(retried, grantInput(other.id)), "refused");
+			assert.strictEqual(
+				deps.audit.ofType("browser.grant.refused").length,
+				before + 2,
+				"two refusals for different contexts under one request ID are two rows",
+			);
 		}),
 
-		test("lets an agent in the parent session grant a browser context to its child", async (subject, deps) => {
+		test("lets an agent in the parent session pass on a browser context it holds to its child", async (subject, deps) => {
 			const { browser } = subject;
 			const context = await putContext(browser);
 			subject.setParent(SESSION, PARENT_SESSION);
+			const parentGrant = await grantToParent(browser, context.id);
 			const grant = await browser.grant(parentAgent, grantInput(context.id));
 			assert.strictEqual(grant.status, "active");
 			assert.strictEqual(grant.sessionId, SESSION);
 			assert.strictEqual(grant.contextId, context.id);
+			assert.strictEqual(grant.parentGrantId, parentGrant.id, "the grant names the grant it was passed on from");
 			assert.deepEqual(grant.grantedBy, parentAgent.actor, "the grant names the supervising agent");
 			assert.deepEqual(
 				(await browser.listGrants(agent, {})).map((listed) => listed.id),
 				[grant.id],
 			);
-			const created = deps.audit.ofType("browser.grant.created");
+			const created = deps.audit.ofType("browser.grant.created").filter((event) => event.sessionId === SESSION);
 			assert.strictEqual(created.length, 1);
 			assert.deepEqual(created[0]!.actor, parentAgent.actor, "the audit names the supervising agent");
 			const session = await browser.open(agent, { grantId: grant.id });
@@ -178,6 +250,112 @@ export function createBrowserConformance(options: {
 			assert.strictEqual((await browser.listGrants(human, { sessionId: SESSION })).length, 2);
 			assert.strictEqual(deps.audit.ofType("browser.grant.created").length, 2);
 			assert.strictEqual(deps.audit.ofType("browser.grant.refused").length, 0);
+		}),
+
+		test("refuses an agent supervisor granting a context it holds no active grant for", async (subject, deps) => {
+			const { browser } = subject;
+			const context = await putContext(browser);
+			const other = await putContext(browser, "lleverage-staging", "brwsr-ctx-other");
+			subject.setParent(SESSION, PARENT_SESSION);
+			await assertGrantRefused(browser, deps, parentAgent, grantInput(context.id), "no_parent_grant");
+			await browser.grant(human, grantInput(context.id, { sessionId: UNRELATED_SESSION, agentId: "agent-unrelated" }));
+			await assertGrantRefused(browser, deps, parentAgent, grantInput(context.id), "no_parent_grant");
+			await browser.grant(human, grantInput(context.id, { sessionId: PARENT_SESSION, agentId: "agent-other" }));
+			await assertGrantRefused(browser, deps, parentAgent, grantInput(context.id), "no_parent_grant");
+			const held = await grantToParent(browser, other.id);
+			await assertGrantRefused(browser, deps, parentAgent, grantInput(context.id), "no_parent_grant");
+			const revoked = await grantToParent(browser, context.id);
+			await browser.revokeGrant(human, revoked.id);
+			await assertGrantRefused(browser, deps, parentAgent, grantInput(context.id), "no_parent_grant");
+			const passed = await browser.grant(parentAgent, grantInput(other.id));
+			assert.strictEqual(passed.parentGrantId, held.id, "the context it does hold can be passed on");
+		}),
+
+		test("refuses an agent supervisor passing on a grant wider than its own in persist, sites or timeout", async (subject, deps) => {
+			const { browser } = subject;
+			const context = await putContext(browser);
+			subject.setParent(SESSION, PARENT_SESSION);
+			const parentGrant = await grantToParent(browser, context.id, {
+				persist: false,
+				timeoutMs: 60_000,
+				allowedSites: ["github.com", "*.api.github.com"],
+			});
+			const wider: readonly Partial<GrantBrowserInput>[] = [
+				{ persist: true, allowedSites: ["github.com"] },
+				{ timeoutMs: 60_001, allowedSites: ["github.com"] },
+				{ allowedSites: ["github.com", "gitlab.com"] },
+				{ allowedSites: ["*.github.com"] },
+				{ allowedSites: ["api.github.com"] },
+				{ allowedSites: ["*.evilapi.github.com"] },
+			];
+			for (const extra of wider) {
+				await assertGrantRefused(browser, deps, parentAgent, grantInput(context.id, extra), "wider_than_parent");
+			}
+			const narrower = await browser.grant(
+				parentAgent,
+				grantInput(context.id, {
+					persist: false,
+					timeoutMs: 60_000,
+					allowedSites: ["github.com", "*.api.github.com", "v3.api.github.com", "*.eu.api.github.com"],
+				}),
+			);
+			assert.strictEqual(narrower.parentGrantId, parentGrant.id, "a grant no wider than the parent's is allowed");
+		}),
+
+		test("ends the grants passed on from a grant, transitively, and closes their browsers, when it is revoked or its session ends", async (subject, deps) => {
+			const { browser } = subject;
+			const context = await putContext(browser);
+			subject.setParent(SESSION, PARENT_SESSION);
+			subject.setParent(GRANDCHILD_SESSION, SESSION);
+			const passOn = async () => {
+				const parentGrant = await grantToParent(browser, context.id);
+				const childGrant = await browser.grant(parentAgent, grantInput(context.id));
+				const grandchildGrant = await browser.grant(
+					agent,
+					grantInput(context.id, { sessionId: GRANDCHILD_SESSION, agentId: GRANDCHILD_AGENT }),
+				);
+				assert.strictEqual(grandchildGrant.parentGrantId, childGrant.id);
+				const browsers = [
+					await browser.open(parentAgent, { grantId: parentGrant.id }),
+					await browser.open(agent, { grantId: childGrant.id }),
+					await browser.open(grandchildAgent, { grantId: grandchildGrant.id }),
+				];
+				return { parentGrant, passedOn: [childGrant, grandchildGrant], browsers };
+			};
+			const unrelated = await browser.grant(
+				human,
+				grantInput(context.id, { sessionId: UNRELATED_SESSION, agentId: "agent-unrelated" }),
+			);
+			const kept = await browser.open(unrelatedAgent, { grantId: unrelated.id });
+
+			const first = await passOn();
+			await browser.revokeGrant(human, first.parentGrant.id);
+			for (const grant of first.passedOn) {
+				const read = (await browser.listGrants(human, {})).find((listed) => listed.id === grant.id);
+				assert.strictEqual(read?.status, "revoked", "a grant passed on is revoked with its parent");
+			}
+			for (const opened of first.browsers) {
+				const read = await browser.get(human, opened.id);
+				assert.strictEqual(read.status, "closed");
+				assert.strictEqual(read.endReason, "revoked");
+			}
+			assert.strictEqual(subject.providerLive().length, 1, "only the unrelated browser is live");
+			assert.strictEqual(deps.audit.ofType("browser.grant.revoked").length, 3, "each revocation is audited");
+
+			const second = await passOn();
+			await browser.endSession(PARENT_SESSION, "session_ended");
+			for (const grant of second.passedOn) {
+				const read = (await browser.listGrants(human, {})).find((listed) => listed.id === grant.id);
+				assert.strictEqual(read?.status, "ended", "a grant passed on ends with its parent's session");
+			}
+			for (const opened of second.browsers) {
+				const read = await browser.get(human, opened.id);
+				assert.strictEqual(read.status, "closed");
+				assert.strictEqual(read.endReason, "session_ended");
+			}
+			assert.strictEqual(subject.providerLive().length, 1, "only the unrelated browser is live");
+			assert.strictEqual((await browser.get(human, kept.id)).status, "open", "the unrelated browser is untouched");
+			await assert.rejectsWithCode(browser.open(agent, { grantId: second.passedOn[0]!.id }), "expired");
 		}),
 
 		test("forbids an agent listing or creating browser contexts", async ({ browser }) => {
@@ -217,6 +395,7 @@ export function createBrowserConformance(options: {
 			await assertGrantRefused(browser, deps, agent, grantInput(context.id, { requestId: request.id }));
 			assert.strictEqual(deps.audit.ofType("browser.request.granted").length, 0, "a refusal answers nothing");
 			subject.setParent(SESSION, PARENT_SESSION);
+			await grantToParent(browser, context.id);
 			const grant = await browser.grant(parentAgent, grantInput(context.id, { requestId: request.id }));
 			assert.strictEqual(grant.requestId, request.id);
 			const granted = deps.audit.ofType("browser.request.granted");
@@ -368,6 +547,24 @@ export function createBrowserConformance(options: {
 			await assert.rejectsWithCode(browser.checkSite(unrelatedAgent, session.id, "https://github.com/"), "not_found");
 		}),
 
+		test("rejects a wildcard over a single label as invalid", async ({ browser }) => {
+			const context = await putContext(browser);
+			for (const site of ["*.com", "*"]) {
+				await assert.rejectsWithCode(
+					browser.grant(human, grantInput(context.id, { allowedSites: ["github.com", site] })),
+					"invalid",
+					`a grant of ${site}`,
+				);
+				await assert.rejectsWithCode(
+					browser.request(agent, { reason: "Browse", sites: [site] }),
+					"invalid",
+					`a request for ${site}`,
+				);
+			}
+			const grant = await browser.grant(human, grantInput(context.id, { allowedSites: ["*.co.uk"] }));
+			assert.deepEqual(grant.allowedSites, ["*.co.uk"], "two labels are enough: there is no public suffix list");
+		}),
+
 		test("closes a browser session past its timeout as timeout and releases it at the provider", async (subject, deps) => {
 			const { browser } = subject;
 			const { grant } = await grantFresh(browser, { timeoutMs: 30_000, persist: true });
@@ -455,6 +652,41 @@ export function createBrowserConformance(options: {
 				closed.every((event) => sameActor(event.actor, human.actor)),
 				"the closes name the revoker",
 			);
+		}),
+
+		test("fails an open in flight when its grant is revoked, releasing the browser and freeing the persisting slot", async (subject) => {
+			await assertOpenInFlightExpires(subject, (browser, grant) => browser.revokeGrant(human, grant.id));
+		}),
+
+		test("fails an open in flight when its session ends, releasing the browser and freeing the persisting slot", async (subject) => {
+			await assertOpenInFlightExpires(subject, (browser) => browser.endSession(SESSION, "session_ended"));
+		}),
+
+		test("releases each browser independently when a provider release fails, and retries the failed one on the next call", async (subject, deps) => {
+			const { browser } = subject;
+			const { grant } = await grantFresh(browser);
+			const opened = [
+				await browser.open(agent, { grantId: grant.id }),
+				await browser.open(agent, { grantId: grant.id }),
+				await browser.open(agent, { grantId: grant.id }),
+			];
+			assert.strictEqual(subject.providerLive().length, 3);
+			subject.failReleases(1);
+			await browser.endSession(SESSION, "session_ended");
+			assert.strictEqual(subject.providerLive().length, 1, "the other two are released");
+			subject.failReleases(1);
+			const theirs = await browser.listContexts(outsider);
+			assert.strictEqual(theirs.items.length, 0, "an unrelated organisation's call resolves during the failure");
+			assert.strictEqual(subject.providerLive().length, 1, "the retry during the failure fails too");
+			const failures = deps.audit.ofType("browser.session.release_failed");
+			assert.strictEqual(failures.length, 2, "each failed attempt is audited once");
+			assert.strictEqual(failures[0]!.subject?.id, failures[1]!.subject?.id, "both name the same browser session");
+			for (const session of opened) {
+				assert.strictEqual((await browser.get(agent, session.id)).status, "closed", "every record is closed");
+			}
+			assert.strictEqual(subject.providerLive().length, 0, "the next call after the failure clears releases it");
+			assert.strictEqual(deps.audit.ofType("browser.session.release_failed").length, 2, "no new failure row");
+			assert.strictEqual(deps.audit.ofType("browser.session.closed").length, 3);
 		}),
 
 		test("hides another organisation's contexts, grants and browser sessions as not found", async ({ browser }) => {

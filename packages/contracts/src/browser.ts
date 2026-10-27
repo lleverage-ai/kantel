@@ -5,7 +5,8 @@
  * only a session-scoped CDP URL, and every browser session is a lease that ends with its agent session.
  *
  * "Supervisor" means a human, a service (a host app such as Sal), or an agent acting in the parent session of the
- * session the grant is for. An agent can never grant to its own session.
+ * session the grant is for. An agent can never grant to its own session, and an agent supervisor can only pass on, no
+ * wider, a context it holds through an active grant of its own.
  */
 import type {
 	Actor,
@@ -50,6 +51,8 @@ export interface BrowserGrant {
 	readonly status: "active" | "revoked" | "ended";
 	/** Set when the grant answers an agent's request. */
 	readonly requestId?: string;
+	/** The grant this one was passed on from, when an agent supervisor granted it; it ends when that one does. */
+	readonly parentGrantId?: string;
 }
 
 /** An agent asking for a browser. It names what it needs, never a context. */
@@ -117,7 +120,10 @@ export interface Browser {
 	): Promise<BrowserRequest>;
 	/**
 	 * Grants a context to a session. Refused (`refused`, audited as `browser.grant.refused`) when the actor is an agent
-	 * that is not acting in the target session's parent, including an agent granting to its own session.
+	 * that is not acting in the target session's parent, including an agent granting to its own session. An agent in the
+	 * parent session may only pass on a context it holds through an active grant of its own (the parent grant), no wider:
+	 * `persist` only if the parent's is, a `timeoutMs` no greater, and sites the parent's cover. Revoking or ending a
+	 * grant ends every grant passed on from it, the same way.
 	 */
 	grant(ctx: CallContext, input: GrantBrowserInput): Promise<BrowserGrant>;
 	revokeGrant(ctx: CallContext, grantId: string): Promise<BrowserGrant>;
