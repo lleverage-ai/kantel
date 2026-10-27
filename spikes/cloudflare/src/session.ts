@@ -73,6 +73,8 @@ export class SessionDO extends DurableObject<Env> {
 	#opening: Promise<Harness> | undefined;
 	readonly #openedAt = Date.now();
 	#openMs: number | undefined;
+	/** A setup is in progress (it awaits R2 before it records the session). */
+	#settingUp = false;
 	readonly #leases: LeaseStore;
 	readonly #audit: AuditSink;
 
@@ -116,7 +118,13 @@ export class SessionDO extends DurableObject<Env> {
 		const row = this.ctx.storage.sql
 			.exec<{ value: string }>("SELECT value FROM harbour_meta WHERE key = 'meta'")
 			.toArray()[0];
-		return row === undefined ? undefined : (JSON.parse(row.value) as Meta);
+		if (row === undefined) return undefined;
+		const { settleOnIdle, ...meta } = JSON.parse(row.value) as Meta & { settleOnIdle?: boolean };
+		// An earlier build marked an unsettled prompted run with a flag; read it as one outstanding run.
+		if (settleOnIdle === true && meta.promptedRuns === undefined) {
+			return { ...meta, promptedRuns: (meta.settledRuns ?? 0) + 1 };
+		}
+		return meta;
 	}
 
 	#setMeta(meta: Meta): void {
@@ -354,7 +362,18 @@ export class SessionDO extends DurableObject<Env> {
 
 	async #setup(body: SetupBody) {
 		const started = performance.now();
-		if (this.#meta() !== undefined) throw new Error("session already set up");
+		if (this.#meta() !== undefined || this.#settingUp) throw new Error("session already set up");
+		// Reserved before the first await, so a second setup cannot interleave and overwrite this one's metadata (or a
+		// prompt's counters) with its own.
+		this.#settingUp = true;
+		try {
+			return await this.#initialise(body, started);
+		} finally {
+			this.#settingUp = false;
+		}
+	}
+
+	async #initialise(body: SetupBody, started: number) {
 		const sessionId = body.sessionId;
 		const workspaceId = body.workspaceId ?? `ws-${sessionId}`;
 		const scenario: Scenario = body.scenario ?? { name: "none", steps: [], finalAnswer: "ok", seed: {} };
@@ -378,7 +397,7 @@ export class SessionDO extends DurableObject<Env> {
 		this.#setMeta(meta);
 		const harness = await this.#open();
 		const conversation = await harness.createConversation({ ownership: { kind: "ownerless" } }, BACKGROUND_CONTEXT);
-		this.#setMeta({ ...meta, conversationId: conversation.id });
+		this.#setMeta({ ...this.#requireMeta(), conversationId: conversation.id });
 		return {
 			sessionId,
 			workspaceId,
