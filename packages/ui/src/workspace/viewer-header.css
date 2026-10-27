@@ -1,0 +1,74 @@
+/* The top bar of the file and note viewers: one compact row with a hairline under it, the name over its folder. */
+
+.hb-viewer-header {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	min-height: calc(var(--hb-control-md) + var(--hb-space-4) * 2);
+	padding: var(--hb-space-4) var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-viewer-back {
+	margin-left: calc(var(--hb-space-3) * -1);
+}
+
+/* The chevron points right everywhere else; mirrored, it says "back" without an arrow glyph. */
+.hb-viewer-back-icon {
+	transform: scaleX(-1);
+}
+
+/* A zero basis, so a long name truncates instead of pushing the actions off the row. */
+.hb-viewer-heading {
+	display: flex;
+	flex: 1 1 0;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-viewer-title {
+	margin: 0;
+	overflow: hidden;
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The folder and the facts side by side, separated by a gap. The folder truncates; the facts keep their width. */
+.hb-viewer-facts {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-5);
+	min-width: 0;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-viewer-facts > * {
+	flex: none;
+	white-space: nowrap;
+}
+
+.hb-viewer-facts > .hb-viewer-parent {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--hb-text-muted);
+	text-overflow: ellipsis;
+}
+
+.hb-viewer-actions {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--hb-space-2);
+	margin-right: calc(var(--hb-space-3) * -1);
+}
