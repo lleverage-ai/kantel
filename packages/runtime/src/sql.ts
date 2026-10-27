@@ -21,6 +21,7 @@ export interface SqlSessionStoreOptions {
 interface SessionRow {
 	readonly seq: number;
 	readonly closed: number;
+	readonly wake_at: number | null;
 	readonly aborts: number;
 	readonly record: string;
 	readonly profile: string;
@@ -72,9 +73,17 @@ const migrations = (p: string) => [
 			)`,
 		],
 	},
+	{
+		version: 2,
+		statements: [
+			// When the session next needs a process (`SessionStore.setWake`); null when it needs none.
+			`ALTER TABLE ${p}sessions ADD COLUMN wake_at INTEGER`,
+			`CREATE INDEX IF NOT EXISTS ${p}sessions_by_wake ON ${p}sessions (wake_at)`,
+		],
+	},
 ];
 
-const SESSION_COLUMNS = "seq, closed, aborts, record, profile";
+const SESSION_COLUMNS = "seq, closed, aborts, record, profile, wake_at";
 
 function sessionOf(row: SessionRow): StoredSession {
 	return {
@@ -83,6 +92,7 @@ function sessionOf(row: SessionRow): StoredSession {
 		sequence: Number(row.seq),
 		aborts: Number(row.aborts),
 		closed: Number(row.closed) === 1,
+		...(row.wake_at === null || row.wake_at === undefined ? {} : { wakeAt: Number(row.wake_at) }),
 	};
 }
 
@@ -195,6 +205,23 @@ export async function createSqlSessionStore(
 				`SELECT ${SESSION_COLUMNS} FROM ${p}sessions WHERE closed = 0 ORDER BY seq`,
 			);
 			return rows.map(sessionOf);
+		},
+		async setWake(sessionId, at) {
+			await db.run(`UPDATE ${p}sessions SET wake_at = ? WHERE id = ?`, at ?? null, sessionId);
+		},
+		async wakeable(before) {
+			const rows = await db.all<SessionRow>(
+				`SELECT ${SESSION_COLUMNS} FROM ${p}sessions
+				 WHERE closed = 0 AND wake_at IS NOT NULL AND wake_at <= ? ORDER BY wake_at, seq`,
+				before,
+			);
+			return rows.map(sessionOf);
+		},
+		async nextWake() {
+			const row = await db.get<{ at: number | null }>(
+				`SELECT MIN(wake_at) AS at FROM ${p}sessions WHERE closed = 0 AND wake_at IS NOT NULL`,
+			);
+			return row?.at === null || row?.at === undefined ? undefined : Number(row.at);
 		},
 		async submission(sessionId, submissionId) {
 			const row = await db.get<{ body: string; pi_id: number }>(

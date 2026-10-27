@@ -103,9 +103,14 @@ from `@harbour/runtime/core` is the runtime every target runs. A target gives it
   database under the session's own table prefix (`pi_<uuid without dashes>_`).
 
 Sessions open on first use. A runtime opened on a store that already holds sessions reopens each one when it is next
-used: its profile, transcript, submissions and host tools carry on. Call `resume()` once after start: it opens every
-session the directory shows `running` or `waiting`, and Pi Durable carries its work on from the last commit. A model
-call cut off is sent again; a host tool call cut off reruns, with the same call ID, when the tool is `replay: "safe"`,
+used: its profile, transcript, submissions and host tools carry on.
+
+Each stored session has a wake: when it next needs a process. The runtime sets it to now before it admits input or an
+abort (and refuses the input if it cannot), then keeps it to what the session's Harness says (`onWake`: right away
+while work runs, the earliest sleep while it sleeps, none once it settles), and arms a timer for each sleep in its
+process. Call `resume()` once after start, and from a target's alarm: it runs every session whose wake is due, so Pi
+Durable carries its work on from the last commit, and arms a timer for the next wake. `onWakeAt` tells a target whose
+process can be evicted when to set its alarm. A model call cut off is sent again; a host tool call cut off reruns, with the same call ID, when the tool is `replay: "safe"`,
 and otherwise the model gets an interrupted result. Two processes must not run one session's storage at once: a target
 fences its storage (self-hosted) or has one owner by construction (a Durable Object).
 
