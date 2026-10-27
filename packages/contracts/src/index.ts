@@ -5,6 +5,7 @@ export * from "./capability.ts";
 export * from "./common.ts";
 export * from "./identity.ts";
 export * from "./memory.ts";
+export * from "./models.ts";
 export * from "./sandbox.ts";
 export * from "./schedules.ts";
 export * from "./session.ts";
