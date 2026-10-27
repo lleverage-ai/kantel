@@ -41,6 +41,7 @@ x-host: &host
   environment: &host-env
     HARBOUR_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
     HARBOUR_LEASE_TTL_MS: ${HARBOUR_LEASE_TTL_MS:-10000}
+    HARBOUR_IDLE_CLOSE_MS: ${HARBOUR_IDLE_CLOSE_MS:-300000}
     S3_ENDPOINT: http://minio:9000
     S3_BUCKET: harbour
     S3_ACCESS_KEY: harbour

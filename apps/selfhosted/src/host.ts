@@ -61,6 +61,8 @@ interface OpenSession {
 	wakeTimer?: ReturnType<typeof setTimeout>;
 	/** Closes the session once it has been idle for `idleCloseMs`. */
 	idleTimer?: ReturnType<typeof setTimeout>;
+	/** When a request was last routed to this session here (epoch ms). */
+	lastUsed?: number;
 }
 
 const FAUX_STEPS = 200;
@@ -107,6 +109,7 @@ const textOf = (parts: ViewPart[] | undefined) =>
 export class SessionHost {
 	readonly #open = new Map<string, OpenSession>();
 	readonly #opening = new Map<string, Promise<OpenSession | undefined>>();
+	readonly #closing = new Map<string, Promise<void>>();
 	#takeoverTimer: ReturnType<typeof setTimeout> | undefined;
 	#stopped = false;
 	#liveness: pg.Client | undefined;
@@ -175,7 +178,13 @@ export class SessionHost {
 	/** Open the session here if its lease is free. Undefined if another live host owns it. */
 	#ensureOpen(sessionId: string): Promise<OpenSession | undefined> {
 		const open = this.#open.get(sessionId);
-		if (open !== undefined) return Promise.resolve(open);
+		if (open !== undefined) {
+			open.lastUsed = Date.now();
+			return Promise.resolve(open);
+		}
+		// Closing here (idle): reopen once its storage is closed and its lease released.
+		const closing = this.#closing.get(sessionId);
+		if (closing !== undefined) return closing.then(() => this.#ensureOpen(sessionId));
 		const pending = this.#opening.get(sessionId);
 		if (pending !== undefined) return pending;
 		const opening = this.#doOpen(sessionId).finally(() => this.#opening.delete(sessionId));
@@ -328,9 +337,17 @@ export class SessionHost {
 				Math.max(0, wake.at - Date.now()),
 			);
 		} else if (!wake.active && this.options.idleCloseMs > 0) {
-			session.idleTimer = setTimeout(() => {
-				if (live()) void this.#close(session, "idle", true);
-			}, this.options.idleCloseMs);
+			// Closes only after idleCloseMs with no request routed to the session
+			// and no work started; a request in between pushes it back.
+			const idle = () => {
+				if (!live() || session.harness.wake().active) return;
+				const wait = (session.lastUsed ?? 0) + this.options.idleCloseMs - Date.now();
+				if (wait > 0) {
+					session.idleTimer = setTimeout(idle, wait);
+					session.idleTimer.unref?.();
+				} else void this.#close(session, "idle", true);
+			};
+			session.idleTimer = setTimeout(idle, this.options.idleCloseMs);
 			session.idleTimer.unref?.();
 		}
 		await this.#fenced(
@@ -368,8 +385,16 @@ export class SessionHost {
 
 	async #close(session: OpenSession, why: string, release = false) {
 		this.#forget(session, why);
-		await session.harness.close(context).catch(() => undefined);
-		if (release) await this.leases.release(session.lease).catch(() => undefined);
+		const done = (async () => {
+			await session.harness.close(context).catch(() => undefined);
+			if (release) await this.leases.release(session.lease).catch(() => undefined);
+		})();
+		this.#closing.set(session.sessionId, done);
+		try {
+			await done;
+		} finally {
+			if (this.#closing.get(session.sessionId) === done) this.#closing.delete(session.sessionId);
+		}
 	}
 
 	/** Take over active sessions whose owner stopped renewing. */
