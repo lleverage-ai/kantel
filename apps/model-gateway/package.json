@@ -1,0 +1,30 @@
+{
+	"name": "@harbour/model-gateway",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "M1-BE9: the model gateway service. @harbour/models behind a Node http server or a Worker, reading connector keys from the vault's egress decision API",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/app.ts",
+		"./node": "./src/node.ts",
+		"./worker": "./src/worker.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@harbour/audit": "workspace:*",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/models": "workspace:*",
+		"@harbour/vault": "workspace:*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
+		"@harbour/testing": "workspace:*",
+		"@types/node": "24.19.2",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12"
+	}
+}
