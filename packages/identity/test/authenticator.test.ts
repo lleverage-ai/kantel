@@ -10,11 +10,14 @@ import {
 	createAuthenticator,
 	withAuthentication,
 } from "@harbour/identity/authenticator";
+import { cloudflareAccessProvider, oidcProvider } from "@harbour/identity/jwt";
 import { createMemoryIdentity } from "@harbour/identity/memory";
+import { createMockAccess, createMockIdp } from "@harbour/identity/testing";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { ManualClock } from "@harbour/testing/harness";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { startHttpIdp } from "./http-idp.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
 
@@ -112,6 +115,274 @@ describe("createAuthenticator with API keys", () => {
 		await expect(authenticator.authenticate(request({ authorization: "Bearer hbr_x" }))).rejects.toThrow(
 			"database down",
 		);
+	});
+});
+
+const AUDIENCE = "harbour-console";
+const TEAM = "harbour.cloudflareaccess.com";
+const AUD_TAG = "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2";
+
+type HttpIdp = Awaited<ReturnType<typeof startHttpIdp>> & { readonly clock: ManualClock };
+
+/** A tenant with Alice invited by email, the local OIDC provider over HTTP and a mock Access team, all on one clock. */
+async function signInSetup(http: HttpIdp) {
+	const setup = await tenant(http.clock);
+	const alice = await setup.identity.createUser(setup.admin, { name: "Alice", email: "Alice@Example.com" });
+	const { idp } = http;
+	const access = createMockAccess({ teamDomain: TEAM, audience: AUD_TAG, clock: setup.clock });
+	const oidc = oidcProvider({ issuer: idp.issuer, audience: AUDIENCE, clock: setup.clock });
+	const cloudflare = cloudflareAccessProvider({
+		teamDomain: TEAM,
+		audience: AUD_TAG,
+		fetch: access.fetch,
+		clock: setup.clock,
+	});
+	return { ...setup, alice, idp, access, oidc, cloudflare };
+}
+
+describe("createAuthenticator with sign-in providers", () => {
+	let http: HttpIdp;
+
+	beforeAll(async () => {
+		const clock = new ManualClock();
+		http = { ...(await startHttpIdp({ audience: AUDIENCE, clock })), clock };
+	});
+
+	afterAll(async () => {
+		await http.close();
+	});
+
+	it("signs an invited user in with an OIDC token: the first sign-in links by verified email, the next by subject", async () => {
+		const { identity, organisation, admin, alice, idp, oidc } = await signInSetup(http);
+		const authenticator = createAuthenticator({ identity, providers: [oidc] });
+
+		const first = await idp.sign({ sub: "oidc-alice", email: "alice@example.com", email_verified: true });
+		expect(await authenticator.authenticate(request({ authorization: `Bearer ${first}` }))).toEqual({
+			method: "oidc",
+			actor: { kind: "human", userId: alice.id },
+			organisationId: organisation.id,
+		});
+		expect((await identity.getUser(admin, alice.id)).externalSubject).toBe(`${idp.issuer} oidc-alice`);
+
+		const second = await idp.sign({ sub: "oidc-alice" });
+		const caller = await authenticator.authenticate(request({ authorization: `Bearer ${second}` }));
+		expect(caller.actor).toEqual({ kind: "human", userId: alice.id });
+		expect(callContextFor(caller)).toEqual({ actor: caller.actor, organisationId: organisation.id });
+	});
+
+	it("signs an invited user in with a Cloudflare Access token, linking once and then by subject", async () => {
+		const { identity, organisation, admin, alice, access, cloudflare } = await signInSetup(http);
+		const authenticator = createAuthenticator({ identity, providers: [cloudflare] });
+
+		for (const claims of [
+			{ sub: "cf-alice", email: "alice@example.com" },
+			{ sub: "cf-alice", email: "alias@example.com" },
+		]) {
+			const token = await access.sign(claims);
+			expect(await authenticator.authenticate(request({ "cf-access-jwt-assertion": token }))).toEqual({
+				method: "cloudflare_access",
+				actor: { kind: "human", userId: alice.id },
+				organisationId: organisation.id,
+			});
+		}
+		expect((await identity.getUser(admin, alice.id)).externalSubject).toBe(`https://${TEAM} cf-alice`);
+	});
+
+	it("refuses a stranger, an unverified email, a service token and tokens that do not verify, as invalid", async () => {
+		const { identity, idp, access, oidc, cloudflare, clock } = await signInSetup(http);
+		const authenticator = createAuthenticator({ identity, providers: [oidc, cloudflare] });
+		const bearer = async (claims: Record<string, unknown>, options?: { expiresInSeconds?: number }) => ({
+			authorization: `Bearer ${await idp.sign(claims, options)}`,
+		});
+		const assertion = async (claims: Record<string, unknown>) => ({
+			"cf-access-jwt-assertion": await access.sign(claims),
+		});
+		const expired = await bearer(
+			{ sub: "x", email: "alice@example.com", email_verified: true },
+			{ expiresInSeconds: 1 },
+		);
+		const cases = [
+			await bearer({ sub: "stranger", email: "stranger@example.com", email_verified: true }),
+			await bearer({ sub: "unverified", email: "alice@example.com", email_verified: false }),
+			await bearer({ sub: "wrong-audience", email: "alice@example.com", email_verified: true, aud: "other" }),
+			await assertion({ sub: "", common_name: "host.access" }),
+			await assertion({ sub: "cf-stranger", email: "stranger@example.com" }),
+		];
+		clock.advance(1000);
+		for (const [index, headers] of [...cases, expired].entries()) {
+			expect(await failureOf(authenticator.authenticate(request(headers))), `case ${index}`).toBe("invalid");
+		}
+	});
+
+	it("selects the organisation: a named one the user is in, or their only one", async () => {
+		const { identity, organisation, alice, idp, oidc } = await signInSetup(http);
+		const authenticator = createAuthenticator({ identity, providers: [oidc] });
+		const token = await idp.sign({ sub: "org-alice", email: "alice@example.com", email_verified: true });
+		const signIn = (headers: Record<string, string> = {}) =>
+			authenticator.authenticate(request({ authorization: `Bearer ${token}`, ...headers }));
+
+		expect((await signIn()).organisationId).toBe(organisation.id);
+		expect((await signIn({ "harbour-organisation": organisation.id })).organisationId).toBe(organisation.id);
+		expect(await failureOf(signIn({ "harbour-organisation": "org_elsewhere" }))).toBe("organisation");
+
+		const other = await identity.createOrganisation(bootstrap, {
+			name: "Other",
+			admin: { kind: "user", userId: alice.id },
+		});
+		expect(await failureOf(signIn())).toBe("organisation");
+		expect((await signIn({ "harbour-organisation": other.id })).organisationId).toBe(other.id);
+		expect((await signIn({ "harbour-organisation": organisation.id })).organisationId).toBe(organisation.id);
+	});
+
+	it("still takes API keys, and reads each credential with its own provider when both are configured", async () => {
+		const { identity, organisation, admin, alpha, service, alice, idp, access, oidc, cloudflare } =
+			await signInSetup(http);
+		const authenticator = createAuthenticator({ identity, providers: [cloudflare, oidc] });
+		const issued = await identity.issueApiKey(admin, { serviceId: service.id, projectIds: [alpha.id], role: "viewer" });
+
+		const key = await authenticator.authenticate(request({ authorization: `Bearer ${issued.secret}` }));
+		expect(key).toMatchObject({ method: "api_key", actor: { kind: "service", serviceId: service.id } });
+		// A host app behind Access carries an Access service token as well: its API key still decides.
+		const serviceToken = await access.sign({ sub: "", common_name: "host" });
+		const behindAccess = await authenticator.authenticate(
+			request({ authorization: `Bearer ${issued.secret}`, "cf-access-jwt-assertion": serviceToken }),
+		);
+		expect(behindAccess).toMatchObject({ method: "api_key", actor: { kind: "service", serviceId: service.id } });
+
+		const viaOidc = await idp.sign({ sub: "both-oidc", email: "alice@example.com", email_verified: true });
+		expect(await authenticator.authenticate(request({ authorization: `Bearer ${viaOidc}` }))).toEqual({
+			method: "oidc",
+			actor: { kind: "human", userId: alice.id },
+			organisationId: organisation.id,
+		});
+
+		// Alice is linked to her OIDC subject now, so an Access token with her email would not match her; Bob uses Access.
+		const bob = await identity.createUser(admin, { name: "Bob", email: "bob@example.com" });
+		const viaAccess = await access.sign({ sub: "both-cf", email: "bob@example.com" });
+		expect(await authenticator.authenticate(request({ "cf-access-jwt-assertion": viaAccess }))).toEqual({
+			method: "cloudflare_access",
+			actor: { kind: "human", userId: bob.id },
+			organisationId: organisation.id,
+		});
+
+		expect(await failureOf(authenticator.authenticate(request({})))).toBe("missing");
+		expect(await failureOf(authenticator.authenticate(request({ authorization: "Bearer hbr_unknown" })))).toBe(
+			"invalid",
+		);
+	});
+
+	it("picks between OIDC providers by the token's issuer", async () => {
+		const { identity, alice, idp, oidc, clock } = await signInSetup(http);
+		const second = createMockIdp({ issuer: "https://login.second.test", audience: AUDIENCE, clock });
+		const secondProvider = oidcProvider({ issuer: second.issuer, audience: AUDIENCE, fetch: second.fetch, clock });
+		const authenticator = createAuthenticator({ identity, providers: [oidc, secondProvider] });
+
+		const fromSecond = await second.sign({ sub: "second-alice", email: "alice@example.com", email_verified: true });
+		const caller = await authenticator.authenticate(request({ authorization: `Bearer ${fromSecond}` }));
+		expect(caller).toMatchObject({ method: "oidc", actor: { kind: "human", userId: alice.id } });
+
+		const fromFirst = await idp.sign({ sub: "first-alice" });
+		const unknownIssuer = await second.sign({ iss: "https://nobody.test" });
+		expect(await failureOf(authenticator.authenticate(request({ authorization: `Bearer ${fromFirst}` })))).toBe(
+			"invalid",
+		);
+		for (const token of [unknownIssuer, "not-a-jwt"]) {
+			expect(await failureOf(authenticator.authenticate(request({ authorization: `Bearer ${token}` })))).toBe(
+				"invalid",
+			);
+		}
+	});
+
+	it("treats a bearer JWT as invalid without an OIDC provider, and ignores an Access header without an Access provider", async () => {
+		const { identity, idp, access } = await signInSetup(http);
+		const keysOnly = createAuthenticator({ identity });
+		const token = await idp.sign({ sub: "x" });
+		expect(await failureOf(keysOnly.authenticate(request({ authorization: `Bearer ${token}` })))).toBe("invalid");
+		const assertion = await access.sign({ sub: "x", email: "alice@example.com" });
+		expect(await failureOf(keysOnly.authenticate(request({ "cf-access-jwt-assertion": assertion })))).toBe("missing");
+	});
+
+	it("needs signIn to take providers, and passes on errors that are not about the credentials", async () => {
+		const { idp, oidc } = await signInSetup(http);
+		expect(() =>
+			createAuthenticator({
+				identity: {
+					async authenticateApiKey() {
+						throw new Error("unused");
+					},
+				},
+				providers: [oidc],
+			}),
+		).toThrow(/signIn/);
+
+		const authenticator = createAuthenticator({
+			identity: {
+				async authenticateApiKey() {
+					throw new Error("unused");
+				},
+				async signIn() {
+					throw new Error("database down");
+				},
+			},
+			providers: [oidc],
+		});
+		const token = await idp.sign({ sub: "x" });
+		await expect(authenticator.authenticate(request({ authorization: `Bearer ${token}` }))).rejects.toThrow(
+			"database down",
+		);
+	});
+
+	it("passes on an identity provider that is down as unavailable, not a 401", async () => {
+		const { identity, idp } = await signInSetup(http);
+		const down = oidcProvider({
+			issuer: idp.issuer,
+			audience: AUDIENCE,
+			clock: http.clock,
+			fetch: async () => {
+				throw new TypeError("fetch failed");
+			},
+		});
+		const handler = withAuthentication(createAuthenticator({ identity, providers: [down] }), () => new Response("ok"));
+		const token = await idp.sign({ sub: "x" });
+		let thrown: unknown;
+		try {
+			await handler(request({ authorization: `Bearer ${token}` }));
+		} catch (error) {
+			thrown = error;
+		}
+		expect(isHarbourError(thrown, "unavailable")).toBe(true);
+		expect(String((thrown as Error).message)).not.toContain(token);
+	});
+
+	it("never echoes a token in an error or a response body", async () => {
+		const { identity, idp, access, oidc, cloudflare } = await signInSetup(http);
+		const authenticator = createAuthenticator({ identity, providers: [oidc, cloudflare] });
+		const handler = withAuthentication(authenticator, (_request, caller) => Response.json({ actor: caller.actor }));
+		const tokens: Record<string, string>[] = [
+			{ authorization: `Bearer ${await idp.sign({ sub: "stranger", email: "s@example.com", email_verified: true })}` },
+			{ authorization: `Bearer ${await idp.sign({ sub: "y" }, { kid: "unknown" })}` },
+			{ authorization: `Bearer ${await idp.sign({ aud: "other" })}` },
+			{ "cf-access-jwt-assertion": await access.sign({ sub: "", common_name: "host" }) },
+			{
+				authorization: `Bearer ${await idp.sign({ sub: "alice", email: "alice@example.com", email_verified: true })}`,
+				"harbour-organisation": "org_elsewhere",
+			},
+		];
+		for (const headers of tokens) {
+			const token = headers.authorization?.slice("Bearer ".length) ?? headers["cf-access-jwt-assertion"] ?? "";
+			expect(token).not.toBe("");
+			try {
+				await authenticator.authenticate(request(headers));
+			} catch (error) {
+				expect((error as Error).message).not.toContain(token);
+				expect(JSON.stringify(error)).not.toContain(token);
+			}
+			const response = await handler(request(headers));
+			expect([401, 403]).toContain(response.status);
+			const body = await response.text();
+			expect(body).not.toContain(token);
+			expect(body).not.toContain(token.split(".")[2] ?? token);
+		}
 	});
 });
 

@@ -8,10 +8,13 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
-		"./authenticator": "./src/authenticator.ts"
+		"./authenticator": "./src/authenticator.ts",
+		"./jwt": "./src/jwt.ts",
+		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@harbour/contracts": "workspace:*",
+		"jose": "6.2.13"
 	},
 	"devDependencies": {
 		"@harbour/testing": "workspace:*",
