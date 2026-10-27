@@ -168,13 +168,15 @@ export interface AuditOutbox extends AuditSink {
  *
  * - `GET /v1/audit/events?<query>` → `AuditEventsResponse`: `AuditStore.query` with the query and page in the search
  *   parameters, as `auditQueryToSearchParams` writes them and `auditQueryFromSearchParams` reads them.
- * - `GET /v1/audit/events/<id>` → `AuditEventResponse`: `AuditStore.get`, the event id URI-encoded.
+ * - `GET /v1/audit/event?id=<id>` → `AuditEventResponse`: `AuditStore.get`. The id is a search parameter, not a path
+ *   segment, because ids are chosen by sources and may be `.` or hold a `/`.
  *
  * The organisation is always the caller's. Failures answer `AuditErrorResponse` with the `HarbourError` code: 400
  * `invalid` (a malformed parameter), 401 (no or bad credentials), 403 `forbidden` (an agent, or a project the caller
  * may not view), 404 `not_found`, 503 `unavailable`.
  */
 export const AUDIT_EVENTS_PATH = "/v1/audit/events";
+export const AUDIT_EVENT_PATH = "/v1/audit/event";
 
 export interface AuditEventsResponse {
 	readonly items: readonly AuditEvent[];

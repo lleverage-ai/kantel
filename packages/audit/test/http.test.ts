@@ -1,6 +1,7 @@
 import { createAuditClient, createAuditQueryHandler } from "@harbour/audit/http";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import {
+	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
 	type AuditEventInput,
 	type AuditQuery,
@@ -111,7 +112,7 @@ async function setup() {
 			fetch: async (input, init) => handler(new Request(input, init)),
 			...(secret === undefined ? {} : { headers: () => ({ authorization: `Bearer ${secret}` }) }),
 		});
-	return { alpha, beta, alphaKey, handler, client };
+	return { alpha, beta, alphaKey, handler, client, store, event };
 }
 
 describe("the audit query API", () => {
@@ -155,6 +156,51 @@ describe("the audit query API", () => {
 		);
 		expect(post.status).toBe(405);
 		expect(post.headers.get("allow")).toBe("GET");
+	});
+
+	it("reads events whose ids are dot segments or hold a slash, and refuses an empty id", async () => {
+		const { alpha, alphaKey, client, store, event, handler } = await setup();
+		await store.append(systemContext("vault"), [
+			event(".", alpha.id, 1),
+			event("..", alpha.id, 2),
+			event("a/b?c", alpha.id, 3),
+		]);
+		const api = client(alphaKey.secret);
+		for (const id of [".", "..", "a/b?c"]) expect((await api.get(id)).id).toBe(id);
+		await expect(api.get("")).rejects.toMatchObject({ code: "invalid" });
+		const auth = { authorization: `Bearer ${alphaKey.secret}` };
+		for (const search of ["", "?id=", "?id=x&id=y", "?id=x&limit=1"]) {
+			const response = await handler(
+				new Request(`https://harbour.test${AUDIT_EVENT_PATH}${search}`, { headers: auth }),
+			);
+			expect(response.status, search).toBe(400);
+		}
+	});
+
+	it("keeps every error code the server sends", async () => {
+		for (const code of ["aborted", "expired", "refused", "exhausted", "conflict", "not_supported"] as const) {
+			const handler = createAuditQueryHandler({
+				store: {
+					async query() {
+						throw new HarbourError(code, "nope");
+					},
+					async get() {
+						throw new HarbourError(code, "nope");
+					},
+				},
+				authenticator: {
+					async authenticate() {
+						return { method: "api_key", actor: { kind: "service", serviceId: "s" }, organisationId: "o" };
+					},
+				},
+			});
+			const api = createAuditClient({
+				baseUrl: "https://harbour.test",
+				fetch: async (input, init) => handler(new Request(input, init)),
+			});
+			await expect(api.query(), code).rejects.toMatchObject({ code });
+			await expect(api.get("x"), code).rejects.toMatchObject({ code });
+		}
 	});
 
 	it("hides internal errors", async () => {

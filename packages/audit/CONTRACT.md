@@ -77,11 +77,12 @@ The audit view (M1-FE3) and host apps read the store through two `GET` routes, d
   `actorKeyId` for a service's key, `actorSessionId` for an agent), `source`, `type` (a prefix when it ends in `.`),
   `subjectKind` with `subjectId`, `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and
   `cursor`. An unknown, repeated, empty or half-given parameter is `invalid`.
-- `GET /v1/audit/events/<id>` answers `AuditEventResponse` (`{ event }`): `AuditStore.get`, the id URI-encoded.
+- `GET /v1/audit/event?id=<id>` (`AUDIT_EVENT_PATH`) answers `AuditEventResponse` (`{ event }`): `AuditStore.get`. The
+  id is a search parameter, not a path segment, because sources choose ids and one may be `.` or hold a `/`.
 - Every call goes through the deployment's `Authenticator`; the organisation is always the caller's, and the store
   decides what they see. Errors answer `{ error: { code, message } }`: 400 `invalid`, 401 `unauthenticated` (with
-  `WWW-Authenticate: Bearer`), 403 `forbidden`, 404 `not_found`, 405 for a method other than `GET`, 503
-  `unavailable`, and 500 with no detail for anything unexpected.
+  `WWW-Authenticate: Bearer`), 403 `forbidden`, 404 `not_found`, 405 for a method other than `GET`, 409 `conflict`,
+  410 `expired`, 422 `refused`, 429 `exhausted`, 499 `aborted`, 501 `not_supported`, 503 `unavailable`, and 500 with no detail for anything unexpected.
 
 `@harbour/audit/http` has the handler, `createAuditQueryHandler({ store, authenticator })`, and a client,
 `createAuditClient({ baseUrl, headers, fetch })`, whose `query` and `get` mirror the store's and reject with the

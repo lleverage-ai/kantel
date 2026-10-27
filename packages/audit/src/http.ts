@@ -3,6 +3,7 @@
  * and a client the audit view and host apps call it with. Portable: Workers, Bun and Node.
  */
 import {
+	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
 	type AuditErrorResponse,
 	type AuditEvent,
@@ -22,14 +23,21 @@ import {
 	type PageRequest,
 } from "@harbour/contracts";
 
-const STATUS: Partial<Record<ErrorCode, number>> = {
+/** Every `ErrorCode` and the status it answers with. */
+const STATUS: Record<ErrorCode, number> = {
 	invalid: 400,
 	forbidden: 403,
 	not_found: 404,
 	conflict: 409,
+	expired: 410,
+	refused: 422,
+	exhausted: 429,
+	aborted: 499,
 	not_supported: 501,
 	unavailable: 503,
 };
+
+const isErrorCode = (code: unknown): code is ErrorCode => typeof code === "string" && Object.hasOwn(STATUS, code);
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
 	return new Response(JSON.stringify(body), {
@@ -49,7 +57,7 @@ export interface AuditQueryHandlerOptions {
 }
 
 /**
- * Serves `GET /v1/audit/events` and `GET /v1/audit/events/<id>`. Every call is authenticated first; the store then
+ * Serves `GET /v1/audit/events` and `GET /v1/audit/event?id=<id>`. Every call is authenticated first; the store then
  * decides what the caller may see (agents are refused, project viewers see their projects). Unknown paths are 404,
  * other methods 405. Errors other than `HarbourError`s are 500 with no detail.
  */
@@ -57,8 +65,8 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 	return async (request) => {
 		const url = new URL(request.url);
 		const path = url.pathname;
-		const isList = path === AUDIT_EVENTS_PATH || path === `${AUDIT_EVENTS_PATH}/`;
-		const isOne = !isList && path.startsWith(`${AUDIT_EVENTS_PATH}/`);
+		const isList = path === AUDIT_EVENTS_PATH;
+		const isOne = path === AUDIT_EVENT_PATH;
 		if (!isList && !isOne) return errorResponse(404, "not_found", "No such route");
 		if (request.method !== "GET") return errorResponse(405, "invalid", "Use GET", { allow: "GET" });
 
@@ -92,15 +100,11 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 						: { items: result.items, nextCursor: result.nextCursor };
 				return json(200, body);
 			}
-			const raw = path.slice(AUDIT_EVENTS_PATH.length + 1);
-			if (raw.includes("/")) throw new HarbourError("not_found", "No such route");
-			let id: string;
-			try {
-				id = decodeURIComponent(raw);
-			} catch {
-				throw new HarbourError("invalid", "The event id is not valid URI encoding");
+			const names = [...url.searchParams.keys()];
+			const id = url.searchParams.get("id");
+			if (names.length !== 1 || names[0] !== "id" || id === null || id === "") {
+				throw new HarbourError("invalid", "This route takes exactly one parameter, a non-empty id");
 			}
-			if ([...url.searchParams.keys()].length > 0) throw new HarbourError("invalid", "This route takes no parameters");
 			const ctx = callContextFor(caller, {
 				...(requestId === undefined ? {} : { requestId }),
 				signal: request.signal,
@@ -115,7 +119,7 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 
 function failed(error: unknown): Response {
 	if (isHarbourError(error)) {
-		const status = STATUS[error.code] ?? 500;
+		const status = isErrorCode(error.code) ? STATUS[error.code] : 500;
 		return errorResponse(status, error.code, status === 500 ? "Internal error" : error.message);
 	}
 	return errorResponse(500, "internal", "Internal error");
@@ -154,7 +158,7 @@ export function createAuditClient(options: AuditClientOptions): AuditClient {
 		const error = (body as Partial<AuditErrorResponse> | undefined)?.error;
 		const message = typeof error?.message === "string" ? error.message : `HTTP ${response.status}`;
 		if (response.status === 401) throw new HarbourError("forbidden", message, { authentication: "invalid" });
-		const code = typeof error?.code === "string" && error.code in STATUS ? (error.code as ErrorCode) : "unavailable";
+		const code = isErrorCode(error?.code) ? error.code : "unavailable";
 		throw new HarbourError(code, message);
 	}
 
@@ -165,7 +169,9 @@ export function createAuditClient(options: AuditClientOptions): AuditClient {
 			return body.nextCursor === undefined ? { items: body.items } : { items: body.items, nextCursor: body.nextCursor };
 		},
 		async get(eventId, signal) {
-			const body = await call<AuditEventResponse>(`${AUDIT_EVENTS_PATH}/${encodeURIComponent(eventId)}`, signal);
+			if (typeof eventId !== "string" || eventId === "") throw new HarbourError("invalid", "An event id is needed");
+			const params = new URLSearchParams({ id: eventId }).toString();
+			const body = await call<AuditEventResponse>(`${AUDIT_EVENT_PATH}?${params}`, signal);
 			return body.event;
 		},
 	};
