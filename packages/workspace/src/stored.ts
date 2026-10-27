@@ -49,6 +49,7 @@ import { resolveSeed, type Seeders } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
+	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
 	compare,
@@ -498,13 +499,18 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			}
 		},
 
-		async export(ctx, id, prefixes) {
+		async export(ctx, id, prefixes, options) {
 			const head = await load(ctx, id);
 			await checks.requireWorkspace(ctx, head.record, "viewer", "workspace.export");
 			checkExportPrefixes(prefixes);
 			const selected = [...(await treeAt(head, undefined))]
 				.filter(([path]) => prefixes.some((prefix) => path.startsWith(prefix)))
 				.sort(([left], [right]) => compare(left, right));
+			// Sizes come from the same tree the bodies are read from, so nothing over the budget is loaded.
+			checkExportSize(
+				selected.map(([, file]) => file.size),
+				options?.maxBytes,
+			);
 			return inBatches(selected, async ([path, file]) => ({
 				path,
 				content: await readBlobObject(head.organisationId, file.digest),

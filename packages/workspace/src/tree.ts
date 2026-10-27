@@ -328,6 +328,23 @@ export function checkExportPrefixes(prefixes: readonly string[]): void {
 	}
 }
 
+/**
+ * Rejects with `refused` an export whose bodies add up to more than `maxBytes`, from sizes the tree already holds, so
+ * the check reads no body. Absent `maxBytes` allows any size.
+ */
+export function checkExportSize(sizes: Iterable<number>, maxBytes: number | undefined): void {
+	if (maxBytes === undefined) return;
+	if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new HarbourError("invalid", "maxBytes must be a size in bytes");
+	let bytes = 0;
+	for (const size of sizes) bytes += size;
+	if (bytes > maxBytes) {
+		throw new HarbourError("refused", `the export is ${bytes} bytes, over the ${maxBytes} allowed`, {
+			maxBytes,
+			bytes,
+		});
+	}
+}
+
 export function pageLimit(limit: number | undefined): number {
 	if (limit === undefined) return DEFAULT_PAGE_LIMIT;
 	if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");

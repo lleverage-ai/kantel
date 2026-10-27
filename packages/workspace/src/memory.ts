@@ -40,6 +40,7 @@ import { resolveSeed, type Seeders } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
+	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
 	compare,
@@ -360,12 +361,17 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			return state.record;
 		},
 
-		async export(ctx, id, prefixes) {
+		async export(ctx, id, prefixes, options) {
 			const state = load(ctx, id);
 			await checks.requireWorkspace(ctx, state.record, "viewer", "workspace.export");
 			checkExportPrefixes(prefixes);
+			const tree = state.versions[state.record.head]!.tree;
+			checkExportSize(
+				[...tree].filter(([path]) => prefixes.some((prefix) => path.startsWith(prefix))).map(([, file]) => file.size),
+				options?.maxBytes,
+			);
 			const files: FileContent[] = [];
-			for (const [path, file] of state.versions[state.record.head]!.tree) {
+			for (const [path, file] of tree) {
 				if (!prefixes.some((prefix) => path.startsWith(prefix))) continue;
 				files.push({ path, content: new Uint8Array(file.content), version: file.version, digest: file.digest });
 			}

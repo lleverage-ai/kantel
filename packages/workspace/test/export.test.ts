@@ -68,6 +68,24 @@ describe.each(Object.entries(subjects))("syncExport over %s workspaces", (_name,
 		expect(Object.keys(third.manifest.files).sort()).toEqual(["notes/a.md", "notes/deep/c.md"]);
 	});
 
+	it("refuses an export over maxBytes with refused and its sizes, and allows one within it", async () => {
+		const workspaces = make();
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "notes/a.md": "aaaa", "notes/b.md": "bbbb", x: "x" } }] },
+		});
+		let caught: unknown;
+		try {
+			await workspaces.export(ctx, record.id, ["notes/"], { maxBytes: 7 });
+		} catch (error) {
+			caught = error;
+		}
+		expect(isHarbourError(caught, "refused")).toBe(true);
+		expect((caught as HarbourError).details).toEqual({ maxBytes: 7, bytes: 8 });
+		expect(await workspaces.export(ctx, record.id, ["notes/"], { maxBytes: 8 })).toHaveLength(2);
+		expect(await codeOf(workspaces.export(ctx, record.id, ["notes/"], { maxBytes: -1 }))).toBe("invalid");
+	});
+
 	it("keeps earlier entries outside the prefixes it was asked for, and refuses no prefix", async () => {
 		const workspaces = make();
 		const record = await workspaces.create(ctx, {
@@ -188,6 +206,46 @@ describe("the read API's export route", () => {
 		const head = await send("?prefix=src/", "HEAD");
 		expect(head.status).toBe(200);
 		expect(head.body).toBeNull();
+	});
+
+	it("refuses an export that grew between the listing and the export, without loading its bodies", async () => {
+		let bodyReads = 0;
+		const inner = createMemoryWorkspaceStore();
+		const store = {
+			...inner,
+			getObject: async (key: string) => {
+				if (key.includes("/blobs/")) bodyReads++;
+				return inner.getObject(key);
+			},
+		};
+		const workspaces = createStoredWorkspaces({ store });
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "notes/a.md": "a" } }] },
+		});
+		const api = createWorkspaceReadApi({
+			workspaces: {
+				...workspaces,
+				// Another writer commits a large note after the listing has sized the export.
+				list: async (...args) => {
+					const page = await workspaces.list(...args);
+					const head = (await workspaces.get(ctx, record.id)).head;
+					if (head === record.head) {
+						await workspaces.commit(ctx, record.id, {
+							baseVersion: head,
+							changes: [{ op: "put", path: "notes/big.md", content: "x".repeat(64) }],
+						});
+					}
+					return page;
+				},
+			},
+			authenticate: async () => ctx,
+			maxContentBytes: 16,
+		});
+		bodyReads = 0;
+		const response = (await api(new Request(`https://harbour.test/v1/workspaces/${record.id}/export?prefix=notes/`)))!;
+		expect(response.status).toBe(413);
+		expect(bodyReads).toBe(0);
 	});
 
 	it("sizes an export across pages, for directory and partial prefixes, without listing a mount", async () => {

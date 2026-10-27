@@ -160,8 +160,16 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 			errorResponse(413, "refused", `the export is larger than the read API sends (${maxContentBytes} bytes)`);
 		// Sizes come from listings, which read no bodies, so an export over the budget is refused before it is loaded.
 		if ((await exportSize(ctx, id, prefixes)) > maxContentBytes) return tooLarge();
-		const files = await workspaces.export(ctx, id, prefixes);
-		// A commit between the listing and the export may have grown it.
+		// A commit between the listing and the export may have grown it: the export checks the budget against the tree it
+		// reads from, before loading any body.
+		let files: readonly FileContent[];
+		try {
+			files = await workspaces.export(ctx, id, prefixes, { maxBytes: maxContentBytes });
+		} catch (error) {
+			if (isHarbourError(error, "refused") && error.details?.maxBytes === maxContentBytes) return tooLarge();
+			throw error;
+		}
+		// A host whose export predates `maxBytes` loads everything; still never send more than the budget.
 		if (files.reduce((sum, file) => sum + file.content.byteLength, 0) > maxContentBytes) return tooLarge();
 		const body: ExportedFile[] = files.map((file) => ({
 			path: file.path,
