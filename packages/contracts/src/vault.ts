@@ -32,7 +32,10 @@ import type {
 export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 export const READ_METHODS: readonly HttpMethod[] = ["GET", "HEAD", "OPTIONS"];
 
-/** Where a credential may be used: one host, some methods, and paths starting with `pathPrefix`. */
+/**
+ * Where a credential may be used: one host over https, some methods, and paths under `pathPrefix`. The prefix matches
+ * whole path segments: `/repos` covers `/repos` and `/repos/x`, never `/repositories`. Plain http is never injected.
+ */
 export interface RouteScope {
 	/** Exact host name, lower case, such as `api.github.com`. */
 	readonly host: string;

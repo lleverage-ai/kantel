@@ -802,6 +802,12 @@ export function createMemoryVault(options: MemoryVaultOptions = {}): Vault {
 			const host = url.hostname.toLowerCase();
 			const path = url.pathname.length === 0 ? "/" : url.pathname;
 			const target = { host, path };
+			if (url.protocol !== "https:") {
+				return denyEgress(request, target, "Credentials are only injected over https", {
+					action: "none",
+					message: `Use https://${host}${path} instead.`,
+				});
+			}
 
 			const ceiling = ceilings.get(request.organisationId);
 			if (ceiling !== undefined && !ceiling.routes.some((route) => routeAllows(route, method, host, path))) {

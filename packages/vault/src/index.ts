@@ -94,8 +94,15 @@ export function assertValidRoute(route: RouteScope): void {
 }
 
 /** Whether `scope` allows `method` to `host` on `path`. */
+/** Whether `path` lies under `prefix`, by whole segments: `/repos` covers `/repos/x` but not `/repositories`. */
+export function pathUnder(path: string, prefix: string): boolean {
+	if (prefix === "" || prefix === "/" || path === prefix) return true;
+	const base = prefix.endsWith("/") ? prefix : `${prefix}/`;
+	return path.startsWith(base);
+}
+
 export function routeAllows(scope: RouteScope, method: HttpMethod, host: string, path: string): boolean {
-	return scope.host === host.toLowerCase() && scope.methods.includes(method) && path.startsWith(scope.pathPrefix);
+	return scope.host === host.toLowerCase() && scope.methods.includes(method) && pathUnder(path, scope.pathPrefix);
 }
 
 /** Whether everything `inner` allows, `outer` allows too. */
@@ -103,7 +110,7 @@ export function routeWithin(inner: RouteScope, outer: RouteScope): boolean {
 	return (
 		inner.host === outer.host &&
 		inner.methods.every((method) => outer.methods.includes(method)) &&
-		inner.pathPrefix.startsWith(outer.pathPrefix)
+		pathUnder(inner.pathPrefix, outer.pathPrefix)
 	);
 }
 

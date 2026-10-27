@@ -478,6 +478,8 @@ export function createVaultConformance(options: {
 				[egress("DELETE", `https://${HOST}/repos/harbour`), "another method"],
 				[egress("GET", `https://${HOST}/user`), "another path prefix"],
 				[egress("GET", `https://${HOST}/repos/../user`), "a path escaping the prefix"],
+				[egress("GET", `https://${HOST}/repositories`), "a path sharing the prefix's letters, not its segment"],
+				[egress("GET", `http://${HOST}/repos/harbour`), "plain http"],
 				[egress("GET", `https://${HOST}/repos/harbour`, { sessionId: "session-2" }), "another session"],
 				[egress("GET", `https://${HOST}/repos/harbour`, { agentId: "agent-2" }), "another agent"],
 			] as const) {
@@ -487,6 +489,15 @@ export function createVaultConformance(options: {
 				assert.ok(decision.fix !== undefined, `a fix for ${label}`);
 			}
 			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, true);
+		}),
+
+		test("matches a path prefix by whole segments", async (vault) => {
+			const item = await putGithubToken(vault);
+			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos"));
+			await vault.decide(human, approval(proposal));
+			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos`))).allow, true);
+			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repos/harbour`))).allow, true);
+			assert.strictEqual((await vault.decideEgress(egress("GET", `https://${HOST}/repositories`))).allow, false);
 		}),
 
 		test("denies egress once a grant's uses are spent", async (vault) => {
