@@ -5,7 +5,6 @@ import type { AssistantMessage, Usage } from "../pi-durable/events.ts";
 import { FixtureHost } from "../server-sim/fixture-host.ts";
 import { parseRecording, toFrames } from "../server-sim/frames.ts";
 import { Projector } from "../server-sim/project.ts";
-import { splitBlocks } from "../ui/markdown.tsx";
 import { COALESCE_MS, SessionClient, type Transport } from "./session-client.ts";
 
 const root = new URL("../../../../fixtures/", import.meta.url);
@@ -340,16 +339,4 @@ function claimingCursor(host: FixtureHost, after: string): Transport {
 	};
 }
 
-describe("splitBlocks", () => {
-	it("splits at blank lines but never inside a code fence", () => {
-		const text = "Intro\n\n```ts\nconst a = 1;\n\nconst b = 2;\n```\n\n- one\n- two";
-		expect(splitBlocks(text)).toEqual(["Intro\n", "```ts\nconst a = 1;\n\nconst b = 2;\n```\n", "- one\n- two"]);
-	});
-
-	it("keeps earlier blocks byte-identical as text streams in", () => {
-		const full = "Para one.\n\nPara two is longer.\n\n```\ncode\n```";
-		const early = splitBlocks(full.slice(0, 22));
-		const late = splitBlocks(full);
-		expect(late.slice(0, early.length - 1)).toEqual(early.slice(0, -1));
-	});
-});
+// splitBlocks moved to @harbour/ui with the Markdown component; its tests are in packages/ui/src/session/markdown.test.ts.

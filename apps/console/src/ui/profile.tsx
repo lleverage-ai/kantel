@@ -1,9 +1,10 @@
+import type { RowRenderPhase } from "@harbour/ui";
 import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
 
-// React Profiler evidence. With ?profile=1 every transcript row is wrapped in React's <Profiler>, whose onRender runs
-// only when that row's subtree actually rendered in a commit, and the counts are kept here. The panel and the
-// evidence script read them: while a long answer streams, only the streaming row (and the transcript list itself)
-// should appear. Off by default, so normal use pays nothing.
+// React Profiler evidence. With ?profile=1 the transcript list is wrapped in React's <Profiler> for its commit
+// timings, and @harbour/ui's Transcript reports every row it renders, mount or update, through onRowRender. The
+// counts are kept here. The panel and the evidence script read them: while a long answer streams, only the
+// streaming row (and the transcript list itself) should appear. Off by default, so normal use pays nothing.
 
 export const profiling = typeof location !== "undefined" && new URLSearchParams(location.search).has("profile");
 
@@ -59,6 +60,15 @@ const onRender: ProfilerOnRenderCallback = (id, phase, actualDuration, _base, _s
 	const bucket = phase === "mount" ? store.mounts : store.updates;
 	bucket[id] = (bucket[id] ?? 0) + 1;
 };
+
+/** The transcript's onRowRender while profiling; undefined otherwise, so rows report to nothing. */
+export const recordRow: ((id: string, phase: RowRenderPhase) => void) | undefined =
+	profileStore === undefined
+		? undefined
+		: (id, phase) => {
+				const bucket = phase === "mount" ? profileStore.mounts : profileStore.updates;
+				bucket[id] = (bucket[id] ?? 0) + 1;
+			};
 
 export function Profiled({ id, children }: { id: string; children: ReactNode }) {
 	if (!profiling) return children;

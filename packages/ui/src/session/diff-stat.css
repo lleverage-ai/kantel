@@ -1,0 +1,19 @@
+.hb-diff-stat {
+	display: inline-flex;
+	flex: none;
+	align-items: baseline;
+	gap: var(--hb-space-3);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+	line-height: var(--hb-leading-tight);
+	white-space: nowrap;
+}
+
+.hb-diff-stat-add {
+	color: var(--hb-diff-add);
+}
+
+.hb-diff-stat-del {
+	color: var(--hb-diff-del);
+}

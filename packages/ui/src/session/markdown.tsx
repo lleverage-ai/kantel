@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import "./markdown.css";
 
 // Incremental Markdown. A streamed answer only ever grows at its end, so the text is split into top-level blocks at
 // blank lines outside code fences, and each block is its own memoised component keyed by position: when a token
@@ -12,6 +13,16 @@ import remarkGfm from "remark-gfm";
 // Lists still render as lists, numbered ones keep their start number; reference links are rare in agent output.
 
 const plugins = [remarkGfm];
+
+// Links leave the session in a new tab, so following one never loses the reader's place in the transcript. Code
+// blocks scroll sideways rather than wrap, so they take focus for keyboard scrolling.
+const components: Components = {
+	a: ({ node: _node, ...props }) => <a {...props} className="hb-focusable" target="_blank" rel="noreferrer noopener" />,
+	pre: ({ node: _node, ...props }) => (
+		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.
+		<pre {...props} className="hb-focusable" tabIndex={0} />
+	),
+};
 
 /** Split Markdown into top-level blocks. A block ends at a blank line outside a fenced code block. */
 export function splitBlocks(text: string): string[] {
@@ -42,16 +53,20 @@ export function splitBlocks(text: string): string[] {
 
 const Block = memo(function Block({ text }: { text: string }) {
 	return (
-		<ReactMarkdown remarkPlugins={plugins} skipHtml>
+		<ReactMarkdown remarkPlugins={plugins} components={components} skipHtml>
 			{text}
 		</ReactMarkdown>
 	);
 });
 
-export function Markdown({ text }: { text: string }) {
+/**
+ * Renders Markdown (GitHub flavoured, raw HTML skipped) for the transcript. Re-parses only the last block as text
+ * streams in.
+ */
+export function Markdown({ text, className }: { text: string; className?: string }) {
 	const blocks = useMemo(() => splitBlocks(text), [text]);
 	return (
-		<div className="md">
+		<div className={`hb-markdown${className ? ` ${className}` : ""}`}>
 			{blocks.map((block, index) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional; only the last one changes while text streams.
 				<Block key={index} text={block} />

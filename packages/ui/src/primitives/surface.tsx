@@ -36,18 +36,27 @@ const noticeIcon = {
 /**
  * A one or two line message in the flow: "This tool may have partly run", "Reconnecting". For something the person
  * must decide, use a card; for a whole empty screen, EmptyState.
+ *
+ * A notice is announced when it appears (an error as an alert). Pass `announce={false}` for one that is part of a
+ * record rather than news, such as a notice in a transcript, which would otherwise be read again whenever the
+ * virtual list mounts it.
  */
 export function Notice({
 	level = "info",
 	children,
 	action,
+	announce = true,
 }: {
 	level?: NoticeLevel;
 	children: ReactNode;
 	action?: ReactNode;
+	announce?: boolean;
 }) {
 	return (
-		<div className={`hb-notice hb-notice-${level}`} role={level === "error" ? "alert" : "status"}>
+		<div
+			className={`hb-notice hb-notice-${level}`}
+			role={announce ? (level === "error" ? "alert" : "status") : undefined}
+		>
 			{noticeIcon[level]}
 			<div className="hb-notice-text">{children}</div>
 			{action === undefined ? null : <div className="hb-notice-action">{action}</div>}

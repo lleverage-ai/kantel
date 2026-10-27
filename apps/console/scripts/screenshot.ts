@@ -21,7 +21,7 @@ try {
 		["desktop", { width: 1440, height: 900 }, 1],
 		["420", { width: 420, height: 860 }, 2],
 	] as const) {
-		const page = await browser.newPage({ viewport, deviceScaleFactor: scale, colorScheme: "light" });
+		const page = await browser.newPage({ viewport, deviceScaleFactor: scale, colorScheme: "dark" });
 		await page.goto(url);
 		await page.waitForTimeout(Number(values.wait));
 		await page.screenshot({ path: `${prefix}-${name}.png` });

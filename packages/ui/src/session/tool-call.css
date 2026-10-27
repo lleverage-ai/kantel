@@ -1,0 +1,181 @@
+/* Tool calls as quiet work-log rows (T3 Code's WorkLog): 24px rows, 13px muted labels, a 16px icon, the duration at
+   the end. The detail is a framed block of selectable mono text with a bounded height. */
+
+.hb-tool {
+	/* The tallest an argument or output block grows before it scrolls. Candidate token: --hb-tool-output-height. */
+	--hb-tool-output-height: calc(var(--hb-space-11) * 5);
+
+	min-width: 0;
+}
+
+.hb-tool-row {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	width: calc(100% + var(--hb-space-3) * 2);
+	min-width: 0;
+	min-height: var(--hb-control-xs);
+	margin: 0 calc(var(--hb-space-3) * -1);
+	padding: var(--hb-space-1) var(--hb-space-3);
+	border: 0;
+	border-radius: var(--hb-radius-sm);
+	background: none;
+	color: var(--hb-text-muted);
+	font: inherit;
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+	text-align: left;
+	cursor: pointer;
+}
+
+.hb-tool-row:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-tool-icon {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-icon-md);
+	height: var(--hb-icon-md);
+	color: var(--hb-text-faint);
+}
+
+.hb-tool-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-tool-time {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-tool-time:empty {
+	display: none;
+}
+
+.hb-tool-chevron {
+	flex: none;
+	color: var(--hb-text-faint);
+	transition:
+		transform var(--hb-duration) var(--hb-ease),
+		opacity var(--hb-duration-fast) var(--hb-ease);
+}
+
+/* With a mouse, the chevron appears on hover or focus; on touch it is always there, as the only hint of more. */
+@media (hover: hover) {
+	.hb-tool-chevron {
+		opacity: 0;
+	}
+
+	.hb-tool-open .hb-tool-chevron,
+	.hb-tool-row:hover .hb-tool-chevron,
+	.hb-tool-row:focus-visible .hb-tool-chevron {
+		opacity: 1;
+	}
+}
+
+.hb-tool-open .hb-tool-chevron {
+	transform: rotate(90deg);
+}
+
+/* Failure is said by the icon; the label stays readable at full strength. */
+.hb-tool-error .hb-tool-icon {
+	color: var(--hb-status-error);
+}
+
+.hb-tool-error .hb-tool-label {
+	color: var(--hb-text);
+}
+
+.hb-tool-interrupted .hb-tool-icon {
+	color: var(--hb-status-approval);
+}
+
+.hb-tool-detail {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	min-width: 0;
+	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
+	padding: var(--hb-space-5) var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-panel);
+}
+
+.hb-tool-error .hb-tool-detail {
+	border-color: var(--hb-status-error-line);
+}
+
+.hb-tool-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-tool-section-label {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-tool-pre {
+	max-height: var(--hb-tool-output-height);
+	margin: 0;
+	padding: var(--hb-space-4) var(--hb-space-5);
+	overflow: auto;
+	border-radius: var(--hb-radius-sm);
+	background: var(--hb-code);
+	color: var(--hb-text);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	line-height: var(--hb-leading);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	user-select: text;
+}
+
+.hb-tool-error .hb-tool-output {
+	color: var(--hb-status-error);
+}
+
+.hb-tool-empty {
+	margin: 0;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-sm);
+}
+
+/* Groups. */
+
+.hb-tool-group {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-tool-group-words {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-tool-group-summary > .hb-disclosure-detail {
+	padding: 0 0 var(--hb-space-2) var(--hb-space-7);
+}
+
+.hb-tool-group-failed {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	padding-left: var(--hb-space-7);
+}

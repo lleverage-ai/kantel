@@ -1,0 +1,147 @@
+/* The transcript: a centred reading column (--hb-content-width, as T3 Code's chat column) inside a virtualised list
+   that fills its parent. The parent gives the transcript its height. */
+
+.hb-transcript {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.hb-transcript-frame {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+}
+
+.hb-transcript-list {
+	position: absolute;
+	inset: 0;
+	overscroll-behavior: contain;
+}
+
+/* The list is focusable so the keyboard can scroll it; its ring sits inside the edge, which may be the screen's. */
+.hb-transcript-list.hb-focusable:focus-visible {
+	outline-offset: calc(var(--hb-ring) * -1);
+}
+
+.hb-transcript-row {
+	padding: var(--hb-space-2) var(--hb-space-7);
+}
+
+.hb-transcript-row-tools {
+	padding-top: var(--hb-space-1);
+	padding-bottom: var(--hb-space-1);
+}
+
+.hb-transcript-row-card {
+	padding-top: var(--hb-space-3);
+	padding-bottom: var(--hb-space-3);
+}
+
+/* virtua wraps every row in its own element, so the ends are marked explicitly, not with :first-child. */
+.hb-transcript-row-first {
+	padding-top: var(--hb-space-7);
+}
+
+.hb-transcript-turn {
+	padding-top: var(--hb-space-9);
+}
+
+.hb-transcript-column {
+	min-width: 0;
+	max-width: var(--hb-content-width);
+	margin: 0 auto;
+}
+
+.hb-transcript-end {
+	height: var(--hb-space-10);
+}
+
+/* Floating controls. These float over the list, so they get the float shadow. */
+
+.hb-transcript-older {
+	position: absolute;
+	z-index: var(--hb-z-float);
+	top: var(--hb-space-5);
+	left: 50%;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	padding: var(--hb-space-2) var(--hb-space-6);
+	transform: translateX(-50%);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-float);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	white-space: nowrap;
+}
+
+.hb-transcript-scroll-end.hb-button {
+	position: absolute;
+	z-index: var(--hb-z-float);
+	bottom: var(--hb-space-7);
+	left: 50%;
+	transform: translateX(-50%);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-float);
+	color: var(--hb-text-muted);
+}
+
+.hb-transcript-scroll-end.hb-button:hover:not(:disabled) {
+	background: var(--hb-active);
+	color: var(--hb-text);
+}
+
+/* States. */
+
+.hb-transcript-error {
+	flex: none;
+	padding: var(--hb-space-4) var(--hb-space-7) 0;
+}
+
+.hb-transcript-empty {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	justify-content: center;
+	min-height: 0;
+	padding: 0 var(--hb-space-7);
+}
+
+.hb-transcript-loading {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	padding: var(--hb-space-7);
+}
+
+.hb-transcript-skeleton-turn {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-6);
+	padding-bottom: var(--hb-space-10);
+}
+
+.hb-transcript-skeleton-user .hb-skeleton {
+	height: var(--hb-control-lg);
+	margin-left: auto;
+	border-radius: var(--hb-radius-bubble);
+}
+
+.hb-transcript-skeleton-tools {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+}
+
+@media (min-width: 900px) {
+	.hb-transcript-row,
+	.hb-transcript-error {
+		padding-left: var(--hb-space-9);
+		padding-right: var(--hb-space-9);
+	}
+}
