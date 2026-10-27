@@ -135,7 +135,42 @@ describe("the console on the session API", () => {
 		release();
 		client.markRead(away)();
 		await eventually(() => latest().every((session) => session.unread === undefined), "away read");
-		expect(client.projectOf(away)).toBe("proj-a");
+		expect(await client.projectOf(away)).toBe("proj-a");
+	});
+
+	it("marks a session unread when a whole run happens between two looks at the list", async () => {
+		const { client, create, script, memory } = await setUp();
+		const id = await create("proj-a", "Quick");
+		const states: { sessions: readonly { id: string; unread?: boolean }[] }[] = [];
+		cleanups.push(client.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.length > 0, "the first list");
+		expect(states[0]?.sessions[0]?.unread).toBeUndefined();
+		script.reply({ text: "Done already" });
+		const submitted = await memory.runtime.prompt(ctx, id, { text: "Quick one" });
+		await memory.runtime.wait(ctx, id, submitted.id);
+		const after = states.length;
+		await eventually(() => states.length > after, "the next list");
+		expect(states.at(-1)?.sessions[0]?.unread).toBe(true);
+	});
+
+	it("lists every page of sessions, and finds a linked session the list hasn't shown", async () => {
+		const { apiFetch, client, create } = await setUp();
+		const first = await create("proj-old");
+		for (let index = 0; index < 120; index++) await create("proj-a");
+		// proj-old's one session is the oldest, past the first page.
+		expect((await client.projects()).map((project) => project.id).sort()).toEqual(["proj-a", "proj-old"]);
+		const states: { sessions: readonly unknown[] }[] = [];
+		cleanups.push(client.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.length > 0, "the list");
+		expect(states[0]?.sessions).toHaveLength(120);
+
+		const fresh = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: (input, init) => apiFetch(new Request(input, init)),
+		});
+		expect(await fresh.projectOf(first)).toBe("proj-old");
+		expect(await fresh.projectOf("s-nobody")).toBeUndefined();
 	});
 
 	it("streams a session: a snapshot, then the run's answer as it happens", async () => {
@@ -194,6 +229,32 @@ describe("the console on the session API", () => {
 		// The run stops and the session stays usable.
 		expect(session.getState().status).toBe("idle");
 		expect(texts(session)).not.toContain("assistant:Too late");
+	});
+
+	it("sends a retried message once when the host took it but its answer was lost", async () => {
+		const { apiFetch, create, open, script } = await setUp();
+		const id = await create("proj-a");
+		let loseNextAnswer = true;
+		const lossy = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				const response = await apiFetch(request);
+				if (request.method === "POST" && loseNextAnswer) {
+					loseNextAnswer = false;
+					throw new TypeError("fetch failed");
+				}
+				return response;
+			},
+		});
+		script.reply({ text: "Once" });
+		await expect(lossy.prompt(id, "Hello", { requestId: "r-lost" })).rejects.toThrow("Can't reach Harbour");
+		await lossy.prompt(id, "Hello", { requestId: "r-lost" });
+		const session = open(id);
+		await eventually(() => texts(session).includes("assistant:Once"), "the answer");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(texts(session)).toEqual(["prompt:Hello", "assistant:Once"]);
 	});
 
 	it("says why a call was refused, in words", async () => {

@@ -42,6 +42,27 @@ function useProjects(client: ConsoleClient): { projects?: readonly ProjectSummar
 	return state;
 }
 
+/**
+ * The project a linked session is in: `pending` until the client answers, then its project id, or undefined when
+ * there's no such session. Until then the session opens as linked; most links are good.
+ */
+function useSessionProject(client: ConsoleClient, sessionId: string | undefined): string | undefined | "pending" {
+	const [found, setFound] = useState<{ sessionId: string; projectId: string | undefined }>();
+	useEffect(() => {
+		if (sessionId === undefined) return;
+		let live = true;
+		client.projectOf(sessionId).then(
+			(projectId) => live && setFound({ sessionId, projectId }),
+			// Couldn't ask; the session's own stream will say what's wrong.
+			() => {},
+		);
+		return () => {
+			live = false;
+		};
+	}, [client, sessionId]);
+	return found !== undefined && found.sessionId === sessionId ? found.projectId : "pending";
+}
+
 function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]; current: string | undefined }) {
 	return (
 		<nav className="shell-projects" aria-label="Projects">
@@ -73,6 +94,7 @@ export function App({
 	const sessionId = route.name === "session" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
+	const sessionProject = useSessionProject(client, sessionId);
 
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
@@ -100,7 +122,8 @@ export function App({
 		);
 
 	const unknownProject = projectId !== undefined && project === undefined;
-	const unknownSession = sessionId !== undefined && project !== undefined && client.projectOf(sessionId) !== projectId;
+	const unknownSession =
+		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
 
 	// A way back for an error, which on a phone fills the screen: the project's list, or the first project's.
 	const way = project ?? projects[0];

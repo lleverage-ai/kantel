@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleClient } from "../api/client.ts";
 import { SessionClient } from "../state/session-client.ts";
-import type { SessionActions } from "../ui/actions.ts";
+import { createRequestIds, type SessionActions } from "../ui/actions.ts";
 import { SessionView } from "../ui/session-view.tsx";
 
 /**
@@ -27,6 +27,7 @@ export function SessionScreen({
 	const [sending, setSending] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const [draft, setDraft] = useState("");
+	const requestIds = useMemo(() => createRequestIds(), []);
 
 	useEffect(() => {
 		session.start();
@@ -39,18 +40,28 @@ export function SessionScreen({
 	}, [client, session, sessionId, onOpen]);
 
 	/** Runs one action. A sent draft is cleared once it has gone, unless it was edited meanwhile; a failed one stays. */
-	const run = useCallback(async (action: () => Promise<void>, sent?: string) => {
-		setSending(true);
-		setFailure(undefined);
-		try {
-			await action();
-			if (sent !== undefined) setDraft((current) => (current.trim() === sent ? "" : current));
-		} catch (reason) {
-			setFailure(reason instanceof Error ? reason.message : String(reason));
-		} finally {
-			setSending(false);
-		}
-	}, []);
+	const run = useCallback(
+		async (action: () => Promise<void>, sent?: string) => {
+			setSending(true);
+			setFailure(undefined);
+			try {
+				await action();
+				if (sent !== undefined) {
+					requestIds.sent();
+					setDraft((current) => (current.trim() === sent ? "" : current));
+				}
+			} catch (reason) {
+				setFailure(reason instanceof Error ? reason.message : String(reason));
+			} finally {
+				setSending(false);
+			}
+		},
+		[requestIds],
+	);
+
+	/** Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one. */
+	const send = (how: "prompt" | "steer" | "followUp", text: string) =>
+		void run(() => client[how](sessionId, text, { requestId: requestIds.for(how, text) }), text);
 
 	const actions: SessionActions = {
 		control: client.control(sessionId),
@@ -58,9 +69,9 @@ export function SessionScreen({
 		failure,
 		draft,
 		onDraft: setDraft,
-		onSend: (text) => void run(() => client.prompt(sessionId, text, { requestId: crypto.randomUUID() }), text),
-		onSteer: (text) => void run(() => client.steer(sessionId, text, { requestId: crypto.randomUUID() }), text),
-		onFollowUp: (text) => void run(() => client.followUp(sessionId, text, { requestId: crypto.randomUUID() }), text),
+		onSend: (text) => send("prompt", text),
+		onSteer: (text) => send("steer", text),
+		onFollowUp: (text) => send("followUp", text),
 		onStop: () => void run(() => client.cancel(sessionId)),
 	};
 

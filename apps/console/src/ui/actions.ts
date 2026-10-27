@@ -31,6 +31,24 @@ export function composerState(control: SessionControl, status: SessionStatus, se
 	return status === "running" ? "running" : "idle";
 }
 
+/**
+ * Request ids for sends. Sending the same thing the same way again after a failure reuses the failed attempt's id, so
+ * a send the host took before its answer was lost still happens once. A send that succeeds clears it.
+ */
+export function createRequestIds(newId: () => string = () => crypto.randomUUID()) {
+	let last: { key: string; id: string } | undefined;
+	return {
+		for(action: string, text: string): string {
+			const key = `${action}\n${text}`;
+			if (last?.key !== key) last = { key, id: newId() };
+			return last.id;
+		},
+		sent(): void {
+			last = undefined;
+		},
+	};
+}
+
 /** Whether the composer offers "Send after this run": the agent is running and there is something to send. */
 export function offersFollowUp(control: SessionControl, status: SessionStatus, sending: boolean, draft: string) {
 	return control.live && !sending && status === "running" && draft.trim() !== "";

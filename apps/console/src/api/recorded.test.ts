@@ -180,8 +180,8 @@ describe("the recorded client", () => {
 		session.start();
 		await vi.advanceTimersByTimeAsync(10);
 		expect(session.getState().error).toMatch(/not_found/);
-		expect(client.projectOf("nope")).toBeUndefined();
-		expect(client.projectOf("s-flaky")).toBe("harbour");
+		expect(await client.projectOf("nope")).toBeUndefined();
+		expect(await client.projectOf("s-flaky")).toBe("harbour");
 		session.stop();
 		client.dispose();
 	});

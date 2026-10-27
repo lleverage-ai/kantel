@@ -47,8 +47,8 @@ export interface ConsoleClient {
 	watchSessions(projectId: string, onChange: (state: SessionListState) => void): () => void;
 	/** The protocol connection to one session: hello, a snapshot or the deltas after a cursor, history pages. */
 	transport(sessionId: string): Transport;
-	/** The project a session belongs to, or undefined when the session is unknown. */
-	projectOf(sessionId: string): string | undefined;
+	/** The project a session belongs to, or undefined when there's no such session. */
+	projectOf(sessionId: string): Promise<string | undefined>;
 	control(sessionId: string): SessionControl;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;

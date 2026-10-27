@@ -7,7 +7,7 @@
 // - Sessions: listed per project, each one's frames streamed as server-sent events, prompt, steer, follow-up and abort.
 // - No list of projects and no "who am I": the projects are the ones the caller's sessions are in, named by id, and
 //   the actor is whoever Access signed in. Identity's HTTP API (M1-BE7) will answer both.
-// - No list events: a project's list is polled, every LIST_POLL_MS while it is shown.
+// - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
 // - No history pages: the snapshot is the whole transcript, so a history request is answered with an empty page.
 
 import type { HistoryPage, ServerFrame, SessionStatus } from "@harbour/protocol";
@@ -18,8 +18,6 @@ import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
 const LIST_LIMIT = 100;
-/** Pages of sessions read to find the projects. */
-const PROJECT_PAGES = 5;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
 
 /** A session as the API lists it: the parts of `SessionRecord` (`@harbour/contracts`) the console reads. */
@@ -76,9 +74,14 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 
 	/** The project each session we've seen is in. */
 	const projectOfSession = new Map<string, string>();
-	/** Each session's status when last listed, to tell when one finishes while nobody is watching it. */
-	const lastStatus = new Map<string, SessionStatus>();
-	const unread = new Set<string>();
+	/**
+	 * Unread: a settled session that has changed since it was last on screen. `seen` holds each session's `updatedAt`
+	 * when it was last on screen, or when it was first listed (so nothing is unread on opening the console). A
+	 * session first listed later than its project's first listing, which ran and settled in between, starts unread.
+	 */
+	const seen = new Map<string, number>();
+	const latest = new Map<string, number>();
+	const listedProjects = new Set<string>();
 	/** Sessions on screen, with how many screens show each. */
 	const open = new Map<string, number>();
 
@@ -107,26 +110,37 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		});
 	};
 
-	const listSessions = async (query: URLSearchParams): Promise<Page<SessionRecord>> => {
-		const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
-		for (const record of page.items) projectOfSession.set(record.id, record.projectId);
-		return page;
+	/** Every session matching `filter`, following the API's pages. */
+	const listSessions = async (filter: Record<string, string> = {}): Promise<SessionRecord[]> => {
+		const records: SessionRecord[] = [];
+		let cursor: string | undefined;
+		do {
+			const query = new URLSearchParams({ ...filter, limit: String(LIST_LIMIT) });
+			if (cursor !== undefined) query.set("cursor", cursor);
+			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
+			for (const record of page.items) projectOfSession.set(record.id, record.projectId);
+			records.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return records;
 	};
 
-	const summaryOf = (record: SessionRecord): SessionSummary => {
-		const before = lastStatus.get(record.id);
-		lastStatus.set(record.id, record.status);
-		// Finishing while nobody has it open makes it unread; markRead clears it.
-		if (before !== undefined && active(before) && !active(record.status) && !open.has(record.id)) {
-			unread.add(record.id);
-		}
+	const isUnread = (record: SessionRecord, firstListing: boolean): boolean => {
+		latest.set(record.id, record.updatedAt);
+		if (open.has(record.id)) seen.set(record.id, record.updatedAt);
+		else if (!seen.has(record.id)) seen.set(record.id, firstListing ? record.updatedAt : record.createdAt);
+		return !active(record.status) && record.updatedAt > (seen.get(record.id) ?? record.updatedAt);
+	};
+
+	const summaryOf = (record: SessionRecord, firstListing: boolean): SessionSummary => {
+		const unread = isUnread(record, firstListing);
 		return {
 			id: record.id,
 			title: record.title ?? "Untitled session",
 			status: listStatus(record.status),
 			startedAt: record.createdAt,
 			updatedAt: record.updatedAt,
-			...(unread.has(record.id) ? { unread: true } : {}),
+			...(unread ? { unread: true } : {}),
 		};
 	};
 
@@ -141,20 +155,12 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		actor: { id: "access", name: "Signed in", stubbed: false },
 
 		async projects(): Promise<readonly ProjectSummary[]> {
-			const seen = new Map<string, number>();
-			let cursor: string | undefined;
-			for (let page = 0; page < PROJECT_PAGES; page++) {
-				const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
-				if (cursor !== undefined) query.set("cursor", cursor);
-				const result = await listSessions(query);
-				for (const record of result.items) {
-					seen.set(record.projectId, Math.max(seen.get(record.projectId) ?? 0, record.updatedAt));
-				}
-				cursor = result.nextCursor;
-				if (cursor === undefined) break;
+			const recent = new Map<string, number>();
+			for (const record of await listSessions()) {
+				recent.set(record.projectId, Math.max(recent.get(record.projectId) ?? 0, record.updatedAt));
 			}
 			// The most recently active project first, so the home page opens it.
-			return [...seen].sort((a, b) => b[1] - a[1]).map(([id]) => ({ id, name: id }));
+			return [...recent].sort((a, b) => b[1] - a[1]).map(([id]) => ({ id, name: id }));
 		},
 
 		watchSessions(projectId, onChange) {
@@ -163,9 +169,11 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			let sessions: readonly SessionSummary[] = [];
 			const poll = async () => {
 				try {
-					const page = await listSessions(new URLSearchParams({ projectId, limit: String(LIST_LIMIT) }));
+					const records = await listSessions({ projectId });
 					if (stopped) return;
-					sessions = page.items.map(summaryOf);
+					const firstListing = !listedProjects.has(projectId);
+					listedProjects.add(projectId);
+					sessions = records.map((record) => summaryOf(record, firstListing));
 					onChange({ sessions, loading: false });
 				} catch (reason) {
 					if (stopped) return;
@@ -236,7 +244,18 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			};
 		},
 
-		projectOf: (sessionId) => projectOfSession.get(sessionId),
+		async projectOf(sessionId) {
+			const known = projectOfSession.get(sessionId);
+			if (known !== undefined) return known;
+			try {
+				const record = await getJson<SessionRecord>(sessionUrl(sessionId));
+				projectOfSession.set(record.id, record.projectId);
+				return record.projectId;
+			} catch (reason) {
+				if (reason instanceof ApiError && reason.code === "not_found") return undefined;
+				throw reason;
+			}
+		},
 
 		control: (): SessionControl => ({ live: true }),
 
@@ -247,11 +266,17 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 
 		markRead(sessionId) {
 			open.set(sessionId, (open.get(sessionId) ?? 0) + 1);
-			unread.delete(sessionId);
+			const read = () => {
+				const updated = latest.get(sessionId);
+				if (updated !== undefined) seen.set(sessionId, updated);
+			};
+			read();
 			let released = false;
 			return () => {
 				if (released) return;
 				released = true;
+				// It was on screen until now, so what it did meanwhile has been seen.
+				read();
 				const count = (open.get(sessionId) ?? 1) - 1;
 				if (count > 0) open.set(sessionId, count);
 				else open.delete(sessionId);
