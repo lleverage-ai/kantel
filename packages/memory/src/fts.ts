@@ -95,6 +95,9 @@ function isTokenCharacter(code: number): boolean {
 	if (code < 128) {
 		return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 	}
+	// SQLite to 3.53 reads U+FFFE and U+FFFF as U+FFFD, a symbol, so they separate tokens. 3.54 keeps them as
+	// unassigned code points, which join tokens. Sal's Bun (3.53) and Node 24 do the former, so Harbour does too.
+	if (code === 0xfffe || code === 0xffff) return false;
 	return TOKEN_CATEGORIES.has(category(code));
 }
 

@@ -54,7 +54,8 @@ describe("ftsTerms", () => {
 		for (let block = 0x80; block < 0x30000; block += 0x1000) {
 			const parts: string[] = [];
 			for (let code = block; code < block + 0x1000; code += 1) {
-				if (code >= 0xd800 && code < 0xe000) continue;
+				// Surrogates are not characters; U+FFFE and U+FFFF differ between SQLite versions (see below).
+				if ((code >= 0xd800 && code < 0xe000) || code === 0xfffe || code === 0xffff) continue;
 				const character = String.fromCodePoint(code);
 				parts.push(`x${character}y A${character}`);
 			}
@@ -75,6 +76,10 @@ describe("ftsTerms", () => {
 		const long = `${"a".repeat(62)}ing`;
 		expect(porterStem(long)).toBe(long);
 		expect(unicode61Tokens("Ünïcödé")).toEqual(["unicode"]);
+	});
+
+	it("separates tokens at U+FFFE and U+FFFF, as SQLite to 3.53 (Sal's Bun, Node 24) does", () => {
+		expect(ftsTerms("x\ufffey A\uffff")).toEqual(["x", "y", "a"]);
 	});
 
 	it("keeps a very long token whole, as SQLite does", () => {
