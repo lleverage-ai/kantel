@@ -36,6 +36,7 @@ import {
 	normalizeWorkspacePath,
 	toBytes,
 } from "./index.ts";
+import { resolveSeed, type Seeders } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
@@ -53,7 +54,6 @@ import {
 	prepareChanges,
 	readTree,
 	seedFiles,
-	seedReadiness,
 	statTree,
 	type TreeFile,
 	treeEntries,
@@ -90,6 +90,8 @@ export interface MemoryWorkspacesOptions {
 	 * every conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
+	/** How seed sources other than `files` are fetched. Without a git fetcher, git sources wait at `metadata`. */
+	readonly seeders?: Seeders;
 }
 
 export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): KeyedWorkspaces {
@@ -143,14 +145,18 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 		checkOwner(ctx, input.owner);
 		await checks.requireCreate(ctx, input.owner, input.sessionId);
 		const seed = input.seed;
-		const seeded = seedFiles(seed);
+		// Static files are checked before anything is fetched.
+		seedFiles(seed);
 		const requests = mountRequests(seed, input.mounts);
 		await checks.requireMounts(ctx, requests.values());
 		const mounts: Mount[] = [];
 		for (const request of requests.values()) mounts.push(await sources.resolve(ctx, request));
 		checkMountsDisjoint(mounts);
 
-		const prepared = await prepareChanges([...seeded].map(([path, content]) => ({ op: "put", path, content })));
+		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock);
+		const prepared = await prepareChanges(
+			[...seeded.files].map(([path, file]) => ({ op: "put", path, content: file.content })),
+		);
 		const files = applyChanges<StoredFile>(new Map(), prepared, (change) => ({
 			content: change.content,
 			digest: change.digest,
@@ -175,7 +181,8 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			head: versions.length - 1,
 			mounts,
 			...(seed === undefined ? {} : { seed }),
-			seedReadiness: seedReadiness(seed),
+			seedReadiness: seeded.readiness,
+			...(seeded.report === undefined ? {} : { seedReport: seeded.report }),
 			createdAt: now,
 			updatedAt: now,
 		};

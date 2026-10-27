@@ -15,6 +15,7 @@
  * | `/:id/stat?path=&version=` | one `FileEntry` |
  * | `/:id/content?path=&version=` | the file's bytes, with `ETag` (its digest) and `Harbour-Version` |
  * | `/:id/history?cursor=&limit=` | a `Page<WorkspaceVersionInfo>`, newest first |
+ * | `/:id/export?prefix=notes/` | `{ files }`: each file under the prefixes at head, its bytes base64 (`prefix` repeats) |
  *
  * Errors are `{ "error": { "code", "message" } }` with the status `errorStatus` gives. Content is served so a browser
  * never runs it: HTML is sent as text, every response has `nosniff` and a sandboxing CSP.
@@ -44,8 +45,22 @@ export const DEFAULT_MAX_CONTENT_BYTES = 16 * 1024 * 1024;
 /** The response header carrying a file's version: a workspace version number, or a mount's pinned version string. */
 export const VERSION_HEADER = "Harbour-Version";
 
-/** The operations the read API uses. Any `Workspaces` satisfies it; nothing here can write. */
-export type WorkspaceReader = Pick<Workspaces, "get" | "list" | "stat" | "read" | "history">;
+/**
+ * The operations the read API uses. Any `Workspaces` satisfies it; nothing here can write. Without `export`, the export
+ * route answers `not_supported`.
+ */
+export type WorkspaceReader = Pick<Workspaces, "get" | "list" | "stat" | "read" | "history"> &
+	Partial<Pick<Workspaces, "export">>;
+
+/** One file as the export route sends it. */
+export interface ExportedFile {
+	readonly path: string;
+	readonly digest: string;
+	readonly version: WorkspaceVersion | string;
+	readonly size: number;
+	/** The bytes, base64. */
+	readonly content: string;
+}
 
 export interface WorkspaceReadApiOptions {
 	readonly workspaces: WorkspaceReader;
@@ -56,7 +71,7 @@ export interface WorkspaceReadApiOptions {
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** Route prefix, without a trailing slash. Default `/v1/workspaces`. */
 	readonly basePath?: string;
-	/** The largest file the content route serves. Default 16 MiB. */
+	/** The largest file the content route serves, and the most bytes one export sends. Default 16 MiB. */
 	readonly maxContentBytes?: number;
 }
 
@@ -122,6 +137,8 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 					return json(await workspaces.history(ctx, id, pageRequest(query)));
 				case "content":
 					return await content(ctx, id, query, request);
+				case "export":
+					return await exported(ctx, id, query);
 				default:
 					return errorResponse(404, "not_found", "no such route");
 			}
@@ -129,6 +146,27 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(500, "unavailable", "the workspace read API failed");
 		}
+	}
+
+	async function exported(ctx: CallContext, id: WorkspaceId, query: URLSearchParams): Promise<Response> {
+		if (workspaces.export === undefined) throw new HarbourError("not_supported", "this host does not export files");
+		const prefixes = query.getAll("prefix");
+		if (prefixes.length === 0 || prefixes.includes("")) {
+			throw new HarbourError("invalid", "name at least one prefix, such as prefix=notes/");
+		}
+		const files = await workspaces.export(ctx, id, prefixes);
+		const total = files.reduce((sum, file) => sum + file.content.byteLength, 0);
+		if (total > maxContentBytes) {
+			return errorResponse(413, "refused", `the export is larger than the read API sends (${maxContentBytes} bytes)`);
+		}
+		const body: ExportedFile[] = files.map((file) => ({
+			path: file.path,
+			digest: file.digest,
+			version: file.version,
+			size: file.content.byteLength,
+			content: toBase64(file.content),
+		}));
+		return json({ files: body });
 	}
 
 	async function content(
@@ -195,6 +233,21 @@ function errorResponse(status: number, code: ErrorCode, message: string, extra: 
 		status,
 		headers: { ...SAFE_HEADERS, ...extra, "Content-Type": "application/json; charset=utf-8" },
 	});
+}
+
+function toBase64(bytes: Uint8Array): string {
+	let binary = "";
+	for (let start = 0; start < bytes.length; start += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
+	}
+	return btoa(binary);
+}
+
+function fromBase64(text: string): Uint8Array {
+	const binary = atob(text);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+	return bytes;
 }
 
 function safeDecode(segment: string): string | null {
@@ -313,6 +366,8 @@ export interface WorkspaceReadClient {
 		init?: RequestOptions,
 	): Promise<ReadFile>;
 	history(id: WorkspaceId, page?: PageRequest, init?: RequestOptions): Promise<Page<WorkspaceVersionInfo>>;
+	/** The files under `prefixes` at head, as `Workspaces.export` returns them. */
+	export(id: WorkspaceId, prefixes: readonly string[], init?: RequestOptions): Promise<readonly FileContent[]>;
 }
 
 export interface RequestOptions {
@@ -327,11 +382,14 @@ export function createWorkspaceReadClient(options: WorkspaceReadClientOptions): 
 	async function call(
 		id: WorkspaceId,
 		route: string,
-		params: { readonly [key: string]: string | number | boolean | undefined },
+		params: { readonly [key: string]: string | number | boolean | readonly string[] | undefined },
 		init: RequestOptions | undefined,
 	): Promise<Response> {
 		const search = new URLSearchParams();
-		for (const [key, value] of Object.entries(params)) if (value !== undefined) search.set(key, String(value));
+		for (const [key, value] of Object.entries(params)) {
+			if (Array.isArray(value)) for (const item of value) search.append(key, item);
+			else if (value !== undefined) search.set(key, String(value));
+		}
 		const encoded = search.toString();
 		const query = encoded === "" ? "" : `?${encoded}`;
 		const response = await fetcher(`${base}/${encodeURIComponent(id)}${route === "" ? "" : `/${route}`}${query}`, {
@@ -367,6 +425,17 @@ export function createWorkspaceReadClient(options: WorkspaceReadClientOptions): 
 			return (await call(id, "history", { cursor: page.cursor, limit: page.limit }, init)).json() as Promise<
 				Page<WorkspaceVersionInfo>
 			>;
+		},
+		async export(id, prefixes, init) {
+			const body = (await (await call(id, "export", { prefix: prefixes }, init)).json()) as {
+				files: ExportedFile[];
+			};
+			return body.files.map((file) => ({
+				path: file.path,
+				content: fromBase64(file.content),
+				version: file.version,
+				digest: file.digest,
+			}));
 		},
 	};
 }

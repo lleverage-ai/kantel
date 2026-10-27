@@ -45,6 +45,7 @@ import {
 	sha256Hex,
 	toBytes,
 } from "./index.ts";
+import { resolveSeed, type Seeders } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
@@ -65,7 +66,6 @@ import {
 	prepareChanges,
 	readTree,
 	seedFiles,
-	seedReadiness,
 	statTree,
 	type Tree,
 	type TreeFile,
@@ -134,6 +134,8 @@ export interface StoredWorkspacesOptions {
 	readonly access?: ProjectAccess;
 	/** Parsed tree entries kept per instance; a larger tree is parsed for each call and not kept. */
 	readonly treeCacheEntries?: number;
+	/** How seed sources other than `files` are fetched. Without a git fetcher, git sources wait at `metadata`. */
+	readonly seeders?: Seeders;
 }
 
 /** Stored workspaces, plus what the sandbox tiers use beside the contract. */
@@ -245,18 +247,28 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		checkOwner(ctx, input.owner);
 		await checks.requireCreate(ctx, input.owner, input.sessionId);
 		const seed = input.seed;
-		const seeded = seedFiles(seed);
+		// Static files are checked before anything is fetched.
+		seedFiles(seed);
 		const requests = mountRequests(seed, input.mounts);
 		await checks.requireMounts(ctx, requests.values());
 		const mounts: Mount[] = [];
 		for (const request of requests.values()) mounts.push(await sources.resolve(ctx, request));
 		checkMountsDisjoint(mounts);
 
-		const prepared = await prepareChanges([...seeded].map(([path, content]) => ({ op: "put", path, content })));
+		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock);
+		const prepared = await prepareChanges(
+			[...seeded.files].map(([path, file]) => ({
+				op: "put",
+				path,
+				content: file.content,
+				...(file.mode === undefined ? {} : { mode: file.mode }),
+			})),
+		);
 		const tree = applyChanges<TreeFile>(new Map(), prepared, (change) => ({
 			digest: change.digest,
 			size: change.content.byteLength,
 			version: 1,
+			...(change.mode === undefined ? {} : { mode: change.mode }),
 		}));
 		const treeKey = await writeVersion(ctx.organisationId, tree, prepared);
 		const now = clock.now();
@@ -274,7 +286,8 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			head: versions.length - 1,
 			mounts,
 			...(seed === undefined ? {} : { seed }),
-			seedReadiness: seedReadiness(seed),
+			seedReadiness: seeded.readiness,
+			...(seeded.report === undefined ? {} : { seedReport: seeded.report }),
 			createdAt: now,
 			updatedAt: now,
 		};

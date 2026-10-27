@@ -97,6 +97,7 @@ project-access checks, mount reads included. The host's `authenticate` turns the
 | `/:id/stat?path=&version=` | one `FileEntry` |
 | `/:id/content?path=&version=` | the bytes, `ETag` (the digest, `If-None-Match` answers 304), `Harbour-Version` (JSON) |
 | `/:id/history?cursor=&limit=` | `Page<WorkspaceVersionInfo>`, newest first |
+| `/:id/export?prefix=notes/` | `{ files }`, each file under the prefixes at head with its bytes base64 (`prefix` repeats; the total is capped at `maxContentBytes`, 413 above it) |
 
 Errors are `{ "error": { "code", "message" } }`: `invalid` 400, `forbidden` and `refused` 403, `not_found` 404,
 `conflict` 409, `expired` 410, `exhausted` 429, `not_supported` 501, `unavailable` 503; a file over
@@ -104,7 +105,35 @@ Errors are `{ "error": { "code", "message" } }`: `invalid` 400, `forbidden` and 
 response has `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. A workspace file read
 at an explicit `version` is cached as immutable; a mount path never is, because `remount` moves its pin. `HEAD` answers
 carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, headers? })` returns the same
-types as `Workspaces` and rethrows error bodies as `HarbourError`.
+types as `Workspaces` and rethrows error bodies as `HarbourError`. The export route needs `export` on the reader it is
+given and answers 501 without it.
+
+## Seeding v0 (M1-BE3)
+
+`create` resolves the seed's sources in order, later sources winning on a path, after the caller's create and mount
+checks pass (so a refused caller fetches nothing). `files` sources are applied as before. A `git` source is fetched by
+the `GitFetcher` the host passes as `seeders: { git }` to `createMemoryWorkspaces` or `createStoredWorkspaces`: the tree
+at the resolved commit, cut to `sparse` and placed under `into`, becomes part of version 1, with executable bits kept by
+stored workspaces. The record then carries a `SeedReport` (`method: "clone"`, the resolved commit per source,
+`indexState: "refreshed"` because the tree arrives without `.git`, timings, and a `cacheKey` that is equal for equal
+resolved sources and mounts). A fetch failure fails the create with the fetcher's code. Without a fetcher, or with an
+`objects` source, the workspace waits at `metadata` as before.
+
+`@harbour/workspace/git-tarball` has `createGitHubTarballFetcher({ fetch?, apiBase?, codeloadBase?, maxBytes?,
+maxFiles? })`, which runs anywhere `fetch` and `DecompressionStream` do (a Worker or a node): it resolves the ref with
+the commits API (skipped for a pinned commit) and reads the commit's tarball from codeload. Pass the vault's egress
+`fetch` for private repositories; the spec never carries credentials. Symlinks and submodules are skipped; over
+`maxBytes` (512 MiB uncompressed) or `maxFiles` (100,000) is `exhausted`. History, dependency steps, mirrors, snapshots
+and `objects` sources stay with M2-BE1.
+
+## Export to the host (M1-BE3)
+
+`Workspaces.export(ctx, id, prefixes)` returns the files under the prefixes at head. `@harbour/workspace/export` has
+`syncExport(ctx, workspaces, id, { prefixes, sink, previous? })`, which keeps a host-side copy (a task's `notes/`) in step:
+it writes only files whose digest changed since `previous`, removes files that an earlier sync wrote and the workspace
+no longer has, never touches host files it did not write, and returns the next manifest. The sink decides where bytes
+go; `createMemoryExportSink()` is one for tests, and a filesystem sink must keep paths inside its root. The read API
+client's `export` is a drop-in source for a remote host.
 
 ## Read-only mount sources (M1-BE3)
 
@@ -139,8 +168,8 @@ second time with `/project` served from workspace-backed trees (`test/mounts.con
 tests. Paths inside a source are relative and `""` is its root. It also rejects a tree where a path is both a file and
 a directory (`invalid`), a delete of a missing file (`not_found`), an empty commit (`invalid`) and an owner in another
 organisation (`forbidden`). Seed mounts and input mounts are merged, the input winning on the same mount point.
-History includes version 0. It leaves out: fetching `git` and `objects` seeds (recorded at `seedReadiness:
-"metadata"`), dependency steps, durable storage and any org check inside the project files source. Without `access`, both check only
+History includes version 0. It leaves out: fetching `objects` seeds and `git` seeds without a fetcher (recorded at
+`seedReadiness: "metadata"`), dependency steps, durable storage and any org check inside the project files source. Without `access`, both check only
 the organisation.
 
 ## Stored workspaces (`@harbour/workspace/stored`)
@@ -168,5 +197,5 @@ across organisations and, with project access, the race loser checked against th
 - How a mount source checks that the caller's organisation owns the ref; the memory source does not. (Whether the
   caller may read the ref is settled: the workspace requires viewer on it as `workspace.mount`.)
 - Whether deleting a missing path should be idempotent rather than `not_found`.
-- `git`/`objects` fetching and `SeedReport` for real targets (M2-BE1). The seed shape, readiness stages and
-  methods are settled by M0-BE2's measurements (#5).
+- `objects` fetching, git history and dependency steps (M2-BE1). The seed shape, readiness stages and methods are
+  settled by M0-BE2's measurements (#5); v0 fetches git trees only, as `clone` without `.git`.
