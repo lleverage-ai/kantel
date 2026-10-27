@@ -115,13 +115,17 @@ export class ContainerRunner implements SandboxTierRunner {
 		const filters = encodeURIComponent(JSON.stringify({ label: [`harbour.session=${sessionId}`] }));
 		const list = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as { Id: string }[];
 		for (const container of list) await this.docker(`/containers/${container.Id}?force=1`, { method: "DELETE" });
-		for (const network of await this.#networks({ label: [`harbour.session=${sessionId}`] })) await this.#removeNetwork(network.Id);
+		for (const network of await this.#networks({ label: [`harbour.session=${sessionId}`] }))
+			await this.#removeNetwork(network.Id);
 		return list.length;
 	}
 
 	async #networks(filter: Record<string, string[]>): Promise<{ Id: string; Labels: Record<string, string> }[]> {
 		const filters = encodeURIComponent(JSON.stringify(filter));
-		return (await (await this.docker(`/networks?filters=${filters}`)).json()) as { Id: string; Labels: Record<string, string> }[];
+		return (await (await this.docker(`/networks?filters=${filters}`)).json()) as {
+			Id: string;
+			Labels: Record<string, string>;
+		}[];
 	}
 
 	/** A new internal network for one command, with the vault on it as `vault-proxy`. */
@@ -208,7 +212,10 @@ export class ContainerRunner implements SandboxTierRunner {
 			[token, request.sessionId],
 		);
 		const proxy = this.options.proxyUrl.replace("://", `://sbx:${token}@`);
-		const cwd = `/workspace/${(request.cwd ?? "").replace(/^\/?workspace\/?/, "").replace(/^\/+/, "")}`.replace(/\/+$/, "");
+		const cwd = `/workspace/${(request.cwd ?? "").replace(/^\/?workspace\/?/, "").replace(/^\/+/, "")}`.replace(
+			/\/+$/,
+			"",
+		);
 		const pendingNetwork = this.#createNetwork(request.sessionId, token);
 		pendingNetwork.catch(() => undefined); // awaited below; mark handled while the tar builds
 		let network: string | undefined;
@@ -261,7 +268,9 @@ export class ContainerRunner implements SandboxTierRunner {
 			await this.docker(`/containers/${id}/start`, { method: "POST" });
 			mark("startMs");
 			const timeout = request.timeoutMs ?? 120_000;
-			const wait = this.docker(`/containers/${id}/wait`, { method: "POST" }).then((r) => r.json() as Promise<{ StatusCode: number }>);
+			const wait = this.docker(`/containers/${id}/wait`, { method: "POST" }).then(
+				(r) => r.json() as Promise<{ StatusCode: number }>,
+			);
 			const timer = new Promise<never>((_, reject) => {
 				const handle = setTimeout(() => reject(new Error(`container command timed out after ${timeout} ms`)), timeout);
 				signal?.addEventListener("abort", () => {
@@ -271,8 +280,12 @@ export class ContainerRunner implements SandboxTierRunner {
 			});
 			const { StatusCode } = await Promise.race([wait, timer]);
 			mark("runMs");
-			const logs = demux(new Uint8Array(await (await this.docker(`/containers/${id}/logs?stdout=1&stderr=1`)).arrayBuffer()));
-			const exported = readTar(new Uint8Array(await (await this.docker(`/containers/${id}/archive?path=/workspace`)).arrayBuffer()));
+			const logs = demux(
+				new Uint8Array(await (await this.docker(`/containers/${id}/logs?stdout=1&stderr=1`)).arrayBuffer()),
+			);
+			const exported = readTar(
+				new Uint8Array(await (await this.docker(`/containers/${id}/archive?path=/workspace`)).arrayBuffer()),
+			);
 			mark("copyOutMs");
 			const next: Manifest = {};
 			const changed: string[] = [];

@@ -6,10 +6,10 @@
 // which wakes exactly when the next active lease expires.
 
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import type { AssistantMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, Harness, type Storage, type SubmissionId, type Wake } from "@earendil-works/pi-durable";
-import type { AssistantMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import pg from "pg";
 import type {
 	CreateSessionResponse,
@@ -23,8 +23,8 @@ import type {
 import type { Audit } from "./audit.ts";
 import { holdLiveness, LeaseLost, type PostgresLeases } from "./lease.ts";
 import { openPostgresStorage, piSchemaFor } from "./pi-postgres.ts";
-import { isSpecPrompt, type StepsScenario, scriptedResponse, stepsResponse } from "./scenario-model.ts";
 import type { ContainerRunner } from "./sandbox/container.ts";
+import { isSpecPrompt, type StepsScenario, scriptedResponse, stepsResponse } from "./scenario-model.ts";
 import { createHarbourTools, type ExecRecord, runCommand, type ToolDeps } from "./tools.ts";
 import { type MinioWorkspace, sha256Hex } from "./workspace.ts";
 
@@ -64,6 +64,45 @@ interface OpenSession {
 }
 
 const FAUX_STEPS = 200;
+
+// The parts of Pi Durable's root view this host reads. Pi types the view as
+// unknown; these are the fields the spike relies on, all optional.
+interface ViewPart {
+	type?: string;
+	text?: string;
+	id?: string;
+	name?: string;
+	arguments?: unknown;
+}
+interface ViewMessage {
+	role?: string;
+	content?: ViewPart[];
+	stopReason?: string;
+	toolCallId?: string;
+	toolName?: string;
+	isError?: boolean;
+	timestamp?: number;
+	details?: { tier?: SandboxTier };
+}
+interface ViewEntry {
+	id?: unknown;
+	model?: ViewMessage[];
+}
+interface LiveTool {
+	callId?: string;
+	id?: string;
+	name?: string;
+	toolName?: string;
+	arguments?: unknown;
+	args?: unknown;
+	output?: unknown;
+}
+interface RootView {
+	entries?: ViewEntry[];
+	docs?: { "pi.live"?: { tools?: Record<string, LiveTool> } };
+}
+const textOf = (parts: ViewPart[] | undefined) =>
+	(parts ?? []).map((part) => (part.type === undefined || part.type === "text" ? (part.text ?? "") : "")).join("");
 
 export class SessionHost {
 	readonly #open = new Map<string, OpenSession>();
@@ -116,8 +155,12 @@ export class SessionHost {
 
 	// ---------------------------------------------------------------- lifecycle
 
-	async create(sessionId: string = crypto.randomUUID(), workspaceId = `ws-${sessionId}`): Promise<CreateSessionResponse> {
-		const existing = (await this.pool.query(`SELECT workspace_id FROM harbour.sessions WHERE id = $1`, [sessionId])).rows[0];
+	async create(
+		sessionId: string = crypto.randomUUID(),
+		workspaceId = `ws-${sessionId}`,
+	): Promise<CreateSessionResponse> {
+		const existing = (await this.pool.query(`SELECT workspace_id FROM harbour.sessions WHERE id = $1`, [sessionId]))
+			.rows[0];
 		if (existing !== undefined) workspaceId = existing.workspace_id;
 		else await this.workspace.create(workspaceId);
 		await this.pool.query(
@@ -145,9 +188,10 @@ export class SessionHost {
 			await this.pool.query(`SELECT workspace_id, pi_schema, scenario FROM harbour.sessions WHERE id = $1`, [sessionId])
 		).rows[0];
 		if (row === undefined) throw new NotFound(`unknown session ${sessionId}`);
-		const before = await this.pool.query(`SELECT owner, fence, expires_at FROM harbour.session_leases WHERE session_id = $1`, [
-			sessionId,
-		]);
+		const before = await this.pool.query(
+			`SELECT owner, fence, expires_at FROM harbour.session_leases WHERE session_id = $1`,
+			[sessionId],
+		);
 		const lease = await this.leases.acquire(sessionId, this.owner, this.options.hostUrl, this.options.leaseTtlMs);
 		if (lease === undefined) return undefined;
 		const previousOwner = before.rows[0]?.owner as string | undefined;
@@ -159,7 +203,8 @@ export class SessionHost {
 			fence: lease.fence,
 			previousOwner: takeover ? previousOwner : undefined,
 		});
-		if (takeover) await this.audit.record(sessionId, "session", "reopen", { owner: this.owner, fence: lease.fence, previousOwner });
+		if (takeover)
+			await this.audit.record(sessionId, "session", "reopen", { owner: this.owner, fence: lease.fence, previousOwner });
 		// Containers a dead owner left behind for this session: their writes were
 		// never committed (a command commits only when it finishes), so remove them.
 		const reaped = await this.container.reap(sessionId);
@@ -173,7 +218,9 @@ export class SessionHost {
 		});
 		const session = { scenario: row.scenario ?? undefined, fence } as OpenSession;
 		session.respond = (ctx) =>
-			session.scenario !== undefined && !isSpecPrompt(ctx) ? stepsResponse(session.scenario, ctx) : scriptedResponse(ctx);
+			session.scenario !== undefined && !isSpecPrompt(ctx)
+				? stepsResponse(session.scenario, ctx)
+				: scriptedResponse(ctx);
 		const faux = fauxProvider();
 		faux.setResponses(Array(FAUX_STEPS).fill(session.respond));
 		const models = createModels();
@@ -216,7 +263,14 @@ export class SessionHost {
 		await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		harness.resume();
 		if (takeover) {
-			this.takeovers.push({ sessionId, previousOwner, fence: lease.fence, previousExpiresAt, acquiredAt, resumedAt: Date.now() });
+			this.takeovers.push({
+				sessionId,
+				previousOwner,
+				fence: lease.fence,
+				previousExpiresAt,
+				acquiredAt,
+				resumedAt: Date.now(),
+			});
 			console.log(`[${this.options.hostId}] took over ${sessionId} at fence ${lease.fence} from ${previousOwner}`);
 		}
 		return session;
@@ -248,7 +302,10 @@ export class SessionHost {
 		if (session.killAfterExec === undefined) return;
 		session.killAfterExec -= 1;
 		if (session.killAfterExec > 0) return;
-		await this.audit.record(session.sessionId, "session", "kill", { owner: this.owner, command: record.command.slice(0, 200) });
+		await this.audit.record(session.sessionId, "session", "kill", {
+			owner: this.owner,
+			command: record.command.slice(0, 200),
+		});
 		console.error(`[${this.owner}] scenario kill switch: exiting after "${record.command.slice(0, 60)}" committed`);
 		process.exit(137);
 	}
@@ -264,20 +321,23 @@ export class SessionHost {
 		session.wakeTimer = session.idleTimer = undefined;
 		const live = () => this.#open.get(session.sessionId) === session;
 		if (wake.at !== undefined) {
-			session.wakeTimer = setTimeout(() => {
-				if (live()) session.harness.resume();
-			}, Math.max(0, wake.at - Date.now()));
+			session.wakeTimer = setTimeout(
+				() => {
+					if (live()) session.harness.resume();
+				},
+				Math.max(0, wake.at - Date.now()),
+			);
 		} else if (!wake.active && this.options.idleCloseMs > 0) {
 			session.idleTimer = setTimeout(() => {
 				if (live()) void this.#close(session, "idle", true);
 			}, this.options.idleCloseMs);
 			session.idleTimer.unref?.();
 		}
-		await this.#fenced(session, `UPDATE harbour.sessions SET status = $2, wake_at = $3, updated_at = now() WHERE id = $1`, [
-			session.sessionId,
-			wake.active ? "active" : "idle",
-			wake.at === undefined ? null : new Date(wake.at),
-		]).catch((error) => console.error(`[${this.owner}] wake update for ${session.sessionId} failed:`, error));
+		await this.#fenced(
+			session,
+			`UPDATE harbour.sessions SET status = $2, wake_at = $3, updated_at = now() WHERE id = $1`,
+			[session.sessionId, wake.active ? "active" : "idle", wake.at === undefined ? null : new Date(wake.at)],
+		).catch((error) => console.error(`[${this.owner}] wake update for ${session.sessionId} failed:`, error));
 	}
 
 	/** A session metadata write that commits only while this owner still holds the lease. */
@@ -374,28 +434,28 @@ export class SessionHost {
 	async state(session: OpenSession): Promise<SessionState> {
 		const root = await session.harness.root(context);
 		const view = await root.viewState(context);
-		const value = view.value as any;
+		const value = view.value as unknown as RootView;
 		view.dispose?.();
 		const toolResults: ToolCallSummary[] = [];
 		const calls = new Map<string, { name: string; args: unknown }>();
 		let answer: string | undefined;
-		for (const entry of value.entries as any[]) {
+		for (const entry of value.entries ?? []) {
 			for (const message of entry.model ?? []) {
 				if (message.role === "assistant") {
 					const texts: string[] = [];
 					for (const part of message.content ?? []) {
-						if (part.type === "toolCall") calls.set(part.id, { name: part.name, args: part.arguments });
-						if (part.type === "text") texts.push(part.text);
+						if (part.type === "toolCall") calls.set(part.id ?? "", { name: part.name ?? "", args: part.arguments });
+						if (part.type === "text") texts.push(part.text ?? "");
 					}
 					if (message.stopReason !== "toolUse" && texts.length > 0) answer = texts.join("");
 				} else if (message.role === "toolResult") {
-					const call = calls.get(message.toolCallId);
+					const call = calls.get(message.toolCallId ?? "");
 					toolResults.push({
-						id: message.toolCallId,
-						name: message.toolName,
+						id: message.toolCallId ?? "",
+						name: message.toolName ?? "",
 						args: call?.args,
 						isError: message.isError,
-						output: (message.content ?? []).map((p: any) => p.text ?? "").join(""),
+						output: textOf(message.content),
 						tier: message.details?.tier,
 					});
 				} else if (message.role === "user") {
@@ -404,14 +464,14 @@ export class SessionHost {
 			}
 		}
 		const live = value.docs?.["pi.live"] ?? {};
-		const running: ToolCallSummary[] = Object.values((live.tools ?? {}) as Record<string, any>).map((tool: any) => ({
+		const running: ToolCallSummary[] = Object.values(live.tools ?? {}).map((tool) => ({
 			id: tool.callId ?? tool.id ?? "",
 			name: tool.name ?? tool.toolName ?? "",
 			args: tool.arguments ?? tool.args,
 			output: typeof tool.output === "string" ? tool.output.slice(-500) : undefined,
 		}));
-		const status = (await this.pool.query(`SELECT status FROM harbour.sessions WHERE id = $1`, [session.sessionId])).rows[0]
-			?.status;
+		const status = (await this.pool.query(`SELECT status FROM harbour.sessions WHERE id = $1`, [session.sessionId]))
+			.rows[0]?.status;
 		return {
 			sessionId: session.sessionId,
 			workspaceId: session.workspaceId,
@@ -429,7 +489,7 @@ export class SessionHost {
 	async live(session: OpenSession): Promise<unknown> {
 		const root = await session.harness.root(context);
 		const view = await root.viewState(context);
-		const value = (view.value as any).docs?.["pi.live"];
+		const value = (view.value as unknown as RootView).docs?.["pi.live"];
 		view.dispose?.();
 		return value ?? null;
 	}
@@ -451,7 +511,10 @@ export class SessionHost {
 		if (!("session" in routed)) throw new Error(`session ${sessionId} is owned by another host`);
 		const session = routed.session;
 		if (scenario !== undefined) {
-			await this.#fenced(session, `UPDATE harbour.sessions SET scenario = $2 WHERE id = $1`, [sessionId, JSON.stringify(scenario)]);
+			await this.#fenced(session, `UPDATE harbour.sessions SET scenario = $2 WHERE id = $1`, [
+				sessionId,
+				JSON.stringify(scenario),
+			]);
 			session.scenario = scenario;
 		}
 		let head = await this.workspace.head(created.workspaceId);
@@ -495,18 +558,18 @@ export class SessionHost {
 		return { ...run.record, stdout: run.stdout, stderr: run.stderr };
 	}
 
-	async #entries(session: OpenSession): Promise<any[]> {
+	async #entries(session: OpenSession): Promise<ViewEntry[]> {
 		const root = await session.harness.root(context);
 		const view = await root.viewState(context);
-		const entries = (view.value as any).entries as any[];
+		const entries = (view.value as unknown as RootView).entries ?? [];
 		view.dispose?.();
 		return entries;
 	}
 
 	async #execs(sessionId: string): Promise<ExecRecord[]> {
-		return (await this.pool.query(`SELECT body FROM harbour.execs WHERE session_id = $1 ORDER BY id`, [sessionId])).rows.map(
-			(row) => row.body,
-		);
+		return (
+			await this.pool.query(`SELECT body FROM harbour.execs WHERE session_id = $1 ORDER BY id`, [sessionId])
+		).rows.map((row) => row.body);
 	}
 
 	async #events(sessionId: string) {
@@ -525,7 +588,12 @@ export class SessionHost {
 			 WHERE session_id = $1 AND actor LIKE 'vault:%' ORDER BY id`,
 			[sessionId],
 		);
-		const decisions: Record<string, string> = { "vault.allow": "allowed", "vault.deny": "denied", "vault.error": "error", "vault.tunnel": "tunnelled" };
+		const decisions: Record<string, string> = {
+			"vault.allow": "allowed",
+			"vault.deny": "denied",
+			"vault.error": "error",
+			"vault.tunnel": "tunnelled",
+		};
 		return rows.rows.map((row) => {
 			const d = row.detail as Record<string, unknown>;
 			return {
@@ -552,10 +620,10 @@ export class SessionHost {
 				if (message.role !== "toolResult") continue;
 				timed.push({
 					at: message.timestamp ?? 0,
-					toolCallId: message.toolCallId,
-					toolName: message.toolName,
+					toolCallId: message.toolCallId ?? "",
+					toolName: message.toolName ?? "",
 					isError: message.isError === true,
-					text: (message.content ?? []).map((c: any) => (c.type === "text" ? c.text : "")).join(""),
+					text: (message.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join(""),
 				});
 			}
 		}
@@ -564,14 +632,20 @@ export class SessionHost {
 		let answer: string | undefined;
 		if (submissionId !== undefined) {
 			const handle = await session.harness.submission(Number(submissionId) as SubmissionId, context);
-			const record = (await handle?.status(context)) as any;
+			const record = (await handle?.status(context)) as
+				| { status: string; reason?: unknown; answer?: unknown }
+				| undefined;
 			if (record !== undefined) {
-				submission = { id: submissionId, status: record.status, ...(record.reason ? { reason: String(record.reason) } : {}) };
+				submission = {
+					id: submissionId,
+					status: record.status,
+					...(record.reason ? { reason: String(record.reason) } : {}),
+				};
 				if (record.status === "done") {
 					answer = entries
 						.find((entry) => entry.id === record.answer)
-						?.model?.flatMap((m: any) => (m.role === "assistant" ? m.content : []))
-						.map((c: any) => (c.type === "text" ? c.text : ""))
+						?.model?.flatMap((m) => (m.role === "assistant" ? (m.content ?? []) : []))
+						.map((c) => (c.type === "text" ? (c.text ?? "") : ""))
 						.join("");
 				}
 			}
@@ -585,7 +659,12 @@ export class SessionHost {
 			workspace: { id: session.workspaceId, head: head.version },
 			execs: await this.#execs(session.sessionId),
 			events: await this.#events(session.sessionId),
-			process: { owner: this.owner, fence: session.lease.fence, openedAt: session.openedAt, takeover: session.takeover },
+			process: {
+				owner: this.owner,
+				fence: session.lease.fence,
+				openedAt: session.openedAt,
+				takeover: session.takeover,
+			},
 		};
 	}
 

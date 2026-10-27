@@ -1,11 +1,13 @@
-// Draft contracts for the M0 spike (M0-SH1).
+// The spike's internal shapes (M0-SH1), next to M0-BE1's real contracts.
 //
-// These are deliberately small stand-ins for the real contracts M0-BE1 (#2)
-// writes in packages/contracts. They cover only what the spike exercises:
-// a versioned workspace, a two-tier sandbox, the session lease that stands in
-// for a Durable Object, and the spike's HTTP API, which both targets serve so
-// one scenario script and one conformance suite run against either.
-// Reconcile with packages/contracts when #2 lands; see spike/README.md.
+// What the real contracts cover is taken from packages/contracts: the tier
+// type and the tool-to-tier table (apps/selfhosted/src/sandbox/router.ts), and
+// the `Workspaces` contract, which apps/selfhosted/src/workspaces.ts implements
+// on Postgres + MinIO and which passes packages/testing's workspace suite.
+// What is left here is spike-internal: the manifest-per-command store the
+// session host runs on today, the per-command sandbox runner, the session lease
+// that stands in for a Durable Object (no BE1 contract), and the spike's HTTP
+// API. spike/README.md lists what moves where in M1.
 
 // ---------------------------------------------------------------- workspace
 
@@ -47,8 +49,10 @@ export interface Workspace {
 
 // ------------------------------------------------------------------ sandbox
 
+import type { SandboxTier } from "../../packages/contracts/src/sandbox.ts";
+
 /** The tool picks the tier, not the agent. */
-export type SandboxTier = "isolate" | "container";
+export type { SandboxTier };
 
 export interface SandboxExecRequest {
 	sessionId: string;

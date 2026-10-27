@@ -1,6 +1,6 @@
 # Harbour container tier: a warm base image the session host starts once per
-# escalated command. Its network is the default-deny sandbox network, where
-# the vault proxy is the only reachable host.
+# escalated command. Each container gets its own internal network, where the
+# vault proxy is the only other host.
 FROM alpine:3.22
 RUN apk add --no-cache bash git curl coreutils findutils grep sed jq python3 \
 	&& addgroup -g 1000 sandbox \

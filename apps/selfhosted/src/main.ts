@@ -14,7 +14,20 @@ import { NotFound, SessionHost } from "./host.ts";
 import { PostgresLeases } from "./lease.ts";
 import { ContainerRunner } from "./sandbox/container.ts";
 import { IsolateRunner } from "./sandbox/isolate.ts";
+import type { StepsScenario } from "./scenario-model.ts";
 import { MinioWorkspace } from "./workspace.ts";
+
+/** The JSON bodies of the shared scenario surface (spikes/scenario/README.md in M0-CF1). */
+interface SharedInput {
+	scenario?: StepsScenario;
+	workspaceId?: string;
+	content?: string;
+	text?: string;
+	requestId?: string;
+	afterExec?: number;
+	command?: string;
+	tier?: string;
+}
 
 const env = (name: string, fallback?: string): string => {
 	const value = process.env[name] ?? fallback;
@@ -116,7 +129,10 @@ async function forward(request: Request, base: string, body: string | undefined)
 		// when it does. Retryable.
 		return json({ error: `owner ${base} unreachable; retry after the lease expires` }, 503);
 	}
-	return new Response(response.body, { status: response.status, headers: { ...Object.fromEntries(response.headers), "x-harbour-forwarded-to": base } });
+	return new Response(response.body, {
+		status: response.status,
+		headers: { ...Object.fromEntries(response.headers), "x-harbour-forwarded-to": base },
+	});
 }
 
 async function serve() {
@@ -131,11 +147,13 @@ async function serve() {
 			const url = new URL(request.url);
 			const parts = url.pathname.split("/").filter(Boolean);
 			try {
-				if (url.pathname === "/healthz") return json({ ok: true, host: cfg.hostId, sessions: host.ownedSessions().length });
+				if (url.pathname === "/healthz")
+					return json({ ok: true, host: cfg.hostId, sessions: host.ownedSessions().length });
 				if (cfg.spikeToken !== undefined && request.headers.get("authorization") !== `Bearer ${cfg.spikeToken}`) {
 					return json({ error: "unauthorised" }, 401);
 				}
-				if (parts[0] === "sessions" && parts[1] !== undefined) return await sharedSurface(request, url, parts[1], parts[2]);
+				if (parts[0] === "sessions" && parts[1] !== undefined)
+					return await sharedSurface(request, url, parts[1], parts[2]);
 				if (url.pathname === "/v0/target") {
 					return json({ target: "selfhosted", host: cfg.hostId, owner: host.owner, leaseTtlMs: cfg.leaseTtlMs });
 				}
@@ -187,9 +205,14 @@ async function serve() {
 	 * The shared scenario surface (M0-CF1's spikes/scenario/README.md):
 	 * /sessions/:id/{setup,prompt,state,kill,exec,vault,fixture,file}.
 	 */
-	async function sharedSurface(request: Request, url: URL, sessionId: string, action: string | undefined): Promise<Response> {
+	async function sharedSurface(
+		request: Request,
+		url: URL,
+		sessionId: string,
+		action: string | undefined,
+	): Promise<Response> {
 		const body = request.method === "POST" ? await request.text() : undefined;
-		const input = JSON.parse(body || "{}") as Record<string, any>;
+		const input = JSON.parse(body || "{}") as SharedInput;
 		const known = (await pool.query(`SELECT 1 FROM harbour.sessions WHERE id = $1`, [sessionId])).rowCount === 1;
 		if (action === "setup" && request.method === "POST" && !known) {
 			return json(await host.setup(sessionId, input.scenario, input.workspaceId));
@@ -205,13 +228,25 @@ async function serve() {
 			case "POST setup":
 				return json(await host.setup(sessionId, input.scenario, input.workspaceId));
 			case "POST prompt":
-				return json(await host.prompt(session, String(input.content ?? input.text ?? ""), String(input.requestId ?? crypto.randomUUID())));
+				return json(
+					await host.prompt(
+						session,
+						String(input.content ?? input.text ?? ""),
+						String(input.requestId ?? crypto.randomUUID()),
+					),
+				);
 			case "GET state":
 				return json(await host.scenarioState(session, url.searchParams.get("submission") ?? undefined));
 			case "POST kill":
 				return json(host.armKill(session, Number(input.afterExec ?? 1)));
 			case "POST exec":
-				return json(await host.exec(session, String(input.command), input.tier));
+				return json(
+					await host.exec(
+						session,
+						String(input.command),
+						input.tier === "isolate" || input.tier === "container" ? input.tier : undefined,
+					),
+				);
 			case "GET vault":
 				return json(await host.vaultUses(sessionId));
 			case "GET fixture":

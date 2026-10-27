@@ -137,9 +137,12 @@ export function createHarbourTools(deps: ToolDeps) {
 		// "interrupted" and is never rerun, because a shell command may have
 		// partially run. Its workspace changes are never committed.
 		replay: "unsafe",
-		execute: async (args, api, context) => {
+		execute: async (args, _api, context) => {
 			const session = deps.session();
-			const run = await runCommand(deps, session, args.command, { timeoutMs: args.timeoutMs, signal: context.abortSignal });
+			const run = await runCommand(deps, session, args.command, {
+				timeoutMs: args.timeoutMs,
+				signal: context.abortSignal,
+			});
 			const { record } = run;
 			const output = [run.stdout, run.stderr].filter(Boolean).join(run.stdout && run.stderr ? "\n" : "");
 			return {
@@ -174,7 +177,10 @@ export function createHarbourTools(deps: ToolDeps) {
 			if (sha !== sha256Hex(bytes)) throw new Error("blob hash mismatch");
 			const before = manifest[path];
 			if (before?.kind === "file" && before.sha === sha) {
-				return { output: [{ type: "text", text: `${path} unchanged` }], details: { tier: "host", version: head.version, seq: head.seq } };
+				return {
+					output: [{ type: "text", text: `${path} unchanged` }],
+					details: { tier: "host", version: head.version, seq: head.seq },
+				};
 			}
 			manifest[path] = { kind: "file", sha, size: bytes.length, mode: 0o644 };
 			const next = await deps.workspace.commit(
@@ -200,7 +206,11 @@ export function createHarbourTools(deps: ToolDeps) {
 			const head = await deps.workspace.head(session.workspaceId);
 			const entry = (await deps.workspace.manifest(session.workspaceId, head.version))[path];
 			if (entry?.kind !== "file") {
-				return { output: [{ type: "text", text: `${path}: no such file` }], isError: true, details: { tier: "host", version: head.version } };
+				return {
+					output: [{ type: "text", text: `${path}: no such file` }],
+					isError: true,
+					details: { tier: "host", version: head.version },
+				};
 			}
 			const text = new TextDecoder().decode(await deps.workspace.readBlob(session.workspaceId, entry.sha));
 			return { output: [{ type: "text", text }], details: { tier: "host", version: head.version } };

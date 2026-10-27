@@ -56,15 +56,33 @@ SessionDO can use the same file.
 
 ## Reconciling with M0-BE1's contracts
 
-These are stand-ins until `packages/contracts` (#2) lands. When it does:
+M0-BE1's contracts landed in #39. What this branch takes from them now:
 
-1. Replace `spike/contracts` imports with `@harbour/contracts` and delete the
-   draft. Expected mapping: `Workspace`/`Manifest` to the workspace contract
-   (versioned list/read/commit), `SandboxTierRunner` to the sandbox exec
-   contract, `SessionLeases` to the sandbox or session lease contract.
-2. Register the self-hosted implementations with BE1's conformance suites
-   (`packages/testing`), next to `spike/conformance`.
-3. The spike API stays a spike API; M1-BE1's session API replaces it.
+- **Tier routing.** `apps/selfhosted/src/sandbox/router.ts` routes with
+  `DEFAULT_TIER_ROUTES` and `routeTool` from `packages/contracts` and
+  `packages/sandbox`. Self-hosted only escalates further towards the container
+  (a container program later in a pipeline, or `# harbour:container`).
+- **`SandboxTier`** comes from `packages/contracts`.
+- **`Workspaces`.** `apps/selfhosted/src/workspaces.ts` implements the real
+  contract on Postgres (records, head, history) and MinIO (content-addressed
+  blobs, one immutable tree object per version), and passes
+  `packages/testing`'s workspace suite (15 cases) in
+  `apps/selfhosted/test/workspaces.conformance.test.ts`. Mount sources stay in
+  memory in that test.
 
-Anything BE1's contracts do not cover (the session lease, the vault stub) stays
-under `apps/selfhosted` until its M1 stream owns it.
+What is still spike-internal, and where it goes in M1:
+
+1. The session host still runs on the manifest-per-command store
+   (`MinioWorkspace`, opaque string versions, fenced by the session lease).
+   Moving it onto `PostgresWorkspaces` needs the contract's commit to carry
+   the lease fence (`CommitRequest.writer.leaseId` is there but not checked),
+   and the sandboxes to commit `changes` rather than whole manifests.
+2. The per-command `SandboxTierRunner` maps onto the contract's `Sandboxes`
+   (`acquire`/`exec`/`release` leases per tier) once a container lease lives
+   longer than one command.
+3. The session lease (`SessionLeases`) has no BE1 contract; it stays in
+   `apps/selfhosted` until the M1 session-host stream owns it.
+4. The vault stub maps onto `packages/vault`'s `RouteScope` and
+   `InjectionRule`; it should register with the vault suite when it becomes a
+   real service.
+5. The spike API stays a spike API; M1-BE1's session API replaces it.

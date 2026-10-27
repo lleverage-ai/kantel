@@ -1,14 +1,14 @@
 {
-  "name": "@harbour/isolate-host",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "bun run build.ts",
-    "start": "workerd serve config.capnp --experimental"
-  },
-  "dependencies": {
-    "aws4fetch": "1.0.20",
-    "just-bash": "3.6.0",
-    "workerd": "1.20261027.1"
-  }
+	"name": "@harbour/isolate-host",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "bun run build.ts",
+		"start": "workerd serve config.capnp --experimental"
+	},
+	"dependencies": {
+		"aws4fetch": "1.0.20",
+		"just-bash": "3.6.0",
+		"workerd": "1.20261027.1"
+	}
 }

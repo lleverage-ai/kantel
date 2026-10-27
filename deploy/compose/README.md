@@ -35,10 +35,15 @@ docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
 | `sandbox-image` | Builds `harbour-sandbox:dev`, the container tier's warm image, and exits. | none |
 
-Networks: `control` (everything but sandboxes and the fixture), `upstream`
-(vault and fixture: the outside world), and `harbour-sandbox`, which is
-`internal: true` and has only the vault on it. A sandbox container has no
-other route out; `curl --noproxy '*'` to a public IP fails.
+Networks: `control` (everything but sandboxes and the fixture) and `upstream`
+(vault and fixture: the outside world). Each sandbox container gets its own
+`internal` network for the length of its command (`harbour-sbx-<token>`), and
+the session host connects the vault (container `harbour-vault-proxy`) to it as
+`vault-proxy`. A sandbox has no other route out (`curl --noproxy '*'` to a
+public IP fails) and cannot reach another sandbox (the conformance suite
+probes for peers). Docker's default address pools allow about 30 such
+networks at once, which caps concurrent container commands on one daemon;
+widen `default-address-pools` in the daemon config to raise it.
 
 Ports are bound to 127.0.0.1 and can be moved with `HARBOUR_PG_PORT`,
 `HARBOUR_S3_PORT`, `HARBOUR_ISOLATE_PORT`, `HARBOUR_HOST_A_PORT` and
@@ -48,10 +53,11 @@ Ports are bound to 127.0.0.1 and can be moved with `HARBOUR_PG_PORT`,
 
 The stack gives you Postgres (`postgres://harbour:harbour@127.0.0.1:55432/harbour`),
 MinIO (`http://127.0.0.1:59000`, user `harbour`, password `harbour-dev-secret`,
-bucket `harbour`), the warm sandbox image `harbour-sandbox:dev` and the
-`harbour-sandbox` network. To time a container seed the way the container
-tier starts one, run on that network with `--runtime "${HARBOUR_SANDBOX_RUNTIME:-runc}"`
-and the vault as `HTTP(S)_PROXY`; the vault refuses everything not in
+bucket `harbour`) and the warm sandbox image `harbour-sandbox:dev`. To time a
+container seed the way the container tier starts one, create an internal
+network, connect `harbour-vault-proxy` to it with the alias `vault-proxy`, run
+on it with `--runtime "${HARBOUR_SANDBOX_RUNTIME:-runc}"` and the vault as
+`HTTP(S)_PROXY`; the vault refuses everything not in
 `vault-policy.json`, so add a route (for example `github.com`, `tunnel: true`)
 for git over HTTPS.
 

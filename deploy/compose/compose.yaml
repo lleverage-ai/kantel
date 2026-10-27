@@ -106,7 +106,13 @@ services:
       minio: { condition: service_healthy }
     healthcheck:
       # No shell tools in the image beyond bash's /dev/tcp.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"ok\":true' <&3"]
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"ok\":true' <&3",
+        ]
       interval: 1s
       timeout: 2s
       retries: 30
@@ -136,7 +142,13 @@ services:
       postgres: { condition: service_healthy }
       host-migrate: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3128/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3128/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
       interval: 1s
       timeout: 2s
       retries: 30

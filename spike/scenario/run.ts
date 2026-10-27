@@ -79,13 +79,29 @@ check("task finished (DONE)", settled.done, settled.done ? undefined : state.ans
 const results = state.toolResults;
 const step = (i: number) => results[i];
 const crashOffset = args.crash ? 1 : 0;
-check("page fetched through the vault (fixture requires the injected header)", step(0)?.isError === false && Number(step(0)?.output) > 0, `${step(0)?.output} bytes`);
+check(
+	"page fetched through the vault (fixture requires the injected header)",
+	step(0)?.isError === false && Number(step(0)?.output) > 0,
+	`${step(0)?.output} bytes`,
+);
 check("fetch ran in the isolate tier", step(0)?.tier === "isolate", step(0)?.tier);
 check("title extracted in the isolate", (step(1)?.output ?? "").includes("Tides of the Harbour"), step(1)?.output);
-check("notes/x.md written", step(2)?.isError === false && (step(2)?.output ?? "").includes("notes/x.md"), step(2)?.output);
-check("isolate sees the host write", (step(3)?.output ?? "").includes("# Research notes") && (step(3)?.output ?? "").includes("Tides"), step(3)?.tier);
+check(
+	"notes/x.md written",
+	step(2)?.isError === false && (step(2)?.output ?? "").includes("notes/x.md"),
+	step(2)?.output,
+);
+check(
+	"isolate sees the host write",
+	(step(3)?.output ?? "").includes("# Research notes") && (step(3)?.output ?? "").includes("Tides"),
+	step(3)?.tier,
+);
 const git = step(4 + crashOffset);
-check("git ran in the container tier", git?.tier === "container" && /^[0-9a-f]{40}$/.test((git?.output ?? "").trim()), `${git?.tier}: ${git?.output?.trim()}`);
+check(
+	"git ran in the container tier",
+	git?.tier === "container" && /^[0-9a-f]{40}$/.test((git?.output ?? "").trim()),
+	`${git?.tier}: ${git?.output?.trim()}`,
+);
 const after = step(5 + crashOffset);
 check(
 	"isolate sees the container's write (.git and git-commits.txt)",
@@ -103,7 +119,11 @@ if (args.crash) {
 		interrupted?.isError === true && !(interrupted?.output ?? "").includes("finished"),
 		interrupted?.output?.slice(0, 200),
 	);
-	check("session moved to another owner", state.owner !== null && state.owner !== killedOwner, `${killedOwner} -> ${state.owner}, fence ${state.fence}`);
+	check(
+		"session moved to another owner",
+		state.owner !== null && state.owner !== killedOwner,
+		`${killedOwner} -> ${state.owner}, fence ${state.fence}`,
+	);
 	if (args.fallback) {
 		const takeovers = (await (await fetch(`${args.fallback}/v0/takeovers`)).json()) as {
 			takeovers: { sessionId: string; resumedAt: number; acquiredAt?: number; previousExpiresAt?: number }[];
@@ -116,7 +136,9 @@ if (args.crash) {
 				takeoverDetail = {
 					killToAcquireMs: mine.acquiredAt - killedAt,
 					acquireToResumeMs: mine.resumedAt - mine.acquiredAt,
-					...(mine.previousExpiresAt === undefined ? {} : { acquireMinusOldExpiryMs: mine.acquiredAt - mine.previousExpiresAt }),
+					...(mine.previousExpiresAt === undefined
+						? {}
+						: { acquireMinusOldExpiryMs: mine.acquiredAt - mine.previousExpiresAt }),
 					killCmdMs,
 				};
 			}
@@ -145,5 +167,7 @@ const summary = {
 	passed: failed === 0,
 };
 if (args.json) await Bun.write(args.json, `${JSON.stringify(summary, null, 2)}\n`);
-console.log(`${failed === 0 ? "PASS" : "FAIL"}: ${checks.length - failed}/${checks.length} checks, ${Math.round(totalMs)} ms`);
+console.log(
+	`${failed === 0 ? "PASS" : "FAIL"}: ${checks.length - failed}/${checks.length} checks, ${Math.round(totalMs)} ms`,
+);
 process.exit(failed === 0 ? 0 : 1);

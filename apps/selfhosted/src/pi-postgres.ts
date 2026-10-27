@@ -11,9 +11,9 @@
 // Pin @earendil-works/pi-durable exactly: a Pi upgrade can change its SQL, and
 // the suite is what tells us whether the translation still holds.
 
+import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import type { Storage } from "@earendil-works/pi-durable";
 import pg from "pg";
 
 // int8 (bigint) and numeric come back as strings by default; Pi's core compares

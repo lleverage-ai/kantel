@@ -60,7 +60,7 @@ async function seed(workspaceId: string): Promise<{ version: string; manifest: M
 	const writes: Promise<unknown>[] = [];
 	for (let i = 0; i < fileCount; i++) {
 		const dir = `src/pkg${i % 10}/mod${i % 7}`;
-		manifest["src"] = { kind: "dir" };
+		manifest.src = { kind: "dir" };
 		manifest[`src/pkg${i % 10}`] = { kind: "dir" };
 		manifest[dir] = { kind: "dir" };
 		const bytes = new TextEncoder().encode(`// file ${i}\n${"x".repeat(fileBytes - 20)}\n`);
@@ -71,7 +71,11 @@ async function seed(workspaceId: string): Promise<{ version: string; manifest: M
 		);
 	}
 	await Promise.all(writes);
-	const head = await workspace.commit(workspaceId, { base: "empty", manifest, tier: "host", changed: Object.keys(manifest) }, lease);
+	const head = await workspace.commit(
+		workspaceId,
+		{ base: "empty", manifest, tier: "host", changed: Object.keys(manifest) },
+		lease,
+	);
 	if (head.version !== versionOf(manifest)) throw new Error("version mismatch");
 	return { version: head.version, manifest };
 }
@@ -99,7 +103,10 @@ const rows: Record<string, { ms: number[]; detail?: Record<string, number>[] }> 
 
 // Warm-up, not recorded: first image use, first connections.
 await isolate.list(`${tag}-warmup`, workspaceId, seeded.version);
-await container.exec({ sessionId: `${tag}-warmup`, workspaceId, version: seeded.version, command: "true" }, seeded.manifest);
+await container.exec(
+	{ sessionId: `${tag}-warmup`, workspaceId, version: seeded.version, command: "true" },
+	seeded.manifest,
+);
 
 for (let i = 0; i < runs; i++) {
 	const sessionId = `${tag}-iso-${i}`;
@@ -109,19 +116,29 @@ for (let i = 0; i < runs; i++) {
 
 	const firstId = `${tag}-first-${i}`;
 	const first = await time(() =>
-		isolate.exec({ sessionId: firstId, workspaceId, version: seeded.version, command: "ls -R | wc -l" }, seeded.manifest),
+		isolate.exec(
+			{ sessionId: firstId, workspaceId, version: seeded.version, command: "ls -R | wc -l" },
+			seeded.manifest,
+		),
 	);
 	rows["isolate.first"]!.ms.push(first.ms);
 	rows["isolate.first"]!.detail!.push(first.value.timings);
 	const warm = await time(() =>
-		isolate.exec({ sessionId: firstId, workspaceId, version: seeded.version, command: "ls -R | wc -l" }, seeded.manifest),
+		isolate.exec(
+			{ sessionId: firstId, workspaceId, version: seeded.version, command: "ls -R | wc -l" },
+			seeded.manifest,
+		),
 	);
 	rows["isolate.warm"]!.ms.push(warm.ms);
 
 	const started = await time(() =>
-		container.exec({ sessionId: `${tag}-ctr-${i}`, workspaceId, version: seeded.version, command: "true" }, seeded.manifest),
+		container.exec(
+			{ sessionId: `${tag}-ctr-${i}`, workspaceId, version: seeded.version, command: "true" },
+			seeded.manifest,
+		),
 	);
-	if (started.value.exitCode !== 0 || started.value.changed.length !== 0) throw new Error("container round trip changed the workspace");
+	if (started.value.exitCode !== 0 || started.value.changed.length !== 0)
+		throw new Error("container round trip changed the workspace");
 	rows["container.same"]!.ms.push(started.ms);
 	rows["container.same"]!.detail!.push(started.value.timings);
 	process.stderr.write(".");
@@ -139,7 +156,11 @@ const summary = Object.fromEntries(
 	Object.entries(rows).map(([name, row]) => {
 		const phases: Record<string, number> = {};
 		if (row.detail?.length) {
-			for (const key of Object.keys(row.detail[0]!)) phases[key] = pct(row.detail.map((d) => d[key] ?? 0), 50);
+			for (const key of Object.keys(row.detail[0]!))
+				phases[key] = pct(
+					row.detail.map((d) => d[key] ?? 0),
+					50,
+				);
 		}
 		return [
 			name,

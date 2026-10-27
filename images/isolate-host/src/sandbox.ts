@@ -47,7 +47,8 @@ export interface ExecResponse {
 const ROOT = "/workspace";
 
 const abs = (path: string) => (path === "" ? ROOT : `${ROOT}/${path}`);
-const rel = (path: string) => (path === ROOT ? "" : path.startsWith(`${ROOT}/`) ? path.slice(ROOT.length + 1) : undefined);
+const rel = (path: string) =>
+	path === ROOT ? "" : path.startsWith(`${ROOT}/`) ? path.slice(ROOT.length + 1) : undefined;
 
 function normalise(base: string, path: string): string {
 	const parts = (path.startsWith("/") ? path : `${base}/${path}`).split("/");
@@ -67,7 +68,13 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 async function plainFetch(
 	url: string,
-	options: { method?: string; headers?: Headers | Record<string, string>; body?: string | Uint8Array; followRedirects?: boolean; signal?: AbortSignal } = {},
+	options: {
+		method?: string;
+		headers?: Headers | Record<string, string>;
+		body?: string | Uint8Array;
+		followRedirects?: boolean;
+		signal?: AbortSignal;
+	} = {},
 ) {
 	const response = await fetch(url, {
 		method: options.method ?? "GET",

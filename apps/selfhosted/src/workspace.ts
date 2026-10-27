@@ -64,7 +64,8 @@ export class MinioWorkspace implements Workspace {
 		const head = await aws.fetch(url, { method: "HEAD" });
 		if (head.ok) return;
 		const created = await aws.fetch(url, { method: "PUT" });
-		if (!created.ok && created.status !== 409) throw new Error(`create bucket: ${created.status} ${await created.text()}`);
+		if (!created.ok && created.status !== 409)
+			throw new Error(`create bucket: ${created.status} ${await created.text()}`);
 	}
 
 	#key(workspaceId: string, kind: "blobs" | "manifests", name: string) {
@@ -124,7 +125,16 @@ export class MinioWorkspace implements Workspace {
 			await client.query(
 				`INSERT INTO harbour.workspace_versions (workspace_id, seq, version, base, tier, changed, session_id, fence)
 				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				[workspaceId, seq, version, commit.base, commit.tier, JSON.stringify(commit.changed), fence.sessionId, fence.fence],
+				[
+					workspaceId,
+					seq,
+					version,
+					commit.base,
+					commit.tier,
+					JSON.stringify(commit.changed),
+					fence.sessionId,
+					fence.fence,
+				],
 			);
 			await client.query("COMMIT");
 			return { workspaceId, version, seq };

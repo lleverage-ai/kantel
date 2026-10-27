@@ -13,14 +13,11 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 // Bundled just-bash sandbox, embedded as a text module by config.capnp.
 import sandboxSource from "harbour-sandbox-bundle";
-import type { ExecRequest, Manifest } from "./sandbox.ts";
+import type { ExecRequest, Manifest, default as Sandbox } from "./sandbox.ts";
 
 interface Env {
 	LOADER: {
-		get(
-			id: string,
-			factory: () => Promise<unknown>,
-		): { getEntrypoint(name?: string): any };
+		get(id: string, factory: () => Promise<unknown>): { getEntrypoint(name?: string): SandboxEntrypoint };
 	};
 	VAULT: Fetcher;
 	S3_ENDPOINT: string;
@@ -32,6 +29,17 @@ interface Env {
 	COMPATIBILITY_DATE: string;
 }
 
+/** The Dynamic Worker's RPC surface (sandbox.ts). */
+type SandboxEntrypoint = Pick<Sandbox, "exec" | "list">;
+
+/** Loopback bindings to this Worker's own entrypoints, with props (`ctx.exports`). */
+type LoaderContext = ExecutionContext & {
+	exports: {
+		Workspace(options: { props: WorkspaceProps }): unknown;
+		Egress(options: { props: EgressProps }): unknown;
+	};
+};
+
 interface WorkspaceProps {
 	workspaceId: string;
 }
@@ -41,7 +49,12 @@ interface EgressProps {
 }
 
 const s3 = (env: Env) =>
-	new AwsClient({ accessKeyId: env.S3_ACCESS_KEY, secretAccessKey: env.S3_SECRET_KEY, service: "s3", region: "us-east-1" });
+	new AwsClient({
+		accessKeyId: env.S3_ACCESS_KEY,
+		secretAccessKey: env.S3_SECRET_KEY,
+		service: "s3",
+		region: "us-east-1",
+	});
 
 const blobUrl = (env: Env, workspaceId: string, sha: string) =>
 	`${env.S3_ENDPOINT}/${env.S3_BUCKET}/workspaces/${encodeURIComponent(workspaceId)}/blobs/${sha}`;
@@ -91,7 +104,7 @@ interface LoadBody {
 	manifest?: Manifest;
 }
 
-function sandboxFor(env: Env, ctx: ExecutionContext & { exports: any }, body: LoadBody) {
+function sandboxFor(env: Env, ctx: LoaderContext, body: LoadBody) {
 	return env.LOADER.get(`session:${body.sessionId}`, async () => ({
 		compatibilityDate: env.COMPATIBILITY_DATE,
 		mainModule: "sandbox.js",
@@ -112,7 +125,7 @@ const json = (value: unknown, status = 200) =>
 	new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext & { exports: any }): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: LoaderContext): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.pathname === "/healthz") return json({ ok: true });
 		if (request.method !== "POST") return json({ error: "not found" }, 404);

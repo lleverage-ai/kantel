@@ -57,7 +57,11 @@ export class SpikeClient {
 	async settle(
 		sessionId: string,
 		options: { timeoutMs?: number; intervalMs?: number; onState?: (state: SessionState) => Promise<void> | void } = {},
-	): Promise<{ state: SessionState; done: boolean; result: { steps: number; outputs: string[]; errors: boolean[] } | undefined }> {
+	): Promise<{
+		state: SessionState;
+		done: boolean;
+		result: { steps: number; outputs: string[]; errors: boolean[] } | undefined;
+	}> {
 		const deadline = Date.now() + (options.timeoutMs ?? 180_000);
 		let last: SessionState | undefined;
 		while (Date.now() < deadline) {
@@ -69,7 +73,11 @@ export class SpikeClient {
 				if (answer.startsWith("FAILED")) return { state: last, done: false, result: undefined };
 			} catch (error) {
 				// A host that just died: keep polling (the caller may have switched base).
-				if (!(error instanceof Error) || !/fetch|ECONNREFUSED|socket|50[23]|timed out|Unable to connect/i.test(error.message)) throw error;
+				if (
+					!(error instanceof Error) ||
+					!/fetch|ECONNREFUSED|socket|50[23]|timed out|Unable to connect/i.test(error.message)
+				)
+					throw error;
 			}
 			await Bun.sleep(options.intervalMs ?? 200);
 		}

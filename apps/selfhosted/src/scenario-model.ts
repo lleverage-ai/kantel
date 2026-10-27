@@ -28,7 +28,10 @@ export function scenarioSteps(spec: ScenarioSpec): ScriptedStep[] {
 	if (spec.kind === "exec") return spec.steps;
 	const steps: ScriptedStep[] = [
 		{ tool: "bash", args: { command: `curl -sS -f ${spec.url} -o page.html && wc -c < page.html` } },
-		{ tool: "bash", args: { command: "grep -o '<h1>[^<]*</h1>' page.html | sed 's/<[^>]*>//g' > title.txt && cat title.txt" } },
+		{
+			tool: "bash",
+			args: { command: "grep -o '<h1>[^<]*</h1>' page.html | sed 's/<[^>]*>//g' > title.txt && cat title.txt" },
+		},
 		{
 			tool: "write",
 			args: {
@@ -63,7 +66,9 @@ const text = (message: { content: unknown }) =>
 	typeof message.content === "string"
 		? message.content
 		: Array.isArray(message.content)
-			? message.content.map((part: any) => (part.type === "text" ? part.text : "")).join("")
+			? (message.content as { type?: string; text?: string }[])
+					.map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+					.join("")
 			: "";
 
 /**
@@ -77,7 +82,7 @@ export interface StepsScenario {
 	finalAnswer: string;
 }
 
-const isInterrupted = (message: any) =>
+const isInterrupted = (message: { role: string; isError?: boolean; content: unknown }) =>
 	message.role === "toolResult" && message.isError === true && /interrupt/i.test(text(message));
 
 /**
@@ -146,7 +151,10 @@ export function scriptedResponse(context: TranscriptContext): AssistantMessage {
 		const errors = results.map((r) => (r as { isError?: boolean }).isError === true);
 		return fauxAssistantMessage(fauxText(`DONE ${JSON.stringify({ steps: results.length, outputs, errors })}`));
 	}
-	return fauxAssistantMessage(fauxToolCall(next.tool, next.args as Parameters<typeof fauxToolCall>[1], { id: `step-${start}-${results.length}` }), {
-		stopReason: "toolUse",
-	});
+	return fauxAssistantMessage(
+		fauxToolCall(next.tool, next.args as Parameters<typeof fauxToolCall>[1], { id: `step-${start}-${results.length}` }),
+		{
+			stopReason: "toolUse",
+		},
+	);
 }

@@ -9,7 +9,12 @@ export class Audit {
 		private readonly actor: string,
 	) {}
 
-	async record(sessionId: string | null, source: string, kind: string, detail: Record<string, unknown> = {}): Promise<void> {
+	async record(
+		sessionId: string | null,
+		source: string,
+		kind: string,
+		detail: Record<string, unknown> = {},
+	): Promise<void> {
 		await this.pool.query(
 			`INSERT INTO harbour.audit_events (session_id, actor, kind, detail) VALUES ($1, $2, $3, $4)`,
 			[sessionId, `${source}:${this.actor}`, kind, JSON.stringify(detail)],
@@ -18,6 +23,9 @@ export class Audit {
 
 	/** The per-session command log the scenario surface reports as `execs`. */
 	async exec(sessionId: string, record: object): Promise<void> {
-		await this.pool.query(`INSERT INTO harbour.execs (session_id, body) VALUES ($1, $2)`, [sessionId, JSON.stringify(record)]);
+		await this.pool.query(`INSERT INTO harbour.execs (session_id, body) VALUES ($1, $2)`, [
+			sessionId,
+			JSON.stringify(record),
+		]);
 	}
 }

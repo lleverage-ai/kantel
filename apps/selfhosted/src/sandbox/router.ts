@@ -1,34 +1,22 @@
-// Tool-to-tier routing: the tool picks the tier, not the agent. A command that
-// names a real binary just-bash cannot provide runs in a container on the same
-// workspace version; everything else runs in the isolate.
+// Tool-to-tier routing: the tool picks the tier, not the agent. It uses M0-BE1's
+// table (DEFAULT_TIER_ROUTES) and routing rule (routeTool: the program a
+// command starts, after any `cd ... &&`), so this target routes exactly as the
+// contract says. On top of that, two self-hosted escalations, both towards the
+// container (which can run anything the isolate can):
+// - any later command in a pipeline or list that names a container program
+//   (`cat x | python3 -`), which just-bash could not run either;
+// - an explicit leading `# harbour:container` line.
 
-import type { SandboxTier } from "../../../../spike/contracts/index.ts";
+import { DEFAULT_TIER_ROUTES, type SandboxTier } from "../../../../packages/contracts/src/sandbox.ts";
+import { routeTool } from "../../../../packages/sandbox/src/index.ts";
 
-/** Programs that need Linux. git reads could stay in the isolate (isomorphic-git) later; M0 escalates all git. */
-export const CONTAINER_PROGRAMS = new Set([
-	"git",
-	"bun",
-	"bunx",
-	"node",
-	"npm",
-	"npx",
-	"pnpm",
-	"yarn",
-	"deno",
-	"gh",
-	"make",
-	"cargo",
-	"go",
-	"pip",
-	"pip3",
-	"uv",
-	"apk",
-	"apt-get",
-	"python",
-	"python3",
-]);
+/** The programs the contract's table sends to the container. */
+export const CONTAINER_PROGRAMS = new Set(
+	DEFAULT_TIER_ROUTES.filter((row) => row.tool === "bash" && row.tier === "container").flatMap(
+		(row) => row.programs ?? [],
+	),
+);
 
-/** A command can ask for the container explicitly with a leading `# harbour:container` line. */
 const CONTAINER_DIRECTIVE = /^\s*#\s*harbour:container\b/;
 
 /** The first word of every simple command in a pipeline or list, skipping env assignments. */
@@ -37,7 +25,8 @@ export function commandWords(command: string): string[] {
 	for (const segment of command.split(/&&|\|\||[;|&\n(){}]|`|\$\(/)) {
 		const tokens = segment.trim().split(/\s+/).filter(Boolean);
 		while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) tokens.shift();
-		while (tokens[0] === "time" || tokens[0] === "exec" || tokens[0] === "command" || tokens[0] === "sudo") tokens.shift();
+		while (tokens[0] === "time" || tokens[0] === "exec" || tokens[0] === "command" || tokens[0] === "sudo")
+			tokens.shift();
 		const first = tokens[0];
 		if (first !== undefined) words.push(first.replace(/^.*\//, ""));
 	}
@@ -46,5 +35,6 @@ export function commandWords(command: string): string[] {
 
 export function tierFor(command: string): SandboxTier {
 	if (CONTAINER_DIRECTIVE.test(command)) return "container";
+	if (routeTool(DEFAULT_TIER_ROUTES, "bash", command) === "container") return "container";
 	return commandWords(command).some((word) => CONTAINER_PROGRAMS.has(word)) ? "container" : "isolate";
 }

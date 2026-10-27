@@ -62,7 +62,9 @@ for (const route of policy.routes) {
 const redactor = new Redactor([...new Set(secrets.values())]);
 
 // A bug in one request must not take the vault down for every session.
-process.on("unhandledRejection", (error) => console.error("vault: unhandled rejection:", redactor.text(String(error)).text));
+process.on("unhandledRejection", (error) =>
+	console.error("vault: unhandled rejection:", redactor.text(String(error)).text),
+);
 
 // ------------------------------------------------------------------ the CA
 
@@ -70,7 +72,13 @@ const caDir = env("VAULT_CA_DIR", "/var/lib/harbour-vault");
 const ca = loadCa();
 // One key for every intercepted host's certificate, new on each start.
 const leafKeyPath = `${caDir}/leaf.key`;
-const leafKey = execFileSync("openssl", ["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256"]).toString();
+const leafKey = execFileSync("openssl", [
+	"genpkey",
+	"-algorithm",
+	"EC",
+	"-pkeyopt",
+	"ec_paramgen_curve:P-256",
+]).toString();
 writeFileSync(leafKeyPath, leafKey, { mode: 0o600 });
 const contexts = new Map<string, tls.SecureContext>();
 
@@ -94,7 +102,14 @@ function contextFor(host: string): tls.SecureContext {
 	if (context !== undefined) return context;
 	const san = net.isIP(host) ? `IP:${host}` : `DNS:${host}`;
 	const args = ["req", "-x509", "-key", leafKeyPath, "-CA", ca.certPath, "-CAkey", ca.keyPath];
-	args.push("-subj", `/CN=${host.slice(0, 64)}`, "-days", "30", "-set_serial", `0x${crypto.randomUUID().replaceAll("-", "")}`);
+	args.push(
+		"-subj",
+		`/CN=${host.slice(0, 64)}`,
+		"-days",
+		"30",
+		"-set_serial",
+		`0x${crypto.randomUUID().replaceAll("-", "")}`,
+	);
 	args.push("-addext", `subjectAltName=${san}`, "-addext", "basicConstraints=critical,CA:FALSE");
 	args.push("-addext", "extendedKeyUsage=serverAuth");
 	const cert = execFileSync("openssl", args, { stdio: ["ignore", "pipe", "pipe"] }).toString();
@@ -135,9 +150,10 @@ async function callerOf(headers: http.IncomingHttpHeaders): Promise<Caller | und
 		const [, token] = Buffer.from(auth.slice(6), "base64").toString().split(":");
 		if (token) {
 			const row = (
-				await pool.query(`SELECT session_id, tier FROM harbour.sandbox_tokens WHERE token = $1 AND expires_at > now()`, [
-					token,
-				])
+				await pool.query(
+					`SELECT session_id, tier FROM harbour.sandbox_tokens WHERE token = $1 AND expires_at > now()`,
+					[token],
+				)
 			).rows[0];
 			if (row) return { sessionId: row.session_id, tier: row.tier };
 		}
@@ -244,7 +260,11 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		});
 		const clean = redactBytes(Buffer.from(await upstream.arrayBuffer()));
 		redactions += clean.count;
-		res.writeHead(upstream.status, { ...out, "content-length": String(clean.bytes.length), "x-harbour-vault": route.id });
+		res.writeHead(upstream.status, {
+			...out,
+			"content-length": String(clean.bytes.length),
+			"x-harbour-vault": route.id,
+		});
 		res.end(clean.bytes);
 		await audit(caller, "vault.allow", {
 			...where,
@@ -291,14 +311,15 @@ async function serve(req: http.IncomingMessage, res: http.ServerResponse) {
 
 /** Requests inside intercepted CONNECT tunnels, keyed by their TLS socket. */
 const tunnels = new WeakMap<object, { caller: Caller; host: string; port: number }>();
-const intercepted = http.createServer((req, res) =>
-	void guarded(res, async () => {
-		const tunnel = tunnels.get(req.socket);
-		if (tunnel === undefined) return deny(res, "no tunnel");
-		if (!(req.url ?? "").startsWith("/")) return deny(res, "origin-form request expected inside a tunnel");
-		const authority = tunnel.port === 443 ? tunnel.host : `${tunnel.host}:${tunnel.port}`;
-		await proxy(req, res, new URL(`https://${authority}${req.url}`), tunnel.caller);
-	}),
+const intercepted = http.createServer(
+	(req, res) =>
+		void guarded(res, async () => {
+			const tunnel = tunnels.get(req.socket);
+			if (tunnel === undefined) return deny(res, "no tunnel");
+			if (!(req.url ?? "").startsWith("/")) return deny(res, "origin-form request expected inside a tunnel");
+			const authority = tunnel.port === 443 ? tunnel.host : `${tunnel.host}:${tunnel.port}`;
+			await proxy(req, res, new URL(`https://${authority}${req.url}`), tunnel.caller);
+		}),
 );
 
 server.on("connect", (req, socket: net.Socket, head) => {
@@ -313,7 +334,11 @@ async function connect(req: http.IncomingMessage, socket: net.Socket, head: Buff
 	const caller = await callerOf(req.headers);
 	const authority = parseAuthority(req.url ?? "");
 	if (authority === undefined) {
-		await audit(caller, "vault.deny", { method: "CONNECT", host: String(req.url ?? "").slice(0, 200), reason: "bad authority" });
+		await audit(caller, "vault.deny", {
+			method: "CONNECT",
+			host: String(req.url ?? "").slice(0, 200),
+			reason: "bad authority",
+		});
 		socket.end("HTTP/1.1 400 Bad Request\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n");
 		return;
 	}

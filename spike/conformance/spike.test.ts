@@ -98,7 +98,9 @@ describe(`spike conformance (${base})`, () => {
 			expect(state.toolResults.map((r) => r.isError)).toEqual([false, true, true]);
 			expect(state.toolResults[0]?.text.trim()).toBe("[vault:redacted]");
 			const uses = (await surface.vault(sessionId)).filter((u) => u.tier === "isolate");
-			expect(uses.some((u) => u.decision === "allowed" && u.injected !== undefined && (u.redactions ?? 0) > 0)).toBe(true);
+			expect(uses.some((u) => u.decision === "allowed" && u.injected !== undefined && (u.redactions ?? 0) > 0)).toBe(
+				true,
+			);
 			expect(uses.filter((u) => u.decision === "denied").length).toBeGreaterThanOrEqual(2);
 		},
 		T,
@@ -120,7 +122,9 @@ describe(`spike conformance (${base})`, () => {
 			expect(state.toolResults[0]?.text.trim()).toBe("[vault:redacted]");
 			expect(state.toolResults[2]?.text.trim()).toBe("403");
 			const uses = (await surface.vault(sessionId)).filter((u) => u.tier === "container");
-			expect(uses.some((u) => u.decision === "allowed" && u.injected !== undefined && (u.redactions ?? 0) > 0)).toBe(true);
+			expect(uses.some((u) => u.decision === "allowed" && u.injected !== undefined && (u.redactions ?? 0) > 0)).toBe(
+				true,
+			);
 			expect(uses.filter((u) => u.decision === "denied").length).toBeGreaterThanOrEqual(2);
 		},
 		T,
@@ -132,7 +136,9 @@ describe(`spike conformance (${base})`, () => {
 			// A serves on a port for a while; B, at the same time, probes every
 			// address on its own /24 for that port. On a shared sandbox network B
 			// would find A; with per-sandbox networks it finds no one.
-			const serve = inContainer("(python3 -m http.server 8765 --bind 0.0.0.0 >/dev/null 2>&1 &) ; sleep 20; echo served");
+			const serve = inContainer(
+				"(python3 -m http.server 8765 --bind 0.0.0.0 >/dev/null 2>&1 &) ; sleep 20; echo served",
+			);
 			const probe = inContainer(
 				`sleep 4; python3 -c "${[
 					"import socket, concurrent.futures as f",
@@ -209,7 +215,12 @@ describe(`spike conformance (${base})`, () => {
 		async () => {
 			const sessionId = `conformance-${crypto.randomUUID().slice(0, 12)}`;
 			await surface.call("POST", sessionId, "setup", {
-				scenario: { name: "idempotency", seed: {}, steps: [bash("echo once >> count.txt && cat count.txt")], finalAnswer: FINAL },
+				scenario: {
+					name: "idempotency",
+					seed: {},
+					steps: [bash("echo once >> count.txt && cat count.txt")],
+					finalAnswer: FINAL,
+				},
 			});
 			const first = await surface.prompt(sessionId, "same-request");
 			const again = await surface.prompt(sessionId, "same-request");

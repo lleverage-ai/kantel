@@ -4,6 +4,9 @@ WORKDIR /harbour/apps/selfhosted
 COPY apps/selfhosted/package.json apps/selfhosted/bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY spike/contracts /harbour/spike/contracts
+# M0-BE1's tier table and router (type imports are erased at runtime).
+COPY packages/contracts/src /harbour/packages/contracts/src
+COPY packages/sandbox/src /harbour/packages/sandbox/src
 COPY apps/selfhosted/sql ./sql
 COPY apps/selfhosted/src ./src
 EXPOSE 8080

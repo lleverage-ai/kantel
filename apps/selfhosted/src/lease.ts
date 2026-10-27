@@ -35,7 +35,15 @@ export async function holdLiveness(client: pg.Client, owner: string): Promise<vo
 	await client.query(`SELECT pg_advisory_lock(${LIVENESS_CLASS}, hashtext($1))`, [owner]);
 }
 
-const row = (r: any): Lease => ({
+interface LeaseRow {
+	session_id: string;
+	owner: string;
+	owner_url: string;
+	fence: string | number;
+	expires_at: Date | string;
+}
+
+const row = (r: LeaseRow): Lease => ({
 	sessionId: r.session_id,
 	owner: r.owner,
 	ownerUrl: r.owner_url,

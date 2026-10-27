@@ -16,7 +16,8 @@ function octal(value: number, length: number): string {
 
 function header(name: string, options: { size: number; mode: number; type: string; linkname?: string }): Uint8Array {
 	const block = new Uint8Array(BLOCK);
-	const put = (text: string, offset: number, length: number) => block.set(encoder.encode(text).subarray(0, length), offset);
+	const put = (text: string, offset: number, length: number) =>
+		block.set(encoder.encode(text).subarray(0, length), offset);
 	put(name, 0, 100);
 	put(octal(options.mode & 0o7777, 8), 100, 8);
 	// Owned by the sandbox user (uid and gid 1000 in images/sandbox).

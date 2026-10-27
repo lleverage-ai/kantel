@@ -64,7 +64,12 @@ export class SharedSurface {
 	async run(steps: Step[], options: { seed?: Record<string, string>; timeoutMs?: number } = {}) {
 		const sessionId = `conformance-${crypto.randomUUID().slice(0, 12)}`;
 		await this.call("POST", sessionId, "setup", {
-			scenario: { name: "conformance", seed: options.seed ?? { "README.md": "conformance\n" }, steps, finalAnswer: FINAL },
+			scenario: {
+				name: "conformance",
+				seed: options.seed ?? { "README.md": "conformance\n" },
+				steps,
+				finalAnswer: FINAL,
+			},
 		});
 		const { submissionId } = await this.prompt(sessionId, `${sessionId}-prompt`);
 		const state = await this.settle(sessionId, submissionId, options.timeoutMs);
@@ -72,7 +77,10 @@ export class SharedSurface {
 	}
 
 	prompt(sessionId: string, requestId: string) {
-		return this.call<{ submissionId: string | number }>("POST", sessionId, "prompt", { content: "Run the steps.", requestId });
+		return this.call<{ submissionId: string | number }>("POST", sessionId, "prompt", {
+			content: "Run the steps.",
+			requestId,
+		});
 	}
 
 	async settle(sessionId: string, submissionId: string | number, timeoutMs = 180_000): Promise<State> {
