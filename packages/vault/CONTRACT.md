@@ -90,15 +90,106 @@ session-end teardown.
   grants and withdraws its pending proposals when the session ends", "ends a session's grants on abort and leaves its
   pending proposals and later grants working".
 
-## The in-memory implementation
+## Platform items and the connector credential read
 
-`createMemoryVault({ clock?, audit?, proposalTtlMs?, linkBase?, expiryPollMs?, access?, sessionEnd? })` keeps
-everything in maps per organisation, values in a private map. Expiry is read from the clock whenever a proposal or grant is read, and each pending wait checks the
-clock every `expiryPollMs` (default 25 ms), so a waiting agent hears of expiry on its own. Decisions on one proposal are
-serialised: a second `decide` or a `withdraw` while one is in flight is `conflict`, and `decide` makes every state
-change before its first await, so an expiry cannot land between them; a call that awaits the access check reads its
-record again afterwards. Without `access` it checks only the organisation (and "not an agent"); with `sessionEnd` it
-registers `endSession` as `vault`. It leaves out encryption at rest, durable waits and value rotation.
+- `putItem` with `owner: { kind: "platform" }` is for Harbour's operator only: a `system` caller. Anyone else is
+  `forbidden`, audited once as `access.denied` (operation `vault.putItem`), and nothing is stored. Platform items are
+  stored outside every organisation, so no organisation's caller lists, reads, proposes for or writes a policy on one
+  (`not_found`), and egress never injects one. Cases: "platform items: only a system caller creates one, and no
+  organisation's caller lists or reads it".
+- `readConnectorCredential(ctx, request)` (`ConnectorCredentials` in `models.ts`) is the model gateway's key read. A
+  worker call, like `decideEgress`: any caller but `system` is `forbidden`, audited once as `access.denied`, and records
+  no use. The item must belong to the connector's owner: a platform item for a platform connector; for an
+  organisation's connector, an item its organisation or one of its projects owns, read only for a session of that
+  organisation. The base URL's host must be one of the item's `hosts` (http is allowed here, as upstreams may be
+  internal), and the item must have a value. Otherwise `refused` (`invalid` for a base URL that is not http(s)). Every
+  read records a `VaultUse` (method `POST`, the base URL's host and path, the scope's session and project) as `injected`
+  or `denied`, audited `vault.use.injected` or `vault.use.denied` with `data.connectorId`; neither holds the value,
+  which is returned only as `ConnectorCredential.value`. Cases: the six `connector credentials:` cases.
+- `HarbourVault = Vault & ConnectorCredentials` (`@harbour/vault/engine`) is what `createVault` and `createMemoryVault`
+  return.
+
+## Storage, encryption and races
+
+`createVault({ store, cipher, clock?, audit?, proposalTtlMs?, linkBase?, expiryPollMs?, access?, sessionEnd? })`
+(`@harbour/vault/engine`) runs every rule above over a `VaultStore` (`@harbour/vault/store`). Without `access` it checks
+only the organisation (and "not an agent"); with `sessionEnd` it registers `endSession` as `vault`.
+
+- **Store.** One table per record kind: items (with the sealed value), ceilings, policies (with their use counts),
+  proposals, decisions, grants (with their use counts and revocation) and uses. Each row is an ID, the owning
+  organisation (`null` for platform items), a revision and the record as JSON, listed in insertion order. The store
+  holds no rules. Its one guarantee is `commit(writes)`: every write or none, each insert only for a new ID and each
+  update only while the row still has the revision the engine read (compare-and-set). Targets:
+  `createMemoryVaultStore` (maps), `createPostgresVaultStore` (`@harbour/vault-selfhosted`: `pg.Pool` or PGlite, one
+  transaction per multi-write commit, `UPDATE … WHERE revision = $n`, `migrate()` creating the schema
+  `harbour_vault` by default) and `createSqliteVaultStore` (`@harbour/vault-cloudflare`: a Durable Object's
+  `ctx.storage.sql`, each commit checked and applied in one synchronous step, inside `transactionSync`).
+- **Races across processes.** Every decision reads the store, and every change that races is one conditional commit,
+  so two vault instances over one store behave as one. A decision, a withdrawal, a session-end withdrawal and an expiry
+  each settle a proposal by a compare-and-set on its record, together with the decision, the grant and any pasted
+  value or new item: exactly one wins, and a loser reads again and answers `conflict` (or `expired`). A decision that
+  lands at the clock's expiry commits only before it. Spending a grant's or policy's use, and revoking one, are
+  compare-and-sets too, so `maxUses` is never exceeded and a revocation through one instance holds for the next
+  decision through any other. Within one instance a second `decide` or a `withdraw` while a decision is in flight is
+  still `conflict` at once. Cases: the suite above on every target, and the `races:` proof.
+- **Encryption at rest.** A `VaultCipher` seals values before they reach the store. `createAesGcmCipher({ key, keyId? })`
+  (`@harbour/vault/cipher`, Web Crypto only, so Workers and Node alike) uses AES-256-GCM with a random 96-bit IV per
+  seal, in the envelope `hv1.<keyId>.<iv>.<ciphertext>` (base64url). The additional data binds the item ID and value
+  version, so a sealed value copied onto another item, or replayed as another version, does not open; nor does one
+  sealed under another key ID (`unavailable`). Values are opened only to build an allowed egress decision's `inject`
+  and to answer `readConnectorCredential`. No plaintext value reaches the store: the `canary:` proof reads every row
+  raw.
+- **Durable waits.** `waitForOutcome` reads its proposal from the store every `expiryPollMs` (default 25 ms) while it
+  waits, so a vault instance built after a restart resolves a wait for a proposal decided through another instance; a
+  decision through the same instance wakes it at once. Expiry is still read from the clock: reading a pending proposal
+  past its expiry stores it as `expired`. Cases: the `durable waits:` proof.
+
+`createMemoryVault(options)` (`@harbour/vault/memory`) is `createVault` over `createMemoryVaultStore()` and a cipher
+with a random key that lives as long as the vault. It leaves out value rotation.
+
+## Egress decision API
+
+`createEgressDecisionApi({ vault, authenticate, basePath? })` (`@harbour/vault/egress-api`) is the fetch-style handler
+the egress proxy (`apps/vault-proxy`) and the model gateway call; the self-hosted vault and the VaultDO serve it.
+Routes, under `basePath` (default none), both `POST` with a JSON body:
+
+| Route | Body | Returns |
+| --- | --- | --- |
+| `/v1/egress/decisions` | `EgressRequest` | `EgressDecision` |
+| `/v1/connector-credentials` | `ConnectorCredentialRequest` | `ConnectorCredential` |
+
+`authenticate(request)` returns the calling component's `SystemContext` or throws `forbidden`;
+`createSharedKeyAuthenticator({ keys: { [component]: secret } })` checks `Authorization: Bearer <key>` in constant time
+(SHA-256 of both sides, every key tried). The vault still refuses any caller but `system`. Errors are
+`{ "error": { "code", "message" } }` with one status per `ErrorCode` (as in the workspace read API: `invalid` 400,
+`forbidden` and `refused` 403, `not_found` 404, `conflict` 409, `expired` 410, `exhausted` 429, `aborted` 499,
+`not_supported` 501, wrong method 405, `unavailable` 503), and 500 without detail for anything else. No error echoes a
+value. Every response is `cache-control: no-store`. `createEgressDecisionClient({ baseUrl, token, fetch? })` has
+`decideEgress(request)` and `readConnectorCredential(request)` and rebuilds a `HarbourError` from the error JSON.
+
+The Cloudflare target's `VaultDurableObjectCore({ sql, cipherKey, clock?, audit?, … })` builds the vault over the
+object's SQLite (migrating it) and exposes `decideEgress`, `readConnectorCredential` and the API handler as `fetch`,
+so a VaultDO class is a thin wrapper. Its single-threaded execution plus the conditional commits keep the race rules.
+
+## Host grant import
+
+`importHostGrants(vault, ctx, grants)` (`@harbour/vault/import`) is the vault side of importing a host's grants (such
+as Sal's) that have a host mapping. Each grant (`name`, `description?`, `hosts`, `injection`, `value?`, `routes`,
+`selector`) becomes an item (or reuses the one of the same name and owner: the selector's project, else its
+organisation) and one policy per route, through the vault's own calls and checks. A re-run creates nothing. A grant
+with no hosts or routes (local-only), or with a route to a host it is not mapped to, is listed in `refused` as
+`invalid`; one the vault refuses (outside the ceiling) as `refused`, keeping what was created before the refusal. Any
+other error is thrown. A reused item keeps its value.
+
+## Proofs (issue #13)
+
+Each durable target runs `registerVaultDurableProofs` (`@harbour/testing/vault`), one test file per proof, on PGlite
+and on `node:sqlite` (and on Postgres when `HARBOUR_TEST_DATABASE_URL` is set): `canary:` (the value appears only in
+an allowed decision's `inject.value`, never in a stored row, record, audit event, outcome, error, console output or
+placeholder, over a full flow through the egress API over HTTP), `revocation:` (revoked through one instance, refused
+by another within 5 s; in practice the next decision), `wrong code:` (a wrong code on a write, route or secret paste is
+`refused`, audited, and leaves every stored row as it was), `lifecycle:` (approve, narrow, deny, expire and revoke,
+each followed by a decision over the API), `durable waits:` and `races:`.
 
 ## Open questions
 

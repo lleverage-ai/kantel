@@ -7,7 +7,12 @@
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
-		"./memory": "./src/memory.ts"
+		"./memory": "./src/memory.ts",
+		"./engine": "./src/engine.ts",
+		"./store": "./src/store.ts",
+		"./cipher": "./src/cipher.ts",
+		"./egress-api": "./src/egress-api.ts",
+		"./import": "./src/import.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*"
