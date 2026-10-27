@@ -14,8 +14,10 @@ import {
 	type OrganisationId,
 	type Page,
 	type PageRequest,
+	type ProjectAccess,
 	type Recall,
 	type RecallManifestEntry,
+	type Role,
 	systemClock,
 } from "@harbour/contracts";
 import {
@@ -32,6 +34,12 @@ import {
 export interface MemoryMemoryOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
+	/**
+	 * Project access (settled question 7): a project-owned space needs `viewer` to read or recall and `operator` to
+	 * create, propose to or decide on. Without it the memory checks only the organisation; every target and every
+	 * conformance run passes one.
+	 */
+	readonly access?: ProjectAccess;
 }
 
 const DEFAULT_MAX_CONCEPTS = 5;
@@ -178,6 +186,7 @@ function escapeLinkText(text: string): string {
 export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
+	const access = options.access;
 
 	const spaces = new Map<string, StoredSpace>();
 	const proposals = new Map<string, StoredProposal>();
@@ -200,6 +209,28 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			throw new HarbourError("not_found", `No memory space ${spaceId}`);
 		}
 		return stored;
+	}
+
+	/**
+	 * Checks project access on a project-owned space; organisation- and user-owned spaces keep their existing rules. An
+	 * agent acts through its own session.
+	 */
+	async function requireSpace(
+		ctx: CallContext,
+		stored: StoredSpace,
+		needed: Role,
+		operation: string,
+		subject: { readonly kind: string; readonly id: string } = { kind: "memory.space", id: stored.space.id },
+	): Promise<void> {
+		const owner = stored.space.owner;
+		if (access === undefined || owner.kind !== "project") return;
+		await access.require(ctx, {
+			projectId: owner.projectId,
+			...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId } : {}),
+			needed,
+			operation,
+			subject,
+		});
 	}
 
 	function activeConcept(stored: StoredSpace, conceptId: string): Concept {
@@ -332,6 +363,9 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				throw new HarbourError("invalid", "A memory space must be owned within the caller's organisation");
 			}
 			if (!nonEmpty(input.name)) throw new HarbourError("invalid", "A memory space needs a name");
+			if (access !== undefined && owner.kind === "project") {
+				await access.require(ctx, { projectId: owner.projectId, needed: "operator", operation: "memory.createSpace" });
+			}
 			const space: MemorySpace = {
 				id: `space_${crypto.randomUUID()}`,
 				owner: { ...owner },
@@ -357,13 +391,16 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 		},
 
 		async getConcept(ctx, spaceId, conceptId) {
-			const concept = spaceFor(ctx, spaceId).concepts.get(conceptId);
+			const stored = spaceFor(ctx, spaceId);
+			await requireSpace(ctx, stored, "viewer", "memory.getConcept");
+			const concept = stored.concepts.get(conceptId);
 			if (concept === undefined) throw new HarbourError("not_found", `No concept ${conceptId}`);
 			return concept;
 		},
 
 		async listConcepts(ctx, spaceId, filter, page) {
 			const stored = spaceFor(ctx, spaceId);
+			await requireSpace(ctx, stored, "viewer", "memory.listConcepts");
 			const matching = [...stored.concepts.values()]
 				.filter((concept) => filter?.status === undefined || concept.status === filter.status)
 				.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
@@ -382,10 +419,14 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				(concept.scope.kind === "project" && projects.has(concept.scope.project)) ||
 				(concept.scope.kind === "job" && jobs.has(concept.scope.job));
 
+			// Every space is found before any is checked, so a foreign one is `not_found` whatever its place; one refused
+			// project space refuses the whole recall.
+			const named = [...new Set(request.spaceIds)].map((spaceId) => spaceFor(ctx, spaceId));
+			for (const stored of named) await requireSpace(ctx, stored, "viewer", "memory.recall");
 			const candidates = new Map<string, Concept>();
 			const keyOf = (concept: Concept) => `${concept.spaceId}\u0000${concept.id}`;
-			for (const spaceId of new Set(request.spaceIds)) {
-				for (const concept of spaceFor(ctx, spaceId).concepts.values()) {
+			for (const stored of named) {
+				for (const concept of stored.concepts.values()) {
 					if (concept.status === "active" && inScope(concept)) candidates.set(keyOf(concept), concept);
 				}
 			}
@@ -433,6 +474,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 		async propose(ctx, spaceId, write) {
 			const stored = spaceFor(ctx, spaceId);
+			await requireSpace(ctx, stored, "operator", "memory.propose");
 			let duplicate: string | undefined;
 			switch (write.op) {
 				case "remember":
@@ -498,6 +540,9 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			if (input.outcome !== "apply" && input.outcome !== "reject") {
 				throw new HarbourError("invalid", "The outcome is apply or reject");
 			}
+			const space = spaceFor(ctx, record.proposal.spaceId);
+			await requireSpace(ctx, space, "operator", "memory.decide", { kind: "memory.proposal", id: proposalId });
+			// Checked after the await: another decision may have settled the proposal meanwhile.
 			assertPending(record.proposal);
 			const decided = (status: "applied" | "rejected"): MemoryProposal => ({
 				...record.proposal,
@@ -524,7 +569,6 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 				return record.proposal;
 			}
 
-			const space = spaceFor(ctx, record.proposal.spaceId);
 			return serially(space, async () => {
 				// Re-read inside the writer: an earlier apply or a reject may have settled this proposal meanwhile.
 				assertPending(record.proposal);
@@ -548,7 +592,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 		},
 
 		async listProposals(ctx, spaceId, filter, page) {
-			spaceFor(ctx, spaceId);
+			await requireSpace(ctx, spaceFor(ctx, spaceId), "viewer", "memory.listProposals");
 			const matching = [...proposals.values()]
 				.map((stored) => stored.proposal)
 				.filter(
@@ -560,6 +604,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 		async exportBundle(ctx, spaceId) {
 			const stored = spaceFor(ctx, spaceId);
+			await requireSpace(ctx, stored, "viewer", "memory.exportBundle");
 			const concepts = [...stored.concepts.values()].sort((left, right) =>
 				left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
 			);
