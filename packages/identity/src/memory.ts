@@ -11,6 +11,7 @@ import {
 	type Authentication,
 	type CallContext,
 	type Clock,
+	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
 	type IssuedApiKey,
@@ -29,6 +30,7 @@ import {
 	roleSatisfies,
 	type ServiceId,
 	type ServiceIdentity,
+	type SignIn,
 	systemClock,
 	systemContext,
 	type User,
@@ -480,6 +482,51 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				projectIds: key.projectIds,
 				role: key.role,
 			};
+		},
+
+		async signIn(ctx, identity): Promise<SignIn> {
+			await requireSystem(ctx, "identity.signIn", { ...(audit === undefined ? {} : { audit }), clock });
+			if (
+				typeof identity?.issuer !== "string" ||
+				identity.issuer === "" ||
+				typeof identity.subject !== "string" ||
+				identity.subject === ""
+			) {
+				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
+			}
+			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
+			let stored = [...users.values()].find((candidate) => candidate.user.externalSubject === externalSubject);
+			if (stored === undefined) {
+				const email = identity.emailVerified === true ? identity.email?.trim().toLowerCase() : undefined;
+				const invited =
+					email === undefined || email === ""
+						? []
+						: [...users.values()].filter(
+								(candidate) =>
+									candidate.user.externalSubject === undefined && candidate.user.email?.trim().toLowerCase() === email,
+							);
+				const only = invited.length === 1 ? invited[0] : undefined;
+				if (only === undefined) throw forbidden("no user matches this sign-in");
+				stored = { ...only, user: Object.freeze({ ...only.user, externalSubject }) };
+				users.set(stored.user.id, stored);
+				await emit(
+					// The person signing in links themselves; the authenticator only carried their token.
+					{ actor: { kind: "human", userId: stored.user.id }, organisationId: stored.createdInOrganisationId },
+					"identity.user.linked",
+					stored.createdInOrganisationId,
+					{ kind: "identity.user", id: stored.user.id },
+					{ issuer: identity.issuer },
+				);
+			}
+			const userId = stored.user.id;
+			const organisationIds = new Set<OrganisationId>();
+			if (organisations.has(stored.createdInOrganisationId)) organisationIds.add(stored.createdInOrganisationId);
+			for (const binding of bindings.values()) {
+				if (binding.principal.kind === "user" && binding.principal.userId === userId) {
+					organisationIds.add(binding.organisationId);
+				}
+			}
+			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {

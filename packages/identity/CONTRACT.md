@@ -54,6 +54,21 @@ organisation. Host apps call with API keys scoped to projects.
   or no caller is `forbidden` and audited once as `access.denied`, never with the key's secret — "worker calls:
   roleOf and authenticateApiKey refuse every caller but system".
 
+## Sign-in (M1-BE7)
+
+`signIn(ctx, identity)` resolves a person a sign-in provider vouched for (`ExternalIdentity`: the verified `issuer`,
+`subject`, and optionally `email`, `emailVerified` and `name` of a Cloudflare Access or OIDC token) to a `SignIn`: their
+`User` and the organisations they may act in (created in, or holding a role in). Harbour is invite-only: an admin
+creates the user, and sign-in never creates one.
+
+- A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person — "signIn
+  finds a user by issuer and subject, links an invited user by verified email once, and refuses anyone else".
+- Otherwise a provider-verified email links the one user with that email (case-insensitive) and no `externalSubject`,
+  once, audited as `identity.user.linked` with the user as actor. An unverified email, an email two unlinked users
+  share, a linked user's email at a new subject, or nobody at all is `forbidden`.
+- The organisations — "signIn lists the organisations the user was created in or holds a role in".
+- A worker call: the authenticator makes it as `system` — "worker calls: signIn refuses every caller but system".
+
 ## The authenticator (M1-BE7)
 
 `Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Harbour API takes. It turns a
@@ -89,7 +104,7 @@ instance. It reads time only from the clock (key expiry is `now >= expiresAt`) a
 - `listRoleBindings` with a project lists that project's bindings (viewer on it needed); without, all of the
   organisation's (organisation-wide viewer needed).
 
-Left out: persistence, sign-in (Cloudflare Access, OIDC) and user lookup by external subject, listing services,
+Left out: persistence, listing services,
 deleting records, rate limits on `authenticateApiKey`, and a guard against revoking the last organisation admin.
 
 ## Open questions

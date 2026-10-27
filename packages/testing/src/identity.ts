@@ -2,20 +2,22 @@
  * Conformance suite for `IdentityDirectory`. Every target registers it with a provider that builds a fresh directory
  * wired to the case's clock and audit sink.
  */
-import type {
-	Actor,
-	CallContext,
-	IdentityDirectory,
-	Organisation,
-	ProjectId,
-	Role,
-	ServiceIdentity,
-	SystemContext,
-	User,
+import {
+	type Actor,
+	type CallContext,
+	externalSubjectOf,
+	type IdentityDirectory,
+	type Organisation,
+	type ProjectId,
+	type Role,
+	type ServiceIdentity,
+	type SystemContext,
+	type User,
 } from "@harbour/contracts";
 import {
 	actors,
 	assertAccessDenied,
+	assertWorkerCallRefused,
 	type ConformanceAssertions,
 	type ConformanceCase,
 	type ConformanceDeps,
@@ -567,6 +569,120 @@ export function createIdentityConformance(options: {
 					role: "viewer",
 				});
 				a.deepEqual(await ids((await identity.authenticateApiKey(WORKER, issued.secret)).actor), [third.id]);
+			}),
+		},
+		{
+			name: "signIn finds a user by issuer and subject, links an invited user by verified email once, and refuses anyone else",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const issuer = "https://idp.example.test";
+				const invited = await identity.createUser(tenant.admin, { name: "Ada", email: "Ada@Example.test" });
+				const linked = await identity.createUser(tenant.admin, {
+					name: "Grace",
+					externalSubject: externalSubjectOf(issuer, "grace-sub"),
+				});
+
+				const found = await identity.signIn(WORKER, { issuer, subject: "grace-sub" });
+				a.strictEqual(found.user.id, linked.id, "a linked user is found by issuer and subject");
+
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { issuer, subject: "ada-sub", email: "ada@example.test" }),
+					"forbidden",
+					"an unverified email links nobody",
+				);
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { issuer: "https://other.example.test", subject: "grace-sub" }),
+					"forbidden",
+					"the same subject at another issuer is someone else",
+				);
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { issuer, subject: "stranger", email: "nobody@example.test", emailVerified: true }),
+					"forbidden",
+					"sign-in never creates a user",
+				);
+
+				const before = deps.audit.ofType("identity.user.linked").length;
+				const first = await identity.signIn(WORKER, {
+					issuer,
+					subject: "ada-sub",
+					email: " ada@EXAMPLE.test",
+					emailVerified: true,
+				});
+				a.strictEqual(first.user.id, invited.id, "a verified email links the invited user");
+				a.strictEqual(first.user.externalSubject, externalSubjectOf(issuer, "ada-sub"));
+				a.deepEqual((await identity.getUser(tenant.admin, invited.id)).externalSubject, first.user.externalSubject);
+				const linkedEvents = deps.audit.ofType("identity.user.linked").slice(before);
+				a.strictEqual(linkedEvents.length, 1, "linking is audited once");
+				a.partialDeepEqual(linkedEvents[0], {
+					actor: { kind: "human", userId: invited.id },
+					organisationId: tenant.organisation.id,
+					subject: { kind: "identity.user", id: invited.id },
+				});
+
+				const again = await identity.signIn(WORKER, { issuer, subject: "ada-sub" });
+				a.strictEqual(again.user.id, invited.id, "the link holds without the email");
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, {
+						issuer,
+						subject: "ada-other-device",
+						email: "ada@example.test",
+						emailVerified: true,
+					}),
+					"forbidden",
+					"a linked user's email links no second subject",
+				);
+				a.strictEqual(deps.audit.ofType("identity.user.linked").length, before + 1, "nothing else was linked");
+
+				await identity.createUser(tenant.admin, { name: "Twin one", email: "twin@example.test" });
+				await identity.createUser(tenant.admin, { name: "Twin two", email: "twin@example.test" });
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { issuer, subject: "twin", email: "twin@example.test", emailVerified: true }),
+					"forbidden",
+					"an email two unlinked users share links neither",
+				);
+				await a.rejectsWithCode(identity.signIn(WORKER, { issuer: "", subject: "x" }), "invalid");
+			}),
+		},
+		{
+			name: "signIn lists the organisations the user was created in or holds a role in",
+			run: withSubject(async ({ identity }) => {
+				const home = await createTenant(identity, "Home");
+				const away = await createTenant(identity, "Away");
+				const elsewhere = await createTenant(identity, "Elsewhere");
+				const issuer = "https://idp.example.test";
+				const user = await identity.createUser(home.admin, {
+					name: "Member",
+					externalSubject: externalSubjectOf(issuer, "member"),
+				});
+				const awayProject = await identity.createProject(away.admin, { name: "P" });
+				await identity.grantRole(away.admin, {
+					principal: { kind: "user", userId: user.id },
+					role: "viewer",
+					projectId: awayProject.id,
+				});
+				const { organisationIds } = await identity.signIn(WORKER, { issuer, subject: "member" });
+				a.deepEqual(
+					[...organisationIds].sort(),
+					[home.organisation.id, away.organisation.id].sort(),
+					"home and the organisation with a role, not a third",
+				);
+				a.ok(!organisationIds.includes(elsewhere.organisation.id));
+			}),
+		},
+		{
+			name: "worker calls: signIn refuses every caller but system",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const issuer = "https://idp.example.test";
+				await identity.createUser(tenant.admin, { name: "U", externalSubject: externalSubjectOf(issuer, "u") });
+				await assertWorkerCallRefused(
+					a,
+					deps,
+					"identity.signIn",
+					(ctx) => identity.signIn(ctx, { issuer, subject: "u" }),
+					tenant.organisation.id,
+				);
+				a.ok((await identity.signIn(WORKER, { issuer, subject: "u" })).user !== undefined);
 			}),
 		},
 		{
