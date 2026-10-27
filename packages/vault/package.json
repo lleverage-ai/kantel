@@ -11,5 +11,8 @@
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*"
+	},
+	"devDependencies": {
+		"@harbour/testing": "workspace:*"
 	}
 }
