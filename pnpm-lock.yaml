@@ -46,6 +46,12 @@ importers:
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../../packages/vault
+      "@harbour/vault-cloudflare":
+        specifier: workspace:*
+        version: link:../../targets/cloudflare/vault
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace

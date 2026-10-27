@@ -19,9 +19,17 @@
 		"run_worker_first": ["/v1/*", "/healthz"]
 	},
 	"durable_objects": {
-		"bindings": [{ "name": "STACK", "class_name": "HarbourStack" }]
+		"bindings": [
+			{ "name": "STACK", "class_name": "HarbourStack" },
+			// The VaultDO (src/vault-object.ts): every vault record in its own SQLite. Its key and the components' shared
+			// keys are Worker secrets (src/vault.ts), never vars here.
+			{ "name": "VAULTS", "class_name": "HarbourVault" }
+		]
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] }],
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] },
+		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] }
+	],
 	// Named but not given IDs: the first real deploy creates them (wrangler's automatic provisioning), later deploys find
 	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces.
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour" }],
@@ -49,7 +57,10 @@
 				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*"]
 			},
 			"durable_objects": {
-				"bindings": [{ "name": "STACK", "class_name": "HarbourStack" }]
+				"bindings": [
+					{ "name": "STACK", "class_name": "HarbourStack" },
+					{ "name": "VAULTS", "class_name": "HarbourVault" }
+				]
 			},
 			// Local only: wrangler dev simulates both.
 			"d1_databases": [{ "binding": "DB", "database_name": "harbour-dev" }],
@@ -57,7 +68,12 @@
 			"vars": {
 				"HARBOUR_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
 				"HARBOUR_ACCESS_AUD": "harbour-dev-aud",
-				"HARBOUR_ADMIN_EMAIL": "dev@harbour.test"
+				"HARBOUR_ADMIN_EMAIL": "dev@harbour.test",
+				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001") and the
+				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
+				// secrets; scripts/deploy-config.ts refuses them as vars.
+				"HARBOUR_VAULT_KEY": "aGFyYm91ci1sb2NhbC1kZXYtdmF1bHQta2V5LTAwMDE=",
+				"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN": "harbour-dev-model-gateway-token"
 			}
 		}
 	}

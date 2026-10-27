@@ -23,6 +23,8 @@
 		"@harbour/identity": "workspace:*",
 		"@harbour/runtime": "workspace:*",
 		"@harbour/sql": "workspace:*",
+		"@harbour/vault": "workspace:*",
+		"@harbour/vault-cloudflare": "workspace:*",
 		"@harbour/workspace": "workspace:*"
 	},
 	"devDependencies": {

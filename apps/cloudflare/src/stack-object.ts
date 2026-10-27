@@ -17,9 +17,14 @@ import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
+import type { VaultVars } from "./vault.ts";
 
-export interface Env extends GatewayVars {
+export { STACK_NAME } from "./route.ts";
+
+export interface Env extends GatewayVars, VaultVars {
 	readonly STACK: DurableObjectNamespace;
+	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
+	readonly VAULTS: DurableObjectNamespace;
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
 	readonly WORKSPACES: R2Bucket;
@@ -29,9 +34,6 @@ export interface Env extends GatewayVars {
 const BOOTSTRAP_KEY = "harbour.bootstrap";
 /** Workspace objects live under this prefix in the bucket. */
 const WORKSPACE_PREFIX = "workspaces";
-
-/** The one stack object's name. */
-export const STACK_NAME = "m1";
 
 export abstract class HarbourStackBase extends DurableObject<Env> {
 	#ready: Promise<{ stack: Stack; gateway: Gateway }> | undefined;
