@@ -153,6 +153,29 @@ describe("the console on the session API", () => {
 		expect(states.at(-1)?.sessions[0]?.unread).toBe(true);
 	});
 
+	it("doesn't mark a session unread when you watched it finish and left before the list caught up", async () => {
+		const { apiFetch, client, create, open, script } = await setUp();
+		const id = await create("proj-a", "Watched");
+		const slow = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: (input, init) => apiFetch(new Request(input, init)),
+			listPollMs: 300,
+		});
+		const states: { sessions: readonly { id: string; unread?: boolean }[] }[] = [];
+		cleanups.push(slow.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.length > 0, "the first list");
+		const release = slow.markRead(id);
+		const session = open(id);
+		script.reply({ text: "Finished" });
+		await client.prompt(id, "Go");
+		await eventually(() => texts(session).includes("assistant:Finished"), "the answer on screen");
+		const before = states.length;
+		release();
+		await eventually(() => states.length > before + 1, "two more lists");
+		expect(states.at(-1)?.sessions[0]?.unread).toBeUndefined();
+	});
+
 	it("lists every page of sessions, and finds a linked session the list hasn't shown", async () => {
 		const { apiFetch, client, create } = await setUp();
 		const first = await create("proj-old");

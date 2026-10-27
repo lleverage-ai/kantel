@@ -272,14 +272,24 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			};
 			read();
 			let released = false;
-			return () => {
-				if (released) return;
-				released = true;
-				// It was on screen until now, so what it did meanwhile has been seen.
-				read();
+			const close = () => {
 				const count = (open.get(sessionId) ?? 1) - 1;
 				if (count > 0) open.set(sessionId, count);
 				else open.delete(sessionId);
+			};
+			return () => {
+				if (released) return;
+				released = true;
+				read();
+				// It was on screen until now, so whatever it did meanwhile has been seen, though the list may not have
+				// caught up: the session's own updatedAt, read now, is the mark. It counts as open until then.
+				getJson<SessionRecord>(sessionUrl(sessionId))
+					.then((record) => {
+						latest.set(sessionId, Math.max(latest.get(sessionId) ?? 0, record.updatedAt));
+						read();
+					})
+					.catch(() => {})
+					.finally(close);
 			};
 		},
 	};
