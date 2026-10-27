@@ -36,6 +36,21 @@ describe("the console's vault and audit stand-in", () => {
 		expect(audit.directory.item?.(linear!.value)).toBe("Linear API key");
 	});
 
+	it("files the second organisation's uses under the same choices", async () => {
+		const { audit } = await createRecordedOversight(NOW, { historyCount: 4000 });
+		const choices = new Set(audit.choices.credentials?.map((choice) => choice.value));
+		const labs = audit.choices.organisations?.[1]?.value;
+		expect(labs).toBeDefined();
+		const named = new Set<string>();
+		for await (const page of readAll(
+			audit.source,
+			toQuery({ range: "all", kind: "credential-use", organisationId: labs! }, NOW),
+		))
+			for (const event of page) if (typeof event.data?.itemId === "string") named.add(event.data.itemId);
+		expect(named.size).toBeGreaterThan(0);
+		for (const itemId of named) expect(choices.has(itemId), itemId).toBe(true);
+	});
+
 	it("links only the requests the vault holds", async () => {
 		const { audit } = await createRecordedOversight(NOW, { historyCount: 600 });
 		const events = [];

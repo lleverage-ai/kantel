@@ -73,6 +73,18 @@ describe("the audit log over the audit query API", () => {
 		expect(other.items.every((event) => event.organisationId === "org_b")).toBe(true);
 	});
 
+	it("replaces an organisation header the credentials carry, whatever its case", async () => {
+		const { fetcher } = await served();
+		const source = auditApiSource({
+			baseUrl: "https://harbour.test",
+			fetch: fetcher,
+			headers: () => ({ authorization: "Bearer tom", "Harbour-Organisation": "org_a" }),
+		});
+		const page = await source.query(toQuery({ range: "all", kind: "all", organisationId: "org_b" }, NOW));
+		expect(page.items).toHaveLength(20);
+		expect(page.items.every((event) => event.organisationId === "org_b")).toBe(true);
+	});
+
 	it("passes the server's refusal through for an organisation the caller isn't in", async () => {
 		const { fetcher } = await served();
 		const source = auditApiSource({

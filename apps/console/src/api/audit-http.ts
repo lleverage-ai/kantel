@@ -26,7 +26,11 @@ export function auditApiSource(options: AuditApiSourceOptions): AuditSource {
 				...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 				headers: async () => {
 					const base = (await options.headers?.()) ?? {};
-					return organisationId === undefined ? base : { ...base, [ORGANISATION_HEADER]: organisationId };
+					if (organisationId === undefined) return base;
+					// Header names are case-insensitive: the organisation asked for replaces any the credentials carry.
+					const headers = new Headers(base);
+					headers.set(ORGANISATION_HEADER, organisationId);
+					return Object.fromEntries(headers);
 				},
 			});
 			clients.set(key, client);

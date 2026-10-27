@@ -24,30 +24,35 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 	const [grants, setGrants] = useState<readonly GrantSummary[]>([]);
 	const [grantsLoading, setGrantsLoading] = useState(true);
 	const [grantsError, setGrantsError] = useState<string>();
-	// Replies for a request the screen has moved on from are dropped.
-	const current = useRef(proposalId);
-	current.current = proposalId;
+	// Each read is numbered; only the latest of its kind may change the screen, so a slow older reply (a reload a stop
+	// started before another stop's) never puts back what a newer one removed, and nothing lands after unmounting.
+	const requestRead = useRef(0);
+	const grantsRead = useRef(0);
 
 	const loadRequest = useCallback(async () => {
+		const mine = ++requestRead.current;
 		if (proposalId === undefined) return;
 		try {
 			const loaded = await vault.request(proposalId);
-			if (current.current !== proposalId) return;
+			if (requestRead.current !== mine) return;
 			setRequest(loaded);
 			setError(undefined);
 		} catch (caught) {
-			if (current.current === proposalId) setError(loadError(caught));
+			if (requestRead.current === mine) setError(loadError(caught));
 		}
 	}, [vault, proposalId]);
 
 	const loadGrants = useCallback(async () => {
+		const mine = ++grantsRead.current;
 		try {
-			setGrants(await vault.grants());
+			const loaded = await vault.grants();
+			if (grantsRead.current !== mine) return;
+			setGrants(loaded);
 			setGrantsError(undefined);
 		} catch {
-			setGrantsError("Couldn't load your active grants.");
+			if (grantsRead.current === mine) setGrantsError("Couldn't load your active grants.");
 		} finally {
-			setGrantsLoading(false);
+			if (grantsRead.current === mine) setGrantsLoading(false);
 		}
 	}, [vault]);
 
@@ -55,9 +60,15 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 		setRequest(undefined);
 		setError(undefined);
 		void loadRequest();
+		return () => {
+			requestRead.current += 1;
+		};
 	}, [loadRequest]);
 	useEffect(() => {
 		void loadGrants();
+		return () => {
+			grantsRead.current += 1;
+		};
 	}, [loadGrants]);
 
 	const onDecide = useCallback((input: DecisionInput): Promise<Decision> => vault.decide(input), [vault]);
@@ -79,8 +90,8 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 
 	return (
 		<>
-			{/* The request's own heading names it once it loads; until then, or without one, the page's. */}
-			{request === undefined ? (
+			{/* The request's own heading names it once it shows; until then, without one, or on an error, the page's. */}
+			{request === undefined || error !== undefined ? (
 				<h1 className="hb-sr-only">{proposalId === undefined ? "Vault" : "Vault request"}</h1>
 			) : null}
 			<VaultPage

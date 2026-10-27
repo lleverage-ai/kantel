@@ -491,9 +491,10 @@ export async function appendHistory(
 	for (let index = 0; index < events.length; index += 5000) {
 		await store.append(systemContext("fixture"), events.slice(index, index + 5000));
 	}
-	// The second organisation's log: a tenth the size, from another seed, so its rows differ from the first's.
+	// The second organisation's log: a tenth the size, from another seed, so its rows differ from the first's. Its
+	// items are remapped too, as the view's credential choices are shared between the two.
 	const labs = generateEvents(Math.max(50, Math.round(count / 10)), end, 11).map((event) => ({
-		...event,
+		...remapItem(event, itemIds),
 		organisationId: SECOND_ORGANISATION,
 	}));
 	await store.append(systemContext("fixture"), labs);
