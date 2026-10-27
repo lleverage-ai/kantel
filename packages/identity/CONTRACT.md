@@ -172,9 +172,9 @@ in-memory directory, with the same choices, errors and audit events.
   subject leave one, and the other is `conflict`; linking by email updates only a user still unlinked.
 - `listProjects` pages in creation order (`nextCursor` is the last project's ID, as in memory). Lists bind as one JSON
   parameter, so no statement meets D1's 100-parameter cap. Audit events go to the sink after the write.
-- Differences from memory: `createUser` refuses an `email` that is not a string (`invalid`); Postgres may commit two
-  concurrent `createProject`s out of creation order, so a reader paging at that moment can miss the earlier one until
-  it pages again.
+- On Postgres each `createProject` takes an advisory lock first, so projects commit in creation order and a reader
+  paging by cursor never skips one that commits late.
+- Differences from memory: `createUser` refuses an `email` that is not a string (`invalid`).
 
 ## Open questions
 
