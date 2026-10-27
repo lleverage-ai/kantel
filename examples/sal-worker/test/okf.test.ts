@@ -132,6 +132,9 @@ describe("okfConcept", () => {
 		expect(() =>
 			okfConcept("personal/x", conceptFile({ title: "X", sal: { superseded_by: "personal/x" } }, "B")),
 		).toThrow("sal.superseded_by");
+		expect(() => okfConcept("personal/x", conceptFile({ title: "X", sal: { applies_to: " " } }, "B"))).toThrow(
+			"sal.applies_to",
+		);
 		// An empty source resource is kept for rendering, not as a Harbour source.
 		const { concept } = okfConcept(
 			"personal/x",
@@ -179,6 +182,11 @@ describe("okfSnapshot", () => {
 					text: conceptFile({ title: "Good", generated: { at: "2026-10-12T09:35:38.357Z" } }, "G"),
 				},
 				{ path: "personal/empty.md", text: conceptFile({ title: "Empty" }, "") },
+				{ path: "personal/nojob.md", text: conceptFile({ title: "No job", sal: { applies_to: "" } }, "N") },
+				{
+					path: "personal/nodate.md",
+					text: conceptFile({ title: "No date", generated: { at: "2026-99-99T00:00:00.000Z" } }, "D"),
+				},
 				{
 					path: "personal/offset.md",
 					text: conceptFile({ title: "O", generated: { at: "2026-01-01T00:00:00+02:00" } }, "O"),
@@ -196,10 +204,11 @@ describe("okfSnapshot", () => {
 		expect(bundle.snapshot.concepts.map((concept) => concept.id)).toEqual([
 			"personal/bytes",
 			"personal/good",
+			"personal/nodate",
 			"personal/offset",
 		]);
-		expect(bundle.refused.map((entry) => entry.path)).toEqual(["personal/empty.md"]);
-		expect(bundle.warnings.map((entry) => entry.path)).toEqual(["personal/offset.md"]);
+		expect(bundle.refused.map((entry) => entry.path)).toEqual(["personal/empty.md", "personal/nojob.md"]);
+		expect(bundle.warnings.map((entry) => entry.path)).toEqual(["personal/nodate.md", "personal/offset.md"]);
 		const memory = createMemoryMemory();
 		const ctx = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org" } as const;
 		const space = await memory.createSpace(ctx, {
