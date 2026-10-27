@@ -1,0 +1,16 @@
+{
+  "routes": [
+    {
+      "id": "research-site",
+      "host": "research-site",
+      "ports": [80],
+      "methods": ["GET", "HEAD"],
+      "pathPrefix": "/",
+      "inject": {
+        "header": "authorization",
+        "template": "Bearer {secret}",
+        "secretEnv": "HARBOUR_CANARY_SECRET"
+      }
+    }
+  ]
+}
