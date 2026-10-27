@@ -16,6 +16,7 @@ import {
 	type IdentityDirectory,
 	type IssuedApiKey,
 	type JsonValue,
+	normaliseEmail,
 	type Organisation,
 	type OrganisationId,
 	type Page,
