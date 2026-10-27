@@ -22,11 +22,17 @@ export function sqlBootstrapFinder(driver: SqlDriver): BootstrapFinder {
 		return row === undefined ? undefined : String(row.id);
 	};
 	return {
+		// With no admin email, the bootstrap's placeholder admin: the user it made with no email.
 		user: (email) =>
-			first(
-				"SELECT id FROM identity_users WHERE email_normalised = ? AND created_in_organisation_id = ? ORDER BY created_at, id LIMIT 1",
-				[normaliseEmail(email), BOOTSTRAP_ORGANISATION],
-			),
+			email === undefined
+				? first(
+						"SELECT id FROM identity_users WHERE email_normalised IS NULL AND created_in_organisation_id = ? ORDER BY created_at, id LIMIT 1",
+						[BOOTSTRAP_ORGANISATION],
+					)
+				: first(
+						"SELECT id FROM identity_users WHERE email_normalised = ? AND created_in_organisation_id = ? ORDER BY created_at, id LIMIT 1",
+						[normaliseEmail(email), BOOTSTRAP_ORGANISATION],
+					),
 		organisation: (userId) =>
 			first(
 				"SELECT organisation_id AS id FROM identity_role_bindings WHERE principal_kind = 'user' AND principal_id = ? AND scope = '*' AND role = 'admin' ORDER BY seq LIMIT 1",

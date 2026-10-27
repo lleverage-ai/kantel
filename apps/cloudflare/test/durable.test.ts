@@ -39,12 +39,12 @@ async function durableStorage(bootstrap: BootstrapStore = createMemoryBootstrapS
 	};
 }
 
-async function start(storage: StackStorage) {
+async function start(storage: StackStorage, adminEmail: string = ADMIN) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
 		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: ADMIN,
+		HARBOUR_ADMIN_EMAIL: adminEmail,
 	});
 	const stack = await createStack({ config, accessFetch: mock.fetch, storage });
 	opened.push({ stack, sessions: storage.sessions! });
@@ -141,6 +141,26 @@ describe("the stack over durable storage", () => {
 			expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
 		});
 	}
+
+	it("reuses the placeholder admin when there is no admin email and a start fails before saving it", async () => {
+		let saved: BootstrapRecord = {};
+		let failed = false;
+		const bootstrap: BootstrapStore = {
+			load: async () => saved,
+			async save(record) {
+				if (!failed) {
+					failed = true;
+					throw new Error("the object restarted");
+				}
+				saved = record;
+			},
+		};
+		const storage = await durableStorage(bootstrap);
+		await expect(start(storage, "")).rejects.toThrow("the object restarted");
+		const { stack } = await start(storage, "");
+		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
+		expect(saved.organisationId).toBe(stack.organisation.id);
+	});
 
 	it("bootstraps again when the saved record names an organisation the directory no longer has", async () => {
 		const bootstrap = createMemoryBootstrapStore();

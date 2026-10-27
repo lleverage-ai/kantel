@@ -68,7 +68,8 @@ export interface BootstrapStore {
  * administers, and that organisation's first project. Durable identity has one (`sqlBootstrapFinder`).
  */
 export interface BootstrapFinder {
-	user(email: string): Promise<string | undefined>;
+	/** The bootstrap's user with this email, or with no email when there is no admin email. */
+	user(email: string | undefined): Promise<string | undefined>;
 	organisation(userId: string): Promise<string | undefined>;
 	project(organisationId: string): Promise<string | undefined>;
 	/** Whether the directory still has the organisation a saved record names (it may have been reset). */
@@ -240,7 +241,7 @@ async function bootstrapOnce(
 		await store.save(record);
 	};
 
-	let userId = record.userId ?? (adminEmail === undefined ? undefined : await finder?.user(adminEmail));
+	let userId = record.userId ?? (await finder?.user(adminEmail));
 	if (userId === undefined) {
 		const user = await identity.createUser(BOOTSTRAP, {
 			name: adminEmail ?? "Bootstrap admin",
