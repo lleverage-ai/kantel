@@ -1,0 +1,10 @@
+// Rendered to wrangler.jsonc with @ASSETS@ set to the packed lazy workspaces (iso/<repo>/{manifest.json,f/<id>}).
+{
+  "name": "harbour-m0-seed-isogit",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "limits": { "cpu_ms": 120000 },
+  "assets": { "directory": "@ASSETS@", "binding": "ASSETS", "run_worker_first": true }
+}
