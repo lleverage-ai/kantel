@@ -53,6 +53,9 @@ a `fix`. `putItem`, `putPolicy`, `setCeiling`, `revokeGrant`, `revokePolicy` for
   grant's uses are spent", "denies egress after a grant expires by the clock", "denies egress after a grant is revoked",
   "denies egress under a grant whose item has no value yet", "expires and exhausts policies with a lifetime like
   grants".
+- Path prefixes match whole segments and credentials go out only over https: "matches a path prefix by whole
+  segments", and the `/repositories` and `http://` rows of "denies egress for another host, method, path prefix or
+  session".
 - Item hosts and the ceiling bound everything: "refuses a proposal outside the organisation's ceiling", "refuses a
   proposal or policy for a host the item is not bound to", "refuses a policy outside the ceiling and lets egress through
   under one inside it" (outside the ceiling the fix is `none`).
@@ -69,8 +72,8 @@ encryption at rest, durable waits, role checks beyond "not an agent", and value 
 
 - `getCeiling` rejects `not_found` when no ceiling is set (no ceiling means no bound beyond item hosts). Should every
   organisation start with an explicit ceiling instead?
-- Path prefixes match by string prefix (`/repos` also matches `/repositories`); egress ignores scheme and port. Should
-  routes match on path segments and require `https`?
+- Ports are not part of a route; a credential bound to a host goes to any https port on it. Should routes carry a
+  port?
 - A secret proposal may name an existing valueless item by `itemId`; pasting then sets its value. Is that the intended
   reading of "the item to create"?
 - Who may withdraw: the requesting agent, or any non-agent actor. Who may revoke grants: any non-agent actor; role
