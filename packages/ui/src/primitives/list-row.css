@@ -1,0 +1,151 @@
+.hb-list-row {
+	position: relative;
+	display: flex;
+	align-items: stretch;
+	min-width: 0;
+	border-radius: var(--hb-radius-control);
+	color: var(--hb-text);
+}
+
+.hb-list-row:hover {
+	background: var(--hb-hover);
+}
+
+.hb-list-row-selected,
+.hb-list-row-selected:hover {
+	background: var(--hb-selected);
+}
+
+.hb-list-row-main {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	padding: 0 var(--hb-space-5);
+	border: 0;
+	border-radius: inherit;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	text-decoration: none;
+}
+
+button.hb-list-row-main,
+a.hb-list-row-main {
+	cursor: pointer;
+}
+
+.hb-list-row-main:focus-visible {
+	outline-offset: calc(var(--hb-ring) * -1);
+}
+
+.hb-list-row-compact .hb-list-row-main {
+	min-height: var(--hb-control-lg);
+}
+
+.hb-list-row-comfortable .hb-list-row-main {
+	align-items: flex-start;
+	padding-top: var(--hb-space-4);
+	padding-bottom: var(--hb-space-4);
+}
+
+.hb-list-row-leading {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	min-width: var(--hb-icon-md);
+	height: calc(var(--hb-text-md) * var(--hb-leading));
+	color: var(--hb-text-faint);
+}
+
+.hb-list-row-text {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-list-row-title,
+.hb-list-row-overline,
+.hb-list-row-meta {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-list-row-title {
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading);
+}
+
+.hb-list-row-overline,
+.hb-list-row-meta {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-list-row-quiet .hb-list-row-title {
+	color: var(--hb-text-muted);
+}
+
+.hb-list-row-side {
+	position: relative;
+	display: flex;
+	flex: none;
+	align-items: center;
+	padding-right: var(--hb-space-5);
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-list-row-comfortable .hb-list-row-side {
+	align-items: flex-start;
+	padding-top: var(--hb-space-4);
+}
+
+.hb-list-row-actions {
+	display: none;
+	align-items: center;
+	gap: var(--hb-space-1);
+}
+
+/*
+ * A static row has no focusable main target for Tab to land on and reveal its actions, so they always show, next to
+ * whatever is trailing.
+ */
+.hb-list-row-static .hb-list-row-actions {
+	display: inline-flex;
+}
+
+.hb-list-row-has-actions:hover .hb-list-row-actions,
+.hb-list-row-has-actions:focus-within .hb-list-row-actions {
+	display: inline-flex;
+}
+
+.hb-list-row-has-actions:hover .hb-list-row-trailing,
+.hb-list-row-has-actions:focus-within .hb-list-row-trailing {
+	display: none;
+}
+
+.hb-list-row-static.hb-list-row-has-actions:hover .hb-list-row-trailing,
+.hb-list-row-static.hb-list-row-has-actions:focus-within .hb-list-row-trailing {
+	display: inline-flex;
+}
+
+/* Touch has no hover: keep the actions in reach. */
+@media (pointer: coarse) {
+	.hb-list-row-actions {
+		display: inline-flex;
+	}
+
+	.hb-list-row-has-actions:not(.hb-list-row-static) .hb-list-row-trailing {
+		display: none;
+	}
+}

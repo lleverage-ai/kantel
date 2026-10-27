@@ -1,0 +1,133 @@
+/* Harbour design tokens. The only file in @harbour/ui allowed raw colours and sizes: every component reads these
+   custom properties, and `pnpm --filter @harbour/ui lint:tokens` fails on a raw value anywhere else.
+
+   Dark and neutral, after T3 Code's dark theme (pingdotgg/t3code@1152e9171a9ce6ede20e0cc1f16ed0dbe103da9b,
+   apps/web/src/index.css): a near-black canvas, slightly lifted panels, hairline white borders, system fonts, compact
+   12–14px text. One accent, which a host app rebrands by setting --hb-accent, --hb-accent-hover, --hb-accent-text
+   and --hb-accent-fg on any ancestor. */
+
+:root,
+.hb-theme {
+	color-scheme: dark;
+
+	/* Surfaces, darkest first. */
+	--hb-canvas: #0a0a0a;
+	--hb-panel: #111111;
+	--hb-raised: #181818;
+	--hb-sunken: #070707;
+	--hb-hover: rgb(255 255 255 / 0.05);
+	--hb-active: rgb(255 255 255 / 0.08);
+	--hb-selected: rgb(255 255 255 / 0.07);
+	--hb-user-message: #1b1b1b;
+	--hb-code: #0d0d0d;
+	--hb-scrim: rgb(0 0 0 / 0.6);
+
+	/* Lines. */
+	--hb-border: rgb(255 255 255 / 0.06);
+	--hb-border-strong: rgb(255 255 255 / 0.11);
+	--hb-border-input: rgb(255 255 255 / 0.11);
+
+	/* Text. All pass WCAG AA (4.5:1) on --hb-raised and darker. */
+	--hb-text: #ededed;
+	--hb-text-muted: #a3a3a3;
+	--hb-text-faint: #8a8a8a;
+	--hb-text-disabled: #5c5c5c;
+
+	/* The accent: one colour, rebrandable. T3 Code's dark primary by default. */
+	--hb-accent: #346bf1;
+	--hb-accent-hover: #4a7bf3;
+	--hb-accent-fg: #ffffff;
+	--hb-accent-text: #81a9fd;
+	--hb-accent-soft: color-mix(in srgb, var(--hb-accent) 16%, transparent);
+	--hb-focus: color-mix(in srgb, var(--hb-accent-text) 80%, transparent);
+
+	/* Status, after T3 Code's sidebar. Text colours pass AA on every surface; soft fills sit behind them. */
+	--hb-status-working: #38bdf8; /* sky: the agent is working */
+	--hb-status-waiting: #a5b4fc; /* indigo: waiting on an answer from you */
+	--hb-status-approval: #fbbf24; /* amber: waiting on your approval */
+	--hb-status-done: #34d399; /* emerald: done */
+	--hb-status-error: #f87171; /* red: failed */
+	--hb-status-idle: #8a8a8a; /* neutral: nothing happening */
+	--hb-status-working-soft: color-mix(in srgb, var(--hb-status-working) 12%, transparent);
+	--hb-status-waiting-soft: color-mix(in srgb, var(--hb-status-waiting) 12%, transparent);
+	--hb-status-approval-soft: color-mix(in srgb, var(--hb-status-approval) 10%, transparent);
+	--hb-status-done-soft: color-mix(in srgb, var(--hb-status-done) 10%, transparent);
+	--hb-status-error-soft: color-mix(in srgb, var(--hb-status-error) 10%, transparent);
+	--hb-status-approval-line: color-mix(in srgb, var(--hb-status-approval) 35%, transparent);
+	--hb-status-error-line: color-mix(in srgb, var(--hb-status-error) 35%, transparent);
+
+	/* Diff. */
+	--hb-diff-add: #34d399;
+	--hb-diff-del: #f87171;
+
+	/* Type. System stacks, as T3 Code. */
+	--hb-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", sans-serif;
+	--hb-font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+	--hb-text-2xs: 11px;
+	--hb-text-xs: 12px;
+	--hb-text-sm: 13px;
+	--hb-text-md: 14px;
+	--hb-text-lg: 16px;
+	--hb-text-code: 12.5px;
+	--hb-text-display: 24px; /* binding codes, nothing else */
+	--hb-leading-tight: 1.3;
+	--hb-leading: 1.5;
+	--hb-leading-prose: 1.6;
+	--hb-weight-regular: 400;
+	--hb-weight-medium: 500;
+	--hb-weight-strong: 600;
+
+	/* Space, a 2px-based scale. */
+	--hb-space-0: 0;
+	--hb-space-1: 2px;
+	--hb-space-2: 4px;
+	--hb-space-3: 6px;
+	--hb-space-4: 8px;
+	--hb-space-5: 10px;
+	--hb-space-6: 12px;
+	--hb-space-7: 16px;
+	--hb-space-8: 20px;
+	--hb-space-9: 24px;
+	--hb-space-10: 32px;
+	--hb-space-11: 48px;
+
+	/* Sizes. */
+	--hb-control-xs: 24px;
+	--hb-control-sm: 28px;
+	--hb-control-md: 32px;
+	--hb-control-lg: 36px; /* the touch size: the floor for primary actions under a coarse pointer */
+	--hb-icon-sm: 14px;
+	--hb-icon-md: 16px;
+	--hb-dot: 6px;
+	--hb-hairline: 1px;
+	--hb-ring: 2px;
+	--hb-content-width: 46rem; /* the transcript and composer column, as T3 Code's chat-content-max-width */
+	--hb-card-width: 560px;
+	--hb-sidebar-width: 300px;
+
+	/* Radius. 10px panels, 8px controls. */
+	--hb-radius: 10px;
+	--hb-radius-control: 8px;
+	--hb-radius-sm: 6px;
+	--hb-radius-xs: 4px;
+	--hb-radius-bubble: 16px;
+	--hb-radius-full: 999px;
+
+	/* Elevation, for things that float. Panels in the flow use borders, not shadows. */
+	--hb-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--hb-border-strong);
+	--hb-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
+
+	/* Motion. Nothing moves unless something is happening. */
+	--hb-duration-fast: 120ms;
+	--hb-duration: 160ms;
+	--hb-duration-pulse: 2s;
+	--hb-duration-spin: 0.9s;
+	--hb-duration-shimmer: 2.4s;
+	/* What every duration becomes under reduced motion. */
+	--hb-duration-instant: 0.01ms;
+	--hb-ease: cubic-bezier(0.2, 0, 0, 1);
+
+	/* Layers. */
+	--hb-z-float: 20;
+	--hb-z-overlay: 40;
+}
