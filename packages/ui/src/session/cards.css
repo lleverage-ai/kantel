@@ -81,6 +81,13 @@
 	min-width: 0;
 }
 
+/* Read-only options (no onAnswer): a numbered list, not radios. */
+.hb-question-options-static {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
 .hb-question-option {
 	display: flex;
 	align-items: flex-start;

@@ -8,7 +8,10 @@ import "./cards.css";
 
 export type QuestionCardProps = {
 	card: QuestionCardData;
-	/** Called with the chosen option or the typed answer, trimmed. */
+	/**
+	 * Called with the chosen option or the typed answer, trimmed. Without it an open question is shown read-only: the
+	 * question and its options, waiting for an answer, with nothing to press (a replay, an audit view).
+	 */
 	onAnswer?: (answer: string) => void;
 	/** The answer is on its way: the Answer button shows a spinner. */
 	busy?: boolean;
@@ -51,8 +54,40 @@ export const QuestionCard = memo(function QuestionCard({ card, onAnswer, busy = 
 			</p>
 		);
 	}
+	if (onAnswer === undefined) return <PendingQuestion card={card} />;
 	return <OpenQuestion card={card} onAnswer={onAnswer} busy={busy} />;
 });
+
+/** An open question nobody can answer from here: what was asked and the options offered, nothing to press. */
+function PendingQuestion({ card }: { card: QuestionCardData }) {
+	const questionId = useId();
+	const options = card.options ?? [];
+	return (
+		<Panel className="hb-card hb-question-card" aria-labelledby={questionId}>
+			<div className="hb-card-head">
+				<QuestionIcon className="hb-card-icon-waiting" />
+				<div className="hb-card-text">
+					<p id={questionId} className="hb-card-question">
+						{card.text}
+					</p>
+					<p className="hb-card-detail">Waiting for an answer</p>
+				</div>
+			</div>
+			{options.length === 0 ? null : (
+				<ol className="hb-question-options hb-question-options-static" aria-label="Options">
+					{options.map((option, index) => (
+						<li key={option} className="hb-question-option">
+							<span className="hb-question-number" aria-hidden="true">
+								{index + 1}
+							</span>
+							<span className="hb-question-option-text">{option}</span>
+						</li>
+					))}
+				</ol>
+			)}
+		</Panel>
+	);
+}
 
 function OpenQuestion({
 	card,
@@ -60,7 +95,7 @@ function OpenQuestion({
 	busy,
 }: {
 	card: QuestionCardData;
-	onAnswer: ((answer: string) => void) | undefined;
+	onAnswer: (answer: string) => void;
 	busy: boolean;
 }) {
 	const options = card.options ?? [];
@@ -78,7 +113,7 @@ function OpenQuestion({
 	const submit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		onAnswer?.(answer);
+		onAnswer(answer);
 	};
 
 	const keyDown = (event: KeyboardEvent<HTMLElement>) => {

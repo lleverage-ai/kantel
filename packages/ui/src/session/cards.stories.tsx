@@ -1,4 +1,5 @@
 import type { BrowserGrantCard as BrowserGrantCardData, QuestionCard as QuestionCardData } from "@harbour/protocol";
+
 import { useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
@@ -7,19 +8,10 @@ import { Elapsed } from "../primitives/time.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Row, Section, Sheet } from "../workbench/specimen.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
-import { question } from "./fixtures.ts";
+import { browser, question } from "./fixtures.ts";
 import { QuestionCard } from "./question-card.tsx";
 
 export default { title: "Session/Question and browser cards" } satisfies StoryDefault;
-
-// fixtures.ts has no browser grant yet; this one is local until it does.
-const browser = (overrides: Partial<BrowserGrantCardData> = {}): BrowserGrantCardData => ({
-	type: "browser.grant",
-	requestId: "br_1",
-	reason: "To check the staging dashboard shows the new invoice totals after the migration dry run.",
-	status: "pending",
-	...overrides,
-});
 
 const longQuestion = question({
 	text: "The billing-staging database has 41 tenants, but the migration plan in docs/migrations/2026-10-billing.md only lists 38 of them, and three of the missing ones (acme-eu, northwind-legacy and globex-test) still have open invoices from September. Should I include them in the dry run, leave them out and list them in the PR, or stop and wait until someone confirms which tenants are in scope?",
@@ -113,6 +105,24 @@ export const Default: Story = () => (
 		<Section title="Browser, declined">
 			<Column>
 				<BrowserGrantCard card={browser({ status: "denied" })} />
+			</Column>
+		</Section>
+	</Sheet>
+);
+
+export const ReadOnly: Story = () => (
+	<Sheet
+		title="Cards, read-only"
+		intro="Without handlers (a replayed session, an audit view) an open card shows what was asked and waits, with nothing to press."
+	>
+		<Section title="Question, open">
+			<Column>
+				<QuestionCard card={question()} />
+			</Column>
+		</Section>
+		<Section title="Browser, pending">
+			<Column>
+				<BrowserGrantCard card={browser()} />
 			</Column>
 		</Section>
 	</Sheet>

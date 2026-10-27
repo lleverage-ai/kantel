@@ -2,7 +2,19 @@ import type { TranscriptItem } from "@harbour/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Sheet } from "../workbench/specimen.tsx";
-import { assistant, finishedTurn, liveTurn, longTranscript, notice, tool, user } from "./fixtures.ts";
+import {
+	assistant,
+	browser,
+	card,
+	finishedTurn,
+	liveTurn,
+	longTranscript,
+	notice,
+	question,
+	tool,
+	user,
+	vaultCard,
+} from "./fixtures.ts";
 import { Transcript } from "./transcript.tsx";
 import "./stories.css";
 
@@ -109,6 +121,26 @@ const failed: TranscriptItem[] = [
 ];
 
 // Named ErrorState so the export does not shadow the global Error; Ladle shows it as "Error".
+const withCards: TranscriptItem[] = [
+	user("u-cards", "File the three bugs from last night's sweep in Linear, then check the staging dashboard.", 240),
+	assistant("a-cards-1", "I need a Linear API key for that. I've asked the vault for one.", { secondsAgo: 200 }),
+	// The transcript's cards read the real clock, so the request's expiry is re-based on it, like running calls.
+	card("c-vault", vaultCard({ expiresAt: Date.now() + 14 * 60_000 }), 190),
+	card("c-question", question(), 120),
+	card("c-browser", browser(), 60),
+];
+
+export const WithCards: Story = () => (
+	<Sheet
+		title="Transcript with cards, read-only"
+		intro="Without renderCard the cards show everything they say, with nothing to press: the vault request's terms and binding code, the question and its options, the browser request's reason."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={withCards} />
+		</div>
+	</Sheet>
+);
+
 export const ErrorState: Story = () => (
 	<Sheet
 		title="Transcript with errors"

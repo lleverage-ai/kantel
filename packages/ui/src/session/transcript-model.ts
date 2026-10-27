@@ -32,6 +32,11 @@ function sameTools(a: readonly ToolItem[], b: readonly ToolItem[]): boolean {
  * whose items did not change; when nothing changed at all, `previous` itself is returned.
  *
  * A single tool call is still a group (of one), so its row keeps the same kind and key when a second call joins it.
+ *
+ * A call that started a group in `previous` still starts one. Groups grow at their end as a turn adds calls, never at
+ * their start: when an older page is put in front and ends with tool calls, those form their own group before the
+ * existing one, rather than merging into it. Merging would change the group's key and could collapse calls the
+ * reader is looking at into a summary, moving their place.
  */
 export function groupTranscript(
 	items: readonly TranscriptItem[],
@@ -39,6 +44,7 @@ export function groupTranscript(
 ): readonly TranscriptRow[] {
 	const before = new Map<string, TranscriptRow>();
 	if (previous !== undefined) for (const row of previous) before.set(row.id, row);
+	const starts = (id: string): boolean => before.get(id)?.kind === "tools";
 
 	const rows: TranscriptRow[] = [];
 	let tools: ToolItem[] = [];
@@ -57,6 +63,7 @@ export function groupTranscript(
 
 	for (const item of items) {
 		if (item.kind === "tool") {
+			if (tools.length > 0 && starts(item.id)) closeGroup(false);
 			tools.push(item);
 			continue;
 		}

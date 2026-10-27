@@ -109,14 +109,19 @@ export function Composer({
 	const reasonId = useId();
 	const disabled = state === "disabled";
 	const action = primaryAction(state, text);
+	const showReason = disabled && disabledReason !== undefined && disabledReason !== "";
+	// Disabled with a reason and nothing typed, the composer is one line: the reason and the action. An empty field,
+	// or an invitation to type, beside the reason would contradict it. A draft always stays visible.
+	const folded = showReason && text === "";
 
 	useLayoutEffect(() => {
 		fitHeight(field.current, text, coarse);
 	}, [text, coarse]);
 
+	// Also when the field appears: a composer mounted disabled (folded) takes focus once it can be typed in.
 	useEffect(() => {
-		if (autoFocus) field.current?.focus();
-	}, [autoFocus]);
+		if (autoFocus && !folded) field.current?.focus();
+	}, [autoFocus, folded]);
 
 	const change = (event: ChangeEvent<HTMLTextAreaElement>) => {
 		if (!controlled) setDraft(event.target.value);
@@ -156,15 +161,11 @@ export function Composer({
 		submit();
 	};
 
-	const showReason = disabled && disabledReason !== undefined && disabledReason !== "";
-
 	return (
 		<div className={`hb-composer hb-composer-${state}`}>
 			{banner === undefined || banner === null ? null : <div className="hb-composer-banner">{banner}</div>}
 			<div className="hb-composer-surface" data-focus-surface="">
-				{/* Disabled with a reason and nothing typed, the composer is one line: the reason and the action. An empty
-				    field, or an invitation to type, beside the reason would contradict it. A draft always stays visible. */}
-				{showReason && text === "" ? null : (
+				{folded ? null : (
 					<textarea
 						ref={field}
 						className="hb-composer-input"

@@ -59,11 +59,6 @@
 	height: var(--hb-space-10);
 }
 
-.hb-transcript-card-name {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-sm);
-}
-
 /* Floating controls. These float over the list, so they get the float shadow. */
 
 .hb-transcript-older {

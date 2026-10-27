@@ -91,4 +91,35 @@ describe("groupTranscript", () => {
 		expect(second.map((row) => row.id)).toEqual(first.map((row) => row.id));
 		expect(second[0]).toBe(first[0]);
 	});
+
+	it("never merges an older page's calls into a group already shown", () => {
+		// The loaded page starts inside a run of calls: t3 and t4 show as a group of two.
+		const page: TranscriptItem[] = [
+			tool("t3", "bash", "Ran make"),
+			tool("t4", "bash", "Ran make test"),
+			assistant("a1", "Done."),
+		];
+		const shown = groupTranscript(page);
+		expect(shape(shown)).toEqual(["tools t3 [t3,t4]", "item a1"]);
+		// The page before it ends with t1 and t2. They form their own group; t3's group is the same row object, so the
+		// reader's place, and the group's open or closed state, stay as they were.
+		const older: TranscriptItem[] = [
+			user("u1", "Go"),
+			tool("t1", "read", "Read a.md"),
+			tool("t2", "read", "Read b.md"),
+		];
+		const after = groupTranscript([...older, ...page], shown);
+		expect(shape(after)).toEqual(["item u1", "tools t1 [t1,t2]", "tools t3 [t3,t4]", "item a1"]);
+		expect(after[2]).toBe(shown[0]);
+	});
+
+	it("groups the same calls as one run when they arrive in one load", () => {
+		const items: TranscriptItem[] = [
+			tool("t1", "read", "Read a.md"),
+			tool("t2", "read", "Read b.md"),
+			tool("t3", "bash", "Ran make"),
+			assistant("a1", "Done."),
+		];
+		expect(shape(groupTranscript(items))).toEqual(["tools t1 [t1,t2,t3]", "item a1"]);
+	});
 });

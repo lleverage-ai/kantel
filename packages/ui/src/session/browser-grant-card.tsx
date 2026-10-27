@@ -7,6 +7,7 @@ import "./cards.css";
 
 export type BrowserGrantCardProps = {
 	card: BrowserGrantCardData;
+	/** Allow. Without both handlers a pending request is shown read-only, waiting for a decision (a replay, an audit). */
 	onGrant?: () => void;
 	onDeny?: () => void;
 	/** The decision is on its way: the button pressed shows a spinner and both are blocked. */
@@ -60,6 +61,7 @@ function PendingGrant({
 		if (!busy) setPressed(undefined);
 	}, [busy]);
 	const spinning = busy ? (pressed ?? "grant") : undefined;
+	const decidable = onGrant !== undefined && onDeny !== undefined;
 
 	return (
 		<Panel className="hb-card hb-browser-card" tone="approval" aria-labelledby={titleId}>
@@ -70,31 +72,34 @@ function PendingGrant({
 						Wants to use a browser
 					</p>
 					<p className="hb-card-detail">{card.reason}</p>
+					{decidable ? null : <p className="hb-card-detail">Waiting for a decision</p>}
 				</div>
 			</div>
-			<div className="hb-card-actions">
-				<Button
-					disabled={busy && spinning !== "deny"}
-					busy={spinning === "deny"}
-					onClick={() => {
-						setPressed("deny");
-						onDeny?.();
-					}}
-				>
-					Decline
-				</Button>
-				<Button
-					variant="primary"
-					disabled={busy && spinning !== "grant"}
-					busy={spinning === "grant"}
-					onClick={() => {
-						setPressed("grant");
-						onGrant?.();
-					}}
-				>
-					Allow
-				</Button>
-			</div>
+			{decidable ? (
+				<div className="hb-card-actions">
+					<Button
+						disabled={busy && spinning !== "deny"}
+						busy={spinning === "deny"}
+						onClick={() => {
+							setPressed("deny");
+							onDeny?.();
+						}}
+					>
+						Decline
+					</Button>
+					<Button
+						variant="primary"
+						disabled={busy && spinning !== "grant"}
+						busy={spinning === "grant"}
+						onClick={() => {
+							setPressed("grant");
+							onGrant?.();
+						}}
+					>
+						Allow
+					</Button>
+				</div>
+			) : null}
 		</Panel>
 	);
 }

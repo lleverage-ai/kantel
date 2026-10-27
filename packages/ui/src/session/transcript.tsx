@@ -4,10 +4,13 @@ import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
-import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
+import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BrowserGrantCard } from "./browser-grant-card.tsx";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
+import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
 import { groupTranscript, type TranscriptRow } from "./transcript-model.ts";
+import { VaultApprovalCard } from "./vault-approval-card.tsx";
 import "./transcript.css";
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
@@ -27,19 +30,20 @@ const BUFFER_PX = 600;
 const END = { end: true } as const;
 type Entry = TranscriptRow | typeof END;
 
-const cardNames: Record<Card["type"], string> = {
-	"vault.approval": "Vault approval",
-	question: "Question",
-	"browser.grant": "Browser grant",
-};
-
-/** Without a renderCard, a card shows as a plain panel naming its type, so the transcript never drops it silently. */
-function CardFallback({ item }: { item: CardItem }) {
-	return (
-		<Panel className="hb-transcript-card">
-			<span className="hb-transcript-card-name">{cardNames[item.card.type]}</span>
-		</Panel>
-	);
+/**
+ * Without a renderCard, a card shows read-only: everything it says (a vault request's terms and binding code, a
+ * question and its options, a browser request's reason), with nothing to press. A host that can act on cards passes
+ * renderCard with the same components and their handlers.
+ */
+function ReadOnlyCard({ card }: { card: Card }) {
+	switch (card.type) {
+		case "vault.approval":
+			return <VaultApprovalCard card={card} />;
+		case "question":
+			return <QuestionCard card={card} />;
+		case "browser.grant":
+			return <BrowserGrantCard card={card} />;
+	}
 }
 
 type RowProps = {
@@ -64,7 +68,7 @@ function rowBody(row: TranscriptRow, renderCard: RowProps["renderCard"]): ReactN
 		case "notice":
 			return <NoticeRow item={item} />;
 		case "card":
-			return renderCard === undefined ? <CardFallback item={item} /> : renderCard(item);
+			return renderCard === undefined ? <ReadOnlyCard card={item.card} /> : renderCard(item);
 	}
 }
 
@@ -115,7 +119,10 @@ export type TranscriptProps = {
 	hasOlder?: boolean;
 	loadingOlder?: boolean;
 	onLoadOlder?: () => void;
-	/** Renders a card item (an approval, a question). Keep it stable: every row re-renders when it changes. */
+	/**
+	 * Renders a card item (an approval, a question), with the host's handlers. Keep it stable: every row re-renders
+	 * when it changes. Without it cards show read-only, from the same components.
+	 */
 	renderCard?: (item: CardItem) => ReactNode;
 	/** The first page is loading: shows skeleton rows while there are no items. */
 	loading?: boolean;
@@ -202,14 +209,20 @@ export function Transcript({
 		return () => observer.disconnect();
 	}, [showList]);
 
+	// Following stops only when the reader moves up (the offset falls while away from the bottom), never because rows
+	// were measured taller after a jump to the end: that scroll event is not the reader's, and the observer above
+	// brings the end back into view. Reaching the bottom by any means starts following again.
+	const lastOffset = useRef(0);
 	const onScroll = useCallback(
 		(offset: number) => {
 			const handle = list.current;
 			if (handle === null) return;
 			const distance = handle.scrollSize - (offset + handle.viewportSize);
 			const atBottom = distance <= AT_BOTTOM_PX;
-			following.current = atBottom;
-			setShowEnd(!atBottom);
+			if (atBottom) following.current = true;
+			else if (offset < lastOffset.current) following.current = false;
+			lastOffset.current = offset;
+			setShowEnd(!following.current);
 			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder) onLoadOlder?.();
 		},
 		[hasOlder, loadingOlder, onLoadOlder],

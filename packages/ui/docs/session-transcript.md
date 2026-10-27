@@ -37,7 +37,9 @@ Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `
 - *Loading:* `loading` with no items shows two skeleton turns. With items, `loading` is ignored and the list shows.
 - *Empty:* no items and not loading shows `empty`, or "No messages yet" with "Send a message to start the session."
 - *Error:* `error` shows in an error `Notice` above the list; the list stays usable below it.
-- Cards render through `renderCard`; without it, a plain panel names the card's type, so a card is never dropped.
+- Cards render through `renderCard`, with the host's handlers. Without it they show read-only, from the same
+  components: a vault request's terms and binding code, a question and its options, a browser request's reason,
+  each waiting with nothing to press. A card is never reduced to its type.
 
 Key the transcript by session. A different session's items would otherwise look like older history put in front.
 

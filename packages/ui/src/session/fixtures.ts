@@ -3,6 +3,7 @@
 
 import type {
 	AssistantItem,
+	BrowserGrantCard,
 	CardItem,
 	NoticeItem,
 	QuestionCard,
@@ -102,6 +103,14 @@ export const question = (overrides: Partial<QuestionCard> = {}): QuestionCard =>
 		"A fresh copy from last night's backup",
 	],
 	status: "open",
+	...overrides,
+});
+
+export const browser = (overrides: Partial<BrowserGrantCard> = {}): BrowserGrantCard => ({
+	type: "browser.grant",
+	requestId: "br_1",
+	reason: "To check the staging dashboard shows the new invoice totals after the migration dry run.",
+	status: "pending",
 	...overrides,
 });
 
