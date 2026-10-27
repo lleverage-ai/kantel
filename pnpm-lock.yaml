@@ -118,7 +118,13 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../sql
     devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
       "@harbour/identity":
         specifier: workspace:*
         version: link:../identity
@@ -249,6 +255,21 @@ importers:
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
+
+  packages/sql:
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
+      "@types/pg":
+        specifier: 8.15.5
+        version: 8.15.5
+      miniflare:
+        specifier: 5.20261023.0-beta
+        version: 5.20261023.0-beta(@types/node@24.19.2)
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
 
   packages/testing:
     dependencies:
@@ -804,6 +825,10 @@ packages:
     resolution:
       { integrity: sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w== }
     engines: { node: ">=22.19.0" }
+
+  "@electric-sql/pglite@0.5.12":
+    resolution:
+      { integrity: sha512-IiAxv1ld1V9QP0AWsflliDqrGRo+20O+yXOr2fjk6YzBHsCvTPclwQhCB1uZ7eHtPrxUrSllNzWgqy/Ot76PEw== }
 
   "@emnapi/runtime@1.11.3":
     resolution:
@@ -5461,6 +5486,8 @@ snapshots:
       - zod
 
   "@earendil-works/pi-telemetry@1.4.0": {}
+
+  "@electric-sql/pglite@0.5.12": {}
 
   "@emnapi/runtime@1.11.3":
     dependencies:

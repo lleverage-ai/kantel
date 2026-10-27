@@ -1,0 +1,20 @@
+{
+	"name": "@harbour/sql",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "The SQL seam Harbour's durable stores run on, with Postgres and SQLite (D1) drivers",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./postgres": "./src/postgres.ts",
+		"./sqlite": "./src/sqlite.ts",
+		"./testing": "./testing/index.ts"
+	},
+	"devDependencies": {
+		"@electric-sql/pglite": "0.5.12",
+		"@types/pg": "8.15.5",
+		"miniflare": "5.20261023.0-beta",
+		"pg": "8.16.3"
+	}
+}
