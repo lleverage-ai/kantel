@@ -202,7 +202,7 @@ Docker as a second runtime, `runsc-kvm`, with `runtimeArgs:
 `/dev/kvm` present), Docker 29.8.1, load average 4.8–10.1 (mostly 6–8).
 
 The cold starts were measured in rounds on one stack, 50 runs each, from
-16:14 to 16:27 UTC: runsc-kvm, runsc, runc, then the mixed config (isolate
+16:12 to 16:27 UTC: runsc-kvm, runsc, runc, then the mixed config (isolate
 on runsc-kvm, containers on runsc), twice, then one more runsc-kvm run. So the
 runsc and runc columns here are new runs beside the KVM ones, not the earlier
 pairs. Before and after every run the script checked the isolate host's
@@ -233,7 +233,7 @@ not hold** on any runtime, and needs the pre-loaded isolate pool or one
 isolate per workspace, not a faster platform. Container starts are the same
 on every runtime (1.04–1.12 s p50; rounds 2 and 3 on KVM 1.08–1.09 s). KVM's
 round 1, the first run after the stack came up, was slower (1.23 / 1.70 s,
-`create` and `start` about 70 and 85 ms slower) while the load average rose
+mostly in `create`, about 70 ms slower) while the load average rose
 from 4.8 to 7.9; it is kept in the table and the raw file.
 
 A container that does real work is where KVM pays off. One `docker run` of
@@ -250,7 +250,7 @@ the container from `/proc/uptime`:
 
 KVM is about 30% faster than systrap on it, though still about 3.5 times
 runc. The shared scenario shows the same: its two container commands (git and
-curl) took 1.00–1.18 s on runsc-kvm against 1.12–1.38 s with containers on
+curl) took 1.00–1.18 s on runsc-kvm against 1.26–1.38 s with containers on
 runsc, and the whole scenario 4.4 s against 5.4–5.5 s.
 
 Takeover, scenario and suites on runsc-kvm. The cold starts and takeover ran
