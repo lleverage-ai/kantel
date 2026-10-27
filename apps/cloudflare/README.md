@@ -92,6 +92,11 @@ specific pattern wins, so `harbour.myslop.app/*` beats the wildcard
 own: the zone's proxied wildcard record (`*.myslop.app`) already resolves the hostname, so none is needed for it. The
 zone is the hostname's parent, so `HARBOUR_HOSTNAME` must be a direct subdomain of its zone.
 
+The first three deploys (27 Oct 2026, before #92) attached `harbour.myslop.app` as a custom domain. Wrangler only
+manages the trigger kinds a config names, so the routes-only deploys since have left it in place. The route takes
+precedence over it, so it does no harm; removing it is an account change (the Worker's Domains & Routes in the
+dashboard), not something the deploy does.
+
 ### The deploy token's permissions
 
 | Scope | Permission | Why |
@@ -103,6 +108,44 @@ zone is the hostname's parent, so `HARBOUR_HOSTNAME` must be a direct subdomain 
 | Zone (myslop.app) | Workers Routes: Edit | Add the zone route `HARBOUR_HOSTNAME/*` |
 
 A zone route needs only Workers Routes edit on the zone; it makes no DNS record, so DNS edit isn't needed. Later steps of #17 may add more, such as Containers for the container tier; each will be listed here.
+
+## Cost estimate
+
+M1 as deployed (27 Oct 2026): one Worker with static assets, one Durable Object (`HarbourStack`), D1, R2 and a
+Workers VPC service, for one person and Sal's tasks. Prices are Cloudflare's published rates
+(https://developers.cloudflare.com/workers/platform/pricing/,
+https://developers.cloudflare.com/workers-vpc/reference/pricing/), checked 27 Oct 2026.
+
+| Part | Included each month on Workers Paid | M1 use, roughly | Cost |
+| --- | --- | --- | --- |
+| Workers Paid plan | | | $5 minimum per account, shared with everything else on it |
+| Worker requests and CPU | 10 M requests, 30 M CPU ms | ~0.3 M requests, ~3 M CPU ms (console open 8 h a day) | $0 |
+| Static assets (console) | free and unlimited | | $0 |
+| Durable Object requests | 1 M | ~0.3 M (console open 8 h a day) | $0 |
+| Durable Object duration | 400,000 GB-s | ~108,000 GB-s (console open 8 h a day) | $0, see below |
+| Durable Object SQLite | 25 bn rows read, 50 M written, 5 GB | well under | $0 |
+| D1 (identity, audit) | 25 bn rows read, 50 M written, 5 GB | well under | $0 |
+| R2 (workspaces) | 10 GB-month, 1 M class A, 10 M class B | < 1 GB, < 0.1 M ops | $0 |
+| Workers VPC (`MODELS`) | free during the open beta | | $0 |
+| Model tokens | | through CLIProxyAPI on Sal's host | not billed by Cloudflare |
+
+Estimate: **about $0 a month on top of the account's $5 Workers Paid minimum**; if the account already pays that,
+Harbour adds nothing at this scale. Access sign-in adds one seat
+to the account's existing Zero Trust organisation; whether that costs anything depends on that plan.
+
+What would move it:
+
+- **An open console.** It polls the session list every 3 s (`LIST_POLL_MS` in `apps/console/src/api/http.ts`), and
+  an open event stream (`GET /v1/sessions/:id/events`) holds a request open, so `HarbourStack` stays active, billed at
+  128 MB, for as long as a console is open: about 324,000 GB-s and 0.9 M requests for one tab left open all month.
+  That alone fits the 400,000 GB-s and 1 M requests included; a second tab left open all month goes past both, at
+  about $4 per further 324,000 GB-s ($12.50 per million GB-s) and $0.15 per further million requests. A SessionDO per
+  session doesn't change this much: duration follows open consoles and streams.
+- **The container tier**, when it lands: Containers bill per instance-second, so it will dominate. It gets its own
+  line here with that step.
+- **Workers VPC** pricing after its beta.
+
+#17's definition of done checks this against the first week's bill.
 
 ## Checks
 
