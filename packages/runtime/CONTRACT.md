@@ -96,7 +96,7 @@ see.
 
 ## The runtime and its store
 
-`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, hostHandler, pageSize })`
+`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, pageSize })`
 from `@harbour/runtime/core` is the runtime every target runs. A target gives it two things:
 
 - `store`, a `SessionStore` (`@harbour/runtime/store`): the directory of sessions (each with the profile it was created
@@ -108,9 +108,31 @@ from `@harbour/runtime/core` is the runtime every target runs. A target gives it
   database under the session's own table prefix (`pi_<uuid without dashes>_`).
 
 Sessions open on first use. A runtime opened on a store that already holds sessions reopens each one when it is next
-used: its profile, transcript, submissions and host tools carry on, and `resume()` lets work left in its storage
-continue. A host registration made in this process (`register` with a handler) offers its tools only while its handler
-lives; one stored with a callback is served through `hostHandler` in any process.
+used: its profile, transcript, submissions and host tools carry on.
+
+Each stored session has a wake: when it next needs a process. The runtime sets it to now before it admits input or an
+abort (and refuses the input if it cannot), then keeps it to what the session's Harness says (`onWake`: right away
+while work runs, the earliest sleep while it sleeps, none once it settles), and arms a timer for each sleep in its
+process. Call `resume()` once after start, and from a target's alarm: it runs every session whose wake is due, so Pi
+Durable carries its work on from the last commit, and arms a timer for the next wake. `onWakeAt` tells a target whose
+process can be evicted when to set its alarm. A model call cut off is sent again; a host tool call cut off reruns, with the same call ID, when the tool is `replay: "safe"`,
+and otherwise the model gets an interrupted result. Two processes must not run one session's storage at once: a target
+fences its storage (self-hosted) or has one owner by construction (a Durable Object).
+
+Sandbox leases expire by their TTL. With `sandboxes.sweep`, the runtime is their alarm: `resume()` sweeps first, and
+while its process holds a session open it sweeps every `leaseSweepMs` (default 60 s), as the `session` component.
+`sweepLeases()` sweeps on demand, and `onSweepError` hears of a failed sweep, which the next one retries. Sweeps never
+overlap: every caller shares the one in progress. `resume()` waits at most `sweepWaitMs` (default 5 s) for its sweep
+before recovering sessions anyway. A child's
+leases are released when it ends: aborting or closing a parent runs the session-end hook, `sandbox` teardown included,
+for each child too.
+
+A host registration made in this process (`hostTools.register` with a handler) offers its tools only while its handler
+lives. `hosts.register(ctx, hostId, tools, callback, owner)` stores the registration with its callback URL and HMAC
+secret, and any later runtime on the store serves it through `hostHandler` (`callbackHostHandlers()` from
+`@harbour/runtime/http`); only `owner` may remove it, and only while it is the host's current registration. The
+session API takes the runtime's `hosts` as its `hosts` option and then keeps every `PUT /hosts/:id` this way. The
+secret is stored with the registration, so the store is as sensitive as the secrets it holds.
 
 ## The in-memory implementation
 
@@ -140,6 +162,38 @@ scopes, workspaces and sandbox routing beyond `releaseSession`, usage totals in 
 injected authenticator, `watch` as server-sent events and host tools served by signed HTTPS callbacks; its client
 implements the same contracts, and the conformance suite runs through it. Routes and wire format are in
 [HTTP.md](HTTP.md).
+
+## Models
+
+The runtime never calls a provider or holds a provider key: it calls Harbour's internal model gateway over pi-ai's
+`pi-messages` protocol ([docs/model-connectors.md](../../docs/model-connectors.md), contracts in
+`@harbour/contracts` `models.ts`). `@harbour/runtime/models` holds its side:
+
+- `harbourResolveModel(choice)` gives `{ provider: "harbour", modelId }`, where `modelId` is the route, or
+  `<route>:<modelId>` when the profile chooses a model. The profile's `thinking` is the conversation's thinking level,
+  which Pi Durable sends as the request's `reasoning` option.
+- `harbourProvider({ baseUrl, fetch?, token })` is the pi-ai provider `harbour` on API `pi-messages`. Its models come
+  from `GET <baseUrl>/v1/config`; every request carries `Authorization: Bearer <token>` (read at each request) and
+  goes through `fetch` when given, such as a Cloudflare service binding's.
+- `harbourModels({ gateway: { baseUrl, fetch? }, tokens, ttlMs?, clock? })` gives each session its own `Models`, with
+  only the `harbour` provider. Its token is minted with `tokens.mint(systemContext("session"), scope, ttlMs)` for the
+  session's organisation, project, agent and session, and minted again once half its lifetime has passed. The
+  catalogue is loaded once, when the session opens; a gateway whose config can't be loaded fails the opening with
+  `unavailable`, and the next use of the session tries again.
+
+The runtime's `models` option takes a `Models` shared by every session, as before, or a function
+`(session: SessionRecord) => Models | Promise<Models>` called as each session opens. A function needs `resolveModel`
+(`invalid` otherwise); pass `harbourModels(...)` with `resolveModel: harbourResolveModel`. The scripted model of
+`@harbour/runtime/testing` stays the default for tests and the conformance suites.
+
+`packages/runtime/test/models.test.ts` runs the runtime against a toy gateway (a fetch handler serving `/v1/config` and
+an SSE `/messages`) with fake session tokens: a prompt end to end, each session's own bearer and scope, the route or
+`route:modelId` as the model, `thinking` as `reasoning`, a token minted again near expiry, a tool call streamed through
+to a host tool, and an upstream `429` error event retried by Pi Durable on the same route.
+
+What remains for lane 5 is the gateway itself: `packages/models` and `apps/model-gateway` (token verification, route
+resolution and pinning, connector presets, the vault credential read, redaction, usage and audit), its conformance
+suites, and the targets wiring `harbourModels` to it. Until then no target passes `harbourModels`.
 
 ## Open questions
 

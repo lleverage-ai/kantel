@@ -12,6 +12,7 @@
 		"./sql": "./src/sql.ts",
 		"./store": "./src/store.ts",
 		"./memory": "./src/memory.ts",
+		"./models": "./src/models.ts",
 		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {

@@ -36,9 +36,11 @@ import {
 	normalizeWorkspacePath,
 	toBytes,
 } from "./index.ts";
+import { resolveSeed, type Seeders } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
+	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
 	compare,
@@ -52,8 +54,8 @@ import {
 	pageLimit,
 	prepareChanges,
 	readTree,
+	requireNotAborted,
 	seedFiles,
-	seedReadiness,
 	statTree,
 	type TreeFile,
 	treeEntries,
@@ -90,6 +92,8 @@ export interface MemoryWorkspacesOptions {
 	 * every conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
+	/** How seed sources other than `files` are fetched. Without a git fetcher, git sources wait at `metadata`. */
+	readonly seeders?: Seeders;
 }
 
 export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): KeyedWorkspaces {
@@ -143,14 +147,18 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 		checkOwner(ctx, input.owner);
 		await checks.requireCreate(ctx, input.owner, input.sessionId);
 		const seed = input.seed;
-		const seeded = seedFiles(seed);
+		// Static files are checked before anything is fetched.
+		seedFiles(seed);
 		const requests = mountRequests(seed, input.mounts);
 		await checks.requireMounts(ctx, requests.values());
 		const mounts: Mount[] = [];
 		for (const request of requests.values()) mounts.push(await sources.resolve(ctx, request));
 		checkMountsDisjoint(mounts);
 
-		const prepared = await prepareChanges([...seeded].map(([path, content]) => ({ op: "put", path, content })));
+		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock, mounts);
+		const prepared = await prepareChanges(
+			[...seeded.files].map(([path, file]) => ({ op: "put", path, content: file.content })),
+		);
 		const files = applyChanges<StoredFile>(new Map(), prepared, (change) => ({
 			content: change.content,
 			digest: change.digest,
@@ -175,7 +183,8 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			head: versions.length - 1,
 			mounts,
 			...(seed === undefined ? {} : { seed }),
-			seedReadiness: seedReadiness(seed),
+			seedReadiness: seeded.readiness,
+			...(seeded.report === undefined ? {} : { seedReport: seeded.report }),
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -277,6 +286,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			const prepared = await prepareChanges(request.changes);
 
 			// Everything below is synchronous, so the head check and the new version are atomic.
+			requireNotAborted(ctx);
 			if (request.baseVersion !== state.record.head) {
 				throw new HarbourError("conflict", `base version ${request.baseVersion} is not the head`, {
 					head: state.record.head,
@@ -353,12 +363,17 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			return state.record;
 		},
 
-		async export(ctx, id, prefixes) {
+		async export(ctx, id, prefixes, options) {
 			const state = load(ctx, id);
 			await checks.requireWorkspace(ctx, state.record, "viewer", "workspace.export");
 			checkExportPrefixes(prefixes);
+			const tree = state.versions[state.record.head]!.tree;
+			checkExportSize(
+				[...tree].filter(([path]) => prefixes.some((prefix) => path.startsWith(prefix))).map(([, file]) => file.size),
+				options?.maxBytes,
+			);
 			const files: FileContent[] = [];
-			for (const [path, file] of state.versions[state.record.head]!.tree) {
+			for (const [path, file] of tree) {
 				if (!prefixes.some((prefix) => path.startsWith(prefix))) continue;
 				files.push({ path, content: new Uint8Array(file.content), version: file.version, digest: file.digest });
 			}

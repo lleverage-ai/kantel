@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRoute, projectPath, sessionPath } from "./router.ts";
+import { AUDIT_PATH, filesPath, parseRoute, projectPath, sessionPath, VAULT_PATH, vaultRequestPath } from "./router.ts";
 
 describe("routes", () => {
 	it("parses the home page, a project and a session", () => {
@@ -16,8 +16,37 @@ describe("routes", () => {
 		expect(parseRoute(projectPath("a b"))).toEqual({ name: "project", projectId: "a b" });
 	});
 
+	it("parses the vault page, a vault request and the audit log", () => {
+		expect(parseRoute(VAULT_PATH)).toEqual({ name: "vault" });
+		expect(parseRoute(vaultRequestPath("proposal_1/x"))).toEqual({ name: "vault-request", proposalId: "proposal_1/x" });
+		expect(parseRoute(AUDIT_PATH)).toEqual({ name: "audit" });
+		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
+	});
+
+	it("parses a session's files and one file in them, mounts included", () => {
+		expect(parseRoute(filesPath("sal", "s-1"))).toEqual({ name: "files", projectId: "sal", sessionId: "s-1" });
+		for (const file of ["README.md", "src/billing/retry.ts", "/project/notes/plan.md", "a b?#.md"]) {
+			const path = filesPath("sal", "s-1", file);
+			expect(path.split("/")).toHaveLength(7);
+			expect(parseRoute(path)).toEqual({ name: "files", projectId: "sal", sessionId: "s-1", path: file });
+		}
+	});
+
 	it("says anything else is not found", () => {
-		for (const path of ["/projects", "/projects/sal/sessions", "/projects/sal/other/x", "/elsewhere", "/projects/%E0"])
+		for (const path of [
+			"/projects",
+			"/projects/sal/sessions",
+			"/projects/sal/other/x",
+			"/elsewhere",
+			"/projects/%E0",
+			"/vault/requests",
+			"/vault/other/x",
+			"/vault/requests/%E0",
+			"/audit/x",
+			"/projects/sal/sessions/s-1/other",
+			"/projects/sal/sessions/s-1/files/a/b",
+			"/projects/sal/sessions/s-1/files/%E0",
+		])
 			expect(parseRoute(path)).toEqual({ name: "not-found", path });
 	});
 });

@@ -9,6 +9,8 @@
 //   HARBOUR_ORGANISATION_NAME   default "Harbour"
 //   HARBOUR_PROJECT_NAME        default "default"
 //   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use; default any https: URL
+//   HARBOUR_SMTP_URL            where sign-in codes are sent (smtp:// or smtps://); unset, no email is sent
+//   HARBOUR_MAIL_FROM           their From address; required with HARBOUR_SMTP_URL (see mail.ts)
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
@@ -16,6 +18,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bootstrap, createGatewayComponents } from "./components.ts";
 import { createGateway } from "./gateway.ts";
+import { describeMail, mailConfig } from "./mail.ts";
 import { listen } from "./node-http.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -30,6 +33,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		organisation: env.HARBOUR_ORGANISATION_NAME ?? "Harbour",
 		project: env.HARBOUR_PROJECT_NAME ?? "default",
 		callbackOrigins: origins,
+		mail: mailConfig(env),
 	};
 }
 
@@ -59,6 +63,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const gateway = createGateway({
 		components,
 		consoleDir: cfg.consoleDir,
+		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0
 			? {}
 			: { allowCallbackUrl: (url: URL) => cfg.callbackOrigins.includes(url.origin) }),
@@ -66,7 +71,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const server = await listen(gateway.fetch, cfg.port);
 	console.log(
 		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}; ` +
-			`bootstrap key in ${cfg.bootstrapFile}; bindings ${JSON.stringify(components.bindings)}`,
+			`bootstrap key in ${cfg.bootstrapFile}; bindings ${JSON.stringify(components.bindings)}; ` +
+			`mail ${cfg.mail === undefined ? "off" : JSON.stringify(describeMail(cfg.mail))}`,
 	);
 
 	const shutdown = async () => {

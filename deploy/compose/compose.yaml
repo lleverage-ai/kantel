@@ -227,12 +227,38 @@ services:
     environment:
       HARBOUR_BOOTSTRAP_FILE: /var/lib/harbour/bootstrap.json
       HARBOUR_CONSOLE_DIR: /harbour/apps/console/dist
+      # Where sign-in codes are sent (#15, email one-time PIN): Mailpit here;
+      # any relay in production (smtp:// with STARTTLS, or smtps://).
+      HARBOUR_SMTP_URL: ${HARBOUR_SMTP_URL:-smtp://mailpit:1025}
+      HARBOUR_MAIL_FROM: ${HARBOUR_MAIL_FROM:-Harbour <harbour@harbour.localhost>}
     ports: ["127.0.0.1:${HARBOUR_GATEWAY_PORT:-58090}:8080"]
     networks: [control]
     volumes: [gatewaystate:/var/lib/harbour]
+    depends_on:
+      mailpit: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
       interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # The SMTP server sign-in codes go to in compose and CI. It keeps every
+  # message in memory and serves them at http://127.0.0.1:58025 (web UI and
+  # API), where end-to-end tests read the codes. Never relays anything on.
+  mailpit:
+    image: axllent/mailpit:v1.32.0@sha256:0790692be935ea4420d085694f7985b1f692ca6a8771ab0e0bd8ba75ac180498
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "127.0.0.1:${HARBOUR_MAILPIT_PORT:-58025}:8025"
+      - "127.0.0.1:${HARBOUR_SMTP_PORT:-58125}:1025"
+    networks: [control]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 1s
       timeout: 2s
       retries: 30
 

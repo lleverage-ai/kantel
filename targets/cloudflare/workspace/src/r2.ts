@@ -89,7 +89,12 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		return JSON.parse(await object.text()) as StoredVersion;
 	}
 
-	async function swap(current: LoadedHead, next: StoredHead, version?: StoredVersion): Promise<boolean> {
+	async function swap(
+		current: LoadedHead,
+		next: StoredHead,
+		version?: StoredVersion,
+		check?: () => void,
+	): Promise<boolean> {
 		const id = current.record.id;
 		if (next.record.id !== id) throw new HarbourError("invalid", "a head cannot change its ID");
 		let document: HeadDocument;
@@ -106,6 +111,8 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 			recent = [version];
 		}
 		const written: HeadDocument = { organisationId: next.organisationId, record: next.record, tree: next.tree, recent };
+		// The last moment a commit can stop: the versions archived above are below the head, so harmless.
+		check?.();
 		const result = await bucket.put(headKey(id), JSON.stringify(written), { onlyIf: { etagMatches: current.token } });
 		return result !== null;
 	}
@@ -125,7 +132,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 			return result !== null;
 		},
 
-		advance: (current, next, version) => swap(current, next, version),
+		advance: (current, next, version, options) => swap(current, next, version, options?.check),
 		update: (current, next) => swap(current, next),
 
 		async treeAt(current, version) {

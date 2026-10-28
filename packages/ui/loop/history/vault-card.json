@@ -205,6 +205,291 @@
 			"accepted": [],
 			"selected": null,
 			"carried": []
+		},
+		{
+			"round": 3,
+			"method": {
+				"harness": "loop/ab.ts: one browser, ABBA order, 40 runs a side after 4 warm-up runs a side thrown away, garbage collected before each phase, the gap between inputs varied by up to 17ms, CPU 4x; bands are 95% bootstrap intervals of the ratio of median runs",
+				"fixedGapCheck": {
+					"note": "the same A/B with round 2's fixed 50ms gap between inputs",
+					"bands": {
+						"renderMs": {
+							"ratio": 0.2165,
+							"low": 0.1872,
+							"high": 0.2363,
+							"inside": false
+						},
+						"wasted": {
+							"ratio": 0.1,
+							"low": 0.1,
+							"high": 0.1,
+							"inside": false
+						},
+						"latencyMedian": {
+							"ratio": 1.1892,
+							"low": 0.9973,
+							"high": 1.2507,
+							"inside": true
+						},
+						"latencyP95": {
+							"ratio": 1.0151,
+							"low": 0.8841,
+							"high": 1.0642,
+							"inside": true
+						},
+						"inputRenderMs": {
+							"ratio": 0.5827,
+							"low": 0.5144,
+							"high": 0.6305,
+							"inside": false
+						},
+						"workMedian": {
+							"ratio": 0.8528,
+							"low": 0.7651,
+							"high": 0.9613,
+							"inside": false
+						}
+					},
+					"champion": {
+						"renderMs": 19.40000033378601,
+						"wasted": 10,
+						"latencyMedian": 37,
+						"latencyP95": 59.59999990463257,
+						"inputRenderMs": 39.30000042915344,
+						"bundleJs": 4643,
+						"bundleCss": 2813
+					},
+					"variant": {
+						"renderMs": 4.200000286102295,
+						"wasted": 0,
+						"latencyMedian": 44,
+						"latencyP95": 60.5,
+						"inputRenderMs": 22.899999856948853,
+						"bundleJs": 4758,
+						"bundleCss": 2813
+					}
+				},
+				"selfCheck": {
+					"note": "champion against itself, 30 runs a side, fixed gap: every band should include 1",
+					"bands": {
+						"renderMs": {
+							"ratio": 1.068,
+							"low": 0.9412,
+							"high": 1.2324,
+							"inside": true
+						},
+						"wasted": {
+							"ratio": 1,
+							"low": 1,
+							"high": 1,
+							"inside": true
+						},
+						"latencyMedian": {
+							"ratio": 1.0521,
+							"low": 0.8807,
+							"high": 1.1658,
+							"inside": true
+						},
+						"latencyP95": {
+							"ratio": 0.9633,
+							"low": 0.8634,
+							"high": 1.0417,
+							"inside": true
+						},
+						"inputRenderMs": {
+							"ratio": 0.995,
+							"low": 0.9043,
+							"high": 1.1355,
+							"inside": true
+						},
+						"workMedian": {
+							"ratio": 1.0719,
+							"low": 0.9771,
+							"high": 1.2039,
+							"inside": true
+						}
+					}
+				},
+				"coldRuns": "round 2's method (a fresh browser per run, no warm-up), 12 runs a side: loop-results.md, round 3"
+			},
+			"champion": {
+				"gates": {
+					"typecheck": true,
+					"tests": true,
+					"lint": true,
+					"browser": {
+						"runs": 30,
+						"failed": [],
+						"alignment": "1px gate included"
+					},
+					"passed": true
+				},
+				"measures": {
+					"renderMs": 19.700000047683716,
+					"wasted": 10,
+					"latencyMedian": 39.30000019073486,
+					"latencyP95": 58.700000047683716,
+					"inputRenderMs": 41.00000071525574,
+					"bundleJs": 4643,
+					"bundleCss": 2813
+				},
+				"workMedian": 17.700000047683716,
+				"spread": {
+					"renderMs": {
+						"q1": 18.100000381469727,
+						"q3": 22.90000009536743,
+						"min": 13.700000524520874,
+						"max": 48.89999985694885
+					},
+					"wasted": {
+						"q1": 10,
+						"q3": 10,
+						"min": 10,
+						"max": 10
+					},
+					"latencyMedian": {
+						"q1": 35.09999990463257,
+						"q3": 44.200000047683716,
+						"min": 31.40000009536743,
+						"max": 63.09999990463257
+					},
+					"latencyP95": {
+						"q1": 53,
+						"q3": 67.30000019073486,
+						"min": 39.59999990463257,
+						"max": 149.59999990463257
+					},
+					"workMedian": {
+						"q1": 16.09999990463257,
+						"q3": 20.40000009536743,
+						"min": 13.200000047683716,
+						"max": 32
+					},
+					"inputRenderMs": {
+						"q1": 38.59999942779541,
+						"q3": 49.60000038146973,
+						"min": 33.40000009536743,
+						"max": 94.79999995231628
+					}
+				},
+				"runs": 40
+			},
+			"variants": [
+				{
+					"variant": "vault-lifetime-leaf",
+					"hypothesis": "Round 2's rejected performance variant, re-measured: the per-second clock moves into the Lifetime value alone, the card is memoised and folds on one expiry timeout, so neither a tick nor picking a code re-renders the card.",
+					"gates": {
+						"typecheck": true,
+						"tests": true,
+						"lint": true,
+						"browser": {
+							"runs": 30,
+							"failed": [],
+							"alignment": "1px gate included"
+						},
+						"passed": true
+					},
+					"measures": {
+						"renderMs": 3.700000047683716,
+						"wasted": 0,
+						"latencyMedian": 38.59999990463257,
+						"latencyP95": 57.200000047683716,
+						"inputRenderMs": 24.30000066757202,
+						"bundleJs": 4758,
+						"bundleCss": 2813
+					},
+					"workMedian": 15.5,
+					"spread": {
+						"renderMs": {
+							"q1": 3.1999998092651367,
+							"q3": 5,
+							"min": 2.0999999046325684,
+							"max": 7.600000381469727
+						},
+						"wasted": {
+							"q1": 0,
+							"q3": 0,
+							"min": 0,
+							"max": 0
+						},
+						"latencyMedian": {
+							"q1": 35.5,
+							"q3": 44.700000047683716,
+							"min": 26.40000009536743,
+							"max": 76.29999995231628
+						},
+						"latencyP95": {
+							"q1": 49.700000047683716,
+							"q3": 68.59999990463257,
+							"min": 41.19999980926514,
+							"max": 92.60000014305115
+						},
+						"workMedian": {
+							"q1": 14.5,
+							"q3": 18.199999809265137,
+							"min": 11.799999952316284,
+							"max": 35.30000019073486
+						},
+						"inputRenderMs": {
+							"q1": 21.899999618530273,
+							"q3": 27.800000429153442,
+							"min": 15,
+							"max": 39.90000009536743
+						}
+					},
+					"bands": {
+						"renderMs": {
+							"ratio": 0.1878,
+							"low": 0.1592,
+							"high": 0.2296,
+							"inside": false
+						},
+						"wasted": {
+							"ratio": 0.1,
+							"low": 0.1,
+							"high": 0.1,
+							"inside": false
+						},
+						"latencyMedian": {
+							"ratio": 0.9822,
+							"low": 0.9012,
+							"high": 1.0877,
+							"inside": true
+						},
+						"latencyP95": {
+							"ratio": 0.9744,
+							"low": 0.8594,
+							"high": 1.0801,
+							"inside": true
+						},
+						"inputRenderMs": {
+							"ratio": 0.5927,
+							"low": 0.5157,
+							"high": 0.6228,
+							"inside": false
+						},
+						"workMedian": {
+							"ratio": 0.8757,
+							"low": 0.8,
+							"high": 0.9581,
+							"inside": false
+						}
+					},
+					"judged": "pixel-identical to the champion on all 30 shots (15 stories at 1280px and 420px), not judged",
+					"decision": {
+						"judged": 0,
+						"measured": 0.921985160598518,
+						"score": 0.921985160598518,
+						"worse": [],
+						"missing": [],
+						"noise": ["latencyMedian", "latencyP95"],
+						"accepted": true
+					}
+				}
+			],
+			"accepted": ["vault-lifetime-leaf"],
+			"selected": "vault-lifetime-leaf",
+			"carried": []
 		}
 	]
 }

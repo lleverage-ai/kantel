@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decide, measureGain } from "./score.ts";
+import { decide, measureGain, noiseBand } from "./score.ts";
 
 const same = { renderMs: 20, latencyMedian: 30, wasted: 0, bundleJs: 3000 };
 
@@ -79,5 +79,62 @@ describe("decide", () => {
 		expect(
 			decide({ gatesPassed: false, judgedChampion: 3, judgedVariant: 5, champion: same, variant: same }).accepted,
 		).toBe(false);
+	});
+});
+
+describe("decide with a noise band", () => {
+	it("scores a measure inside its noise band as no change, so it neither rejects nor counts", () => {
+		const decision = decide({
+			gatesPassed: true,
+			judgedChampion: 4,
+			judgedVariant: 4,
+			champion: same,
+			variant: { ...same, renderMs: 5, latencyMedian: 40 },
+			noise: ["latencyMedian"],
+		});
+		expect(decision.worse).toEqual([]);
+		expect(decision.noise).toEqual(["latencyMedian"]);
+		expect(decision.measured).toBeCloseTo(2 / 4);
+		expect(decision.accepted).toBe(true);
+	});
+
+	it("still rejects a measure outside its band", () => {
+		const decision = decide({
+			gatesPassed: true,
+			judgedChampion: 4,
+			judgedVariant: 4,
+			champion: same,
+			variant: { ...same, renderMs: 5, latencyMedian: 40 },
+			noise: ["renderMs"],
+		});
+		expect(decision.worse).toEqual(["latencyMedian"]);
+		expect(decision.accepted).toBe(false);
+	});
+});
+
+describe("noiseBand", () => {
+	const spread = (centre: number) => Array.from({ length: 30 }, (_, i) => centre + ((i * 7) % 11) - 5);
+
+	it("finds no difference between two samples from the same spread", () => {
+		const band = noiseBand("latencyMedian", spread(40), spread(40));
+		expect(band.ratio).toBe(1);
+		expect(band.inside).toBe(true);
+	});
+
+	it("tells a real difference from the noise", () => {
+		const band = noiseBand("renderMs", spread(40), spread(20));
+		expect(band.ratio).toBeCloseTo(0.5, 1);
+		expect(band.high).toBeLessThan(1);
+		expect(band.inside).toBe(false);
+	});
+
+	it("counts two values under the floor as the same", () => {
+		expect(noiseBand("renderMs", [0, 0.2], [0.5, 0.9]).inside).toBe(true);
+	});
+
+	it("gives the same band each time for the same runs", () => {
+		const a = [31, 45, 29, 44, 33, 46];
+		const b = [44, 30, 45, 29, 46, 31];
+		expect(noiseBand("latencyMedian", a, b)).toEqual(noiseBand("latencyMedian", a, b));
 	});
 });

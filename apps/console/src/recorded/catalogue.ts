@@ -19,6 +19,8 @@ export type RecordedSession = {
 	readonly frames: () => Promise<readonly ServerFrame[]>;
 	/** What the list shows before the frames are loaded, for sessions fetched when first opened. */
 	readonly preview?: { readonly title: string; readonly updatedAt: number; readonly startedAt: number };
+	/** Has no workspace, so its files say so. Every other recorded session has the stand-in one (workspace.ts). */
+	readonly noWorkspace?: true;
 };
 
 export type Catalogue = {
@@ -250,7 +252,7 @@ export type FixtureUrls = { readonly long: string; readonly small: string };
 export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 	const sessions: RecordedSession[] = [
 		{ id: "s-linear-key", projectId: "sal", frames: made(linearKey(now)) },
-		{ id: "s-digest", projectId: "sal", frames: made(digest(now)) },
+		{ id: "s-digest", projectId: "sal", noWorkspace: true, frames: made(digest(now)) },
 		{ id: "s-handback", projectId: "sal", frames: made(handback(now)) },
 		{
 			id: "s-flaky",

@@ -1,10 +1,24 @@
-import { Badge, EmptyState, ListRow, Notice, SessionList, Spinner } from "@harbour/ui";
+import { AuditView, Badge, Button, EmptyState, ListRow, Notice, SessionList, Spinner } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
+import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
 import type { SessionClient } from "../state/session-client.ts";
-import { interceptLinks, navigate, parseRoute, projectPath, sessionPath, usePathname } from "./router.ts";
+import { FilesScreen } from "./files-screen.tsx";
+import {
+	AUDIT_PATH,
+	filesPath,
+	interceptLinks,
+	navigate,
+	parseRoute,
+	projectPath,
+	type Route,
+	sessionPath,
+	usePathname,
+	VAULT_PATH,
+} from "./router.ts";
 import { SessionScreen } from "./session-screen.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
+import { VaultScreen } from "./vault-screen.tsx";
 
 // The console's shell: projects and the current project's sessions in a sidebar, the open session beside it. On a
 // phone it is one pane at a time: the list, or the session with Back. Every piece is from @harbour/ui; this file
@@ -42,6 +56,27 @@ function useProjects(client: ConsoleClient): { projects?: readonly ProjectSummar
 	return state;
 }
 
+/**
+ * The project a linked session is in: `pending` until the client answers, then its project id, or undefined when
+ * there's no such session. Until then the session opens as linked; most links are good.
+ */
+function useSessionProject(client: ConsoleClient, sessionId: string | undefined): string | undefined | "pending" {
+	const [found, setFound] = useState<{ sessionId: string; projectId: string | undefined }>();
+	useEffect(() => {
+		if (sessionId === undefined) return;
+		let live = true;
+		client.projectOf(sessionId).then(
+			(projectId) => live && setFound({ sessionId, projectId }),
+			// Couldn't ask; the session's own stream will say what's wrong.
+			() => {},
+		);
+		return () => {
+			live = false;
+		};
+	}, [client, sessionId]);
+	return found !== undefined && found.sessionId === sessionId ? found.projectId : "pending";
+}
+
 function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]; current: string | undefined }) {
 	return (
 		<nav className="shell-projects" aria-label="Projects">
@@ -57,11 +92,43 @@ function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]
 	);
 }
 
+/** The organisation's pages: the vault and the audit log, each shown when the console has a seam for it. */
+function OrganisationNav({ route, vault, audit }: { route: Route; vault: boolean; audit: boolean }) {
+	if (!vault && !audit) return null;
+	return (
+		<nav className="shell-organisation" aria-label="Organisation">
+			<h2 className="shell-heading">Organisation</h2>
+			<ul className="shell-rows">
+				{vault ? (
+					<li>
+						<ListRow
+							title="Vault"
+							href={VAULT_PATH}
+							selected={route.name === "vault" || route.name === "vault-request"}
+						/>
+					</li>
+				) : null}
+				{audit ? (
+					<li>
+						<ListRow title="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
+					</li>
+				) : null}
+			</ul>
+		</nav>
+	);
+}
+
 export function App({
 	client,
+	vault,
+	audit,
 	onOpen,
 }: {
 	client: ConsoleClient;
+	/** The vault page's seam; without it there's no Vault in the sidebar. */
+	vault?: ConsoleVault;
+	/** The audit view's seam; without it there's no Audit log in the sidebar. */
+	audit?: ConsoleAudit;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -69,10 +136,12 @@ export function App({
 	const narrow = useMedia(NARROW_QUERY);
 	const { projects, error: projectsError } = useProjects(client);
 
-	const projectId = route.name === "project" || route.name === "session" ? route.projectId : undefined;
-	const sessionId = route.name === "session" ? route.sessionId : undefined;
+	const projectId =
+		route.name === "project" || route.name === "session" || route.name === "files" ? route.projectId : undefined;
+	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
+	const sessionProject = useSessionProject(client, sessionId);
 
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
@@ -85,6 +154,10 @@ export function App({
 
 	const hrefFor = useCallback((id: string) => sessionPath(projectId ?? "", id), [projectId]);
 	const back = useCallback(() => navigate(projectPath(projectId ?? "")), [projectId]);
+	const toFiles = useCallback(
+		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
+		[projectId, sessionId],
+	);
 
 	if (projectsError !== undefined)
 		return (
@@ -100,7 +173,15 @@ export function App({
 		);
 
 	const unknownProject = projectId !== undefined && project === undefined;
-	const unknownSession = sessionId !== undefined && project !== undefined && client.projectOf(sessionId) !== projectId;
+	// The organisation's pages, when the console has their seams; without one the path is not found.
+	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
+	const auditRoute = audit !== undefined && route.name === "audit";
+	const organisationPage = vaultRoute || auditRoute;
+	const missing =
+		route.name === "not-found" ||
+		((route.name === "vault" || route.name === "vault-request" || route.name === "audit") && !organisationPage);
+	const unknownSession =
+		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
 
 	// A way back for an error, which on a phone fills the screen: the project's list, or the first project's.
 	const way = project ?? projects[0];
@@ -109,8 +190,41 @@ export function App({
 			<ListRow title={`Go to ${way.name}`} href={projectPath(way.id)} density="compact" />
 		);
 
+	// On a phone an organisation page fills the screen, so it gets a way back to the list.
+	const pageBar = narrow ? (
+		<div className="shell-page-bar">
+			<Button size="sm" variant="ghost" onClick={() => navigate(way === undefined ? "/" : projectPath(way.id))}>
+				Back to sessions
+			</Button>
+		</div>
+	) : null;
+
 	let main: ReactNode;
-	if (route.name === "not-found" || unknownProject) {
+	if (vaultRoute && vault !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<VaultScreen
+					key={route.name === "vault-request" ? route.proposalId : "grants"}
+					vault={vault}
+					{...(route.name === "vault-request" ? { proposalId: route.proposalId } : {})}
+				/>
+			</div>
+		);
+	} else if (auditRoute && audit !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<AuditView
+					source={audit.source}
+					directory={audit.directory}
+					links={audit.links}
+					choices={audit.choices}
+					{...(audit.pollMs === undefined ? {} : { pollMs: audit.pollMs })}
+				/>
+			</div>
+		);
+	} else if (missing || unknownProject) {
 		main = (
 			<div className="shell-empty">
 				<EmptyState title="There's nothing here" action={wayBack}>
@@ -126,6 +240,18 @@ export function App({
 				</EmptyState>
 			</div>
 		);
+	} else if (route.name === "files") {
+		main = (
+			<FilesScreen
+				key={route.sessionId}
+				client={client}
+				projectId={route.projectId}
+				sessionId={route.sessionId}
+				project={project?.name}
+				path={route.path}
+				narrow={narrow}
+			/>
+		);
 	} else if (sessionId !== undefined) {
 		main = (
 			<SessionScreen
@@ -134,6 +260,7 @@ export function App({
 				sessionId={sessionId}
 				project={project?.name}
 				onBack={narrow ? back : undefined}
+				onFiles={toFiles}
 				onOpen={onOpen}
 			/>
 		);
@@ -145,14 +272,16 @@ export function App({
 		);
 	}
 
-	const pane = sessionId !== undefined || route.name === "not-found" || unknownProject ? "main" : "list";
+	const pane = sessionId !== undefined || missing || unknownProject || organisationPage ? "main" : "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
 	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
 	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
-	const title =
-		route.name === "not-found" || unknownProject
+	// The vault page and the audit log bring their own headings.
+	const title = organisationPage
+		? undefined
+		: missing || unknownProject
 			? "Page not found"
 			: unknownSession
 				? "Session not found"
@@ -169,20 +298,26 @@ export function App({
 					<span className="shell-wordmark">Harbour</span>
 				</div>
 				<ProjectNav projects={projects} current={projectId} />
+				<OrganisationNav route={route} vault={vault !== undefined} audit={audit !== undefined} />
+				{/* An organisation page belongs to no project, so there's no project's sessions to list beside it. */}
 				<div className="shell-sessions">
-					<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
-					<SessionList
-						sessions={list.sessions}
-						selectedId={sessionId}
-						hrefFor={hrefFor}
-						loading={list.loading}
-						error={list.error}
-						empty={
-							<EmptyState title="No sessions in this project yet">
-								Sessions started here, by you or a schedule, show up as they run.
-							</EmptyState>
-						}
-					/>
+					{organisationPage ? null : (
+						<>
+							<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
+							<SessionList
+								sessions={list.sessions}
+								selectedId={sessionId}
+								hrefFor={hrefFor}
+								loading={list.loading}
+								error={list.error}
+								empty={
+									<EmptyState title="No sessions in this project yet">
+										Sessions started here, by you or a schedule, show up as they run.
+									</EmptyState>
+								}
+							/>
+						</>
+					)}
 				</div>
 				<div className="shell-actor">
 					<span className="shell-actor-name">{client.actor.name}</span>

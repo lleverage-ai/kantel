@@ -5,6 +5,7 @@
  */
 import { type Concept, type ConceptScope, HarbourError } from "@harbour/contracts";
 
+export * from "./capabilities.ts";
 export * from "./fts.ts";
 export * from "./recall.ts";
 export * from "./terms.ts";

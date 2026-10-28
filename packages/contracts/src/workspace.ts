@@ -266,7 +266,9 @@ export interface Workspaces {
 	/**
 	 * Applies changes atomically as one new version. Rejects with `conflict` when `baseVersion` is not the head, with
 	 * `refused` for any path under a mount point (and audits `workspace.write.refused`), and with `invalid` for a path
-	 * that is not a normalised relative path.
+	 * that is not a normalised relative path. An implementation that honours cancellation (`@harbour/workspace`'s do;
+	 * the conformance suite's `cancellation` case checks it) rejects with `aborted` and commits nothing when `ctx.signal`
+	 * has fired by the time the head would move.
 	 */
 	commit(ctx: CallContext, id: WorkspaceId, request: CommitRequest): Promise<CommitResult>;
 
@@ -275,8 +277,21 @@ export interface Workspaces {
 	/** Re-pins a mount to a newer source version (or the latest). */
 	remount(ctx: CallContext, id: WorkspaceId, mount: MountRequest): Promise<WorkspaceRecord>;
 
-	/** Files under `prefixes` (such as `notes/`) at head, for handing back to the host. */
-	export(ctx: CallContext, id: WorkspaceId, prefixes: readonly string[]): Promise<readonly FileContent[]>;
+	/**
+	 * Files under `prefixes` (such as `notes/`) at head, for handing back to the host. With `maxBytes`, an export whose
+	 * files add up to more is rejected with `refused` (details `{ maxBytes, bytes }`) before any body is read.
+	 */
+	export(
+		ctx: CallContext,
+		id: WorkspaceId,
+		prefixes: readonly string[],
+		options?: ExportOptions,
+	): Promise<readonly FileContent[]>;
+}
+
+export interface ExportOptions {
+	/** The most bytes the exported bodies may add up to, checked against the tree before any body is read. */
+	readonly maxBytes?: number;
 }
 
 /**

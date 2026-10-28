@@ -51,6 +51,33 @@ docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbo
 bun apps/selfhosted/test/gateway/stack.ts     # the end-to-end test CI runs against the stack
 ```
 
+### Mail
+
+Sign-in is by email one-time PIN (#15, Sign-in). The gateway sends mail through `HARBOUR_SMTP_URL` (`smtp://` with
+STARTTLS, or `smtps://`, credentials in the URL if the relay needs them) from `HARBOUR_MAIL_FROM`. In compose both
+default to Mailpit (`smtp://mailpit:1025`, `Harbour <harbour@harbour.localhost>`); set them to use a real relay. The
+gateway refuses to start on a malformed value, and `/v1/deployment` shows the server and From address, never the
+credentials. Read what was sent at <http://127.0.0.1:58025/> or through Mailpit's API
+(`/api/v1/search?query=to:"…"`), which is how the end-to-end tests read codes.
+
+### Bindings: the real implementations against the stack
+
+`bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its
+contract's conformance suite, on this stack's Postgres, MinIO and Mailpit, and prints which pass. CI's `selfhosted`
+job runs it and puts the table in the job summary. A suite that skips for want of its service counts as a failure.
+
+| Contract | Implementation | Suite |
+|---|---|---|
+| Session runtime | SQL session store and Pi Durable tables on Postgres | `apps/selfhosted/test/gateway/runtime-postgres.conformance.test.ts` |
+| Audit | SQL audit store and outbox on Postgres | `packages/audit/test/sql.conformance.test.ts` |
+| Identity | SQL identity directory on Postgres | `packages/identity/test/sql.conformance.test.ts` |
+| Email one-time PIN | OTP sign-in, mail through Mailpit | `packages/identity/test/otp.mailpit.test.ts` |
+| Workspaces | Postgres and S3 (MinIO), keyed | `targets/selfhosted/workspace/test/conformance.stack.test.ts` |
+| Vault | engine on the Postgres vault store | `targets/selfhosted/vault/test/postgres.conformance.test.ts` |
+
+Each suite works in its own fresh schema (and object prefix) and drops it afterwards, so running it against a shared
+stack is safe. Pass `--postgres-url`, `--s3-endpoint`, `--smtp-url` and `--mailpit-url` for a second stack.
+
 ## Running a second stack
 
 Other work may already be using a stack named `harbour` on the default ports. A second one on the same machine needs
@@ -61,13 +88,15 @@ its own project name, ports, `control` subnet, vault container name, sandbox net
 export COMPOSE_PROJECT_NAME=harbour-m1sh HARBOUR_IMAGE_TAG=m1sh \
   HARBOUR_PG_PORT=56432 HARBOUR_S3_PORT=59100 HARBOUR_ISOLATE_PORT=58180 \
   HARBOUR_HOST_A_PORT=58181 HARBOUR_HOST_B_PORT=58182 HARBOUR_GATEWAY_PORT=58190 \
+  HARBOUR_MAILPIT_PORT=58225 HARBOUR_SMTP_PORT=58226 \
   HARBOUR_CONTROL_PREFIX=10.250.91 HARBOUR_VAULT_CONTAINER=harbour-m1sh-vault-proxy \
   HARBOUR_SANDBOX_NETWORK=harbour-m1sh-sbx
 docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
 The tests take the matching URLs: `HARBOUR_DATABASE_URL`, `S3_ENDPOINT`, `--base` for the spike scripts and
-`--base-url` for the gateway test.
+`--base-url` and `--mailpit-url` for the gateway test, and `--postgres-url`, `--s3-endpoint`, `--smtp-url` and
+`--mailpit-url` for `apps/selfhosted/test/bindings.ts`.
 
 ## What runs
 
@@ -81,6 +110,7 @@ The tests take the matching URLs: `HARBOUR_DATABASE_URL`, `S3_ENDPOINT`, `--base
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
 | `sandbox-image` | Builds `harbour-sandbox:dev`, the container tier's warm image, and exits. | none |
 | `gateway` | The M1 gateway (Bun): session, workspace read and audit query APIs behind the API-key authenticator, and the console. | 58090 |
+| `mailpit` | The SMTP server sign-in codes go to (email one-time PIN, #15). Keeps messages in memory and relays nothing; web UI and API on 58025, SMTP on 58125. | 58025, 58125 |
 
 Networks: `control` (everything but sandboxes and the fixture) and `upstream`
 (vault and fixture: the outside world). Each sandbox container gets its own
@@ -94,7 +124,8 @@ widen `default-address-pools` in the daemon config to raise it.
 
 Ports are bound to 127.0.0.1 and can be moved with `HARBOUR_PG_PORT`,
 `HARBOUR_S3_PORT`, `HARBOUR_ISOLATE_PORT`, `HARBOUR_HOST_A_PORT`,
-`HARBOUR_HOST_B_PORT` and `HARBOUR_GATEWAY_PORT`.
+`HARBOUR_HOST_B_PORT`, `HARBOUR_GATEWAY_PORT`, `HARBOUR_MAILPIT_PORT` and
+`HARBOUR_SMTP_PORT`.
 
 ## For M0-BE2 (seeding measurements)
 

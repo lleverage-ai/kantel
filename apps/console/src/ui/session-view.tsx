@@ -4,6 +4,7 @@ import {
 	Composer,
 	type ConnectionStateValue,
 	DotsIcon,
+	FileIcon,
 	IconButton,
 	Notice,
 	SessionHeader,
@@ -13,7 +14,7 @@ import {
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
-import { composerState, type SessionActions } from "./actions.ts";
+import { composerState, offersFollowUp, type SessionActions } from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -72,6 +73,7 @@ export function SessionView({
 	project,
 	actions,
 	onBack,
+	onFiles,
 }: {
 	client: SessionClient;
 	/** The project's name, shown with the session's facts. */
@@ -79,6 +81,8 @@ export function SessionView({
 	actions: SessionActions;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
+	/** Shows Files, to browse the session's workspace. */
+	onFiles?: () => void;
 }) {
 	const state = useSyncExternalStore(client.subscribe, client.getState);
 	const [menu, setMenu] = useState(false);
@@ -120,42 +124,49 @@ export function SessionView({
 					</>
 				}
 				actions={
-					<div className="console-menu-root" ref={menuRoot}>
-						<IconButton
-							variant="ghost"
-							label="Session options"
-							icon={<DotsIcon />}
-							aria-expanded={menu}
-							onClick={() => setMenu((open) => !open)}
-						/>
-						{menu ? (
-							<div className="console-menu">
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => {
-										client.simulateDisconnect(3000);
-										setMenu(false);
-									}}
-									disabled={state.connection.status !== "open"}
-								>
-									Drop the connection for 3s
-								</Button>
-								<div className="console-menu-label">Stream</div>
-								<ul className="console-menu-facts">
-									<li>
-										{loaded.toLocaleString("en-GB")} items loaded
-										{state.hasEarlier ? ", earlier ones on scroll" : ", the whole session"}
-									</li>
-									<li>{state.flushes.toLocaleString("en-GB")} renders from the stream</li>
-									{last ? (
+					<div className="console-actions">
+						{onFiles === undefined ? null : (
+							<Button variant="ghost" size="sm" icon={<FileIcon />} onClick={onFiles}>
+								Files
+							</Button>
+						)}
+						<div className="console-menu-root" ref={menuRoot}>
+							<IconButton
+								variant="ghost"
+								label="Session options"
+								icon={<DotsIcon />}
+								aria-expanded={menu}
+								onClick={() => setMenu((open) => !open)}
+							/>
+							{menu ? (
+								<div className="console-menu">
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => {
+											client.simulateDisconnect(3000);
+											setMenu(false);
+										}}
+										disabled={state.connection.status !== "open"}
+									>
+										Drop the connection for 3s
+									</Button>
+									<div className="console-menu-label">Stream</div>
+									<ul className="console-menu-facts">
 										<li>
-											Last resume from <code>{last.from ?? "start"}</code> by {last.how}
+											{loaded.toLocaleString("en-GB")} items loaded
+											{state.hasEarlier ? ", earlier ones on scroll" : ", the whole session"}
 										</li>
-									) : null}
-								</ul>
-							</div>
-						) : null}
+										<li>{state.flushes.toLocaleString("en-GB")} renders from the stream</li>
+										{last ? (
+											<li>
+												Last resume from <code>{last.from ?? "start"}</code> by {last.how}
+											</li>
+										) : null}
+									</ul>
+								</div>
+							) : null}
+						</div>
 					</div>
 				}
 			/>
@@ -178,6 +189,15 @@ export function SessionView({
 					disabledReason={control.live ? undefined : control.reason}
 					label="Message"
 					banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
+					value={actions.draft}
+					onChange={actions.onDraft}
+					footer={
+						offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+							<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+								Send after this run
+							</Button>
+						) : undefined
+					}
 					onSend={actions.onSend}
 					onSteer={actions.onSteer}
 					onStop={actions.onStop}

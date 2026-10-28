@@ -1,6 +1,10 @@
 // The isolate tier: one Dynamic Worker per session, loaded by the isolate host
 // (loader.ts) through workerd's workerLoader binding.
 //
+// The workspace is either the WS binding, fixed at load (one isolate loaded per
+// session), or a scope the host passes with each call (a pre-loaded isolate
+// from the pool, which has no WS binding).
+//
 // It runs just-bash over a lazy view of one workspace version. File bodies are
 // fetched through the WS binding only when a command reads them. At the end of
 // every command it uploads what changed and returns the new manifest; the
@@ -24,7 +28,7 @@ interface WorkspaceBinding {
 }
 
 interface Env {
-	WS: WorkspaceBinding;
+	WS?: WorkspaceBinding;
 }
 
 export interface ExecRequest {
@@ -120,14 +124,21 @@ function track(fs: InMemoryFs, dirty: Set<string>): InMemoryFs {
 }
 
 export default class Sandbox extends WorkerEntrypoint<Env> {
+	#workspace(scope: WorkspaceBinding | undefined): WorkspaceBinding {
+		const ws = scope ?? this.env.WS;
+		if (!ws) throw new Error("no workspace: a pooled isolate takes it with each call");
+		return ws;
+	}
+
 	/** List the workspace without reading any file body. */
-	async list(manifest: Manifest): Promise<{ entries: number; bytes: number }> {
+	async list(manifest: Manifest, _scope?: WorkspaceBinding): Promise<{ entries: number; bytes: number }> {
 		let bytes = 0;
 		for (const entry of Object.values(manifest)) if (entry.kind === "file") bytes += entry.size;
 		return { entries: Object.keys(manifest).length, bytes };
 	}
 
-	async exec(request: ExecRequest): Promise<ExecResponse> {
+	async exec(request: ExecRequest, scope?: WorkspaceBinding): Promise<ExecResponse> {
+		const ws = this.#workspace(scope);
 		const t0 = performance.now();
 		let lazyReads = 0;
 		const files: Record<string, unknown> = {};
@@ -135,7 +146,7 @@ export default class Sandbox extends WorkerEntrypoint<Env> {
 			if (entry.kind !== "file") continue;
 			files[abs(path)] = async () => {
 				lazyReads++;
-				return await this.env.WS.read(entry.sha);
+				return await ws.read(entry.sha);
 			};
 		}
 		const fs = new InMemoryFs(files as never);
@@ -188,7 +199,7 @@ export default class Sandbox extends WorkerEntrypoint<Env> {
 				const sha = await sha256(bytes);
 				const mode = stat.mode & 0o777;
 				if (before?.kind !== "file" || before.sha !== sha || before.mode !== mode) {
-					await this.env.WS.put(bytes);
+					await ws.put(bytes);
 					changed.push(path);
 				}
 				next[path] = { kind: "file", sha, size: bytes.byteLength, mode };

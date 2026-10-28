@@ -9,13 +9,16 @@ name: Cloudflare deploy (M1-CF1)
 #   secret   CLOUDFLARE_API_TOKEN
 #   vars     CLOUDFLARE_ACCOUNT_ID, HARBOUR_HOSTNAME, HARBOUR_ACCESS_TEAM_DOMAIN, HARBOUR_ACCESS_AUD,
 #            HARBOUR_MODELS_VPC_SERVICE_ID, HARBOUR_ADMIN_EMAIL (the first admin, invited by email)
+#   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
+#            HARBOUR_VAULT_KEY (without it the vault answers 503), HARBOUR_VAULT_MODEL_GATEWAY_TOKEN,
+#            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN
 #
 # The token's permissions (apps/cloudflare/README.md explains each):
 #   Account  Workers Scripts: Edit            deploy the Worker, its Durable Objects and static assets
 #   Account  D1: Edit                         create the `harbour` database on the first deploy, find it after
 #   Account  Workers R2 Storage: Edit         create the `harbour-workspaces` bucket on the first deploy, find it after
 #   Account  Connectivity Directory: Bind     bind the Workers VPC service to CLIProxyAPI
-#   Zone     Workers Routes: Edit (myslop.app)  attach the custom domain HARBOUR_HOSTNAME
+#   Zone     Workers Routes: Edit (myslop.app)  add the zone route HARBOUR_HOSTNAME/*
 #
 # The first real deploy creates the D1 database and R2 bucket if they're missing (wrangler's automatic provisioning,
 # by name); later deploys find them by name. A dry run creates nothing.
@@ -27,6 +30,7 @@ on:
       - "apps/cloudflare/**"
       - "apps/console/**"
       - "packages/**"
+      - "targets/cloudflare/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/cloudflare-deploy.yml"
   pull_request:
@@ -34,6 +38,7 @@ on:
       - "apps/cloudflare/**"
       - "apps/console/**"
       - "packages/**"
+      - "targets/cloudflare/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/cloudflare-deploy.yml"
   workflow_dispatch: {}
@@ -128,6 +133,18 @@ jobs:
           MODE: ${{ steps.mode.outputs.mode }}
         run: node scripts/deploy-config.ts --mode "$MODE"
 
+      # The vault's Worker secrets, from the repository secrets of the same names: each one only if it is set, checked
+      # first. Wrangler's secrets file is additive, so one left out keeps its value on the Worker.
+      - name: Write the vault secrets
+        id: vault-secrets
+        if: steps.mode.outputs.mode == 'deploy'
+        working-directory: apps/cloudflare
+        env:
+          HARBOUR_VAULT_KEY: ${{ secrets.HARBOUR_VAULT_KEY }}
+          HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_MODEL_GATEWAY_TOKEN }}
+          HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN }}
+        run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
+
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.
       - name: wrangler deploy --dry-run
         working-directory: apps/cloudflare
@@ -138,7 +155,19 @@ jobs:
         working-directory: apps/cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm exec wrangler deploy --config wrangler.deploy.json
+          SECRETS_FILE: ${{ steps.vault-secrets.outputs.file }}
+        run: |
+          if [ -n "$SECRETS_FILE" ]; then
+            pnpm exec wrangler deploy --config wrangler.deploy.json --secrets-file "$SECRETS_FILE"
+          else
+            pnpm exec wrangler deploy --config wrangler.deploy.json
+          fi
+
+      - name: Remove the vault secrets file
+        if: always() && steps.vault-secrets.outputs.file != ''
+        env:
+          SECRETS_FILE: ${{ steps.vault-secrets.outputs.file }}
+        run: rm -f "$SECRETS_FILE"
 
       # An anonymous visitor must be sent to Access sign-in on every path, or the deploy fails.
       - name: Anonymous requests go to Access sign-in

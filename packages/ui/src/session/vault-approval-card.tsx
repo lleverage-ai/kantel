@@ -1,5 +1,5 @@
 import type { VaultApprovalCard as VaultApprovalCardData } from "@harbour/protocol";
-import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, memo, useId, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { CopyButton, Disclosure } from "../primitives/controls.tsx";
@@ -33,9 +33,10 @@ export type VaultApprovalCardProps = {
  * The terms as label and value pairs, under one line that says who set them: the agent (proposed) or a person
  * (approved). The protocol gives one source for every term on a card, so it is said once rather than as a badge on
  * each row, where five identical amber marks read as five warnings and compete with the binding code. The Lifetime
- * term is the only place the card says how long is left; under two minutes it turns amber.
+ * term is the only place the card says how long is left; under two minutes it turns amber. The terms themselves do
+ * not move with time: only the Lifetime value does, in its own component, so the list renders with the card alone.
  */
-function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: number; requester?: string }) {
+function Terms({ card, now, requester }: { card: VaultApprovalCardData; now?: number; requester?: string }) {
 	useRenderProbe("VaultTerms", card.proposalId);
 	const source = card.termsSource === "approved" ? "Approved on the vault page" : "Proposed by the agent";
 	return (
@@ -60,11 +61,7 @@ function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: num
 					)}
 				</Field>
 				<Field label="Lifetime">
-					<span
-						className={`hb-mono${card.status === "pending" && isUrgent(card.expiresAt, now) ? " hb-vault-urgent" : ""}`}
-					>
-						{lifetimeText(card.expiresAt, now)}
-					</span>
+					<LifetimeValue expiresAt={card.expiresAt} pending={card.status === "pending"} now={now} />
 				</Field>
 				{requester === undefined ? null : <Field label="Requested by">{requester}</Field>}
 			</FieldList>
@@ -73,24 +70,60 @@ function Terms({ card, now, requester }: { card: VaultApprovalCardData; now: num
 }
 
 /**
+ * The Lifetime term's value, the one part of the card that moves with time. While the card is pending and has no fixed
+ * `now`, it alone reads the shared one-second clock and re-renders on each tick; the card around it does not.
+ */
+function LifetimeValue({ expiresAt, pending, now }: { expiresAt: number; pending: boolean; now?: number }) {
+	const ticking = useNow(1000, now === undefined && pending);
+	const time = now ?? ticking;
+	// The card folds to expired on its own timer. Should a tick land before it, keep the last pending wording rather
+	// than say "Expired" on a card that still reads as pending; with time left this is the current time.
+	const current = pending ? Math.min(time, expiresAt - 1) : time;
+	return (
+		<span className={`hb-mono${pending && isUrgent(expiresAt, current) ? " hb-vault-urgent" : ""}`}>
+			{lifetimeText(expiresAt, current)}
+		</span>
+	);
+}
+
+// The longest delay setTimeout holds; a longer one would fire at once.
+const MAX_TIMEOUT = 2 ** 31 - 1;
+
+/**
  * The card a session shows when its agent asks the vault for a secret or a route. It says what is needed and why,
  * that the agent never sees the value, and the exact terms, marked once as the agent's proposal or as approved, with
  * how long is left said once, in the Lifetime term. The binding code is always shown; the vault page shows the same
  * one. Settled cards fold to one row.
  */
-export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApprovalCardProps) {
+export const VaultApprovalCard = memo(function VaultApprovalCard({
+	card,
+	now,
+	onAskAgain,
+	requester,
+}: VaultApprovalCardProps) {
 	useRenderProbe("VaultApprovalCard", card.proposalId);
 	const titleId = useId();
-	// Ticks once a second on the shared clock, only while pending, unfixed and not yet run out.
-	const [ranOut, setRanOut] = useState<number | undefined>(undefined);
-	const live = now === undefined && card.status === "pending" && ranOut !== card.expiresAt;
-	const ticking = useNow(1000, live);
-	const current = now ?? ticking;
-	const timeIsUp = current >= card.expiresAt;
-	useEffect(() => {
-		if (live && timeIsUp) setRanOut(card.expiresAt);
-	}, [live, timeIsUp, card.expiresAt]);
+	const expiresAt = card.expiresAt;
+	// The expiry this card has seen pass. The card holds no clock: a pending, unfixed card sets one timeout for its
+	// expiry and re-renders when it fires, or when its props change. A card mounted already past its expiry starts so.
+	const [ranOut, setRanOut] = useState<number | undefined>(() =>
+		now === undefined && Date.now() >= expiresAt ? expiresAt : undefined,
+	);
+	const live = now === undefined && card.status === "pending" && ranOut !== expiresAt;
+	// A layout effect, so a card whose new expiry has already passed folds before it is painted as pending.
+	useLayoutEffect(() => {
+		if (!live) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const check = () => {
+			const left = expiresAt - Date.now();
+			if (left <= 0) setRanOut(expiresAt);
+			else timer = setTimeout(check, Math.min(left, MAX_TIMEOUT));
+		};
+		check();
+		return () => clearTimeout(timer);
+	}, [live, expiresAt]);
 
+	const timeIsUp = now === undefined ? ranOut === expiresAt : now >= expiresAt;
 	const status = card.status === "pending" && timeIsUp ? "expired" : card.status;
 
 	if (status === "approved") {
@@ -103,7 +136,7 @@ export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApp
 					</p>
 					<code className="hb-vault-row-code hb-selectable">{card.bindingCode}</code>
 					<Disclosure summary="Terms" className="hb-vault-terms">
-						<Terms card={card} now={current} requester={requester} />
+						<Terms card={card} now={now} requester={requester} />
 					</Disclosure>
 				</div>
 			</section>
@@ -171,7 +204,7 @@ export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApp
 				</p>
 			</div>
 
-			<Terms card={card} now={current} requester={requester} />
+			<Terms card={card} now={now} requester={requester} />
 
 			<div className="hb-vault-code">
 				<p className="hb-vault-code-label">Binding code</p>
@@ -198,7 +231,7 @@ export function VaultApprovalCard({ card, now, onAskAgain, requester }: VaultApp
 			<p className="hb-vault-card-closing">The agent carries on when you're done.</p>
 		</section>
 	);
-}
+});
 
 /** The shape of a pending card while it loads: header, title, terms and actions as placeholders. */
 export function VaultApprovalCardSkeleton() {

@@ -55,6 +55,9 @@ import {
 } from "@harbour/sql";
 import { apiKeyPrefix, generateApiKeySecret, hashApiKeySecret, strongestRole } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
+import { otpSchema } from "./otp-sql.ts";
+
+export { createSqlOtpStores, otpSchema } from "./otp-sql.ts";
 
 /** Identity appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("identity");
@@ -143,6 +146,7 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			revoked_at ${time}
 		)`,
 		"CREATE INDEX IF NOT EXISTS identity_api_keys_by_organisation ON identity_api_keys (organisation_id, seq)",
+		...otpSchema(dialect),
 	];
 }
 
@@ -1101,6 +1105,36 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			);
 			for (const row of bound) organisationIds.add(String(row.organisation_id));
 			return { user: stored.user, organisationIds: [...organisationIds] };
+		},
+
+		async canSignIn(ctx, identity) {
+			await requireSystem(ctx, "identity.canSignIn", workerOptions);
+			const wellFormed =
+				typeof identity?.issuer === "string" &&
+				identity.issuer !== "" &&
+				typeof identity.subject === "string" &&
+				identity.subject !== "";
+			const externalSubject = wellFormed ? externalSubjectOf(identity.issuer, identity.subject) : "";
+			const email =
+				wellFormed && identity.emailVerified === true && typeof identity.email === "string"
+					? normaliseEmail(identity.email)
+					: "";
+			// The same statement whoever the identity names: both index lookups run every time, and the subject's match
+			// wins over any number of unlinked users with the email, as it does in `signIn`.
+			const [row] = await driver.query<{ by_subject: unknown; invited: unknown }>(
+				`SELECT
+					(SELECT COUNT(*) FROM identity_users WHERE external_subject = ?) AS by_subject,
+					(SELECT COUNT(*) FROM (
+						SELECT 1 AS one FROM identity_users
+						WHERE external_subject IS NULL AND email_normalised = ? AND email_normalised <> ''
+						LIMIT 2
+					) AS candidates) AS invited`,
+				[externalSubject, email],
+			);
+			if (!wellFormed || row === undefined) return false;
+			const bySubject = sqlNumber(row.by_subject);
+			if (bySubject > 0) return bySubject === 1;
+			return email !== "" && sqlNumber(row.invited) === 1;
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {
