@@ -134,6 +134,8 @@ export function skillsSchema(dialect: SqlDialect): readonly string[] {
 			UNIQUE (owner_key, name)
 		)`,
 		"CREATE INDEX IF NOT EXISTS skill_packages_by_organisation ON skill_packages (organisation_id, owner_kind)",
+		// Lists find platform skills through this one, so they never scan other organisations' packages.
+		"CREATE INDEX IF NOT EXISTS skill_packages_by_kind ON skill_packages (owner_kind, latest_revision)",
 		`CREATE TABLE IF NOT EXISTS skill_drafts (
 			skill_id TEXT PRIMARY KEY,
 			seq INTEGER NOT NULL,
@@ -607,10 +609,15 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 				}
 				const seq = sqlNumber(draft.seq);
 				if (latest !== undefined && latest.digest === digest) {
-					await driver.batch([
-						sql("DELETE FROM skill_drafts WHERE skill_id = ? AND seq = ?", skillId, seq),
-						sql("UPDATE skill_packages SET updated_at = ? WHERE id = ?", clock.now(), skillId),
-					]);
+					// Closes the draft only while `latest` is still the package's latest: if another writer moved the package on
+					// since it was read, the draft is no longer unchanged from it, so re-read and publish it instead.
+					const closed = await driver.query(
+						`DELETE FROM skill_drafts WHERE skill_id = ? AND seq = ?
+						AND EXISTS (SELECT 1 FROM skill_packages WHERE id = ? AND latest_revision = ?) RETURNING seq`,
+						[skillId, seq, skillId, latest.revision],
+					);
+					if (closed.length === 0) continue;
+					await driver.query("UPDATE skill_packages SET updated_at = ? WHERE id = ?", [clock.now(), skillId]);
 					return latest;
 				}
 				const revision = await recordRevision(ctx, pkg, (pkg.latestRevision ?? 0) + 1, {

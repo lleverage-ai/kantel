@@ -197,6 +197,61 @@ for (const kind of testDatabaseKinds()) {
 			expect(after.text).toContain(current.statement);
 			expect(audit.events.filter((event) => event.type === "memory.proposal.applied")).toHaveLength(1);
 		});
+
+		it("names the snapshot its recalled concepts came from when an import lands during the recall", async () => {
+			const driver = await open();
+			const left = createSqlMemory({ driver, clock });
+			const space = await left.createSpace(human, { owner, name: "Sal memory" });
+			await left.importSnapshot(service, space.id, snapshot);
+			const changed: MemorySnapshot = {
+				...snapshot,
+				ref: "8a1b2c3",
+				concepts: [concept("projects/harbour/deploys", "Deploy windows", "Deploy Harbour on Friday evenings.")],
+			};
+			// The import lands after the recall has read the space, before it reads the concepts.
+			let pending: (() => Promise<unknown>) | undefined = () => left.importSnapshot(service, space.id, changed);
+			const gated: SqlDriver = {
+				dialect: driver.dialect,
+				batch: (statements) => driver.batch(statements),
+				async query(text, params) {
+					if (pending !== undefined && text.includes("memory_concepts")) {
+						const run = pending;
+						pending = undefined;
+						await run();
+					}
+					return driver.query(text, params);
+				},
+			};
+			const recall = await createSqlMemory({ driver: gated, clock }).recall(agent, recallRequest(space.id));
+			expect(pending).toBeUndefined();
+			expect(recall.text).toContain("Friday evenings");
+			expect(recall.manifest.length).toBeGreaterThan(0);
+			expect(recall.manifest.map((entry) => entry.snapshotRef)).toEqual(recall.manifest.map(() => "8a1b2c3"));
+		});
+
+		it("pages a space's proposals in order, after others' proposals elsewhere", async () => {
+			const driver = await open();
+			const memory = createSqlMemory({ driver, clock });
+			const one = await memory.createSpace(human, { owner, name: "One" });
+			const two = await memory.createSpace(human, { owner, name: "Two" });
+			const ids: string[] = [];
+			for (let index = 0; index < 5; index += 1) {
+				const write = {
+					op: "remember" as const,
+					concept: concept(`projects/harbour/n${index}`, "N", `Note ${index}.`),
+				};
+				ids.push((await memory.propose(agent, one.id, write)).id);
+				await memory.propose(agent, two.id, write);
+			}
+			const seen: string[] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await memory.listProposals(human, one.id, undefined, { limit: 2, ...(cursor ? { cursor } : {}) });
+				seen.push(...page.items.map((item) => item.id));
+				cursor = page.nextCursor;
+			} while (cursor !== undefined);
+			expect(seen).toEqual(ids);
+		});
 	});
 }
 

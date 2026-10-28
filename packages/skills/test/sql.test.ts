@@ -200,6 +200,72 @@ for (const kind of testDatabaseKinds()) {
 			expect(types.filter((type) => type === "skills.revision.published")).toHaveLength(4);
 			expect(types.filter((type) => type === "skills.session.pinned")).toHaveLength(1);
 		});
+
+		it("publishes a draft that matches a revision another writer has since moved past", async () => {
+			const driver = await open();
+			const objects = createMemoryObjectBucket();
+			const other = createSqlSkills({ driver, objects });
+			const pkg = await other.create(human, { owner, name: "pr-review", description: "Review PRs" });
+			const a = await other.saveDraft(human, pkg.id, { files: files("pr-review", "A.") });
+			await other.publish(human, pkg.id, { expectedDigest: a.digest });
+			// The publisher reads revision 1 (A) as latest; before it reads the draft, another writer imports B as
+			// revision 2 and saves A again as a draft. Publishing that draft must make revision 3, not close it as unchanged.
+			let pending: (() => Promise<unknown>) | undefined = async () => {
+				await other.importRevision(service, {
+					owner,
+					name: "pr-review",
+					description: "Review PRs",
+					files: files("pr-review", "B."),
+					source: { sourceId: "sal-git", ref: "b" },
+				});
+				await other.saveDraft(human, pkg.id, { files: files("pr-review", "A.") });
+			};
+			const gated: SqlDriver = {
+				dialect: driver.dialect,
+				batch: (statements) => driver.batch(statements),
+				async query(text, params) {
+					if (pending !== undefined && text.startsWith("SELECT seq, digest")) {
+						const run = pending;
+						pending = undefined;
+						await run();
+					}
+					return driver.query(text, params);
+				},
+			};
+			const published = await createSqlSkills({ driver: gated, objects }).publish(human, pkg.id, {
+				expectedDigest: a.digest,
+			});
+			expect(pending).toBeUndefined();
+			expect(published.revision).toBe(3);
+			const after = await other.get(human, pkg.id);
+			expect(after.latestRevision).toBe(3);
+			expect(after.draftDigest).toBeUndefined();
+			expect(await other.readFile(human, pkg.id, 3, "scripts/run.sh")).toBe("echo A.\n");
+		});
+
+		it("lists platform skills without scanning other organisations' packages", async () => {
+			const driver = await open();
+			if (driver.dialect !== "sqlite") return;
+			// Catches the listing's own statement, then asks SQLite how it would run it.
+			const seen: { text: string; params: readonly unknown[] }[] = [];
+			const recording: SqlDriver = {
+				dialect: driver.dialect,
+				batch: (statements) => driver.batch(statements),
+				query(text, params) {
+					seen.push({ text, params: params ?? [] });
+					return driver.query(text, params);
+				},
+			};
+			await createSqlSkills({ driver: recording, objects: createMemoryObjectBucket() }).list(human, {});
+			const listing = seen.find((statement) => statement.text.includes("owner_kind = 'platform'"));
+			expect(listing).toBeDefined();
+			const plan = await driver.query<{ detail: string }>(
+				`EXPLAIN QUERY PLAN ${listing!.text}`,
+				listing!.params as Parameters<SqlDriver["query"]>[1],
+			);
+			const details = plan.map((row) => String(row.detail));
+			expect(details.some((detail) => /SCAN p\b/.test(detail) && !/USING/.test(detail))).toBe(false);
+		});
 	});
 }
 

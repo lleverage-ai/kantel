@@ -243,23 +243,44 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 		return named;
 	}
 
-	/** Every concept of the spaces, any status, by ID then space, indexed for recall and search. */
+	/**
+	 * Every concept of the spaces, any status, by ID then space, indexed for recall and search. The spaces and their
+	 * concepts are read in one statement, so the snapshot a manifest names is the one its concepts came from even when
+	 * an import lands meanwhile, and the index is cached under the generations it was read at.
+	 */
 	async function corpusFor(named: readonly LoadedSpace[]): Promise<RecallCorpus> {
-		const key = named.map((loaded) => `${loaded.space.id}:${loaded.generation}`).join("\u0000");
-		if (cached?.key === key) return cached.corpus;
+		const keyOf = (spaces: readonly LoadedSpace[]) =>
+			spaces.map((loaded) => `${loaded.space.id}:${loaded.generation}`).join("\u0000");
+		if (cached?.key === keyOf(named)) return cached.corpus;
 		const rows =
 			named.length === 0
 				? []
-				: await driver.query<{ space_id: unknown; concept: unknown }>(
-						`SELECT space_id, concept FROM memory_concepts WHERE held = 1 AND ${inJsonList(driver.dialect, "space_id")}`,
+				: await driver.query<SpaceRow & { readonly concept: unknown }>(
+						`SELECT ${SPACE_COLUMNS.split(", ")
+							.map((column) => `s.${column}`)
+							.join(", ")}, c.concept
+						FROM memory_spaces s LEFT JOIN memory_concepts c ON c.space_id = s.id AND c.held = 1
+						WHERE ${inJsonList(driver.dialect, "s.id")}`,
 						[JSON.stringify(named.map((loaded) => loaded.space.id))],
 					);
-		const bySpace = new Map<string, Concept[]>(named.map((loaded) => [loaded.space.id, []]));
-		for (const row of rows) bySpace.get(String(row.space_id))?.push(JSON.parse(String(row.concept)) as Concept);
+		const read = new Map<string, { loaded: LoadedSpace; concepts: Concept[] }>();
+		for (const row of rows) {
+			const id = String(row.id);
+			let entry = read.get(id);
+			if (entry === undefined) {
+				entry = { loaded: spaceFrom(row), concepts: [] };
+				read.set(id, entry);
+			}
+			if (row.concept !== null && row.concept !== undefined) {
+				entry.concepts.push(JSON.parse(String(row.concept)) as Concept);
+			}
+		}
+		// Spaces are never deleted, so each named one is read; fall back to the first read if one somehow isn't.
+		const spaces = named.map((loaded) => read.get(loaded.space.id) ?? { loaded, concepts: [] });
 		const corpus = createRecallCorpus(
-			recallCorpusOf(named.map((loaded) => ({ space: loaded.space, concepts: bySpace.get(loaded.space.id) ?? [] }))),
+			recallCorpusOf(spaces.map(({ loaded, concepts }) => ({ space: loaded.space, concepts }))),
 		);
-		cached = { key, corpus };
+		cached = { key: keyOf(spaces.map(({ loaded }) => loaded)), corpus };
 		return corpus;
 	}
 
@@ -455,9 +476,20 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			const loaded = await spaceFor(ctx, spaceId);
 			await requireSpace(access, ctx, loaded.space, "operator", "memory.propose");
 			const proposal = proposalFor(ctx, await stateOf(spaceId), write, `memprop_${crypto.randomUUID()}`, clock.now());
-			await driver.query(
+			const insert = sql(
 				"INSERT INTO memory_proposals (id, organisation_id, space_id, status, proposal) VALUES (?, ?, ?, ?, ?)",
-				[proposal.id, ctx.organisationId, spaceId, proposal.status, JSON.stringify(proposal)],
+				proposal.id,
+				ctx.organisationId,
+				spaceId,
+				proposal.status,
+				JSON.stringify(proposal),
+			);
+			// On Postgres the lock makes a space's proposals commit in `seq` order, so a reader paging by cursor never skips
+			// one that commits late. SQLite and D1 run one write at a time anyway.
+			await driver.batch(
+				driver.dialect === "postgres"
+					? [sql("SELECT pg_advisory_xact_lock(73162, hashtext(?))", spaceId), insert]
+					: [insert],
 			);
 			await audits.proposed(ctx, proposal);
 			return proposal;
