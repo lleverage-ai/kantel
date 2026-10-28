@@ -26,6 +26,20 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// Identity: a host app's API keys.
+export { ApiKeysPage, type ApiKeysPageProps } from "./identity/api-keys.tsx";
+export {
+	type ApiKeysApi,
+	type ApiKeysFlow,
+	type ApiKeysProblem,
+	type ApiKeysState,
+	administeredProjects,
+	apiKeysProblem,
+	createApiKeysFlow,
+	type KeyDraft,
+	type KeyExpiry,
+	type KeyProject,
+} from "./identity/api-keys-model.ts";
 // Identity: who is signed in, and Harbour's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
 export {
@@ -53,7 +67,15 @@ export {
 	type IconButtonProps,
 } from "./primitives/button.tsx";
 export { clockListenerCounts, useNow } from "./primitives/clock.ts";
-export { CopyButton, Disclosure, SegmentedControl, type SegmentOption, TextField } from "./primitives/controls.tsx";
+export {
+	CopyButton,
+	Disclosure,
+	SegmentedControl,
+	type SegmentOption,
+	SelectField,
+	type SelectOption,
+	TextField,
+} from "./primitives/controls.tsx";
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
 export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";

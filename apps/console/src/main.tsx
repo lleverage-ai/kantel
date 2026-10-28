@@ -7,7 +7,8 @@ import { apiAudit } from "./api/audit-http.ts";
 import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
-import type { ConsoleAudit, ConsoleVault } from "./api/oversight.ts";
+import { apiKeys } from "./api/keys.ts";
+import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App } from "./app/app.tsx";
@@ -34,6 +35,8 @@ import "./ui/styles.css";
 // log on the audit query API (M1-BE8), both served by the gateway on this origin; the vault page is listed once the
 // approval API has said who is signed in, and not at all on a gateway without one. On `recorded` both run on the
 // in-memory vault and audit store in the page (recorded/oversight.ts).
+//
+// On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -78,7 +81,7 @@ const onOpen = (sessionId: string, session: SessionClient) => {
 	current = { sessionId, session };
 };
 
-type Oversight = { readonly vault?: ConsoleVault; readonly audit?: ConsoleAudit };
+type Oversight = { readonly vault?: ConsoleVault; readonly audit?: ConsoleAudit; readonly keys?: ConsoleKeys };
 const recordedOversight: Promise<Oversight> | undefined =
 	source === "recorded"
 		? createRecordedOversight().then((made: RecordedOversight) => {
@@ -93,12 +96,13 @@ function OversightConsole({ client, oversight }: { client: ConsoleClient; oversi
 }
 
 function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
-	const { vault, audit } = oversight;
+	const { vault, audit, keys } = oversight;
 	return (
 		<App
 			client={client}
 			{...(vault === undefined ? {} : { vault })}
 			{...(audit === undefined ? {} : { audit })}
+			{...(keys === undefined ? {} : { keys })}
 			onOpen={onOpen}
 		/>
 	);
@@ -172,14 +176,15 @@ function SignedInConsole({
 			onSignedOut();
 		};
 		const audit = apiAudit({ headers: state.headers });
+		const keys = apiKeys(identity.client, state.me);
 		return {
 			client: createApiClient({ actor: state.actor, headers: state.headers, onUnauthenticated }),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
-				(vault): Oversight => ({ vault, audit }),
+				(vault): Oversight => ({ vault, audit, ...(keys === undefined ? {} : { keys }) }),
 				(error: unknown): Oversight => {
 					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
-					return { audit };
+					return { audit, ...(keys === undefined ? {} : { keys }) };
 				},
 			),
 		};

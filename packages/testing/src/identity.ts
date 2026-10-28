@@ -4,6 +4,8 @@
  */
 import {
 	type Actor,
+	API_KEY_LAST_USED_PRECISION_MS,
+	API_KEY_NAME_MAX_LENGTH,
 	type CallContext,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
@@ -414,6 +416,61 @@ export function createIdentityConformance(options: {
 				await a.rejectsWithCode(
 					identity.authorize(contextFor(expiringActor, tenant.organisation.id, project.id), "viewer"),
 					"forbidden",
+				);
+			}),
+		},
+		{
+			name: "a key keeps the name it was issued with, trimmed, and an empty or overlong name is invalid",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const service = await createService(identity, tenant);
+				const base = { serviceId: service.id, projectIds: [project.id], role: "operator" } as const;
+				const named = await identity.issueApiKey(tenant.admin, { ...base, name: "  Sal's supervisor " });
+				a.strictEqual(named.key.name, "Sal's supervisor");
+				const unnamed = await identity.issueApiKey(tenant.admin, base);
+				a.strictEqual(unnamed.key.name, undefined, "a key issued without a name has none");
+				const listed = await identity.listApiKeys(tenant.admin);
+				a.strictEqual(listed.find((key) => key.id === named.key.id)?.name, "Sal's supervisor");
+				a.ok(!("name" in (listed.find((key) => key.id === unnamed.key.id) ?? {})), "no name is listed as absent");
+				await a.rejectsWithCode(identity.issueApiKey(tenant.admin, { ...base, name: "   " }), "invalid");
+				await a.rejectsWithCode(
+					identity.issueApiKey(tenant.admin, { ...base, name: "x".repeat(API_KEY_NAME_MAX_LENGTH + 1) }),
+					"invalid",
+				);
+				a.strictEqual((await identity.listApiKeys(tenant.admin)).length, 2, "a refused name issues no key");
+			}),
+		},
+		{
+			name: "a key's last use is recorded when it authenticates, to within the precision",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const service = await createService(identity, tenant);
+				const issued = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "operator",
+				});
+				const lastUsed = async () =>
+					(await identity.listApiKeys(tenant.admin)).find((key) => key.id === issued.key.id)?.lastUsedAt;
+				a.strictEqual(await lastUsed(), undefined, "a key never used has no last use");
+				const first = deps.clock.now();
+				await identity.authenticateApiKey(WORKER, issued.secret);
+				a.strictEqual(await lastUsed(), first);
+				deps.clock.advance(API_KEY_LAST_USED_PRECISION_MS / 2);
+				await identity.authenticateApiKey(WORKER, issued.secret);
+				a.strictEqual(await lastUsed(), first, "a use within the precision keeps the recorded time");
+				const later = deps.clock.advance(API_KEY_LAST_USED_PRECISION_MS);
+				await identity.authenticateApiKey(WORKER, issued.secret);
+				a.strictEqual(await lastUsed(), later);
+				await identity.revokeApiKey(tenant.admin, issued.key.id);
+				deps.clock.advance(API_KEY_LAST_USED_PRECISION_MS * 2);
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, issued.secret), "forbidden");
+				a.strictEqual(await lastUsed(), later, "a refused use is not recorded");
+				a.ok(
+					!deps.audit.events.some((event) => JSON.stringify(event).includes(issued.secret)),
+					"no audit event holds the secret",
 				);
 			}),
 		},

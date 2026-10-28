@@ -78,6 +78,13 @@
 	border-color: var(--hb-status-error-line);
 }
 
+/* The browser's own select, in the input's frame; its menu follows the page's dark colour scheme. */
+.hb-select {
+	min-width: 0;
+	padding-right: var(--hb-space-4);
+	cursor: pointer;
+}
+
 .hb-text-field-hint,
 .hb-text-field-error {
 	margin: 0;

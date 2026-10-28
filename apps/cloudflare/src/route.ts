@@ -12,6 +12,8 @@
  *   APIs, served by the `HarbourStack` Durable Object.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
+import { API_KEYS_PATH } from "@harbour/contracts";
+import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
@@ -107,6 +109,12 @@ export async function routeRequest<StackId, VaultId>(
 	if (request.method === "POST" && path === WORKSPACES_PATH) {
 		// The same for creating a workspace: the stack refuses a caller without operator rights before it reads the seed.
 		const forwarded = await buffered(request, WORKSPACE_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(forwarded);
+	}
+	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
+		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
+		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
 		return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(forwarded);
 	}

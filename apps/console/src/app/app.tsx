@@ -1,7 +1,7 @@
-import { Badge, Button, EmptyState, ListRow, Notice, SessionList, SignedInAs, Spinner } from "@harbour/ui";
+import { ApiKeysPage, Badge, Button, EmptyState, ListRow, Notice, SessionList, SignedInAs, Spinner } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
-import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
+import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "../api/oversight.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
@@ -9,6 +9,7 @@ import {
 	AUDIT_PATH,
 	filesPath,
 	interceptLinks,
+	KEYS_PATH,
 	navigate,
 	parseRoute,
 	projectPath,
@@ -115,9 +116,19 @@ function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]
 	);
 }
 
-/** The organisation's pages: the vault and the audit log, each shown when the console has a seam for it. */
-function OrganisationNav({ route, vault, audit }: { route: Route; vault: boolean; audit: boolean }) {
-	if (!vault && !audit) return null;
+/** The organisation's pages: the vault, the audit log and API keys, each shown when the console has a seam for it. */
+function OrganisationNav({
+	route,
+	vault,
+	audit,
+	keys,
+}: {
+	route: Route;
+	vault: boolean;
+	audit: boolean;
+	keys: boolean;
+}) {
+	if (!vault && !audit && !keys) return null;
 	return (
 		<nav className="shell-organisation" aria-label="Organisation">
 			<h2 className="shell-heading">Organisation</h2>
@@ -136,6 +147,11 @@ function OrganisationNav({ route, vault, audit }: { route: Route; vault: boolean
 						<ListRow title="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
 					</li>
 				) : null}
+				{keys ? (
+					<li>
+						<ListRow title="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
+					</li>
+				) : null}
 			</ul>
 		</nav>
 	);
@@ -145,6 +161,7 @@ export function App({
 	client,
 	vault,
 	audit,
+	keys,
 	onOpen,
 }: {
 	client: ConsoleClient;
@@ -152,6 +169,8 @@ export function App({
 	vault?: ConsoleVault;
 	/** The audit view's seam; without it there's no Audit log in the sidebar. */
 	audit?: ConsoleAudit;
+	/** The API keys page's seam; without it there's no API keys in the sidebar. */
+	keys?: ConsoleKeys;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -199,10 +218,12 @@ export function App({
 	// The organisation's pages, when the console has their seams; without one the path is not found.
 	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
-	const organisationPage = vaultRoute || auditRoute;
+	const keysRoute = keys !== undefined && route.name === "keys";
+	const organisationPage = vaultRoute || auditRoute || keysRoute;
 	const missing =
 		route.name === "not-found" ||
-		((route.name === "vault" || route.name === "vault-request" || route.name === "audit") && !organisationPage);
+		((route.name === "vault" || route.name === "vault-request" || route.name === "audit" || route.name === "keys") &&
+			!organisationPage);
 	const unknownSession =
 		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
 
@@ -239,6 +260,17 @@ export function App({
 			<div className="shell-page">
 				{pageBar}
 				<AuditScreen audit={audit} />
+			</div>
+		);
+	} else if (keysRoute && keys !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<ApiKeysPage
+					api={keys.api}
+					roles={keys.roles}
+					projects={projects.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
+				/>
 			</div>
 		);
 	} else if (missing || unknownProject) {
@@ -295,7 +327,7 @@ export function App({
 	const listIsPage = narrow && pane === "list";
 	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
-	// The vault page and the audit log bring their own headings.
+	// The vault page, the audit log and API keys bring their own headings.
 	const title = organisationPage
 		? undefined
 		: missing || unknownProject
@@ -315,7 +347,12 @@ export function App({
 					<span className="shell-wordmark">Harbour</span>
 				</div>
 				<ProjectNav projects={projects} current={projectId} />
-				<OrganisationNav route={route} vault={vault !== undefined} audit={audit !== undefined} />
+				<OrganisationNav
+					route={route}
+					vault={vault !== undefined}
+					audit={audit !== undefined}
+					keys={keys !== undefined}
+				/>
 				{/* An organisation page belongs to no project, so there's no project's sessions to list beside it. */}
 				<div className="shell-sessions">
 					{organisationPage ? null : (
