@@ -1,5 +1,13 @@
 import { type Decision, type DecisionInput, isHarbourError } from "@harbour/contracts";
-import { type GrantSummary, VaultPage, type VaultPageProps, type VaultRequest } from "@harbour/ui";
+import {
+	Button,
+	type GrantSummary,
+	Notice,
+	type PasskeyCheck,
+	VaultPage,
+	type VaultPageProps,
+	type VaultRequest,
+} from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleVault } from "../api/oversight.ts";
 
@@ -12,6 +20,49 @@ export function loadError(error: unknown): NonNullable<VaultPageProps["error"]> 
 			message: "There's no vault request at this link. Check it against the card in your session.",
 		};
 	return { kind: "other", message: "Couldn't load the request. Try again." };
+}
+
+/**
+ * Offers a person with no passkey yet to set one up, on a host that takes them. Once they have, the page asks for it
+ * before every approval; until then, approving rests on their sign-in and the binding code.
+ */
+function PasskeySetUp({
+	register,
+	onReady,
+}: {
+	register: () => Promise<PasskeyCheck | undefined>;
+	onReady: (check: PasskeyCheck) => void;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [failed, setFailed] = useState(false);
+	const setUp = async () => {
+		setBusy(true);
+		setFailed(false);
+		try {
+			const check = await register();
+			if (check !== undefined) onReady(check);
+		} catch {
+			setFailed(true);
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<div style={{ marginBottom: "var(--hb-space-5)" }}>
+			<Notice
+				level={failed ? "warning" : "info"}
+				action={
+					<Button size="sm" busy={busy} onClick={() => void setUp()}>
+						Set up a passkey
+					</Button>
+				}
+			>
+				{failed
+					? "Your passkey couldn't be set up. Try again."
+					: "Approvals rest on your sign-in alone. Set up a passkey to confirm each one with your fingerprint, face or PIN."}
+			</Notice>
+		</div>
+	);
 }
 
 /**
@@ -28,6 +79,9 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 	// started before another stop's) never puts back what a newer one removed, and nothing lands after unmounting.
 	const requestRead = useRef(0);
 	const grantsRead = useRef(0);
+	// The vault's passkey check, or the one a passkey set up here gives.
+	const [passkey, setPasskey] = useState<PasskeyCheck | undefined>(() => vault.passkey);
+	useEffect(() => setPasskey(() => vault.passkey), [vault]);
 
 	const loadRequest = useCallback(async () => {
 		const mine = ++requestRead.current;
@@ -106,6 +160,9 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 			{request === undefined || error !== undefined ? (
 				<h1 className="hb-sr-only">{proposalId === undefined ? "Vault" : "Vault request"}</h1>
 			) : null}
+			{passkey === undefined && vault.registerPasskey !== undefined ? (
+				<PasskeySetUp register={vault.registerPasskey} onReady={(check) => setPasskey(() => check)} />
+			) : null}
 			<VaultPage
 				embedded
 				viewer={vault.viewer}
@@ -116,7 +173,7 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 				onRetry={retry}
 				onDecide={onDecide}
 				onDecided={onDecided}
-				{...(vault.passkey === undefined ? {} : { passkey: vault.passkey })}
+				{...(passkey === undefined ? {} : { passkey })}
 				grants={{
 					grants,
 					onStop,

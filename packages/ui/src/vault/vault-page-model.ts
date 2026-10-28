@@ -339,6 +339,16 @@ export type DecisionRefusal =
  * refusal with a code picked is the code, unless the vault's message names the terms.
  */
 export function decisionRefusal(error: unknown, context: { project?: string } = {}): DecisionRefusal {
+	// The host's server refused the passkey (#132): the refusal names why in `details.passkey`.
+	if (isHarbourError(error, "refused") && typeof error.details?.passkey === "string") {
+		return {
+			kind: "passkey",
+			message:
+				error.details.passkey === "missing"
+					? "Approving needs your passkey. Nothing was approved, and the attempt was recorded."
+					: "Your passkey didn't match this request, so nothing was approved, and the attempt was recorded. Try again.",
+		};
+	}
 	if (isHarbourError(error, "refused")) {
 		if (/terms/i.test(error.message) && !/code/i.test(error.message)) {
 			return {
