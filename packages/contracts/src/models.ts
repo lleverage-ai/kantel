@@ -387,6 +387,11 @@ export interface ModelCallRecord {
 	readonly usage: ModelUsage;
 	/** Where `usage.cost` came from: the upstream's report, catalogue rates, or none (tokens only, such as CPA). */
 	readonly costSource: "reported" | "computed" | "none";
+	/**
+	 * Set when the call's `model.call` audit event could not be appended after retrying: the event is not in the audit
+	 * log, and the host was told (the gateway's `onAuditFailure`) so it can append it later under the same event ID.
+	 */
+	readonly auditPending?: true;
 }
 
 /**

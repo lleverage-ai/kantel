@@ -103,6 +103,19 @@ and a later one brings back carries on from there and a proposal against its old
 index, terms and recall beside it) has no Node APIs. It leaves out durable storage, publishing to a `MemorySource`
 and embeddings; reading a source's bundle into a snapshot is the host's adapter.
 
+## Capabilities
+
+`memoryCapabilities` defines `memory.search` and `memory.read` (version 1, `replay: "safe"`, `runsIn: "host"`), which a
+Pi host shows as `memory_search` and `memory_read`. `memoryCapabilityHandler({ memory, spaceIds, now })` serves both
+from any `Memory` as the invoking agent, so the memory's own access checks apply; the host's `spaceIds` names the
+spaces a session reads. Search returns each hit's `spaces` beside its `ids` (and names the space in its line when a
+session reads more than one); `memory.read` takes a concept from its optional `space`, which must be one of the
+session's, or else from the first space that has it. A missing, unknown or mistyped argument, an unknown concept or a
+`HarbourError` (from the host's `spaceIds` too) is an `isError` result for the model, not a thrown error; anything
+else throws. Search lines give the ID, title, description, status (current, stale, superseded, forgotten), scope, who
+set it and the first source, then the snippet; a read gives the status, version, title, description, statement and
+sources.
+
 ## Open questions
 
 - Concept IDs need at least two segments (`personal/x`). Is a single segment ever wanted?

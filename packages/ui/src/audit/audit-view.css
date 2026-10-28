@@ -1,0 +1,395 @@
+/* The audit view: header, filters, the credential summary, and a virtualised timeline that scrolls on its own. */
+
+.hb-audit {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-audit p,
+.hb-audit h1,
+.hb-audit h2 {
+	margin: 0;
+}
+
+.hb-audit-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--hb-space-5);
+}
+
+.hb-audit-head-text {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-audit-title {
+	font-size: var(--hb-text-lg);
+	font-weight: var(--hb-weight-strong);
+}
+
+.hb-audit-subtitle {
+	color: var(--hb-text-muted);
+}
+
+.hb-audit-export {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+}
+
+.hb-audit-export-progress {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	color: var(--hb-text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Filters: as many to a row as fit, each at least a select's comfortable width. */
+.hb-audit-filters {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(calc(var(--hb-card-width) / 3), 1fr));
+	gap: var(--hb-space-5);
+	align-items: end;
+}
+
+.hb-audit-filter {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-audit-filter-label {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-audit-select {
+	height: var(--hb-control-md);
+	min-width: 0;
+	padding: 0 var(--hb-space-4);
+	border: var(--hb-hairline) solid var(--hb-border-input);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+	color: var(--hb-text);
+	font: inherit;
+	font-size: var(--hb-text-sm);
+}
+
+.hb-audit-filter-clear {
+	align-items: flex-start;
+}
+
+.hb-audit-status {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-audit-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	padding: var(--hb-space-5) 0;
+}
+
+/* The timeline scrolls inside a fixed-height box so the virtual list knows its viewport. */
+.hb-audit-timeline {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+	overflow: hidden;
+}
+
+.hb-audit-viewport {
+	position: relative;
+	height: 70vh;
+	min-height: calc(var(--hb-control-lg) * 8);
+}
+
+.hb-audit-list {
+	position: absolute;
+	inset: 0;
+	overscroll-behavior: contain;
+}
+
+.hb-audit-day {
+	position: relative;
+	padding: var(--hb-space-6) var(--hb-space-6) var(--hb-space-3);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-audit-row {
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-audit-row[data-open] {
+	background: var(--hb-sunken);
+}
+
+.hb-audit-row-main {
+	display: grid;
+	grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	padding: var(--hb-space-4) var(--hb-space-6) var(--hb-space-4) var(--hb-space-3);
+}
+
+.hb-audit-row-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	align-self: center;
+	width: var(--hb-control-xs);
+	height: var(--hb-control-xs);
+	padding: 0;
+	border: 0;
+	border-radius: var(--hb-radius-sm);
+	background: transparent;
+	color: var(--hb-text-faint);
+	cursor: pointer;
+}
+
+.hb-audit-row-toggle:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-audit-row-time {
+	color: var(--hb-text-faint);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-audit-row-badge {
+	display: inline-flex;
+}
+
+.hb-audit-row-text {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.hb-audit-row-actor {
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-audit-row-where {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 0 var(--hb-space-4);
+	margin-left: var(--hb-space-4);
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-audit-row-link {
+	color: var(--hb-accent-text);
+	font-size: var(--hb-text-xs);
+	text-decoration: none;
+	white-space: nowrap;
+	border-radius: var(--hb-radius-xs);
+}
+
+.hb-audit-row-link:hover {
+	text-decoration: underline;
+}
+
+.hb-audit-row-details {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	padding: 0 var(--hb-space-6) var(--hb-space-5) calc(var(--hb-control-xs) + var(--hb-space-3) + var(--hb-space-4));
+}
+
+.hb-audit-detail-list {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: var(--hb-space-2) var(--hb-space-6);
+	margin: 0;
+	font-size: var(--hb-text-xs);
+}
+
+.hb-audit-detail-list dt {
+	color: var(--hb-text-muted);
+}
+
+.hb-audit-detail-list dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.hb-audit-row-data {
+	margin: 0;
+	padding: var(--hb-space-4) var(--hb-space-5);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-code);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.hb-audit-foot {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-lg);
+	padding: var(--hb-space-3) var(--hb-space-6);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-audit-foot-text {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+}
+
+.hb-audit-foot-error {
+	color: var(--hb-status-error);
+}
+
+/* The credential summary. */
+.hb-audit-usage {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	padding: var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+}
+
+.hb-audit-usage-title {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-audit-usage-title .hb-icon {
+	color: var(--hb-text-faint);
+}
+
+.hb-audit-usage-summary,
+.hb-audit-usage-none {
+	color: var(--hb-text-muted);
+}
+
+.hb-audit-usage-list {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-audit-usage-row {
+	display: grid;
+	grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 2fr);
+	gap: var(--hb-space-2) var(--hb-space-6);
+	padding: var(--hb-space-4) 0;
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-audit-usage-session,
+.hb-audit-usage-uses,
+.hb-audit-usage-approvals {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.hb-audit-usage-uses {
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-audit-usage-name {
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-medium);
+	text-decoration: none;
+	border-radius: var(--hb-radius-xs);
+}
+
+a.hb-audit-usage-name {
+	color: var(--hb-accent-text);
+}
+
+a.hb-audit-usage-name:hover,
+a.hb-audit-usage-when:hover {
+	text-decoration: underline;
+}
+
+.hb-audit-usage-meta {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-audit-usage-approver {
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-audit-usage-when {
+	color: var(--hb-accent-text);
+	font-size: var(--hb-text-xs);
+	text-decoration: none;
+	border-radius: var(--hb-radius-xs);
+}
+
+@media (max-width: 640px) {
+	.hb-audit-filters {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	}
+
+	.hb-audit-row-main {
+		grid-template-columns: auto auto minmax(0, 1fr);
+		row-gap: var(--hb-space-2);
+	}
+
+	/* On a phone the sentence takes the whole second line, with the link under it. */
+	.hb-audit-row-text {
+		grid-column: 2 / -1;
+	}
+
+	.hb-audit-row-link {
+		grid-column: 2 / -1;
+	}
+
+	.hb-audit-row-details {
+		padding-left: var(--hb-space-6);
+	}
+
+	.hb-audit-usage-row {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.hb-audit-viewport {
+		height: 75vh;
+	}
+}
+
+.hb-audit-newer {
+	display: flex;
+	justify-content: center;
+}

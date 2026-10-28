@@ -4,6 +4,11 @@
 //   /                                         the first project
 //   /projects/:projectId                      a project's sessions
 //   /projects/:projectId/sessions/:sessionId  one session
+//   /vault                                    the vault page: your active grants
+//   /vault/requests/:proposalId               one vault request to decide, beside your active grants
+//   /audit                                    the audit log
+//   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
+//   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
 //
 // Query strings are kept as they are (?profile=1 turns on the profiler).
 
@@ -13,6 +18,10 @@ export type Route =
 	| { readonly name: "home" }
 	| { readonly name: "project"; readonly projectId: string }
 	| { readonly name: "session"; readonly projectId: string; readonly sessionId: string }
+	| { readonly name: "vault" }
+	| { readonly name: "vault-request"; readonly proposalId: string }
+	| { readonly name: "audit" }
+	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
 
 const segment = (value: string): string | undefined => {
@@ -27,12 +36,24 @@ const segment = (value: string): string | undefined => {
 export function parseRoute(pathname: string): Route {
 	const parts = pathname.split("/").filter((part) => part !== "");
 	if (parts.length === 0) return { name: "home" };
+	if (parts[0] === "vault") {
+		if (parts.length === 1) return { name: "vault" };
+		const proposalId = parts[2] === undefined ? undefined : segment(parts[2]);
+		if (parts[1] === "requests" && proposalId !== undefined && parts.length === 3)
+			return { name: "vault-request", proposalId };
+	}
+	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
 		const sessionId = parts[3] === undefined ? undefined : segment(parts[3]);
-		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined && parts.length === 4)
-			return { name: "session", projectId, sessionId };
+		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined) {
+			if (parts.length === 4) return { name: "session", projectId, sessionId };
+			if (parts[4] === "files" && parts.length === 5) return { name: "files", projectId, sessionId };
+			const path = parts[5] === undefined ? undefined : segment(parts[5]);
+			if (parts[4] === "files" && path !== undefined && parts.length === 6)
+				return { name: "files", projectId, sessionId, path };
+		}
 	}
 	return { name: "not-found", path: pathname };
 }
@@ -40,6 +61,12 @@ export function parseRoute(pathname: string): Route {
 export const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
 export const sessionPath = (projectId: string, sessionId: string): string =>
 	`${projectPath(projectId)}/sessions/${encodeURIComponent(sessionId)}`;
+export const VAULT_PATH = "/vault";
+export const vaultRequestPath = (proposalId: string): string => `/vault/requests/${encodeURIComponent(proposalId)}`;
+export const AUDIT_PATH = "/audit";
+/** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
+export const filesPath = (projectId: string, sessionId: string, path?: string): string =>
+	`${sessionPath(projectId, sessionId)}/files${path === undefined ? "" : `/${encodeURIComponent(path)}`}`;
 
 const listeners = new Set<() => void>();
 const notify = () => {

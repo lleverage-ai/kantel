@@ -4,7 +4,7 @@
  * Wrangler's config can't read environment variables, so this fills them in:
  *
  * - `account_id` from `CLOUDFLARE_ACCOUNT_ID`;
- * - the custom domain from `HARBOUR_HOSTNAME` (console and gateway on one hostname);
+ * - the zone route `<HARBOUR_HOSTNAME>/*` on the hostname's zone (console and gateway on one hostname);
  * - the Access team domain and AUD, and the first admin's email, as vars;
  * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `HARBOUR_MODELS_VPC_SERVICE_ID`.
  *
@@ -18,6 +18,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { VAULT_SECRETS } from "./vault-secrets.ts";
 
 export const DEPLOY_VARIABLES = [
 	"CLOUDFLARE_ACCOUNT_ID",
@@ -46,6 +47,14 @@ const PLACEHOLDERS: Readonly<Record<Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_
 /** A host name with at least two labels, each 1-63 letters, digits or inner hyphens, ending in a letter label. */
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
+/**
+ * The zone `HARBOUR_HOSTNAME` is routed on: its parent, so `harbour.myslop.app` is on `myslop.app`. Harbour serves on
+ * a direct subdomain of its zone, which the zone's proxied wildcard DNS record already resolves.
+ */
+export function zoneOf(hostname: string): string {
+	return hostname.slice(hostname.indexOf(".") + 1);
+}
+
 /** A plain address: a local part without spaces or a second @, at a valid host name. */
 function isEmail(value: string): boolean {
 	const at = value.lastIndexOf("@");
@@ -66,8 +75,9 @@ const CHECKS: Readonly<Record<DeployVariable, { readonly test: (value: string) =
 	{
 		CLOUDFLARE_ACCOUNT_ID: { test: (v) => /^[0-9a-f]{32}$/i.test(v), expect: "a 32-character hex account ID" },
 		HARBOUR_HOSTNAME: {
-			test: (v) => HOST.test(v),
-			expect: "a host name such as harbour.myslop.app, no scheme or path",
+			// At least three labels: a subdomain of its zone, never the zone's apex.
+			test: (v) => HOST.test(v) && v.split(".").length >= 3,
+			expect: "a host name such as harbour.myslop.app (a subdomain of its zone), no scheme or path",
 		},
 		HARBOUR_ACCESS_TEAM_DOMAIN: {
 			test: (v) => HOST.test(hostOnly(v)),
@@ -145,10 +155,16 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	}
 	const { $schema: _schema, env: _env, ...base } = raw;
 	const vars = typeof raw.vars === "object" && raw.vars !== null ? raw.vars : {};
+	// A var would show the value in the dashboard, and wrangler refuses a var and a secret of one name.
+	for (const name of VAULT_SECRETS) {
+		if (name in vars) throw new Error(`wrangler.jsonc must not set ${name} as a var: it is a Worker secret`);
+	}
 	return {
 		...base,
 		...(values.accountId === undefined ? {} : { account_id: values.accountId }),
-		routes: [{ pattern: values.hostname, custom_domain: true }],
+		// A zone route, not a custom domain: the zone's `*.myslop.app/*` route to `myslop-apps` would take precedence over
+		// a custom domain on the same hostname, while between routes the most specific pattern wins (#17, Route).
+		routes: [{ pattern: `${values.hostname}/*`, zone_name: zoneOf(values.hostname) }],
 		vars: {
 			...vars,
 			HARBOUR_ACCESS_TEAM_DOMAIN: values.accessTeamDomain,

@@ -125,6 +125,12 @@ export function normaliseEmail(email: string): string {
 	return email.trim().toLowerCase();
 }
 
+/**
+ * The `ExternalIdentity.issuer` of Harbour's own email one-time PIN sign-in (self-hosted). Its subject is the normalised
+ * email, and the email counts as verified: the person read the code from that inbox.
+ */
+export const EMAIL_OTP_ISSUER = "harbour:email-otp";
+
 /** A signed-in person's user record and the organisations they may act in. */
 export interface SignIn {
 	readonly user: User;
@@ -139,7 +145,9 @@ export type AuthenticationMethod =
 	/** A Cloudflare Access application token: the `Cf-Access-Jwt-Assertion` header. */
 	| "cloudflare_access"
 	/** An OIDC provider's token: `Authorization: Bearer <JWT>`. */
-	| "oidc";
+	| "oidc"
+	/** A Harbour session a sign-in issued, such as an email one-time PIN's: `Authorization: Bearer hbs_…`. */
+	| "harbour_session";
 
 /** An authenticated caller: an `Authentication` and the method that proved it. */
 export interface AuthenticatedCaller extends Authentication {
@@ -273,6 +281,14 @@ export interface IdentityDirectory {
 	signIn(ctx: SystemContext, identity: ExternalIdentity): Promise<SignIn>;
 
 	/**
+	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing. Email one-time PIN sign-in asks
+	 * it before sending a code, so only an invited user's inbox ever gets one. It does the same lookups whoever the
+	 * identity names, but that is no constant-time promise: a public route that asks it must keep its own response
+	 * independent of the answer. Malformed identities are `false`. A worker call: any actor but `system` is `forbidden`.
+	 */
+	canSignIn(ctx: SystemContext, identity: ExternalIdentity): Promise<boolean>;
+
+	/**
 	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or undefined. A worker call
 	 * (settled question 13): `ProjectAccess` asks it as `system`; any other actor is `forbidden`.
 	 */
@@ -289,4 +305,53 @@ export interface IdentityDirectory {
 	 * resolved by the runtime, and is never authorised here.
 	 */
 	authorize(ctx: CallContext, needed: Role): Promise<void>;
+}
+
+/*
+ * Email one-time PIN sign-in over HTTP (M1-BE7, self-hosted). Cloudflare puts Access's own one-time PIN in front of
+ * Harbour instead, so a Cloudflare deployment does not serve these routes.
+ *
+ * `POST OTP_START_PATH` with `OtpStartRequest` always answers 202 with `OtpStartResponse`, the same body whoever the
+ * email names: only an invited user's inbox gets a code, so the route cannot be used to probe for accounts. Codes are
+ * 6 digits, single use, valid 10 minutes and stored hashed; 5 wrong tries burn a code; an email gets at most 5 codes an
+ * hour.
+ *
+ * `POST OTP_VERIFY_PATH` with `OtpVerifyRequest` signs the person in (`signIn` with `EMAIL_OTP_ISSUER`) and answers 200
+ * with `OtpVerifyResponse`: a Harbour session token the authenticator accepts as `Authorization: Bearer hbs_…`. A
+ * wrong, expired, used or burned code, or an email with no code, is 401 with the same body.
+ *
+ * `POST SESSION_END_PATH` with the session as bearer ends it (204), whatever state it was in.
+ *
+ * Failures answer `IdentityErrorResponse`: 400 `invalid` (a malformed body), 401 `unauthenticated`, 503 `unavailable`.
+ */
+export const OTP_START_PATH = "/auth/otp/start";
+export const OTP_VERIFY_PATH = "/auth/otp/verify";
+export const SESSION_END_PATH = "/auth/session/end";
+
+export interface OtpStartRequest {
+	readonly email: string;
+}
+
+export interface OtpStartResponse {
+	readonly status: "accepted";
+}
+
+export interface OtpVerifyRequest {
+	readonly email: string;
+	/** The 6-digit code from the email. */
+	readonly code: string;
+}
+
+export interface OtpVerifyResponse {
+	/** The session token, shown once. Send it as `Authorization: Bearer <token>`. */
+	readonly token: string;
+	/** When the session ends, in milliseconds since the epoch. */
+	readonly expiresAt: Timestamp;
+	readonly user: User;
+	/** The organisations the user may act in; name one with `ORGANISATION_HEADER` when there is more than one. */
+	readonly organisationIds: readonly OrganisationId[];
+}
+
+export interface IdentityErrorResponse {
+	readonly error: { readonly code: string; readonly message: string };
 }

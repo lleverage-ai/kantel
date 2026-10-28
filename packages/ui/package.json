@@ -13,6 +13,8 @@
 		".": "./src/index.ts",
 		"./tokens.css": "./src/tokens/tokens.css",
 		"./tokens": "./src/tokens/tokens.ts",
+		"./vault/fixtures": "./src/vault/fixtures.ts",
+		"./audit/fixtures": "./src/audit/fixtures.ts",
 		"./token-lint": "./scripts/token-lint.ts"
 	},
 	"scripts": {
@@ -32,6 +34,7 @@
 		"react-dom": ">=19.0.0"
 	},
 	"devDependencies": {
+		"@harbour/audit": "workspace:*",
 		"@ladle/react": "5.1.1",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",
@@ -46,7 +49,9 @@
 		"vitest": "5.0.5"
 	},
 	"dependencies": {
+		"@harbour/contracts": "workspace:*",
 		"@harbour/protocol": "workspace:*",
+		"@harbour/vault": "workspace:*",
 		"react-markdown": "10.1.0",
 		"remark-gfm": "4.0.1",
 		"virtua": "0.53.6"

@@ -120,6 +120,34 @@ describe("Cloudflare workspaces on R2", () => {
 		}
 	});
 
+	it("moves nothing when the commit is cancelled while the head write archives older versions", async () => {
+		const prefix = `m1-be23/${crypto.randomUUID()}`;
+		const workspaces = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "a.txt": "v1" } }] },
+		});
+		const controller = new AbortController();
+		const cancelling = {
+			get: r2.bucket.get.bind(r2.bucket),
+			async put(key: string, value: string | ArrayBuffer | Uint8Array, options?: Parameters<typeof r2.bucket.put>[2]) {
+				// The archive puts run inside `advance`, after the commit's own last check.
+				if (key.includes("/versions/")) controller.abort();
+				return r2.bucket.put(key, value, options);
+			},
+		};
+		await expect(
+			createCloudflareWorkspaces({ bucket: cancelling, prefix }).commit(
+				{ ...ctx, signal: controller.signal },
+				record.id,
+				{ baseVersion: 1, changes: [{ op: "put", path: "a.txt", content: "late" }] },
+			),
+		).rejects.toMatchObject({ code: "aborted" });
+		const fresh = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+		expect((await fresh.get(ctx, record.id)).head).toBe(1);
+		expect(text((await fresh.read(ctx, record.id, "a.txt")).content)).toBe("v1");
+	});
+
 	it("lets exactly one of two racing commits move the head", async () => {
 		const prefix = `m1-be23/${crypto.randomUUID()}`;
 		const store = createR2WorkspaceStore({ bucket: r2.bucket, prefix });

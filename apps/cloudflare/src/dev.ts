@@ -15,6 +15,8 @@ import { routeRequest } from "./index.ts";
 import type { StackOptions } from "./stack.ts";
 import { type Env, HarbourStackBase, STACK_NAME } from "./stack-object.ts";
 
+export { HarbourVault } from "./vault-object.ts";
+
 const DEV_PREFIX = "/__dev/";
 
 export class HarbourStack extends HarbourStackBase {
@@ -28,7 +30,7 @@ export class HarbourStack extends HarbourStackBase {
 		return this.#access;
 	}
 
-	protected override stackOptions(): Omit<StackOptions, "config"> {
+	protected override stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		return { accessFetch: this.#mockAccess().fetch };
 	}
 

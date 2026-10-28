@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 import { accessVerdict } from "../scripts/check-access.ts";
-import { DEPLOY_VARIABLES, deployConfig, deployValues, missingVariables } from "../scripts/deploy-config.ts";
+import { DEPLOY_VARIABLES, deployConfig, deployValues, missingVariables, zoneOf } from "../scripts/deploy-config.ts";
 
 const configured = {
 	CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
@@ -38,7 +38,7 @@ describe("deploy config", () => {
 		expect(values.accountId).toBeUndefined();
 		const config = deployConfig(rawConfig, values);
 		expect(config.account_id).toBeUndefined();
-		expect(config.routes).toEqual([{ pattern: "harbour.example.com", custom_domain: true }]);
+		expect(config.routes).toEqual([{ pattern: "harbour.example.com/*", zone_name: "example.com" }]);
 	});
 
 	it("refuses a malformed variable in either mode", () => {
@@ -51,7 +51,7 @@ describe("deploy config", () => {
 			);
 			const malformed: Record<string, readonly string[]> = {
 				CLOUDFLARE_ACCOUNT_ID: ["0123", "my-account"],
-				HARBOUR_HOSTNAME: ["harbour", "harbour.example-", "harbour.myslop.app/v1"],
+				HARBOUR_HOSTNAME: ["harbour", "harbour.example-", "harbour.myslop.app/v1", "myslop.app"],
 				HARBOUR_ACCESS_TEAM_DOMAIN: ["team", "https://team.cloudflareaccess.com/login"],
 				HARBOUR_ACCESS_AUD: ["not hex", "abc"],
 				HARBOUR_ADMIN_EMAIL: ["tom", "admin@harbour..test", "a b@harbour.test", "@harbour.test", "admin@harbour"],
@@ -66,14 +66,14 @@ describe("deploy config", () => {
 		}
 	});
 
-	it("adds the account, custom domain, Access vars and the models VPC service to wrangler.jsonc", () => {
+	it("adds the account, zone route, Access vars and the models VPC service to wrangler.jsonc", () => {
 		const config = deployConfig(rawConfig, deployValues(configured, "deploy"));
 		expect(config).toMatchObject({
 			name: "harbour",
 			account_id: configured.CLOUDFLARE_ACCOUNT_ID,
 			workers_dev: false,
 			preview_urls: false,
-			routes: [{ pattern: "harbour.myslop.app", custom_domain: true }],
+			routes: [{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }],
 			vpc_services: [{ binding: "MODELS", service_id: configured.HARBOUR_MODELS_VPC_SERVICE_ID }],
 			vars: {
 				HARBOUR_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
@@ -84,6 +84,17 @@ describe("deploy config", () => {
 		// The local dev environment (its mock Access issuer and dev routes) is never deployed.
 		expect(config.env).toBeUndefined();
 		expect(config.main).toBe("src/index.ts");
+	});
+
+	it("routes the hostname on its parent zone, never as a custom domain", () => {
+		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
+		expect(zoneOf("harbour.example.co.uk")).toBe("example.co.uk");
+		const config = deployConfig(
+			rawConfig,
+			deployValues({ ...configured, HARBOUR_HOSTNAME: "Harbour.MySlop.app" }, "deploy"),
+		);
+		expect(config.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		expect(JSON.stringify(config)).not.toContain("custom_domain");
 	});
 
 	it("leaves D1 and R2 to be provisioned by name on the first real deploy", () => {

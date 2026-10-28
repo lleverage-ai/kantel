@@ -6,6 +6,25 @@
 import "./tokens/tokens.css";
 import "./tokens/base.css";
 
+// The audit view.
+export {
+	type AuditDirectory,
+	type AuditFilters,
+	type AuditKind,
+	type AuditLinks,
+	type AuditRange,
+	type AuditSource,
+	type AuditViewQuery,
+	describeEvent,
+	matchesCredential,
+	rangeBounds,
+	readAll,
+	toJsonl,
+	toQuery,
+} from "./audit/audit-model.ts";
+export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
+export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
+export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
 export {
 	Button,
 	type ButtonProps,
@@ -31,7 +50,6 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
-
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
@@ -106,7 +124,43 @@ export {
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
-
+// The vault page.
+export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
+export {
+	type DescribeRequester,
+	type GrantSummary,
+	loadActiveGrants,
+	loadVaultRequest,
+	type VaultPageApi,
+} from "./vault/load.ts";
+export {
+	type PasskeyCheck,
+	type PasskeyRequest,
+	type WebAuthnPasskeyOptions,
+	webAuthnPasskey,
+} from "./vault/passkey.ts";
+export {
+	VaultPage,
+	type VaultPageProps,
+	VaultRequestSkeleton,
+	VaultRequestView,
+	type VaultRequestViewProps,
+} from "./vault/vault-page.tsx";
+export {
+	type DecisionRefusal,
+	decisionRefusal,
+	draftNarrowing,
+	initialDraft,
+	isForwarded,
+	type NarrowingDraft,
+	previewTerms,
+	type RequesterLabels,
+	settledState,
+	termsSentence,
+	type VaultLifecycle,
+	type VaultRequest,
+	type Viewer,
+} from "./vault/vault-page-model.ts";
 // Workspace components.
 export { FileTree, type FileTreeProps } from "./workspace/file-tree.tsx";
 export { FileViewer, type FileViewerProps, type FileViewState } from "./workspace/file-viewer.tsx";
