@@ -152,6 +152,17 @@ export {
 	sessionStatus,
 } from "./session/session-model.ts";
 export {
+	chosenThinking,
+	clampThinking,
+	isThinkingLevel,
+	offeredLevels,
+	stepThinking,
+	THINKING_LABELS,
+	THINKING_LEVELS,
+	type ThinkingLevel,
+} from "./session/thinking-model.ts";
+export { ThinkingPicker, type ThinkingPickerProps } from "./session/thinking-picker.tsx";
+export {
 	ToolCallChip,
 	type ToolCallChipProps,
 	ToolCallGroup,

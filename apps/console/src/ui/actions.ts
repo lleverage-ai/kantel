@@ -1,5 +1,5 @@
 import type { SessionStatus } from "@harbour/protocol";
-import type { ComposerState } from "@harbour/ui";
+import type { ComposerProps, ComposerState } from "@harbour/ui";
 import type { SessionControl } from "../api/client.ts";
 
 /**
@@ -19,6 +19,11 @@ export type SessionActions = {
 	sending: boolean;
 	/** Why the last send or stop failed, shown on the composer until the next one. */
 	failure?: string;
+	/** The composer's model and thinking pickers, when the session offers a choice. */
+	pickers?: Pick<
+		ComposerProps,
+		"models" | "model" | "onModelChange" | "thinking" | "defaultThinking" | "onThinkingChange"
+	>;
 };
 
 /**

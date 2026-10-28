@@ -43,13 +43,15 @@ Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 M
 | `GET /sessions/:id/children` | `directory.children` | `{ items }` |
 | `GET /sessions/:id/snapshot` | `runtime.snapshot` | `SessionSnapshot` |
 | `GET /sessions/:id/history?cursor&before&limit` | `history.history`, when the API has `history` | `SessionHistoryPage` |
-| `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId? }`) | 202 `Submission` |
+| `GET /sessions/:id/models` | `models.modelState`, when the API has `models` | `SessionModelState` |
+| `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId?, model?, thinking? }`) | 202 `Submission` |
 | `POST /sessions/:id/abort` | `runtime.abort` (body `{ reason? }`) | 204 |
 | `POST /sessions/:id/close` | `runtime.close` | 204 |
 | `GET /sessions/:id/result?submission=<id>&timeoutMs=` | `runtime.wait` | `RunResult`, or 202 `{ status: "pending" }` |
 | `GET /sessions/:id/events?after=<cursor>` | `runtime.watch` | `text/event-stream` |
 | `PUT /profiles/:agentId` | `profiles.put` (body `AgentProfile`) | `AgentProfile` |
 | `GET /profiles/:agentId`, `GET /profiles?limit&cursor` | `profiles.get`, `profiles.list` | `AgentProfile`, `Page` |
+| `GET /profiles/:agentId/models?projectId=` | `models.startModels`, when the API has `models` | `SessionModelState` |
 | `PUT /hosts/:hostId` | `hostTools.register` (body below) | `{ hostId, registration, tools, secret? }` |
 | `GET /hosts/:hostId/tools` | `hostTools.list` | `{ items }` |
 | `DELETE /hosts/:hostId?registration=<id>` | closes the registration | 204 |
@@ -64,6 +66,13 @@ Errors are `{ error: { code, message, details? } }` with the HarbourError code: 
 from an item a client already holds, such as a snapshot's first. A cursor names an item, not an offset, so pages
 behind it stay the same while new turns arrive. The API serves it only when it is given `history` (the runtime's);
 without it the route is `not_found`.
+
+`models` is what a client's model and thinking pickers show (`SessionModels`, proposed): the models the session may
+name, what it runs with now (`selected`) and what its agent profile names (`defaults`). On a profile it is what a new
+session in `projectId` would get, so a New session screen can offer the choice; the first prompt carries it. A prompt's
+`model` and `thinking` stay with the session for its later runs (and from a steer's next model call); an unknown model
+or level is `invalid`, and a level the model lacks runs as its nearest one. Without `models` both routes are
+`not_found` and prompts still take the fields.
 
 `result` waits up to `timeoutMs` (default 25 s, at most 120 s) and answers 202 while the run goes on; the client polls
 until it ends. Submission IDs hold a `/`, which is why they go in the query.

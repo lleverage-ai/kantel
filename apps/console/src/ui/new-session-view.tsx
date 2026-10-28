@@ -1,5 +1,6 @@
 import {
 	Composer,
+	type ComposerProps,
 	type ComposerState,
 	EmptyState,
 	Notice,
@@ -28,6 +29,11 @@ export type NewSessionState = {
 	blocked?: string;
 	/** Why the last attempt failed, until the next. */
 	failure?: string;
+	/** The model and thinking pickers, once the agent's models are known. */
+	pickers?: Pick<
+		ComposerProps,
+		"models" | "model" | "onModelChange" | "thinking" | "defaultThinking" | "onThinkingChange"
+	>;
 };
 
 export type NewSessionHandlers = {
@@ -72,6 +78,7 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 							banner={state.failure === undefined ? undefined : <Notice level="error">{state.failure}</Notice>}
 							value={state.draft}
 							onChange={on.onDraft}
+							{...state.pickers}
 							onSend={(text) => on.onSend(text)}
 							footer={
 								<ProjectPicker

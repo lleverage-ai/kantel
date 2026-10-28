@@ -26,6 +26,9 @@ const uploads = useComposerAttachments(uploadToHost);
 			models={catalogue}
 			model={modelId}
 			onModelChange={setModelId}
+			thinking={level}
+			defaultThinking={profileLevel}
+			onThinkingChange={setLevel}
 			attachments={uploads.attachments}
 			onAttach={uploads.attach}
 			onRemoveAttachment={uploads.remove}
@@ -53,6 +56,10 @@ const uploads = useComposerAttachments(uploadToHost);
   host's own controls).
 - Models: `models` (the host's catalogue, `ComposerModelOption[]`), `model` (the chosen id) and `onModelChange`.
   Without `models` and `onModelChange` there is no picker.
+- Thinking: `thinking` (the chosen level), `defaultThinking` (the session's level when nobody chose one, marked
+  Default) and `onThinkingChange`. The levels come from the chosen model's `capabilities.thinking`; a model without
+  any but `off`, or no `onThinkingChange`, has no thinking picker. With a picker the model's button drops its
+  chevron, so the level reads on from the name ("Claude Sonnet 4.5 High"), as T3 Code's does.
 - Attachments: `attachments` (what the host reports, `ComposerAttachment[]`), `onAttach(files, source)`,
   `onRemoveAttachment(id)`, `onRetryAttachment(id)`, `attachmentLimits` and `pasteFold`. Without `onAttach` the
   composer takes no files: no paperclip, no drop, no file paste.
@@ -158,11 +165,43 @@ type ComposerModelOption = {
 	label: string;
 	provider?: string;
 	description?: string;
-	capabilities?: { images?: boolean };
+	capabilities?: { images?: boolean; thinking?: ThinkingLevel[] };
 	default?: boolean;
 	disabledReason?: string;
 };
 ```
+
+The composer passes `chevron={false}` when a thinking picker follows the button; a host showing `ModelPicker` alone
+leaves it on.
+
+#### Thinking picker
+
+`ThinkingPicker` is the composer's, after T3 Code's traits picker, and exported for hosts that put it elsewhere. A
+quiet word after the model's name ("Medium") opens a short menu upward headed Thinking: the levels the model supports,
+in order, with the default marked "Default" and a tick on the chosen one. Up and Down move, Home and End jump, Enter or
+Space chooses and returns focus to the field, Escape closes back to the button, and Up or Down on the button opens it.
+It renders nothing for a model that can't think.
+
+The levels are pi's, and Harbour's model gateway's: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, read
+Off, Minimal, Low, Medium, High, Extra high and Max (`THINKING_LABELS`). The helpers in `thinking-model.ts` are the
+rules, pure and tested:
+
+- `offeredLevels(levels)`: a model's levels in order, unknown values dropped; empty for a model that can't think.
+- `clampThinking(levels, level)`: the level itself when the model has it, else the nearest above, else the nearest
+  below, as pi's `clampThinkingLevel` does. Switching from a model with Max to one without shows (and sends) its
+  nearest level, and switching back shows Max again, because the composer keeps the chosen level, not the clamped one.
+- `chosenThinking(levels, value, fallback)`: what the button shows; `stepThinking(levels, current, ±1)` cycles, for a
+  host's shortcut.
+
+**Sizes.** The button is the model button's height (28px, 24px in the resting strip) and type (14px, 12px resting),
+in `--hb-text-faint` until hovered or open; it pulls back by the toolbar's gap so the two words sit one model-button
+padding apart. The menu is `--hb-menu-width` (12rem) wide, rows 32px. Both words are trimmed to their capitals and
+centred, so the level and the model's name share a baseline; `loop/gates.ts` holds the level, each row's name, tick and
+"Default" to their text within 1px.
+
+**Not for** settings that aren't the model's (permissions, the project): give those their own control in `footer`.
+
+**Cost:** one button; the menu mounts only while open.
 
 #### Project picker
 

@@ -22,6 +22,7 @@ import {
 	type SessionFilter,
 	type SessionHistory,
 	type SessionHistoryRequest,
+	type SessionModels,
 	type SessionRuntime,
 	type SessionStatus,
 	type Subscription,
@@ -49,6 +50,11 @@ export interface SessionApiOptions {
 	readonly runtime: SessionRuntime;
 	/** Serves `GET /sessions/:id/history`, the transcript in pages, newest first: the runtime's `history`. */
 	readonly history?: SessionHistory;
+	/**
+	 * Serves `GET /sessions/:id/models` (a session's models and what it runs with) and `GET /profiles/:id/models?projectId=`
+	 * (what a new session would), for a client's model and thinking pickers: the runtime's `models`.
+	 */
+	readonly models?: SessionModels;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -132,8 +138,21 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 	if (body.requestId !== undefined && typeof body.requestId !== "string") {
 		throw new HarbourError("invalid", "requestId must be a string");
 	}
-	return body.requestId === undefined ? { text: body.text } : { text: body.text, requestId: body.requestId };
+	if (body.model !== undefined && (typeof body.model !== "string" || body.model === "")) {
+		throw new HarbourError("invalid", "model must be a model ID");
+	}
+	if (body.thinking !== undefined && !THINKING_LEVELS.has(body.thinking)) {
+		throw new HarbourError("invalid", "thinking must be a thinking level");
+	}
+	return {
+		text: body.text,
+		...(body.requestId === undefined ? {} : { requestId: body.requestId }),
+		...(body.model === undefined ? {} : { model: body.model }),
+		...(body.thinking === undefined ? {} : { thinking: body.thinking }),
+	};
 }
+
+const THINKING_LEVELS = new Set<unknown>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function pageOf(params: URLSearchParams): PageRequest {
 	const limit = params.get("limit");
@@ -273,6 +292,9 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			case "GET history":
 				if (options.history === undefined) break;
 				return json(await options.history.history(ctx, sessionId, historyRequestOf(url.searchParams)));
+			case "GET models":
+				if (options.models === undefined) break;
+				return json(await options.models.modelState(ctx, sessionId));
 			case "POST prompt":
 				return json(await runtime.prompt(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST steer":
@@ -476,6 +498,11 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		if (agentId === undefined) {
 			if (request.method === "GET") return json(await profiles.list(ctx, pageOf(url.searchParams)));
 			throw NOT_FOUND;
+		}
+		if (more.length === 1 && more[0] === "models" && request.method === "GET" && options.models !== undefined) {
+			const projectId = url.searchParams.get("projectId");
+			if (projectId === null || projectId === "") throw new HarbourError("invalid", "Name the project");
+			return json(await options.models.startModels(ctx, { projectId, agentId }));
 		}
 		if (more.length > 0) throw NOT_FOUND;
 		if (request.method === "GET") return json(await profiles.get(ctx, agentId));

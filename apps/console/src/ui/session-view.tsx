@@ -189,6 +189,7 @@ export function SessionView({
 								banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
 								value={actions.draft}
 								onChange={actions.onDraft}
+								{...actions.pickers}
 								footer={
 									offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
 										<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
