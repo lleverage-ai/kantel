@@ -152,7 +152,7 @@ jobs:
             echo "::error::the gateway set up a new deployment on restart instead of keeping its own"
             exit 1
           fi
-          bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58090 --mailpit-url http://127.0.0.1:58025
+          bun apps/selfhosted/test/gateway/stack.ts --base-url "http://$STACK:58090" --mailpit-url "http://$STACK:58025"
 
       - name: Scripted task
         run: bun spike/scenario/run.ts --base "http://$STACK:58081"
