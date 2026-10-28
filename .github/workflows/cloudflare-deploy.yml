@@ -54,7 +54,8 @@ permissions:
 jobs:
   deploy:
     name: Build, dry run, and deploy when set up
-    runs-on: ubuntu-latest
+    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    runs-on: [self-hosted, harbour]
     timeout-minutes: 20
     env:
       WRANGLER_SEND_METRICS: "false"
