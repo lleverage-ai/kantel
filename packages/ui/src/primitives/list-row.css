@@ -75,6 +75,18 @@ a.hb-list-row-main {
 	translate: 0 var(--hb-on-cap);
 }
 
+/*
+ * An icon is taller than the title's capitals, so on the baseline it would push the line, and that baseline, down past
+ * the title's. Pulled up by its own height, it takes no room above the baseline and sits on the title's.
+ */
+.hb-list-row-leading > .hb-icon-sm {
+	margin-top: calc(-1 * var(--hb-icon-sm));
+}
+
+.hb-list-row-leading > .hb-icon-md {
+	margin-top: calc(-1 * var(--hb-icon-md));
+}
+
 .hb-list-row-text {
 	display: flex;
 	flex: 1;

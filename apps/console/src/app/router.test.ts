@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { AUDIT_PATH, filesPath, parseRoute, projectPath, sessionPath, VAULT_PATH, vaultRequestPath } from "./router.ts";
+import {
+	AUDIT_PATH,
+	filesPath,
+	KEYS_PATH,
+	newSessionPath,
+	parseRoute,
+	projectPath,
+	sessionPath,
+	sessionTurnPath,
+	VAULT_PATH,
+	vaultRequestPath,
+} from "./router.ts";
 
 describe("routes", () => {
 	it("parses the home page, a project and a session", () => {
@@ -9,6 +20,12 @@ describe("routes", () => {
 		expect(parseRoute("/projects/sal/sessions/s-1")).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
 	});
 
+	it("parses a project's new session page", () => {
+		expect(newSessionPath("my project")).toBe("/projects/my%20project/new");
+		expect(parseRoute(newSessionPath("my project"))).toEqual({ name: "new-session", projectId: "my project" });
+		expect(parseRoute("/projects/sal/new/extra")).toMatchObject({ name: "not-found" });
+	});
+
 	it("round-trips ids that need encoding", () => {
 		const path = sessionPath("my project", "s/1?x");
 		expect(path).toBe("/projects/my%20project/sessions/s%2F1%3Fx");
@@ -16,11 +33,25 @@ describe("routes", () => {
 		expect(parseRoute(projectPath("a b"))).toEqual({ name: "project", projectId: "a b" });
 	});
 
+	it("puts a session's turn in the hash, so the path is still the session's", () => {
+		const path = sessionTurnPath("sal", "s-1", "s-1/7");
+		expect(path).toBe("/projects/sal/sessions/s-1#turn=s-1%2F7");
+		const url = new URL(path, "https://harbour.test");
+		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
+		expect(decodeURIComponent(url.hash.slice("#turn=".length))).toBe("s-1/7");
+		expect(sessionTurnPath("sal", "s-1")).toBe(sessionPath("sal", "s-1"));
+	});
+
 	it("parses the vault page, a vault request and the audit log", () => {
 		expect(parseRoute(VAULT_PATH)).toEqual({ name: "vault" });
 		expect(parseRoute(vaultRequestPath("proposal_1/x"))).toEqual({ name: "vault-request", proposalId: "proposal_1/x" });
+		// The vault's own link for a proposal opens it, and so does the path earlier consoles linked to.
+		expect(vaultRequestPath("proposal_1")).toBe("/vault/proposals/proposal_1");
+		expect(parseRoute("/vault/requests/proposal_1")).toEqual({ name: "vault-request", proposalId: "proposal_1" });
 		expect(parseRoute(AUDIT_PATH)).toEqual({ name: "audit" });
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
+		expect(parseRoute(KEYS_PATH)).toEqual({ name: "keys" });
+		expect(parseRoute("/keys/key_1")).toEqual({ name: "not-found", path: "/keys/key_1" });
 	});
 
 	it("parses a session's files and one file in them, mounts included", () => {
@@ -42,6 +73,8 @@ describe("routes", () => {
 			"/vault/requests",
 			"/vault/other/x",
 			"/vault/requests/%E0",
+			"/vault/proposals",
+			"/vault/proposals/p-1/x",
 			"/audit/x",
 			"/projects/sal/sessions/s-1/other",
 			"/projects/sal/sessions/s-1/files/a/b",

@@ -5,9 +5,11 @@ on:
   push:
     branches: [main]
 
+# A re-push cancels the pull request's older run, queued or running. Runs on main are never cancelled: each gets a group
+# of its own, since a shared group would still cancel an older pending run when a newer one queues.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

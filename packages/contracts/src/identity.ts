@@ -80,10 +80,23 @@ export interface ApiKey {
 	readonly projectIds: readonly ProjectId[];
 	readonly role: Role;
 	readonly prefix: string;
+	/** What the key is for, as its issuer named it ("Sal's supervisor"). Absent on keys issued without one. */
+	readonly name?: string;
 	readonly createdAt: Timestamp;
+	/** When the key last signed a call in, to within `API_KEY_LAST_USED_PRECISION_MS`. Absent until its first use. */
+	readonly lastUsedAt?: Timestamp;
 	readonly expiresAt?: Timestamp;
 	readonly revokedAt?: Timestamp;
 }
+
+/**
+ * How fresh `ApiKey.lastUsedAt` is kept: a use records its time only when the recorded one is older than this, so a
+ * busy key costs one write a minute, not one per call.
+ */
+export const API_KEY_LAST_USED_PRECISION_MS = 60_000;
+
+/** The longest `ApiKey.name`, in characters. */
+export const API_KEY_NAME_MAX_LENGTH = 100;
 
 export interface IssuedApiKey {
 	readonly key: ApiKey;
@@ -247,13 +260,17 @@ export interface IdentityDirectory {
 	revokeRole(ctx: CallContext, input: { readonly principal: Principal; readonly projectId?: ProjectId }): Promise<void>;
 	listRoleBindings(ctx: CallContext, input?: { readonly projectId?: ProjectId }): Promise<readonly RoleBinding[]>;
 
-	/** Issues a key for a service identity, scoped to projects in its organisation. Needs admin on each project. */
+	/**
+	 * Issues a key for a service identity, scoped to projects in its organisation. Needs admin on each project. A `name`
+	 * is trimmed, must not be empty and holds at most `API_KEY_NAME_MAX_LENGTH` characters (else `invalid`).
+	 */
 	issueApiKey(
 		ctx: CallContext,
 		input: {
 			readonly serviceId: ServiceId;
 			readonly projectIds: readonly ProjectId[];
 			readonly role: Role;
+			readonly name?: string;
 			readonly expiresAt?: Timestamp;
 		},
 	): Promise<IssuedApiKey>;
@@ -262,8 +279,9 @@ export interface IdentityDirectory {
 
 	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
-	 * caller learns nothing about which keys exist). A worker call (settled question 13): Harbour's gateway calls it as
-	 * `system` to learn who a request is from; any other actor is `forbidden`.
+	 * caller learns nothing about which keys exist). A live key's use is recorded as its `lastUsedAt` (see
+	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call (settled question 13): Harbour's gateway calls it as `system` to
+	 * learn who a request is from; any other actor is `forbidden`.
 	 */
 	authenticateApiKey(ctx: SystemContext, secret: string): Promise<Authentication>;
 
@@ -355,3 +373,98 @@ export interface OtpVerifyResponse {
 export interface IdentityErrorResponse {
 	readonly error: { readonly code: string; readonly message: string };
 }
+
+/*
+ * Who is signed in, and their projects, over HTTP (M1-BE7). Both routes are behind the authenticator, so any caller
+ * may ask about itself: a person signed in through Access, OIDC or a Harbour session, or a host app's API key.
+ *
+ * `GET ME_PATH` answers 200 with `MeResponse`. `GET PROJECTS_PATH?limit=&cursor=` answers 200 with a page of the
+ * projects the caller holds a role on in its organisation (`IdentityDirectory.listProjects`), as `ProjectsResponse`.
+ *
+ * A missing or invalid credential is 401 with `UnauthenticatedResponse`, whose `signIn` names how a person signs in to
+ * this deployment, so a console knows whether to show its own sign-in screen (`email_otp`) or reload the page for the
+ * edge to sign them in (`cloudflare_access`). An organisation the caller may not act in is 403; a malformed `limit` or
+ * `cursor` is 400 `invalid`.
+ */
+export const ME_PATH = "/v1/me";
+export const PROJECTS_PATH = "/v1/projects";
+
+/** How a person signs in to a deployment: Harbour's email one-time PIN (self-hosted) or Cloudflare Access at the edge. */
+export type SignInMethod = "email_otp" | "cloudflare_access";
+export const SIGN_IN_METHODS: readonly SignInMethod[] = ["email_otp", "cloudflare_access"];
+
+/** A role the caller holds: across the organisation when `projectId` is absent, else on that project. */
+export interface HeldRole {
+	readonly projectId?: ProjectId;
+	readonly role: Role;
+}
+
+export interface MeResponse {
+	readonly actor: Actor;
+	readonly organisationId: OrganisationId;
+	readonly method: AuthenticationMethod;
+	/** A person's name; a host app's service ID, as a key carries no name of its own. */
+	readonly name: string;
+	readonly email?: string;
+	/**
+	 * The organisation-wide role first, when there is one, then each project where the caller holds more than that. A key
+	 * holds its role on each of its projects and nothing across the organisation.
+	 */
+	readonly roles: readonly HeldRole[];
+}
+
+export interface ProjectsResponse {
+	readonly items: readonly Project[];
+	/** Present when more projects follow: pass it back as `cursor`. */
+	readonly nextCursor?: string;
+}
+
+export interface UnauthenticatedResponse {
+	readonly error: {
+		readonly code: "unauthenticated";
+		readonly message: string;
+		/** How a person signs in here; absent when the deployment did not say. */
+		readonly signIn?: readonly SignInMethod[];
+	};
+}
+
+/*
+ * API keys over HTTP (M1-BE7): issue, list and revoke a host app's keys, behind the authenticator like `ME_PATH`.
+ * Only someone who may issue keys reaches them: `admin` on the organisation or on at least one project. Anyone else
+ * signed in is 403 `forbidden`; a missing or invalid credential is 401 with `UnauthenticatedResponse`. The directory
+ * then decides each call as `issueApiKey`, `listApiKeys` and `revokeApiKey` do.
+ *
+ * - `GET API_KEYS_PATH` answers 200 with `ApiKeysResponse`: the keys the caller administers (every project of the key),
+ *   revoked ones included. Never a secret.
+ * - `POST API_KEYS_PATH` with `CreateApiKeyRequest` answers 201 with `CreateApiKeyResponse`, the only answer that
+ *   ever holds the key's secret. Without `serviceId` the key gets a service identity of its own, named after the key,
+ *   which needs `admin` on the organisation.
+ * - `POST apiKeyRevokePath(id)` revokes the key and answers 204, also for a key already revoked. The key's next call
+ *   is refused.
+ *
+ * Both POSTs need `Content-Type: application/json` (else 415), so a page on another site can't send one with the
+ * browser's sign-in cookie: a cross-site JSON request needs a CORS preflight the gateway never grants. A malformed
+ * body is 400 `invalid`, an unknown project or key 404 `not_found`.
+ */
+export const API_KEYS_PATH = "/v1/keys";
+/** `/v1/keys/:id/revoke`. */
+export const apiKeyRevokePath = (keyId: ApiKeyId): string => `${API_KEYS_PATH}/${encodeURIComponent(keyId)}/revoke`;
+
+export interface ApiKeysResponse {
+	readonly items: readonly ApiKey[];
+}
+
+export interface CreateApiKeyRequest {
+	/** What the key is for; also the name of its service identity when one is made for it. */
+	readonly name: string;
+	/** The projects the key may act in, at least one. */
+	readonly projectIds: readonly ProjectId[];
+	readonly role: Role;
+	/** When the key stops working, in milliseconds since the epoch. Absent: it works until revoked. */
+	readonly expiresAt?: Timestamp;
+	/** An existing service identity to issue the key for, such as when rotating a host app's key. */
+	readonly serviceId?: ServiceId;
+}
+
+/** The key's record and its secret, shown once: Harbour keeps only a hash of it. */
+export type CreateApiKeyResponse = IssuedApiKey;

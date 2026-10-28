@@ -1,5 +1,15 @@
 import type { Card, CardItem, TranscriptItem } from "@harbour/protocol";
-import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	type DragEvent,
+	memo,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
@@ -7,17 +17,21 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
+import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
+import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
 import { groupTranscript, type TranscriptRow } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
+import { WorkingIndicator } from "./working-indicator.tsx";
 import "./transcript.css";
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
 // new output only while the reader is at the bottom (T3 Code's useTimelineFollow.ts:162-196): scrolling up stops
 // following, and returning to the bottom, or the "Scroll to end" button, starts it again. Near the top it asks for
-// the previous history page, and keeps the reader's place when that page is put in front.
+// the previous history page, and keeps the reader's place when that page is put in front. Once there is nothing
+// older, a paged transcript starts with a quiet "Start of the session" divider, so the reader knows they have it all.
 
 /** How close to the bottom still counts as at the bottom, in CSS pixels. */
 const AT_BOTTOM_PX = 48;
@@ -29,7 +43,46 @@ const BUFFER_PX = 600;
 // A fixed spacer always sits after the last row, so the bottom padding never belongs to a real row: if it did, the
 // row that was last would render again, to lose it, every time an item arrived.
 const END = { end: true } as const;
-type Entry = TranscriptRow | typeof END;
+// The top of a paged transcript once there is nothing older. It is an entry of the list, not an overlay, so it
+// scrolls with the rows; it is put in front as an older page would be, keeping the reader's place.
+const START = { start: true } as const;
+// The turn's working row, after the last row while the session works on a turn (the `working` prop).
+const WORKING = { working: true } as const;
+type Entry = TranscriptRow | typeof END | typeof START | typeof WORKING;
+
+const entryKey = (entry: Entry | undefined): string | undefined =>
+	entry === undefined
+		? undefined
+		: "end" in entry
+			? "end"
+			: "start" in entry
+				? "start"
+				: "working" in entry
+					? "working"
+					: entry.id;
+
+/** The session is working on a turn: what the transcript's working row says, and when the turn started. */
+export type TranscriptWorking = {
+	/**
+	 * When the turn started (epoch ms), for the row's timer. Default: when the person last sent a message other than a
+	 * steer, if it is loaded.
+	 */
+	readonly since?: number;
+	/** Default "Working". */
+	readonly label?: string;
+};
+
+/** An answer that streams with nothing in it yet shows its own working row; the turn's row then waits behind it. */
+function showsOwnWorkingRow(row: TranscriptRow | undefined): boolean {
+	return (
+		row !== undefined &&
+		row.kind === "item" &&
+		row.item.kind === "assistant" &&
+		row.item.streaming &&
+		row.item.text === "" &&
+		!row.item.thinking
+	);
+}
 
 /**
  * Without a renderCard, a card shows read-only: everything it says (a vault request's terms and binding code, a
@@ -124,6 +177,11 @@ export type TranscriptProps = {
 	loadingOlder?: boolean;
 	onLoadOlder?: () => void;
 	/**
+	 * Loading the previous page failed: says why at the top, with "Try again" (which calls `onLoadOlder`). While it is
+	 * set, scrolling near the top doesn't ask again on its own.
+	 */
+	olderError?: ReactNode;
+	/**
 	 * Renders a card item (an approval, a question), with the host's handlers. Keep it stable: every row re-renders
 	 * when it changes. Without it cards show read-only, from the same components.
 	 */
@@ -135,12 +193,31 @@ export type TranscriptProps = {
 	/** An error shown above the list, in an error notice. */
 	error?: ReactNode;
 	/**
+	 * The session is working on a turn: from the moment a message is sent until the run settles, the transcript ends
+	 * with a live "Working for 12s" row (`WorkingIndicator`), after T3 Code's. `true` times it from the person's last
+	 * message; pass `{ since }` to time it from when the host knows the turn started (an optimistic send, say).
+	 */
+	working?: boolean | TranscriptWorking;
+	/**
 	 * Called while a row renders, with its id and whether it is mounting or rendering again: the console's profiler
 	 * and the design loop's wasted-render count. Never causes a render.
 	 */
 	onRowRender?: (id: string, phase: RowRenderPhase) => void;
+	/**
+	 * Docked over the transcript's foot, usually a Composer, as T3 Code's thread: the list scrolls under it and its
+	 * end makes room for it. A Composer here rests (folds to one line) while the reader scrolls back, comes back at
+	 * the end, and takes files dropped anywhere on the transcript.
+	 */
+	dock?: ReactNode;
 	className?: string;
 };
+
+/** Files dropped on a docked transcript: what the composer accepts, said plainly in the overlay. */
+type DropTarget = { handler: FileDropHandler; hint: string };
+
+function hasFiles(event: DragEvent): boolean {
+	return [...(event.dataTransfer?.types ?? [])].includes("Files");
+}
 
 /**
  * A session's transcript: user bubbles, assistant answers, grouped tool calls, notices and cards, in a virtualised
@@ -152,11 +229,14 @@ export function Transcript({
 	hasOlder = false,
 	loadingOlder = false,
 	onLoadOlder,
+	olderError,
 	renderCard,
 	loading = false,
 	empty,
 	error,
+	working,
 	onRowRender,
+	dock,
 	className,
 }: TranscriptProps) {
 	// Rows keep their identity across renders wherever their items are unchanged.
@@ -166,12 +246,19 @@ export function Transcript({
 		previousRows.current = next;
 		return next;
 	}, [items]);
-	const entries = useMemo<Entry[]>(() => [...rows, END], [rows]);
+	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
+	const paged = onLoadOlder !== undefined;
+	const atStart = paged && !hasOlder && rows.length > 0;
+	const showWorking = working !== undefined && working !== false && !showsOwnWorkingRow(rows.at(-1));
+	const entries = useMemo<Entry[]>(() => {
+		const tail: Entry[] = showWorking ? [WORKING, END] : [END];
+		return atStart ? [START, ...rows, ...tail] : [...rows, ...tail];
+	}, [rows, atStart, showWorking]);
 
 	// When each streaming answer's turn started, by row id: the time of the last message the person sent before it,
 	// other than a steer (a steer joins the turn under way). The working row times the turn from it. A number, so the
 	// streaming row's props stay equal as its text grows. An answer whose prompt is in an unloaded page has none.
-	const turnStarts = useMemo(() => {
+	const { turnStarts, lastTurnStart } = useMemo(() => {
 		const starts = new Map<string, number>();
 		let start: number | undefined;
 		for (const row of rows) {
@@ -180,8 +267,10 @@ export function Transcript({
 			if (item.kind === "user" && item.via !== "steer") start = item.at;
 			else if (item.kind === "assistant" && item.streaming && start !== undefined) starts.set(row.id, start);
 		}
-		return starts;
+		return { turnStarts: starts, lastTurnStart: start };
 	}, [rows]);
+	const workingSince = typeof working === "object" ? (working.since ?? lastTurnStart) : lastTurnStart;
+	const workingLabel = typeof working === "object" ? working.label : undefined;
 
 	// The render hook lives in a ref, so a new callback from the host never re-renders the rows.
 	const onRowRenderRef = useRef(onRowRender);
@@ -192,24 +281,35 @@ export function Transcript({
 	const frame = useRef<HTMLElement>(null);
 	const following = useRef(true);
 	const [showEnd, setShowEnd] = useState(false);
+	// A docked composer rests while the reader is away from the end; see the dock below.
+	const [resting, setResting] = useState(false);
 	const first = useRef<string | undefined>(undefined);
 	const count = useRef(0);
-	const showList = rows.length > 0;
+	// The working row alone is a list too: a message just sent, before its turn's first item arrives.
+	const showList = rows.length > 0 || showWorking;
 
-	// Prepending older items: tell the virtualiser to keep the visible content still (virtua's `shift`).
-	const firstId = items[0]?.id;
-	const prepended = first.current !== undefined && firstId !== first.current && items.length > count.current;
+	// Prepending older rows, or the start divider: tell the virtualiser to keep the visible content still (virtua's
+	// `shift`). Compared on the list's entries, so a page that arrives with the divider is one shift, not two.
+	const firstKey = entryKey(entries[0]);
+	const prepended =
+		first.current !== undefined &&
+		firstKey !== first.current &&
+		firstKey !== "end" &&
+		first.current !== "working" &&
+		entries.length > count.current &&
+		count.current > 1;
 
 	const toBottom = useCallback(() => {
 		const handle = list.current;
-		if (handle === null || rows.length === 0) return;
-		handle.scrollToIndex(rows.length, { align: "end" });
-	}, [rows.length]);
+		if (handle === null || entries.length <= 1) return;
+		handle.scrollToIndex(entries.length - 1, { align: "end" });
+	}, [entries.length]);
 
 	useLayoutEffect(() => {
-		const initial = first.current === undefined && items.length > 0;
-		first.current = firstId;
-		count.current = items.length;
+		const initial =
+			(first.current === undefined || first.current === "end" || first.current === "working") && rows.length > 0;
+		first.current = firstKey;
+		count.current = entries.length;
 		if (initial || (following.current && !prepended)) toBottom();
 	});
 
@@ -238,20 +338,159 @@ export function Transcript({
 			if (handle === null) return;
 			const distance = handle.scrollSize - (offset + handle.viewportSize);
 			const atBottom = distance <= AT_BOTTOM_PX;
-			if (atBottom) following.current = true;
-			else if (offset < lastOffset.current) following.current = false;
+			if (atBottom) {
+				following.current = true;
+				setResting(false);
+			} else if (offset < lastOffset.current) following.current = false;
 			lastOffset.current = offset;
 			setShowEnd(!following.current);
-			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder) onLoadOlder?.();
+			// After a failed page only "Try again" asks again, or every scroll event would.
+			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
 		},
-		[hasOlder, loadingOlder, onLoadOlder],
+		[hasOlder, loadingOlder, olderError, onLoadOlder],
 	);
 
 	const scrollToEnd = useCallback(() => {
 		following.current = true;
 		setShowEnd(false);
+		setResting(false);
 		toBottom();
 	}, [toBottom]);
+
+	// The dock. Its height becomes the room at the list's end, measured as it changes. While the composer rests the
+	// room stays as it was, so folding it doesn't move what the reader is looking at (T3 Code keeps the expanded
+	// inset too, MessagesTimeline.tsx).
+	const docked = dock !== undefined && dock !== null && dock !== false;
+	const root = useRef<HTMLDivElement>(null);
+	const dockElement = useRef<HTMLDivElement>(null);
+	const restingRef = useRef(resting);
+	restingRef.current = resting;
+	const inset = useRef(0);
+	useLayoutEffect(() => {
+		const element = dockElement.current;
+		const host = root.current;
+		if (!docked || element === null || host === null) return;
+		const apply = (height: number) => {
+			const next = restingRef.current ? Math.max(height, inset.current) : height;
+			if (next === inset.current) return;
+			inset.current = next;
+			host.style.setProperty("--hb-transcript-dock-height", `${next}px`);
+		};
+		apply(Math.ceil(element.getBoundingClientRect().height));
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(() => apply(Math.ceil(element.getBoundingClientRect().height)));
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [docked]);
+
+	// Resting: a wheel gesture of 24px or more, a Page Up or Home, or a finger dragging the list, while it can scroll
+	// that way (T3 Code's composerScrollGesture.ts). Scrolling down at the end never rests it; reaching the end wakes it.
+	useEffect(() => {
+		if (!docked || !showList) return;
+		const viewport = frame.current?.firstElementChild;
+		if (!(viewport instanceof HTMLElement)) return;
+		const gesture = restGesture();
+		const position = () => ({
+			top: viewport.scrollTop,
+			height: viewport.scrollHeight,
+			client: viewport.clientHeight,
+		});
+		const record = (now: number, deltaY: number, pixels: number) => {
+			const scroll = position();
+			const atEnd = atScrollEnd(scroll);
+			const up = deltaY < 0;
+			const rests = recordRestGesture(gesture, {
+				now,
+				pixels,
+				canScroll: up ? scroll.top > 0 : !atEnd,
+				downAtEnd: !up && atEnd,
+			});
+			if (!rests) return;
+			// The reader is leaving the end: stop following now, before the scroll event says so, or the re-render
+			// that rests the composer would pin the list back to its end.
+			if (up) following.current = false;
+			setResting(true);
+		};
+		const onWheel = (event: WheelEvent) => {
+			if (event.ctrlKey || event.deltaY === 0) return;
+			record(event.timeStamp, event.deltaY, wheelPixels(event.deltaY, event.deltaMode, viewport.clientHeight));
+		};
+		const onKey = (event: KeyboardEvent) => {
+			if (!restsForKey(event.key, position())) return;
+			if (event.key === "PageUp" || event.key === "Home") following.current = false;
+			setResting(true);
+		};
+		let lastY: number | undefined;
+		const onTouchStart = (event: TouchEvent) => {
+			lastY = event.touches[0]?.clientY;
+		};
+		const onTouchMove = (event: TouchEvent) => {
+			const y = event.touches[0]?.clientY;
+			if (y === undefined || lastY === undefined) return;
+			// A finger moving down scrolls the list up.
+			const deltaY = lastY - y;
+			lastY = y;
+			if (deltaY !== 0) record(event.timeStamp, deltaY, Math.abs(deltaY));
+		};
+		viewport.addEventListener("wheel", onWheel, { passive: true });
+		viewport.addEventListener("keydown", onKey);
+		viewport.addEventListener("touchstart", onTouchStart, { passive: true });
+		viewport.addEventListener("touchmove", onTouchMove, { passive: true });
+		return () => {
+			viewport.removeEventListener("wheel", onWheel);
+			viewport.removeEventListener("keydown", onKey);
+			viewport.removeEventListener("touchstart", onTouchStart);
+			viewport.removeEventListener("touchmove", onTouchMove);
+		};
+	}, [docked, showList]);
+
+	// Files dragged anywhere over a docked transcript go to the composer, while it takes files.
+	const dropTarget = useRef<DropTarget | null>(null);
+	const [dropHint, setDropHint] = useState<string | undefined>(undefined);
+	const [dragDepth, setDragDepth] = useState(0);
+	const dragging = dragDepth > 0 && dropHint !== undefined;
+	const wake = useCallback(() => setResting(false), []);
+	const acceptDrops = useCallback((handler: FileDropHandler, hint: string) => {
+		const target = { handler, hint };
+		dropTarget.current = target;
+		setDropHint(hint);
+		return () => {
+			if (dropTarget.current !== target) return;
+			dropTarget.current = null;
+			setDropHint(undefined);
+			setDragDepth(0);
+		};
+	}, []);
+	const dockContext = useMemo<ComposerDock>(
+		() => ({ resting, wake, dragging, acceptDrops }),
+		[resting, wake, dragging, acceptDrops],
+	);
+	// Attached whenever docked and checked per event, so a drag that starts the moment the composer registers counts.
+	const takesDrop = (event: DragEvent) => dropTarget.current !== null && hasFiles(event);
+	const dragHandlers = docked
+		? {
+				onDragEnter: (event: DragEvent<HTMLDivElement>) => {
+					if (!takesDrop(event)) return;
+					event.preventDefault();
+					setDragDepth((depth) => depth + 1);
+				},
+				onDragOver: (event: DragEvent<HTMLDivElement>) => {
+					if (!takesDrop(event)) return;
+					event.preventDefault();
+					event.dataTransfer.dropEffect = "copy";
+				},
+				onDragLeave: (event: DragEvent<HTMLDivElement>) => {
+					if (!hasFiles(event)) return;
+					setDragDepth((depth) => Math.max(0, depth - 1));
+				},
+				onDrop: (event: DragEvent<HTMLDivElement>) => {
+					if (!takesDrop(event)) return;
+					event.preventDefault();
+					setDragDepth(0);
+					dropTarget.current?.handler([...event.dataTransfer.files]);
+				},
+			}
+		: {};
 
 	let body: ReactNode;
 	if (showList) {
@@ -269,12 +508,25 @@ export function Transcript({
 					{(entry, index) =>
 						"end" in entry ? (
 							<div key="end" className="hb-transcript-end" aria-hidden="true" />
+						) : "working" in entry ? (
+							<div key="working" className="hb-transcript-row hb-transcript-row-working">
+								<div className="hb-transcript-column">
+									<WorkingIndicator
+										since={workingSince}
+										{...(workingLabel === undefined ? {} : { label: workingLabel })}
+									/>
+								</div>
+							</div>
+						) : "start" in entry ? (
+							<div key="start" className="hb-transcript-start">
+								<div className="hb-transcript-column hb-transcript-start-rule">Start of the session</div>
+							</div>
 						) : (
 							<Row
 								key={entry.id}
 								row={entry}
 								first={index === 0 && !hasOlder}
-								turnStart={index > 0 && entry.kind === "item" && entry.item.kind === "user"}
+								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
 								turnStartedAt={turnStarts.get(entry.id)}
 								renderCard={renderCard}
 								report={report}
@@ -286,6 +538,15 @@ export function Transcript({
 					<div className="hb-transcript-older" role="status">
 						<Spinner size="sm" />
 						Loading earlier messages
+					</div>
+				) : olderError && hasOlder ? (
+					<div className="hb-transcript-older hb-transcript-older-error" role="alert">
+						<span className="hb-transcript-older-text">{olderError}</span>
+						{onLoadOlder === undefined ? null : (
+							<Button variant="ghost" size="sm" onClick={onLoadOlder}>
+								Try again
+							</Button>
+						)}
 					</div>
 				) : null}
 				{showEnd ? (
@@ -311,7 +572,12 @@ export function Transcript({
 	}
 
 	return (
-		<div className={`hb-transcript${className ? ` ${className}` : ""}`}>
+		// A file drop here is a pointer-only shortcut; the composer's paperclip is the keyboard's way.
+		<div
+			ref={root}
+			className={`hb-transcript${docked ? " hb-transcript-docked" : ""}${className ? ` ${className}` : ""}`}
+			{...dragHandlers}
+		>
 			{error ? (
 				<div className="hb-transcript-error">
 					<div className="hb-transcript-column">
@@ -320,6 +586,19 @@ export function Transcript({
 				</div>
 			) : null}
 			{body}
+			{docked ? (
+				<ComposerDockContext.Provider value={dockContext}>
+					<div className="hb-transcript-dock" ref={dockElement}>
+						<div className="hb-transcript-dock-lane">{dock}</div>
+					</div>
+				</ComposerDockContext.Provider>
+			) : null}
+			{dragging ? (
+				<div className="hb-transcript-drop" aria-hidden="true">
+					<span className="hb-transcript-drop-label">Drop files to attach</span>
+					{dropHint ? <span className="hb-transcript-drop-limits">{dropHint}</span> : null}
+				</div>
+			) : null}
 		</div>
 	);
 }

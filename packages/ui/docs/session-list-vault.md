@@ -71,6 +71,25 @@ Props: `sessions`, `selectedId`, `onSelect(id)`, `hrefFor(id)`, `loading`, `erro
 re-renders that row only, provided the other session objects keep their identity and `onSelect` and `hrefFor` are
 stable.
 
+### NewSessionRow
+
+**For** the row above a project's `SessionList` that starts a session, as T3 Code's "New thread" heads its threads:
+a plus and "New session", a link to the host's new-session page (`href`) or a button (`onSelect`). `selected` marks
+it while that page is open.
+
+**States:**
+
+- Enabled: a `ListRow` with a plus as its leading icon.
+- Selected: the list's selected row style, while the new-session page is open.
+- Disabled (`disabledReason`): it keeps its place, dimmed and not clickable, with the reason under the words, such as
+  a viewer's "You can watch this project's sessions. Starting one needs the operator role." Hiding it would leave the
+  person wondering where it went.
+- Mobile: the same row at the top of the list page; the reason wraps.
+
+**Not for** other actions in the list (filters, sorting): it is the one way into a new session.
+
+**Keyboard:** one Tab stop when enabled, none when disabled; Enter opens it.
+
 ## Vault approval card
 
 ### VaultApprovalCard

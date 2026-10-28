@@ -16,6 +16,7 @@ import {
 	type SessionDirectory,
 	type SessionEnd,
 	type SessionEndHook,
+	type SessionHistory,
 	type SessionRuntime,
 	type Subscription,
 } from "@harbour/contracts";
@@ -72,6 +73,13 @@ export interface RuntimeSubject {
 	readonly releasedSessions: readonly string[];
 	/** The session-end hook the runtime runs on close and abort; the suite registers teardowns with it. */
 	readonly sessionEnd: SessionEndHook;
+	/** The transcript in pages (proposed). Needed by the `history:` cases, which run with `history: true`. */
+	readonly history?: SessionHistory;
+}
+
+export interface RuntimeConformanceOptions extends ConformanceOptions {
+	/** Adds the `history:` cases, for a subject that serves `history` (proposed, issue #6). */
+	readonly history?: boolean;
 }
 
 /**
@@ -230,6 +238,8 @@ export function createRuntimeConformance(options: {
 	provider: RuntimeConformanceProvider;
 	/** Adds the `project access:` cases; see `ConformanceOptions.projectAccess`. */
 	projectAccess?: boolean;
+	/** Adds the `history:` cases; see `RuntimeConformanceOptions.history`. */
+	history?: boolean;
 }): readonly ConformanceCase[] {
 	const a = options.assertions;
 	const run =
@@ -960,14 +970,169 @@ export function createRuntimeConformance(options: {
 		},
 	];
 
-	return [...cases, ...sessionEndCases, ...(options.projectAccess === true ? projectAccessCases : [])];
+	const historyOf = (subject: RuntimeSubject): SessionHistory => {
+		if (subject.history === undefined) throw new Error("The history cases need the subject's history");
+		return subject.history;
+	};
+
+	/** Runs `turns` prompts, each answered, so the session holds a user and an assistant item for each. */
+	const converse = async (subject: RuntimeSubject, sessionId: string, turns: number, from = 0) => {
+		for (let turn = from; turn < from + turns; turn++) {
+			subject.model.reply({ text: `Answer ${turn}` });
+			const prompt = await subject.runtime.prompt(operator, sessionId, { text: `Question ${turn}` });
+			await subject.runtime.wait(operator, sessionId, prompt.id);
+		}
+	};
+
+	/** Every item, oldest first, by following cursors from the latest page. */
+	const readBack = async (history: SessionHistory, ctx: CallContext, sessionId: string, limit: number) => {
+		const pages: (readonly TranscriptItem[])[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await history.history(ctx, sessionId, { limit, ...(cursor === undefined ? {} : { cursor }) });
+			a.ok(page.items.length > 0 && page.items.length <= limit, "a page holds from one to limit items");
+			a.strictEqual(page.sessionId, sessionId);
+			pages.push(page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return { pages, items: pages.flat().reverse() };
+	};
+
+	const textsOf = (items: readonly TranscriptItem[]) =>
+		items.map((item) => (item.kind === "user" || item.kind === "assistant" ? item.text : item.kind));
+
+	const historyCases: ConformanceCase[] = [
+		{
+			name: "history: serves the latest page first, newest first, and its cursors page back to the start without a repeat or a gap",
+			run: run(async (subject) => {
+				const history = historyOf(subject);
+				const session = await setUp(subject);
+				const empty = await history.history(operator, session.id);
+				a.deepEqual(empty.items, [], "a new session has no items");
+				a.strictEqual(empty.nextCursor, undefined);
+				await converse(subject, session.id, 9);
+				const latest = await history.history(operator, session.id, { limit: 4 });
+				a.deepEqual(textsOf(latest.items), ["Answer 8", "Question 8", "Answer 7", "Question 7"]);
+				a.ok(latest.nextCursor !== undefined, "older items follow");
+				const { pages, items } = await readBack(history, operator, session.id, 4);
+				a.strictEqual(pages.length, 5, "18 items in pages of 4");
+				a.deepEqual(
+					textsOf(items),
+					Array.from({ length: 9 }, (_, turn) => [`Question ${turn}`, `Answer ${turn}`]).flat(),
+				);
+				const snapshot = await subject.runtime.snapshot(operator, session.id);
+				a.deepEqual(
+					items.map((item) => item.id),
+					snapshot.items.map((item) => item.id),
+					"the same items, with the same IDs, as the snapshot",
+				);
+				const all = await history.history(reader, session.id);
+				a.strictEqual(all.items.length, 18, "the default page holds them all, and a viewer may read it");
+				a.strictEqual(all.nextCursor, undefined);
+			}),
+		},
+		{
+			name: "history: pages behind a cursor stay the same while new turns arrive",
+			run: run(async (subject) => {
+				const history = historyOf(subject);
+				const session = await setUp(subject);
+				await converse(subject, session.id, 6);
+				const latest = await history.history(operator, session.id, { limit: 3 });
+				await converse(subject, session.id, 3, 6);
+				const older: TranscriptItem[] = [...latest.items];
+				let cursor = latest.nextCursor;
+				while (cursor !== undefined) {
+					const page = await history.history(operator, session.id, { cursor, limit: 3 });
+					older.push(...page.items);
+					cursor = page.nextCursor;
+				}
+				a.deepEqual(
+					textsOf(older.reverse()),
+					Array.from({ length: 6 }, (_, turn) => [`Question ${turn}`, `Answer ${turn}`]).flat(),
+					"paging back from the first page sees each earlier item once, whatever arrived since",
+				);
+				const now = await history.history(operator, session.id, { limit: 2 });
+				a.deepEqual(textsOf(now.items), ["Answer 8", "Question 8"], "a new latest page has the new turns");
+			}),
+		},
+		{
+			name: "history: pages back from an item a client holds, as the protocol's history frame names it",
+			run: run(async (subject) => {
+				const history = historyOf(subject);
+				const session = await setUp(subject);
+				await converse(subject, session.id, 4);
+				const snapshot = await subject.runtime.snapshot(operator, session.id);
+				const held = snapshot.items[5]!;
+				const page = await history.history(operator, session.id, { before: held.id, limit: 3 });
+				a.deepEqual(
+					page.items.map((item) => item.id),
+					snapshot.items
+						.slice(2, 5)
+						.map((item) => item.id)
+						.reverse(),
+				);
+				a.ok(page.nextCursor !== undefined);
+				const rest = await history.history(operator, session.id, { cursor: page.nextCursor!, limit: 10 });
+				a.deepEqual(
+					rest.items.map((item) => item.id),
+					snapshot.items
+						.slice(0, 2)
+						.map((item) => item.id)
+						.reverse(),
+				);
+				a.strictEqual(rest.nextCursor, undefined, "the first item has nothing before it");
+				const first = await history.history(operator, session.id, { before: snapshot.items[0]!.id });
+				a.deepEqual(first.items, []);
+			}),
+		},
+		{
+			name: "history: refuses a malformed request as invalid, an unknown item and another organisation's session as not_found",
+			run: run(async (subject) => {
+				const history = historyOf(subject);
+				const session = await setUp(subject);
+				await converse(subject, session.id, 2);
+				const latest = await history.history(operator, session.id, { limit: 1 });
+				const cursor = latest.nextCursor!;
+				await a.rejectsWithCode(history.history(operator, session.id, { cursor, before: "x" }), "invalid");
+				await a.rejectsWithCode(history.history(operator, session.id, { cursor: "not-a-cursor" }), "invalid");
+				await a.rejectsWithCode(history.history(operator, session.id, { limit: 0 }), "invalid");
+				await a.rejectsWithCode(history.history(operator, session.id, { before: "no-such-item" }), "not_found");
+				await a.rejectsWithCode(history.history(outsider, session.id), "not_found");
+				await a.rejectsWithCode(history.history(operator, "no-such-session"), "not_found");
+				const capped = await history.history(operator, session.id, { limit: 5000 });
+				a.strictEqual(capped.items.length, 4, "a limit above the most a page holds is cut, not refused");
+			}),
+		},
+		...(options.projectAccess === true
+			? [
+					{
+						name: "history: project access refuses an operator outside the project",
+						run: run(async (subject, deps) => {
+							const history = historyOf(subject);
+							const session = await setUp(subject);
+							await assertAccessDenied(a, deps, history.history(siteOperator, session.id), {
+								operation: "session.history",
+								message: "session.history by an operator outside the project",
+							});
+						}),
+					},
+				]
+			: []),
+	];
+
+	return [
+		...cases,
+		...sessionEndCases,
+		...(options.projectAccess === true ? projectAccessCases : []),
+		...(options.history === true ? historyCases : []),
+	];
 }
 
 export function registerRuntimeConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: RuntimeConformanceProvider,
-	options?: ConformanceOptions,
+	options?: RuntimeConformanceOptions,
 ): void {
 	registerCases(
 		runner,
@@ -976,6 +1141,7 @@ export function registerRuntimeConformance(
 			assertions: createExpectAssertions(runner.expect),
 			provider,
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+			...(options?.history === undefined ? {} : { history: options.history }),
 		}),
 	);
 }

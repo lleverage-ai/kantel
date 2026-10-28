@@ -59,6 +59,87 @@
 	height: var(--hb-space-10);
 }
 
+/* The top of a paged transcript with nothing older: a hairline either side of one quiet line. */
+.hb-transcript-start {
+	padding: var(--hb-space-7) var(--hb-space-7) var(--hb-space-4);
+}
+
+.hb-transcript-start-rule {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	white-space: nowrap;
+}
+
+.hb-transcript-start-rule::before,
+.hb-transcript-start-rule::after {
+	flex: 1;
+	height: var(--hb-hairline);
+	background: var(--hb-border-strong);
+	content: "";
+}
+
+/*
+ * Docked: a composer floats over the transcript's foot (T3 Code's composer overlay, ChatView.tsx). The list scrolls
+ * under its glass; the end makes room for it, as tall as transcript.tsx measures the dock, plus the usual gap.
+ */
+.hb-transcript-docked .hb-transcript-end {
+	height: calc(var(--hb-transcript-dock-height) + var(--hb-space-7));
+}
+
+.hb-transcript-dock {
+	position: absolute;
+	z-index: var(--hb-z-float);
+	right: 0;
+	bottom: 0;
+	left: 0;
+	padding: var(--hb-space-3) var(--hb-space-6) calc(var(--hb-space-7) + env(safe-area-inset-bottom));
+	/* The lane takes the pointer; the gutters beside it scroll the list. */
+	pointer-events: none;
+}
+
+.hb-transcript-dock-lane {
+	max-width: var(--hb-content-width);
+	margin: 0 auto;
+	pointer-events: auto;
+}
+
+/* Files dragged over a docked transcript: a dashed frame and one line saying where they go. */
+.hb-transcript-drop {
+	position: absolute;
+	z-index: var(--hb-z-overlay);
+	inset: var(--hb-space-4);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--hb-space-3);
+	border: var(--hb-ring) dashed var(--hb-drop-line);
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-drop-fill);
+	pointer-events: none;
+}
+
+.hb-transcript-drop-label {
+	padding: var(--hb-space-3) var(--hb-space-7);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-float);
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-transcript-drop-limits {
+	padding: var(--hb-space-1) var(--hb-space-5);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-raised);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
 /* Floating controls. These float over the list, so they get the float shadow. */
 
 .hb-transcript-older {
@@ -79,6 +160,22 @@
 	white-space: nowrap;
 }
 
+/* A failed page: the reason and "Try again", in the same pill. */
+.hb-transcript-older-error {
+	padding-right: var(--hb-space-2);
+	color: var(--hb-text);
+}
+
+.hb-transcript-older-text {
+	overflow: hidden;
+	max-width: var(--hb-popover-width);
+	text-overflow: ellipsis;
+}
+
+.hb-transcript-older-error .hb-button {
+	border-radius: var(--hb-radius-full);
+}
+
 .hb-transcript-scroll-end.hb-button {
 	position: absolute;
 	z-index: var(--hb-z-float);
@@ -89,6 +186,11 @@
 	background: var(--hb-raised);
 	box-shadow: var(--hb-shadow-float);
 	color: var(--hb-text-muted);
+}
+
+/* Docked, it sits just above the composer (T3 Code: the measured clearance plus 4px). */
+.hb-transcript-docked .hb-transcript-scroll-end.hb-button {
+	bottom: calc(var(--hb-transcript-dock-height) + var(--hb-space-2));
 }
 
 .hb-transcript-scroll-end.hb-button:hover:not(:disabled) {
@@ -119,6 +221,12 @@
 	padding: var(--hb-space-7);
 }
 
+/* Docked, the empty state and the skeleton stay clear of the composer. */
+.hb-transcript-docked .hb-transcript-empty,
+.hb-transcript-docked .hb-transcript-loading {
+	padding-bottom: var(--hb-transcript-dock-height);
+}
+
 .hb-transcript-skeleton-turn {
 	display: flex;
 	flex-direction: column;
@@ -138,10 +246,22 @@
 	gap: var(--hb-space-3);
 }
 
+@media (min-width: 640px) {
+	.hb-transcript-dock {
+		padding: var(--hb-space-4) var(--hb-space-7) calc(var(--hb-space-8) + env(safe-area-inset-bottom));
+	}
+}
+
 @media (min-width: 900px) {
 	.hb-transcript-row,
+	.hb-transcript-start,
 	.hb-transcript-error {
 		padding-left: var(--hb-space-9);
 		padding-right: var(--hb-space-9);
+	}
+
+	.hb-transcript-dock {
+		padding-right: var(--hb-space-9);
+		padding-left: var(--hb-space-9);
 	}
 }

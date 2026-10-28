@@ -6,6 +6,7 @@ one hostname (`harbour.myslop.app`) behind Cloudflare Access with One-time PIN. 
 ```
 browser ── Access (OTP) ── Worker harbour ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► HarbourVault DO (VaultDO)
 host app ── API key ────────┘              ├─ /v1/*      ─► HarbourStack DO ─► gateway (src/gateway.ts)
+                                           │                                     ├─ POST /v1/workspaces  create a seeded workspace, operators only
                                            │                                     ├─ /v1/workspaces/…  workspace read API (#58)
                                            │                                     ├─ /v1/audit/…       audit query API (#60)
                                            │                                     └─ /v1/…             session API (#61)
@@ -13,7 +14,11 @@ host app ── API key ────────┘              ├─ /v1/*   
                                            └─ anything else ─► console (apps/console/dist, single-page app)
 ```
 
-`src/route.ts` decides which part answers.
+`src/route.ts` decides which part answers. It reads a `POST /v1/workspaces` body (up to 16 MiB) before the stack
+object sees it, as it does for the vault's, since the stack refuses a caller before it reads the seed.
+
+A seed's git source is fetched from GitHub as a tarball (`createGitHubTarballFetcher`, #81) with the Worker's own
+`fetch`, so only public repositories seed for now; private ones wait for the vault's egress `fetch`.
 
 Status: step 2 of #17, in part. The stack is durable and hosted in one Durable Object (`HarbourStack`):
 
@@ -26,11 +31,64 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
+| Sandboxes: #94's tiers, leases, the TTL sweep and session-end release; the isolate on `HARBOUR_ISOLATE_BACKEND` | `HarbourStack`, leases in memory | `@harbour/sandbox` (`src/sandboxes.ts`) |
 
 Migrations run on every start of the object; each is idempotent. The bootstrap saves each step as it completes, so a
-restart finds the same organisation rather than making another. Still to come: a SessionDO per session and the models
-binding to CLIProxyAPI (`MODELS`, already bound by the deploy); until then sessions run on an echo model
-(`src/echo-model.ts`).
+restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
+`MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
+
+## Decisions
+
+**One Durable Object for every session in M1** (28 Oct 2026). `HarbourStack` is M1's SessionDO: the runtime lane's
+`SessionRuntimeDurableObjectCore` (#98) runs every session in its one SQLite, with its alarm.
+
+- Why: in M0, first contact with a brand-new SessionDO alone took 467 ms p50 and 1,773 ms p95
+  ([M0-CF1 measurements](../../docs/measurements/m0-cf1/README.md), "Where the time goes"), against #17's target of
+  100 ms p50 for the whole of isolate-ready. A warm, shared object pays none of it.
+- What it costs: every session shares one single-threaded object, so one session's CPU-heavy work (an in-process
+  isolate command, a large commit) delays every other session's requests, and the object's memory and request rate
+  bound how many sessions run at once.
+- What replaces it: per-session objects taken from a pool of pre-created, idle objects (so a new session never pays
+  creation), with a session directory in D1 so the gateway routes each session to its object. Not built yet.
+
+**The isolate backend is a switch** (28 Oct 2026). `HARBOUR_ISOLATE_BACKEND` picks where the isolate tier runs, so
+the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
+runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate, runs the same shell in a
+Dynamic Worker per session through the `LOADER` (`worker_loaders`) binding, as the M0 spike ran it
+(`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. The container tier is not on
+Cloudflare yet: a command routed to it is refused `unavailable`.
+
+How `dynamic-worker` works:
+
+- **One isolate per session and workspace.** The loader ID names the organisation, session, workspace and a digest
+  of the isolate's code, so a session's later commands reuse its warm isolate, sessions never share one, and a deploy
+  that changes the isolate never reuses an old one.
+- **The workspace crosses as a capability.** The isolate (`src/isolate/entry.ts`, bundled by
+  `scripts/build-isolate.ts` into `generated/isolate.bundle.txt`) has no bindings and no network
+  (`globalOutbound: null`, so `curl` fails). Each command passes it a `WorkspacePort`, an RPC target in
+  `HarbourStack`, that lists a version and reads bodies and mounts with the caller's context, which the isolate never
+  sees. It can't write: what a command changed comes back in the result, and the tiered sandboxes commit it before the
+  tool call returns, as for `in-process`.
+- **Cancellation:** an `AbortSignal` can't cross RPC, so while a cancellable command runs the isolate asks the port
+  every 50 ms whether the caller has cancelled, and aborts the shell when it has; the shell stops at its next
+  statement, as in process. The caller's call rejects `aborted` at once, and anything the isolate answers later is
+  dropped, so nothing is committed.
+
+## Measuring isolate-ready
+
+`POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" | "dynamic-worker", "placement"?: true }`
+(`src/measure.ts`), signed in like any API call. Each run creates a new session on a 61-file measurement workspace
+(made once per object start), runs `ls -1R` in the session's isolate, answers `{ backend, exitCode, listed, timings }`
+(server milliseconds for `signIn`, `session`, `isolate` and `total`, plus the sandbox's own phases; `total` leaves out
+`signIn`), and closes the session. On `dynamic-worker`, `isolate.call` is the round trip into the isolate and
+`isolate.cold` is 1 when the command loaded it. Run it 50 times and take p50 and p95 of the client's wall time and of
+`timings.total`.
+
+With `"placement": true` the answer adds `placement`, probed after the run: `objectColo` (the colo the stack object's
+own subrequest to Cloudflare's `/cdn-cgi/trace` reaches, so where the object runs), `edgeColo` (`request.cf.colo`),
+and D1's `region`, `colo` and `primary` from its query `meta` (`served_by_region`, `served_by_colo`,
+`served_by_primary`), with five `SELECT 1` round trips and D1's own `sql_duration_ms` for each, and `r2`: five
+round trips (`head` of a key that doesn't exist) to the workspace bucket, which says nothing else of where it is.
 
 ## The vault (VaultDO)
 
@@ -76,6 +134,10 @@ Every API call authenticates with `createAuthenticator` from `@harbour/identity`
 - Host apps: `Authorization: Bearer hbr_…`, an API key scoped to projects.
 
 The team domain and AUD come as a pair; one without the other is refused (503) rather than served with sign-in off.
+Project access asks identity for the caller's role on every item a list returns, and each answer is two or three D1
+queries, so the runtime's directory looks a role up once per request (`src/role-memo.ts`): memoised per signed-in
+actor object, which the authenticator makes afresh for each request, and for at most 1 s.
+
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
 
@@ -92,8 +154,9 @@ that directory to start afresh. `--env dev` runs `src/dev.ts`: the deployed Work
 verifies with the real provider) and the two `/__dev/` routes. It is never the deployed entry point, and
 `test/gateway.test.ts` checks that no other module imports it.
 
-`pnpm --filter @harbour/cloudflare deploy:dry-run` builds the console and bundles the deployed Worker into `dist/`
-without contacting Cloudflare.
+`pnpm --filter @harbour/cloudflare deploy:dry-run` builds the console and the dynamic-worker isolate and bundles the
+deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs the Worker Loader locally too, so
+`HARBOUR_ISOLATE_BACKEND=dynamic-worker` (or the measurement's `backend`) works on a laptop.
 
 ## Deploy
 
@@ -110,6 +173,9 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
 | `HARBOUR_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
+| `HARBOUR_D1_DATABASE_NAME` with `HARBOUR_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour`, by name |
+| `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
+| `HARBOUR_LOCATION_HINT` | optional variable | The location hint the stack and vault objects are created with (`src/route.ts`). Unset: `weur`, from `wrangler.jsonc` |
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
 
 Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
@@ -122,6 +188,13 @@ Until the secret and every variable exist, and on every pull request, the workfl
    R2 bucket `harbour-workspaces` (its automatic provisioning, by name); later deploys find them by name;
 3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
+
+**Where the data lives.** The optional variables above exist so a database and bucket made in another region can be
+swapped in without a code change. Cloudflare places by region hint, never by city or colo: `weur` (western Europe)
+holds Amsterdam and London alike. A D1 database's location is fixed when it's created (`--location`), so moving it
+means a new database with the data copied in; an R2 bucket's the same. The objects take `HARBOUR_LOCATION_HINT` only
+when they're first created: the existing `m1` stack object and `vault` object stay where they are, whatever it says,
+and renaming one would start it empty.
 
 Harbour is served on a zone route, `harbour.myslop.app/*` with `zone_name: "myslop.app"`, not a custom domain. The
 `myslop.app` zone already has a `*.myslop.app/*` route to the `myslop-apps` Worker, and Cloudflare gives a route
@@ -166,6 +239,7 @@ https://developers.cloudflare.com/workers-vpc/reference/pricing/), checked 27 Oc
 | D1 (identity, audit) | 25 bn rows read, 50 M written, 5 GB | well under | $0 |
 | R2 (workspaces) | 10 GB-month, 1 M class A, 10 M class B | < 1 GB, < 0.1 M ops | $0 |
 | Workers VPC (`MODELS`) | free during the open beta | | $0 |
+| Dynamic Workers (`dynamic-worker` backend, added 28 Oct 2026) | 1,000 unique Dynamic Workers a month; requests and CPU count as Workers' | one per session and workspace on each day it runs a command; 51 per 50-run measurement | $0 while sessions use `in-process`; past 1,000 a month, $0.002 each per day |
 | Model tokens | | through CLIProxyAPI on Sal's host | not billed by Cloudflare |
 
 Estimate: **about $0 a month on top of the account's $5 Workers Paid minimum**, as long as the account's other
@@ -185,6 +259,12 @@ What would move it:
 - **The container tier**, when it lands: Containers bill per instance-second, so it will dominate. It gets its own
   line here with that step.
 - **Workers VPC** pricing after its beta.
+- **Sessions on `dynamic-worker`.** Cloudflare counts a Dynamic Worker per loader ID and code version per day
+  (https://developers.cloudflare.com/dynamic-workers/pricing/), and Harbour's loader ID is per session and workspace,
+  so the count is the sessions that run a command each day, plus one per deploy for each session still in use. At
+  M1's scale that is well inside 1,000 a month; 100 sessions a day would be about 3,000 a month, about $4 past the
+  allowance. Each command is one request into the isolate, and its startup CPU (parsing the 1.25 MB bundle) is billed
+  as Workers CPU.
 
 The VaultDO adds a second object, active only while it answers an egress decision or a key read, so its duration
 stays far inside the allowance.

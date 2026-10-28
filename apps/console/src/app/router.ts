@@ -3,24 +3,31 @@
 //
 //   /                                         the first project
 //   /projects/:projectId                      a project's sessions
+//   /projects/:projectId/new                  a new session in the project: the composer, before it exists
 //   /projects/:projectId/sessions/:sessionId  one session
 //   /vault                                    the vault page: your active grants
-//   /vault/requests/:proposalId               one vault request to decide, beside your active grants
+//   /vault/proposals/:proposalId              one vault request to decide, beside your active grants: the link the
+//                                             vault gives each proposal (`Proposal.link`)
+//   /vault/requests/:proposalId               the same, as earlier consoles linked it
 //   /audit                                    the audit log
+//   /keys                                     host apps' API keys
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
 //
-// Query strings are kept as they are (?profile=1 turns on the profiler).
+// Query strings are kept as they are (?profile=1 turns on the profiler). A link's hash goes with it: a session at a
+// turn is `#turn=<id>`, as the audit log links one.
 
 import { useSyncExternalStore } from "react";
 
 export type Route =
 	| { readonly name: "home" }
 	| { readonly name: "project"; readonly projectId: string }
+	| { readonly name: "new-session"; readonly projectId: string }
 	| { readonly name: "session"; readonly projectId: string; readonly sessionId: string }
 	| { readonly name: "vault" }
 	| { readonly name: "vault-request"; readonly proposalId: string }
 	| { readonly name: "audit" }
+	| { readonly name: "keys" }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
 
@@ -39,13 +46,15 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "vault") {
 		if (parts.length === 1) return { name: "vault" };
 		const proposalId = parts[2] === undefined ? undefined : segment(parts[2]);
-		if (parts[1] === "requests" && proposalId !== undefined && parts.length === 3)
+		if ((parts[1] === "proposals" || parts[1] === "requests") && proposalId !== undefined && parts.length === 3)
 			return { name: "vault-request", proposalId };
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
+	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
+		if (projectId !== undefined && parts[2] === "new" && parts.length === 3) return { name: "new-session", projectId };
 		const sessionId = parts[3] === undefined ? undefined : segment(parts[3]);
 		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined) {
 			if (parts.length === 4) return { name: "session", projectId, sessionId };
@@ -59,11 +68,17 @@ export function parseRoute(pathname: string): Route {
 }
 
 export const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+export const newSessionPath = (projectId: string): string => `${projectPath(projectId)}/new`;
 export const sessionPath = (projectId: string, sessionId: string): string =>
 	`${projectPath(projectId)}/sessions/${encodeURIComponent(sessionId)}`;
+/** A session at one turn: the submission or tool call an audit event names, as the session's `#turn=<id>`. */
+export const sessionTurnPath = (projectId: string, sessionId: string, turn?: string): string =>
+	`${sessionPath(projectId, sessionId)}${turn === undefined || turn === "" ? "" : `#turn=${encodeURIComponent(turn)}`}`;
 export const VAULT_PATH = "/vault";
-export const vaultRequestPath = (proposalId: string): string => `/vault/requests/${encodeURIComponent(proposalId)}`;
+/** One vault request: the path the vault's own links use (`Proposal.link`, `@harbour/vault`'s `approvalLink`). */
+export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
 export const AUDIT_PATH = "/audit";
+export const KEYS_PATH = "/keys";
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
 export const filesPath = (projectId: string, sessionId: string, path?: string): string =>
 	`${sessionPath(projectId, sessionId)}/files${path === undefined ? "" : `/${encodeURIComponent(path)}`}`;
@@ -82,10 +97,15 @@ function subscribe(listener: () => void): () => void {
 	};
 }
 
-/** Goes to `path`, keeping the query string. `replace` swaps the current history entry instead of adding one. */
+/**
+ * Goes to `path`, keeping the query string; a hash on `path` (`/projects/p/sessions/s#turn=x`) follows it. `replace`
+ * swaps the current history entry instead of adding one.
+ */
 export function navigate(path: string, { replace = false }: { replace?: boolean } = {}): void {
-	const target = `${path}${location.search}`;
-	if (`${location.pathname}${location.search}` === target) return;
+	const hashAt = path.indexOf("#");
+	const target =
+		hashAt === -1 ? `${path}${location.search}` : `${path.slice(0, hashAt)}${location.search}${path.slice(hashAt)}`;
+	if (`${location.pathname}${location.search}${hashAt === -1 ? "" : location.hash}` === target) return;
 	if (replace) history.replaceState(null, "", target);
 	else history.pushState(null, "", target);
 	notify();
@@ -115,7 +135,7 @@ export function interceptLinks(root: HTMLElement): () => void {
 		const url = new URL(anchor.href, location.href);
 		if (url.origin !== location.origin) return;
 		event.preventDefault();
-		navigate(url.pathname);
+		navigate(`${url.pathname}${url.hash}`);
 	};
 	root.addEventListener("click", onClick);
 	return () => root.removeEventListener("click", onClick);

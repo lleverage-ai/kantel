@@ -15,3 +15,8 @@
 .hb-story-transcript-frame-tall {
 	height: calc(var(--hb-space-11) * 15);
 }
+
+/* Room above a composer for its model picker, which opens upward. */
+.hb-story-picker-frame {
+	padding-top: var(--hb-popover-height);
+}
