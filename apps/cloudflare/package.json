@@ -30,6 +30,7 @@
 		"@harbour/runtime": "workspace:*",
 		"@harbour/runtime-cloudflare": "workspace:*",
 		"@harbour/sandbox": "workspace:*",
+		"@harbour/schedules": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@harbour/sql": "workspace:*",
 		"@harbour/vault": "workspace:*",
