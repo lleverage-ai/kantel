@@ -3,6 +3,8 @@
  * Node. It sits over the four runtime contracts, so it serves the in-memory runtime now and the persistent one later,
  * and takes the caller from an injected `Authenticator`. Routes are listed in `packages/runtime/HTTP.md`.
  */
+
+import { createRouter, routes as publicRoutes } from "@harbour/api";
 import {
 	type AgentProfile,
 	type AgentProfiles,
@@ -19,12 +21,10 @@ import {
 	type PageRequest,
 	type PromptInput,
 	type SessionDirectory,
-	type SessionFilter,
 	type SessionHistory,
 	type SessionHistoryRequest,
 	type SessionModels,
 	type SessionRuntime,
-	type SessionStatus,
 	type Subscription,
 	systemClock,
 } from "@harbour/contracts";
@@ -33,8 +33,6 @@ import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
 import {
-	type AbortBody,
-	type CreateSessionBody,
 	DEFAULT_BASE_PATH,
 	errorResponse,
 	HEADERS,
@@ -114,8 +112,6 @@ interface Registration {
 	readonly registration: string;
 }
 
-const SESSION_STATUSES = new Set<SessionStatus>(["idle", "running", "waiting", "done", "failed", "cancelled"]);
-
 function actorKey(ctx: CallContext): string {
 	const actor = ctx.actor;
 	switch (actor.kind) {
@@ -187,26 +183,6 @@ function historyRequestOf(params: URLSearchParams): SessionHistoryRequest {
 		...(cursor === null ? {} : { cursor }),
 		...(before === null ? {} : { before }),
 		...(limit === null ? {} : { limit: Number(limit) }),
-	};
-}
-
-/** `?projectId=&agentId=&status=&parentSessionId=&label.<key>=<value>` */
-function filterOf(params: URLSearchParams): SessionFilter {
-	const labels: { [key: string]: string } = {};
-	for (const [key, value] of params) if (key.startsWith("label.") && key.length > 6) labels[key.slice(6)] = value;
-	const status = params.get("status");
-	if (status !== null && !SESSION_STATUSES.has(status as SessionStatus)) {
-		throw new HarbourError("invalid", `Unknown status ${status}`);
-	}
-	const projectId = params.get("projectId");
-	const agentId = params.get("agentId");
-	const parentSessionId = params.get("parentSessionId");
-	return {
-		...(projectId === null ? {} : { projectId }),
-		...(agentId === null ? {} : { agentId }),
-		...(status === null ? {} : { status: status as SessionStatus }),
-		...(parentSessionId === null ? {} : { parentSessionId }),
-		...(Object.keys(labels).length === 0 ? {} : { labels }),
 	};
 }
 
@@ -296,8 +272,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	): Promise<Response> => {
 		const route = `${request.method} ${rest.join("/")}`;
 		switch (route) {
-			case "GET ":
-				return json(await directory.get(ctx, sessionId));
 			case "GET children":
 				return json({ items: await directory.children(ctx, sessionId) });
 			case "GET snapshot":
@@ -314,17 +288,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				return json(await runtime.steer(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST follow-up":
 				return json(await runtime.followUp(ctx, sessionId, promptInput(await readJson(request))), 202);
-			case "POST abort": {
-				const body = await readJson<AbortBody>(request);
-				if (body.reason !== undefined && typeof body.reason !== "string") {
-					throw new HarbourError("invalid", "reason must be a string");
-				}
-				await runtime.abort(ctx, sessionId, body.reason);
-				return new Response(null, { status: 204 });
-			}
-			case "POST close":
-				await runtime.close(ctx, sessionId);
-				return new Response(null, { status: 204 });
 			case "GET result":
 				return result(ctx, request, url, sessionId);
 			case "GET events":
@@ -598,19 +561,40 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		throw NOT_FOUND;
 	};
 
+	/**
+	 * The public API's routes (`@harbour/api`), each defined once there with its schemas: the router checks a request
+	 * against them before a handler sees it. The routes below it are the ones not yet in the public API.
+	 */
+	const publicApi = createRouter(
+		publicRoutes,
+		{
+			createSession: (ctx: CallContext, { body }) => runtime.create(ctx, body),
+			listSessions: (ctx: CallContext, { query }) => {
+				const { limit, cursor, label, ...filter } = query;
+				return directory.list(
+					ctx,
+					{ ...filter, ...(label === undefined || Object.keys(label).length === 0 ? {} : { labels: label }) },
+					{ ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }) },
+				);
+			},
+			getSession: (ctx: CallContext, { params }) => directory.get(ctx, params.sessionId),
+			closeSession: async (ctx: CallContext, { params }) => {
+				await runtime.close(ctx, params.sessionId);
+				return undefined;
+			},
+			abortSession: async (ctx: CallContext, { params, body }) => {
+				await runtime.abort(ctx, params.sessionId, body.reason);
+				return undefined;
+			},
+		},
+		{ basePath },
+	);
+
 	const route = async (ctx: CallContext, request: Request, url: URL, segments: readonly string[]) => {
+		const answered = await publicApi(ctx, request);
+		if (answered !== undefined) return answered;
 		const [area, id, ...rest] = segments;
-		if (area === "sessions") {
-			if (id === undefined) {
-				if (request.method === "POST")
-					return json(await runtime.create(ctx, await readJson<CreateSessionBody>(request)), 201);
-				if (request.method === "GET") {
-					return json(await directory.list(ctx, filterOf(url.searchParams), pageOf(url.searchParams)));
-				}
-				throw NOT_FOUND;
-			}
-			return sessionRoutes(ctx, request, url, id, rest);
-		}
+		if (area === "sessions" && id !== undefined) return sessionRoutes(ctx, request, url, id, rest);
 		if (area === "profiles") return profileRoutes(ctx, request, url, id === undefined ? [] : [id, ...rest]);
 		if (area === "hosts" && id !== undefined) return hostRoutes(ctx, request, url, id, rest);
 		throw NOT_FOUND;
