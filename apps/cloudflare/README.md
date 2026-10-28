@@ -87,7 +87,8 @@ How `dynamic-worker` works:
 With `"placement": true` the answer adds `placement`, probed after the run: `objectColo` (the colo the stack object's
 own subrequest to Cloudflare's `/cdn-cgi/trace` reaches, so where the object runs), `edgeColo` (`request.cf.colo`),
 and D1's `region`, `colo` and `primary` from its query `meta` (`served_by_region`, `served_by_colo`,
-`served_by_primary`), with five `SELECT 1` round trips and D1's own `sql_duration_ms` for each.
+`served_by_primary`), with five `SELECT 1` round trips and D1's own `sql_duration_ms` for each, and `r2`: five
+round trips (`head` of a key that doesn't exist) to the workspace bucket, which says nothing else of where it is.
 
 ## The vault (VaultDO)
 
@@ -172,6 +173,9 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
 | `HARBOUR_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
+| `HARBOUR_D1_DATABASE_NAME` with `HARBOUR_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour`, by name |
+| `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
+| `HARBOUR_LOCATION_HINT` | optional variable | The location hint the stack and vault objects are created with (`src/route.ts`). Unset: `weur`, from `wrangler.jsonc` |
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
 
 Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
@@ -184,6 +188,13 @@ Until the secret and every variable exist, and on every pull request, the workfl
    R2 bucket `harbour-workspaces` (its automatic provisioning, by name); later deploys find them by name;
 3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
+
+**Where the data lives.** The optional variables above exist so a database and bucket made in another region can be
+swapped in without a code change. Cloudflare places by region hint, never by city or colo: `weur` (western Europe)
+holds Amsterdam and London alike. A D1 database's location is fixed when it's created (`--location`), so moving it
+means a new database with the data copied in; an R2 bucket's the same. The objects take `HARBOUR_LOCATION_HINT` only
+when they're first created: the existing `m1` stack object and `vault` object stay where they are, whatever it says,
+and renaming one would start it empty.
 
 Harbour is served on a zone route, `harbour.myslop.app/*` with `zone_name: "myslop.app"`, not a custom domain. The
 `myslop.app` zone already has a `*.myslop.app/*` route to the `myslop-apps` Worker, and Cloudflare gives a route

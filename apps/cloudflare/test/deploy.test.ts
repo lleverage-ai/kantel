@@ -2,7 +2,15 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 import { accessVerdict } from "../scripts/check-access.ts";
-import { DEPLOY_VARIABLES, deployConfig, deployValues, missingVariables, zoneOf } from "../scripts/deploy-config.ts";
+import {
+	DEPLOY_VARIABLES,
+	deployConfig,
+	deployValues,
+	LOCATION_HINTS,
+	missingVariables,
+	zoneOf,
+} from "../scripts/deploy-config.ts";
+import { DEFAULT_LOCATION_HINT, LOCATION_HINTS as ROUTE_LOCATION_HINTS } from "../src/route.ts";
 
 const configured = {
 	CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
@@ -101,6 +109,62 @@ describe("deploy config", () => {
 		const config = deployConfig(rawConfig, deployValues(configured, "deploy"));
 		expect(config.d1_databases).toEqual([{ binding: "DB", database_name: "harbour" }]);
 		expect(config.r2_buckets).toEqual([{ binding: "WORKSPACES", bucket_name: "harbour-workspaces" }]);
+	});
+
+	it("binds exactly today's D1, R2 and hint when the optional variables are unset", () => {
+		const config = deployConfig(rawConfig, deployValues({ ...configured, HARBOUR_R2_BUCKET: " " }, "deploy"));
+		expect(config.d1_databases).toEqual(rawConfig.d1_databases);
+		expect(config.r2_buckets).toEqual(rawConfig.r2_buckets);
+		expect((config.vars as Record<string, string>).HARBOUR_LOCATION_HINT).toBe(DEFAULT_LOCATION_HINT);
+		expect(LOCATION_HINTS).toEqual(ROUTE_LOCATION_HINTS);
+	});
+
+	it("points DB, WORKSPACES and the objects' hint elsewhere when the variables say so", () => {
+		const id = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+		const moved = {
+			...configured,
+			HARBOUR_D1_DATABASE_NAME: "harbour-weur",
+			HARBOUR_D1_DATABASE_ID: id.toUpperCase(),
+			HARBOUR_R2_BUCKET: "harbour-workspaces-weur",
+			HARBOUR_LOCATION_HINT: "eeur",
+		};
+		for (const mode of ["deploy", "dry-run"] as const) {
+			const config = deployConfig(rawConfig, deployValues(moved, mode));
+			expect(config.d1_databases).toEqual([{ binding: "DB", database_name: "harbour-weur", database_id: id }]);
+			expect(config.r2_buckets).toEqual([{ binding: "WORKSPACES", bucket_name: "harbour-workspaces-weur" }]);
+			expect((config.vars as Record<string, string>).HARBOUR_LOCATION_HINT).toBe("eeur");
+		}
+		// Only R2: D1 stays as it is.
+		const bucketOnly = deployConfig(
+			rawConfig,
+			deployValues({ ...configured, HARBOUR_R2_BUCKET: "other-bucket" }, "deploy"),
+		);
+		expect(bucketOnly.d1_databases).toEqual(rawConfig.d1_databases);
+	});
+
+	it("refuses a D1 name without its ID, a bad ID, bucket or hint, and a base config without the binding", () => {
+		const id = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+		expect(() => deployValues({ ...configured, HARBOUR_D1_DATABASE_NAME: "harbour-weur" }, "deploy")).toThrow(
+			/both HARBOUR_D1_DATABASE_NAME and HARBOUR_D1_DATABASE_ID/,
+		);
+		expect(() => deployValues({ ...configured, HARBOUR_D1_DATABASE_ID: id }, "dry-run")).toThrow(/or neither/);
+		const bad = {
+			HARBOUR_D1_DATABASE_ID: "harbour",
+			HARBOUR_R2_BUCKET: "Harbour_Workspaces",
+			HARBOUR_LOCATION_HINT: "ams",
+		};
+		for (const [name, value] of Object.entries(bad)) {
+			const env = {
+				...configured,
+				HARBOUR_D1_DATABASE_NAME: "harbour-weur",
+				HARBOUR_D1_DATABASE_ID: id,
+				[name]: value,
+			};
+			expect(() => deployValues(env, "dry-run"), name).toThrow(name);
+		}
+		const values = deployValues({ ...configured, HARBOUR_R2_BUCKET: "other-bucket" }, "deploy");
+		const { r2_buckets: _, ...noBucket } = rawConfig;
+		expect(() => deployConfig(noBucket, values)).toThrow(/no r2_buckets entry for WORKSPACES/);
 	});
 
 	it("refuses a base config that names a route or account, or could serve outside Access", () => {

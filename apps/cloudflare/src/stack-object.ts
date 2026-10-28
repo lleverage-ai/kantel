@@ -28,7 +28,7 @@ import { createGateway, type Gateway } from "./gateway.ts";
 import type { IsolatePort } from "./isolate/runner.ts";
 import type { Placement } from "./measure.ts";
 import { cpaKey, createGatewayModels, defaultModel, type ModelsVars } from "./models.ts";
-import { VAULT_NAME } from "./route.ts";
+import { namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
@@ -37,7 +37,7 @@ import type { HarbourVault } from "./vault-object.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars {
+export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars {
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
 	readonly VAULTS: DurableObjectNamespace<HarbourVault>;
@@ -79,8 +79,10 @@ class IsolatePortTarget extends RpcTarget implements IsolatePort {
 
 /** The isolate code's digest, part of every isolate's loader ID. */
 const ISOLATE_BUNDLE_ID = bundleId(ISOLATE_BUNDLE);
-/** `SELECT 1` queries the placement probe times. */
+/** `SELECT 1` queries (and R2 `head`s) the placement probe times. */
 const PLACEMENT_QUERIES = 5;
+/** The key the R2 probe heads: outside the workspace prefix, and never written. */
+const PLACEMENT_R2_KEY = "placement-probe/none";
 
 /** The vault object's RPC methods the model gateway calls (`HarbourVault`). */
 interface VaultRpc {
@@ -119,11 +121,11 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 	/** How the stack is built; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		// The approval API's vault: each call goes to the one VaultDO over RPC, as the person the gateway signed in.
-		const vaults = this.env.VAULTS;
+		const env = this.env;
 		const loader = this.env.LOADER;
 		return {
 			vault: approvalVaultOver((method, ctx, args) =>
-				vaults.get(vaults.idFromName(VAULT_NAME)).approvalCall(method, ctx, args),
+				namedObject(env.VAULTS, VAULT_NAME, env).approvalCall(method, ctx, args),
 			),
 			// The dynamic-worker backend, when the Worker has the loader: the measurement can run on it whichever backend
 			// sessions use.
@@ -166,6 +168,17 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		} catch (error) {
 			console.warn("harbour: the D1 placement probe failed", error);
 		}
+		// R2 says nothing of where a bucket lives, so only its round trip: a `head` of a key no workspace uses.
+		const r2: { roundTripMs: number }[] = [];
+		try {
+			for (let i = 0; i < PLACEMENT_QUERIES; i += 1) {
+				const started = performance.now();
+				await this.env.WORKSPACES.head(PLACEMENT_R2_KEY);
+				r2.push({ roundTripMs: Math.round((performance.now() - started) * 10) / 10 });
+			}
+		} catch (error) {
+			console.warn("harbour: the R2 placement probe failed", error);
+		}
 		const objectColo = await this.#objectColo;
 		const edgeColo = (request.cf as { colo?: unknown } | undefined)?.colo;
 		return {
@@ -177,6 +190,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				...(meta?.served_by_primary === undefined ? {} : { primary: meta.served_by_primary }),
 				queries,
 			},
+			r2: { queries: r2 },
 		};
 	}
 
@@ -191,7 +205,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 			return undefined;
 		}
 		const modelId = defaultModel(this.env);
-		const vault = this.env.VAULTS.get(this.env.VAULTS.idFromName(VAULT_NAME)) as unknown as VaultRpc;
+		const vault = namedObject(this.env.VAULTS, VAULT_NAME, this.env) as unknown as VaultRpc;
 		return ({ audit, clock }) =>
 			createGatewayModels({
 				upstream: (request) => upstream.fetch(request),
