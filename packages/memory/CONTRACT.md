@@ -103,6 +103,25 @@ and a later one brings back carries on from there and a proposal against its old
 index, terms and recall beside it) has no Node APIs. It leaves out durable storage, publishing to a `MemorySource`
 and embeddings; reading a source's bundle into a snapshot is the host's adapter.
 
+## The durable implementation (`@harbour/memory/sql`)
+
+`createSqlMemory({ driver, clock?, audit?, access?, renderer? })` runs on any `SqlDriver` from `@harbour/sql`
+(Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare). It applies the same rules as the in-memory
+memory (`src/rules.ts`, shared by both) and passes the whole suite, with `projectAccess`, on PGlite, `node:sqlite`, D1
+in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres. `migrateMemory(driver)` creates the tables if
+they are missing; `memorySchema(dialect)` gives the statements for a target's own migrations.
+
+- Rows: `memory_spaces` (with the snapshot each was last imported from and its import count), `memory_concepts` (one
+  per space and ID; a concept a snapshot drops stays as a row that is no longer held, so its ID keeps its highest
+  version), `memory_proposals` and `memory_space_writes`.
+- Every change to a space (an import, an apply, a reject) is one batch that first claims the space's next generation
+  in `memory_space_writes` with `ON CONFLICT DO NOTHING`; every other statement in it runs only if that claim is this
+  writer's. Of two writers that read the same generation exactly one changes anything; the other re-reads and tries
+  again, so the version checks run against the current state as they do in the in-memory memory's one writer.
+- Recall and search build the same in-process index from the named spaces' concepts, cached per process until a
+  space's generation moves on, so they return what the in-memory memory returns for the same writes, and a restart
+  loses only the cache.
+
 ## Capabilities
 
 `memoryCapabilities` defines `memory.search` and `memory.read` (version 1, `replay: "safe"`, `runsIn: "host"`), which a

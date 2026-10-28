@@ -45,6 +45,29 @@
 	overflow-wrap: anywhere;
 }
 
+/* A thought as it streams, before the answer's first word: "Thinking", then a window four lines tall onto the end of
+   the thought, so its newest lines show and the row never grows past four lines. */
+.hb-assistant-message-thinking-live {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-assistant-message-thinking-label {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-assistant-message-thought-window {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	max-height: calc(4 * var(--hb-text-sm) * var(--hb-leading));
+	overflow: hidden;
+}
+
 /* The streaming caret: a soft block after the last word. It sits inside the last inline-bearing element, so it
    follows the text, not a new line: the last paragraph or heading, a list's last item, a code block's code. */
 .hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, table, blockquote, hr):last-child::after,
@@ -61,18 +84,6 @@
 	background: var(--hb-accent-text);
 	opacity: 0.6;
 	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
-}
-
-/* "Working for 12s" while the agent works before its first word, after T3 Code's working row: muted, small, tabular
-   numbers so the timer does not shift as it counts. One line as tall as the answer's first line, so nothing moves
-   when the first word replaces it. Not flex: the space in "Working for " must stay between the words and the time. */
-.hb-working {
-	min-width: 0;
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-sm);
-	line-height: calc(var(--hb-text-md) * var(--hb-leading-prose));
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: reduce) {

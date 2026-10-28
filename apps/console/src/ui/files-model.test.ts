@@ -1,6 +1,6 @@
 import { parentPath } from "@harbour/ui";
 import { describe, expect, it } from "vitest";
-import { ancestorsOf, entryFor, MAX_CONTENT_BYTES, shouldRead, textOf, viewOf } from "./files-model.ts";
+import { ancestorsOf, entryFor, isImageType, MAX_CONTENT_BYTES, shouldRead, textOf, viewOf } from "./files-model.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const file = (text: string | Uint8Array, contentType = "text/plain; charset=utf-8") => ({
@@ -44,12 +44,31 @@ describe("what the file browser shows", () => {
 				state: { status: "binary", size: 4, contentType: "application/octet-stream" },
 			},
 		);
-		const logo = { path: "assets/logo.png", kind: "file" as const, size: 2048 };
-		expect(viewOf("assets/logo.png", logo, undefined).state).toEqual({ status: "binary", size: 2048 });
+		const release = { path: "release.zip", kind: "file" as const, size: 2048 };
+		expect(viewOf("release.zip", release, undefined).state).toEqual({ status: "binary", size: 2048 });
+	});
+
+	it("shows an image from the object URL the host made of its bytes, loading until there is one", () => {
+		const png = file(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), "image/png");
+		expect(viewOf("notes/chart.png", undefined, png, "blob:chart")).toEqual({
+			viewer: "file",
+			state: { status: "image", src: "blob:chart", size: 4, contentType: "image/png" },
+		});
+		expect(viewOf("notes/chart.png", undefined, png)).toEqual({ viewer: "file", state: { status: "loading" } });
+		expect(viewOf("notes/chart.png", undefined, undefined)).toEqual({ viewer: "file", state: { status: "loading" } });
+		// SVG comes back as text, so it is shown as its source, never rendered.
+		expect(viewOf("logo.svg", undefined, file("<svg/>"), "blob:ignored").state).toMatchObject({ status: "ready" });
+		expect(isImageType("image/jpeg")).toBe(true);
+		expect(isImageType("IMAGE/PNG; charset=binary")).toBe(true);
+		expect(isImageType("text/plain; charset=utf-8")).toBe(false);
+		expect(isImageType("image/svg+xml")).toBe(false);
 	});
 
 	it("doesn't fetch a file it can't show", () => {
-		expect(shouldRead("assets/logo.png", undefined)).toBe(false);
+		expect(shouldRead("assets/logo.png", undefined)).toBe(true);
+		expect(shouldRead("assets/logo.png", { path: "assets/logo.png", kind: "file", size: MAX_CONTENT_BYTES + 1 })).toBe(
+			false,
+		);
 		expect(shouldRead("release.zip", undefined)).toBe(false);
 		expect(shouldRead("dump.csv", { path: "dump.csv", kind: "file", size: MAX_CONTENT_BYTES + 1 })).toBe(false);
 		expect(shouldRead("dump.csv", { path: "dump.csv", kind: "file", size: 10 })).toBe(true);

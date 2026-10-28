@@ -19,13 +19,20 @@ export type FileView =
 	| { readonly viewer: "file"; readonly state: FileViewState };
 
 /**
- * Whether to read a file at all. A file whose name says it isn't text (an image, an archive) or that the listing says
- * is over the API's limit is shown as such without fetching its bytes.
+ * Whether to read a file at all. A file whose name says it is neither text nor an image (an archive, a binary) or that
+ * the listing says is over the API's limit is shown as such without fetching its bytes.
  */
 export function shouldRead(path: string, entry: WorkspaceEntry | undefined): boolean {
-	const kind = fileKind(path);
-	if (kind === "image" || kind === "binary") return false;
+	if (fileKind(path) === "binary") return false;
 	return entry === undefined || entry.size <= MAX_CONTENT_BYTES;
+}
+
+/** Image types every browser the console supports decodes. SVG isn't one: the read API serves it as text. */
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+
+/** Whether the content route's type is an image the viewer shows as one. */
+export function isImageType(contentType: string): boolean {
+	return IMAGE_TYPES.has(mediaType(contentType).toLowerCase());
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -40,8 +47,16 @@ export function textOf(content: Uint8Array): string | undefined {
 	}
 }
 
-/** What the viewer shows for `path`, from its listing entry (when listed) and the read, if one was made. */
-export function viewOf(path: string, entry: WorkspaceEntry | undefined, read: FileRead | undefined): FileView {
+/**
+ * What the viewer shows for `path`, from its listing entry (when listed) and the read, if one was made. An image read
+ * is shown from `imageSrc`, the object URL the host made from its bytes; until there is one it is still loading.
+ */
+export function viewOf(
+	path: string,
+	entry: WorkspaceEntry | undefined,
+	read: FileRead | undefined,
+	imageSrc?: string,
+): FileView {
 	const note = isNote(path);
 	const size = entry?.size ?? 0;
 	if (read === undefined) {
@@ -60,6 +75,19 @@ export function viewOf(path: string, entry: WorkspaceEntry | undefined, read: Fi
 				: { viewer: "file", state: { status: "error", message: read.message } };
 		case "ready": {
 			const { content, contentType, version } = read.file;
+			if (isImageType(contentType)) {
+				return imageSrc === undefined
+					? { viewer: "file", state: { status: "loading" } }
+					: {
+							viewer: "file",
+							state: {
+								status: "image",
+								src: imageSrc,
+								size: content.byteLength,
+								contentType: mediaType(contentType),
+							},
+						};
+			}
 			const text = textOf(content);
 			if (text === undefined) {
 				return {
@@ -74,7 +102,7 @@ export function viewOf(path: string, entry: WorkspaceEntry | undefined, read: Fi
 }
 
 /** "image/png" from "image/png; charset=binary". */
-const mediaType = (contentType: string): string => contentType.split(";")[0]?.trim() ?? contentType;
+export const mediaType = (contentType: string): string => contentType.split(";")[0]?.trim() ?? contentType;
 
 /** The listing entry for `path`, from its directory's listing, when that has been read. */
 export function entryFor(entries: readonly WorkspaceEntry[] | undefined, path: string): WorkspaceEntry | undefined {

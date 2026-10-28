@@ -1,0 +1,479 @@
+{
+	"backend": "in-process",
+	"startedAt": "2026-10-28T16:19:49.697Z",
+	"from": "/healthz",
+	"warmup": {
+		"status": 200,
+		"wall": 19429.600000000093,
+		"server": 3922,
+		"session": 1648,
+		"isolate": 2274,
+		"exit": 0,
+		"listed": 68
+	},
+	"runs": [
+		{
+			"status": 200,
+			"wall": 9506.700000000186,
+			"server": 1950,
+			"session": 392,
+			"isolate": 1558,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2974.1999999997206,
+			"server": 1989,
+			"session": 398,
+			"isolate": 1591,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3117.100000000093,
+			"server": 1986,
+			"session": 438,
+			"isolate": 1548,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2856.2999999998137,
+			"server": 1888,
+			"session": 396,
+			"isolate": 1492,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2854,
+			"server": 1869,
+			"session": 372,
+			"isolate": 1497,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2939.5,
+			"server": 1958,
+			"session": 388,
+			"isolate": 1570,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2894.4000000003725,
+			"server": 1888,
+			"session": 375,
+			"isolate": 1513,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2929.4000000003725,
+			"server": 1913,
+			"session": 436,
+			"isolate": 1477,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3027,
+			"server": 1996,
+			"session": 386,
+			"isolate": 1610,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3113,
+			"server": 1937,
+			"session": 408,
+			"isolate": 1529,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2989.3000000002794,
+			"server": 1976,
+			"session": 392,
+			"isolate": 1584,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2815.2999999998137,
+			"server": 1834,
+			"session": 375,
+			"isolate": 1459,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2854.399999999907,
+			"server": 1870,
+			"session": 372,
+			"isolate": 1498,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3050.3000000002794,
+			"server": 1981,
+			"session": 391,
+			"isolate": 1590,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2979.5,
+			"server": 1888,
+			"session": 384,
+			"isolate": 1504,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2959.899999999907,
+			"server": 1908,
+			"session": 436,
+			"isolate": 1472,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3302.100000000093,
+			"server": 2026,
+			"session": 414,
+			"isolate": 1612,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3099.7999999998137,
+			"server": 2065,
+			"session": 395,
+			"isolate": 1670,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3007.600000000093,
+			"server": 2025,
+			"session": 425,
+			"isolate": 1600,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3019.899999999907,
+			"server": 1976,
+			"session": 414,
+			"isolate": 1562,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3276.2999999998137,
+			"server": 2006,
+			"session": 440,
+			"isolate": 1566,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3545.4000000003725,
+			"server": 2028,
+			"session": 393,
+			"isolate": 1635,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3384.399999999907,
+			"server": 1929,
+			"session": 405,
+			"isolate": 1524,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2871.2999999998137,
+			"server": 1907,
+			"session": 421,
+			"isolate": 1486,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3454,
+			"server": 2411,
+			"session": 392,
+			"isolate": 2019,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2904,
+			"server": 1925,
+			"session": 382,
+			"isolate": 1543,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2882.899999999907,
+			"server": 1888,
+			"session": 385,
+			"isolate": 1503,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3188.8000000002794,
+			"server": 2150,
+			"session": 388,
+			"isolate": 1762,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3103.2999999998137,
+			"server": 1925,
+			"session": 427,
+			"isolate": 1498,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3099.399999999907,
+			"server": 2046,
+			"session": 396,
+			"isolate": 1650,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2957,
+			"server": 1877,
+			"session": 396,
+			"isolate": 1481,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3051.4000000003725,
+			"server": 2149,
+			"session": 606,
+			"isolate": 1543,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2977.1999999997206,
+			"server": 1954,
+			"session": 404,
+			"isolate": 1550,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2829.3000000002794,
+			"server": 1851,
+			"session": 377,
+			"isolate": 1474,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3358.5,
+			"server": 2038,
+			"session": 399,
+			"isolate": 1639,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3134.1999999997206,
+			"server": 2028,
+			"session": 383,
+			"isolate": 1645,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2890.5,
+			"server": 1867,
+			"session": 396,
+			"isolate": 1471,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3143.2000000001863,
+			"server": 2007,
+			"session": 389,
+			"isolate": 1618,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2976.6999999997206,
+			"server": 1980,
+			"session": 408,
+			"isolate": 1572,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2866,
+			"server": 1883,
+			"session": 417,
+			"isolate": 1466,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2900.4000000003725,
+			"server": 1869,
+			"session": 368,
+			"isolate": 1501,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2973.1999999997206,
+			"server": 1923,
+			"session": 404,
+			"isolate": 1519,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3015.5,
+			"server": 1932,
+			"session": 399,
+			"isolate": 1533,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3013.2000000001863,
+			"server": 1917,
+			"session": 396,
+			"isolate": 1521,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3144.600000000093,
+			"server": 1996,
+			"session": 449,
+			"isolate": 1547,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2958.899999999907,
+			"server": 1883,
+			"session": 380,
+			"isolate": 1503,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3161.600000000093,
+			"server": 2031,
+			"session": 375,
+			"isolate": 1656,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3270,
+			"server": 1961,
+			"session": 394,
+			"isolate": 1567,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 3120,
+			"server": 1909,
+			"session": 384,
+			"isolate": 1525,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2942.5999999996275,
+			"server": 1963,
+			"session": 442,
+			"isolate": 1521,
+			"exit": 0,
+			"listed": 68
+		}
+	],
+	"summary": {
+		"backend": "in-process",
+		"ok": 50,
+		"wallP50": 3007.600000000093,
+		"wallP95": 3454,
+		"serverP50": 1950,
+		"serverP95": 2149,
+		"sessionP50": 396,
+		"sessionP95": 442,
+		"isolateP50": 1543,
+		"isolateP95": 1670
+	},
+	"endedAt": "2026-10-28T16:22:48.931Z"
+}

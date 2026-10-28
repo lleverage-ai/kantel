@@ -125,6 +125,94 @@ function WorkingDemo() {
 
 export const Working: Story = () => <WorkingDemo />;
 
+/** A message just sent: the session works on the turn, but nothing of the answer has arrived yet. */
+function JustSentDemo() {
+	const [items] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("js", "Now run the full suite and open a PR."), at: Date.now() - 2_000 },
+	]);
+	return (
+		<Sheet
+			title="Transcript just sent"
+			intro="The turn has started (working) and no item of the answer has arrived. The transcript ends with the working row at once, so the reader sees the agent has the message before its first token."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} working />
+			</div>
+		</Sheet>
+	);
+}
+
+export const JustSent: Story = () => <JustSentDemo />;
+
+/** Between steps of a turn: a call has finished, the next has not started, so only the turn's working row moves. */
+function WorkingBetweenStepsDemo() {
+	const [items] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("bs", "Now run the full suite and open a PR."), at: Date.now() - 41_000 },
+		assistant("bs-a", "I'll run the whole suite first.", { secondsAgo: 40 }),
+		tool("bs-t", "bash", "Ran pnpm test", { args: { command: "pnpm test" }, seconds: 31 }),
+	]);
+	return (
+		<Sheet
+			title="Transcript working between steps"
+			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The working row stays at the end, counting from the prompt."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} working />
+			</div>
+		</Sheet>
+	);
+}
+
+export const WorkingBetweenSteps: Story = () => <WorkingBetweenStepsDemo />;
+
+const thought =
+	"The user wants the full suite and a PR. The billing fix touched the retry path, so the idempotency tests are the ones most likely to fail. I should run everything rather than only the billing package, because the worker shares the queue client. If the suite passes I will push the branch and open the PR with a description of the double charge and how the key is reused on retry."
+		.split(" ")
+		.filter((word) => word !== "");
+
+/** A thought streams a word every 80ms, then the answer starts and the thought folds behind its disclosure. */
+function ThinkingDemo() {
+	const [items, setItems] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("tu", "Now run the full suite and open a PR."), at: Date.now() - 4_000 },
+		assistant("ta", "", { streaming: true, secondsAgo: 1 }),
+	]);
+	useEffect(() => {
+		let tick = 0;
+		const timer = setInterval(() => {
+			tick++;
+			setItems((previous) => {
+				const last = previous.at(-1);
+				if (last?.kind !== "assistant") return previous;
+				const next =
+					tick <= thought.length
+						? { ...last, thinking: `${last.thinking ?? ""}${tick === 1 ? "" : " "}${thought[tick - 1]}` }
+						: {
+								...last,
+								text: `${last.text}${last.text === "" ? "" : " "}${streamed[tick - thought.length - 1] ?? ""}`,
+							};
+				return [...previous.slice(0, -1), next];
+			});
+			if (tick >= thought.length + 40) clearInterval(timer);
+		}, 80);
+		return () => clearInterval(timer);
+	}, []);
+	return (
+		<Sheet
+			title="Transcript thinking"
+			intro="A thought streams live, its newest four lines under Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} working />
+			</div>
+		</Sheet>
+	);
+}
+
+export const Thinking: Story = () => <ThinkingDemo />;
+
 const failed: TranscriptItem[] = [
 	user("eu", "Run the billing migration against staging.", 120),
 	tool("et1", "read", "Read migrations/0042_idempotency.sql", { args: { path: "migrations/0042_idempotency.sql" } }),
@@ -217,12 +305,25 @@ export const LongContent: Story = () => (
 	</Sheet>
 );
 
-const history = longTranscript(60);
+// Paging back through a long session, as the console does over the session API's history route: the latest page
+// first, then a page before the oldest item shown each time the reader nears the top.
+const history = longTranscript(500);
 const PAGE = 40;
+const noop = () => {};
 
-/** Starts on the last page; scrolling near the top loads the page before it, keeping your place. */
-function OlderPagesDemo() {
-	const [start, setStart] = useState(history.length - PAGE);
+/** Starts on the last page; scrolling near the top loads the page before it after `delayMs`, keeping your place. */
+function PagingDemo({
+	items,
+	title,
+	intro,
+	delayMs = 700,
+}: {
+	items: readonly TranscriptItem[];
+	title: string;
+	intro: string;
+	delayMs?: number;
+}) {
+	const [start, setStart] = useState(Math.max(0, items.length - PAGE));
 	const [loadingOlder, setLoadingOlder] = useState(false);
 	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 	useEffect(() => () => clearTimeout(timer.current), []);
@@ -231,18 +332,15 @@ function OlderPagesDemo() {
 		setLoadingOlder(true);
 		timer.current = setTimeout(() => {
 			timer.current = undefined;
-			setStart((value) => Math.max(0, value - PAGE));
 			setLoadingOlder(false);
-		}, 700);
-	}, []);
+			setStart((value) => Math.max(0, value - PAGE));
+		}, delayMs);
+	}, [delayMs]);
 	return (
-		<Sheet
-			title="Transcript paging"
-			intro="Not one of the required states: the older-history path. Scroll up to load the previous page; the visible rows stay where they are."
-		>
+		<Sheet title={title} intro={intro}>
 			<div className="hb-story-transcript-frame">
 				<Transcript
-					items={history.slice(start)}
+					items={items.slice(start)}
 					hasOlder={start > 0}
 					loadingOlder={loadingOlder}
 					onLoadOlder={onLoadOlder}
@@ -252,7 +350,50 @@ function OlderPagesDemo() {
 	);
 }
 
-export const OlderPages: Story = () => <OlderPagesDemo />;
+export const OlderPages: Story = () => (
+	<PagingDemo
+		items={history}
+		title="Transcript paging"
+		intro="A session of 500 turns (2,000 items) opens on its latest 40 items. Scroll up: each page before the oldest shown loads as you near the top, and the rows you are reading stay where they are. At the very top it says where the session starts."
+	/>
+);
+
+export const OlderPagesMobile: Story = () => (
+	<PagingDemo items={history} title="Transcript paging at 420px" intro="The same long session on a phone." />
+);
+OlderPagesMobile.meta = { width: 420 };
+
+const lastPage = history.slice(-PAGE);
+
+export const OlderPagesLoading: Story = () => (
+	<Sheet
+		title="Transcript loading an earlier page"
+		intro="The reader has scrolled to the top of what is loaded; the page before it is on its way."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={lastPage} hasOlder loadingOlder onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
+
+export const OlderPagesError: Story = () => (
+	<Sheet title="Transcript after a failed page" intro="Loading the page before these failed; Try again asks for it.">
+		<div className="hb-story-transcript-frame">
+			<Transcript items={lastPage} hasOlder olderError="Couldn't load earlier messages." onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
+
+export const StartOfSession: Story = () => (
+	<Sheet
+		title="Transcript at the start of the session"
+		intro="A paged transcript with every item loaded: nothing older, so it begins with where the session starts."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={longTranscript(2)} onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
 
 export const Mobile: Story = () => (
 	<Sheet title="Transcript at 420px" intro="The default session on a phone.">

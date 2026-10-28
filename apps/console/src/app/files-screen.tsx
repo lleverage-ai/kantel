@@ -12,7 +12,7 @@ import {
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient, WorkspaceFiles } from "../api/client.ts";
-import { ancestorsOf, entryFor, type FileRead, shouldRead, viewOf } from "../ui/files-model.ts";
+import { ancestorsOf, entryFor, type FileRead, isImageType, mediaType, shouldRead, viewOf } from "../ui/files-model.ts";
 import { filesPath, navigate, sessionPath } from "./router.ts";
 
 // A session's workspace, read-only: the file tree beside the open file on a desktop, one at a time on a phone. Every
@@ -101,6 +101,24 @@ function useFileRead(files: WorkspaceFiles | undefined, path: string | undefined
 	return state !== undefined && state.path === path && read ? state.read : undefined;
 }
 
+/**
+ * An object URL for an image the content route returned, made from the bytes already read (so the console's own
+ * credentials and recorded sources work alike), and revoked when the file changes or the screen goes.
+ */
+function useImageUrl(read: FileRead | undefined): string | undefined {
+	const file = read?.status === "ready" && isImageType(read.file.contentType) ? read.file : undefined;
+	const [made, setMade] = useState<{ readonly file: object; readonly url: string }>();
+	useEffect(() => {
+		if (file === undefined) return;
+		const url = URL.createObjectURL(
+			new Blob([file.content as Uint8Array<ArrayBuffer>], { type: mediaType(file.contentType) }),
+		);
+		setMade({ file, url });
+		return () => URL.revokeObjectURL(url);
+	}, [file]);
+	return made !== undefined && made.file === file ? made.url : undefined;
+}
+
 export function FilesScreen({
 	client,
 	projectId,
@@ -152,7 +170,11 @@ export function FilesScreen({
 	const entry =
 		path === undefined ? undefined : entryFor(listing?.status === "ready" ? listing.entries : undefined, path);
 	const read = useFileRead(files, path, path !== undefined && shouldRead(path, entry));
-	const view = useMemo(() => (path === undefined ? undefined : viewOf(path, entry, read)), [path, entry, read]);
+	const imageSrc = useImageUrl(read);
+	const view = useMemo(
+		() => (path === undefined ? undefined : viewOf(path, entry, read, imageSrc)),
+		[path, entry, read, imageSrc],
+	);
 
 	const toSession = () => navigate(sessionPath(projectId, sessionId));
 	const toTree = () => navigate(filesPath(projectId, sessionId));

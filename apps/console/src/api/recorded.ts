@@ -21,6 +21,8 @@ import type { ConsoleActor, ConsoleClient, SessionControl, SessionListState } fr
 import { ApiError } from "./http.ts";
 
 export const RECORDED_REASON = "This is a recorded session, so it can't be steered.";
+/** Why New session is dimmed on recorded sessions: there is no host to start one on. */
+export const RECORDED_START_REASON = "These are recorded sessions. Open the console on a Harbour to start one.";
 
 /** Until identity (M1-BE7): everyone is the same stand-in person. */
 export const STUB_ACTOR: ConsoleActor = { id: "user-stub", name: "Tom Davies", stubbed: true };
@@ -226,6 +228,9 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 		},
 
 		control: (): SessionControl => ({ live: false, reason: RECORDED_REASON }),
+		mayStart: () => ({ allowed: false, reason: RECORDED_START_REASON }),
+		startOptions: () => Promise.reject(new Error(RECORDED_START_REASON)),
+		create: () => Promise.reject(new Error(RECORDED_START_REASON)),
 		prompt: refuse,
 		steer: refuse,
 		followUp: refuse,

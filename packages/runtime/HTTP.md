@@ -42,13 +42,16 @@ Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 M
 | `GET /sessions/:id` | `directory.get` | `SessionRecord` |
 | `GET /sessions/:id/children` | `directory.children` | `{ items }` |
 | `GET /sessions/:id/snapshot` | `runtime.snapshot` | `SessionSnapshot` |
-| `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId? }`) | 202 `Submission` |
+| `GET /sessions/:id/history?cursor&before&limit` | `history.history`, when the API has `history` | `SessionHistoryPage` |
+| `GET /sessions/:id/models` | `models.modelState`, when the API has `models` | `SessionModelState` |
+| `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId?, model?, thinking? }`) | 202 `Submission` |
 | `POST /sessions/:id/abort` | `runtime.abort` (body `{ reason? }`) | 204 |
 | `POST /sessions/:id/close` | `runtime.close` | 204 |
 | `GET /sessions/:id/result?submission=<id>&timeoutMs=` | `runtime.wait` | `RunResult`, or 202 `{ status: "pending" }` |
 | `GET /sessions/:id/events?after=<cursor>` | `runtime.watch` | `text/event-stream` |
 | `PUT /profiles/:agentId` | `profiles.put` (body `AgentProfile`) | `AgentProfile` |
 | `GET /profiles/:agentId`, `GET /profiles?limit&cursor` | `profiles.get`, `profiles.list` | `AgentProfile`, `Page` |
+| `GET /profiles/:agentId/models?projectId=` | `models.startModels`, when the API has `models` | `SessionModelState` |
 | `PUT /hosts/:hostId` | `hostTools.register` (body below) | `{ hostId, registration, tools, secret? }` |
 | `GET /hosts/:hostId/tools` | `hostTools.list` | `{ items }` |
 | `DELETE /hosts/:hostId?registration=<id>` | closes the registration | 204 |
@@ -57,6 +60,19 @@ Errors are `{ error: { code, message, details? } }` with the HarbourError code: 
 `not_found` 404, `conflict` and `aborted` 409, `expired` 410, `refused` 422, `exhausted` 429, `not_supported` 501,
 `unavailable` 503. Any other error is a bare 500 `unavailable`, never its message. The client turns each back into a
 `HarbourError` with the same code.
+
+`history` is the transcript in pages, newest first (`SessionHistory`, proposed). With no query it is the latest
+`limit` items (default 50, at most 200); `?cursor=` takes a page's `nextCursor` and `?before=<item id>` pages back
+from an item a client already holds, such as a snapshot's first. A cursor names an item, not an offset, so pages
+behind it stay the same while new turns arrive. The API serves it only when it is given `history` (the runtime's);
+without it the route is `not_found`.
+
+`models` is what a client's model and thinking pickers show (`SessionModels`, proposed): the models the session may
+name, what it runs with now (`selected`) and what its agent profile names (`defaults`). On a profile it is what a new
+session in `projectId` would get, so a New session screen can offer the choice; the first prompt carries it. A prompt's
+`model` and `thinking` stay with the session for its later runs (and from a steer's next model call); an unknown model
+or level is `invalid`, and a level the model lacks runs as its nearest one. Without `models` both routes are
+`not_found` and prompts still take the fields.
 
 `result` waits up to `timeoutMs` (default 25 s, at most 120 s) and answers 202 while the run goes on; the client polls
 until it ends. Submission IDs hold a `/`, which is why they go in the query.
@@ -70,6 +86,16 @@ then a snapshot or the missed deltas) the server sends one `ready` event, which 
 comment every 15 s keeps idle connections open. A refused or unknown session is a JSON error, not a stream.
 `EventSource` cannot send an `Authorization` header, so a browser reads the stream with `fetch` (and `readSse`) or
 authenticates with a cookie.
+
+The same route upgrades to a WebSocket when the request asks (`Upgrade: websocket`) and the API was given
+`acceptWebSocket` (`ws.ts`; the Cloudflare gateway's Durable Object gives it a `WebSocketPair`). The watch opens before
+the upgrade is accepted, so a refused or unknown session is the same JSON error and no socket opens. Each message is
+a JSON array of the frames the watch gave in one turn of the event loop (hello and the snapshot arrive together); an
+empty array every 15 s keeps the socket open. Resume by reconnecting with `?after=<cursor>`; the client sends
+nothing. Workers negotiate `permessage-deflate` with the browser by themselves, so the frames travel compressed, the
+window shared across messages. A browser can't put an `Authorization` header on a socket either: it authenticates with
+a cookie (behind Access), and a client holding a bearer reads the event stream. Without `acceptWebSocket` an upgrade
+gets the event stream, which a WebSocket client takes as a failed handshake.
 
 ## Host tools over signed callbacks
 

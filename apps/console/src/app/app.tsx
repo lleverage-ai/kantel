@@ -1,14 +1,30 @@
-import { AuditView, Badge, Button, EmptyState, ListRow, Notice, SessionList, Spinner } from "@harbour/ui";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
-import type { ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
-import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
+import {
+	ApiKeysPage,
+	Badge,
+	Button,
+	EmptyState,
+	ListRow,
+	NewSessionRow,
+	Notice,
+	SessionList,
+	SignedInAs,
+	Spinner,
+} from "@harbour/ui";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
+import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "../api/oversight.ts";
+import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
+import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
+import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
 	filesPath,
 	interceptLinks,
+	KEYS_PATH,
 	navigate,
+	newSessionPath,
 	parseRoute,
 	projectPath,
 	type Route,
@@ -77,6 +93,28 @@ function useSessionProject(client: ConsoleClient, sessionId: string | undefined)
 	return found !== undefined && found.sessionId === sessionId ? found.projectId : "pending";
 }
 
+/** Who is signed in, at the sidebar's foot, with Sign out when the console signed them in itself. */
+function Actor({ actor }: { actor: ConsoleActor }) {
+	const [signingOut, setSigningOut] = useState(false);
+	const { signOut } = actor;
+	return (
+		<SignedInAs
+			name={actor.name}
+			{...(actor.email === undefined ? {} : { email: actor.email })}
+			{...(actor.stubbed ? { badge: <Badge>Sign-in stubbed</Badge> } : {})}
+			{...(signOut === undefined
+				? {}
+				: {
+						onSignOut: () => {
+							setSigningOut(true);
+							void signOut().finally(() => location.reload());
+						},
+					})}
+			signingOut={signingOut}
+		/>
+	);
+}
+
 function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]; current: string | undefined }) {
 	return (
 		<nav className="shell-projects" aria-label="Projects">
@@ -92,9 +130,19 @@ function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]
 	);
 }
 
-/** The organisation's pages: the vault and the audit log, each shown when the console has a seam for it. */
-function OrganisationNav({ route, vault, audit }: { route: Route; vault: boolean; audit: boolean }) {
-	if (!vault && !audit) return null;
+/** The organisation's pages: the vault, the audit log and API keys, each shown when the console has a seam for it. */
+function OrganisationNav({
+	route,
+	vault,
+	audit,
+	keys,
+}: {
+	route: Route;
+	vault: boolean;
+	audit: boolean;
+	keys: boolean;
+}) {
+	if (!vault && !audit && !keys) return null;
 	return (
 		<nav className="shell-organisation" aria-label="Organisation">
 			<h2 className="shell-heading">Organisation</h2>
@@ -113,6 +161,11 @@ function OrganisationNav({ route, vault, audit }: { route: Route; vault: boolean
 						<ListRow title="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
 					</li>
 				) : null}
+				{keys ? (
+					<li>
+						<ListRow title="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
+					</li>
+				) : null}
 			</ul>
 		</nav>
 	);
@@ -122,6 +175,7 @@ export function App({
 	client,
 	vault,
 	audit,
+	keys,
 	onOpen,
 }: {
 	client: ConsoleClient;
@@ -129,6 +183,8 @@ export function App({
 	vault?: ConsoleVault;
 	/** The audit view's seam; without it there's no Audit log in the sidebar. */
 	audit?: ConsoleAudit;
+	/** The API keys page's seam; without it there's no API keys in the sidebar. */
+	keys?: ConsoleKeys;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -137,10 +193,14 @@ export function App({
 	const { projects, error: projectsError } = useProjects(client);
 
 	const projectId =
-		route.name === "project" || route.name === "session" || route.name === "files" ? route.projectId : undefined;
+		route.name === "project" || route.name === "session" || route.name === "files" || route.name === "new-session"
+			? route.projectId
+			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
+	const [live, setLive] = useState<LiveSummary>();
+	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
 	const sessionProject = useSessionProject(client, sessionId);
 
 	// In-app links navigate without reloading the page.
@@ -176,10 +236,12 @@ export function App({
 	// The organisation's pages, when the console has their seams; without one the path is not found.
 	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
-	const organisationPage = vaultRoute || auditRoute;
+	const keysRoute = keys !== undefined && route.name === "keys";
+	const organisationPage = vaultRoute || auditRoute || keysRoute;
 	const missing =
 		route.name === "not-found" ||
-		((route.name === "vault" || route.name === "vault-request" || route.name === "audit") && !organisationPage);
+		((route.name === "vault" || route.name === "vault-request" || route.name === "audit" || route.name === "keys") &&
+			!organisationPage);
 	const unknownSession =
 		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
 
@@ -215,12 +277,17 @@ export function App({
 		main = (
 			<div className="shell-page">
 				{pageBar}
-				<AuditView
-					source={audit.source}
-					directory={audit.directory}
-					links={audit.links}
-					choices={audit.choices}
-					{...(audit.pollMs === undefined ? {} : { pollMs: audit.pollMs })}
+				<AuditScreen audit={audit} />
+			</div>
+		);
+	} else if (keysRoute && keys !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<ApiKeysPage
+					api={keys.api}
+					roles={keys.roles}
+					projects={projects.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
 				/>
 			</div>
 		);
@@ -239,6 +306,15 @@ export function App({
 					It may have been in another project.
 				</EmptyState>
 			</div>
+		);
+	} else if (route.name === "new-session") {
+		main = (
+			<NewSessionScreen
+				client={client}
+				projectId={route.projectId}
+				projects={projects}
+				{...(narrow ? { onBack: back } : {})}
+			/>
 		);
 	} else if (route.name === "files") {
 		main = (
@@ -262,33 +338,46 @@ export function App({
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
 				onOpen={onOpen}
+				onLive={setLive}
 			/>
 		);
 	} else {
 		main = (
 			<div className="shell-empty">
-				<EmptyState title="No session open">Pick a session from the list to watch it.</EmptyState>
+				{project !== undefined && client.mayStart(project.id).allowed ? (
+					<EmptyState
+						title="No session open"
+						action={<ListRow title="New session" href={newSessionPath(project.id)} density="compact" />}
+					>
+						Pick a session from the list to watch it, or start a new one.
+					</EmptyState>
+				) : (
+					<EmptyState title="No session open">Pick a session from the list to watch it.</EmptyState>
+				)}
 			</div>
 		);
 	}
 
-	const pane = sessionId !== undefined || missing || unknownProject || organisationPage ? "main" : "list";
+	const newSession = route.name === "new-session" && project !== undefined;
+	const pane = sessionId !== undefined || newSession || missing || unknownProject || organisationPage ? "main" : "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
 	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
 	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
-	// The vault page and the audit log bring their own headings.
+	// The vault page, the audit log and API keys bring their own headings.
 	const title = organisationPage
 		? undefined
 		: missing || unknownProject
 			? "Page not found"
 			: unknownSession
 				? "Session not found"
-				: sessionId === undefined
+				: sessionId === undefined && !newSession
 					? `${project?.name ?? "Harbour"} sessions`
 					: undefined;
 	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
+	const start = project === undefined ? undefined : client.mayStart(project.id);
+	const startBlocked = start === undefined || start.allowed ? {} : { disabledReason: start.reason };
 
 	return (
 		<div className="shell hb-app" data-pane={pane}>
@@ -298,14 +387,26 @@ export function App({
 					<span className="shell-wordmark">Harbour</span>
 				</div>
 				<ProjectNav projects={projects} current={projectId} />
-				<OrganisationNav route={route} vault={vault !== undefined} audit={audit !== undefined} />
+				<OrganisationNav
+					route={route}
+					vault={vault !== undefined}
+					audit={audit !== undefined}
+					keys={keys !== undefined}
+				/>
 				{/* An organisation page belongs to no project, so there's no project's sessions to list beside it. */}
 				<div className="shell-sessions">
 					{organisationPage ? null : (
 						<>
 							<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
+							{project === undefined ? null : (
+								<NewSessionRow
+									href={newSessionPath(project.id)}
+									selected={route.name === "new-session"}
+									{...startBlocked}
+								/>
+							)}
 							<SessionList
-								sessions={list.sessions}
+								sessions={sessions}
 								selectedId={sessionId}
 								hrefFor={hrefFor}
 								loading={list.loading}
@@ -320,8 +421,7 @@ export function App({
 					)}
 				</div>
 				<div className="shell-actor">
-					<span className="shell-actor-name">{client.actor.name}</span>
-					{client.actor.stubbed ? <Badge>Sign-in stubbed</Badge> : null}
+					<Actor actor={client.actor} />
 				</div>
 			</div>
 			{listIsPage ? null : (

@@ -3,6 +3,7 @@
 // before there is a host. Every recorded session shares it. Nothing here is real work: the files are stand-ins.
 
 import type { WorkspaceEntry } from "@harbour/ui";
+import { retriesChartBytes } from "@harbour/ui/workspace/image-fixture";
 import type { WorkspaceFile, WorkspaceFiles, WorkspaceListing } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
 
@@ -116,7 +117,7 @@ const runLog = Array.from(
 		`02:${String(Math.floor(line / 120) % 60).padStart(2, "0")}:${String(line % 60).padStart(2, "0")} sync account ${1000 + (line % 400)}: ${line % 97 === 0 ? "503, retrying" : "ok"}`,
 ).join("\n");
 
-/** The first bytes of a PNG: enough to be a file that isn't text. */
+/** The first bytes of a PNG and no more: an image the browser can't decode, which the viewer says it can't show. */
 const logo = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]);
 
 type Stored =
@@ -136,6 +137,7 @@ const FILES: ReadonlyMap<string, Stored> = new Map<string, Stored>([
 	["notes/plan.md", text(plan, "text/markdown; charset=utf-8", 4)],
 	["notes/handback.md", text(handback, "text/markdown; charset=utf-8", 6)],
 	["notes/empty.md", text("", "text/markdown; charset=utf-8", 2)],
+	["notes/retries-per-night.png", { content: retriesChartBytes(), contentType: "image/png", version: 6 }],
 	["src/billing/retry.ts", text(retry, "text/plain; charset=utf-8", 3)],
 	["src/billing/retry.test.ts", text(retryTest, "text/plain; charset=utf-8", 3)],
 	["logs/sync-2026-10-27.log", text(runLog, "text/plain; charset=utf-8", 5)],

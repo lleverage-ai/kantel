@@ -5,13 +5,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { createSqlAuditStore } from "@harbour/audit/sql";
 import { type CallContext, isHarbourError } from "@harbour/contracts";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createEgressDecisionClient } from "@harbour/vault/egress-api";
-import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 import { deployConfig, deployValues } from "../scripts/deploy-config.ts";
@@ -25,38 +24,12 @@ import {
 	type VaultVars,
 	vaultAuditSink,
 } from "../src/vault.ts";
+import { objectStorage } from "./object-storage.ts";
 
 const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 const MODEL_GATEWAY_TOKEN = "model-gateway-token-0123456789";
 const human: CallContext = { actor: { kind: "human", userId: "admin-1" }, organisationId: "org-a" };
 const BASE = "https://harbour.test";
-
-/** A Durable Object's `ctx.storage.sql` and `transactionSync` over `node:sqlite`. */
-function objectStorage(db: DatabaseSync): { sql: SqlStorageLike; transactionSync<T>(work: () => T): T } {
-	return {
-		sql: {
-			exec<T extends Record<string, SqlValue>>(query: string, ...bindings: SqlValue[]) {
-				const statement = db.prepare(query);
-				const values = bindings.map((b) => (b instanceof ArrayBuffer ? new Uint8Array(b) : b)) as SQLInputValue[];
-				const reads = statement.columns().length > 0;
-				const rows = reads ? (statement.all(...values) as T[]) : [];
-				const rowsWritten = reads ? 0 : Number(statement.run(...values).changes);
-				return { toArray: () => rows, one: () => rows[0]!, rowsWritten };
-			},
-		},
-		transactionSync<T>(work: () => T): T {
-			db.exec("BEGIN IMMEDIATE");
-			try {
-				const result = work();
-				db.exec("COMMIT");
-				return result;
-			} catch (error) {
-				db.exec("ROLLBACK");
-				throw error;
-			}
-		},
-	};
-}
 
 function vaultOver(objectDb: DatabaseSync, auditDb: DatabaseSync, vars: VaultVars) {
 	const storage = objectStorage(objectDb);
@@ -157,23 +130,46 @@ describe("the VaultDO's core", () => {
 				HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "",
 			}),
 		).toEqual({ "model-gateway": "model-token-0123456789" });
-		// The deploy writes exactly the secrets the vault reads.
-		expect([...VAULT_SECRETS].sort()).toEqual(["HARBOUR_VAULT_KEY", ...Object.values(COMPONENT_TOKENS)].sort());
+		// The deploy writes exactly the secrets the vault reads: its key, the components' keys and CPA's key.
+		expect([...VAULT_SECRETS].sort()).toEqual(
+			["HARBOUR_VAULT_KEY", "HARBOUR_CPA_API_KEY", ...Object.values(COMPONENT_TOKENS)].sort(),
+		);
 	});
 });
 
 describe("routing", () => {
-	function namespace(name: string, seen: string[]) {
+	function namespace(name: string, seen: string[], hints: (string | undefined)[] = []) {
 		return {
 			idFromName: (objectName: string) => `${name}:${objectName}`,
-			get: (id: string) => ({
-				fetch: async (request: Request) => {
-					seen.push(`${id} ${new URL(request.url).pathname}`);
-					return new Response(null, { status: 204 });
-				},
-			}),
+			get: (id: string, options?: { locationHint?: string }) => {
+				hints.push(options?.locationHint);
+				return {
+					fetch: async (request: Request) => {
+						seen.push(`${id} ${new URL(request.url).pathname}`);
+						return new Response(null, { status: 204 });
+					},
+				};
+			},
 		};
 	}
+
+	it("asks for both objects with the location hint: weur unless the Worker's var says otherwise", async () => {
+		const hints: (string | undefined)[] = [];
+		const env = {
+			STACK: namespace("stack", [], hints),
+			VAULTS: namespace("vault", [], hints),
+			ASSETS: { fetch: async () => new Response(null, { status: 204 }) },
+		};
+		await routeRequest(new Request(`${BASE}/v1/sessions`), env);
+		await routeRequest(new Request(`${BASE}/v1/egress/decisions`), env);
+		await routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, HARBOUR_LOCATION_HINT: " eeur " });
+		expect(hints).toEqual(["weur", "weur", "eeur"]);
+		await expect(
+			routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, HARBOUR_LOCATION_HINT: "ams" }),
+		).rejects.toThrow(/HARBOUR_LOCATION_HINT must be one of/);
+		// The console's assets need no object.
+		await routeRequest(new Request(`${BASE}/`), { ...env, HARBOUR_LOCATION_HINT: "ams" });
+	});
 
 	it("sends the egress decision API to the one vault object and every other /v1 path to the stack", async () => {
 		const seen: string[] = [];
@@ -193,7 +189,10 @@ describe("routing", () => {
 			"/v1/egress",
 			"/v1/egress/decisions/x",
 			"/v1/sessions",
+			"/v1/vault/proposals",
+			"/v1/vault/proposals/p-1/decision",
 			"/vault",
+			"/vault/proposals/p-1",
 			"/",
 		]) {
 			await routeRequest(new Request(`${BASE}${path}`), env);
@@ -204,7 +203,11 @@ describe("routing", () => {
 			`stack:${STACK_NAME} /v1/egress`,
 			`stack:${STACK_NAME} /v1/egress/decisions/x`,
 			`stack:${STACK_NAME} /v1/sessions`,
+			// The approval API is the stack's: it signs the person in and checks their project role before the VaultDO.
+			`stack:${STACK_NAME} /v1/vault/proposals`,
+			`stack:${STACK_NAME} /v1/vault/proposals/p-1/decision`,
 			"assets /vault",
+			"assets /vault/proposals/p-1",
 			"assets /",
 		]);
 		expect(isVaultPath("/v1/egress/decisions")).toBe(true);

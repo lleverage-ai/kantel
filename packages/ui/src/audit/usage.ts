@@ -2,9 +2,8 @@
 // session, each with the approvals (or standing policy) that let it through. Built from the audit log alone: the uses
 // name their grant or policy, and each approval names the grant it made.
 //
-// The contract's query can't filter on a credential or a grant, so both reads page through a type and match here:
-// the uses in the range, then every approval up to the range's end. Lane 6's query API could take `itemId` and
-// `grantId` filters to make both reads exact; see docs/audit.md.
+// Both reads are exact, filtered by the store: the item's uses in the range (`itemId`), then for each grant they went
+// through, the approval that made it (`grantId`), one row each, however long before the range it was.
 
 import type { Actor, AuditEvent } from "@harbour/contracts";
 import { type AuditSource, readAll } from "./audit-model.ts";
@@ -68,11 +67,7 @@ export async function credentialUsage(
 	};
 	const signal = request.signal === undefined ? {} : { signal: request.signal };
 
-	for await (const page of readAll(
-		source,
-		{ type: "vault.use.", ...range },
-		{ credential: request.itemId, ...signal },
-	)) {
+	for await (const page of readAll(source, { type: "vault.use.", itemId: request.itemId, ...range }, signal)) {
 		for (const event of page) {
 			const grantId = typeof event.data?.grantId === "string" ? event.data.grantId : undefined;
 			const policyId = typeof event.data?.policyId === "string" ? event.data.policyId : undefined;
@@ -105,27 +100,34 @@ export async function credentialUsage(
 		}
 	}
 	const approvals = new Map<string, Approval>();
-	if (grants.size > 0) {
-		// A grant used in the range was approved before its end, perhaps long before its start.
-		const before = { ...scope, ...(request.to === undefined ? {} : { to: request.to }) };
-		for await (const page of readAll(
-			source,
-			{ type: "vault.decision.approved", ...before },
-			{ credential: request.itemId, ...signal },
-		)) {
-			for (const event of page) {
-				const grantId = event.data?.grantId;
-				if (typeof grantId !== "string" || !grants.has(grantId) || approvals.has(grantId)) continue;
-				approvals.set(grantId, {
+	// A grant used in the range was approved before its end, perhaps long before its start: one read per grant, in
+	// parallel, each the grant's first approval.
+	const found = await Promise.all(
+		[...grants].map(async (grantId) => {
+			if (request.signal?.aborted === true) return undefined;
+			const page = await source.query(
+				{
+					...scope,
+					type: "vault.decision.approved",
 					grantId,
-					approvedBy: event.actor,
-					approvedAt: event.at,
-					...(event.subject?.kind === "vault.proposal" ? { proposalId: event.subject.id } : {}),
-					...(event.data?.route === undefined ? {} : { route: { route: event.data.route } }),
-				});
-			}
-			if (approvals.size === grants.size) break;
-		}
+					...(request.to === undefined ? {} : { to: request.to }),
+				},
+				{ limit: 1 },
+			);
+			const event = page.items[0];
+			return event === undefined ? undefined : { grantId, event };
+		}),
+	);
+	for (const approval of found) {
+		if (approval === undefined) continue;
+		const { grantId, event } = approval;
+		approvals.set(grantId, {
+			grantId,
+			approvedBy: event.actor,
+			approvedAt: event.at,
+			...(event.subject?.kind === "vault.proposal" ? { proposalId: event.subject.id } : {}),
+			...(event.data?.route === undefined ? {} : { route: { route: event.data.route } }),
+		});
 	}
 
 	// Most used first, then most recent.

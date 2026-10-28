@@ -15,8 +15,9 @@ export {
 	type AuditRange,
 	type AuditSource,
 	type AuditViewQuery,
+	credentialChoices,
 	describeEvent,
-	matchesCredential,
+	eventItemId,
 	rangeBounds,
 	readAll,
 	toJsonl,
@@ -25,6 +26,38 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// Identity: a host app's API keys.
+export { ApiKeysPage, type ApiKeysPageProps } from "./identity/api-keys.tsx";
+export {
+	type ApiKeysApi,
+	type ApiKeysFlow,
+	type ApiKeysProblem,
+	type ApiKeysState,
+	administeredProjects,
+	apiKeysProblem,
+	createApiKeysFlow,
+	type KeyDraft,
+	type KeyExpiry,
+	type KeyProject,
+} from "./identity/api-keys-model.ts";
+// Identity: who is signed in, and Harbour's own email-code sign-in.
+export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
+export {
+	codeDigits,
+	createSignInFlow,
+	initialSignIn,
+	SIGN_IN_CODE_DIGITS,
+	SIGN_IN_CODE_TTL_MS,
+	SIGN_IN_MAX_CODES,
+	SIGN_IN_MAX_TRIES,
+	type SignInApi,
+	type SignInFlow,
+	type SignInFlowOptions,
+	type SignInProblem,
+	type SignInState,
+	signInProblem,
+} from "./identity/sign-in-model.ts";
+export { initials, SignedInAs, type SignedInAsProps } from "./identity/signed-in-as.tsx";
 export {
 	Button,
 	type ButtonProps,
@@ -34,7 +67,15 @@ export {
 	type IconButtonProps,
 } from "./primitives/button.tsx";
 export { clockListenerCounts, useNow } from "./primitives/clock.ts";
-export { CopyButton, Disclosure, SegmentedControl, type SegmentOption, TextField } from "./primitives/controls.tsx";
+export {
+	CopyButton,
+	Disclosure,
+	SegmentedControl,
+	type SegmentOption,
+	SelectField,
+	type SelectOption,
+	TextField,
+} from "./primitives/controls.tsx";
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
 export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
@@ -53,10 +94,42 @@ export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
-export { type ComposerState, type PrimaryAction, primaryAction, shouldSend } from "./session/composer-model.ts";
+export {
+	type AttachSource,
+	attachmentKind,
+	type ComposerAttachment,
+	type ComposerAttachmentKind,
+	type ComposerAttachments,
+	type Upload,
+	type UploadContext,
+	useComposerAttachments,
+} from "./session/composer-attachments.tsx";
+export {
+	type AttachmentLimits,
+	type ComposerState,
+	checkFiles,
+	DEFAULT_PASTE_FOLD,
+	limitsSummary,
+	type PasteFold,
+	type PrimaryAction,
+	primaryAction,
+	type RejectedFile,
+	shouldSend,
+} from "./session/composer-model.ts";
 export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
 export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
+export {
+	type ComposerModelOption,
+	filterModels,
+	ModelPicker,
+	type ModelPickerProps,
+	type ProjectOption,
+	ProjectPicker,
+	type ProjectPickerProps,
+	selectedModel,
+} from "./session/model-picker.tsx";
+export { NewSessionRow, type NewSessionRowProps } from "./session/new-session.tsx";
 export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
 export {
 	ConnectionState,
@@ -79,13 +152,29 @@ export {
 	sessionStatus,
 } from "./session/session-model.ts";
 export {
+	chosenThinking,
+	clampThinking,
+	isThinkingLevel,
+	offeredLevels,
+	stepThinking,
+	THINKING_LABELS,
+	THINKING_LEVELS,
+	type ThinkingLevel,
+} from "./session/thinking-model.ts";
+export { ThinkingPicker, type ThinkingPickerProps } from "./session/thinking-picker.tsx";
+export {
 	ToolCallChip,
 	type ToolCallChipProps,
 	ToolCallGroup,
 	type ToolCallGroupProps,
 	toolIcon,
 } from "./session/tool-call.tsx";
-export { type RowRenderPhase, Transcript, type TranscriptProps } from "./session/transcript.tsx";
+export {
+	type RowRenderPhase,
+	Transcript,
+	type TranscriptProps,
+	type TranscriptWorking,
+} from "./session/transcript.tsx";
 export { groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
@@ -95,6 +184,7 @@ export {
 	VaultApprovalCardSkeleton,
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
+export { WorkingIndicator, type WorkingIndicatorProps } from "./session/working-indicator.tsx";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";

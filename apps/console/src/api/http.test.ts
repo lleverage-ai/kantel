@@ -1,13 +1,14 @@
 // The console's API client against the real session API (`@harbour/runtime/http`) over the in-memory runtime, in
 // process: every call goes through the HTTP handler the gateway serves, with a scripted model holding runs open so
 // steer, follow-up and cancel can be sent while one is running.
-import type { AgentProfile, Authentication, CallContext } from "@harbour/contracts";
+import type { AgentProfile, Authentication, CallContext, Project } from "@harbour/contracts";
 import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionClient } from "../state/session-client.ts";
-import { createApiClient } from "./http.ts";
+import type { SessionListState } from "./client.ts";
+import { agentFor, createApiClient, startAccess, VIEWER_REASON } from "./http.ts";
 import { readEvents } from "./sse.ts";
 
 const ORG = "org-console";
@@ -48,9 +49,31 @@ async function eventually(check: () => boolean, what: string, ms = 3000) {
 	}
 }
 
-async function setUp() {
+/**
+ * `GET /v1/projects` as identity's handler answers it, pages and all, for the projects named here (the identity
+ * routes themselves are tested in @harbour/identity and through the gateway). Bearer tom only.
+ */
+function projectsRoute(projects: Map<string, string>) {
+	return (request: Request): Response => {
+		if (request.headers.get("authorization") !== "Bearer tom") {
+			return Response.json({ error: { code: "unauthenticated", message: "Sign in" } }, { status: 401 });
+		}
+		const url = new URL(request.url);
+		const limit = Number(url.searchParams.get("limit") ?? "50");
+		const from = Number(url.searchParams.get("cursor") ?? "0");
+		const all: Project[] = [...projects].map(([id, name]) => ({ id, name, organisationId: ORG, createdAt: 0 }));
+		const items = all.slice(from, from + limit);
+		const next = from + limit < all.length ? { nextCursor: String(from + limit) } : {};
+		return Response.json({ items, ...next });
+	};
+}
+
+async function setUp(options: { pageSize?: number } = {}) {
 	const { models, script } = createScriptedModel();
-	const memory = createMemoryRuntime({ models });
+	const memory = createMemoryRuntime({
+		models,
+		...(options.pageSize === undefined ? {} : { pageSize: options.pageSize }),
+	});
 	const api = createSessionApi({
 		...memory,
 		authenticator: staticTokenAuthenticator({ tom }),
@@ -61,22 +84,38 @@ async function setUp() {
 		await memory.close();
 	});
 	await memory.profiles.put(ctx, profile);
-	const apiFetch = (request: Request) => api.fetch(request);
+	/** The projects `GET /v1/projects` lists, by id; a session's project is added when one is created in it. */
+	const projects = new Map<string, string>();
+	const listProjects = projectsRoute(projects);
+	const apiFetch = async (request: Request) =>
+		new URL(request.url).pathname === "/v1/projects" ? listProjects(request) : api.fetch(request);
 	const client = createApiClient({
 		baseUrl: BASE,
 		headers: () => ({ authorization: "Bearer tom" }),
 		fetch: (input, init) => apiFetch(new Request(input, init)),
 		listPollMs: 20,
 	});
-	const create = async (projectId: string, title?: string) =>
-		(await memory.runtime.create(ctx, { projectId, agentId: "worker", ...(title === undefined ? {} : { title }) })).id;
+	const create = async (projectId: string, title?: string) => {
+		if (!projects.has(projectId)) projects.set(projectId, `Project ${projectId.replace(/^proj-/, "").toUpperCase()}`);
+		return (
+			await memory.runtime.create(ctx, { projectId, agentId: "worker", ...(title === undefined ? {} : { title }) })
+		).id;
+	};
 	const open = (sessionId: string) => {
 		const session = new SessionClient(client.transport(sessionId), sessionId);
 		session.start();
 		cleanups.push(() => session.stop());
 		return session;
 	};
-	return { memory, script, client, create, open, apiFetch };
+	/** Runs `texts` as turns, each answered `Re: <text>`, straight on the runtime. */
+	const converse = async (sessionId: string, ...texts: string[]) => {
+		for (const text of texts) {
+			script.reply({ text: `Re: ${text}` });
+			const submitted = await memory.runtime.prompt(ctx, sessionId, { text });
+			await memory.runtime.wait(ctx, sessionId, submitted.id);
+		}
+	};
+	return { memory, script, client, create, open, apiFetch, projects, converse };
 }
 
 const texts = (session: SessionClient) =>
@@ -91,16 +130,47 @@ const texts = (session: SessionClient) =>
 		);
 
 describe("the console on the session API", () => {
-	it("finds the projects from the caller's sessions, the most recently active first", async () => {
-		const { client, create } = await setUp();
+	it("lists the caller's projects by name, the most recently active first, then the rest by name", async () => {
+		const { client, create, projects } = await setUp();
+		projects.set("proj-quiet", "Archive");
+		projects.set("proj-new", "Billing");
 		await create("proj-a");
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		await create("proj-b");
 		await create("proj-b");
 		expect(await client.projects()).toEqual([
-			{ id: "proj-b", name: "proj-b" },
-			{ id: "proj-a", name: "proj-a" },
+			{ id: "proj-b", name: "Project B" },
+			{ id: "proj-a", name: "Project A" },
+			{ id: "proj-quiet", name: "Archive" },
+			{ id: "proj-new", name: "Billing" },
 		]);
+	});
+
+	it("follows every page of projects", async () => {
+		const { client, projects } = await setUp();
+		for (let index = 0; index < 230; index++) projects.set(`proj-${String(index).padStart(3, "0")}`, `P${index}`);
+		expect(await client.projects()).toHaveLength(230);
+	});
+
+	it("says when the session is over, on any call", async () => {
+		const { apiFetch } = await setUp();
+		let signedOut = 0;
+		const client = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer someone-else" }),
+			fetch: (input, init) => apiFetch(new Request(input, init)),
+			onUnauthenticated: () => signedOut++,
+		});
+		await expect(client.projects()).rejects.toMatchObject({ code: "unauthenticated" });
+		expect(signedOut).toBeGreaterThan(0);
+	});
+
+	it("acts as whoever it was told is signed in", async () => {
+		const client = createApiClient({
+			actor: { id: "u1", name: "Ada Lovelace", email: "ada@harbour.test", stubbed: false },
+		});
+		expect(client.actor).toMatchObject({ name: "Ada Lovelace", email: "ada@harbour.test" });
+		expect(createApiClient().actor).toMatchObject({ name: "Signed in" });
 	});
 
 	it("follows a project's sessions, and marks one unread when it finishes while it isn't open", async () => {
@@ -316,6 +386,70 @@ describe("the console on the session API", () => {
 		expect(texts(session)).toEqual(["prompt:Hello", "assistant:Once"]);
 	});
 
+	it("shows the latest page first, then pages earlier turns in front from the history route while new turns arrive", async () => {
+		const { converse, create, open } = await setUp({ pageSize: 4 });
+		const id = await create("proj-a");
+		await converse(id, "One", "Two", "Three");
+		const session = open(id);
+		await eventually(() => session.getState().items.length > 0, "the snapshot");
+		expect(texts(session)).toEqual(["prompt:Two", "assistant:Re: Two", "prompt:Three", "assistant:Re: Three"]);
+		expect(session.getState().hasEarlier).toBe(true);
+		// New turns land behind what is shown; the page before the first item is the same.
+		await converse(id, "Four");
+		await eventually(() => texts(session).includes("assistant:Re: Four"), "the new turn");
+		const held = session.getState().items;
+		session.loadOlder();
+		expect(session.getState().loadingOlder).toBe(true);
+		await eventually(() => !session.getState().loadingOlder, "the earlier page");
+		expect(texts(session)).toEqual([
+			"prompt:One",
+			"assistant:Re: One",
+			"prompt:Two",
+			"assistant:Re: Two",
+			"prompt:Three",
+			"assistant:Re: Three",
+			"prompt:Four",
+			"assistant:Re: Four",
+		]);
+		expect(session.getState().hasEarlier).toBe(false);
+		expect(session.getState().items.slice(2)).toEqual(held);
+		expect(session.getState().items[2]).toBe(held[0]);
+		expect(session.getState().olderError).toBeUndefined();
+	});
+
+	it("says an earlier page failed without ending the session, and loads it when asked again", async () => {
+		const { apiFetch, converse, create } = await setUp({ pageSize: 2 });
+		const id = await create("proj-a");
+		await converse(id, "One", "Two");
+		let failNext = true;
+		const flaky = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				if (failNext && new URL(request.url).pathname.endsWith("/history")) {
+					failNext = false;
+					return Response.json({ error: { code: "unavailable", message: "Try later" } }, { status: 503 });
+				}
+				return apiFetch(request);
+			},
+		});
+		const session = new SessionClient(flaky.transport(id), id);
+		session.start();
+		cleanups.push(() => session.stop());
+		await eventually(() => session.getState().items.length === 2, "the snapshot");
+		session.loadOlder();
+		await eventually(() => session.getState().olderError !== undefined, "the failed page");
+		expect(session.getState()).toMatchObject({ loadingOlder: false, hasEarlier: true });
+		expect(session.getState().error).toBeUndefined();
+		expect(session.getState().connection.status).toBe("open");
+		session.loadOlder();
+		expect(session.getState().olderError).toBeUndefined();
+		await eventually(() => !session.getState().loadingOlder, "the retried page");
+		expect(texts(session)).toEqual(["prompt:One", "assistant:Re: One", "prompt:Two", "assistant:Re: Two"]);
+		expect(session.getState().hasEarlier).toBe(false);
+	});
+
 	it("says why a call was refused, in words", async () => {
 		const { create } = await setUp();
 		const id = await create("proj-a");
@@ -389,6 +523,83 @@ describe("the console on the session API", () => {
 		await client.prompt(id, "Two");
 		await eventually(() => texts(session).includes("assistant:After"), "the answer after reconnecting");
 		expect(texts(session)).toEqual(["prompt:One", "assistant:Before", "prompt:Two", "assistant:After"]);
+	});
+
+	it("starts a session with the project's agent, which then streams its first answer", async () => {
+		const { client, script, open } = await setUp();
+		const options = await client.startOptions("proj-a");
+		expect(options).toEqual({ agentId: "worker", agentName: "Worker" });
+		const id = await client.create({ projectId: "proj-a", agentId: options.agentId, title: "Plan the week" });
+		expect(await client.projectOf(id)).toBe("proj-a");
+		script.reply({ text: "Here is the plan" });
+		await client.prompt(id, "Plan the week");
+		const session = open(id);
+		await eventually(() => texts(session).includes("assistant:Here is the plan"), "the first answer");
+		expect(texts(session)).toEqual(["prompt:Plan the week", "assistant:Here is the plan"]);
+		const states: SessionListState[] = [];
+		cleanups.push(client.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.some((state) => state.sessions.some((s) => s.id === id)), "the new session listed");
+		expect(states.at(-1)?.sessions.find((s) => s.id === id)?.title).toBe("Plan the week");
+	});
+
+	it("starts a project's session with the project's own agent before the organisation's", async () => {
+		const { client, memory } = await setUp();
+		await memory.profiles.put(ctx, { ...profile, id: "billing", name: "Billing agent", projectId: "proj-b" });
+		expect(await client.startOptions("proj-b")).toEqual({ agentId: "billing", agentName: "Billing agent" });
+		expect((await client.startOptions("proj-a")).agentId).toBe("worker");
+	});
+
+	it("says when no agent can run in a project", async () => {
+		const client = createApiClient({
+			baseUrl: BASE,
+			fetch: async () => Response.json({ items: [{ ...profile, projectId: "proj-b" }] }),
+		});
+		await expect(client.startOptions("proj-a")).rejects.toThrow("No agent can run in this project yet");
+	});
+});
+
+describe("who may start a session", () => {
+	it("is an operator or above in the project, or across the organisation", () => {
+		expect(startAccess([{ role: "operator", projectId: "p1" }], "p1")).toEqual({ allowed: true });
+		expect(startAccess([{ role: "admin" }], "p1")).toEqual({ allowed: true });
+		expect(
+			startAccess(
+				[
+					{ role: "viewer", projectId: "p1" },
+					{ role: "operator", projectId: "p2" },
+				],
+				"p1",
+			),
+		).toEqual({
+			allowed: false,
+			reason: VIEWER_REASON,
+		});
+		expect(startAccess([], "p1")).toEqual({ allowed: false, reason: VIEWER_REASON });
+	});
+
+	it("is anyone when the roles aren't known, and the API decides", () => {
+		expect(startAccess(undefined, "p1")).toEqual({ allowed: true });
+	});
+});
+
+describe("the agent a new session runs", () => {
+	const named = (id: string, name: string, projectId?: string): AgentProfile => ({
+		...profile,
+		id,
+		name,
+		...(projectId === undefined ? {} : { projectId }),
+	});
+
+	it("is the project's own first by name, else the organisation's", () => {
+		const profiles = [
+			named("zed", "Zed", "p1"),
+			named("org", "Anyone"),
+			named("amy", "Amy", "p1"),
+			named("b", "B", "p2"),
+		];
+		expect(agentFor(profiles, "p1")?.id).toBe("amy");
+		expect(agentFor(profiles, "p3")?.id).toBe("org");
+		expect(agentFor([named("b", "B", "p2")], "p3")).toBeUndefined();
 	});
 });
 

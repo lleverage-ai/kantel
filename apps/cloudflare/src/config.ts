@@ -8,6 +8,8 @@ export interface GatewayVars {
 	readonly HARBOUR_ACCESS_TEAM_DOMAIN?: string;
 	readonly HARBOUR_ACCESS_AUD?: string;
 	readonly HARBOUR_ADMIN_EMAIL?: string;
+	/** The first admin's name, as the console shows it. Default their email. */
+	readonly HARBOUR_ADMIN_NAME?: string;
 }
 
 export interface GatewayConfig {
@@ -15,6 +17,8 @@ export interface GatewayConfig {
 	readonly access?: { readonly teamDomain: string; readonly audience: string };
 	/** The person invited as the organisation's first admin. */
 	readonly adminEmail?: string;
+	/** The first admin's name; only used when the bootstrap invites them. */
+	readonly adminName?: string;
 }
 
 const trimmed = (value: string | undefined): string => (value ?? "").trim();
@@ -33,8 +37,10 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	if (adminEmail !== "" && !/^[^\s@]+@[^\s@]+$/.test(adminEmail)) {
 		throw new HarbourError("invalid", "HARBOUR_ADMIN_EMAIL must be an email address");
 	}
+	const adminName = trimmed(vars.HARBOUR_ADMIN_NAME);
 	return {
 		...(teamDomain === "" ? {} : { access: { teamDomain, audience } }),
 		...(adminEmail === "" ? {} : { adminEmail }),
+		...(adminName === "" ? {} : { adminName }),
 	};
 }
