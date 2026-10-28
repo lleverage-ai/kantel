@@ -48,21 +48,25 @@ to its times): the object's colo, the edge's, D1's region and colo, and five `SE
 50 of 50 answered 200 with exit code 0 in both. The in-process batch ran on the next deploy (#137, API keys), which
 changed neither backend.
 
-**Verdict: the backend isn't what misses the target; D1's location is.**
+**Verdict: switching backend changed nothing measurable; the remote D1 round trips are most likely the bulk of the
+miss.** Neither batch measured a co-located object and D1, so what that would reach is an expectation, not a result.
 
 - **The two backends take the same time.** Server p50 1,496 ms on Dynamic Workers against 1,533 ms in process. Each
   run is a new session, so each loads a new Dynamic Worker (`isolate.cold` was 1 in all 50), and the call into it
   (`isolate.call`: load, the RPC both ways and the command, with its manifest read over the port) took **128 / 212 ms**
-  p50 / p95. The other ~0.9 s of `isolate` is the same storage round trips the in-process backend waits on.
+  p50 / p95. That call alone is already over the 100 ms p50 target, with a cold load every time. The other ~0.9 s
+  of `isolate` is the same storage round trips the in-process backend waits on.
 - **D1's primary is in North America; the object is in London.** All four placement probes answered: object `LHR`, D1
   region `ENAM`, colo `ORD`, `served_by_primary` true. The edge was `LHR` or `AMS`, wherever brwsr's browser came in.
-- **Each D1 query costs about 120 ms, nearly all of it the Atlantic.** The 20 `SELECT 1` round trips took 120 ms p50
-  (107–256 ms); D1 reported at most 0.38 ms of SQL in any of them. That confirms the inference below of about 100 ms
-  a query: sign-in's ~370 ms is its three D1 queries, and the rest of the server time is a handful more.
+- **Each D1 query costs about 120 ms from the object, almost none of it SQL.** The 20 `SELECT 1` round trips took
+  120 ms p50 (107–256 ms); D1 reported at most 0.38 ms of SQL in any of them. These probes don't separate the
+  network from D1's own overhead, but the distance (London to Chicago) fits. They agree with the inference below of
+  about 100 ms a query: sign-in's ~370 ms matches its three D1 queries.
 
-So with the object and D1 together (either moved), each of those round trips would be a few milliseconds, and
-isolate-ready would be the Dynamic Worker call plus the object's own work. Which to move is a decision for #17, not
-taken here: D1's location is set when a database is created (a location hint), so moving it means a new database and
+With the object and D1 together (either moved), those round trips should shrink to a few milliseconds each, leaving
+the Dynamic Worker call and the object's own work; that needs measuring again before it counts. The cold Dynamic
+Worker load (128 ms p50) would then be the next thing in the way. Which to move is a decision for #17, not taken
+here: D1's location is set when a database is created (a location hint), so moving it means a new database and
 its data copied, and the object's is set on its first use, so moving it means a new object name with a location hint.
 
 ## Where the time goes
