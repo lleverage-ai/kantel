@@ -30,7 +30,7 @@ import {
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
-import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
+import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
@@ -92,6 +92,8 @@ async function requesterNames(stack: Stack, ctx: CallContext, proposal: Proposal
 export interface GatewayOptions {
 	/** Where the stack runs, for the measurement's `placement` (the Durable Object answers it on Cloudflare). */
 	readonly placement?: PlacementProbe;
+	/** Serves a session's events over a compressed WebSocket (the Durable Object's `WebSocketPair`). */
+	readonly acceptWebSocket?: AcceptWebSocket;
 }
 
 export function createGateway(stack: Stack, options: GatewayOptions = {}): Gateway {
@@ -108,6 +110,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		...(stack.hosts === undefined ? {} : { hosts: stack.hosts }),
 		authenticator: stack.authenticator,
 		basePath: API_BASE,
+		...(options.acceptWebSocket === undefined ? {} : { acceptWebSocket: options.acceptWebSocket }),
 	});
 
 	const audit = createAuditQueryHandler({ store: stack.audit, authenticator: stack.authenticator });

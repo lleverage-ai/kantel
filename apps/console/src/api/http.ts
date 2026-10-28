@@ -4,7 +4,8 @@
 // (identity.ts). `pnpm dev` proxies `/v1` to a local gateway and adds a dev token there (vite.config.ts).
 //
 // What the API has and hasn't yet:
-// - Sessions: listed per project, each one's frames streamed as server-sent events, prompt, steer, follow-up and abort.
+// - Sessions: listed per project, each one's frames streamed over a compressed WebSocket (socket.ts) or, where there is
+//   none, as server-sent events; prompt, steer, follow-up and abort.
 // - Who is signed in and their projects: identity's `GET /v1/me` (identity.ts, before this client is made) and
 //   `GET /v1/projects`, every page, named, the most recently active first.
 // - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
@@ -38,6 +39,7 @@ import type {
 	WorkspaceFiles,
 	WorkspaceListing,
 } from "./client.ts";
+import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
@@ -74,7 +76,23 @@ export type ApiClientOptions = {
 	roles?: readonly HeldRole[];
 	/** Called on any 401: the session is over, and the console asks to sign in again. */
 	onUnauthenticated?: () => void;
+	/**
+	 * Opens a session's event socket. Default the browser's `WebSocket`; `false` reads every session as server-sent
+	 * events. The socket is used only while `headers` add no credential (behind Access the cookie signs it in; a browser
+	 * can't put a bearer on a socket), and once one fails to open the client reads event streams for the rest of its life.
+	 */
+	openSocket?: OpenSocket | false;
+	/** The page the API's paths are relative to, for the socket's URL. Default the page's own location. */
+	origin?: string;
+	/** Told how each session's events came: over a socket, with its extensions, or as an event stream. */
+	onTransport?: (sessionId: string, how: TransportKind) => void;
 };
+
+/** How a session's events reach the console. */
+export type TransportKind = { readonly kind: "websocket"; readonly extensions: string } | { readonly kind: "sse" };
+
+const browserSocket: OpenSocket | undefined =
+	typeof WebSocket === "undefined" ? undefined : (url) => new WebSocket(url) as unknown as ReturnType<OpenSocket>;
 
 const SIGNED_IN: ConsoleActor = { id: "access", name: "Signed in", stubbed: false };
 
@@ -143,6 +161,11 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const base = (options.baseUrl ?? "/v1").replace(/\/+$/, "");
 	const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
 	const pollMs = options.listPollMs ?? LIST_POLL_MS;
+	const openSocket = options.openSocket === false ? undefined : (options.openSocket ?? browserSocket);
+	const origin = options.origin ?? (typeof location === "undefined" ? undefined : location.href);
+	/** Cleared for good when a socket fails to open: the gateway, a proxy or the network won't carry one. */
+	let socketsWork = openSocket !== undefined && origin !== undefined;
+	const socketAllowed = () => socketsWork && Object.keys(options.headers?.() ?? {}).length === 0;
 	const sessionUrl = (id: string, rest = "") => `${base}/sessions/${encodeURIComponent(id)}${rest}`;
 
 	/** The project each session we've seen is in. */
@@ -356,8 +379,30 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				connect(receive, lost) {
 					const controller = new AbortController();
 					let closed = false;
-					const stream = async (after: string | undefined) => {
+					let socket: { close(): void } | undefined;
+					const stream = (after: string | undefined) => {
 						const query = after === undefined ? "" : `?after=${encodeURIComponent(after)}`;
+						if (!socketAllowed() || openSocket === undefined || origin === undefined) return void events(query);
+						socket = watchOverSocket(openSocket, socketUrl(sessionUrl(sessionId, `/events${query}`), origin), {
+							receive: (frame) => {
+								if (!closed) receive(frame);
+							},
+							opened: (extensions) => options.onTransport?.(sessionId, { kind: "websocket", extensions }),
+							// No socket here: read the event stream now, and from now on.
+							failed: () => {
+								socket = undefined;
+								if (closed) return;
+								socketsWork = false;
+								void events(query);
+							},
+							lost: () => {
+								socket = undefined;
+								if (!closed) lost?.();
+							},
+						});
+					};
+					const events = async (query: string) => {
+						options.onTransport?.(sessionId, { kind: "sse" });
 						let response: Response;
 						try {
 							response = await call(sessionUrl(sessionId, `/events${query}`), {
@@ -410,6 +455,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 						close() {
 							closed = true;
 							controller.abort();
+							socket?.close();
 						},
 					};
 				},

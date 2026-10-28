@@ -45,6 +45,14 @@ import {
 	type RegisterHostResponse,
 	unauthenticated,
 } from "./wire.ts";
+import {
+	type AcceptWebSocket,
+	frameBatcher,
+	isWebSocketUpgrade,
+	type ServerWebSocket,
+	WS_CLOSE_GOING_AWAY,
+	WS_KEEP_ALIVE,
+} from "./ws.ts";
 
 export interface SessionApiOptions {
 	readonly runtime: SessionRuntime;
@@ -84,6 +92,11 @@ export interface SessionApiOptions {
 	readonly maxResultWaitMs?: number;
 	/** How often an idle event stream gets a comment, to keep proxies from closing it. Default 15 s. */
 	readonly keepAliveMs?: number;
+	/**
+	 * Serves `GET /sessions/:id/events` over a WebSocket when the request asks to upgrade (`ws.ts`), on a platform that
+	 * can accept one. Without it an upgrade gets the event stream, which a WebSocket client takes as a failed handshake.
+	 */
+	readonly acceptWebSocket?: AcceptWebSocket;
 }
 
 export interface SessionApi {
@@ -344,8 +357,79 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		}
 	};
 
+	/**
+	 * `watch` over a WebSocket (`ws.ts`), resuming after `?after=`. The watch is opened before the upgrade is accepted, so
+	 * a refused or unknown session answers a JSON error, as the event stream does, and never opens a socket.
+	 */
+	const socketEvents = async (
+		ctx: CallContext,
+		request: Request,
+		url: URL,
+		sessionId: string,
+		accept: AcceptWebSocket,
+	): Promise<Response> => {
+		const after = url.searchParams.get("after") ?? undefined;
+		let socket: ServerWebSocket | undefined;
+		let subscription: Subscription | undefined;
+		let keepAlive: ReturnType<typeof setInterval> | undefined;
+		let open = true;
+		const queued: string[] = [];
+		const stop = () => {
+			if (!open) return;
+			open = false;
+			clearInterval(keepAlive);
+			streams.delete(stop);
+			void subscription?.close();
+			try {
+				socket?.close(WS_CLOSE_GOING_AWAY, "The watch ended");
+			} catch {
+				// Already closed.
+			}
+		};
+		const send = (data: string) => {
+			if (!open) return;
+			if (socket === undefined) {
+				queued.push(data);
+				return;
+			}
+			try {
+				socket.send(data);
+			} catch {
+				stop();
+			}
+		};
+		const batch = frameBatcher(send);
+		// The first frames arrive before `watch` resolves; they wait until the socket is accepted.
+		const watching = await runtime.watch(
+			ctx,
+			sessionId,
+			after === undefined || after === "" ? {} : { after },
+			(frame) => batch.push(frame),
+		);
+		subscription = watching;
+		let upgrade: ReturnType<AcceptWebSocket>;
+		try {
+			upgrade = accept(request);
+		} catch (error) {
+			await watching.close();
+			throw error;
+		}
+		socket = upgrade.socket;
+		streams.add(stop);
+		keepAlive = setInterval(() => send(WS_KEEP_ALIVE), keepAliveMs);
+		// What was batched while the watch opened goes first, then whatever is still waiting for its microtask.
+		for (const data of queued.splice(0)) send(data);
+		batch.flush();
+		socket.addEventListener("close", stop);
+		socket.addEventListener("error", stop);
+		return upgrade.response;
+	};
+
 	/** `watch` as server-sent events, resuming after `?after=` or `Last-Event-ID`. */
 	const events = async (ctx: CallContext, request: Request, url: URL, sessionId: string): Promise<Response> => {
+		if (options.acceptWebSocket !== undefined && isWebSocketUpgrade(request)) {
+			return socketEvents(ctx, request, url, sessionId, options.acceptWebSocket);
+		}
 		const after = url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? undefined;
 		let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
 		let open = true;

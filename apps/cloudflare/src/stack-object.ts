@@ -19,6 +19,7 @@
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
 import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } from "@harbour/contracts";
+import type { AcceptWebSocket } from "@harbour/runtime/http";
 import { d1Driver } from "@harbour/sql/sqlite";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import type { GatewayVars } from "./config.ts";
@@ -38,6 +39,11 @@ import type { HarbourVault } from "./vault-object.ts";
 export { STACK_NAME } from "./route.ts";
 
 export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars {
+	/**
+	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
+	 * did before. Anything else (the default) serves both.
+	 */
+	readonly HARBOUR_SESSION_WEBSOCKET?: string;
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
 	readonly VAULTS: DurableObjectNamespace<HarbourVault>;
@@ -90,6 +96,17 @@ interface VaultRpc {
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential>;
 }
 
+/**
+ * Accepts a session's event socket in this object. Not hibernatable: the socket is fed by a live watch in this object,
+ * as the event stream is. The response has no `Sec-WebSocket-Extensions`, so the runtime negotiates `permessage-deflate`
+ * with the client itself (the `web_socket_compression` flag, on by this Worker's compatibility date).
+ */
+const acceptWebSocket: AcceptWebSocket = () => {
+	const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
+	server.accept();
+	return { socket: server, response: new Response(null, { status: 101, webSocket: client }) };
+};
+
 /** The key the bootstrap record is kept under in this object's storage. */
 const BOOTSTRAP_KEY = "harbour.bootstrap";
 /** Workspace objects live under this prefix in the bucket. */
@@ -112,7 +129,14 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				config,
 				storage: this.stackStorage(),
 			});
-			return { stack, gateway: createGateway(stack, { placement: (request) => this.placement(request) }) };
+			const sockets = (this.env.HARBOUR_SESSION_WEBSOCKET ?? "").trim() !== "off";
+			return {
+				stack,
+				gateway: createGateway(stack, {
+					placement: (request) => this.placement(request),
+					...(sockets ? { acceptWebSocket } : {}),
+				}),
+			};
 		},
 		reset: (reason) => this.ctx.abort(reason),
 		onStartError: (error) => console.error("harbour: the stack did not start; resetting the object", error),
