@@ -4,7 +4,7 @@
  * a secret left out keeps the value it already has on the Worker, and none is ever deleted.
  *
  * Each value is checked before anything is deployed: the vault key must be 32 bytes of base64, and a component's
- * shared key at least 16 characters. A bad value fails the run rather than deploy a vault that cannot start. Nothing
+ * shared key and CPA's key at least 16 characters. A bad value fails the run rather than deploy a vault that cannot start. Nothing
  * here prints a value.
  *
  * Usage: node scripts/vault-secrets.ts --out <file>. Prints the names it wrote; writes `file=<path>` to
@@ -37,6 +37,11 @@ function isVaultKey(value: string): boolean {
 	}
 }
 
+/** A shared key: at least 16 characters, with no spaces. */
+export function isStrongToken(value: string): boolean {
+	return value.length >= 16 && !/\s/.test(value);
+}
+
 /** The vault secrets that are set, checked. Throws naming every bad one (never its value). */
 export function vaultSecrets(env: Readonly<Record<string, string | undefined>>): Partial<Record<VaultSecret, string>> {
 	const secrets: Partial<Record<VaultSecret, string>> = {};
@@ -44,20 +49,14 @@ export function vaultSecrets(env: Readonly<Record<string, string | undefined>>):
 	for (const name of VAULT_SECRETS) {
 		const value = (env[name] ?? "").trim();
 		if (value === "") continue;
-		// CPA's key is whatever CPA was given; it only has to fit in a header.
-		const ok =
-			name === "HARBOUR_VAULT_KEY"
-				? isVaultKey(value)
-				: name === "HARBOUR_CPA_API_KEY"
-					? !/\s/.test(value)
-					: value.length >= 16 && !/\s/.test(value);
+		// CPA's key is held to the components' rule too: a short key would slip past the model gateway's redaction and
+		// could be guessed from its item's name (src/models.ts).
+		const ok = name === "HARBOUR_VAULT_KEY" ? isVaultKey(value) : isStrongToken(value);
 		if (!ok) {
 			invalid.push(
 				name === "HARBOUR_VAULT_KEY"
 					? `${name} must be 32 random bytes in base64 (openssl rand -base64 32)`
-					: name === "HARBOUR_CPA_API_KEY"
-						? `${name} must have no spaces`
-						: `${name} must be at least 16 characters with no spaces`,
+					: `${name} must be at least 16 characters with no spaces`,
 			);
 			continue;
 		}

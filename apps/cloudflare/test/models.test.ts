@@ -200,6 +200,10 @@ describe("CPA's vault item", () => {
 		await expect(seedCpaItem(core, none, { HARBOUR_CPA_API_KEY: "  " })).rejects.toMatchObject({
 			code: "unavailable",
 		});
+		// A short key would slip past the gateway's redaction, so it is refused rather than seeded.
+		await expect(seedCpaItem(core, none, { HARBOUR_CPA_API_KEY: "abc" })).rejects.toMatchObject({
+			code: "unavailable",
+		});
 		const name = await cpaItemName(CPA_KEY);
 		expect(name).toMatch(/^cliproxyapi-[0-9a-f]{12}$/);
 		expect(await cpaItemName(CPA_KEY)).toBe(name);
@@ -215,9 +219,10 @@ describe("the models configuration", () => {
 		expect(() => defaultModel({ HARBOUR_DEFAULT_MODEL: "two models" })).toThrow();
 	});
 
-	it("deploys CPA's key as a Worker secret, of any form without spaces", () => {
+	it("deploys CPA's key as a Worker secret, refusing a short one or one with spaces", () => {
 		expect(VAULT_SECRETS).toContain("HARBOUR_CPA_API_KEY");
-		expect(vaultSecrets({ HARBOUR_CPA_API_KEY: "short" })).toEqual({ HARBOUR_CPA_API_KEY: "short" });
-		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "has a space" })).toThrow(/HARBOUR_CPA_API_KEY/);
+		expect(vaultSecrets({ HARBOUR_CPA_API_KEY: CPA_KEY })).toEqual({ HARBOUR_CPA_API_KEY: CPA_KEY });
+		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "short" })).toThrow(/HARBOUR_CPA_API_KEY/);
+		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "has a space in a long key" })).toThrow(/HARBOUR_CPA_API_KEY/);
 	});
 });

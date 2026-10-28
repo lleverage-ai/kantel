@@ -115,6 +115,8 @@ export interface SeededItems {
 	put(name: string, itemId: string): Promise<void>;
 }
 
+const MIN_CPA_KEY_LENGTH = 16;
+
 /** The caller that makes the deployment's platform items: Harbour's operator, outside every organisation. */
 export const VAULT_SEED_CONTEXT: CallContext = {
 	...systemContext("cloudflare.vault-seed"),
@@ -123,8 +125,9 @@ export const VAULT_SEED_CONTEXT: CallContext = {
 
 /**
  * The platform item holding CPA's key (`src/models.ts`): the one this object made for this key, or a new one, bound to
- * CPA's host. Refuses (`unavailable`) when the Worker has no `HARBOUR_CPA_API_KEY`. A new key makes a new item, as
- * the vault has no way to replace an item's value, so the gateway never reads the old one again.
+ * CPA's host. Refuses (`unavailable`) when the Worker has no `HARBOUR_CPA_API_KEY`, or a short one: the model
+ * gateway's redaction skips very short secrets, and the item's name would let a short key be guessed. A new key makes
+ * a new item, as the vault has no way to replace an item's value, so the gateway never reads the old one again.
  */
 export async function seedCpaItem(
 	core: Pick<VaultDurableObjectCore, "vault">,
@@ -132,8 +135,13 @@ export async function seedCpaItem(
 	vars: ModelsVars,
 ): Promise<string> {
 	const key = cpaKey(vars);
-	if (key === undefined)
+	if (key === undefined) {
 		throw new HarbourError("unavailable", "The vault has no CLIProxyAPI key: set HARBOUR_CPA_API_KEY");
+	}
+	// The deploy refuses a short key too (scripts/vault-secrets.ts); this catches one set another way.
+	if (key.length < MIN_CPA_KEY_LENGTH || /\s/.test(key)) {
+		throw new HarbourError("unavailable", "HARBOUR_CPA_API_KEY must be at least 16 characters with no spaces");
+	}
 	const name = await cpaItemName(key);
 	const existing = await seeded.get(name);
 	if (existing !== undefined) return existing;
