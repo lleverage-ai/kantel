@@ -409,6 +409,9 @@ importers:
 
   packages/sandbox:
     dependencies:
+      "@earendil-works/pi-durable":
+        specifier: 1.4.0
+        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
@@ -419,6 +422,9 @@ importers:
         specifier: 3.6.0
         version: 3.6.0
     devDependencies:
+      "@earendil-works/chord":
+        specifier: 1.4.0
+        version: 1.4.0
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing

@@ -10,14 +10,17 @@
 		"./memory": "./src/memory.ts",
 		"./tiered": "./src/tiered.ts",
 		"./isolate": "./src/isolate.ts",
-		"./sweeper": "./src/sweeper.ts"
+		"./sweeper": "./src/sweeper.ts",
+		"./pi-env": "./src/pi-env.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*",
 		"@harbour/workspace": "workspace:*",
-		"just-bash": "3.6.0"
+		"just-bash": "3.6.0",
+		"@earendil-works/pi-durable": "1.4.0"
 	},
 	"devDependencies": {
+		"@earendil-works/chord": "1.4.0",
 		"@harbour/testing": "workspace:*"
 	}
 }
