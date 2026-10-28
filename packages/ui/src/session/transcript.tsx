@@ -22,7 +22,7 @@ import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels }
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
-import { groupTranscript, type TranscriptRow } from "./transcript-model.ts";
+import { finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
 import { WorkingIndicator } from "./working-indicator.tsx";
 import "./transcript.css";
@@ -106,6 +106,8 @@ type RowProps = {
 	turnStart: boolean;
 	/** For an answer that is streaming: when its turn started, for the working row's timer. */
 	turnStartedAt: number | undefined;
+	/** The row is its turn's final answer, which gets Copy and its time on hover. */
+	finalAnswer: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
 	report: (id: string, phase: RowRenderPhase) => void;
 };
@@ -113,14 +115,19 @@ type RowProps = {
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
 export type RowRenderPhase = "mount" | "update";
 
-function rowBody(row: TranscriptRow, turnStartedAt: number | undefined, renderCard: RowProps["renderCard"]): ReactNode {
+function rowBody(
+	row: TranscriptRow,
+	turnStartedAt: number | undefined,
+	finalAnswer: boolean,
+	renderCard: RowProps["renderCard"],
+): ReactNode {
 	if (row.kind === "tools") return <ToolCallGroup items={row.items} live={row.live} />;
 	const { item } = row;
 	switch (item.kind) {
 		case "user":
 			return <UserMessage item={item} />;
 		case "assistant":
-			return <AssistantMessage item={item} turnStartedAt={turnStartedAt} />;
+			return <AssistantMessage item={item} turnStartedAt={turnStartedAt} actions={finalAnswer} />;
 		case "notice":
 			return <NoticeRow item={item} />;
 		case "card":
@@ -130,7 +137,7 @@ function rowBody(row: TranscriptRow, turnStartedAt: number | undefined, renderCa
 
 // Memoised on the row object, which groupTranscript keeps while the row's items are unchanged: while an answer
 // streams, every earlier row gets the same props and React skips it.
-const Row = memo(function Row({ row, first, turnStart, turnStartedAt, renderCard, report }: RowProps) {
+const Row = memo(function Row({ row, first, turnStart, turnStartedAt, finalAnswer, renderCard, report }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
 	useRenderProbe("TranscriptRow", row.id);
@@ -143,7 +150,7 @@ const Row = memo(function Row({ row, first, turnStart, turnStartedAt, renderCard
 			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}`}
 			data-row={row.id}
 		>
-			<div className="hb-transcript-column">{rowBody(row, turnStartedAt, renderCard)}</div>
+			<div className="hb-transcript-column">{rowBody(row, turnStartedAt, finalAnswer, renderCard)}</div>
 		</div>
 	);
 });
@@ -271,6 +278,10 @@ export function Transcript({
 	}, [rows]);
 	const workingSince = typeof working === "object" ? (working.since ?? lastTurnStart) : lastTurnStart;
 	const workingLabel = typeof working === "object" ? working.label : undefined;
+
+	// Each turn's final answer: an answer with no answer or tool call after it before the person's next message. Only
+	// these get Copy and their time, as in T3 Code; the words an agent says between tool calls don't.
+	const finalAnswers = useMemo(() => finalAnswerIds(rows), [rows]);
 
 	// The render hook lives in a ref, so a new callback from the host never re-renders the rows.
 	const onRowRenderRef = useRef(onRowRender);
@@ -528,6 +539,7 @@ export function Transcript({
 								first={index === 0 && !hasOlder}
 								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
 								turnStartedAt={turnStarts.get(entry.id)}
+								finalAnswer={finalAnswers.has(entry.id)}
 								renderCard={renderCard}
 								report={report}
 							/>

@@ -61,6 +61,21 @@ function thinkingOf(content: readonly ContentBlock[]): string {
 	return thinking;
 }
 
+/** A stored time, when the message carries a usable one. */
+const timeOf = (value: unknown): Timestamp | undefined =>
+	typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+
+/**
+ * When an answer was generated: when its response ended (the request's start plus its duration), or when it started
+ * for a message without a duration. From the stored message, so it is the same when the session is projected again.
+ */
+function answeredAt(message: AssistantMessage): Timestamp | undefined {
+	const started = timeOf(message.timestamp);
+	if (started === undefined) return undefined;
+	const took = timeOf(message.durationMs);
+	return took === undefined ? started : started + took;
+}
+
 function userViaOf(entry: EntryRecord): { via: UserItemVia; requestId?: string } {
 	if (entry.kind !== HARBOUR_USER_ENTRY || typeof entry.data !== "object" || entry.data === null) {
 		return { via: "prompt" };
@@ -124,7 +139,8 @@ export class ConversationProjector {
 			const item: UserItem = {
 				kind: "user",
 				id: `u${entry.id}`,
-				at: this.#now(),
+				// When it was sent, from the stored message: a session projected again keeps its times.
+				at: timeOf(message.timestamp) ?? this.#now(),
 				text: textOf(message.content),
 				...userViaOf(entry),
 			};
@@ -144,16 +160,18 @@ export class ConversationProjector {
 		const text = textOf(message.content);
 		const thinking = thinkingOf(message.content);
 		const streaming = this.#streaming;
+		const at = answeredAt(message) ?? this.#now();
 		if (streaming !== undefined) {
 			this.#streaming = undefined;
 			const { thinking: _previous, ...rest } = streaming;
-			const item: AssistantItem = { ...rest, text, streaming: false, ...(thinking === "" ? {} : { thinking }) };
+			// A finished answer is timed by when it was generated, not when it started streaming.
+			const item: AssistantItem = { ...rest, at, text, streaming: false, ...(thinking === "" ? {} : { thinking }) };
 			ops.push({ op: "replace", item });
 		} else if (text !== "" || thinking !== "") {
 			const item: AssistantItem = {
 				kind: "assistant",
 				id: `a${entry.id}`,
-				at: this.#now(),
+				at,
 				text,
 				streaming: false,
 				...(thinking === "" ? {} : { thinking }),

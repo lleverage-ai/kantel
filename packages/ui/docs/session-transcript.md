@@ -163,17 +163,23 @@ that chip. Collapsed chips are not rendered.
 
 **For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
 `--hb-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
-sent while the agent was working (`via` is `steer` or `followUp`). `UserMessage({ item })`.
+sent while the agent was working (`via` is `steer` or `followUp`). Under the bubble, on hover or focus, a
+`MessageActions` line: when it was sent and Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}`
+leaves the line out (a preview), `showActions` shows it without a hover (stories).
 
 **Not for** the agent's words, or quoted text inside an answer.
 
-**Cost:** memoised on `item`.
+**Cost:** memoised on `item`. The line is always rendered (transparent until hovered), so it never moves the
+transcript; it holds no timer.
 
 ### AssistantMessage
 
 **For** the agent's answer, unboxed on the canvas, its text as `Markdown`.
-`AssistantMessage({ item, turnStartedAt? })`; `turnStartedAt` is when the answer's turn started, which `Transcript`
-passes.
+`AssistantMessage({ item, turnStartedAt?, actions?, showActions? })`; `turnStartedAt` is when the answer's turn
+started, which `Transcript` passes. With `actions`, a finished answer with text has a `MessageActions` line under it on
+hover or focus: Copy and the time it was generated. `Transcript` turns `actions` on for each turn's final answer only
+(`finalAnswerIds`), as T3 Code shows its message meta only on a turn's terminal answer, so the words an agent says
+between tool calls have none, and neither does an answer still streaming.
 
 **States:** while streaming with no text yet, a thought (`item.thinking`) streams live under "Thinking", its newest
 four lines in a window that doesn't grow, after T3 Code's live reasoning preview (`TimelineWorkGroupRows.tsx:503-581`);
@@ -208,6 +214,31 @@ spinner).
 
 **Cost:** memoised on its props. The dot's pulse and the sweep are CSS only and stop under reduced motion; the timer
 is an `Elapsed` on the shared one-second clock, so only that leaf renders each second.
+
+### MessageActions
+
+**For** the quiet line under a message, after T3 Code's message meta rows (pingdotgg/t3code at `9826dbb9`,
+`apps/web/src/components/chat/TimelineUserMessageRow.tsx` lines 196 to 229 and `TimelineAssistantRows.tsx` lines
+144 to 196): the message's time (`ClockTime`: "16:38", "Yesterday at 16:38", the full date and time as its title)
+and small ghost icon buttons, Copy last. `MessageActions({ at, text, align, children?, visible?, now? })`.
+`align="end"` sits under a person's bubble, the time first; `align="start"` sits under an answer, the actions first,
+the first icon pulled left onto the answer's text edge (optical alignment: the icon lines up, not its button's box).
+`children` are more actions, before Copy: `MessageAction({ label, icon, onClick, disabled?, busy? })`, a 24px ghost
+`IconButton` whose label is its accessible name and tooltip.
+
+The time is trimmed to its capitals (`text-box: trim-both cap alphabetic`), as a button's label is, so its figures
+sit on the icons' centre line; the alignment gate checks icons against it.
+
+**States:** hidden (transparent, still in the flow, so nothing moves when it shows); shown while its message is
+hovered or anything in the line holds focus; always shown under a coarse pointer, where there is no hover (as T3's
+`pointer-coarse:opacity-100`); Copy turns to a check and "Copied" for 1.5s. Under a coarse pointer the buttons take
+the touch size.
+
+**Not for** a message's primary action, or actions that need the person to read first (use a card).
+
+**Keyboard:** each button is reached by Tab; focusing one shows the line.
+
+**Cost:** no timer and no state but Copy's; the time is formatted once per render.
 
 ### NoticeRow
 

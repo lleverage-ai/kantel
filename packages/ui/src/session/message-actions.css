@@ -1,0 +1,64 @@
+/* A message's time and actions, after T3 Code's meta rows: one quiet line under the message, its buttons ghost and
+   24px, the time faint and in tabular figures. Transparent until the message is hovered or holds focus (always shown
+   under a coarse pointer), and kept in the flow while hidden, so nothing moves when it appears. The time is trimmed
+   to its capitals, as a button's label is, so its figures sit on the icons' centre line. */
+
+.hb-message-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	min-height: var(--hb-control-xs);
+	opacity: 0;
+	transition: opacity var(--hb-duration) var(--hb-ease);
+}
+
+.hb-message-actions-end {
+	justify-content: flex-end;
+}
+
+.hb-message-actions-start {
+	justify-content: flex-start;
+	/* Optical alignment: the first button's icon, not its invisible box, lines up with the answer's text. */
+	margin-left: calc((var(--hb-control-xs) - var(--hb-icon-sm)) / -2);
+}
+
+.hb-user-message:hover .hb-message-actions,
+.hb-assistant-message:hover .hb-message-actions,
+.hb-message-actions:focus-within,
+.hb-message-actions-visible {
+	opacity: 1;
+}
+
+.hb-message-actions-buttons {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-1);
+}
+
+.hb-message-actions-time {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	text-box: trim-both cap alphabetic;
+}
+
+/* No hover on a touch screen: the line is always there, as in T3 Code (pointer-coarse:opacity-100). */
+@media (pointer: coarse) {
+	.hb-message-actions {
+		opacity: 1;
+	}
+
+	/* Buttons take the touch size here, so the inset to the icon is larger. */
+	.hb-message-actions-start {
+		margin-left: calc((var(--hb-control-lg) - var(--hb-icon-sm)) / -2);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-message-actions {
+		transition: none;
+	}
+}

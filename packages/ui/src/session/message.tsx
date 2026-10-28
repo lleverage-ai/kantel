@@ -4,6 +4,7 @@ import { Disclosure } from "../primitives/controls.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
 import { Markdown } from "./markdown.tsx";
+import { MessageActions } from "./message-actions.tsx";
 import { WorkingIndicator } from "./working-indicator.tsx";
 import "./message.css";
 
@@ -13,14 +14,28 @@ import "./message.css";
 
 const viaCaption = { prompt: undefined, steer: "Steered", followUp: "Follow-up" } as const;
 
-/** What the person sent: a right-aligned bubble, at most 80% of the column wide. */
-export const UserMessage = memo(function UserMessage({ item }: { item: UserItem }) {
+/**
+ * What the person sent: a right-aligned bubble, at most 80% of the column wide, with the time it was sent and Copy
+ * under it on hover or focus (`MessageActions`). `actions: false` leaves that line out, for a preview.
+ */
+export const UserMessage = memo(function UserMessage({
+	item,
+	actions = true,
+	showActions = false,
+}: {
+	item: UserItem;
+	/** The time and Copy under the bubble. Default on. */
+	actions?: boolean;
+	/** Shows them without a hover, for stories and screenshots. */
+	showActions?: boolean;
+}) {
 	useRenderProbe("UserMessage", item.id);
 	const caption = viaCaption[item.via];
 	return (
 		<div className="hb-user-message">
 			{caption === undefined ? null : <span className="hb-user-message-via">{caption}</span>}
 			<div className="hb-user-message-bubble">{item.text}</div>
+			{actions ? <MessageActions at={item.at} text={item.text} align="end" visible={showActions} /> : null}
 		</div>
 	);
 });
@@ -46,15 +61,25 @@ function ThinkingPreview({ thinking }: { thinking: string }) {
  * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
  * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview;
  * before any text or thought arrives, "Working for 12s" says it is working, timed from `turnStartedAt` (when the turn
- * started), or "Working" without it.
+ * started), or "Working" without it. With `actions`, a finished answer with text has Copy and the time it was
+ * generated under it, on hover or focus (`MessageActions`).
  */
 export const AssistantMessage = memo(function AssistantMessage({
 	item,
 	turnStartedAt,
+	actions = false,
+	showActions = false,
 }: {
 	item: AssistantItem;
 	/** When the turn this answer belongs to started, for the working row's timer. */
 	turnStartedAt?: number | undefined;
+	/**
+	 * Copy and the time under the answer, once it has finished. The transcript turns it on for a turn's final answer
+	 * only, as T3 Code does, not for the words an agent says between tool calls.
+	 */
+	actions?: boolean;
+	/** Shows them without a hover, for stories and screenshots. */
+	showActions?: boolean;
 }) {
 	useRenderProbe("AssistantMessage", item.id);
 	const { streaming, text, thinking } = item;
@@ -73,6 +98,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 				<Markdown text={text} />
 			) : streaming && !thinking ? (
 				<WorkingIndicator since={turnStartedAt} />
+			) : null}
+			{actions && !streaming && text !== "" ? (
+				<MessageActions at={item.at} text={text} align="start" visible={showActions} />
 			) : null}
 		</div>
 	);

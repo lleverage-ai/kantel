@@ -120,6 +120,12 @@ export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
 export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
 export {
+	MessageAction,
+	type MessageActionProps,
+	MessageActions,
+	type MessageActionsProps,
+} from "./session/message-actions.tsx";
+export {
 	type ComposerModelOption,
 	filterModels,
 	ModelPicker,
@@ -175,7 +181,7 @@ export {
 	type TranscriptProps,
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
-export { groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
+export { finalAnswerIds, groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
 	type BindingCodePickerProps,

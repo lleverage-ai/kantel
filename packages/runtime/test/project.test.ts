@@ -71,6 +71,64 @@ describe("ConversationProjector", () => {
 		]);
 	});
 
+	it("times a message from its stored message, so a session projected again keeps its times", () => {
+		const prompt: Entry = { ...user(1, "Hi", "prompt"), model: [{ role: "user", content: "Hi", timestamp: 1_000 }] };
+		const answer: Entry = {
+			id: 2,
+			kind: "pi.assistant",
+			model: [{ role: "assistant", content: [{ type: "text", text: "Hello" }], stopReason: "stop", timestamp: 2_000 }],
+		};
+		const timed: Entry = {
+			id: 3,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Again" }],
+					stopReason: "stop",
+					timestamp: 3_000,
+					durationMs: 1_500,
+				},
+			],
+		};
+		// Projected long after: the clock says 9,999, but the items keep when they were sent and generated.
+		const items = replay(new ConversationProjector({ now: () => 9_999 }), [view([prompt, answer, timed])]).items;
+		expect(items.map((item) => [item.id, item.at])).toEqual([
+			["u1", 1_000],
+			["a2", 2_000],
+			["a3", 4_500],
+		]);
+	});
+
+	it("times a streamed answer by when it finished, not when it started streaming", () => {
+		let now = 5;
+		const projector = new ConversationProjector({ now: () => now });
+		const prompt = user(1, "Hi", "prompt");
+		const partial = {
+			...running,
+			generation: { attempt: 1, message: { role: "assistant", content: [{ type: "text", text: "Hel" }] } },
+		};
+		projector.project(view([prompt], partial));
+		now = 50;
+		const answer: Entry = {
+			id: 3,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Hello" }],
+					stopReason: "stop",
+					timestamp: 10,
+					durationMs: 30,
+				},
+			],
+		};
+		expect(projector.project(view([prompt, answer], {}))[0]).toEqual({
+			op: "replace",
+			item: { kind: "assistant", id: "p1", at: 40, text: "Hello", streaming: false },
+		});
+	});
+
 	it("replaces a tool item when its result lands, marking errors and interruptions", () => {
 		const projector = new ConversationProjector({ now: () => 1 });
 		const calls = assistant(
