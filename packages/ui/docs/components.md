@@ -149,7 +149,8 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
 - **`FileTree`**: a workspace's files as a WAI-ARIA tree, one Tab stop with arrow-key navigation. Loading, error and
   empty states for the root, and inline Loading and error rows for a directory.
 - **`FileViewer`**: one file's text in mono with unselectable line numbers, Copy, and states for loading, error,
-  empty, binary and too large. Renders at most 5,000 lines and says how many more there are.
+  empty, image, binary and too large. Renders at most 5,000 lines and says how many more there are. An image is
+  fitted to the viewer, with its pixel size in the header.
 - **`NoteViewer`**: a Markdown note, parsed as one document in the transcript's Markdown styles at its reading
   measure, with when it was last updated.
 - **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,

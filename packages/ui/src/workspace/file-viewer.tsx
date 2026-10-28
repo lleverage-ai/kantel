@@ -1,4 +1,4 @@
-import { memo, type ReactNode, useId, useMemo } from "react";
+import { memo, type ReactNode, useId, useMemo, useState } from "react";
 import { CopyButton } from "../primitives/controls.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -12,6 +12,16 @@ export type FileViewState =
 	| { readonly status: "error"; readonly message: string }
 	| { readonly status: "ready"; readonly text: string; readonly size: number; readonly version?: string | number }
 	| { readonly status: "binary"; readonly size: number; readonly contentType?: string }
+	| {
+			readonly status: "image";
+			/**
+			 * Where the image's bytes are: an object URL the host made from the content route's answer, or the route's URL
+			 * itself when the browser's own credentials reach it.
+			 */
+			readonly src: string;
+			readonly size: number;
+			readonly contentType?: string;
+	  }
 	| { readonly status: "too-large"; readonly size: number };
 
 export type FileViewerProps = {
@@ -66,7 +76,62 @@ const FileText = memo(function FileText({ label, text }: { label: string; text: 
 	);
 });
 
-function FileBody({ name, state }: { name: string; state: FileViewState }) {
+type Dimensions = { readonly width: number; readonly height: number };
+
+/**
+ * The image, fitted inside the viewer and never scaled past its own size, on a sunken backdrop so its edges show.
+ * Its pixel size goes to the header once it has loaded; one the browser can't decode says so instead of a broken icon.
+ */
+function FileImage({
+	name,
+	src,
+	contentType,
+	onDimensions,
+}: {
+	name: string;
+	src: string;
+	contentType: string | undefined;
+	onDimensions: (dimensions: Dimensions | undefined) => void;
+}) {
+	const [failed, setFailed] = useState(false);
+	if (failed) {
+		return (
+			<EmptyState title="This image can't be shown here">
+				{contentType === undefined
+					? "The browser couldn't read it."
+					: `The browser couldn't read it as ${contentType}.`}
+			</EmptyState>
+		);
+	}
+	return (
+		<ViewerScroll label={`Image ${name}`} className="hb-file-viewer-scroll hb-file-viewer-image">
+			<img
+				className="hb-file-viewer-picture"
+				src={src}
+				alt={name}
+				decoding="async"
+				onLoad={(event) => {
+					const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
+					onDimensions(width > 0 && height > 0 ? { width, height } : undefined);
+				}}
+				onError={() => {
+					setFailed(true);
+					onDimensions(undefined);
+				}}
+			/>
+		</ViewerScroll>
+	);
+}
+
+function FileBody({
+	name,
+	state,
+	onDimensions,
+}: {
+	name: string;
+	state: FileViewState;
+	onDimensions: (dimensions: Dimensions | undefined) => void;
+}) {
 	switch (state.status) {
 		case "loading":
 			return (
@@ -89,6 +154,17 @@ function FileBody({ name, state }: { name: string; state: FileViewState }) {
 					{state.contentType === undefined ? "It isn't a text file." : `It's ${state.contentType}, not text.`}
 				</EmptyState>
 			);
+		case "image":
+			// Keyed by its source, so a new image starts without the last one's failure or size.
+			return (
+				<FileImage
+					key={state.src}
+					name={name}
+					src={state.src}
+					contentType={state.contentType}
+					onDimensions={onDimensions}
+				/>
+			);
 		case "too-large":
 			return (
 				<EmptyState title="This file is too large to show here">
@@ -106,14 +182,19 @@ function FileBody({ name, state }: { name: string; state: FileViewState }) {
 
 /**
  * One file's text, read-only: a header with the name, its folder, its size and Copy, then the text in mono with line
- * numbers, scrolling within the viewer. Binary and very large files say they can't be shown; an empty file says so.
- * The text is rendered as text, never as HTML. Presentational: the host reads the file through the workspace read
- * API and passes its state.
+ * numbers, scrolling within the viewer. An image is shown fitted to the viewer, with its pixel size in the header.
+ * Binary and very large files say they can't be shown; an empty file says so. The text is rendered as text, never as
+ * HTML. Presentational: the host reads the file through the workspace read API and passes its state.
  */
 export function FileViewer({ path, state, onBack, actions }: FileViewerProps) {
 	const id = useId();
 	const name = entryName(path) || path;
 	const size = state.status === "loading" || state.status === "error" ? undefined : state.size;
+	const [loaded, setLoaded] = useState<{ readonly src: string; readonly dimensions: Dimensions }>();
+	const src = state.status === "image" ? state.src : undefined;
+	const dimensions = loaded !== undefined && loaded.src === src ? loaded.dimensions : undefined;
+	const onDimensions = (next: Dimensions | undefined) =>
+		setLoaded(src === undefined || next === undefined ? undefined : { src, dimensions: next });
 	const copy =
 		state.status === "ready" && state.text !== "" ? (
 			<CopyButton text={state.text} label="Copy contents" iconOnly variant="ghost" />
@@ -131,12 +212,21 @@ export function FileViewer({ path, state, onBack, actions }: FileViewerProps) {
 				id={id}
 				path={path}
 				title={name}
-				facts={size === undefined ? undefined : <span>{formatBytes(size)}</span>}
+				facts={
+					size === undefined ? undefined : (
+						<>
+							<span>{formatBytes(size)}</span>
+							{dimensions === undefined ? null : (
+								<span>{`${count.format(dimensions.width)} × ${count.format(dimensions.height)} px`}</span>
+							)}
+						</>
+					)
+				}
 				onBack={onBack}
 				actions={headerActions}
 			/>
 			<div className="hb-file-viewer-body">
-				<FileBody name={name} state={state} />
+				<FileBody name={name} state={state} onDimensions={onDimensions} />
 			</div>
 		</section>
 	);

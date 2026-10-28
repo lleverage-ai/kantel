@@ -8,7 +8,8 @@
  * - `sessions`: the session runtime, as the runtime lane's `SessionRuntimeDurableObjectCore` over the stack Durable
  *   Object's SQLite and alarm: its directory, profiles, host registrations and each session's Pi storage, and the
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
- * - `workspaces`: workspace heads, versions and blobs (R2);
+ * - `workspaces`: workspace heads, versions and blobs (R2). A seed's git source is fetched as a GitHub tarball
+ *   (`createGitHubTarballFetcher`, #81) over `StackOptions.gitFetch`;
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  *
@@ -44,6 +45,7 @@ import {
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
 import type { SqlDriver } from "@harbour/sql";
+import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
@@ -131,6 +133,11 @@ export interface StackOptions {
 	readonly clock?: Clock;
 	/** Used to fetch Access's signing keys. Default the global `fetch`; tests and `wrangler dev` pass a mock issuer's. */
 	readonly accessFetch?: typeof fetch;
+	/**
+	 * Fetches a seed's git ref from GitHub. Default the global `fetch`, which reads public repositories without
+	 * credentials; tests pass a stand-in. Private repositories wait for the vault's egress `fetch`.
+	 */
+	readonly gitFetch?: typeof fetch;
 	readonly storage?: StackStorage;
 	/**
 	 * The models sessions run on, given the stack's audit store for `model.call` events: the model gateway
@@ -147,6 +154,8 @@ export interface Stack {
 	readonly identity: IdentityDirectory;
 	readonly runtime: SessionRuntimeService;
 	readonly workspaces: StoredWorkspaces;
+	/** The runtime's project access: who may do what in which project. */
+	readonly access: ProjectAccess;
 	readonly sandboxes: StackSandboxes;
 	readonly audit: AuditStore;
 	readonly authenticator: Authenticator;
@@ -246,11 +255,15 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
+		const seeders = {
+			git: createGitHubTarballFetcher({ fetch: options.gitFetch ?? ((input, init) => fetch(input, init)) }),
+		};
 		const workspaces = createStoredWorkspaces({
 			store: storage.workspaces ?? createMemoryWorkspaceStore(),
 			clock,
 			audit,
 			access,
+			seeders,
 		});
 		built = createStackSandboxes({
 			workspaces,
@@ -286,6 +299,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			identity,
 			runtime,
 			workspaces,
+			access,
 			sandboxes,
 			audit,
 			authenticator,

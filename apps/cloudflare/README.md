@@ -6,6 +6,7 @@ one hostname (`harbour.myslop.app`) behind Cloudflare Access with One-time PIN. 
 ```
 browser ── Access (OTP) ── Worker harbour ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► HarbourVault DO (VaultDO)
 host app ── API key ────────┘              ├─ /v1/*      ─► HarbourStack DO ─► gateway (src/gateway.ts)
+                                           │                                     ├─ POST /v1/workspaces  create a seeded workspace, operators only
                                            │                                     ├─ /v1/workspaces/…  workspace read API (#58)
                                            │                                     ├─ /v1/audit/…       audit query API (#60)
                                            │                                     └─ /v1/…             session API (#61)
@@ -13,7 +14,11 @@ host app ── API key ────────┘              ├─ /v1/*   
                                            └─ anything else ─► console (apps/console/dist, single-page app)
 ```
 
-`src/route.ts` decides which part answers.
+`src/route.ts` decides which part answers. It reads a `POST /v1/workspaces` body (up to 16 MiB) before the stack
+object sees it, as it does for the vault's, since the stack refuses a caller before it reads the seed.
+
+A seed's git source is fetched from GitHub as a tarball (`createGitHubTarballFetcher`, #81) with the Worker's own
+`fetch`, so only public repositories seed for now; private ones wait for the vault's egress `fetch`.
 
 Status: step 2 of #17, in part. The stack is durable and hosted in one Durable Object (`HarbourStack`):
 

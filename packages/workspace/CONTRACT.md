@@ -108,6 +108,26 @@ carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, he
 types as `Workspaces` and rethrows error bodies as `HarbourError`. The export route needs `export` on the reader it is
 given and answers 501 without it.
 
+## Creating a seeded workspace over HTTP (M1-BE3)
+
+`@harbour/workspace/write-api` is the one write route, beside the read API: `POST /v1/workspaces` with
+`{ projectId, sessionId?, seed?, mounts? }` (seed spec v0: `files` and `git` sources) answers `201` with the
+`WorkspaceRecord` and a `Location`. `createWorkspaceWriteApi({ workspaces, access, authenticate, basePath?,
+maxBodyBytes? })` is a fetch-style handler that answers only that method and path (`null` otherwise, so a gateway tries
+it before the read API). A host then creates a session with the record's ID as its `workspaceId`.
+
+| Case | Answer |
+| --- | --- |
+| Created | 201, the record; a git source is fetched by the `seeders: { git }` the host gave its workspaces |
+| Not an operator on the project (and the session, when named) | 403 `forbidden`, audited once as `access.denied` with operation `workspace.create`, checked before the seed is read, so nothing is fetched |
+| A malformed body, a seed path outside the workspace, a file and a directory at one path | 400 `invalid` |
+| An `objects` source or dependency steps (`deps`) | 501 `not_supported`, rather than recorded and ignored (M2-BE1) |
+| A body over `maxBodyBytes` (16 MiB) | 413 |
+
+It holds no `Sandboxes`: seeding writes files and never runs a command. `createWorkspaceWriteClient({ baseUrl, fetch?,
+headers? })` posts the body and rethrows error bodies as `HarbourError`. Creating isn't audited yet; the audit log
+shows a refusal, not a creation.
+
 ## Seeding v0 (M1-BE3)
 
 `create` resolves the seed's sources in order, later sources winning on a path, after the caller's create and mount
