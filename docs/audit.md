@@ -9,7 +9,8 @@ behind its `ConsoleAudit` seam.
 ## Reading it
 
 - **Filters:** *Organisation*, *When* (last hour, last 24 hours, today, yesterday, last 7 days, last 30 days, all
-  time), *What* (a kind of event), *Credential*, *Who*, *Project*, *Agent* and *Session*. A filter with no options from
+  time), *What* (a kind of event: one type or prefix, or several, such as *Policy changes*, which is credential
+  policies and capability grants), *Credential*, *Who*, *Project*, *Agent* and *Session*. A filter with no options from
   the host is hidden, and *Organisation* shows only when the viewer belongs to two or more. *Clear filters* keeps the
   organisation and time range; a new organisation clears the project, agent, session and credential.
 - **Organisation:** the store takes the organisation from the call context, never the query, so the view puts the
@@ -95,11 +96,10 @@ show by ID, and there is no organisation picker, until identity has an API.
 
 ## Gaps in the contract
 
-1. **One type per query.** A kind such as "policy changes" can't cover both `vault.policy.*` and
-   `capability.grant.*`. A list of types would let *What* group them.
-
-The credential and grant filters this section used to list are now `AuditQuery.itemId` and `grantId`, matched by
-every store on an index (see `packages/audit/CONTRACT.md`).
+None open. The credential and grant filters this section used to list are now `AuditQuery.itemId` and `grantId`,
+matched by every store on an index, and a kind of several types is `AuditQuery.types`: *Policy changes* is
+`["vault.policy.", "capability.grant."]` in one query, so it pages and exports like any other kind (see
+`packages/audit/CONTRACT.md`).
 
 ## Stories and checks
 

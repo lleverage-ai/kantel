@@ -126,6 +126,7 @@ export function matchesQuery(event: AuditEventInput, query: AuditQuery): boolean
 		(query.actor === undefined || actorMatches(event.actor, query.actor)) &&
 		(query.source === undefined || event.source === query.source) &&
 		(query.type === undefined || typeMatches(event.type, query.type)) &&
+		(query.types === undefined || query.types.some((wanted) => typeMatches(event.type, wanted))) &&
 		(query.subject === undefined ||
 			(event.subject?.kind === query.subject.kind && event.subject.id === query.subject.id)) &&
 		(query.itemId === undefined || eventItemId(event) === query.itemId) &&

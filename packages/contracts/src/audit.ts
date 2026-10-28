@@ -134,6 +134,12 @@ export interface AuditQuery {
 	readonly source?: AuditSource;
 	/** An exact type, or a prefix ending in `.` (`vault.` matches every vault event). */
 	readonly type?: string;
+	/**
+	 * Any of these types, each exact or a prefix ending in `.`: `["vault.policy.", "capability.grant."]` is every
+	 * policy change. One to `AUDIT_QUERY_MAX_TYPES` of them; an empty list is `invalid`, not "nothing". With `type` as
+	 * well, an event must match both.
+	 */
+	readonly types?: readonly string[];
 	readonly subject?: { readonly kind: string; readonly id: string };
 	/**
 	 * Events about this vault item: its subject is the `vault.item`, or else `data.itemId` is this ID as a string (uses,
@@ -151,6 +157,29 @@ export interface AuditQuery {
 	readonly to?: Timestamp;
 	/** Newest first instead of oldest first. */
 	readonly newestFirst?: boolean;
+}
+
+/** The most types one `AuditQuery.types` may list. */
+export const AUDIT_QUERY_MAX_TYPES = 20;
+
+/**
+ * Rejects `AuditQuery.types` with `invalid` unless it lists one to `AUDIT_QUERY_MAX_TYPES` non-empty strings. Every
+ * store checks it before reading, and the search parameters before they are written, so an empty list never reaches
+ * a server as no list at all.
+ */
+export function assertAuditQueryTypes(types: readonly string[] | undefined): void {
+	if (types === undefined) return;
+	if (!Array.isArray(types) || types.length === 0) {
+		throw new HarbourError("invalid", "An audit query's types must list at least one type");
+	}
+	if (types.length > AUDIT_QUERY_MAX_TYPES) {
+		throw new HarbourError("invalid", `An audit query may list at most ${AUDIT_QUERY_MAX_TYPES} types`);
+	}
+	for (const type of types) {
+		if (typeof type !== "string" || type === "") {
+			throw new HarbourError("invalid", "An audit query's types must each be a non-empty string");
+		}
+	}
 }
 
 /**
@@ -209,8 +238,8 @@ export interface AuditErrorResponse {
 /**
  * Search parameter names. An actor is `actorKind` with `actorId` (a user, service or agent ID, or a system component),
  * plus `actorKeyId` for a service's key and `actorSessionId` for an agent's session. A subject is `subjectKind` with
- * `subjectId`. `itemId` and `grantId` are `AuditQuery`'s. Times are epoch milliseconds. `order` is `oldest` (default)
- * or `newest`.
+ * `subjectId`. `itemId` and `grantId` are `AuditQuery`'s. `types` is repeated, once for each of `AuditQuery.types`, the
+ * only parameter that may be. Times are epoch milliseconds. `order` is `oldest` (default) or `newest`.
  */
 export const AUDIT_QUERY_PARAMS = [
 	"projectId",
@@ -222,6 +251,7 @@ export const AUDIT_QUERY_PARAMS = [
 	"actorSessionId",
 	"source",
 	"type",
+	"types",
 	"subjectKind",
 	"subjectId",
 	"itemId",
@@ -233,7 +263,7 @@ export const AUDIT_QUERY_PARAMS = [
 	"cursor",
 ] as const;
 
-/** Writes a query and page as search parameters. Absent fields are left out. */
+/** Writes a query and page as search parameters. Absent fields are left out; an empty `types` is `invalid`. */
 export function auditQueryToSearchParams(query: AuditQuery, page: PageRequest = {}): URLSearchParams {
 	const params = new URLSearchParams();
 	const set = (name: (typeof AUDIT_QUERY_PARAMS)[number], value: string | number | undefined) => {
@@ -264,6 +294,8 @@ export function auditQueryToSearchParams(query: AuditQuery, page: PageRequest = 
 	}
 	set("source", query.source);
 	set("type", query.type);
+	assertAuditQueryTypes(query.types);
+	for (const type of query.types ?? []) params.append("types", type);
 	set("subjectKind", query.subject?.kind);
 	set("subjectId", query.subject?.id);
 	set("itemId", query.itemId);
@@ -277,8 +309,9 @@ export function auditQueryToSearchParams(query: AuditQuery, page: PageRequest = 
 }
 
 /**
- * Reads a query and page from search parameters. Rejects with `invalid` on an unknown parameter, a repeated one, an
- * actor or subject missing its other half, a time or limit that is not a whole number, or an unknown order.
+ * Reads a query and page from search parameters. Rejects with `invalid` on an unknown parameter, a repeated one (but
+ * `types`), an empty one, an actor or subject missing its other half, a time or limit that is not a whole number, an
+ * unknown order, or more types than `AUDIT_QUERY_MAX_TYPES`.
  */
 export function auditQueryFromSearchParams(params: URLSearchParams): {
 	readonly query: AuditQuery;
@@ -288,7 +321,9 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 	const seen = new Set<string>();
 	for (const name of params.keys()) {
 		if (!known.has(name)) throw new HarbourError("invalid", `Unknown audit query parameter ${name}`);
-		if (seen.has(name)) throw new HarbourError("invalid", `Audit query parameter ${name} is repeated`);
+		if (seen.has(name) && name !== "types") {
+			throw new HarbourError("invalid", `Audit query parameter ${name} is repeated`);
+		}
 		seen.add(name);
 	}
 	const text = (name: (typeof AUDIT_QUERY_PARAMS)[number]): string | undefined => {
@@ -355,6 +390,10 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 	const limit = whole("limit");
 	if (limit !== undefined && limit < 1) throw new HarbourError("invalid", "limit must be at least 1");
 
+	const listed = params.getAll("types");
+	const types = listed.length === 0 ? undefined : listed;
+	assertAuditQueryTypes(types);
+
 	const optional = <K extends string, V>(key: K, value: V | undefined) =>
 		(value === undefined ? {} : { [key]: value }) as { [P in K]?: V };
 	const query: AuditQuery = {
@@ -364,6 +403,7 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 		...optional("actor", actor),
 		...optional("source", text("source") as AuditSource | undefined),
 		...optional("type", text("type")),
+		...optional("types", types),
 		...optional(
 			"subject",
 			subjectKind === undefined || subjectId === undefined ? undefined : { kind: subjectKind, id: subjectId },

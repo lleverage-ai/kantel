@@ -13,6 +13,7 @@
  */
 import {
 	type Actor,
+	assertAuditQueryTypes,
 	type AuditEvent,
 	type AuditEventInput,
 	type AuditOutbox,
@@ -224,6 +225,16 @@ function inJsonList(dialect: SqlDialect, column: string): string {
 		: `${column} IN (SELECT value FROM json_each(?))`;
 }
 
+/**
+ * The row's type starts with one of the prefixes in the JSON array bound as one parameter. The column is qualified
+ * because SQLite's `json_each` has a `type` column of its own; the database counts the prefix's characters.
+ */
+function underAnyPrefix(dialect: SqlDialect): string {
+	return dialect === "postgres"
+		? "EXISTS (SELECT 1 FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS prefix(value) WHERE substr(audit_events.type, 1, length(prefix.value)) = prefix.value)"
+		: "EXISTS (SELECT 1 FROM json_each(?) AS prefix WHERE substr(audit_events.type, 1, length(prefix.value)) = prefix.value)";
+}
+
 /** The `WHERE` conditions and parameters for the fields of `query`, after the organisation. */
 function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: string[]; params: SqlValue[] } {
 	const conditions: string[] = [];
@@ -251,6 +262,21 @@ function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: 
 		} else {
 			equal("type", query.type);
 		}
+	}
+	if (query.types !== undefined) {
+		// Exact types and prefixes each as one JSON array parameter, so a long list never meets D1's 100-parameter cap.
+		const exact = query.types.filter((type) => !type.endsWith("."));
+		const prefixes = query.types.filter((type) => type.endsWith("."));
+		const any: string[] = [];
+		if (exact.length > 0) {
+			any.push(inJsonList(dialect, "type"));
+			params.push(JSON.stringify(exact));
+		}
+		if (prefixes.length > 0) {
+			any.push(underAnyPrefix(dialect));
+			params.push(JSON.stringify(prefixes));
+		}
+		conditions.push(`(${any.join(" OR ")})`);
 	}
 	if (query.subject !== undefined) equal("subject", subjectColumn(query.subject));
 	if (query.itemId !== undefined) equal(itemExpression(dialect), query.itemId);
@@ -317,6 +343,7 @@ export function createSqlAuditStore(options: SqlAuditStoreOptions): AuditStore {
 
 		async query(ctx: CallContext, query: AuditQuery, page?: PageRequest): Promise<Page<AuditEvent>> {
 			forbidAgent(ctx, "read the audit log");
+			assertAuditQueryTypes(query.types);
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
 			const scoped = query.projectId !== undefined || query.sessionId !== undefined;

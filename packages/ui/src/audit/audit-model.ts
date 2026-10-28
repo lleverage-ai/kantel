@@ -20,7 +20,10 @@ export interface AuditSource {
 	query(query: AuditViewQuery, page?: PageRequest): Promise<Page<AuditEvent>>;
 }
 
-/** The kinds of event the view filters by. Each is one type, or one type prefix, which is all `AuditQuery` takes. */
+/**
+ * The kinds of event the view filters by. Each is a list of types, each exact or a prefix ending in `.`; a kind of one
+ * type asks `AuditQuery.type`, and one of several `AuditQuery.types`.
+ */
 export type AuditKind =
 	| "all"
 	| "credential-use"
@@ -34,18 +37,19 @@ export type AuditKind =
 	| "identity"
 	| "capability";
 
-export const KINDS: readonly { value: AuditKind; label: string; type?: string }[] = [
+export const KINDS: readonly { value: AuditKind; label: string; types?: readonly [string, ...string[]] }[] = [
 	{ value: "all", label: "Everything" },
-	{ value: "credential-use", label: "Credential uses", type: "vault.use." },
-	{ value: "approval", label: "Approvals and denials", type: "vault.decision." },
-	{ value: "vault", label: "All vault events", type: "vault." },
-	{ value: "policy", label: "Policy changes", type: "vault.policy." },
-	{ value: "sandbox", label: "Sandbox", type: "sandbox." },
-	{ value: "session", label: "Session lifecycle", type: "session." },
-	{ value: "access", label: "Refused access", type: "access.denied" },
-	{ value: "browser", label: "Browser", type: "browser." },
-	{ value: "identity", label: "Keys and roles", type: "identity." },
-	{ value: "capability", label: "Capabilities", type: "capability." },
+	{ value: "credential-use", label: "Credential uses", types: ["vault.use."] },
+	{ value: "approval", label: "Approvals and denials", types: ["vault.decision."] },
+	{ value: "vault", label: "All vault events", types: ["vault."] },
+	// Who may use what: a credential's policies, and the capabilities granted to sessions.
+	{ value: "policy", label: "Policy changes", types: ["vault.policy.", "capability.grant."] },
+	{ value: "sandbox", label: "Sandbox", types: ["sandbox."] },
+	{ value: "session", label: "Session lifecycle", types: ["session."] },
+	{ value: "access", label: "Refused access", types: ["access.denied"] },
+	{ value: "browser", label: "Browser", types: ["browser."] },
+	{ value: "identity", label: "Keys and roles", types: ["identity."] },
+	{ value: "capability", label: "Capabilities", types: ["capability."] },
 ];
 
 export type AuditRange = "hour" | "day" | "today" | "yesterday" | "week" | "month" | "all";
@@ -142,13 +146,13 @@ const set = (value: string | undefined): value is string => value !== undefined 
 
 /** The filters as the store's query, newest first. */
 export function toQuery(filters: AuditFilters, now: number): AuditViewQuery {
-	const type = KINDS.find((kind) => kind.value === filters.kind)?.type;
+	const types = KINDS.find((kind) => kind.value === filters.kind)?.types;
 	const actor = set(filters.actor) ? actorFromKey(filters.actor) : undefined;
 	const { from, to } = rangeBounds(filters.range, now);
 	return {
 		newestFirst: true,
 		...(set(filters.organisationId) ? { organisationId: filters.organisationId } : {}),
-		...(type === undefined ? {} : { type }),
+		...(types === undefined ? {} : types.length === 1 ? { type: types[0] } : { types }),
 		...(actor === undefined ? {} : { actor }),
 		...(set(filters.projectId) ? { projectId: filters.projectId } : {}),
 		...(set(filters.agentId) ? { agentId: filters.agentId } : {}),
@@ -307,6 +311,20 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			return withLink({ action: "added a standing vault policy", tone: "accent", label: "Policy" });
 		case "vault.policy.revoked":
 			return withLink({ action: "removed a standing vault policy", tone: "idle", label: "Policy" });
+		case "capability.grant.created": {
+			const names = Array.isArray(data.capabilities) ? data.capabilities.flatMap((name) => text(name) ?? []) : [];
+			return withLink({
+				action: names.length === 0 ? "granted capabilities" : `granted ${names.join(", ")}`,
+				tone: "accent",
+				label: "Capability grant",
+			});
+		}
+		case "capability.grant.revoked":
+			return withLink({
+				action: `revoked a capability grant${text(data.reason) === undefined ? "" : `: ${text(data.reason)}`}`,
+				tone: "idle",
+				label: "Capability grant",
+			});
 		case "access.denied":
 			return withLink({
 				action: `was refused ${text(data.operation) ?? event.subject?.kind ?? "access"}`,

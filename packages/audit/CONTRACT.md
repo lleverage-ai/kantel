@@ -34,6 +34,10 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
 - Rows come in `seq` order (or reversed with `newestFirst`); every query field narrows; a type ending in `.` is a prefix;
   actors compare by kind and ID (a service's key only when asked); `from` is inclusive and `to` exclusive: "returns rows
   in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time".
+- `types` matches any of one to 20 types, each exact or a prefix ending in `.`, so "policy changes" is one query
+  (`types: ["vault.policy.", "capability.grant."]`). It combines with `type` (a row must match both) and every other
+  field, and pages by cursor; an empty list, an empty type or more than 20 are `invalid`, never "match nothing" or
+  "match all": "narrows by any of a list of types, exact or prefix, alongside type, and pages by them".
 - `itemId` and `grantId` match the vault item or grant an event is about: its subject when that is a `vault.item` or
   `vault.grant`, or else `data.itemId` or `data.grantId` when it is a string (a number, a list or a nested field is not
   an ID). They combine with every other field, page by cursor and keep to the rows the caller may see: "narrows by vault
@@ -81,8 +85,10 @@ The audit view (M1-FE3) and host apps read the store through two `GET` routes, d
   `AuditStore.query` with the query and page as search parameters. `auditQueryToSearchParams` writes them and
   `auditQueryFromSearchParams` reads them: `projectId`, `sessionId`, `agentId`, `actorKind` with `actorId` (plus
   `actorKeyId` for a service's key, `actorSessionId` for an agent), `source`, `type` (a prefix when it ends in `.`),
-  `subjectKind` with `subjectId`, `itemId`, `grantId`, `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and
-  `cursor`. An unknown, repeated, empty or half-given parameter is `invalid`.
+  `types` (repeated, once for each type in `AuditQuery.types`), `subjectKind` with `subjectId`, `itemId`, `grantId`,
+  `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and `cursor`. An unknown, empty or
+  half-given parameter is `invalid`, and so is a repeated one other than `types`. `auditQueryToSearchParams` refuses
+  an empty `types` list rather than leave it out, so it never reaches the server as no filter at all.
 - `GET /v1/audit/event?id=<id>` (`AUDIT_EVENT_PATH`) answers `AuditEventResponse` (`{ event }`): `AuditStore.get`. The
   id is a search parameter, not a path segment, because sources choose ids and one may be `.` or hold a `/`.
 - Every call goes through the deployment's `Authenticator`; the organisation is always the caller's, and the store

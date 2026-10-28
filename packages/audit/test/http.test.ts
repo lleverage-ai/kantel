@@ -30,6 +30,8 @@ describe("audit query search parameters", () => {
 		{ source: "vault", type: "vault.", subject: { kind: "vault.proposal", id: "x&y=z" } },
 		{ from: 0, to: 1_800_000_000_000, newestFirst: true },
 		{ itemId: "item/linear key", grantId: "grant&1", type: "vault.use." },
+		{ types: ["vault.policy."] },
+		{ types: ["vault.policy.", "capability.grant.", "odd,type&x=y"], type: "vault." },
 	];
 	it("round-trips every query field and the page", () => {
 		for (const query of queries) {
@@ -37,6 +39,19 @@ describe("audit query search parameters", () => {
 			expect(auditQueryFromSearchParams(params)).toEqual({ query, page: { limit: 50, cursor: "12" } });
 		}
 		expect(auditQueryFromSearchParams(new URLSearchParams(""))).toEqual({ query: {}, page: {} });
+	});
+
+	it("repeats types once per type, and refuses to write an empty list rather than drop it", () => {
+		expect(auditQueryToSearchParams({ types: ["vault.policy.", "capability.grant."] }).toString()).toBe(
+			"types=vault.policy.&types=capability.grant.",
+		);
+		let error: unknown;
+		try {
+			auditQueryToSearchParams({ types: [] });
+		} catch (caught) {
+			error = caught;
+		}
+		expect(isHarbourError(error, "invalid")).toBe(true);
 	});
 
 	it("rejects unknown, repeated, half or malformed parameters as invalid", () => {
@@ -58,6 +73,9 @@ describe("audit query search parameters", () => {
 			"to=1.5",
 			"limit=0",
 			"order=sideways",
+			"types=",
+			"types=vault.&types=",
+			Array.from({ length: 21 }, (_, index) => `types=t${index}.`).join("&"),
 		]) {
 			let error: unknown;
 			try {
