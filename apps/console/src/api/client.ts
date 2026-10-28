@@ -4,7 +4,7 @@
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
-import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
+import type { ComposerModelOption, SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
 /** Who the console acts as: whoever `GET /v1/me` names on the API, a stand-in for recorded sessions. */
@@ -38,6 +38,32 @@ export type SessionControl =
 			/** Shown in the composer, such as "Replaying a recorded session." */
 			readonly reason: string;
 	  };
+
+/** Whether the signed-in person may start a session in a project, and why not when they can't. */
+export type StartAccess =
+	| { readonly allowed: true }
+	| {
+			readonly allowed: false;
+			/** Shown under New session and in the composer, such as a viewer's "Starting one needs the operator role." */
+			readonly reason: string;
+	  };
+
+/** What a new session in a project runs with: the agent, and the models a person may pick for its first message. */
+export type StartOptions = {
+	readonly agentId: string;
+	readonly agentName: string;
+	/** In the order to show them, the agent's own marked `default`. Empty when the host lists none: no picker. */
+	readonly models: readonly ComposerModelOption[];
+};
+
+/** A session to create: the project, the agent, the model if one was picked, and its title. */
+export type CreateInput = {
+	readonly projectId: string;
+	readonly agentId: string;
+	/** A `StartOptions.models` id; absent runs the agent's own model. */
+	readonly model?: string;
+	readonly title?: string;
+};
 
 export type SendOptions = {
 	/** Retrying with the same id sends once. */
@@ -79,6 +105,12 @@ export interface ConsoleClient {
 	transport(sessionId: string): Transport;
 	/** The project a session belongs to, or undefined when there's no such session. */
 	projectOf(sessionId: string): Promise<string | undefined>;
+	/** Whether New session is offered in a project: the API refuses a viewer, so the console says so first. */
+	mayStart(projectId: string): StartAccess;
+	/** The agent a new session in the project runs, and its models. Rejects when no agent may run there. */
+	startOptions(projectId: string, signal?: AbortSignal): Promise<StartOptions>;
+	/** Creates an idle session and resolves with its id; its first message is a `prompt`. */
+	create(input: CreateInput): Promise<string>;
 	control(sessionId: string): SessionControl;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;

@@ -124,8 +124,12 @@ export {
 	filterModels,
 	ModelPicker,
 	type ModelPickerProps,
+	type ProjectOption,
+	ProjectPicker,
+	type ProjectPickerProps,
 	selectedModel,
 } from "./session/model-picker.tsx";
+export { NewSessionRow, type NewSessionRowProps } from "./session/new-session.tsx";
 export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
 export {
 	ConnectionState,
