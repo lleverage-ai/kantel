@@ -1,8 +1,9 @@
-import { AuditView, Badge, Button, EmptyState, ListRow, Notice, SessionList, Spinner } from "@harbour/ui";
+import { Badge, Button, EmptyState, ListRow, Notice, SessionList, Spinner } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
 import type { SessionClient } from "../state/session-client.ts";
+import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
 import {
 	AUDIT_PATH,
@@ -215,13 +216,7 @@ export function App({
 		main = (
 			<div className="shell-page">
 				{pageBar}
-				<AuditView
-					source={audit.source}
-					directory={audit.directory}
-					links={audit.links}
-					choices={audit.choices}
-					{...(audit.pollMs === undefined ? {} : { pollMs: audit.pollMs })}
-				/>
+				<AuditScreen audit={audit} />
 			</div>
 		);
 	} else if (missing || unknownProject) {

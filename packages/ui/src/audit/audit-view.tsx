@@ -275,7 +275,7 @@ export function AuditView({
 	// Ranges are measured from when the filters were last set, so the query holds still while the reader scrolls.
 	const [now, setNow] = useState(() => fixedNow ?? Date.now());
 	const query = useMemo(() => toQuery(filters, now), [filters, now]);
-	const feed = useAuditFeed(source, query, filters.credential, pollMs);
+	const feed = useAuditFeed(source, query, pollMs);
 	const entries = useDayEntries(feed.events);
 	const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
 	// The list is one Tab stop, on the active row; arrow keys, Home and End move it. A log of thousands of rows would
@@ -367,11 +367,7 @@ export function AuditView({
 		const mine = () => abort.current === controller && !controller.signal.aborted;
 		try {
 			// Oldest first in the file, as a log reads.
-			for await (const page of readAll(
-				source,
-				{ ...query, newestFirst: false },
-				{ ...(filters.credential === undefined ? {} : { credential: filters.credential }), signal: controller.signal },
-			)) {
+			for await (const page of readAll(source, { ...query, newestFirst: false }, { signal: controller.signal })) {
 				events.push(...page);
 				if (mine()) setExporting({ phase: "running", count: events.length });
 			}
@@ -540,11 +536,7 @@ export function AuditView({
 			<p className="hb-audit-status" role="status" data-loaded={feed.events.length}>
 				{feed.loading
 					? "Reading the audit log"
-					: `${count.format(feed.events.length)} ${feed.events.length === 1 ? "event" : "events"}${feed.hasMore ? " so far, newest first" : ", newest first"}${
-							filters.credential === undefined || filters.credential === ""
-								? ""
-								: ` (from ${count.format(feed.scanned)} read)`
-						}`}
+					: `${count.format(feed.events.length)} ${feed.events.length === 1 ? "event" : "events"}${feed.hasMore ? " so far, newest first" : ", newest first"}`}
 			</p>
 
 			{feed.newer > 0 ? (
@@ -574,24 +566,6 @@ export function AuditView({
 				>
 					Couldn't read the audit log. Nothing in it has changed; try again.
 				</Notice>
-			) : feed.events.length === 0 && feed.hasMore ? (
-				// A credential filter read a bounded run of pages without a match; older pages may still hold one.
-				<EmptyState
-					title="No matches yet"
-					action={
-						<Button
-							size="sm"
-							variant="secondary"
-							onClick={feed.loadMore}
-							aria-busy={feed.loadingMore || undefined}
-							{...(feed.loadingMore ? { icon: <Spinner size="sm" /> } : {})}
-						>
-							{feed.loadingMore ? "Reading older events" : "Look further back"}
-						</Button>
-					}
-				>
-					None of the {count.format(feed.scanned)} most recent events match. Older ones may.
-				</EmptyState>
 			) : feed.events.length === 0 ? (
 				<EmptyState title={isFiltered(filters) ? "No events match these filters" : "Nothing happened in this time"}>
 					{isFiltered(filters) ? "Widen the time or clear a filter." : "Pick a longer time to see older events."}

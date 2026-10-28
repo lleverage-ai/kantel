@@ -26,9 +26,10 @@ describe("the console's vault and audit stand-in", () => {
 		expect(linear).toBeDefined();
 		expect(audit.choices.credentials?.filter((choice) => choice.label === "Linear API key")).toHaveLength(1);
 		const uses = [];
-		for await (const page of readAll(audit.source, toQuery({ range: "all", kind: "credential-use" }, NOW), {
-			credential: linear!.value,
-		}))
+		for await (const page of readAll(
+			audit.source,
+			toQuery({ range: "all", kind: "credential-use", credential: linear!.value }, NOW),
+		))
 			uses.push(...page);
 		const recent = uses.filter((event) => event.at > NOW - 2 * 24 * 60 * 60 * 1000);
 		expect(recent.length).toBeGreaterThan(0);
