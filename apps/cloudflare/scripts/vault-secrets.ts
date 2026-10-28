@@ -15,11 +15,15 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-/** Kept in step with `VaultVars` in src/vault.ts; test/vault.test.ts checks they agree. */
+/**
+ * Kept in step with `VaultVars` in src/vault.ts and CPA's key in src/models.ts (which the vault object keeps as an
+ * item); test/vault.test.ts checks they agree.
+ */
 export const VAULT_SECRETS = [
 	"HARBOUR_VAULT_KEY",
 	"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN",
 	"HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN",
+	"HARBOUR_CPA_API_KEY",
 ] as const;
 
 export type VaultSecret = (typeof VAULT_SECRETS)[number];
@@ -40,12 +44,20 @@ export function vaultSecrets(env: Readonly<Record<string, string | undefined>>):
 	for (const name of VAULT_SECRETS) {
 		const value = (env[name] ?? "").trim();
 		if (value === "") continue;
-		const ok = name === "HARBOUR_VAULT_KEY" ? isVaultKey(value) : value.length >= 16 && !/\s/.test(value);
+		// CPA's key is whatever CPA was given; it only has to fit in a header.
+		const ok =
+			name === "HARBOUR_VAULT_KEY"
+				? isVaultKey(value)
+				: name === "HARBOUR_CPA_API_KEY"
+					? !/\s/.test(value)
+					: value.length >= 16 && !/\s/.test(value);
 		if (!ok) {
 			invalid.push(
 				name === "HARBOUR_VAULT_KEY"
 					? `${name} must be 32 random bytes in base64 (openssl rand -base64 32)`
-					: `${name} must be at least 16 characters with no spaces`,
+					: name === "HARBOUR_CPA_API_KEY"
+						? `${name} must have no spaces`
+						: `${name} must be at least 16 characters with no spaces`,
 			);
 			continue;
 		}

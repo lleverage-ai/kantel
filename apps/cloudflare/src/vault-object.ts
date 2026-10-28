@@ -7,6 +7,8 @@
  *   Worker's route or a service binding to it.
  * - `decideEgress` and `readConnectorCredential`: the same calls over RPC, for code in this Worker that already holds a
  *   component's system context.
+ * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `HARBOUR_CPA_API_KEY` secret this object
+ *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
  */
 import { DurableObject } from "cloudflare:workers";
 import type {
@@ -19,10 +21,15 @@ import type {
 import { d1Driver } from "@harbour/sql/sqlite";
 import type { VaultDurableObjectCore } from "@harbour/vault-cloudflare";
 import type { Env } from "./stack-object.ts";
-import { createVaultCore, vaultAuditSink, vaultUnavailable } from "./vault.ts";
+import { createVaultCore, seedCpaItem, vaultAuditSink, vaultUnavailable } from "./vault.ts";
+
+/** Where the items this object made are remembered, by name. */
+const SEEDED_PREFIX = "harbour.seeded-item.";
 
 export class HarbourVault extends DurableObject<Env> {
 	#core: VaultDurableObjectCore | undefined;
+	/** One seed at a time, so two first calls make one item; a failed seed is tried again on the next call. */
+	#cpaItem: Promise<string> | undefined;
 
 	/** The vault, built on first use. A failed build (no key yet) is tried again on the next call, not remembered. */
 	#vault(): VaultDurableObjectCore {
@@ -55,5 +62,24 @@ export class HarbourVault extends DurableObject<Env> {
 
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential> {
 		return this.#vault().readConnectorCredential(ctx, request);
+	}
+
+	cpaItem(): Promise<string> {
+		if (this.#cpaItem === undefined) {
+			const storage = this.ctx.storage;
+			const seeding = seedCpaItem(
+				this.#vault(),
+				{
+					get: (name) => storage.get<string>(`${SEEDED_PREFIX}${name}`),
+					put: (name, itemId) => storage.put(`${SEEDED_PREFIX}${name}`, itemId),
+				},
+				this.env,
+			);
+			this.#cpaItem = seeding;
+			seeding.catch(() => {
+				if (this.#cpaItem === seeding) this.#cpaItem = undefined;
+			});
+		}
+		return this.#cpaItem;
 	}
 }
