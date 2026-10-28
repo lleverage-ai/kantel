@@ -56,6 +56,7 @@ import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
 import type { StackModels } from "./models.ts";
+import { memoiseRoleOf } from "./role-memo.ts";
 import {
 	createStackSandboxes,
 	DEFAULT_ISOLATE_BACKEND,
@@ -228,7 +229,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const runtimeOptions = {
 		clock,
 		audit,
-		identity,
+		// The runtime's project access (and so the workspaces', sandboxes' and audit reads') asks for a role per item;
+		// one lookup per request is enough (`src/role-memo.ts`).
+		identity: memoiseRoleOf(identity, { clock }),
 		...models,
 		sandboxes: {
 			releaseSession: (ctx: CallContext, sessionId: string, reason?: LeaseEndReason) =>

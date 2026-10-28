@@ -316,6 +316,43 @@ describe("the stack over durable storage", () => {
 		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
 		expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
 	});
+
+	it("looks the caller's role up once per request, not once per listed session", async () => {
+		const storage = await durableStorage();
+		const sql = storage.sql!;
+		let roleQueries = 0;
+		const counted: StackStorage = {
+			...storage,
+			sql: {
+				dialect: sql.dialect,
+				query: (text, params) => {
+					// `roleOf`'s query; sign-in's membership check (`SELECT 1 …`) is separate and not memoised.
+					if (text.includes("SELECT role FROM identity_role_bindings")) roleQueries++;
+					return sql.query(text, params);
+				},
+				batch: (statements) => sql.batch(statements),
+			},
+		};
+		const { stack, call } = await start(counted);
+		for (let i = 0; i < 20; i++) {
+			const created = await call("/v1/sessions", {
+				method: "POST",
+				body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, title: `S${i}` }),
+			});
+			expect(created.status).toBe(201);
+		}
+
+		roleQueries = 0;
+		const listed = await call("/v1/sessions?limit=50");
+		expect(listed.status).toBe(200);
+		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(20);
+		expect(roleQueries).toBe(1);
+
+		// The next request signs in again and looks again.
+		roleQueries = 0;
+		expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
+		expect(roleQueries).toBe(1);
+	});
 });
 
 async function counts(storage: StackStorage) {
