@@ -348,7 +348,8 @@ describe("routing POST /v1/workspaces", () => {
 describe("the deployed entry point", () => {
 	it("never reaches the dev routes or the mock Access issuer", () => {
 		const src = join(import.meta.dirname, "../src");
-		for (const file of readdirSync(src)) {
+		for (const file of readdirSync(src, { recursive: true, encoding: "utf8" })) {
+			if (!file.endsWith(".ts")) continue;
 			// The dev entry point and the dev-only modules only it imports (dev-vault-seed.ts).
 			if (file === "dev.ts" || file.startsWith("dev-")) continue;
 			const text = readFileSync(join(src, file), "utf8");

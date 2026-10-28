@@ -35,11 +35,11 @@ import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runti
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
-import { MEASURE_PATH, measureIsolateReady, measurementWorkspace } from "./measure.ts";
+import { MEASURE_PATH, measureIsolateReady, measurementWorkspace, type PlacementProbe } from "./measure.ts";
 import { readLimited } from "./route.ts";
 import type { Stack } from "./stack.ts";
 
-/** The measurement's body is `{ "backend"?: string }`: a few bytes. */
+/** The measurement's body is `{ "backend"?: string, "placement"?: boolean }`: a few bytes. */
 const MEASURE_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
@@ -84,7 +84,12 @@ async function requesterNames(stack: Stack, ctx: CallContext, proposal: Proposal
 	};
 }
 
-export function createGateway(stack: Stack): Gateway {
+export interface GatewayOptions {
+	/** Where the stack runs, for the measurement's `placement` (the Durable Object answers it on Cloudflare). */
+	readonly placement?: PlacementProbe;
+}
+
+export function createGateway(stack: Stack, options: GatewayOptions = {}): Gateway {
 	const sessions: SessionApi = createSessionApi({
 		runtime: stack.runtime.runtime,
 		// The console's scroll-back: older turns, a page at a time, before the snapshot's.
@@ -166,9 +171,12 @@ export function createGateway(stack: Stack): Gateway {
 				{ status: 405, headers: { allow: "POST", "cache-control": "no-store" } },
 			);
 		}
+		const signingIn = performance.now();
 		const caller = await authenticate(request);
 		if (caller instanceof Response) return caller;
+		const signedIn = Math.round((performance.now() - signingIn) * 10) / 10;
 		let input: { backend?: string } = {};
+		let placement = false;
 		const bytes = await readLimited(request, MEASURE_BODY_LIMIT).catch(() => undefined);
 		if (bytes === undefined) {
 			return Response.json(
@@ -185,20 +193,35 @@ export function createGateway(stack: Stack): Gateway {
 					return undefined;
 				}
 			})();
-			const backend = (parsed as { backend?: unknown } | undefined)?.backend;
-			if (typeof parsed !== "object" || parsed === null || (backend !== undefined && typeof backend !== "string")) {
+			const body = parsed as { backend?: unknown; placement?: unknown } | undefined;
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				(body?.backend !== undefined && typeof body.backend !== "string") ||
+				(body?.placement !== undefined && typeof body.placement !== "boolean")
+			) {
 				return Response.json(
-					{ error: { code: "invalid", message: 'The body is { "backend"?: string }' } },
+					{ error: { code: "invalid", message: 'The body is { "backend"?: string, "placement"?: boolean }' } },
 					{ status: 400, headers: { "cache-control": "no-store" } },
 				);
 			}
-			input = backend === undefined ? {} : { backend };
+			input = typeof body?.backend === "string" ? { backend: body.backend } : {};
+			placement = body?.placement === true;
 		}
 		try {
 			const ctx = callContextFor(caller, { signal: request.signal });
-			return Response.json(await measureIsolateReady(stack, ctx, workspace, input), {
-				headers: { "cache-control": "no-store" },
-			});
+			const result = await measureIsolateReady(stack, ctx, workspace, input);
+			// Probed after the run, so it adds nothing to the run's times.
+			const where = placement && options.placement !== undefined ? await options.placement(request) : undefined;
+			return Response.json(
+				{
+					...result,
+					// Sign-in comes before the run and is not in `total`.
+					timings: { signIn: signedIn, ...result.timings },
+					...(where === undefined ? {} : { placement: where }),
+				},
+				{ headers: { "cache-control": "no-store" } },
+			);
 		} catch (error) {
 			return errorResponse(error);
 		}

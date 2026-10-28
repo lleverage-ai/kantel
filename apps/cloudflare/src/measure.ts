@@ -2,11 +2,16 @@
  * The isolate-ready measurement (#17's definition of done: a new session's isolate is ready, its workspace listed, in
  * ≤100 ms p50 and ≤300 ms p95 on the deployed stack, 50 runs, as in M0).
  *
- * `POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" }`, signed in like any API call. One run:
+ * `POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" | "dynamic-worker", "placement"?: true }`,
+ * signed in like any API call. One run:
  *
  * 1. creates a new session in the caller's default project, on the measurement workspace;
  * 2. runs `ls -1R` in that session's isolate on the chosen backend (default: the one sessions use);
  * 3. answers the times, then closes the session, which ends its lease.
+ *
+ * With `placement`, the answer also says where the stack runs (`Placement`): the stack object's colo, the request's
+ * edge colo, and D1's region, colo and per-query latency as the object sees them. It is probed after the run, so it
+ * adds nothing to the run's times.
  *
  * The measurement workspace is the M0 fixture's shape: 61 small files, made once in the project and reused, so a run
  * measures the session and the isolate, not seeding. After a restart it is found again through the last measurement
@@ -32,6 +37,24 @@ export interface IsolateReady {
 	/** Milliseconds: `session` (create), `isolate` (acquire and run), `total`, then the sandbox's own phases. */
 	readonly timings: Record<string, number>;
 }
+
+/** Where the stack runs, from inside its Durable Object (`placement: true`). Each field is left out when unknown. */
+export interface Placement {
+	/** The colo the stack object's own subrequests leave from (Cloudflare's `/cdn-cgi/trace`): where the object runs. */
+	readonly objectColo?: string;
+	/** The colo the request reached Cloudflare at (`request.cf.colo`). */
+	readonly edgeColo?: string;
+	readonly d1?: {
+		/** D1's `meta.served_by_region`, `served_by_colo` and `served_by_primary` for the last query. */
+		readonly region?: string;
+		readonly colo?: string;
+		readonly primary?: boolean;
+		/** `SELECT 1` in turn from the object: the round trip, and D1's own `timings.sql_duration_ms`. */
+		readonly queries: readonly { readonly roundTripMs: number; readonly sqlMs?: number }[];
+	};
+}
+
+export type PlacementProbe = (request: Request) => Promise<Placement>;
 
 const round = (ms: number) => Math.round(ms * 10) / 10;
 
