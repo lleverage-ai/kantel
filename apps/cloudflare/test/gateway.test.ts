@@ -7,6 +7,7 @@ import { createMockAccess } from "@harbour/identity/testing";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
+import { routeRequest, STACK_NAME, WORKSPACE_BODY_LIMIT } from "../src/route.ts";
 import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 
 const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
@@ -14,13 +15,29 @@ const AUD = "aud-harbour-test";
 const ADMIN = "tom@harbour.test";
 const BASE = "https://harbour.test";
 
+const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+
+/** Stands in for GitHub: every ref is COMMIT, and its tarball is an empty archive. Records what was asked. */
+function fakeGitHub() {
+	const calls: string[] = [];
+	const fetch = (async (input: string | URL | Request) => {
+		const url = String(input);
+		calls.push(url);
+		if (url.startsWith("https://api.github.com/repos/")) return new Response(COMMIT);
+		const empty = new Blob([new Uint8Array(1024)]).stream().pipeThrough(new CompressionStream("gzip"));
+		return new Response(empty);
+	}) as typeof globalThis.fetch;
+	return { calls, fetch };
+}
+
 async function setup(options: { access?: boolean } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		...(options.access === false ? {} : { HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, HARBOUR_ACCESS_AUD: AUD }),
 		HARBOUR_ADMIN_EMAIL: ADMIN,
 	});
-	const stack = await createStack({ config, accessFetch: mock.fetch });
+	const github = fakeGitHub();
+	const stack = await createStack({ config, accessFetch: mock.fetch, gitFetch: github.fetch });
 	const gateway = createGateway(stack);
 	const service = await stack.identity.createServiceIdentity(stack.admin, { name: "host" });
 	const key = await stack.identity.issueApiKey(stack.admin, {
@@ -34,7 +51,7 @@ async function setup(options: { access?: boolean } = {}) {
 		"cf-access-jwt-assertion": await mock.sign({ sub: "access-subject-1", email: ADMIN, ...claims }),
 	});
 	const withKey = { authorization: `Bearer ${key.secret}` };
-	return { mock, stack, gateway, call, signedIn, withKey };
+	return { mock, stack, gateway, call, signedIn, withKey, github };
 }
 
 describe("gateway config", () => {
@@ -154,6 +171,69 @@ describe("the gateway", () => {
 		expect(await content.text()).toBe("# Hello");
 	});
 
+	it("mounts POST /v1/workspaces: a host seeds a workspace from a git ref and files, then runs a session on it", async () => {
+		const { call, withKey, stack, github } = await setup();
+		const json = { ...withKey, "content-type": "application/json" };
+		const created = await call("/v1/workspaces", json, {
+			method: "POST",
+			body: JSON.stringify({
+				projectId: stack.project.id,
+				seed: {
+					name: "hello",
+					sources: [
+						{ kind: "git", repo: "octocat/Hello-World", ref: "master", into: "repo" },
+						{ kind: "files", files: { "notes/plan.md": "# Plan" } },
+					],
+				},
+			}),
+		});
+		expect(created.status).toBe(201);
+		const workspace = (await created.json()) as { id: string; seedReadiness: string; seedReport?: unknown };
+		expect(workspace.seedReadiness).toBe("files");
+		expect(workspace.seedReport).toMatchObject({ sources: [{ kind: "git", commit: COMMIT }, { kind: "files" }] });
+		expect(github.calls).toEqual([
+			"https://api.github.com/repos/octocat/Hello-World/commits/master",
+			`https://codeload.github.com/octocat/Hello-World/tar.gz/${COMMIT}`,
+		]);
+
+		const session = await call("/v1/sessions", json, {
+			method: "POST",
+			body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, workspaceId: workspace.id }),
+		});
+		expect(session.status).toBe(201);
+		expect(await session.json()).toMatchObject({ workspaceId: workspace.id });
+
+		const note = await call(`/v1/workspaces/${workspace.id}/content?path=notes/plan.md`, withKey);
+		expect(await note.text()).toBe("# Plan");
+		const audit = await call(`/v1/audit/events?projectId=${stack.project.id}`, withKey);
+		const types = ((await audit.json()) as { items: { type: string }[] }).items.map((event) => event.type);
+		expect(types.filter((type) => type.startsWith("sandbox."))).toEqual([]);
+	});
+
+	it("refuses POST /v1/workspaces without operator rights", async () => {
+		const { call, stack, github } = await setup();
+		const service = await stack.identity.createServiceIdentity(stack.admin, { name: "reader" });
+		const viewer = await stack.identity.issueApiKey(stack.admin, {
+			serviceId: service.id,
+			projectIds: [stack.project.id],
+			role: "viewer",
+		});
+		const body = JSON.stringify({
+			projectId: stack.project.id,
+			seed: { name: "x", sources: [{ kind: "git", repo: "octocat/Hello-World", ref: "master" }] },
+		});
+		const asViewer = await call(
+			"/v1/workspaces",
+			{ authorization: `Bearer ${viewer.secret}` },
+			{ method: "POST", body },
+		);
+		expect(asViewer.status).toBe(403);
+		expect(await asViewer.json()).toMatchObject({ error: { code: "forbidden" } });
+		const anonymous = await call("/v1/workspaces", {}, { method: "POST", body });
+		expect(anonymous.status).toBe(401);
+		expect(github.calls).toEqual([]);
+	});
+
 	it("mounts the audit query API, showing the admin the bootstrap's own events", async () => {
 		const { call, signedIn } = await setup();
 		const response = await call("/v1/audit/events?type=identity.project.created", await signedIn());
@@ -165,6 +245,29 @@ describe("the gateway", () => {
 	it("answers 404 for a path under no API", async () => {
 		const { call, withKey } = await setup();
 		expect((await call("/v2/sessions", withKey)).status).toBe(404);
+	});
+});
+
+describe("routing POST /v1/workspaces", () => {
+	it("reads the seed before the stack sees it, and refuses one past the limit", async () => {
+		const seen: string[] = [];
+		const stack = {
+			idFromName: (name: string) => name,
+			get: (name: string) => ({
+				fetch: async (request: Request) => {
+					seen.push(`${name} ${request.method} ${new URL(request.url).pathname} ${await request.text()}`);
+					return new Response(null, { status: 204 });
+				},
+			}),
+		};
+		const unused = { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null) }) };
+		const env = { STACK: stack, VAULTS: unused, ASSETS: { fetch: async () => new Response(null) } };
+		const post = (body: string) => routeRequest(new Request(`${BASE}/v1/workspaces`, { method: "POST", body }), env);
+		expect((await post('{"projectId":"p"}')).status).toBe(204);
+		expect(seen).toEqual([`${STACK_NAME} POST /v1/workspaces {"projectId":"p"}`]);
+		const refused = await post("x".repeat(WORKSPACE_BODY_LIMIT + 1));
+		expect(refused.status).toBe(413);
+		expect(seen).toHaveLength(1);
 	});
 });
 

@@ -5,13 +5,17 @@
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - The vault's egress decision API (`/v1/egress/decisions`, `/v1/connector-credentials`): the `HarbourVault`
  *   Durable Object, which authenticates the calling component itself (`src/vault.ts`).
- * - Every other `/v1/…`: the session, workspace read and audit APIs, served by the `HarbourStack` Durable Object.
+ * - Every other `/v1/…`: the session, workspace (read, and `POST /v1/workspaces` to create a seeded one) and audit
+ *   APIs, served by the `HarbourStack` Durable Object.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
+import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
 
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
+/** Where a host creates a seeded workspace. */
+const WORKSPACES_PATH = "/v1/workspaces";
 /** The one vault object's name. Platform items live outside every organisation, so the deployment has one vault. */
 export const VAULT_NAME = "vault";
 
@@ -29,11 +33,21 @@ export interface NamedObjects<Id> {
 /** The largest body the vault's API takes: an egress request or a key read is a few hundred bytes of JSON. */
 export const VAULT_BODY_LIMIT = 64 * 1024;
 
-const tooLarge = () =>
+/** The largest body `POST /v1/workspaces` takes: a seed's static files travel in it. */
+export const WORKSPACE_BODY_LIMIT = DEFAULT_MAX_SEED_BODY_BYTES;
+
+const tooLarge = (limit: number) =>
 	Response.json(
-		{ error: { code: "invalid", message: `The body is larger than ${VAULT_BODY_LIMIT} bytes` } },
+		{ error: { code: "invalid", message: `The body is larger than ${limit} bytes` } },
 		{ status: 413, headers: { "cache-control": "no-store" } },
 	);
+
+/** The request with its body read here, up to `limit`, or a 413. */
+async function buffered(request: Request, limit: number): Promise<Request | Response> {
+	const body = await readLimited(request, limit);
+	if (body === undefined) return tooLarge(limit);
+	return new Request(request.url, { method: request.method, headers: request.headers, body });
+}
 
 /** The whole body, or `undefined` once it passes `limit` bytes. Counts what arrives, not what Content-Length claims. */
 async function readLimited(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | undefined> {
@@ -79,14 +93,18 @@ export async function routeRequest<StackId, VaultId>(
 		// The vault refuses an unknown caller before it reads the body, and workerd then reports the unread stream it was
 		// still sending the object as an uncaught error. Its bodies are small JSON, so they are read here first, up to a
 		// limit, since anyone who reaches the Worker can send one before the vault checks who they are.
-		let body: Uint8Array<ArrayBuffer> | null = null;
-		if (request.method === "POST") {
-			const read = await readLimited(request, VAULT_BODY_LIMIT);
-			if (read === undefined) return tooLarge();
-			body = read;
-		}
-		const buffered = new Request(request.url, { method: request.method, headers: request.headers, body });
-		return env.VAULTS.get(env.VAULTS.idFromName(VAULT_NAME)).fetch(buffered);
+		const forwarded =
+			request.method === "POST"
+				? await buffered(request, VAULT_BODY_LIMIT)
+				: new Request(request.url, { method: request.method, headers: request.headers });
+		if (forwarded instanceof Response) return forwarded;
+		return env.VAULTS.get(env.VAULTS.idFromName(VAULT_NAME)).fetch(forwarded);
+	}
+	if (request.method === "POST" && path === WORKSPACES_PATH) {
+		// The same for creating a workspace: the stack refuses a caller without operator rights before it reads the seed.
+		const forwarded = await buffered(request, WORKSPACE_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(forwarded);
 	}
 	if (path === "/v1" || path.startsWith("/v1/")) return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(request);
 	return env.ASSETS.fetch(request);
