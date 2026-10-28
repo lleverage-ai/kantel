@@ -235,7 +235,18 @@ describe("the isolate-ready measurement", () => {
 		const other = await session(await workspace());
 		expect((await measure({ sessionId: other.id })).status).toBe(400);
 		const warmup = (await (await measure({ keep: true })).json()) as { sessionId: string };
-		expect((await measure({ sessionId: warmup.sessionId, backend: "dynamic-worker" })).status).not.toBe(200);
+		// A backend this Worker doesn't have is unavailable before any session is looked at.
+		expect((await measure({ sessionId: warmup.sessionId, backend: "dynamic-worker" })).status).toBe(503);
+		// A measurement session labelled with another backend is refused on this one.
+		const elsewhere = await stack.runtime.runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			labels: { measurement: "isolate-ready", backend: "dynamic-worker" },
+			workspaceId: await workspace(),
+		});
+		const refused = await measure({ sessionId: elsewhere.id, backend: "in-process" });
+		expect(refused.status).toBe(400);
+		expect(((await refused.json()) as { error: { message: string } }).error.message).toContain("on in-process");
 		expect((await measure({ sessionId: "no-such-session" })).status).toBe(404);
 		expect((await measure({ sessionId: warmup.sessionId, keep: true })).status).toBe(400);
 		expect((await measure({ sessionId: "" })).status).toBe(400);
