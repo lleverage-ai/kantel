@@ -6,7 +6,7 @@
 import type { ErrorCode } from "@harbour/contracts";
 import type { Static, TObject, TSchema } from "typebox";
 
-export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface RouteAnswer {
 	/** The success status. 204 has no body. */

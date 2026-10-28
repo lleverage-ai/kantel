@@ -6,7 +6,7 @@ schemas). Everything else is made from those definitions:
 
 | What | Where | Made by |
 | --- | --- | --- |
-| The server's routing and request checks | `createRouter(routes, handlers)` (`src/router.ts`) | `@harbour/runtime/http`'s `createSessionApi` uses it |
+| The server's routing and request checks | `createRouter(routes, handlers)` (`src/router.ts`) | `@harbour/runtime/http`'s `createSessionApi` serves `sessionRoutes`; `@harbour/schedules/http`'s `createSchedulesApi` serves `scheduleRoutes` |
 | The OpenAPI 3.1 document | `generated/openapi.json` (`@harbour/api/openapi.json`) | `pnpm --filter @harbour/api generate` |
 | The TypeScript SDK | `generated/sdk.ts` (`@harbour/api/sdk`) | the same |
 

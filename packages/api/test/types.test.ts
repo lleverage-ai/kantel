@@ -2,6 +2,7 @@
 // field added to one and not the other fails `pnpm typecheck`. The `it` is only there so vitest counts the file.
 import type {
 	Actor as ContractActor,
+	CheckSettings as ContractCheckSettings,
 	Concept as ContractConcept,
 	ConceptScope as ContractConceptScope,
 	ErrorCode as ContractErrorCode,
@@ -10,9 +11,13 @@ import type {
 	MemorySearchRequest as ContractMemorySearchRequest,
 	MemorySnapshot as ContractMemorySnapshot,
 	MemorySpace as ContractMemorySpace,
+	Occurrence as ContractOccurrence,
 	OwnerRef as ContractOwnerRef,
 	Recall as ContractRecall,
 	RecallRequest as ContractRecallRequest,
+	Recurrence as ContractRecurrence,
+	Schedule as ContractSchedule,
+	ScheduleKind as ContractScheduleKind,
 	SessionRecord as ContractSessionRecord,
 	SessionStatus as ContractSessionStatus,
 	SkillListing as ContractSkillListing,
@@ -24,6 +29,7 @@ import type {
 	ModelThinking,
 	Page,
 	PromptInput,
+	ScheduleInput,
 	SessionHistoryRequest,
 } from "@harbour/contracts";
 import type * as Protocol from "@harbour/protocol";
@@ -33,10 +39,12 @@ import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
 import type {
 	Actor,
+	CheckSettings,
 	Concept,
 	ConceptPage,
 	ConceptScope,
 	CreatedSession,
+	CreateScheduleBody,
 	CreateSessionBody,
 	ErrorCode,
 	FirstMessage,
@@ -47,9 +55,13 @@ import type {
 	MemorySpace,
 	MemorySpacePage,
 	MessageBody,
+	Occurrence,
 	OwnerRef,
 	Recall,
 	RecallBody,
+	Recurrence,
+	Schedule,
+	ScheduleKind,
 	SessionPage,
 	SessionRecord,
 	SessionStatus,
@@ -59,6 +71,7 @@ import type {
 	SkillRevisionPage,
 	Submission,
 	ThinkingLevel,
+	UpdateScheduleBody,
 } from "../src/schema.ts";
 
 /** Read-only all the way down, as the contracts are; the router returns contract values as `DeepReadonly`. */
@@ -68,6 +81,9 @@ type Assignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : fal
 type SameKeys<A, B> = Assignable<keyof A, keyof B>;
 type Same<A, B> = Assignable<A, B> extends true ? SameKeys<A, B> : false;
 const same = <A, B>(proof: Same<A, B>) => proof;
+/** The wire's JSON values (`payload`, `result`) are `unknown`: the rest must match exactly. */
+type Opaque = "payload" | "result";
+type Typed<T> = Omit<T, Opaque>;
 
 /**
  * The wire's `extensions` are records of `unknown` (`JsonValue` in the contracts, which the read-only mapping can't
@@ -111,6 +127,13 @@ describe("schemas match the contracts", () => {
 			same<Typed<Wire<typeof MemorySearchHit>>, Typed<ContractMemorySearchHit>>(true),
 			same<Wire<typeof RecallBody>, ContractRecallRequest>(true),
 			same<Typed<Wire<typeof Recall>>, Typed<ContractRecall>>(true),
+			same<Wire<typeof ScheduleKind>, ContractScheduleKind>(true),
+			same<Wire<typeof Recurrence>, ContractRecurrence>(true),
+			same<Wire<typeof CheckSettings>, ContractCheckSettings>(true),
+			same<Typed<Wire<typeof Schedule>>, Typed<ContractSchedule>>(true),
+			same<Typed<Wire<typeof CreateScheduleBody>>, Typed<ScheduleInput>>(true),
+			same<Typed<Wire<typeof UpdateScheduleBody>>, Typed<Partial<Omit<ScheduleInput, "owner" | "kind">>>>(true),
+			same<Typed<Wire<typeof Occurrence>>, Typed<ContractOccurrence>>(true),
 			same<Wire<typeof Frames.SessionHistoryPage>, ContractHistoryPage>(true),
 			same<Wire<typeof Frames.HistoryQuery>, SessionHistoryRequest>(true),
 		];

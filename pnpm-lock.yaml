@@ -537,6 +537,9 @@ importers:
 
   packages/schedules:
     dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
