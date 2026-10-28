@@ -5,10 +5,14 @@
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - The vault's egress decision API (`/v1/egress/decisions`, `/v1/connector-credentials`): the `HarbourVault`
  *   Durable Object, which authenticates the calling component itself (`src/vault.ts`).
+ * - The vault approval API (`/v1/vault/…`, the console's vault page): the `HarbourStack` Durable Object, which signs the
+ *   person in and checks their project role with the runtime's `ProjectAccess`, then calls the VaultDO over RPC
+ *   (`src/gateway.ts`, `src/vault.ts`). Never the VaultDO directly: it has no project roles of its own.
  * - Every other `/v1/…`: the session, workspace (read, and `POST /v1/workspaces` to create a seeded one) and audit
  *   APIs, served by the `HarbourStack` Durable Object.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
+import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
 
@@ -106,6 +110,8 @@ export async function routeRequest<StackId, VaultId>(
 		if (forwarded instanceof Response) return forwarded;
 		return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(forwarded);
 	}
-	if (path === "/v1" || path.startsWith("/v1/")) return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(request);
+	const stack = () => env.STACK.get(env.STACK.idFromName(STACK_NAME));
+	if (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`)) return stack().fetch(request);
+	if (path === "/v1" || path.startsWith("/v1/")) return stack().fetch(request);
 	return env.ASSETS.fetch(request);
 }

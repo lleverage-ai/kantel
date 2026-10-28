@@ -12,6 +12,7 @@
 		"./store": "./src/store.ts",
 		"./cipher": "./src/cipher.ts",
 		"./egress-api": "./src/egress-api.ts",
+		"./approval-api": "./src/approval-api.ts",
 		"./import": "./src/import.ts"
 	},
 	"dependencies": {

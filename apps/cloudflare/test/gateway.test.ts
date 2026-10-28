@@ -314,9 +314,10 @@ describe("the deployed entry point", () => {
 	it("never reaches the dev routes or the mock Access issuer", () => {
 		const src = join(import.meta.dirname, "../src");
 		for (const file of readdirSync(src)) {
-			if (file === "dev.ts") continue;
+			// The dev entry point and the dev-only modules only it imports (dev-vault-seed.ts).
+			if (file === "dev.ts" || file.startsWith("dev-")) continue;
 			const text = readFileSync(join(src, file), "utf8");
-			expect(text, file).not.toMatch(/@harbour\/identity\/testing|\.\/dev(\.ts)?["']|__dev/);
+			expect(text, file).not.toMatch(/@harbour\/identity\/testing|\.\/dev(-[a-z-]+)?(\.ts)?["']|__dev/);
 		}
 	});
 });

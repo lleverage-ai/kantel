@@ -8,7 +8,8 @@
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
  * - the model gateway (`src/models.ts`), calling CLIProxyAPI through the `MODELS` VPC service with the key the vault
  *   object keeps, when the Worker has both; the echo model otherwise;
- * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `HARBOUR_ISOLATE_BACKEND` names.
+ * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `HARBOUR_ISOLATE_BACKEND` names;
+ * - the vault approval API's vault: the VaultDO (`HarbourVault`), over RPC.
  *
  * One object serves every session in M1: see the README's "Decisions".
  */
@@ -25,14 +26,15 @@ import { VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
-import type { VaultVars } from "./vault.ts";
+import { approvalVaultOver, type VaultVars } from "./vault.ts";
+import type { HarbourVault } from "./vault-object.ts";
 
 export { STACK_NAME } from "./route.ts";
 
 export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars {
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
-	readonly VAULTS: DurableObjectNamespace;
+	readonly VAULTS: DurableObjectNamespace<HarbourVault>;
 	/** The Workers VPC service to CLIProxyAPI on Sal's host. Absent in `wrangler dev`. */
 	readonly MODELS?: Fetcher;
 	readonly ASSETS: Fetcher;
@@ -76,7 +78,13 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 
 	/** How the stack is built; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
-		return {};
+		// The approval API's vault: each call goes to the one VaultDO over RPC, as the person the gateway signed in.
+		const vaults = this.env.VAULTS;
+		return {
+			vault: approvalVaultOver((method, ctx, args) =>
+				vaults.get(vaults.idFromName(VAULT_NAME)).approvalCall(method, ctx, args),
+			),
+		};
 	}
 
 	/**

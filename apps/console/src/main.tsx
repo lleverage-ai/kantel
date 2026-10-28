@@ -9,6 +9,7 @@ import { createApiClient } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import type { ConsoleAudit, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
+import { apiVault } from "./api/vault-http.ts";
 import { App } from "./app/app.tsx";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
@@ -29,9 +30,10 @@ import "./ui/styles.css";
 // their projects by name. A 401, then or later, shows Harbour's email-code sign-in where the deployment signs people
 // in that way (self-hosted), and asks for a reload where Access does it at the edge.
 //
-// The vault page and audit log follow the source. On `api` the audit log reads the audit query API (M1-BE8) the
-// gateway serves on this origin; the vault page isn't listed, as the gateway serves no approval API yet. On `recorded`
-// both run on the in-memory vault and audit store in the page (recorded/oversight.ts).
+// The vault page and audit log follow the source. On `api` the vault page runs on the vault approval API and the audit
+// log on the audit query API (M1-BE8), both served by the gateway on this origin; the vault page is listed once the
+// approval API has said who is signed in, and not at all on a gateway without one. On `recorded` both run on the
+// in-memory vault and audit store in the page (recorded/oversight.ts).
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -85,7 +87,8 @@ const recordedOversight: Promise<Oversight> | undefined =
 			})
 		: undefined;
 
-function RecordedConsole({ client, oversight }: { client: ConsoleClient; oversight: Promise<Oversight> }) {
+/** The console once its vault page and audit log are known: recorded ones, or the API's. */
+function OversightConsole({ client, oversight }: { client: ConsoleClient; oversight: Promise<Oversight> }) {
 	return <Console client={client} oversight={use(oversight)} />;
 }
 
@@ -168,12 +171,31 @@ function SignedInConsole({
 			identity.forget();
 			onSignedOut();
 		};
+		const audit = apiAudit({ headers: state.headers });
 		return {
 			client: createApiClient({ actor: state.actor, headers: state.headers, onUnauthenticated }),
-			oversight: { audit: apiAudit({ headers: state.headers }) } satisfies Oversight,
+			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
+			oversight: apiVault({ headers: state.headers }).then(
+				(vault): Oversight => ({ vault, audit }),
+				(error: unknown): Oversight => {
+					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
+					return { audit };
+				},
+			),
 		};
 	}, [state, onSignedOut]);
-	return <Console client={made.client} oversight={made.oversight} />;
+	// A boundary of its own, so this component commits and keeps its promise while the vault answers.
+	return (
+		<Suspense
+			fallback={
+				<div className="boot hb-app">
+					<Spinner label="Opening the console" />
+				</div>
+			}
+		>
+			<OversightConsole client={made.client} oversight={made.oversight} />
+		</Suspense>
+	);
 }
 
 createRoot(document.getElementById("root")!).render(
@@ -186,7 +208,7 @@ createRoot(document.getElementById("root")!).render(
 			}
 		>
 			{client !== undefined && recordedOversight !== undefined ? (
-				<RecordedConsole client={client} oversight={recordedOversight} />
+				<OversightConsole client={client} oversight={recordedOversight} />
 			) : firstBoot !== undefined ? (
 				<ApiConsole first={firstBoot} />
 			) : null}

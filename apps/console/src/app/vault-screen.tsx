@@ -116,7 +116,7 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 				onRetry={retry}
 				onDecide={onDecide}
 				onDecided={onDecided}
-				passkey={vault.passkey}
+				{...(vault.passkey === undefined ? {} : { passkey: vault.passkey })}
 				grants={{
 					grants,
 					onStop,

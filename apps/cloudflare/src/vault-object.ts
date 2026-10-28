@@ -9,9 +9,12 @@
  *   component's system context.
  * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `HARBOUR_CPA_API_KEY` secret this object
  *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
+ * - `approvalCall`: the vault approval API's calls over RPC, for `HarbourStack`, which serves that API to people
+ *   (`answerApprovalCall` in `src/vault.ts`).
  */
 import { DurableObject } from "cloudflare:workers";
 import type {
+	CallContext,
 	ConnectorCredential,
 	ConnectorCredentialRequest,
 	EgressDecision,
@@ -21,7 +24,14 @@ import type {
 import { d1Driver } from "@harbour/sql/sqlite";
 import type { VaultDurableObjectCore } from "@harbour/vault-cloudflare";
 import type { Env } from "./stack-object.ts";
-import { createVaultCore, seedCpaItem, vaultAuditSink, vaultUnavailable } from "./vault.ts";
+import {
+	type ApprovalCallResult,
+	answerApprovalCall,
+	createVaultCore,
+	seedCpaItem,
+	vaultAuditSink,
+	vaultUnavailable,
+} from "./vault.ts";
 
 /** Where the items this object made are remembered, by name. */
 const SEEDED_PREFIX = "harbour.seeded-item.";
@@ -32,7 +42,7 @@ export class HarbourVault extends DurableObject<Env> {
 	#cpaItem: Promise<string> | undefined;
 
 	/** The vault, built on first use. A failed build (no key yet) is tried again on the next call, not remembered. */
-	#vault(): VaultDurableObjectCore {
+	protected vaultCore(): VaultDurableObjectCore {
 		if (this.#core === undefined) {
 			const storage = this.ctx.storage;
 			this.#core = createVaultCore({
@@ -48,7 +58,7 @@ export class HarbourVault extends DurableObject<Env> {
 	override async fetch(request: Request): Promise<Response> {
 		let core: VaultDurableObjectCore;
 		try {
-			core = this.#vault();
+			core = this.vaultCore();
 		} catch (error) {
 			console.error("harbour: the vault did not start", error instanceof Error ? error.message : "unknown error");
 			return vaultUnavailable(error);
@@ -57,18 +67,23 @@ export class HarbourVault extends DurableObject<Env> {
 	}
 
 	decideEgress(ctx: SystemContext, request: EgressRequest): Promise<EgressDecision> {
-		return this.#vault().decideEgress(ctx, request);
+		return this.vaultCore().decideEgress(ctx, request);
 	}
 
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential> {
-		return this.#vault().readConnectorCredential(ctx, request);
+		return this.vaultCore().readConnectorCredential(ctx, request);
+	}
+
+	/** One vault approval API call from `HarbourStack`, which has signed the person in and checked project access. */
+	approvalCall(method: string, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult> {
+		return answerApprovalCall(() => this.vaultCore().vault, method, ctx, args);
 	}
 
 	cpaItem(): Promise<string> {
 		if (this.#cpaItem === undefined) {
 			const storage = this.ctx.storage;
 			const seeding = seedCpaItem(
-				this.#vault(),
+				this.vaultCore(),
 				{
 					get: (name) => storage.get<string>(`${SEEDED_PREFIX}${name}`),
 					put: (name, itemId) => storage.put(`${SEEDED_PREFIX}${name}`, itemId),

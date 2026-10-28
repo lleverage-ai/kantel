@@ -40,14 +40,14 @@ const noop = async () => {
 	throw new Error("not in this test");
 };
 
-function render(request: VaultRequest, viewer: Viewer = people.tom) {
+function render(request: VaultRequest, viewer: Viewer = people.tom, options: { passkey?: boolean } = {}) {
 	return renderToStaticMarkup(
 		createElement(VaultPage, {
 			request,
 			viewer,
 			now: FIXTURE_NOW,
 			onDecide: noop,
-			passkey: async () => "confirmed" as const,
+			...(options.passkey === false ? {} : { passkey: async () => "confirmed" as const }),
 			grants: { grants: [], onStop: noop },
 		}),
 	);
@@ -85,6 +85,14 @@ describe("vault page fixtures", () => {
 		const read = await scenario.load(scenario.proposals.read);
 		expect(read.codeRequired).toBe(false);
 		expect(approveButton(render(read))).not.toContain("disabled");
+	});
+
+	it("claims no passkey on a host without one: Approve, on the sign-in alone", async () => {
+		const scenario = await createVaultScenario();
+		const html = render(await scenario.load(scenario.proposals.read), people.tom, { passkey: false });
+		expect(html).not.toMatch(/passkey/i);
+		expect(html).toMatch(/<button[^>]*>(?:(?!<\/button>).)*>Approve<\/span>/s);
+		expect(html).toContain("approving as the person signed in here");
 	});
 });
 

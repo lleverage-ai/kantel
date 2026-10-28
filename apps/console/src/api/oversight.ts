@@ -1,6 +1,7 @@
 // The vault page's and the audit view's seams to a Harbour host, beside `ConsoleClient`'s for sessions. Each is
-// optional: a console without one shows no link to its page. Until lane 5's decision API and lane 6's audit query
-// API land, `recorded/oversight.ts` serves both from the in-memory vault and audit store, in the page.
+// optional: a console without one shows no link to its page. On `source=api` they run over the vault approval API
+// (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
+// both from the in-memory vault and audit store, in the page.
 
 import type { Decision, DecisionInput } from "@harbour/contracts";
 import type {
@@ -26,8 +27,11 @@ export interface ConsoleVault {
 	/** Approves or denies; the vault refuses a wrong binding code with `refused`. */
 	decide(input: DecisionInput): Promise<Decision>;
 	stop(grantId: string): Promise<void>;
-	/** Asks for a passkey before an approval: WebAuthn in a browser, behind the host's challenge and check. */
-	readonly passkey: PasskeyCheck;
+	/**
+	 * Asks for a passkey before an approval: WebAuthn in a browser, behind the host's challenge and check. Absent on a
+	 * host with no passkeys yet; the page then approves on the sign-in alone and says so.
+	 */
+	readonly passkey?: PasskeyCheck;
 }
 
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */
