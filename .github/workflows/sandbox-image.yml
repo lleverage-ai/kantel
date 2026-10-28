@@ -83,7 +83,8 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
 
-      # On the host's daemon: the cases' containers have no network (`NetworkMode: none`) and only their own labels.
+      # On the host's daemon, with only their own labels: most cases' containers have no network (`NetworkMode: none`);
+      # the per-lease network cases make internal networks of their own and a stand-in proxy on runc.
       - name: Container tier tests on gVisor
         env:
           HARBOUR_TEST_DOCKER: "1"
@@ -121,5 +122,7 @@ jobs:
           [ -z "$containers" ] || docker rm --force --volumes $containers
           volumes="$(docker volume ls --format '{{.Name}} {{.Labels}}' | grep -F "$prefix" | cut -d' ' -f1 || true)"
           [ -z "$volumes" ] || docker volume rm $volumes
+          networks="$(docker network ls --no-trunc --format '{{.ID}} {{.Labels}}' | grep -F "$prefix" | cut -d' ' -f1 || true)"
+          [ -z "$networks" ] || docker network rm $networks
           if [ -n "$(docker image ls --quiet "$IMAGE")" ]; then docker image rm "$IMAGE"; fi
           rm -f "$RUNNER_TEMP/sandbox-image.json" "$RUNNER_TEMP/sandbox-image.digest.json"
