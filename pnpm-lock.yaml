@@ -49,6 +49,9 @@ importers:
       "@harbour/runtime-cloudflare":
         specifier: workspace:*
         version: link:../../targets/cloudflare/runtime
+      "@harbour/sandbox":
+        specifier: workspace:*
+        version: link:../../packages/sandbox
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql

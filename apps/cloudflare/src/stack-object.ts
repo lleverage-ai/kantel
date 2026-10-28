@@ -7,9 +7,10 @@
  *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
  * - the model gateway (`src/models.ts`), calling CLIProxyAPI through the `MODELS` VPC service with the key the vault
- *   object keeps, when the Worker has both; the echo model otherwise.
+ *   object keeps, when the Worker has both; the echo model otherwise;
+ * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `HARBOUR_ISOLATE_BACKEND` names.
  *
- * One object serves every session for now; a SessionDO per session is the next step.
+ * One object serves every session in M1: see the README's "Decisions".
  */
 
 import { DurableObject } from "cloudflare:workers";
@@ -21,13 +22,14 @@ import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
 import { cpaKey, createGatewayModels, defaultModel, type ModelsVars } from "./models.ts";
 import { VAULT_NAME } from "./route.ts";
+import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
 import type { VaultVars } from "./vault.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env extends GatewayVars, VaultVars, ModelsVars {
+export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars {
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
 	readonly VAULTS: DurableObjectNamespace;
@@ -53,10 +55,15 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 	/** Starts the stack once; see `startOnce` for what a failed configuration or start does. */
 	readonly #ready = startOnce({
 		// The models are configuration too: a bad HARBOUR_DEFAULT_MODEL is answered and retried, not a reset.
-		configure: () => ({ config: gatewayConfig(this.env), models: this.stackModels() }),
-		start: async ({ config, models }) => {
+		configure: () => ({
+			config: gatewayConfig(this.env),
+			models: this.stackModels(),
+			isolateBackend: isolateBackendName(this.env),
+		}),
+		start: async ({ config, models, isolateBackend }) => {
 			const stack = await createStack({
 				...(models === undefined ? {} : { models }),
+				isolateBackend,
 				...this.stackOptions(),
 				config,
 				storage: this.stackStorage(),

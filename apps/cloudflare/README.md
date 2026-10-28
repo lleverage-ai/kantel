@@ -26,11 +26,39 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
+| Sandboxes: #94's tiers, leases, the TTL sweep and session-end release; the isolate on `HARBOUR_ISOLATE_BACKEND` | `HarbourStack`, leases in memory | `@harbour/sandbox` (`src/sandboxes.ts`) |
 
 Migrations run on every start of the object; each is idempotent. The bootstrap saves each step as it completes, so a
-restart finds the same organisation rather than making another. Still to come: a SessionDO per session and the models
-binding to CLIProxyAPI (`MODELS`, already bound by the deploy); until then sessions run on an echo model
-(`src/echo-model.ts`).
+restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
+`MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
+
+## Decisions
+
+**One Durable Object for every session in M1** (28 Oct 2026). `HarbourStack` is M1's SessionDO: the runtime lane's
+`SessionRuntimeDurableObjectCore` (#98) runs every session in its one SQLite, with its alarm.
+
+- Why: in M0, first contact with a brand-new SessionDO alone took 467 ms p50 and 1,773 ms p95
+  ([M0-CF1 measurements](../../docs/measurements/m0-cf1/README.md), "Where the time goes"), against #17's target of
+  100 ms p50 for the whole of isolate-ready. A warm, shared object pays none of it.
+- What it costs: every session shares one single-threaded object, so one session's CPU-heavy work (an in-process
+  isolate command, a large commit) delays every other session's requests, and the object's memory and request rate
+  bound how many sessions run at once.
+- What replaces it: per-session objects taken from a pool of pre-created, idle objects (so a new session never pays
+  creation), with a session directory in D1 so the gateway routes each session to its object. Not built yet.
+
+**The isolate backend is a switch** (28 Oct 2026). `HARBOUR_ISOLATE_BACKEND` picks where the isolate tier runs, so
+the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
+runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate (a Dynamic Worker per session
+through a `worker_loaders` binding, as the M0 spike ran it), is not built yet. The container tier is not on
+Cloudflare yet: a command routed to it is refused `unavailable`.
+
+## Measuring isolate-ready
+
+`POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" }` (`src/measure.ts`), signed in like any
+API call. Each run creates a new session on a 61-file measurement workspace (made once per object start), runs
+`ls -1R` in the session's isolate, answers `{ backend, exitCode, listed, timings }` (server milliseconds for
+`session`, `isolate` and `total`, plus the sandbox's own phases), and closes the session. Run it 50 times and take
+p50 and p95 of the client's wall time and of `timings.total`.
 
 ## The vault (VaultDO)
 
