@@ -148,7 +148,7 @@ quiet spells, 25 ms with no call in flight from any session, often enough to ref
 or sessions running commands back to back, pays today's cost and no more. gVisor, the cost of concurrent bursts and the
 memory held by idle isolates are still unmeasured.
 
-## What #18 needs to do on Cloudflare
+## What #17 needs to do on Cloudflare
 
 Nothing was deployed here.
 
@@ -183,3 +183,106 @@ order.** Removing R2 (about 300 ms) and creation (about 470 ms p50, 1.8 s p95) l
 time could bring the hand-out to one call into a loaded isolate; whether it does depends on hibernation and
 Worker Loader's cache. Until a measurement Worker is deployed, the 100 ms p50 on Cloudflare is not shown to be
 reachable; the alternative is deciding that "ready" may exclude the isolate load.
+
+## Measured: option (a) (28 October 2026)
+
+Option (a) was chosen on 28 October 2026. The spike [`spikes/ready-preload`](../../spikes/ready-preload/README.md)
+built steps 2–4 in a temporary Worker (`harbour-ready-spike`, deleted afterwards) and measured them next to today's
+cold path. The raw files and phase tables are in
+[m1-cf1-ready-preload](../measurements/m1-cf1-ready-preload/README.md).
+
+**Answer: ≤100 ms p50 is reachable this way, but only when the hand-out finds the object's isolate still loaded, and
+Worker Loader does not promise that.** A hit is 79–98 ms p50. A miss, where the isolate has to be loaded again at
+hand-out, is 180–320 ms p50. Over a pool, p50 depends on how long objects wait before they are handed out.
+
+### Method
+
+- **Pre-loaded path.** A pool object is a SessionDO warmed before anyone owns it. Warming opens Pi Durable's Harness,
+  creates a conversation and loads the object's own Dynamic Worker under `slot:<name>`. That isolate has no
+  workspace binding, and its egress props name only the slot. Warming then runs one `ls` on an empty tree, so
+  just-bash is compiled and has run once.
+- **Hand-out.** A new session claims an object from a pool directory (a Durable Object). The object writes its
+  slot-to-session map once and takes the manifest from a WorkspaceDO (step 2). It then lists the workspace in the
+  slot's isolate, passing a `WorkspaceScope` with the call, as in the self-hosted pool. If the object has hibernated
+  or been evicted, its Harness reopens in parallel with the listing.
+- **Cold path.** M0-CF1's bench phases, rebuilt in the same Worker: a new SessionDO, setup (two R2 head reads,
+  `Harness.open`, a conversation), then the head and manifest from R2 and a Dynamic Worker never loaded before. It
+  is leaner than M0-CF1's: no leases or exec bookkeeping, and two R2 reads in the listing where M0-CF1's path makes
+  four. Treat it as a slightly optimistic stand-in for today's path.
+- **Isolate code.** The same in both arms: the self-hosted sandbox (`images/isolate-host/src/sandbox.ts`, 1.25 MiB
+  with just-bash).
+- **Ready.** M0-CF1's definition: the workspace (61 files) is listed by `ls -1R` in the session's isolate. It is
+  timed in the routing Worker, claim included.
+- **Runs.** 270 sessions in seven batches, sequential and paced, with no failures. The bench ran from Sal's host in
+  Germany, and the Worker ran in FRA. Cloudflare placed about 40% of the objects in FRA and the rest in AMS, and the
+  WorkspaceDO in AMS.
+
+### Numbers
+
+| Path | n | Ready p50 / p95 | Isolate loaded at hand-out |
+|---|---|---|---|
+| Cold, today's path | 50 | **1,046 / 1,404 ms** | — |
+| Pre-loaded, handed out 1 s after warming | 50 | **79 / 170 ms** | 50 of 50 |
+| The same, manifest from R2 instead of the WorkspaceDO | 20 | 272 / 421 ms | 20 of 20 |
+| After 60 s idle (object hibernated or evicted) | 50 | 225 / 417 ms (hits 86, misses 265 p50) | 23 of 50 |
+| After 15 min idle, no keep-alive | 40 | 321 / 569 ms | 0 of 40 |
+| After 15 min, alarm every 20 s pinging the isolate | 30 | 106 / 328 ms (hits 98, misses 257 p50) | 20 of 30 |
+| After 15 min, `setTimeout` every 20 s (object pinned in memory) | 30 | 168 / 510 ms (hits 89, misses 182 p50) | 14 of 30 |
+
+What the numbers show:
+
+- **A hot hand-out meets the target, measured in the Worker as M0-CF1 measured it.** A client in Germany saw 118 ms
+  p50, because its own round trip to FRA comes on top. The 79 ms p50 is two round trips from the Worker to objects
+  that may sit in another colo. The claim is 24 ms (bare round trip 8), and it includes a durable SQLite
+  write. The hand-out call is 53 ms (bare round trip 11). It includes a WorkspaceDO read (19 ms); the remaining
+  23 ms or so is the slot-to-session write and the two calls into the warm isolate.
+- **The hot manifest is required.** Reading the head and manifest from R2 adds about 190 ms p50 (272 against 79).
+- **Hibernation costs little; losing the isolate costs a lot.** After 60 s every object was a new instance (hibernated
+  or evicted; the spike can't tell which), so it woke and reopened its Harness. When the isolate survived, ready was still 86 ms p50, 7 ms above a hot hand-out. When it
+  did not, ready was 265 ms p50. The extra 180 ms is the load itself (about 70 ms p50 and 120 ms p95, measured in the
+  object, against the 310 ms this doc estimated) plus just-bash's first run in a new isolate. That run is CPU only, so
+  Workers clocks can't time it on its own.
+- **Worker Loader drops idle isolates, and a ping only partly helps.** Without pings, none of the isolates survived
+  15 minutes. An alarm every 20 s kept 20 of 30 loaded. Pinning the object in memory with a timer did worse: some
+  objects ran their loader callback 44 times in 15 minutes against 44 pings, so nearly every ping reloaded the
+  isolate. Keeping the Durable Object alive does not keep its Dynamic
+  Worker loaded. The docs say as much: "Two requests are never guaranteed to reach the same isolate."
+  (https://developers.cloudflare.com/dynamic-workers/api-reference/)
+- **The cold path is 1,046 ms p50** (first contact 415, setup 258, list 325). That is about 160 ms under
+  M0-CF1's 1,208, which fits its leaner listing.
+
+### Memory and cost of keeping isolates loaded
+
+- **Memory.** It cannot be measured from inside Workers. Each pooled isolate is its own Dynamic Worker holding the
+  compiled 1.25 MiB bundle, and Dynamic Workers are not billed for memory or wall time. The cost of idle isolates
+  shows up as eviction: the runtime reclaims them, which is what the hit rates above measure.
+- **Durable Object duration.** An idle object that can hibernate is not billed for duration. One held in memory, as
+  the timer keep-alive does, is billed for 128 MB the whole time: about 324,000 GB-s, or $4 a month per object at
+  $12.50 per million GB-s. It also gave the worse hit rate, so don't use it.
+- **Alarm keep-alive.** One alarm and one isolate call every 20 s is 129,600 Durable Object requests and 129,600
+  Dynamic Worker requests a month per object, about $0.06. Add a little duration per wake and $0.002 a day per
+  unique Dynamic Worker. That is roughly $0.15 a month per pooled object, so a pool of 20 costs about $3 a month.
+- **Warming.** About 0.5–0.6 s per object, off the critical path. Each warmed object that is never handed out still
+  counts as one unique Dynamic Worker that day. Pool objects must be created steadily (M0's `SQLITE_NOMEM`); one a
+  second gave no errors here.
+
+### Recommendation
+
+**Adopt (a) and combine it with (b).** Step 2, the hot manifest, is part of (a), not optional.
+
+- **Build steps 2–4 as measured.** Pre-created SessionDOs, each with its own isolate under a stable slot ID, and the
+  manifest in Durable Object storage.
+- **Keep the pool directory in HarbourStack.** It is already the session directory, so the claim becomes a local
+  SQLite write instead of a 24 ms round trip.
+- **Hand out the newest object first,** so objects are as young as possible when claimed.
+- **Keep each object's isolate warm with an alarm,** not a timer.
+- **Size the pool to the arrival rate,** so objects are claimed within minutes.
+- **Trim just-bash (b).** The miss is where p50 and p95 are lost. A miss is about 170 ms more than a hit, and nearly
+  all of that is loading and first running the bundle, so a smaller bundle cuts every miss.
+
+Expect about 80–110 ms p50 and about 300 ms p95: at the target, not under it with margin. That depends on Worker
+Loader keeping isolates, which Cloudflare does not promise.
+
+Measure the hit rate in production (the hand-out can log whether its isolate was loaded). If p50 stays above 100 ms
+after (b), the remaining levers are (c), listing from the manifest while the isolate loads, or (d), accepting the
+Cloudflare figure. Those choices are for the plan's owner.
