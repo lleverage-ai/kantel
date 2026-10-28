@@ -8,6 +8,7 @@
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
+ * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
  * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
@@ -24,12 +25,10 @@ import {
 	type AuthenticatedCaller,
 	type CallContext,
 	callContextFor,
-	ME_PATH,
-	PROJECTS_PATH,
 	type Proposal,
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
-import { createIdentityHandler } from "@harbour/identity/http";
+import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
@@ -221,7 +220,7 @@ export function createGateway(stack: Stack): Gateway {
 				return approvals(request);
 			}
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
-			if (path === ME_PATH || path === PROJECTS_PATH) return identity(request);
+			if (isIdentityPath(path)) return identity(request);
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();
 		},

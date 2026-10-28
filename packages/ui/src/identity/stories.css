@@ -16,6 +16,13 @@
 	align-items: start;
 }
 
+/* The API keys page as the console mounts it: the content column, nothing around it. */
+.hb-story-keys {
+	display: flex;
+	justify-content: center;
+	min-width: 0;
+}
+
 .hb-story-note {
 	margin: 0;
 	color: var(--hb-text-muted);

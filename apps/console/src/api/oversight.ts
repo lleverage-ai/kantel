@@ -3,8 +3,9 @@
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { Decision, DecisionInput } from "@harbour/contracts";
+import type { Decision, DecisionInput, HeldRole } from "@harbour/contracts";
 import type {
+	ApiKeysApi,
 	AuditDirectory,
 	AuditLinks,
 	AuditSource,
@@ -32,6 +33,15 @@ export interface ConsoleVault {
 	 * host with no passkeys yet; the page then approves on the sign-in alone and says so.
 	 */
 	readonly passkey?: PasskeyCheck;
+}
+
+/**
+ * Host apps' API keys, as the signed-in person may manage them: the key routes, and the person's roles from
+ * `GET /v1/me`, which say which projects they may issue keys for. Listed for an operator or above.
+ */
+export interface ConsoleKeys {
+	readonly api: ApiKeysApi;
+	readonly roles: readonly HeldRole[];
 }
 
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */

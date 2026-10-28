@@ -106,6 +106,7 @@ export class HarbourStack extends HarbourStackBase {
 					serviceId: service.id,
 					projectIds: [stack.project.id],
 					role: "operator",
+					name: "Dev host",
 				});
 				return issued.secret;
 			})();

@@ -1,20 +1,31 @@
 /**
  * Who is signed in and which projects they have, over HTTP: `GET /v1/me` and `GET /v1/projects` (`ME_PATH` and
- * `PROJECTS_PATH`; the bodies are in `packages/contracts/src/identity.ts`). A Fetch-style handler behind the
- * authenticator, so it mounts in any Node, Bun or Worker router, and a client for both routes and for email one-time
- * PIN sign-in (`./otp-http.ts`), which the console and host apps call. Portable: Workers, Bun, Node and the browser.
+ * `PROJECTS_PATH`), and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
+ * the bodies are in `packages/contracts/src/identity.ts`). A Fetch-style handler behind the authenticator, so it
+ * mounts in any Node, Bun or Worker router, and a client for these routes and for email one-time PIN sign-in
+ * (`./otp-http.ts`), which the console and host apps call. Portable: Workers, Bun, Node and the browser.
  */
 import {
 	type Actor,
+	API_KEY_NAME_MAX_LENGTH,
+	API_KEYS_PATH,
+	type ApiKey,
+	type ApiKeysResponse,
 	type AuthenticatedCaller,
 	type Authenticator,
+	apiKeyRevokePath,
 	authenticationFailureOf,
+	type CallContext,
+	type Clock,
+	type CreateApiKeyRequest,
+	type CreateApiKeyResponse,
 	callContextFor,
 	type ErrorCode,
 	HarbourError,
 	type HeldRole,
 	type IdentityDirectory,
 	type IdentityErrorResponse,
+	type IssuedApiKey,
 	isHarbourError,
 	type JsonValue,
 	ME_PATH,
@@ -29,9 +40,11 @@ import {
 	type ProjectsResponse,
 	ROLES,
 	type Role,
+	roleSatisfies,
 	SESSION_END_PATH,
 	SIGN_IN_METHODS,
 	type SignInMethod,
+	systemClock,
 	systemContext,
 	type UnauthenticatedResponse,
 } from "@harbour/contracts";
@@ -80,9 +93,28 @@ function failed(error: unknown): Response {
 	return errorResponse(500, "internal", "Internal error");
 }
 
+/** The largest body `POST /v1/keys` takes: a name, a few project IDs and a role. */
+export const API_KEY_BODY_LIMIT = 16 * 1024;
+
+/** The most projects one key may name. */
+export const API_KEY_MAX_PROJECTS = 100;
+
 export interface IdentityHandlerOptions {
-	readonly identity: Pick<IdentityDirectory, "getUser" | "listProjects" | "roleOf">;
+	readonly identity: Pick<
+		IdentityDirectory,
+		| "getUser"
+		| "getProject"
+		| "listProjects"
+		| "roleOf"
+		| "authorize"
+		| "createServiceIdentity"
+		| "issueApiKey"
+		| "listApiKeys"
+		| "revokeApiKey"
+	>;
 	readonly authenticator: Authenticator;
+	/** The clock a new key's expiry is checked against. Default the system's. */
+	readonly clock?: Clock;
 	/**
 	 * How a person signs in to this deployment, named in every 401 so a console knows what to show: `email_otp` when
 	 * the deployment serves `/auth/otp/*`, `cloudflare_access` when Access signs people in at the edge.
@@ -151,14 +183,146 @@ async function heldRoles(
 	return roles;
 }
 
+type Route = { readonly name: "me" | "projects" | "keys" } | { readonly name: "revoke"; readonly keyId: string };
+
+const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
+	me: ["GET"],
+	projects: ["GET"],
+	keys: ["GET", "POST"],
+	revoke: ["POST"],
+};
+
+const REVOKE_SUFFIX = "/revoke";
+
+function routeOf(path: string): Route | undefined {
+	if (path === ME_PATH) return { name: "me" };
+	if (path === PROJECTS_PATH) return { name: "projects" };
+	if (path === API_KEYS_PATH) return { name: "keys" };
+	if (!path.startsWith(`${API_KEYS_PATH}/`) || !path.endsWith(REVOKE_SUFFIX)) return undefined;
+	const segment = path.slice(API_KEYS_PATH.length + 1, -REVOKE_SUFFIX.length);
+	if (segment === "" || segment.includes("/")) return undefined;
+	try {
+		return { name: "revoke", keyId: decodeURIComponent(segment) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Whether the path is one this handler serves, for a router deciding where a request goes. */
+export function isIdentityPath(path: string): boolean {
+	return routeOf(path) !== undefined;
+}
+
 /**
- * Serves `GET /v1/me` and `GET /v1/projects`; any other path is 404, any other method 405. Every call is
- * authenticated first: a missing or bad credential is 401 with a `WWW-Authenticate` challenge and the deployment's
- * sign-in methods, an organisation the caller may not act in is 403. Errors other than `HarbourError`s are 500 with no
- * detail.
+ * Whether the caller may reach the key routes: `operator` or stronger on the organisation, or on at least one of its
+ * projects (up to `ME_ROLE_PROJECT_CAP` of them), so a viewer is refused here. This is only the route's gate: the
+ * directory still decides each call, and it lets only an admin of every project a key covers issue, see or revoke it.
+ * An operator who is not such an admin lists no keys and is refused each create and revoke with `forbidden`.
+ */
+async function mayReachKeys(
+	identity: IdentityHandlerOptions["identity"],
+	caller: AuthenticatedCaller,
+	ctx: CallContext,
+): Promise<boolean> {
+	return (await heldRoles(identity, caller, ctx)).some((held) => roleSatisfies(held.role, "operator"));
+}
+
+/** Whether a POST says it carries JSON. */
+const sendsJson = (request: Request): boolean =>
+	/^application\/json\s*(;|$)/i.test(request.headers.get("content-type") ?? "");
+
+/** The body as JSON, refused past `API_KEY_BODY_LIMIT` bytes; an empty body is `{}`. */
+async function readJson(request: Request): Promise<unknown> {
+	const declared = Number(request.headers.get("content-length") ?? "0");
+	if (declared > API_KEY_BODY_LIMIT) throw new HarbourError("invalid", "The body is too large");
+	const text = await request.text();
+	if (new TextEncoder().encode(text).byteLength > API_KEY_BODY_LIMIT) {
+		throw new HarbourError("invalid", "The body is too large");
+	}
+	if (text.trim() === "") return {};
+	try {
+		return JSON.parse(text) as unknown;
+	} catch {
+		throw new HarbourError("invalid", "The body must be JSON");
+	}
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+const CREATE_FIELDS = new Set(["name", "projectIds", "role", "expiresAt", "serviceId"]);
+
+/** A `CreateApiKeyRequest`, checked field by field, or an `invalid` error naming what is wrong. */
+function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
+	const invalid = (message: string) => new HarbourError("invalid", message);
+	if (!isRecord(body)) throw invalid("The body is { name, projectIds, role, expiresAt?, serviceId? }");
+	for (const field of Object.keys(body)) if (!CREATE_FIELDS.has(field)) throw invalid(`Unknown field ${field}`);
+	const { name, projectIds, role, expiresAt, serviceId } = body;
+	if (typeof name !== "string" || name.trim() === "") throw invalid("name must be a non-empty string");
+	if (name.trim().length > API_KEY_NAME_MAX_LENGTH) {
+		throw invalid(`name is at most ${API_KEY_NAME_MAX_LENGTH} characters`);
+	}
+	if (
+		!Array.isArray(projectIds) ||
+		projectIds.length === 0 ||
+		projectIds.length > API_KEY_MAX_PROJECTS ||
+		!projectIds.every((id) => typeof id === "string" && id !== "")
+	) {
+		throw invalid(`projectIds must list 1 to ${API_KEY_MAX_PROJECTS} project IDs`);
+	}
+	if (typeof role !== "string" || !ROLES.includes(role as Role))
+		throw invalid("role must be viewer, operator or admin");
+	if (expiresAt !== undefined) {
+		if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) throw invalid("expiresAt must be a time in ms");
+		if (expiresAt <= now) throw invalid("expiresAt must be in the future");
+	}
+	if (serviceId !== undefined && (typeof serviceId !== "string" || serviceId === "")) {
+		throw invalid("serviceId must be a non-empty string");
+	}
+	return {
+		name: name.trim(),
+		projectIds: [...new Set(projectIds as string[])],
+		role: role as Role,
+		...(expiresAt === undefined ? {} : { expiresAt: expiresAt as number }),
+		...(serviceId === undefined ? {} : { serviceId: serviceId as string }),
+	};
+}
+
+/**
+ * Issues the request's key. Without a `serviceId` the key gets a service identity of its own, named after it: every
+ * check that could refuse the key is made first (each project exists, the caller is an organisation admin), so a
+ * refusal leaves no service behind.
+ */
+async function issue(
+	identity: IdentityHandlerOptions["identity"],
+	ctx: CallContext,
+	request: CreateApiKeyRequest,
+): Promise<IssuedApiKey> {
+	let serviceId = request.serviceId;
+	if (serviceId === undefined) {
+		for (const projectId of request.projectIds) await identity.getProject(ctx, projectId);
+		await identity.authorize(ctx, "admin");
+		serviceId = (await identity.createServiceIdentity(ctx, { name: request.name })).id;
+	}
+	return identity.issueApiKey(ctx, {
+		serviceId,
+		projectIds: request.projectIds,
+		role: request.role,
+		name: request.name,
+		...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
+	});
+}
+
+/**
+ * Serves `GET /v1/me`, `GET /v1/projects`, `GET` and `POST /v1/keys` and `POST /v1/keys/:id/revoke`; any other path is
+ * 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
+ * `WWW-Authenticate` challenge and the deployment's sign-in methods, an organisation the caller may not act in is 403.
+ * The key routes then need `admin` somewhere in the organisation (else 403), and their POSTs a JSON content type (else
+ * 415). Errors other than `HarbourError`s are 500 with no detail.
  */
 export function createIdentityHandler(options: IdentityHandlerOptions): (request: Request) => Promise<Response> {
 	const { identity, authenticator } = options;
+	const clock = options.clock ?? systemClock;
 	const signIn = options.signIn?.filter((method) => SIGN_IN_METHODS.includes(method));
 
 	const unauthenticated = (message: string): Response => {
@@ -170,9 +334,12 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 
 	return async (request) => {
 		const url = new URL(request.url);
-		const path = url.pathname;
-		if (path !== ME_PATH && path !== PROJECTS_PATH) return errorResponse(404, "not_found", "No such route");
-		if (request.method !== "GET") return errorResponse(405, "invalid", "Use GET", { allow: "GET" });
+		const route = routeOf(url.pathname);
+		if (route === undefined) return errorResponse(404, "not_found", "No such route");
+		const allowed = ALLOW[route.name];
+		if (!allowed.includes(request.method)) {
+			return errorResponse(405, "invalid", `Use ${allowed.join(" or ")}`, { allow: allowed.join(", ") });
+		}
 
 		let caller: AuthenticatedCaller;
 		try {
@@ -180,7 +347,13 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 		} catch (error) {
 			const failure = authenticationFailureOf(error);
 			if (failure === "organisation") {
-				return errorResponse(403, "forbidden", isHarbourError(error) ? error.message : "You may not act here");
+				return json(403, {
+					error: {
+						code: "forbidden",
+						failure,
+						message: isHarbourError(error) ? error.message : "You may not act here",
+					},
+				});
 			}
 			if (failure !== undefined) {
 				return unauthenticated(failure === "missing" ? "This call needs credentials" : "The credentials are not valid");
@@ -192,7 +365,37 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 		const requestId = request.headers.get("harbour-request-id") ?? undefined;
 		const ctx = callContextFor(caller, { ...(requestId === undefined ? {} : { requestId }), signal: request.signal });
 		try {
-			if (path === ME_PATH) {
+			if (route.name === "keys" || route.name === "revoke") {
+				if (!(await mayReachKeys(identity, caller, ctx))) {
+					return errorResponse(403, "forbidden", "API keys need the operator role or stronger");
+				}
+				if (request.method === "GET") {
+					for (const name of url.searchParams.keys()) {
+						if (name !== "serviceId") throw new HarbourError("invalid", `Unknown parameter ${name}`);
+					}
+					const serviceId = url.searchParams.get("serviceId");
+					const items: readonly ApiKey[] = await identity.listApiKeys(
+						ctx,
+						serviceId === null || serviceId === "" ? undefined : { serviceId },
+					);
+					const body: ApiKeysResponse = { items };
+					return json(200, body);
+				}
+				if (!sendsJson(request)) {
+					return errorResponse(415, "invalid", "Send the body as application/json");
+				}
+				const body = await readJson(request);
+				if (route.name === "revoke") {
+					if (!isRecord(body) || Object.keys(body).length > 0) {
+						throw new HarbourError("invalid", "A revocation's body is {}");
+					}
+					await identity.revokeApiKey(ctx, route.keyId);
+					return new Response(null, { status: 204, headers: NO_STORE });
+				}
+				const issued: CreateApiKeyResponse = await issue(identity, ctx, createRequestOf(body, clock.now()));
+				return json(201, issued);
+			}
+			if (route.name === "me") {
 				const [described, roles] = await Promise.all([
 					describe(identity, caller, ctx),
 					heldRoles(identity, caller, ctx),
@@ -236,6 +439,12 @@ export interface IdentityClient {
 	verifyOtp(email: string, code: string, signal?: AbortSignal): Promise<OtpVerifyResponse>;
 	/** Ends a Harbour session. */
 	endSession(token: string, signal?: AbortSignal): Promise<void>;
+	/** The keys the caller administers, revoked ones included. Never a secret. */
+	listApiKeys(input?: { readonly serviceId?: string }, signal?: AbortSignal): Promise<ApiKey[]>;
+	/** Issues a key; the answer is the only time its secret is ever sent. */
+	createApiKey(input: CreateApiKeyRequest, signal?: AbortSignal): Promise<IssuedApiKey>;
+	/** Revokes a key; its next call is refused. Resolves for a key already revoked too. */
+	revokeApiKey(keyId: string, signal?: AbortSignal): Promise<void>;
 }
 
 /** The seconds a `Retry-After` header asks for, when it gives a number of them or a date. */
@@ -251,7 +460,9 @@ function retryAfterSeconds(header: string | null, now: number): number | undefin
  * A client for the identity routes and email one-time PIN sign-in. Failures reject with a `HarbourError`:
  * - 401 is `forbidden` with `details.authentication: "invalid"` and, when the deployment named them,
  *   `details.signIn`, its sign-in methods; a wrong, expired or used code is this too.
- * - 403 is `forbidden` with `details.authentication: "organisation"` when the caller may not act in the organisation.
+ * - 403 is `forbidden` with `details.authentication: "organisation"` when the caller may not act in the organisation,
+ *   and a plain `forbidden` when its role is not enough: a viewer on the key routes, or an operator issuing or revoking
+ *   a key for a project it is not an admin of.
  * - 429 (a deployment's per-address limit on sign-in) is `exhausted`, with `details.retryAfterSeconds` when the
  *   response said.
  * - A failed fetch is `unavailable`; anything else carries the server's code, or `unavailable`.
@@ -289,7 +500,7 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 			if (signIn !== undefined) details.signIn = signIn;
 			return new HarbourError("forbidden", message, details);
 		}
-		if (response.status === 403 && (error?.failure === "organisation" || error?.code === "forbidden")) {
+		if (response.status === 403 && error?.failure === "organisation") {
 			return new HarbourError("forbidden", message, { authentication: "organisation" });
 		}
 		if (response.status === 429) {
@@ -344,6 +555,19 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 
 		async endSession(token, signal) {
 			await post(SESSION_END_PATH, {}, signal, { authorization: `Bearer ${token}` });
+		},
+
+		async listApiKeys(input = {}, signal) {
+			const suffix = input.serviceId === undefined ? "" : `?${new URLSearchParams({ serviceId: input.serviceId })}`;
+			return [...(await getJson<ApiKeysResponse>(`${API_KEYS_PATH}${suffix}`, signal)).items];
+		},
+
+		async createApiKey(input, signal) {
+			return (await (await post(API_KEYS_PATH, input, signal)).json()) as CreateApiKeyResponse;
+		},
+
+		async revokeApiKey(keyId, signal) {
+			await post(apiKeyRevokePath(keyId), {}, signal);
 		},
 	};
 	return client;

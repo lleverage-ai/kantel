@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AUDIT_PATH,
 	filesPath,
+	KEYS_PATH,
 	parseRoute,
 	projectPath,
 	sessionPath,
@@ -42,6 +43,8 @@ describe("routes", () => {
 		expect(parseRoute("/vault/requests/proposal_1")).toEqual({ name: "vault-request", proposalId: "proposal_1" });
 		expect(parseRoute(AUDIT_PATH)).toEqual({ name: "audit" });
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
+		expect(parseRoute(KEYS_PATH)).toEqual({ name: "keys" });
+		expect(parseRoute("/keys/key_1")).toEqual({ name: "not-found", path: "/keys/key_1" });
 	});
 
 	it("parses a session's files and one file in them, mounts included", () => {
