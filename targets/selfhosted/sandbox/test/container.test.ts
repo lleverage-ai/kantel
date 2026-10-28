@@ -488,17 +488,21 @@ function proxied(url: string): string {
 function recordingCredentials() {
 	const issued = new Map<string, { token: string; actor: CallContext["actor"]; sessionId: string }>();
 	const revoked: string[] = [];
+	/** `issue:<lease>` and `revoke:<lease>`, in order. */
+	const events: string[] = [];
 	const credentials: ProxyCredentials = {
 		async issue({ ctx: call, lease }) {
 			const token = `tok-${crypto.randomUUID()}`;
 			issued.set(lease.id, { token, actor: call.actor, sessionId: lease.sessionId });
+			events.push(`issue:${lease.id}`);
 			return token;
 		},
 		async revoke(leaseId) {
 			revoked.push(leaseId);
+			events.push(`revoke:${leaseId}`);
 		},
 	};
-	return { credentials, issued, revoked };
+	return { credentials, issued, revoked, events };
 }
 
 describe("Docker container tier options", () => {
@@ -693,5 +697,111 @@ describe.skipIf(!enabled)(`Docker container tier, per-lease networks (${runtime}
 				await restarted.close();
 			}
 		});
+	});
+
+	it("never revokes the token of a container a command starts while the janitor runs", async (t) => {
+		await withProxy(
+			t.skip,
+			async ({ deps, workspaces, workspaceId, sandboxes, acquire, prefix, issued, events, options }) => {
+				const lease = await acquire("container", 60_000);
+				await sandboxes.exec(ctx, lease.id, { command: "true" });
+				const record = await workspaces.get(ctx, workspaceId);
+				// Each round, a restarted backend finds the last round's container expired and a command for its lease at once;
+				// the delays move the command's start across the janitor's listing. Whichever goes first, the container that
+				// serves the command keeps its token.
+				for (const delayMs of [0, 2, 5, 10, 20, 40]) {
+					const restarted = backendFor(workspaces, prefix, deps, options);
+					try {
+						const [, ran] = await Promise.all([
+							restarted.reapExpired(lease.expiresAt),
+							new Promise((resolve) => setTimeout(resolve, delayMs)).then(() =>
+								restarted.exec({ ctx, lease, record, request: { command: proxied("http://example.test/") } }),
+							),
+						]);
+						expect(ran.exitCode, `after ${delayMs} ms`).toBe(0);
+						const seen = JSON.parse(ran.stdout) as { auth: string | null };
+						expect(seen.auth).toBe(`Basic ${btoa(`sbx:${issued.get(lease.id)?.token}`)}`);
+						const mine = events.filter((event) => event.endsWith(`:${lease.id}`));
+						expect(mine.at(-1), `after ${delayMs} ms`).toBe(`issue:${lease.id}`);
+					} finally {
+						await restarted.close();
+					}
+				}
+			},
+		);
+	});
+});
+
+describe.skipIf(!enabled)(`Docker container tier, proxy credentials on a shared network (${runtime})`, () => {
+	it("leaves a lease the janitor can find when its container fails after the token was issued", async (t) => {
+		try {
+			await lookup("harbour-sandbox-test.localhost");
+		} catch {
+			t.skip();
+			return;
+		}
+		const ca = createServer((_request, response) => response.end("not a real CA\n"));
+		await new Promise<void>((resolve) => ca.listen(0, "::", resolve));
+		const port = (ca.address() as AddressInfo).port;
+		const revoked: string[] = [];
+		let revokes = 0;
+		let proxyHost = "";
+		// The token is refused after it was issued, so creation fails then; and the revocation in the cleanup after it
+		// fails too (the first is the one before creation). With no mounts and a shared network, only the credentials
+		// marker is left to find the lease by.
+		const { prefix, deps, workspaces, sandboxes, cleanup } = await setUp((prefix) => {
+			proxyHost = `${prefix}-sp.localhost`;
+			return {
+				network: { name: `${prefix}-shared`, proxyUrl: `http://${proxyHost}:${port}` },
+				proxyCredentials: {
+					issue: async () => "not a url-safe token!",
+					async revoke(leaseId) {
+						revokes++;
+						if (revokes === 2) throw new Error("token store unavailable");
+						if (revokes > 2) revoked.push(leaseId);
+					},
+				},
+			};
+		});
+		try {
+			await docker.createInternalNetwork(`${prefix}-shared`, { [`${prefix}.lease`]: "shared" });
+			const proxyId = await docker.createContainer(
+				{
+					Image: image,
+					User: "1000:1000",
+					Entrypoint: ["python3", "-c", FAKE_PROXY, String(port)],
+					Labels: { [`${prefix}.lease`]: "proxy" },
+					HostConfig: { Runtime: "runc", NetworkMode: `${prefix}-shared` },
+				},
+				proxyHost,
+			);
+			await docker.startContainer(proxyId);
+			const bare = await workspaces.create(ctx, { owner, sessionId: SESSION, mounts: [] });
+			const lease = await sandboxes.acquire(ctx, {
+				sessionId: SESSION,
+				workspaceId: bare.id,
+				tier: "container",
+				ttlMs: 60_000,
+			});
+			await expect(sandboxes.exec(ctx, lease.id, { command: "true" })).rejects.toThrow(/proxy token/);
+			const left = await docker.listVolumes([`${prefix}.lease=${lease.id}`]);
+			expect(left.map((volume) => volume.Labels?.[`${prefix}.role`])).toEqual(["credentials"]);
+			expect(revoked).toEqual([]);
+
+			const restarted = backendFor(workspaces, prefix, deps, {
+				network: { name: `${prefix}-shared`, proxyUrl: `http://${proxyHost}:${port}` },
+				proxyCredentials: { issue: async () => "unused", revoke: async (leaseId) => void revoked.push(leaseId) },
+			});
+			try {
+				await restarted.reapExpired(lease.expiresAt);
+				expect(revoked).toEqual([lease.id]);
+				expect(await docker.listVolumes([`${prefix}.lease=${lease.id}`])).toEqual([]);
+			} finally {
+				await restarted.close();
+			}
+		} finally {
+			await cleanup();
+			await new Promise((resolve) => ca.close(resolve));
+		}
 	});
 });

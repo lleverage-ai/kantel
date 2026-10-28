@@ -38,7 +38,10 @@ every request the sandbox sends through the proxy carries it as `Proxy-Authoriza
 to the lease's organisation, project, agent and session for the vault's egress decision. `revoke` is called before the
 lease's container and network are removed (`ended`, a fresh container for the lease, or `reapExpired`), and must be
 safe to repeat: a failure fails that call and leaves the lease's resources in place, so a retry or the janitor revokes it
-again rather than leaving a live token behind. Needs `network`.
+again rather than leaving a live token behind. Before `issue`, the backend creates an empty volume labelled with the
+lease (`<prefix>.role=credentials`), so the janitor finds a lease whose container never came up even where nothing
+else was labelled with it. The janitor revokes and removes in the lease's turn, after checking again that no command
+has started a container for it since it listed. Needs `network`.
 
 ## How it works
 

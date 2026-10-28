@@ -102,8 +102,9 @@ export interface ProxyCredentials {
 	 */
 	issue(input: { readonly ctx: CallContext; readonly lease: SandboxLease }): Promise<string>;
 	/**
-	 * Called once the lease's container and network are gone (`ended`, a fresh container, or the janitor). Must be safe
-	 * to repeat: a failure fails that call, which can then be retried.
+	 * Called before the lease's container and network are removed (`ended`, the janitor, and before every container is
+	 * created for it, the first included, so it may come for a lease that has no token). Must be safe to repeat: a
+	 * failure fails that call and leaves the lease's resources, so a retry or the janitor revokes it again.
 	 */
 	revoke(leaseId: string): Promise<void>;
 }
@@ -553,25 +554,43 @@ class DockerContainerTier implements DockerContainerBackend {
 		this.#checkOpen();
 		const leaseKey = this.#label("lease");
 		const expiryKey = this.#label("expires-at");
-		const reaped = new Set<string>();
-		const reapable = (labels: Readonly<Record<string, string>> | null | undefined) => {
+		const live = (leaseId: string) => this.#states.has(leaseId) || this.#creating.has(leaseId);
+		type Found = { containers: string[]; networks: string[]; volumes: string[] };
+		const byLease = new Map<string, Found>();
+		const unleased: Found = { containers: [], networks: [], volumes: [] };
+		const collect = (labels: Readonly<Record<string, string>> | null | undefined, kind: keyof Found, id: string) => {
 			const expiresAt = Number(labels?.[expiryKey]);
-			if (!Number.isFinite(expiresAt) || expiresAt > now) return false;
+			if (!Number.isFinite(expiresAt) || expiresAt > now) return;
 			const leaseId = labels?.[leaseKey];
-			if (leaseId === undefined) return true;
-			if (this.#states.has(leaseId) || this.#creating.has(leaseId)) return false;
-			reaped.add(leaseId);
-			return true;
+			if (leaseId !== undefined && live(leaseId)) return;
+			let found = unleased;
+			if (leaseId !== undefined) {
+				found = byLease.get(leaseId) ?? { containers: [], networks: [], volumes: [] };
+				byLease.set(leaseId, found);
+			}
+			found[kind].push(id);
 		};
-		const containers = (await this.#docker.listContainers([expiryKey])).filter((item) => reapable(item.Labels));
-		const networks = (await this.#docker.listNetworks([expiryKey])).filter((item) => reapable(item.Labels));
-		const volumes = (await this.#docker.listVolumes([expiryKey])).filter((item) => reapable(item.Labels));
-		// Credentials first: a revocation that fails leaves the lease's resources, and so the lease, for the next pass.
-		if (this.#credentials !== undefined) for (const leaseId of reaped) await this.#credentials.revoke(leaseId);
-		let removed = 0;
-		for (const container of containers) if (await this.#docker.removeContainer(container.Id)) removed++;
-		for (const network of networks) await this.#removeNetwork(network.Id);
-		for (const volume of volumes) await this.#docker.removeVolume(volume.Name);
+		for (const item of await this.#docker.listContainers([expiryKey])) collect(item.Labels, "containers", item.Id);
+		for (const item of await this.#docker.listNetworks([expiryKey])) collect(item.Labels, "networks", item.Id);
+		for (const item of await this.#docker.listVolumes([expiryKey])) collect(item.Labels, "volumes", item.Name);
+		const remove = async (found: Found): Promise<number> => {
+			let removed = 0;
+			for (const id of found.containers) if (await this.#docker.removeContainer(id)) removed++;
+			for (const id of found.networks) await this.#removeNetwork(id);
+			for (const name of found.volumes) await this.#docker.removeVolume(name);
+			return removed;
+		};
+		let removed = await remove(unleased);
+		for (const [leaseId, found] of byLease) {
+			// In the lease's turn, as its container's creation is, and checked again there: a command may have started a
+			// new container for it since the listing, and its token must not be revoked.
+			removed += await this.#serial(leaseId, async () => {
+				if (live(leaseId)) return 0;
+				// Credentials first: a revocation that fails leaves the lease's resources, and so the lease, for the next pass.
+				await this.#credentials?.revoke(leaseId);
+				return remove(found);
+			});
+		}
 		return removed;
 	}
 
@@ -850,6 +869,9 @@ class DockerContainerTier implements DockerContainerBackend {
 		}
 		let proxy = network.proxyUrl;
 		if (this.#credentials !== undefined) {
+			// A labelled marker first, so that whatever fails after the token is issued, the janitor still finds the lease
+			// and revokes it: on a shared network, with no mounts, the lease may have no other resource yet.
+			await this.#docker.createVolume({ ...labels, [this.#label("role")]: "credentials" });
 			const token = await this.#credentials.issue({ ctx, lease });
 			if (!PROXY_TOKEN.test(token)) {
 				throw new HarbourError("invalid", "a proxy token may hold only letters, digits, '-', '_', '.' and '~'");
