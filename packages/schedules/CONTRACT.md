@@ -40,6 +40,11 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
 - Claims are exclusive under a lease, the oldest first, and only a live claimant finishes: "claims the oldest claimable
   occurrence first", "keeps a claim exclusive until its lease passes, then hands it over and refuses the first runner",
   "lets only the claimant report a check".
+- Several schedulers may share one store: "two schedulers ticking at once materialise each due time once, and racing
+  runners never share a claim" (the provider's `peer` is a second store over the same storage).
+- A restart neither drops nor duplicates an occurrence (issue #23's definition of done): "a restart neither drops nor
+  duplicates an occurrence, and keeps what a check raised" (the provider's `reopen` opens the store again over the same
+  storage; a store with no storage of its own carries on with the same object).
 - `count` and `until` end a schedule; a one-off ends after it runs: "ends a schedule when its count or until is
   reached".
 - Checks: "raises nothing for a check that exits 0", "raises a check's new findings once and audits each raise",
@@ -77,7 +82,32 @@ compute `nextDueAt` as the first due time at or after now. `create` and `update`
 a caller can never set the id, status, counts or timestamps ("update ignores fields outside ScheduleInput and is
 audited"). It audits `schedules.schedule.created`, `.updated`, `.paused`, `.resumed` and `.ended` by their actor, and
 `schedules.finding.raised` (actor `system:schedules`), with stable IDs. Without `access` it checks only the
-organisation. It leaves out durable storage and a scheduler loop.
+organisation. It keeps nothing across a restart and has no scheduler loop.
+
+Both stores decide through the same rules, `src/rules.ts`: validation, what create, a change or a tick does to a
+schedule, which findings a check run raises, and the audit events.
+
+## The SQL implementation
+
+`createSqlSchedules({ driver, clock?, audit?, access? })` in `@harbour/schedules/sql` runs on any `SqlDriver`: Postgres
+self-hosted, D1 or a Durable Object's SQLite on Cloudflare. Run `migrateSchedules(driver)` (or `schedulesSchema`'s
+idempotent statements) first. It passes the whole suite on PGlite, `node:sqlite`, D1 in Miniflare and, with
+`HARBOUR_TEST_POSTGRES_URL`, a real Postgres, and several stores (hosts) may share one database:
+
+- `schedules` holds a row per schedule: the columns it is found and changed by (`status`, `next_due_at`,
+  `occurrences`, `failures_in_row`) beside the rest of the record as JSON. Every write bumps `revision`; `update`,
+  `pause`, `resume` and `end` land only on the revision they read, and re-read and retry otherwise.
+- `tick` moves each due schedule on with `… WHERE revision = ?`, stamping a writer token, and inserts the occurrence in
+  the same batch only where that token landed. Of two schedulers ticking at once exactly one materialises it, and
+  the occurrence's primary key, `<scheduleId>@<dueAt>`, keeps a due time to one row.
+- `claim` is one `UPDATE … RETURNING` of the oldest claimable occurrence that re-checks it is still claimable; on
+  Postgres the candidate is picked `FOR UPDATE SKIP LOCKED`.
+- `complete` and `reportCheck` finish an occurrence only while the runner holds it with a live lease. A check run's
+  failure count and its raised findings (`schedule_findings`, per schedule and key) change in the same batch, guarded
+  by the occurrence's new token, so a runner whose lease lapsed changes nothing.
+- Every time is the injected clock's, passed in as a parameter; the database's clock is never read.
+
+Neither store runs a scheduler loop; that is the next part of issue #23.
 
 ## Open questions
 
