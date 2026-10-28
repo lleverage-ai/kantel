@@ -355,7 +355,10 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 		return row !== undefined && sqlOptionalString(row.writer) === writer ? occurrenceFrom(row) : undefined;
 	}
 
-	/** Finishes `occurrenceId` if `runner` still holds it at `now`, with `also` in the same batch guarded by it. */
+	/**
+	 * Finishes `occurrenceId` at `now` if `runner` still holds it, with `also` in the same batch guarded by it. The lease is
+	 * checked against the clock read here, not `now`: the reads before this may have outlasted the lease.
+	 */
 	async function finish(
 		occurrenceId: string,
 		runner: string,
@@ -366,6 +369,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 	): Promise<Occurrence> {
 		const writer = crypto.randomUUID();
 		const mine = sql("EXISTS (SELECT 1 FROM schedule_occurrences WHERE id = ? AND writer = ?)", occurrenceId, writer);
+		const leaseCheckedAt = clock.now();
 		await driver.batch([
 			sql(
 				`UPDATE schedule_occurrences SET status = ?, finished_at = ?, result = ?, writer = ?
@@ -376,7 +380,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 				writer,
 				occurrenceId,
 				runner,
-				now,
+				leaseCheckedAt,
 			),
 			...also(mine),
 		]);

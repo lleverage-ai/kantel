@@ -1,5 +1,6 @@
 import { type CallContext, systemContext } from "@harbour/contracts";
 import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
+import type { SqlDriver } from "@harbour/sql";
 import { testDatabaseKinds } from "@harbour/sql/testing";
 import { ManualClock } from "@harbour/testing/harness";
 import { describe, expect, it } from "vitest";
@@ -68,6 +69,55 @@ for (const kind of testDatabaseKinds()) {
 						Array(ROUNDS).fill("succeeded"),
 					);
 				}
+			} finally {
+				await database.close();
+			}
+		}, 60_000);
+
+		it("refuses a check report whose lease lapsed while the store was reading, and records nothing", async () => {
+			const database = await kind.open();
+			try {
+				await migrateSchedules(database.driver);
+				const clock = new ManualClock(Date.parse("2026-10-28T09:00:00Z"));
+				let stallOnFindings = false;
+				const driver: SqlDriver = {
+					dialect: database.driver.dialect,
+					query: async (text, params) => {
+						// The read of the schedule's findings stalls past the lease.
+						if (stallOnFindings && text.includes("FROM schedule_findings")) clock.advance(2 * 60_000);
+						return database.driver.query(text, params);
+					},
+					batch: (statements) => database.driver.batch(statements),
+				};
+				const schedules = createSqlSchedules({ driver, clock });
+				const check = await schedules.create(human, {
+					owner: { kind: "organisation", organisationId: "org-a" },
+					kind: "check",
+					title: "Disk",
+					timezone: "Europe/London",
+					repeat: { every: "hours", interval: 1, from: clock.now() + HOUR },
+					payload: null,
+				});
+				clock.advance(HOUR);
+				await schedules.tick(WORKER);
+				const claim = await schedules.claim(WORKER, "runner-1", 60_000);
+				stallOnFindings = true;
+				await expect(
+					schedules.reportCheck(WORKER, claim!.id, "runner-1", {
+						exitCode: 3,
+						findings: [{ key: "disk:/", severity: "high", summary: "Disk full" }],
+					}),
+				).rejects.toMatchObject({ code: "conflict" });
+				stallOnFindings = false;
+				const [occurrence] = (await schedules.listOccurrences(human, check.id)).items;
+				expect(occurrence?.status).toBe("running");
+				// The next runner's report raises the finding as new: the lapsed one recorded nothing.
+				const again = await schedules.claim(WORKER, "runner-2", 60_000);
+				const raised = await schedules.reportCheck(WORKER, again!.id, "runner-2", {
+					exitCode: 3,
+					findings: [{ key: "disk:/", severity: "high", summary: "Disk full" }],
+				});
+				expect(raised).toMatchObject([{ key: "disk:/", reason: "new" }]);
 			} finally {
 				await database.close();
 			}
