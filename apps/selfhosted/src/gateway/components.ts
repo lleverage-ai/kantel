@@ -9,6 +9,7 @@ import {
 	type AuditStore,
 	type CallContext,
 	EMAIL_OTP_ISSUER,
+	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
 	normaliseEmail,
@@ -138,6 +139,11 @@ export interface Bootstrap {
 	readonly workspaceId: WorkspaceId;
 	/** An operator key on the project, for host apps and the end-to-end test. Its secret is shown only here. */
 	readonly apiKey: string;
+	/**
+	 * The email `inviteAdmin` finished inviting into this organisation, normalised. A later start leaves it alone, so an
+	 * admin who has since changed or removed that person's role keeps the change.
+	 */
+	readonly invitedAdmin?: string;
 }
 
 /**
@@ -182,7 +188,11 @@ export async function bootstrap(
 	const { identity, runtime, workspaces } = components;
 	const deployment = (await previousDeployment(identity, previous)) ?? (await createDeployment(identity, names));
 	const { organisationId, projectId } = deployment;
-	if (names.adminEmail !== undefined) await inviteAdmin(identity, organisationId, names.adminEmail);
+	const reused = previous !== undefined && previous.organisationId === organisationId;
+	const invitedAdmin = names.adminEmail === undefined ? undefined : normaliseEmail(names.adminEmail);
+	if (invitedAdmin !== undefined && !(reused && previous.invitedAdmin === invitedAdmin)) {
+		await inviteAdmin(identity, organisationId, invitedAdmin);
+	}
 	const inProject: CallContext = {
 		actor: { kind: "system", component: "selfhosted-bootstrap" },
 		organisationId,
@@ -216,13 +226,24 @@ export async function bootstrap(
 			message: "bootstrap",
 		});
 	}
-	return { organisationId, projectId, workspaceId: workspace.id, apiKey: deployment.apiKey };
+	return {
+		organisationId,
+		projectId,
+		workspaceId: workspace.id,
+		apiKey: deployment.apiKey,
+		...(invitedAdmin === undefined ? {} : { invitedAdmin }),
+	};
 }
 
 /**
  * Invites `email` as an organisation admin, so a person can sign in by email one-time PIN: Harbour is invite-only, and
- * sign-in never creates a user. Nothing happens when someone can already sign in with that email, so a restart does
- * not add a second user, and an admin who has changed that user's roles keeps the change.
+ * sign-in never creates a user. It finishes whatever a previous attempt left undone, and does nothing more:
+ * - the user is the one who can already sign in with that email, or a new one linked to the email's one-time PIN
+ *   subject at creation, so a retry finds it rather than adding a second user;
+ * - the admin role is granted only when that user has no organisation-wide role here, so a user created by an attempt
+ *   that stopped before its grant gets it on the next try, and one who already has a role keeps it.
+ * The bootstrap records a finished invite (`Bootstrap.invitedAdmin`) and does not repeat it, so a role an admin later
+ * removes stays removed.
  */
 export async function inviteAdmin(
 	identity: IdentityDirectory,
@@ -231,10 +252,22 @@ export async function inviteAdmin(
 ): Promise<void> {
 	const normalised = normaliseEmail(email);
 	const asOtp = { issuer: EMAIL_OTP_ISSUER, subject: normalised, email: normalised, emailVerified: true } as const;
-	if (await identity.canSignIn(BOOTSTRAP, asOtp)) return;
 	const inOrganisation: CallContext = { actor: BOOTSTRAP.actor, organisationId };
-	const user = await identity.createUser(inOrganisation, { name: normalised, email: normalised });
-	await identity.grantRole(inOrganisation, { principal: { kind: "user", userId: user.id }, role: "admin" });
+	const userId = (await identity.canSignIn(BOOTSTRAP, asOtp))
+		? (await identity.signIn(BOOTSTRAP, asOtp)).user.id
+		: (
+				await identity.createUser(inOrganisation, {
+					name: normalised,
+					email: normalised,
+					externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, normalised),
+				})
+			).id;
+	const bindings = await identity.listRoleBindings(inOrganisation);
+	const held = bindings.some(
+		(binding) =>
+			binding.principal.kind === "user" && binding.principal.userId === userId && binding.projectId === undefined,
+	);
+	if (!held) await identity.grantRole(inOrganisation, { principal: { kind: "user", userId }, role: "admin" });
 }
 
 async function createDeployment(

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMAIL_OTP_ISSUER, systemContext } from "@harbour/contracts";
 import { MemoryOtpMailer } from "@harbour/identity/otp";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { type Bootstrap, bootstrap, createGatewayComponents, inviteAdmin } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { writePrivateFile } from "../../src/gateway/main.ts";
@@ -69,14 +69,73 @@ test("email one-time PIN sign-in starts a Harbour session every API accepts", as
 	expect(checks.length).toBeGreaterThanOrEqual(12);
 });
 
-test("inviting the admin again, as a restart does, adds no second user", async () => {
-	const identity = { issuer: EMAIL_OTP_ISSUER, subject: "admin@harbour.localhost", email: "admin@harbour.localhost" };
-	const first = await components.identity.signIn(systemContext("test"), { ...identity, emailVerified: true });
-	await inviteAdmin(components.identity, target.organisationId, ADMIN_EMAIL);
-	await bootstrap(components, { organisation: "Test", project: "test", adminEmail: ADMIN_EMAIL }, target);
-	const again = await components.identity.signIn(systemContext("test"), { ...identity, emailVerified: true });
-	expect(again.user.id).toBe(first.user.id);
-	expect(again.organisationIds).toEqual([target.organisationId]);
+describe("inviting the admin", () => {
+	const email = "invited@harbour.localhost";
+	const asOtp = { issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true } as const;
+	const names = { organisation: "Invite", project: "invite" };
+
+	/** A fresh deployment, and the admin bindings `email`'s user holds in its organisation. */
+	async function fresh() {
+		const parts = createGatewayComponents();
+		const seeded = await bootstrap(parts, names);
+		const inOrganisation = {
+			actor: { kind: "system", component: "test" },
+			organisationId: seeded.organisationId,
+		} as const;
+		const adminBindings = async () => {
+			if (!(await parts.identity.canSignIn(systemContext("test"), asOtp))) return [];
+			const { user } = await parts.identity.signIn(systemContext("test"), asOtp);
+			return (await parts.identity.listRoleBindings(inOrganisation)).filter(
+				(binding) => binding.principal.kind === "user" && binding.principal.userId === user.id,
+			);
+		};
+		return { parts, seeded, inOrganisation, adminBindings };
+	}
+
+	test("twice before anyone signs in creates one user, with one admin binding", async () => {
+		const { parts, seeded, adminBindings } = await fresh();
+		const createUser = vi.spyOn(parts.identity, "createUser");
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		expect(createUser).toHaveBeenCalledTimes(1);
+		expect((await adminBindings()).map((binding) => binding.role)).toEqual(["admin"]);
+		await parts.close();
+	});
+
+	test("after the person has signed in creates no user", async () => {
+		const { parts, seeded } = await fresh();
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		await parts.identity.signIn(systemContext("test"), asOtp);
+		const createUser = vi.spyOn(parts.identity, "createUser");
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		expect(createUser).not.toHaveBeenCalled();
+		await parts.close();
+	});
+
+	test("an attempt that stopped before its grant is finished by the next, with no second user", async () => {
+		const { parts, seeded, adminBindings } = await fresh();
+		const createUser = vi.spyOn(parts.identity, "createUser");
+		vi.spyOn(parts.identity, "grantRole").mockRejectedValueOnce(new Error("the database went away"));
+		await expect(bootstrap(parts, { ...names, adminEmail: email }, seeded)).rejects.toThrow(/went away/);
+		expect(await adminBindings()).toEqual([]);
+		const retried = await bootstrap(parts, { ...names, adminEmail: email }, seeded);
+		expect(retried.invitedAdmin).toBe(email);
+		expect(createUser).toHaveBeenCalledTimes(1);
+		expect((await adminBindings()).map((binding) => binding.role)).toEqual(["admin"]);
+		await parts.close();
+	});
+
+	test("a finished invite is not repeated, so a role removed since stays removed", async () => {
+		const { parts, seeded, inOrganisation, adminBindings } = await fresh();
+		const invited = await bootstrap(parts, { ...names, adminEmail: email.toUpperCase() }, seeded);
+		expect(invited.invitedAdmin).toBe(email);
+		const [binding] = await adminBindings();
+		if (binding === undefined) throw new Error("the invite granted nothing");
+		await parts.identity.revokeRole(inOrganisation, { principal: binding.principal });
+		await bootstrap(parts, { ...names, adminEmail: email }, invited);
+		expect(await adminBindings()).toEqual([]);
+		await parts.close();
+	});
 });
 
 test("without a mailer the sign-in routes answer 503, and API keys still work", async () => {
