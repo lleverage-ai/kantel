@@ -180,8 +180,9 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Only once this run's daemon is up: before that, compose would read the host's default `harbour` stack.
       - name: Logs on failure
-        if: failure()
+        if: failure() && env.STACK != ''
         run: docker compose -f deploy/compose/compose.yaml logs --no-color --timestamps --tail 300
 
       # On the host's daemon: removing the daemon's container and its anonymous volume removes the whole stack,
@@ -190,5 +191,13 @@ jobs:
         if: always()
         run: |
           unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH
-          docker rm --force --volumes "$DIND_NAME" || true
+          # Fail the job if the daemon is still there after three tries; nothing to do if it never started.
+          for _ in 1 2 3; do
+            docker container inspect "$DIND_NAME" >/dev/null 2>&1 || break
+            docker rm --force --volumes "$DIND_NAME" || sleep 5
+          done
+          if docker container inspect "$DIND_NAME" >/dev/null 2>&1; then
+            echo "::error::could not remove $DIND_NAME"
+            exit 1
+          fi
           rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP"/shared-scenario*.json
