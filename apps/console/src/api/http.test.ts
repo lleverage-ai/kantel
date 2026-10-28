@@ -7,7 +7,8 @@ import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionClient } from "../state/session-client.ts";
-import { createApiClient } from "./http.ts";
+import type { SessionListState } from "./client.ts";
+import { agentFor, createApiClient, startAccess, VIEWER_REASON } from "./http.ts";
 import { readEvents } from "./sse.ts";
 
 const ORG = "org-console";
@@ -522,6 +523,83 @@ describe("the console on the session API", () => {
 		await client.prompt(id, "Two");
 		await eventually(() => texts(session).includes("assistant:After"), "the answer after reconnecting");
 		expect(texts(session)).toEqual(["prompt:One", "assistant:Before", "prompt:Two", "assistant:After"]);
+	});
+
+	it("starts a session with the project's agent, which then streams its first answer", async () => {
+		const { client, script, open } = await setUp();
+		const options = await client.startOptions("proj-a");
+		expect(options).toEqual({ agentId: "worker", agentName: "Worker" });
+		const id = await client.create({ projectId: "proj-a", agentId: options.agentId, title: "Plan the week" });
+		expect(await client.projectOf(id)).toBe("proj-a");
+		script.reply({ text: "Here is the plan" });
+		await client.prompt(id, "Plan the week");
+		const session = open(id);
+		await eventually(() => texts(session).includes("assistant:Here is the plan"), "the first answer");
+		expect(texts(session)).toEqual(["prompt:Plan the week", "assistant:Here is the plan"]);
+		const states: SessionListState[] = [];
+		cleanups.push(client.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.some((state) => state.sessions.some((s) => s.id === id)), "the new session listed");
+		expect(states.at(-1)?.sessions.find((s) => s.id === id)?.title).toBe("Plan the week");
+	});
+
+	it("starts a project's session with the project's own agent before the organisation's", async () => {
+		const { client, memory } = await setUp();
+		await memory.profiles.put(ctx, { ...profile, id: "billing", name: "Billing agent", projectId: "proj-b" });
+		expect(await client.startOptions("proj-b")).toEqual({ agentId: "billing", agentName: "Billing agent" });
+		expect((await client.startOptions("proj-a")).agentId).toBe("worker");
+	});
+
+	it("says when no agent can run in a project", async () => {
+		const client = createApiClient({
+			baseUrl: BASE,
+			fetch: async () => Response.json({ items: [{ ...profile, projectId: "proj-b" }] }),
+		});
+		await expect(client.startOptions("proj-a")).rejects.toThrow("No agent can run in this project yet");
+	});
+});
+
+describe("who may start a session", () => {
+	it("is an operator or above in the project, or across the organisation", () => {
+		expect(startAccess([{ role: "operator", projectId: "p1" }], "p1")).toEqual({ allowed: true });
+		expect(startAccess([{ role: "admin" }], "p1")).toEqual({ allowed: true });
+		expect(
+			startAccess(
+				[
+					{ role: "viewer", projectId: "p1" },
+					{ role: "operator", projectId: "p2" },
+				],
+				"p1",
+			),
+		).toEqual({
+			allowed: false,
+			reason: VIEWER_REASON,
+		});
+		expect(startAccess([], "p1")).toEqual({ allowed: false, reason: VIEWER_REASON });
+	});
+
+	it("is anyone when the roles aren't known, and the API decides", () => {
+		expect(startAccess(undefined, "p1")).toEqual({ allowed: true });
+	});
+});
+
+describe("the agent a new session runs", () => {
+	const named = (id: string, name: string, projectId?: string): AgentProfile => ({
+		...profile,
+		id,
+		name,
+		...(projectId === undefined ? {} : { projectId }),
+	});
+
+	it("is the project's own first by name, else the organisation's", () => {
+		const profiles = [
+			named("zed", "Zed", "p1"),
+			named("org", "Anyone"),
+			named("amy", "Amy", "p1"),
+			named("b", "B", "p2"),
+		];
+		expect(agentFor(profiles, "p1")?.id).toBe("amy");
+		expect(agentFor(profiles, "p3")?.id).toBe("org");
+		expect(agentFor([named("b", "B", "p2")], "p3")).toBeUndefined();
 	});
 });
 

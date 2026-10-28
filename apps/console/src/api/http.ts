@@ -17,14 +17,13 @@
 import {
 	type AgentProfile,
 	type HeldRole,
-	type ModelOption,
 	type Project,
 	protocolHistoryPage,
 	roleSatisfies,
 	type SessionHistoryPage,
 } from "@harbour/contracts";
 import type { ServerFrame, SessionStatus } from "@harbour/protocol";
-import type { ComposerModelOption, SessionSummary, WorkspaceEntry } from "@harbour/ui";
+import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
@@ -123,17 +122,6 @@ export function agentFor(profiles: readonly AgentProfile[], projectId: string): 
 		[...profiles].filter((profile) => profile.projectId === undefined).sort(byName)[0]
 	);
 }
-
-/** A model as the picker shows it. */
-const pickerOption = (model: ModelOption): ComposerModelOption => ({
-	id: model.id,
-	label: model.label,
-	...(model.provider === undefined ? {} : { provider: model.provider }),
-	...(model.description === undefined ? {} : { description: model.description }),
-	...(model.capabilities?.images === undefined ? {} : { capabilities: { images: model.capabilities.images } }),
-	...(model.default === true ? { default: true } : {}),
-	...(model.disabledReason === undefined ? {} : { disabledReason: model.disabledReason }),
-});
 
 /** The list's status for a session: an idle session has nothing running, so it reads as settled. */
 const listStatus = (status: SessionStatus): SessionStatus => (status === "idle" ? "done" : status);
@@ -431,17 +419,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			if (agent === undefined) {
 				throw new ApiError("not_found", "No agent can run in this project yet. An admin needs to add one.");
 			}
-			const query = new URLSearchParams({ projectId, agentId: agent.id });
-			let models: readonly ComposerModelOption[] = [];
-			try {
-				models = (await getJson<{ items: readonly ModelOption[] }>(`${base}/models?${query}`, signal)).items.map(
-					pickerOption,
-				);
-			} catch (reason) {
-				if (signal?.aborted) throw reason;
-				// A host that lists no models: the session runs the agent's own, with no picker.
-			}
-			return { agentId: agent.id, agentName: agent.name, models };
+			return { agentId: agent.id, agentName: agent.name };
 		},
 
 		async create(input) {

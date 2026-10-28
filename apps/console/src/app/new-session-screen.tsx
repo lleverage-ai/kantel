@@ -14,7 +14,7 @@ type Options = { readonly projectId: string } & (
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 
 /**
- * New session, as T3 Code's new thread: the composer, with the project and model, before the session exists. Sending
+ * New session, as T3 Code's new thread: the composer, with the project, before the session exists. Sending
  * creates the session, sends the draft as its first message and opens it, where it streams. If the session was
  * created but the message didn't go, sending again sends it to that session rather than creating another.
  *
@@ -32,7 +32,6 @@ export function NewSessionScreen({
 	onBack?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
-	const [model, setModel] = useState<string>();
 	const [sending, setSending] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const [loaded, setLoaded] = useState<Options>({ projectId, state: "loading" });
@@ -43,7 +42,7 @@ export function NewSessionScreen({
 	const access = client.mayStart(projectId);
 	const project = projects.find((candidate) => candidate.id === projectId);
 
-	// The agent and models for the project, asked again when it changes. A viewer can't start one, so isn't asked.
+	// The agent for the project, asked again when it changes. A viewer can't start one, so isn't asked.
 	useEffect(() => {
 		if (!access.allowed) return;
 		const controller = new AbortController();
@@ -59,8 +58,6 @@ export function NewSessionScreen({
 
 	const current = loaded.projectId === projectId ? loaded : undefined;
 	const options = current?.state === "ready" ? current.options : undefined;
-	// A model picked for another agent's catalogue isn't offered here; the agent's default stands.
-	const chosen = options?.models.some((option) => option.id === model) ? model : undefined;
 
 	const blocked = !access.allowed ? access.reason : current?.state === "failed" ? current.reason : undefined;
 
@@ -85,7 +82,6 @@ export function NewSessionScreen({
 					sessionId = await client.create({
 						projectId,
 						agentId: options.agentId,
-						...(chosen === undefined ? {} : { model: chosen }),
 						...(title === undefined ? {} : { title }),
 					});
 					created.current = { projectId, sessionId };
@@ -103,7 +99,7 @@ export function NewSessionScreen({
 				setSending(false);
 			}
 		},
-		[client, options, sending, pending, projectId, chosen, requestIds],
+		[client, options, sending, pending, projectId, requestIds],
 	);
 
 	// Once the agent is known, a message that was waiting for it goes; if it can't be known, the message stays a draft.
@@ -128,8 +124,6 @@ export function NewSessionScreen({
 				projectName: project?.name ?? projectId,
 				projects: projectOptions,
 				...(options === undefined ? {} : { agentName: options.agentName }),
-				models: options?.models ?? [],
-				...(chosen === undefined ? {} : { model: chosen }),
 				draft,
 				sending,
 				...(blocked === undefined ? {} : { blocked }),
@@ -137,7 +131,6 @@ export function NewSessionScreen({
 			}}
 			on={{
 				onDraft: setDraft,
-				onModel: setModel,
 				onProject: (id) => {
 					if (id !== projectId) navigate(newSessionPath(id), { replace: true });
 				},

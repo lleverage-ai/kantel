@@ -1,7 +1,5 @@
 import {
 	Composer,
-	type ComposerModelOption,
-	ComposerSendHint,
 	type ComposerState,
 	EmptyState,
 	Notice,
@@ -12,7 +10,7 @@ import {
 } from "@harbour/ui";
 
 // A new session before it exists, after T3 Code's new thread: the session header with nothing in it yet, an empty
-// transcript saying where it starts, and the composer with the model picker and the project beside it. As with
+// transcript saying where it starts, and the composer with the project picker in its footer. As with
 // session-view.tsx, this only maps the screen's state onto @harbour/ui.
 
 export type NewSessionState = {
@@ -23,8 +21,6 @@ export type NewSessionState = {
 	projects: readonly ProjectOption[];
 	/** The agent that will answer, once known. */
 	agentName?: string;
-	models: readonly ComposerModelOption[];
-	model?: string;
 	draft: string;
 	/** Creating the session or sending its first message. */
 	sending: boolean;
@@ -36,7 +32,6 @@ export type NewSessionState = {
 
 export type NewSessionHandlers = {
 	onDraft: (text: string) => void;
-	onModel: (id: string) => void;
 	onProject: (id: string) => void;
 	onSend: (text: string) => void;
 	/** Shows Back, on a phone, to return to the list. */
@@ -65,9 +60,7 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 					items={[]}
 					empty={
 						<EmptyState title={`Start a session in ${state.projectName}`}>
-							{state.models.length > 0
-								? `Write the first message. ${who} answers it with the model you pick.`
-								: `Write the first message. ${who} answers it.`}
+							{`Write the first message. ${who} answers it.`}
 						</EmptyState>
 					}
 					dock={
@@ -80,23 +73,13 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 							value={state.draft}
 							onChange={on.onDraft}
 							onSend={(text) => on.onSend(text)}
-							{...(state.models.length === 0
-								? {}
-								: {
-										models: state.models,
-										onModelChange: on.onModel,
-										...(state.model === undefined ? {} : { model: state.model }),
-									})}
 							footer={
-								<>
-									<ProjectPicker
-										projects={state.projects}
-										value={state.projectId}
-										onChange={on.onProject}
-										disabled={state.sending}
-									/>
-									<ComposerSendHint />
-								</>
+								<ProjectPicker
+									projects={state.projects}
+									value={state.projectId}
+									onChange={on.onProject}
+									disabled={state.sending}
+								/>
 							}
 							autoFocus
 							captureTyping

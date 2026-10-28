@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
-import { Composer, ComposerSendHint } from "./composer.tsx";
+import { Composer } from "./composer.tsx";
 import { FIXTURE_NOW, sessions as fixtureSessions } from "./fixtures.ts";
 import { type ComposerModelOption, type ProjectOption, ProjectPicker } from "./model-picker.tsx";
 import { NewSessionRow } from "./new-session.tsx";
@@ -165,12 +165,7 @@ function Page({
 						models={models}
 						{...(model === undefined ? {} : { model })}
 						onModelChange={setModel}
-						footer={
-							<>
-								<ProjectPicker projects={projects} value={project} onChange={setProject} />
-								<ComposerSendHint />
-							</>
-						}
+						footer={<ProjectPicker projects={projects} value={project} onChange={setProject} />}
 						autoFocus
 					/>
 				}

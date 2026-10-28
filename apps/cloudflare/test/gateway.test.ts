@@ -383,6 +383,29 @@ describe("the gateway", () => {
 		).toBeUndefined();
 	});
 
+	it("starts a session with an operator's API key, and refuses a viewer's with 403", async () => {
+		const { call, stack, withKey } = await setup();
+		const json = { "content-type": "application/json" };
+		const body = JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, title: "From a key" });
+		const created = await call("/v1/sessions", { ...withKey, ...json }, { method: "POST", body });
+		expect(created.status).toBe(201);
+		expect(await created.json()).toMatchObject({ title: "From a key", createdBy: { kind: "service" } });
+
+		const service = await stack.identity.createServiceIdentity(stack.admin, { name: "watcher" });
+		const viewer = await stack.identity.issueApiKey(stack.admin, {
+			serviceId: service.id,
+			projectIds: [stack.project.id],
+			role: "viewer",
+		});
+		const asViewer = { authorization: `Bearer ${viewer.secret}`, ...json };
+		const refused = await call("/v1/sessions", asViewer, { method: "POST", body });
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toMatchObject({ error: { code: "forbidden" } });
+		// The viewer still watches: the operator's session is listed for them.
+		const listed = await call(`/v1/sessions?projectId=${stack.project.id}`, asViewer);
+		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(1);
+	});
+
 	it("answers 404 for a path under no API", async () => {
 		const { call, withKey } = await setup();
 		expect((await call("/v2/sessions", withKey)).status).toBe(404);

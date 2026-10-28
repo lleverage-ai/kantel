@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { composerState, createRequestIds, offersFollowUp } from "./actions.ts";
+import { composerState, createRequestIds, offersFollowUp, TITLE_MAX, titleFrom } from "./actions.ts";
+
+describe("a new session's title", () => {
+	it("is the first line with words, its spaces folded", () => {
+		expect(titleFrom("\n  \n  Fix the   login bug \nThen the tests")).toBe("Fix the login bug");
+	});
+
+	it("is cut at a word with an ellipsis when it is long", () => {
+		const title = titleFrom(`${"word ".repeat(40)}end`);
+		expect(title?.length).toBeLessThanOrEqual(TITLE_MAX);
+		expect(title).toMatch(/^word( word)*…$/);
+	});
+
+	it("is left out for a message with no words", () => {
+		expect(titleFrom(" \n\t")).toBeUndefined();
+	});
+});
 
 describe("the composer's state", () => {
 	const live = { live: true } as const;
