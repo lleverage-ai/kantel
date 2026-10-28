@@ -14,7 +14,7 @@
  * This file is never the deployed entry point (wrangler.jsonc's top-level `main` is src/index.ts), so none of these
  * routes nor the mock issuer is in the deployed bundle; the deploy workflow checks that.
  */
-import { type CallContext, HarbourError, isHarbourError, type SessionRecord } from "@harbour/contracts";
+import { type CallContext, HarbourError, type SessionRecord } from "@harbour/contracts";
 import { createMockAccess, type MockAccess } from "@harbour/identity/testing";
 import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
@@ -24,8 +24,11 @@ import { type Env, HarbourStackBase, STACK_NAME } from "./stack-object.ts";
 import { HarbourVault as DeployedHarbourVault } from "./vault-object.ts";
 
 const DEV_PREFIX = "/__dev/";
-/** The person `POST /__dev/vault-seed` invites as a viewer on the default project. */
-export const DEV_VIEWER_EMAIL = "viewer@harbour.test";
+/**
+ * The person `POST /__dev/vault-seed` invites as a viewer on the default project. Not exported: everything an entry
+ * point exports must be a handler or a class.
+ */
+const DEV_VIEWER_EMAIL = "viewer@harbour.test";
 
 /** The VaultDO with one more RPC method, for `POST /__dev/vault-seed`. */
 export class HarbourVault extends DeployedHarbourVault {
@@ -52,16 +55,20 @@ export class HarbourStack extends HarbourStackBase {
 	async #seedVault(): Promise<Response> {
 		const { stack } = await this.ready();
 		const { admin, project, organisation } = stack;
-		try {
+		// Invited once: identity takes a second user with the same email, and then signs neither in.
+		const bindings = await stack.identity.listRoleBindings(admin, { projectId: project.id });
+		const invited = await Promise.all(
+			bindings.flatMap((binding) =>
+				binding.principal.kind === "user" ? [stack.identity.getUser(admin, binding.principal.userId)] : [],
+			),
+		);
+		if (!invited.some((user) => user.email === DEV_VIEWER_EMAIL)) {
 			const viewer = await stack.identity.createUser(admin, { name: "Riley Viewer", email: DEV_VIEWER_EMAIL });
 			await stack.identity.grantRole(admin, {
 				principal: { kind: "user", userId: viewer.id },
 				role: "viewer",
 				projectId: project.id,
 			});
-		} catch (error) {
-			// Already invited by an earlier seed.
-			if (!isHarbourError(error, "conflict")) throw error;
 		}
 		const session = (title: string) =>
 			stack.runtime.runtime.create(admin, { projectId: project.id, agentId: DEFAULT_AGENT_ID, title });
