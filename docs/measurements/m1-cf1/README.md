@@ -141,15 +141,16 @@ misses by 14 ms in process and 34 ms on Dynamic Workers.**
 - **Sign-in and the session lookup shrank with it.** Sign-in went from ~360 ms to ~40 ms p50, and the warm runs'
   session lookup from 227 ms to ~26 ms. That puts the client's warm wall time at 216 ms p50, against 925 ms.
 - **What's left in a warm run** is still I/O: the sandbox layer's workspace, session and lease checks and its audit
-  append, now about 10–15 ms per D1 query and ~55 ms per R2 call. The isolate itself is still free when warm
-  (`isolate.call` 0 ms and `isolate.cold` 0 in all 50 on `dynamic-worker`). The cheapest remaining levers are the
+  append, now about 10–15 ms per D1 query and ~55 ms per R2 call. The isolate itself still shows no measurable elapsed
+  time with these timers when warm (`isolate.call` 0 ms and `isolate.cold` 0 in all 50 on `dynamic-worker`); its CPU
+  time isn't measured. The cheapest remaining levers are the
   audit append off the critical path and the workspace head out of R2 ([below](#where-the-time-goes), items 3 and 4).
 - **Dynamic Workers cost about 20 ms more warm, and more cold.** Cold, every run loads a new Dynamic Worker
-  (`isolate.cold` 1 in all 50), and that call took 189 / 322 ms p50 / p95, which is now the largest single item in a
-  cold run on that backend.
+  (`isolate.cold` 1 in all 50), and that call took 189 / 322 ms p50 / p95, a large share of a cold run on that backend
+  (the rest of the run isn't broken down by call, so whether it's the largest single item isn't known).
 - **The cold batches' server p95 is not trustworthy.** In 20 of the 100 cold runs (9 in process, 11 on Dynamic
   Workers) the server's `total` was longer than the client's whole wall time for the same call, which can't be real
-  latency. In 12 of them the `session` step alone was (up to 2.1 s against a wall time of 0.8–1.2 s). None of the
+  latency. In 12 of them the `session` step alone was (up to 2.1 s against a wall time of 0.8–1.3 s). None of the
   100 warm runs, and none of the 360 runs before the move, did this. The cause isn't found; the server's start mark
   looks stale in those runs. Without those 20 runs the cold
   server time is 411 / 709 ms (in process) and 638 / 825 ms (Dynamic Workers). The client wall times have no such
