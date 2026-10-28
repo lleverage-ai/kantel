@@ -17,7 +17,8 @@ jobs:
     name: Install, typecheck, lint and test
     # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
-    timeout-minutes: 10
+    # Four test workers on a shared host take about 7 minutes; GitHub-hosted took about 4.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
