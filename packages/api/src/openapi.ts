@@ -113,14 +113,36 @@ function parameters(route: RouteDefinition, registry: SchemaRegistry): JsonSchem
 function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema {
 	const error = registry.use(ErrorBody);
 	const errorResponse = (description: string) => ({ description, content: { "application/json": { schema: error } } });
-	const responses: { [status: string]: unknown } = {
-		[String(route.answer.status)]:
-			route.answer.schema === undefined
-				? { description: route.answer.description }
-				: {
-						description: route.answer.description,
-						content: { "application/json": { schema: registry.use(route.answer.schema) } },
+	const frame = route.stream === undefined ? undefined : registry.use(route.stream.frame);
+	const success =
+		frame !== undefined
+			? {
+					"101": {
+						description:
+							"Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty " +
+							"array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client " +
+							"sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
+						content: { "application/json": { schema: { type: "array", items: frame } } },
 					},
+					[String(route.answer.status)]: {
+						description:
+							`${route.answer.description} Without an upgrade: server-sent events, each named after its frame's ` +
+							"type with the frame as its JSON data, then one `ready` event once the client has caught up. " +
+							"Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+						content: { "text/event-stream": { schema: frame } },
+					},
+				}
+			: {
+					[String(route.answer.status)]:
+						route.answer.schema === undefined
+							? { description: route.answer.description }
+							: {
+									description: route.answer.description,
+									content: { "application/json": { schema: registry.use(route.answer.schema) } },
+								},
+				};
+	const responses: { [status: string]: unknown } = {
+		...success,
 		[String(UNAUTHENTICATED_STATUS)]: errorResponse("The request needs a valid credential (`unauthenticated`)."),
 	};
 	const byStatus = new Map<number, ErrorCode[]>();

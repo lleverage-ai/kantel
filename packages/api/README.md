@@ -50,7 +50,11 @@ const session = await harbour.createSession({
 	message: { text: "Summarise the open invoices" },
 });
 await harbour.sendMessage(session.id, { via: "steer", text: "Only this month's" }, { idempotencyKey: crypto.randomUUID() });
+
+// @harbour/protocol frames over a WebSocket; fold them with applyFrames, resume with { after: stream.cursor }.
+const stream = harbour.streamSession(session.id, { onFrames: (frames) => render(frames) });
 await harbour.abortSession(session.id, { reason: "The user stopped it" });
+stream.close();
 ```
 
 An error answer rejects with a `HarbourApiError` carrying the HTTP status and Harbour's error code (`not_found`,

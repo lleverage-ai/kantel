@@ -3,6 +3,7 @@
 import type {
 	Actor as ContractActor,
 	ErrorCode as ContractErrorCode,
+	SessionHistoryPage as ContractHistoryPage,
 	SessionRecord as ContractSessionRecord,
 	SessionStatus as ContractSessionStatus,
 	Submission as ContractSubmission,
@@ -10,9 +11,12 @@ import type {
 	ModelThinking,
 	Page,
 	PromptInput,
+	SessionHistoryRequest,
 } from "@harbour/contracts";
+import type * as Protocol from "@harbour/protocol";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
+import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
 import type {
 	Actor,
@@ -53,6 +57,21 @@ describe("schemas match the contracts", () => {
 			same<Omit<Wire<typeof CreatedSession>, "submission">, ContractSessionRecord>(true),
 			same<Wire<typeof SessionPage>, Page<ContractSessionRecord>>(true),
 			same<Wire<typeof ErrorCode>, ContractErrorCode | "unauthenticated">(true),
+			same<Wire<typeof Frames.SessionHistoryPage>, ContractHistoryPage>(true),
+			same<Wire<typeof Frames.HistoryQuery>, SessionHistoryRequest>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
+	});
+
+	it("matches @harbour/protocol's frames", () => {
+		const proofs = [
+			same<Wire<typeof Frames.TranscriptItem>, Protocol.TranscriptItem>(true),
+			same<Wire<typeof Frames.Card>, Protocol.Card>(true),
+			same<Wire<typeof Frames.SessionSnapshot>, Protocol.SessionSnapshot>(true),
+			same<Wire<typeof Frames.DeltaOp>, Protocol.DeltaOp>(true),
+			same<Wire<typeof Frames.SessionDelta>, Protocol.SessionDelta>(true),
+			same<Wire<typeof Frames.HistoryPage>, Protocol.HistoryPage>(true),
+			same<Wire<typeof Frames.ServerFrame>, Protocol.ServerFrame>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
 	});

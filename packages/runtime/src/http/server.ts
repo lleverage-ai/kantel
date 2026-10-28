@@ -616,6 +616,14 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				}
 				return submitted;
 			},
+			streamSession: (ctx: CallContext, { params }, request) =>
+				events(ctx, request, new URL(request.url), params.sessionId),
+			getSessionHistory: async (ctx: CallContext, { params, query }) => {
+				if (options.history === undefined) {
+					throw new HarbourError("not_supported", "This server doesn't page through history");
+				}
+				return options.history.history(ctx, params.sessionId, query);
+			},
 		},
 		{ basePath },
 	);
