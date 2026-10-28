@@ -66,6 +66,7 @@ import {
 	pageLimit,
 	prepareChanges,
 	readTree,
+	requireNotAborted,
 	seedFiles,
 	statTree,
 	type Tree,
@@ -104,8 +105,17 @@ export interface WorkspaceStore {
 	load(id: WorkspaceId): Promise<LoadedHead | undefined>;
 	/** Creates a workspace with its first versions (0, and 1 when seeded); false when the ID is taken. */
 	create(head: StoredHead, versions: readonly StoredVersion[]): Promise<boolean>;
-	/** Moves the head from `current` to `next` and records `version`; false when the head changed meanwhile. */
-	advance(current: LoadedHead, next: StoredHead, version: StoredVersion): Promise<boolean>;
+	/**
+	 * Moves the head from `current` to `next` and records `version`; false when the head changed meanwhile. Calls
+	 * `options.check` as late as it can before the head moves (as the head write starts, or inside a transaction before
+	 * it commits); when it throws, the store moves nothing and rejects with that error.
+	 */
+	advance(
+		current: LoadedHead,
+		next: StoredHead,
+		version: StoredVersion,
+		options?: { readonly check?: () => void },
+	): Promise<boolean>;
 	/** Replaces the record without a new version (a remount); false when the head changed meanwhile. */
 	update(current: LoadedHead, next: StoredHead): Promise<boolean>;
 	/** The tree key of `version` (below the head's), null for an empty tree, undefined when the store has none. */
@@ -139,16 +149,23 @@ export interface StoredWorkspacesOptions {
 	readonly seeders?: Seeders;
 }
 
+/** A commit with mode bits, and a guard for a caller whose right to commit can lapse meanwhile. */
+export type StoredCommitRequest = Omit<CommitRequest, "changes"> & {
+	readonly changes: readonly ModedChange[];
+	/**
+	 * Called just before the head moves, with `ctx.signal`'s check (in the store's `advance`, at its last moment):
+	 * throwing stops the commit, which moves nothing and rejects with that error. A sandbox lease uses it to refuse a
+	 * commit once the lease has ended or passed its TTL.
+	 */
+	readonly guard?: () => void;
+};
+
 /** Stored workspaces, plus what the sandbox tiers use beside the contract. */
 export interface StoredWorkspaces extends KeyedWorkspaces {
 	/** Lists with mode bits, where a tier recorded them. */
 	list(ctx: CallContext, id: WorkspaceId, options?: ListOptions): Promise<Page<ModedFileEntry>>;
 	/** Commits puts that may carry mode bits. */
-	commit(
-		ctx: CallContext,
-		id: WorkspaceId,
-		request: Omit<CommitRequest, "changes"> & { readonly changes: readonly ModedChange[] },
-	): Promise<CommitResult>;
+	commit(ctx: CallContext, id: WorkspaceId, request: StoredCommitRequest): Promise<CommitResult>;
 	/**
 	 * A body by digest, for a tier that already holds a listing of `version`. The digest must be a file of that version,
 	 * so a digest from elsewhere reads nothing. Needs viewer, as `read` does.
@@ -441,7 +458,15 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 					record: { ...head.record, head: version, updatedAt: now },
 					tree: treeKey,
 				};
-				if (await store.advance(head, next, { info, tree: treeKey })) break;
+				// A cancelled caller (or a lapsed guard) stops the commit as late as the store can check: nothing refers to
+				// the objects written so far.
+				const check = () => {
+					requireNotAborted(ctx);
+					request.guard?.();
+				};
+				check();
+				const advanced = await store.advance(head, next, { info, tree: treeKey }, { check });
+				if (advanced) break;
 				// The head changed: a commit that won is a conflict; a remount that only moved the token is retried.
 				const reloaded = await load(ctx, id);
 				if (reloaded.record.head !== request.baseVersion || attempt >= HEAD_ATTEMPTS) {
@@ -655,7 +680,8 @@ export function createMemoryWorkspaceStore(): MemoryWorkspaceStore {
 			rows.set(head.record.id, { head, revision: 1, versions: [...versions] });
 			return true;
 		},
-		async advance(head, next, version) {
+		async advance(head, next, version, options) {
+			options?.check?.();
 			const row = current(head);
 			if (row === undefined) return false;
 			row.head = next;
