@@ -21,6 +21,12 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# One runner (sal-harbour-1) runs every workflow's jobs one at a time, so a re-push must not leave the older run's
+# ~6-minute job queued in front of everyone else's. "Tear down" runs on cancel too and removes the run's daemon.
+concurrency:
+  group: selfhosted-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   selfhosted:
     # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
