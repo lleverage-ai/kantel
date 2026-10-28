@@ -8,6 +8,7 @@ import type {
 	AuditLinks,
 	AuditSource,
 	AuditViewProps,
+	Choice,
 	GrantSummary,
 	PasskeyCheck,
 	VaultRequest,
@@ -35,6 +36,11 @@ export interface ConsoleAudit {
 	readonly directory: AuditDirectory;
 	readonly links: AuditLinks;
 	readonly choices: NonNullable<AuditViewProps["choices"]>;
+	/**
+	 * Reads the credentials to filter by, each time the audit log opens, for a host with no list of them up front. They
+	 * become the *Credential* choices and name the items in rows. A failed read leaves both as they were.
+	 */
+	readonly credentials?: () => Promise<readonly Choice[]>;
 	/** Check for newer events this often (ms). */
 	readonly pollMs?: number;
 }
