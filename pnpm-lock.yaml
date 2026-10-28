@@ -34,6 +34,9 @@ importers:
       "@harbour/audit":
         specifier: workspace:*
         version: link:../../packages/audit
+      "@harbour/browser":
+        specifier: workspace:*
+        version: link:../../packages/browser
       "@harbour/cloudflare-workspace":
         specifier: workspace:*
         version: link:../../targets/cloudflare/workspace
@@ -71,6 +74,9 @@ importers:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
+      "@harbour/protocol":
+        specifier: workspace:*
+        version: link:../../packages/protocol
       "@harbour/testing":
         specifier: workspace:*
         version: link:../../packages/testing

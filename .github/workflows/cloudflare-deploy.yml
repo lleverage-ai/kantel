@@ -14,7 +14,8 @@ name: Cloudflare deploy (M1-CF1)
 #            HARBOUR_R2_BUCKET (another bucket for WORKSPACES), HARBOUR_LOCATION_HINT (the objects' hint)
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            HARBOUR_VAULT_KEY (without it the vault answers 503), HARBOUR_VAULT_MODEL_GATEWAY_TOKEN,
-#            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN
+#            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN, HARBOUR_CPA_API_KEY, HARBOUR_BRWSR_API_KEY (src/browser.ts: without it
+#            sessions have no browser)
 #
 # The token's permissions (apps/cloudflare/README.md explains each):
 #   Account  Workers Scripts: Edit            deploy the Worker, its Durable Objects and static assets
@@ -158,6 +159,8 @@ jobs:
           HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN }}
           # CLIProxyAPI's client key: the vault object keeps it as the model gateway's platform item (src/models.ts).
           HARBOUR_CPA_API_KEY: ${{ secrets.HARBOUR_CPA_API_KEY }}
+          # brwsr's project key: only the browser provider holds it (src/browser.ts).
+          HARBOUR_BRWSR_API_KEY: ${{ secrets.HARBOUR_BRWSR_API_KEY }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.
