@@ -191,13 +191,19 @@ jobs:
         if: always()
         run: |
           unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH
-          # Fail the job if the daemon is still there after three tries; nothing to do if it never started.
+          # `docker ps` lists nothing when the container is gone and fails when Docker can't be reached, so absence is
+          # only ever read from an answer. Fail the job unless the daemon is confirmed gone after three tries.
+          present() { docker ps --all --quiet --filter "name=^/${DIND_NAME}\$"; }
           for _ in 1 2 3; do
-            docker container inspect "$DIND_NAME" >/dev/null 2>&1 || break
-            docker rm --force --volumes "$DIND_NAME" || sleep 5
+            if ids="$(present)"; then
+              [ -z "$ids" ] && break
+              docker rm --force --volumes "$DIND_NAME" || sleep 5
+            else
+              sleep 5
+            fi
           done
-          if docker container inspect "$DIND_NAME" >/dev/null 2>&1; then
-            echo "::error::could not remove $DIND_NAME"
+          if ! ids="$(present)" || [ -n "$ids" ]; then
+            echo "::error::could not confirm $DIND_NAME was removed"
             exit 1
           fi
           rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP"/shared-scenario*.json
