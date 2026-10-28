@@ -49,6 +49,7 @@ import {
 } from "@harbour/runtime-cloudflare";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
+import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
 import {
 	createMemoryWorkspaceStore,
@@ -179,6 +180,8 @@ export interface Stack {
 	readonly identity: IdentityDirectory;
 	readonly runtime: SessionRuntimeService;
 	readonly workspaces: StoredWorkspaces;
+	/** Lists a repository's branches for a new session's branch picker, over the same `fetch` seeds use. */
+	readonly gitRefs: GitRefLister;
 	/** The runtime's project access: who may do what in which project. */
 	readonly access: ProjectAccess;
 	readonly sandboxes: StackSandboxes;
@@ -286,9 +289,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
-		const seeders = {
-			git: createGitHubTarballFetcher({ fetch: options.gitFetch ?? ((input, init) => fetch(input, init)) }),
-		};
+		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
+		const seeders = { git: createGitHubTarballFetcher({ fetch: gitFetch }) };
+		const gitRefs = createGitRefLister({ fetch: gitFetch });
 		const workspaces = createStoredWorkspaces({
 			store: storage.workspaces ?? createMemoryWorkspaceStore(),
 			clock,
@@ -336,6 +339,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			identity,
 			runtime,
 			workspaces,
+			gitRefs,
 			access,
 			sandboxes,
 			audit,

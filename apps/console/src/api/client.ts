@@ -57,11 +57,29 @@ export type StartOptions = {
 	readonly agentName: string;
 };
 
-/** A session to create: the project, the agent and its title. */
+/** A repository a new session's workspace starts from, at a branch. */
+export type RepositoryChoice = {
+	/** `owner/name` on GitHub. */
+	readonly repo: string;
+	readonly branch: string;
+};
+
+/** A session to create: the project, the agent, its title and the repository its workspace starts from, if any. */
 export type CreateInput = {
 	readonly projectId: string;
 	readonly agentId: string;
 	readonly title?: string;
+	/** Seeds a new workspace with the repository's files at the branch, then starts the session on it. */
+	readonly repository?: RepositoryChoice;
+};
+
+/** A repository's branches, as New session's branch picker lists them. */
+export type RepositoryBranches = {
+	readonly repo: string;
+	readonly defaultBranch?: string;
+	readonly branches: readonly { readonly name: string; readonly commit: string }[];
+	/** More branches than were listed. */
+	readonly truncated: boolean;
 };
 
 export type SendOptions = {
@@ -123,7 +141,15 @@ export interface ConsoleClient {
 	mayStart(projectId: string): StartAccess;
 	/** The agent a new session in the project runs. Rejects when no agent may run there. */
 	startOptions(projectId: string, signal?: AbortSignal): Promise<StartOptions>;
-	/** Creates an idle session and resolves with its id; its first message is a `prompt`. */
+	/**
+	 * A repository's branches, for New session's branch picker; rejects with `not_found` when Harbour can't read it.
+	 * Absent on a client that can't start a session on a repository (a recorded session).
+	 */
+	branches?(projectId: string, repo: string, signal?: AbortSignal): Promise<RepositoryBranches>;
+	/**
+	 * Creates an idle session and resolves with its id; its first message is a `prompt`. With `repository`, it first
+	 * creates the session's workspace from the repository at the branch.
+	 */
 	create(input: CreateInput): Promise<string>;
 	control(sessionId: string): SessionControl;
 	/**

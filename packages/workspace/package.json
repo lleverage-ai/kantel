@@ -15,6 +15,7 @@
 		"./tree": "./src/tree.ts",
 		"./seed": "./src/seed.ts",
 		"./git-tarball": "./src/git-tarball.ts",
+		"./git-refs": "./src/git-refs.ts",
 		"./export": "./src/export.ts"
 	},
 	"dependencies": {

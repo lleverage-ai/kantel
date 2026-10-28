@@ -126,13 +126,20 @@ export {
 	type MessageActionsProps,
 } from "./session/message-actions.tsx";
 export {
+	type BranchOption,
+	BranchPicker,
+	type BranchPickerProps,
 	type ComposerModelOption,
 	filterModels,
 	ModelPicker,
 	type ModelPickerProps,
+	NO_REPOSITORY,
 	type ProjectOption,
 	ProjectPicker,
 	type ProjectPickerProps,
+	RepoPicker,
+	type RepoPickerProps,
+	repositoryFrom,
 	selectedModel,
 } from "./session/model-picker.tsx";
 export { NewSessionRow, type NewSessionRowProps } from "./session/new-session.tsx";

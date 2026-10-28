@@ -5,6 +5,7 @@
  * | --- | --- |
  * | `POST /v1/workspaces` | the workspace write API (`@harbour/workspace/write-api`): a seeded workspace, operators only |
  * | `/v1/workspaces/…` | the workspace read API (`@harbour/workspace/read-api`, PR #58) |
+ * | `GET /v1/git/branches` | a repository's branches for a new session's branch picker (`@harbour/workspace/git-refs`), operators only |
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
@@ -32,6 +33,7 @@ import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
+import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
 import {
@@ -138,6 +140,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		access: stack.access,
 		authenticate: callContext,
 	});
+
+	// A new session's branch picker: the same operator check as creating the workspace, before anything is fetched.
+	const gitBranches = createGitBranchesApi({ refs: stack.gitRefs, access: stack.access, authenticate: callContext });
 
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
@@ -265,6 +270,11 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				}
 				callers.set(request, caller);
 				return (await createWorkspace(request)) ?? (await workspaces(request)) ?? notFound();
+			}
+			if (path === GIT_BRANCHES_PATH) {
+				const refused = await signIn(request);
+				if (refused !== undefined) return refused;
+				return (await gitBranches(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
 			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
