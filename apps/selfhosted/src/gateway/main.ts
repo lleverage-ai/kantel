@@ -14,8 +14,10 @@
 //   HARBOUR_ORGANISATION_NAME   default "Harbour"
 //   HARBOUR_PROJECT_NAME        default "default"
 //   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use; default any https: URL
-//   HARBOUR_SMTP_URL            where sign-in codes are sent (smtp:// or smtps://); unset, no email is sent
-//   HARBOUR_MAIL_FROM           their From address; required with HARBOUR_SMTP_URL (see mail.ts)
+//   HARBOUR_SMTP_URL            where sign-in codes are sent (see mail.ts); unset, sign-in by email answers 503
+//   HARBOUR_MAIL_FROM           their From address; required with HARBOUR_SMTP_URL
+//   HARBOUR_ADMIN_EMAIL         invited as an organisation admin at start, unless someone can already sign in with it,
+//                               so a person can sign in by email one-time PIN (Harbour is invite-only)
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -24,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
-import { describeMail, mailConfig } from "./mail.ts";
+import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
 import { listen } from "./node-http.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -32,12 +34,15 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		.split(",")
 		.map((origin) => origin.trim())
 		.filter((origin) => origin !== "");
+	const adminEmail = env.HARBOUR_ADMIN_EMAIL?.trim() ?? "";
+	if (adminEmail !== "" && !plausibleAddress(adminEmail)) throw new Error("HARBOUR_ADMIN_EMAIL must be one address");
 	return {
 		port: Number(env.PORT ?? "8080"),
 		consoleDir: env.HARBOUR_CONSOLE_DIR ?? fileURLToPath(new URL("../../../console/dist", import.meta.url)),
 		bootstrapFile: resolve(env.HARBOUR_BOOTSTRAP_FILE ?? ".harbour/bootstrap.json"),
 		organisation: env.HARBOUR_ORGANISATION_NAME ?? "Harbour",
 		project: env.HARBOUR_PROJECT_NAME ?? "default",
+		...(adminEmail === "" ? {} : { adminEmail }),
 		callbackOrigins: origins,
 		mail: mailConfig(env),
 		durable: durableConfig(env),
@@ -102,7 +107,11 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		cfg.durable === undefined ? createGatewayComponents() : await createDurableGatewayComponents(cfg.durable);
 	const seeded = await bootstrap(
 		components,
-		{ organisation: cfg.organisation, project: cfg.project },
+		{
+			organisation: cfg.organisation,
+			project: cfg.project,
+			...(cfg.adminEmail === undefined ? {} : { adminEmail: cfg.adminEmail }),
+		},
 		await readBootstrap(cfg.bootstrapFile),
 	);
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
@@ -110,7 +119,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const gateway = createGateway({
 		components,
 		consoleDir: cfg.consoleDir,
-		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail) }),
+		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0
 			? {}
 			: { allowCallbackUrl: (url: URL) => cfg.callbackOrigins.includes(url.origin) }),

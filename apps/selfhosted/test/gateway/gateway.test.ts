@@ -4,26 +4,32 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EMAIL_OTP_ISSUER, systemContext } from "@harbour/contracts";
+import { MemoryOtpMailer } from "@harbour/identity/otp";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
+import { type Bootstrap, bootstrap, createGatewayComponents, inviteAdmin } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { writePrivateFile } from "../../src/gateway/main.ts";
 import { type Listening, listen } from "../../src/gateway/node-http.ts";
 import { type E2eTarget, runGatewayE2e } from "./e2e.ts";
+import { runSignInE2e } from "./signin-e2e.ts";
 
 const REQUEST_TIMEOUT_MS = 1000;
+const ADMIN_EMAIL = "Admin@Harbour.localhost";
+const mailer = new MemoryOtpMailer();
+let components: ReturnType<typeof createGatewayComponents>;
 
 let server: Listening;
-let target: E2eTarget;
+let target: E2eTarget & Bootstrap;
 let scratch: string;
 let close: () => Promise<void>;
 
 beforeAll(async () => {
 	scratch = await mkdtemp(join(tmpdir(), "harbour-gateway-"));
 	await writeFile(join(scratch, "index.html"), '<!doctype html><div id="root"></div>');
-	const components = createGatewayComponents();
-	const seeded = await bootstrap(components, { organisation: "Test", project: "test" });
-	const gateway = createGateway({ components, consoleDir: scratch });
+	components = createGatewayComponents();
+	const seeded = await bootstrap(components, { organisation: "Test", project: "test", adminEmail: ADMIN_EMAIL });
+	const gateway = createGateway({ components, consoleDir: scratch, mailer });
 	server = await listen(gateway.fetch, 0, { host: "127.0.0.1", requestTimeoutMs: REQUEST_TIMEOUT_MS });
 	target = { baseUrl: server.url, ...seeded };
 	close = async () => {
@@ -44,6 +50,72 @@ test("the gateway serves every mounted API end to end", async () => {
 	const checks = await runGatewayE2e(target);
 	expect(checks.filter((check) => !check.ok)).toEqual([]);
 	expect(checks.length).toBeGreaterThan(15);
+});
+
+/** The newest code the memory mailer sent to `email`, waiting up to `timeoutMs` for one. */
+async function memoryCode(email: string, _since: number, timeoutMs: number): Promise<string | undefined> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const code = mailer.lastCodeFor(email);
+		if (code !== undefined) return code;
+		if (Date.now() >= deadline) return undefined;
+		await sleep(20);
+	}
+}
+
+test("email one-time PIN sign-in starts a Harbour session every API accepts", async () => {
+	const checks = await runSignInE2e({ ...target, adminEmail: ADMIN_EMAIL.toLowerCase(), readCode: memoryCode });
+	expect(checks.filter((check) => !check.ok)).toEqual([]);
+	expect(checks.length).toBeGreaterThanOrEqual(12);
+});
+
+test("inviting the admin again, as a restart does, adds no second user", async () => {
+	const identity = { issuer: EMAIL_OTP_ISSUER, subject: "admin@harbour.localhost", email: "admin@harbour.localhost" };
+	const first = await components.identity.signIn(systemContext("test"), { ...identity, emailVerified: true });
+	await inviteAdmin(components.identity, target.organisationId, ADMIN_EMAIL);
+	await bootstrap(components, { organisation: "Test", project: "test", adminEmail: ADMIN_EMAIL }, target);
+	const again = await components.identity.signIn(systemContext("test"), { ...identity, emailVerified: true });
+	expect(again.user.id).toBe(first.user.id);
+	expect(again.organisationIds).toEqual([target.organisationId]);
+});
+
+test("without a mailer the sign-in routes answer 503, and API keys still work", async () => {
+	const bare = createGateway({ components });
+	for (const path of ["/auth/otp/start", "/auth/otp/verify", "/auth/session/end"]) {
+		const response = await bare.fetch(new Request(`http://gateway${path}`, { method: "POST", body: "{}" }));
+		expect(response.status).toBe(503);
+	}
+	const deployment = await bare.fetch(
+		new Request("http://gateway/v1/deployment", { headers: { authorization: `Bearer ${target.apiKey}` } }),
+	);
+	expect(deployment.status).toBe(200);
+	await bare.close();
+});
+
+test("sign-in requests are limited per client address, and another address is unaffected", async () => {
+	const limited = createGateway({
+		components,
+		mailer: new MemoryOtpMailer(),
+		signInLimit: { requests: 3, windowMilliseconds: 60_000 },
+	});
+	const start = (address: string) =>
+		limited.fetch(
+			new Request("http://gateway/auth/otp/start", {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-forwarded-for": "10.0.0.9" },
+				body: JSON.stringify({ email: `someone-${crypto.randomUUID()}@example.com` }),
+			}),
+			{ address },
+		);
+	const statuses = [];
+	for (let i = 0; i < 4; i += 1) statuses.push((await start("192.0.2.1")).status);
+	expect(statuses).toEqual([202, 202, 202, 429]);
+	const refused = await start("192.0.2.1");
+	const retryAfter = Number(refused.headers.get("retry-after"));
+	expect(retryAfter).toBeGreaterThan(0);
+	expect(retryAfter).toBeLessThanOrEqual(60);
+	expect((await start("192.0.2.2")).status).toBe(202);
+	await limited.close();
 });
 
 test("static paths cannot leave the console directory", async () => {

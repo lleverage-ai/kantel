@@ -8,8 +8,10 @@ import { createMemoryAuditStore } from "@harbour/audit/memory";
 import {
 	type AuditStore,
 	type CallContext,
+	EMAIL_OTP_ISSUER,
 	HarbourError,
 	type IdentityDirectory,
+	normaliseEmail,
 	type OrganisationId,
 	PLATFORM_ORGANISATION,
 	type ProjectAccess,
@@ -17,6 +19,7 @@ import {
 	type WorkspaceId,
 } from "@harbour/contracts";
 import { createMemoryIdentity } from "@harbour/identity/memory";
+import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import type { KeyedWorkspaces } from "@harbour/workspace";
 import { createMemoryWorkspaces } from "@harbour/workspace/memory";
@@ -35,6 +38,8 @@ export interface GatewayComponents {
 	readonly audit: AuditStore;
 	readonly runtime: MemoryRuntime;
 	readonly workspaces: KeyedWorkspaces;
+	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
+	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -115,7 +120,14 @@ export function createGatewayComponents(): GatewayComponents {
 		audit,
 		runtime,
 		workspaces,
-		bindings: { identity: "memory", audit: "memory", runtime: "memory (echo model)", workspaces: "memory" },
+		otp: createMemoryOtpStores(),
+		bindings: {
+			identity: "memory",
+			audit: "memory",
+			runtime: "memory (echo model)",
+			workspaces: "memory",
+			signIn: "memory",
+		},
 		close: () => runtime.close(),
 	};
 }
@@ -164,12 +176,13 @@ async function previousDeployment(
  */
 export async function bootstrap(
 	components: GatewayComponents,
-	names: { readonly organisation: string; readonly project: string },
+	names: { readonly organisation: string; readonly project: string; readonly adminEmail?: string },
 	previous?: Bootstrap,
 ): Promise<Bootstrap> {
 	const { identity, runtime, workspaces } = components;
 	const deployment = (await previousDeployment(identity, previous)) ?? (await createDeployment(identity, names));
 	const { organisationId, projectId } = deployment;
+	if (names.adminEmail !== undefined) await inviteAdmin(identity, organisationId, names.adminEmail);
 	const inProject: CallContext = {
 		actor: { kind: "system", component: "selfhosted-bootstrap" },
 		organisationId,
@@ -204,6 +217,24 @@ export async function bootstrap(
 		});
 	}
 	return { organisationId, projectId, workspaceId: workspace.id, apiKey: deployment.apiKey };
+}
+
+/**
+ * Invites `email` as an organisation admin, so a person can sign in by email one-time PIN: Harbour is invite-only, and
+ * sign-in never creates a user. Nothing happens when someone can already sign in with that email, so a restart does
+ * not add a second user, and an admin who has changed that user's roles keeps the change.
+ */
+export async function inviteAdmin(
+	identity: IdentityDirectory,
+	organisationId: OrganisationId,
+	email: string,
+): Promise<void> {
+	const normalised = normaliseEmail(email);
+	const asOtp = { issuer: EMAIL_OTP_ISSUER, subject: normalised, email: normalised, emailVerified: true } as const;
+	if (await identity.canSignIn(BOOTSTRAP, asOtp)) return;
+	const inOrganisation: CallContext = { actor: BOOTSTRAP.actor, organisationId };
+	const user = await identity.createUser(inOrganisation, { name: normalised, email: normalised });
+	await identity.grantRole(inOrganisation, { principal: { kind: "user", userId: user.id }, role: "admin" });
 }
 
 async function createDeployment(
