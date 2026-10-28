@@ -22,10 +22,12 @@ on:
   workflow_dispatch: {}
 
 # One runner (sal-harbour-1) runs every workflow's jobs one at a time, so a re-push must not leave the older run's
-# ~6-minute job queued in front of everyone else's. "Tear down" runs on cancel too and removes the run's daemon.
+# ~6-minute job queued in front of everyone else's. "Tear down" runs on cancel too and removes the run's daemon. Runs
+# on main are never cancelled: each gets a group of its own, since a shared group would still cancel an older pending
+# run when a newer one queues.
 concurrency:
-  group: selfhosted-${{ github.ref }}
-  cancel-in-progress: true
+  group: selfhosted-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   selfhosted:

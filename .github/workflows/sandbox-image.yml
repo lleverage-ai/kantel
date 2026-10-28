@@ -19,9 +19,11 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# A re-push cancels the pull request's older run ("Clean up" still runs). Runs on main are never cancelled: each gets a
+# group of its own, since a shared group would still cancel an older pending run when a newer one queues.
 concurrency:
-  group: sandbox-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: sandbox-image-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
