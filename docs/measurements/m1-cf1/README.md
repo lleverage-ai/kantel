@@ -11,7 +11,9 @@ out sign-in, which happens before, and the close, which happens after; the clien
 cloud browser (the round-trip probes below reached Cloudflare in LHR, AMS and CDG). Runs are sequential, and none failed (50 of 50 answered
 200 with exit code 0 in every batch).
 
-#17's target is **≤100 ms p50 and ≤300 ms p95**, measured as in M0 (50 runs, a new session each).
+#17's target is **≤100 ms p50 and ≤300 ms p95**, for a **warm session** (Tom, 28 Oct 2026): one session, warmed up,
+then 50 runs on it ([Warm session](#warm-session-28-oct-2026-2031-utc), below). The batches before that section are
+**cold**: 50 runs, a new session each, as in M0.
 
 ## Results
 
@@ -68,6 +70,44 @@ the Dynamic Worker call and the object's own work; that needs measuring again be
 Worker load (128 ms p50) would then be the next thing in the way. Which to move is a decision for #17, not taken
 here: D1's location is set when a database is created (a location hint), so moving it means a new database and
 its data copied, and the object's is set on its first use, so moving it means a new object name with a location hint.
+
+## Warm session (28 Oct 2026, 20:31 UTC)
+
+One batch per backend on `6514df8` (#139), from `/healthz`. Each opens one session with a cold run that keeps it open
+(`keep: true`, with `placement`), runs `ls -1R` 50 times on that session (`sessionId`), probes placement once more on
+it, then closes it (`POST /v1/sessions/:id/close`, 204 in both). Server `total` is the run on the open session: its
+lease and the backend's isolate are already there. It leaves out the measurement's own session lookup (`lookup`).
+
+| Batch | Kind | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 (min–max) | Target p50 / p95 |
+| --- | --- | --- | --- | --- |
+| [`…T18-23-40Z-in-process-placement.json`](isolate-ready-2026-10-28T18-23-40Z-in-process-placement.json) | in-process, cold | 2,442 / 2,991 | 1,533 / 1,885 | 100 / 300 |
+| [`…T20-33-46Z-warm-in-process.json`](isolate-ready-2026-10-28T20-33-46Z-warm-in-process.json) | in-process, **warm** | 925 / 1,091 (859–1,203) | **285 / 405** (216–497) | 100 / 300 |
+| [`…T18-21-23Z-dynamic-worker.json`](isolate-ready-2026-10-28T18-21-23Z-dynamic-worker.json) | dynamic-worker, cold | 2,329 / 2,700 | 1,496 / 1,910 | 100 / 300 |
+| [`…T20-34-56Z-warm-dynamic-worker.json`](isolate-ready-2026-10-28T20-34-56Z-warm-dynamic-worker.json) | dynamic-worker, **warm** | 979 / 1,134 (846–1,152) | **288 / 470** (240–505) | 100 / 300 |
+
+50 of 50 warm runs answered 200 with exit code 0 on the warm-up's session in both batches. Sign-in, before each
+run, was 356 / 401 ms and 354 / 457 ms p50 / p95.
+
+**Verdict: a warm session is about 5× faster than a new one, and still misses: about 2.9× at p50 and 1.4–1.6× at
+p95 on the server.** Both backends take the same time again.
+
+- **The command and the isolate cost nothing measurable when warm.** On `dynamic-worker`, `isolate.cold` was 0 and
+  `isolate.call` 0 ms in all 50 (the warm-up's cold `isolate.call` was 312 ms). The sandbox's own phases (`isolate.manifest`,
+  `isolate.exec`, `isolate.scan`) were 0 ms in a 10-run batch that kept every run's timings
+  ([`…T20-36-13Z-warm-in-process-timings.json`](isolate-ready-2026-10-28T20-36-13Z-warm-in-process-timings.json)).
+  Worker timers only move on I/O, so the ~285 ms is most likely the run's I/O: the sandbox layer's workspace,
+  session and lease checks and its audit. `total` doesn't break that down by call.
+- **Those round trips are still remote.** All six placement probes (warm-up and after, three batches) said what
+  they did at 18:21: object `LHR`, D1 `ENAM` (`ORD`, primary). From the object, `SELECT 1` took 122 ms p50 (46–313,
+  30 queries) and an R2 `head` 133 ms p50 (73–199, 30); R2 doesn't report its location. Two or three such round trips
+  would add up to the ~285 ms. The measurement's own
+  lookup of the session took 227 ms p50 (195–366) on top, outside `total`.
+- **The client's ~0.9 s wall time** is sign-in (~360 ms), the lookup (~230 ms) and the run (~285 ms), plus the trip
+  from brwsr's browser to the edge.
+
+So the remaining gap most likely comes from where D1 and R2 are rather than the isolate, but that is an inference
+until it is measured: the next step is moving them to `weur`, next to the object (#140 lets CI bind a new database
+and bucket), and running these batches again.
 
 ## Where the time goes
 
@@ -174,3 +214,36 @@ const q = (xs, p) => [...xs].sort((a, b) => a - b)[Math.ceil(p * xs.length) - 1]
 Each file holds that script's output, `runs` included: `status`, `wall` (client ms), `server` (`timings.total`),
 `session`, `isolate`, `exit` and `listed` per run, plus the warm-up and the summary. The two later files add
 `signIn`, `call` and `cold` per run, and `placement` on the warm-up and `after`.
+
+The warm batch runs on one session, which it closes whatever happens (in a fresh page, not after the script above):
+
+```js
+const backend = "in-process"; // or "dynamic-worker"
+const call = async (body) => {
+  const t0 = performance.now();
+  const r = await fetch("/v1/measurements/isolate-ready", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ backend, ...body }),
+  });
+  const j = await r.json();
+  return { status: r.status, wall: performance.now() - t0, sessionId: j.sessionId, warm: j.warm,
+           server: j.timings?.total, timings: j.timings, exit: j.exitCode,
+           ...(body.placement ? { placement: j.placement } : {}) };
+};
+const warmup = await call({ keep: true, placement: true }); // a cold run that leaves its session open
+const runs = [];
+let after;
+try {
+  for (let i = 0; i < 50; i++) runs.push(await call({ sessionId: warmup.sessionId }));
+  after = await call({ sessionId: warmup.sessionId, placement: true });
+} finally {
+  await fetch(`/v1/sessions/${warmup.sessionId}/close`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+}
+```
+
+The same `q` gives the percentiles. The warm
+files hold `warmup`, `runs`, `after`, `closed` (the close's status) and `summary`; the `-timings` file keeps every
+run's whole `timings`. A run answers 409 if the session is closed, and 400 if it isn't a measurement session on that
+backend. Right after a deploy, wait until the object has restarted on the new code: a warm-up answered by the old
+code closes its session, and the batch fails with 409s.
