@@ -82,8 +82,9 @@ describe("the test SMTP client and Mailpit reader", () => {
 		});
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const port = (server.address() as { port: number }).port;
-		// Every search starts at least the 500 ms margin before the deadline, so a loaded machine (CI shares its host)
-		// still answers in time. 500 ends after its first search; the others wait and search again.
+		// Another search is begun only while at least the 500 ms margin is left before the deadline: headroom, so a loaded
+		// machine (CI shares its host) usually still answers in time, though a sleep that overruns can still eat into it.
+		// 500 ends after its first search; the others wait and search again.
 		for (const timeoutMs of [500, 800, 1_200]) {
 			await expect(latestMessageTo(`http://127.0.0.1:${port}`, "a@b", timeoutMs)).resolves.toBeUndefined();
 		}
