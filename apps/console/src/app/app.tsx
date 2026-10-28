@@ -1,6 +1,6 @@
-import { Badge, Button, EmptyState, ListRow, Notice, SessionList, Spinner } from "@harbour/ui";
+import { Badge, Button, EmptyState, ListRow, Notice, SessionList, SignedInAs, Spinner } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import type { ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
+import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { AuditScreen } from "./audit-screen.tsx";
@@ -76,6 +76,28 @@ function useSessionProject(client: ConsoleClient, sessionId: string | undefined)
 		};
 	}, [client, sessionId]);
 	return found !== undefined && found.sessionId === sessionId ? found.projectId : "pending";
+}
+
+/** Who is signed in, at the sidebar's foot, with Sign out when the console signed them in itself. */
+function Actor({ actor }: { actor: ConsoleActor }) {
+	const [signingOut, setSigningOut] = useState(false);
+	const { signOut } = actor;
+	return (
+		<SignedInAs
+			name={actor.name}
+			{...(actor.email === undefined ? {} : { email: actor.email })}
+			{...(actor.stubbed ? { badge: <Badge>Sign-in stubbed</Badge> } : {})}
+			{...(signOut === undefined
+				? {}
+				: {
+						onSignOut: () => {
+							setSigningOut(true);
+							void signOut().finally(() => location.reload());
+						},
+					})}
+			signingOut={signingOut}
+		/>
+	);
 }
 
 function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]; current: string | undefined }) {
@@ -315,8 +337,7 @@ export function App({
 					)}
 				</div>
 				<div className="shell-actor">
-					<span className="shell-actor-name">{client.actor.name}</span>
-					{client.actor.stubbed ? <Badge>Sign-in stubbed</Badge> : null}
+					<Actor actor={client.actor} />
 				</div>
 			</div>
 			{listIsPage ? null : (

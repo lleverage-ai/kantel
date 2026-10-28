@@ -1,0 +1,146 @@
+// The console's sign-in against identity's real routes, in process: `/v1/me` and `/v1/projects`
+// (`@harbour/identity/http`) and the email one-time PIN routes (`@harbour/identity/otp/http`) over an in-memory
+// directory, stores and mailer, as a self-hosted deployment serves them.
+import type { CallContext, SignInMethod } from "@harbour/contracts";
+import { createAuthenticator } from "@harbour/identity/authenticator";
+import { createIdentityHandler } from "@harbour/identity/http";
+import { createMemoryIdentity } from "@harbour/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
+import { createOtpHandler } from "@harbour/identity/otp/http";
+import { createSignInFlow } from "@harbour/ui";
+import { describe, expect, it } from "vitest";
+import { createApiClient } from "./http.ts";
+import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./identity.ts";
+
+const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
+const ORIGIN = "https://harbour.test";
+const ADA = "ada@harbour.test";
+
+async function world(signIn: readonly SignInMethod[] = ["email_otp"]) {
+	const identity = createMemoryIdentity();
+	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
+	const organisation = await identity.createOrganisation(bootstrap, {
+		name: "Harbour",
+		admin: { kind: "user", userId: ada.id },
+	});
+	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
+	await identity.createProject(admin, { name: "Website" });
+	await identity.createProject(admin, { name: "Billing" });
+	const stores = createMemoryOtpStores();
+	const mailer = new MemoryOtpMailer();
+	const sending: Promise<unknown>[] = [];
+	const otp = createEmailOtp({ identity, ...stores, mailer, defer: (work) => sending.push(work) });
+	const otpRoutes = createOtpHandler({ otp });
+	const identityRoutes = createIdentityHandler({
+		identity,
+		authenticator: createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] }),
+		signIn,
+	});
+	const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+		const request = new Request(input, init);
+		const path = new URL(request.url).pathname;
+		if (path.startsWith("/auth/")) return otpRoutes(request);
+		if (path === "/v1/me" || path === "/v1/projects") return identityRoutes(request);
+		// The session API, for the projects' recency: no sessions yet.
+		return Response.json({ items: [] });
+	};
+	const tokens = memoryTokens();
+	const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens });
+	const mailed = async () => {
+		await Promise.all(sending.splice(0));
+		return mailer.lastCodeFor(ADA) ?? "";
+	};
+	return { consoleIdentity, tokens, mailed, fetch };
+}
+
+function expectKind<K extends ConsoleBoot["kind"]>(boot: ConsoleBoot, kind: K): Extract<ConsoleBoot, { kind: K }> {
+	expect(boot.kind).toBe(kind);
+	return boot as Extract<ConsoleBoot, { kind: K }>;
+}
+
+describe("the console's sign-in", () => {
+	it("asks for an email code after a 401 that names it, then knows who is signed in and their projects", async () => {
+		const { consoleIdentity, tokens, mailed, fetch } = await world();
+		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+
+		// The screen's flow, on the routes the console calls.
+		const flow = createSignInFlow({ api: signIn.api });
+		flow.setEmail(ADA);
+		await flow.requestCode();
+		flow.setCode(await mailed());
+		await flow.verify();
+		expect(flow.getState().step).toBe("signed-in");
+		expect(tokens.get()).toMatch(/^hbs_/);
+
+		const booted = expectKind(await consoleIdentity.boot(), "signed-in");
+		expect(booted.actor).toMatchObject({ name: "Ada Lovelace", email: ADA, stubbed: false });
+		expect(booted.actor.signOut).toBeDefined();
+		expect(booted.me.method).toBe("harbour_session");
+		expect(booted.headers()).toEqual({ authorization: `Bearer ${tokens.get()}` });
+
+		const api = createApiClient({ baseUrl: `${ORIGIN}/v1`, fetch, headers: booted.headers, actor: booted.actor });
+		expect((await api.projects()).map((project) => project.name)).toEqual(["Billing", "Website"]);
+	});
+
+	it("signs out: the session ends at the server and the next boot asks again", async () => {
+		const { consoleIdentity, tokens, mailed } = await world();
+		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+		await signIn.api.start(ADA);
+		await signIn.api.verify(ADA, await mailed());
+		const token = tokens.get();
+		const booted = expectKind(await consoleIdentity.boot(), "signed-in");
+		await booted.actor.signOut?.();
+		expect(tokens.get()).toBeUndefined();
+		// The old token no longer works, even if something kept it.
+		tokens.set(token ?? "", Date.now() + 60_000);
+		expectKind(await consoleIdentity.boot(), "sign-in");
+		expect(tokens.get()).toBeUndefined();
+	});
+
+	it("drops a token the server no longer takes", async () => {
+		const { consoleIdentity, tokens } = await world();
+		tokens.set("hbs_not-a-session", Date.now() + 60_000);
+		expectKind(await consoleIdentity.boot(), "sign-in");
+		expect(tokens.get()).toBeUndefined();
+	});
+
+	it("doesn't offer an email code where Access signs people in", async () => {
+		const { consoleIdentity } = await world(["cloudflare_access"]);
+		expect(await consoleIdentity.boot()).toEqual({ kind: "signed-out", methods: ["cloudflare_access"] });
+	});
+
+	it("doesn't offer an email code where the deployment named no way in", async () => {
+		const { consoleIdentity } = await world([]);
+		expect(await consoleIdentity.boot()).toEqual({ kind: "signed-out", methods: [] });
+	});
+
+	it("fails the boot, rather than asking to sign in, when Harbour can't be reached", async () => {
+		const consoleIdentity = createConsoleIdentity({
+			baseUrl: ORIGIN,
+			fetch: () => Promise.reject(new TypeError("offline")),
+			tokens: memoryTokens(),
+		});
+		await expect(consoleIdentity.boot()).rejects.toMatchObject({ code: "unavailable" });
+	});
+});
+
+describe("the session token store", () => {
+	it("keeps the token until it expires, and drops what it can't read", () => {
+		let now = 1000;
+		const items = new Map<string, string>();
+		const storage = {
+			getItem: (key: string) => items.get(key) ?? null,
+			setItem: (key: string, value: string) => items.set(key, value),
+			removeItem: (key: string) => items.delete(key),
+		} as unknown as Storage;
+		const tokens = storageTokens(storage, () => now);
+		tokens.set("hbs_a", 2000);
+		expect(tokens.get()).toBe("hbs_a");
+		now = 2000;
+		expect(tokens.get()).toBeUndefined();
+		expect(items.size).toBe(0);
+		items.set("harbour.console.session", "{not json");
+		expect(tokens.get()).toBeUndefined();
+		expect(items.size).toBe(0);
+	});
+});

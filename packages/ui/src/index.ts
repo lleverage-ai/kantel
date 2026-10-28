@@ -26,6 +26,24 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// Identity: who is signed in, and Harbour's own email-code sign-in.
+export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
+export {
+	codeDigits,
+	createSignInFlow,
+	initialSignIn,
+	SIGN_IN_CODE_DIGITS,
+	SIGN_IN_CODE_TTL_MS,
+	SIGN_IN_MAX_CODES,
+	SIGN_IN_MAX_TRIES,
+	type SignInApi,
+	type SignInFlow,
+	type SignInFlowOptions,
+	type SignInProblem,
+	type SignInState,
+	signInProblem,
+} from "./identity/sign-in-model.ts";
+export { initials, SignedInAs, type SignedInAsProps } from "./identity/signed-in-as.tsx";
 export {
 	Button,
 	type ButtonProps,

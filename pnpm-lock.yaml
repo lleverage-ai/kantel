@@ -92,6 +92,9 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
+      "@harbour/identity":
+        specifier: workspace:*
+        version: link:../../packages/identity
       "@harbour/protocol":
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -527,6 +530,9 @@ importers:
       "@harbour/audit":
         specifier: workspace:*
         version: link:../audit
+      "@harbour/identity":
+        specifier: workspace:*
+        version: link:../identity
       "@ladle/react":
         specifier: 5.1.1
         version: 5.1.1(@types/node@26.6.5)(@types/react@19.3.0)(lightningcss@1.33.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2)(yaml@2.9.1)

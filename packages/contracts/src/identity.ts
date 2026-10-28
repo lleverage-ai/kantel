@@ -355,3 +355,57 @@ export interface OtpVerifyResponse {
 export interface IdentityErrorResponse {
 	readonly error: { readonly code: string; readonly message: string };
 }
+
+/*
+ * Who is signed in, and their projects, over HTTP (M1-BE7). Both routes are behind the authenticator, so any caller
+ * may ask about itself: a person signed in through Access, OIDC or a Harbour session, or a host app's API key.
+ *
+ * `GET ME_PATH` answers 200 with `MeResponse`. `GET PROJECTS_PATH?limit=&cursor=` answers 200 with a page of the
+ * projects the caller holds a role on in its organisation (`IdentityDirectory.listProjects`), as `ProjectsResponse`.
+ *
+ * A missing or invalid credential is 401 with `UnauthenticatedResponse`, whose `signIn` names how a person signs in to
+ * this deployment, so a console knows whether to show its own sign-in screen (`email_otp`) or reload the page for the
+ * edge to sign them in (`cloudflare_access`). An organisation the caller may not act in is 403; a malformed `limit` or
+ * `cursor` is 400 `invalid`.
+ */
+export const ME_PATH = "/v1/me";
+export const PROJECTS_PATH = "/v1/projects";
+
+/** How a person signs in to a deployment: Harbour's email one-time PIN (self-hosted) or Cloudflare Access at the edge. */
+export type SignInMethod = "email_otp" | "cloudflare_access";
+export const SIGN_IN_METHODS: readonly SignInMethod[] = ["email_otp", "cloudflare_access"];
+
+/** A role the caller holds: across the organisation when `projectId` is absent, else on that project. */
+export interface HeldRole {
+	readonly projectId?: ProjectId;
+	readonly role: Role;
+}
+
+export interface MeResponse {
+	readonly actor: Actor;
+	readonly organisationId: OrganisationId;
+	readonly method: AuthenticationMethod;
+	/** A person's name; a host app's service ID, as a key carries no name of its own. */
+	readonly name: string;
+	readonly email?: string;
+	/**
+	 * The organisation-wide role first, when there is one, then each project where the caller holds more than that. A key
+	 * holds its role on each of its projects and nothing across the organisation.
+	 */
+	readonly roles: readonly HeldRole[];
+}
+
+export interface ProjectsResponse {
+	readonly items: readonly Project[];
+	/** Present when more projects follow: pass it back as `cursor`. */
+	readonly nextCursor?: string;
+}
+
+export interface UnauthenticatedResponse {
+	readonly error: {
+		readonly code: "unauthenticated";
+		readonly message: string;
+		/** How a person signs in here; absent when the deployment did not say. */
+		readonly signIn?: readonly SignInMethod[];
+	};
+}

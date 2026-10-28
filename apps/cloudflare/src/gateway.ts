@@ -7,14 +7,23 @@
  * | `/v1/workspaces/…` | the workspace read API (`@harbour/workspace/read-api`, PR #58) |
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
+ * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
  * token Cloudflare Access puts in `Cf-Access-Jwt-Assertion` (people). The console's static assets never reach here.
  */
 import { createAuditQueryHandler } from "@harbour/audit/http";
-import { AUDIT_EVENT_PATH, AUDIT_EVENTS_PATH, type AuthenticatedCaller, callContextFor } from "@harbour/contracts";
+import {
+	AUDIT_EVENT_PATH,
+	AUDIT_EVENTS_PATH,
+	type AuthenticatedCaller,
+	callContextFor,
+	ME_PATH,
+	PROJECTS_PATH,
+} from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
+import { createIdentityHandler } from "@harbour/identity/http";
 import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
@@ -53,6 +62,12 @@ export function createGateway(stack: Stack): Gateway {
 	});
 
 	const audit = createAuditQueryHandler({ store: stack.audit, authenticator: stack.authenticator });
+	// A 401 here names Access, so the console reloads for Access to sign the person in rather than showing its own form.
+	const identity = createIdentityHandler({
+		identity: stack.identity,
+		authenticator: stack.authenticator,
+		signIn: stack.signIn,
+	});
 
 	// The read API takes a call context, not an authenticator, and answers a refused one as 403. The gateway
 	// authenticates first, so a missing or bad credential is a 401 with a challenge, as on every other route.
@@ -144,6 +159,7 @@ export function createGateway(stack: Stack): Gateway {
 			}
 			if (path === MEASURE_PATH) return measure(request);
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
+			if (path === ME_PATH || path === PROJECTS_PATH) return identity(request);
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();
 		},

@@ -1,7 +1,7 @@
 // The console's API client against the real session API (`@harbour/runtime/http`) over the in-memory runtime, in
 // process: every call goes through the HTTP handler the gateway serves, with a scripted model holding runs open so
 // steer, follow-up and cancel can be sent while one is running.
-import type { AgentProfile, Authentication, CallContext } from "@harbour/contracts";
+import type { AgentProfile, Authentication, CallContext, Project } from "@harbour/contracts";
 import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
@@ -48,6 +48,25 @@ async function eventually(check: () => boolean, what: string, ms = 3000) {
 	}
 }
 
+/**
+ * `GET /v1/projects` as identity's handler answers it, pages and all, for the projects named here (the identity
+ * routes themselves are tested in @harbour/identity and through the gateway). Bearer tom only.
+ */
+function projectsRoute(projects: Map<string, string>) {
+	return (request: Request): Response => {
+		if (request.headers.get("authorization") !== "Bearer tom") {
+			return Response.json({ error: { code: "unauthenticated", message: "Sign in" } }, { status: 401 });
+		}
+		const url = new URL(request.url);
+		const limit = Number(url.searchParams.get("limit") ?? "50");
+		const from = Number(url.searchParams.get("cursor") ?? "0");
+		const all: Project[] = [...projects].map(([id, name]) => ({ id, name, organisationId: ORG, createdAt: 0 }));
+		const items = all.slice(from, from + limit);
+		const next = from + limit < all.length ? { nextCursor: String(from + limit) } : {};
+		return Response.json({ items, ...next });
+	};
+}
+
 async function setUp() {
 	const { models, script } = createScriptedModel();
 	const memory = createMemoryRuntime({ models });
@@ -61,22 +80,30 @@ async function setUp() {
 		await memory.close();
 	});
 	await memory.profiles.put(ctx, profile);
-	const apiFetch = (request: Request) => api.fetch(request);
+	/** The projects `GET /v1/projects` lists, by id; a session's project is added when one is created in it. */
+	const projects = new Map<string, string>();
+	const listProjects = projectsRoute(projects);
+	const apiFetch = async (request: Request) =>
+		new URL(request.url).pathname === "/v1/projects" ? listProjects(request) : api.fetch(request);
 	const client = createApiClient({
 		baseUrl: BASE,
 		headers: () => ({ authorization: "Bearer tom" }),
 		fetch: (input, init) => apiFetch(new Request(input, init)),
 		listPollMs: 20,
 	});
-	const create = async (projectId: string, title?: string) =>
-		(await memory.runtime.create(ctx, { projectId, agentId: "worker", ...(title === undefined ? {} : { title }) })).id;
+	const create = async (projectId: string, title?: string) => {
+		if (!projects.has(projectId)) projects.set(projectId, `Project ${projectId.replace(/^proj-/, "").toUpperCase()}`);
+		return (
+			await memory.runtime.create(ctx, { projectId, agentId: "worker", ...(title === undefined ? {} : { title }) })
+		).id;
+	};
 	const open = (sessionId: string) => {
 		const session = new SessionClient(client.transport(sessionId), sessionId);
 		session.start();
 		cleanups.push(() => session.stop());
 		return session;
 	};
-	return { memory, script, client, create, open, apiFetch };
+	return { memory, script, client, create, open, apiFetch, projects };
 }
 
 const texts = (session: SessionClient) =>
@@ -91,16 +118,47 @@ const texts = (session: SessionClient) =>
 		);
 
 describe("the console on the session API", () => {
-	it("finds the projects from the caller's sessions, the most recently active first", async () => {
-		const { client, create } = await setUp();
+	it("lists the caller's projects by name, the most recently active first, then the rest by name", async () => {
+		const { client, create, projects } = await setUp();
+		projects.set("proj-quiet", "Archive");
+		projects.set("proj-new", "Billing");
 		await create("proj-a");
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		await create("proj-b");
 		await create("proj-b");
 		expect(await client.projects()).toEqual([
-			{ id: "proj-b", name: "proj-b" },
-			{ id: "proj-a", name: "proj-a" },
+			{ id: "proj-b", name: "Project B" },
+			{ id: "proj-a", name: "Project A" },
+			{ id: "proj-quiet", name: "Archive" },
+			{ id: "proj-new", name: "Billing" },
 		]);
+	});
+
+	it("follows every page of projects", async () => {
+		const { client, projects } = await setUp();
+		for (let index = 0; index < 230; index++) projects.set(`proj-${String(index).padStart(3, "0")}`, `P${index}`);
+		expect(await client.projects()).toHaveLength(230);
+	});
+
+	it("says when the session is over, on any call", async () => {
+		const { apiFetch } = await setUp();
+		let signedOut = 0;
+		const client = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer someone-else" }),
+			fetch: (input, init) => apiFetch(new Request(input, init)),
+			onUnauthenticated: () => signedOut++,
+		});
+		await expect(client.projects()).rejects.toMatchObject({ code: "unauthenticated" });
+		expect(signedOut).toBeGreaterThan(0);
+	});
+
+	it("acts as whoever it was told is signed in", async () => {
+		const client = createApiClient({
+			actor: { id: "u1", name: "Ada Lovelace", email: "ada@harbour.test", stubbed: false },
+		});
+		expect(client.actor).toMatchObject({ name: "Ada Lovelace", email: "ada@harbour.test" });
+		expect(createApiClient().actor).toMatchObject({ name: "Signed in" });
 	});
 
 	it("follows a project's sessions, and marks one unread when it finishes while it isn't open", async () => {

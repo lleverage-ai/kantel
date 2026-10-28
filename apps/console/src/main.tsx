@@ -1,11 +1,12 @@
-import { Spinner } from "@harbour/ui";
-import { StrictMode, Suspense, use } from "react";
+import { Button, Notice, SignInScreen, Spinner } from "@harbour/ui";
+import { StrictMode, Suspense, use, useCallback, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
 import { apiAudit } from "./api/audit-http.ts";
 import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient } from "./api/http.ts";
+import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import type { ConsoleAudit, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { App } from "./app/app.tsx";
@@ -24,6 +25,10 @@ import "./ui/styles.css";
 // `?source=recorded` or `?source=api` picks one for this tab; `VITE_HARBOUR_SOURCE` sets the default for a build.
 // `?profile=1` adds the render profiler.
 //
+// On `api` the console asks `GET /v1/me` first (api/identity.ts). Signed in, the sidebar names the person and lists
+// their projects by name. A 401, then or later, shows Harbour's email-code sign-in where the deployment signs people
+// in that way (self-hosted), and asks for a reload where Access does it at the edge.
+//
 // The vault page and audit log follow the source. On `api` the audit log reads the audit query API (M1-BE8) the
 // gateway serves on this origin; the vault page isn't listed, as the gateway serves no approval API yet. On `recorded`
 // both run on the in-memory vault and audit store in the page (recorded/oversight.ts).
@@ -38,7 +43,7 @@ const source = sessionStorage.getItem(SOURCE_KEY) ?? import.meta.env.VITE_HARBOU
 let current: { sessionId: string; session: SessionClient } | undefined;
 let proposals: Readonly<Record<string, string>> | undefined;
 let recorded: RecordedClient | undefined;
-let client: ConsoleClient;
+let client: ConsoleClient | undefined;
 if (source === "recorded") {
 	recorded = createRecordedClient(createCatalogue(Date.now(), { long: longUrl, small: smallUrl }), {
 		speed: Number(params.get("speed") ?? "1") || 1,
@@ -51,8 +56,6 @@ if (source === "recorded") {
 		},
 	});
 	client = recorded;
-} else {
-	client = createApiClient();
 }
 
 Object.assign(window, {
@@ -74,16 +77,20 @@ const onOpen = (sessionId: string, session: SessionClient) => {
 };
 
 type Oversight = { readonly vault?: ConsoleVault; readonly audit?: ConsoleAudit };
-const oversight: Promise<Oversight> =
+const recordedOversight: Promise<Oversight> | undefined =
 	source === "recorded"
 		? createRecordedOversight().then((made: RecordedOversight) => {
 				proposals = made.proposals;
 				return made;
 			})
-		: Promise.resolve({ audit: apiAudit() });
+		: undefined;
 
-function Console({ oversight }: { oversight: Promise<Oversight> }) {
-	const { vault, audit } = use(oversight);
+function RecordedConsole({ client, oversight }: { client: ConsoleClient; oversight: Promise<Oversight> }) {
+	return <Console client={client} oversight={use(oversight)} />;
+}
+
+function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
+	const { vault, audit } = oversight;
 	return (
 		<App
 			client={client}
@@ -92,6 +99,81 @@ function Console({ oversight }: { oversight: Promise<Oversight> }) {
 			onOpen={onOpen}
 		/>
 	);
+}
+
+const identity = createConsoleIdentity({ tokens: hasStorage() ? storageTokens(localStorage) : memoryTokens() });
+
+function hasStorage(): boolean {
+	try {
+		return typeof localStorage !== "undefined" && localStorage !== null;
+	} catch {
+		return false;
+	}
+}
+
+type Boot = ConsoleBoot | { readonly kind: "failed"; readonly message: string };
+const boot = (): Promise<Boot> =>
+	identity.boot().catch((reason: unknown) => ({
+		kind: "failed" as const,
+		message: reason instanceof Error ? reason.message : String(reason),
+	}));
+
+// Started here, not in render: a component that suspends before it mounts loses its state, so a promise made in
+// render would be made again on every retry.
+const firstBoot: Promise<Boot> | undefined = source === "recorded" ? undefined : boot();
+
+/** The console on the API: who is signed in first, then the shell, or the way to sign in. */
+function ApiConsole({ first }: { first: Promise<Boot> }) {
+	const [booting, setBooting] = useState(first);
+	const reboot = useCallback(() => setBooting(boot()), []);
+	const state = use(booting);
+	if (state.kind === "signed-in") return <SignedInConsole state={state} onSignedOut={reboot} />;
+	if (state.kind === "sign-in") {
+		return (
+			<div className="boot hb-app">
+				<SignInScreen api={state.api} onSignedIn={reboot} />
+			</div>
+		);
+	}
+	return (
+		<div className="boot hb-app">
+			<Notice
+				level={state.kind === "failed" ? "error" : "info"}
+				action={
+					<Button size="sm" onClick={() => location.reload()}>
+						Reload
+					</Button>
+				}
+			>
+				{state.kind === "failed"
+					? `Harbour can't open the console right now. ${state.message}`
+					: "You're signed out. Reload the page to sign in."}
+			</Notice>
+		</div>
+	);
+}
+
+function SignedInConsole({
+	state,
+	onSignedOut,
+}: {
+	state: Extract<ConsoleBoot, { kind: "signed-in" }>;
+	onSignedOut: () => void;
+}) {
+	const made = useMemo(() => {
+		let over = false;
+		const onUnauthenticated = () => {
+			if (over) return;
+			over = true;
+			identity.forget();
+			onSignedOut();
+		};
+		return {
+			client: createApiClient({ actor: state.actor, headers: state.headers, onUnauthenticated }),
+			oversight: { audit: apiAudit({ headers: state.headers }) } satisfies Oversight,
+		};
+	}, [state, onSignedOut]);
+	return <Console client={made.client} oversight={made.oversight} />;
 }
 
 createRoot(document.getElementById("root")!).render(
@@ -103,7 +185,11 @@ createRoot(document.getElementById("root")!).render(
 				</div>
 			}
 		>
-			<Console oversight={oversight} />
+			{client !== undefined && recordedOversight !== undefined ? (
+				<RecordedConsole client={client} oversight={recordedOversight} />
+			) : firstBoot !== undefined ? (
+				<ApiConsole first={firstBoot} />
+			) : null}
 		</Suspense>
 	</StrictMode>,
 );
