@@ -24,7 +24,8 @@
 //   another stack's owners are not in this stack's database, so they would
 //   all look dead. The owner label was `harbour.owner` before; hosts still
 //   running that code reap every container with it, so new ones do not carry
-//   it.
+//   it. What such a host left behind is this stack's when this stack's vault
+//   is on its network, and is reaped on that evidence alone.
 
 import type pg from "pg";
 import type {
@@ -61,6 +62,8 @@ const CA_PATH = "/etc/harbour/ca.crt";
 export const STACK_LABEL = "harbour.stack";
 export const OWNER_LABEL = "harbour.sandbox-owner";
 export const SESSION_LABEL = "harbour.session";
+/** The owner label before `harbour.stack`, on what hosts on that code made. */
+export const LEGACY_OWNER_LABEL = "harbour.owner";
 
 /** Docker's multiplexed log stream: 8-byte frame headers, stream 1 stdout, 2 stderr. */
 function demux(bytes: Uint8Array): { stdout: string; stderr: string } {
@@ -133,6 +136,40 @@ export class ContainerRunner implements SandboxTierRunner {
 			if (network.Labels[STACK_LABEL] !== this.stack) continue;
 			if (await dead(network.Labels[OWNER_LABEL])) await this.#removeNetwork(network.Id);
 		}
+		return removed + (await this.#reapLegacy(dead));
+	}
+
+	/**
+	 * Leftovers of dead hosts on the code before the stack label: `harbour.owner` and no stack. Each sandbox network had
+	 * its stack's vault on it, and Docker keeps the vault's name unique on the daemon, so a network with this stack's
+	 * vault on it is this stack's, and so is every container on it. One whose vault has been recreated since (and lost
+	 * its networks) can't be told apart, and is left alone.
+	 */
+	async #reapLegacy(dead: (owner: string | undefined) => Promise<boolean>): Promise<number> {
+		const legacy = { label: [LEGACY_OWNER_LABEL] };
+		const networks = (await this.#networks(legacy)).filter((network) => network.Labels[STACK_LABEL] === undefined);
+		if (networks.length === 0) return 0;
+		const filters = encodeURIComponent(JSON.stringify(legacy));
+		const containers = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as {
+			Id: string;
+			Labels: Record<string, string>;
+			HostConfig?: { NetworkMode?: string };
+		}[];
+		let removed = 0;
+		for (const network of networks) {
+			if (!(await dead(network.Labels[LEGACY_OWNER_LABEL]))) continue;
+			const inspected = (await (await this.docker(`/networks/${network.Id}`)).json()) as {
+				Containers?: Record<string, { Name: string }>;
+			};
+			const members = Object.values(inspected.Containers ?? {});
+			if (!members.some((member) => member.Name === this.options.vaultContainer)) continue;
+			for (const container of containers) {
+				if (container.Labels[STACK_LABEL] !== undefined || container.HostConfig?.NetworkMode !== network.Id) continue;
+				await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" }).catch(() => undefined);
+				removed++;
+			}
+			await this.#removeNetwork(network.Id);
+		}
 		return removed;
 	}
 
@@ -140,9 +177,18 @@ export class ContainerRunner implements SandboxTierRunner {
 	async reap(sessionId: string): Promise<number> {
 		const ours = { label: [`${SESSION_LABEL}=${sessionId}`, `${STACK_LABEL}=${this.stack}`] };
 		const filters = encodeURIComponent(JSON.stringify(ours));
-		const list = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as { Id: string }[];
+		const isOurs = (labels: Record<string, string>) =>
+			labels[SESSION_LABEL] === sessionId && labels[STACK_LABEL] === this.stack;
+		const list = (
+			(await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as {
+				Id: string;
+				Labels: Record<string, string>;
+			}[]
+		).filter((container) => isOurs(container.Labels));
 		for (const container of list) await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" });
-		for (const network of await this.#networks(ours)) await this.#removeNetwork(network.Id);
+		for (const network of await this.#networks(ours)) {
+			if (isOurs(network.Labels)) await this.#removeNetwork(network.Id);
+		}
 		return list.length;
 	}
 
