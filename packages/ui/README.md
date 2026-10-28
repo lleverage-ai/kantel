@@ -78,5 +78,9 @@ in `src/session/`, documented in [docs/session-transcript.md](docs/session-trans
 [docs/session-composer.md](docs/session-composer.md) and [docs/session-list-vault.md](docs/session-list-vault.md).
 Workspace components (the file tree, file viewer and note viewer) are in `src/workspace/`, documented in
 [docs/workspace.md](docs/workspace.md); they are read-only and fed by the host from the workspace read API.
+The schedules, skills and memory pages (`SchedulesPage`, `SkillsPage` with its `SkillEditor`, `MemoryPage`) are in
+`src/schedules/`, `src/skills/` and `src/memory/`, documented in
+[docs/schedules-skills-memory.md](docs/schedules-skills-memory.md); each takes its package's contract calls bound to
+the viewer.
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
 [docs/design-loop.md](docs/design-loop.md).

@@ -1,0 +1,385 @@
+/* The memory page: a heading and the three views; the concepts view puts the concepts by scope beside the open
+   concept. Under 900px the two stack and only one shows at a time: the list, or the concept with a way back. */
+
+.hb-memory {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-8);
+	width: 100%;
+	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11));
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-memory p {
+	margin: 0;
+}
+
+.hb-memory-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: var(--hb-space-6);
+	padding-bottom: var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-memory-heading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-memory-title {
+	margin: 0;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+}
+
+.hb-memory-lede {
+	color: var(--hb-text-muted);
+}
+
+.hb-memory-views {
+	display: flex;
+}
+
+.hb-memory-body {
+	display: grid;
+	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-space-10)) minmax(0, 1fr);
+	align-items: start;
+	gap: var(--hb-space-9);
+	min-width: 0;
+}
+
+.hb-memory-list,
+.hb-memory-controls,
+.hb-memory-groups,
+.hb-memory-group,
+.hb-memory-proposals,
+.hb-memory-recall,
+.hb-memory-recall-form,
+.hb-memory-recall-result {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-memory-list,
+.hb-memory-proposals,
+.hb-memory-recall,
+.hb-memory-recall-result {
+	gap: var(--hb-space-7);
+}
+
+.hb-memory-controls,
+.hb-memory-recall-form {
+	gap: var(--hb-space-5);
+}
+
+.hb-memory-groups {
+	gap: var(--hb-space-8);
+}
+
+.hb-memory-group {
+	gap: var(--hb-space-3);
+}
+
+.hb-memory-group-title {
+	margin: 0;
+	padding: 0 var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-memory-rows,
+.hb-memory-proposal-list,
+.hb-memory-skipped,
+.hb-concept-sources,
+.hb-concept-history {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-memory-proposal-list {
+	gap: var(--hb-space-7);
+}
+
+.hb-memory-badges {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-2);
+}
+
+.hb-memory-score,
+.hb-memory-count,
+.hb-memory-proposal-age,
+.hb-memory-skipped-reason,
+.hb-concept-event-meta {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-memory-score {
+	white-space: nowrap;
+}
+
+.hb-memory-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+}
+
+.hb-memory-detail {
+	min-width: 0;
+}
+
+.hb-memory-placeholder {
+	padding-top: var(--hb-space-10);
+}
+
+.hb-memory-back {
+	display: none;
+}
+
+.hb-memory-section {
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-memory-section-row {
+	display: flex;
+	flex: 1;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--hb-space-3) var(--hb-space-4);
+}
+
+.hb-memory-note {
+	color: var(--hb-text-muted);
+}
+
+/* A proposal waiting for a person. */
+
+.hb-memory-proposal-head {
+	display: flex;
+	flex: 1;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-3) var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-memory-proposal-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+	overflow-wrap: anywhere;
+}
+
+.hb-memory-proposal-concept {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	margin-bottom: var(--hb-space-6);
+}
+
+.hb-memory-proposal-concept-title {
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-memory-proposal-sources {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+/* Links stacked one under another, each a full touch target tall. */
+.hb-memory-proposal-sources > a,
+.hb-concept-sources a {
+	display: inline-flex;
+	align-items: center;
+	min-height: var(--hb-control-xs);
+}
+
+.hb-memory-proposal-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-3);
+}
+
+.hb-memory-proposals .hb-notice {
+	margin-bottom: var(--hb-space-6);
+}
+
+/* Recall. */
+
+.hb-memory-recall-scopes {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--hb-space-5);
+}
+
+.hb-memory-skipped li {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	padding: var(--hb-space-2) var(--hb-space-5);
+}
+
+.hb-memory-recall-text {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+}
+
+.hb-memory-recall-copy {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.hb-memory-code {
+	margin: 0;
+	padding: var(--hb-space-5) var(--hb-space-6);
+	overflow: auto;
+	max-height: calc(var(--hb-space-11) * 8);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-code);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	line-height: var(--hb-leading);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* The open concept. */
+
+.hb-concept {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+.hb-concept-head {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	min-width: 0;
+}
+
+.hb-concept-title {
+	margin: 0;
+	font-size: var(--hb-text-lg);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+	overflow-wrap: anywhere;
+}
+
+.hb-concept-title:focus {
+	outline: none;
+}
+
+.hb-concept-id {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-concept-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-3);
+}
+
+.hb-concept-statement {
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading-prose);
+}
+
+.hb-concept-description {
+	color: var(--hb-text-muted);
+}
+
+.hb-concept-statement + .hb-concept-description,
+.hb-concept-statement ~ .hb-concept-tags {
+	margin-top: var(--hb-space-5);
+}
+
+.hb-concept-sources li {
+	padding: var(--hb-space-1) 0;
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-concept-link {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--hb-accent-text);
+	font: inherit;
+	text-align: left;
+	text-decoration: underline;
+	text-underline-offset: 0.2em;
+	overflow-wrap: anywhere;
+	cursor: pointer;
+}
+
+.hb-concept-event {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	padding: var(--hb-space-3) 0;
+}
+
+.hb-concept-event + .hb-concept-event {
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-concept-event-badge {
+	flex: none;
+}
+
+.hb-concept-event-text {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+	.hb-memory-body {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.hb-memory[data-view="list"] .hb-memory-detail,
+	.hb-memory[data-view="detail"] .hb-memory-list,
+	.hb-memory[data-view="detail"] .hb-memory-head,
+	.hb-memory[data-view="detail"] .hb-memory-views {
+		display: none;
+	}
+
+	.hb-memory-back {
+		display: flex;
+		margin-left: calc(var(--hb-space-5) * -1);
+	}
+
+	.hb-memory-recall-scopes {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
