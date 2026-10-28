@@ -87,6 +87,26 @@ after the access check and changes everything before the audit. Without `access`
 (and the user rule is off); every target and conformance run passes one. It leaves out durable storage, file size
 limits and checking the frontmatter `name` against the package name.
 
+## The durable implementation (`@harbour/skills/sql`)
+
+`createSqlSkills({ driver, objects, prefix?, clock?, audit?, access?, mountRoot? })` runs on any `SqlDriver` from
+`@harbour/sql` (Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare) with file bodies in an
+`ObjectBucket` (`r2ObjectBucket(env.BUCKET)` on Cloudflare, an S3 or MinIO adapter self-hosted,
+`createMemoryObjectBucket()` in tests). It applies the same rules as the in-memory store (`src/rules.ts`, shared by
+both) and passes the whole suite, with `projectAccess`, on PGlite, `node:sqlite`, D1 in Miniflare and (with
+`HARBOUR_TEST_POSTGRES_URL`) a real Postgres. `migrateSkills(driver)` creates the tables if they are missing;
+`skillsSchema(dialect)` gives the statements for a target's own migrations.
+
+- Rows: `skill_packages`, `skill_drafts` (the open draft), `skill_revisions` (only ever inserted; `(skill, source,
+  ref)` is unique, so a ref imports once, across restarts too), `skill_sessions` and `skill_pins` (a session's pins,
+  set once in one batch). A draft's or revision's files are a JSON list of path, size and SHA-256.
+- Bodies are objects keyed by their SHA-256 under the owner's organisation (`skills/org/<organisation>/<sha256>` or
+  `skills/platform/<sha256>`, after `prefix`), written before the row that names them and never rewritten or
+  deleted; a read checks the body against its hash and fails `internal` if it is missing or altered.
+- Racing publishes, imports and pins settle as the in-memory store's do: each inserts the next row with
+  `ON CONFLICT DO NOTHING` and a writer token, only the writer whose row landed moves the package on and audits, and
+  a loser re-reads and tries again.
+
 ## Source helpers (`@harbour/skills/sources`)
 
 Portable glue a host uses around any `Skills`; no storage and no Node APIs. A host brings each source as a
