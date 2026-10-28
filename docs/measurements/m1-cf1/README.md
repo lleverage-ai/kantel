@@ -15,6 +15,10 @@ cloud browser (the round-trip probes below reached Cloudflare in LHR, AMS and CD
 then 50 runs on it ([Warm session](#warm-session-28-oct-2026-2031-utc), below). The batches before that section are
 **cold**: 50 runs, a new session each, as in M0.
 
+**Latest: after D1 and R2 moved to `weur`, a warm session takes 114 / 172 ms p50 / p95 on the server (in-process),
+so the p95 target is met and p50 misses by 14 ms** ([After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc)).
+Everything above that section was measured with D1 in North America.
+
 ## Results
 
 | Batch | Deployed `main` | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 | `session` p50 / p95 | `isolate` p50 / p95 |
@@ -109,6 +113,51 @@ So the remaining gap most likely comes from where D1 and R2 are rather than the 
 until it is measured: the next step is moving them to `weur`, next to the object (#140 lets CI bind a new database
 and bucket), and running these batches again.
 
+## After the move to weur (28 Oct 2026, 22:36 UTC)
+
+The same four batches again, warm then cold, both backends, back to back from `/healthz`, after D1 and R2 moved to
+`weur`. The new database `harbour-weur` and bucket `harbour-workspaces-weur` were created with the `weur` location
+hint and the data copied over; CI binds them through `HARBOUR_D1_DATABASE_NAME`, `HARBOUR_D1_DATABASE_ID` and
+`HARBOUR_R2_BUCKET` (#140). The deployed `main` was `9495b62` (#145, a console change only), whose deploy log reads
+`env.DB (harbour-weur)` and `env.WORKSPACES (harbour-workspaces-weur)`. The old `harbour` database and
+`harbour-workspaces` bucket are untouched.
+
+| Batch | Kind | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 (min–max) | Sign-in p50 / p95 | Before the move, server p50 / p95 |
+| --- | --- | --- | --- | --- | --- |
+| [`…T22-36-03Z-weur-warm-in-process.json`](isolate-ready-2026-10-28T22-36-03Z-weur-warm-in-process.json) | in-process, **warm** | 216 / 290 (182–315) | **114 / 172** (48–243) | 41 / 54 | 285 / 405 |
+| [`…T22-36-22Z-weur-warm-dynamic-worker.json`](isolate-ready-2026-10-28T22-36-22Z-weur-warm-dynamic-worker.json) | dynamic-worker, **warm** | 241 / 310 (188–346) | **134 / 223** (63–256) | 39 / 47 | 288 / 470 |
+| [`…T22-36-41Z-weur-in-process.json`](isolate-ready-2026-10-28T22-36-41Z-weur-in-process.json) | in-process, cold | 897 / 1,069 (743–1,212) | 437 / 1,746 (237–2,174) | 58 / 106 | 1,533 / 1,885 |
+| [`…T22-37-37Z-weur-dynamic-worker.json`](isolate-ready-2026-10-28T22-37-37Z-weur-dynamic-worker.json) | dynamic-worker, cold | 1,231 / 1,419 (1,001–1,501) | 690 / 1,733 (412–1,908) | 56 / 98 | 1,496 / 1,910 |
+
+50 of 50 answered 200 with exit code 0 in every batch; both warm batches stayed on the warm-up's session (`warm: true`
+in all 50) and closed it with 204. Target: ≤100 / ≤300 ms, warm.
+
+**Verdict: the move cut the warm server time by 60% (285 → 114 ms p50). The p95 target is met on both backends; p50
+misses by 14 ms in process and 34 ms on Dynamic Workers.**
+
+- **D1 now runs next to the object.** All eight placement probes (warm-up and after, four batches) said object
+  `LHR`, D1 region `WEUR`, colo `LHR`, primary. `SELECT 1` from the object took 15 ms p50 (4–35 ms, 40 queries),
+  against 122 ms before. An R2 `head` took 57 ms p50 (12–350 ms, 40), against 133 ms.
+- **Sign-in and the session lookup shrank with it.** Sign-in went from ~360 ms to ~40 ms p50, and the warm runs'
+  session lookup from 227 ms to ~26 ms. That puts the client's warm wall time at 216 ms p50, against 925 ms.
+- **What's left in a warm run** is still I/O: the sandbox layer's workspace, session and lease checks and its audit
+  append, now about 10–15 ms per D1 query and ~55 ms per R2 call. The isolate itself still shows no measurable elapsed
+  time with these timers when warm (`isolate.call` 0 ms and `isolate.cold` 0 in all 50 on `dynamic-worker`); its CPU
+  time isn't measured. The cheapest remaining levers are the
+  audit append off the critical path and the workspace head out of R2 ([below](#where-the-time-goes), items 3 and 4).
+- **Dynamic Workers cost about 20 ms more warm, and more cold.** Cold, every run loads a new Dynamic Worker
+  (`isolate.cold` 1 in all 50), and that call took 189 / 322 ms p50 / p95, a large share of a cold run on that backend
+  (the rest of the run isn't broken down by call, so whether it's the largest single item isn't known).
+- **The cold batches' server p95 is not trustworthy.** In 20 of the 100 cold runs (9 in process, 11 on Dynamic
+  Workers) the server's `total` was longer than the client's whole wall time for the same call, which can't be real
+  latency. In 12 of them the `session` step alone was (up to 2.1 s against a wall time of 0.8–1.3 s). None of the
+  100 warm runs, and none of the 360 runs before the move, did this. The cause isn't found; the server's start mark
+  looks stale in those runs. Without those 20 runs the cold
+  server time is 411 / 709 ms (in process) and 638 / 825 ms (Dynamic Workers). The client wall times have no such
+  outliers, so read cold p95 from those.
+- **Placement is fixed per object.** The stack object was already in `LHR` and stays there; a location hint only
+  places a new object, so existing objects keep where they are and new ones get `weur` (#140).
+
 ## Where the time goes
 
 Round trips from the same signed-in page (15 calls each for the first three rows; 5, 3, 5 and 5 for the API rows), p50 in ms:
@@ -140,9 +189,11 @@ Round trips from the same signed-in page (15 calls each for the first three rows
 
 What would get near the target, roughly in order of payoff:
 
-1. **D1's location, then fewer D1 round trips.** The `harbour` database's primary is in `ENAM` (`ORD`) and the object
-   in `LHR`, about 120 ms a query (above). Putting them together, read replicas, or keeping the identity rows the
-   object reads on every request in its own SQLite, would cut every call.
+1. **D1's location, then fewer D1 round trips.** Done on 28 Oct 2026: D1 and R2 are now in `weur`, next to the object
+   ([After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc)), and a query now takes about 15 ms instead
+   of 120. Before that, the `harbour` database's primary was in `ENAM` (`ORD`) and the object in `LHR`. Fewer
+   round trips, such as keeping the identity rows the object reads on every request in its own SQLite, would still
+   cut every call.
 2. **Sign-in once per token, not once per request.** A short cache keyed on the Access JWT would save about 0.3 s a
    call. That's the identity lane's authenticator.
 3. **Audit off the critical path.** Append after the answer (`ctx.waitUntil`), not before it, both in the measured
