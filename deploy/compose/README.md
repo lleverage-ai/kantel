@@ -60,6 +60,24 @@ gateway refuses to start on a malformed value, and `/v1/deployment` shows the se
 credentials. Read what was sent at <http://127.0.0.1:58025/> or through Mailpit's API
 (`/api/v1/search?query=to:"…"`), which is how the end-to-end tests read codes.
 
+### Bindings: the real implementations against the stack
+
+`bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its
+contract's conformance suite, on this stack's Postgres, MinIO and Mailpit, and prints which pass. CI's `selfhosted`
+job runs it and puts the table in the job summary. A suite that skips for want of its service counts as a failure.
+
+| Contract | Implementation | Suite |
+|---|---|---|
+| Session runtime | SQL session store and Pi Durable tables on Postgres | `apps/selfhosted/test/gateway/runtime-postgres.conformance.test.ts` |
+| Audit | SQL audit store and outbox on Postgres | `packages/audit/test/sql.conformance.test.ts` |
+| Identity | SQL identity directory on Postgres | `packages/identity/test/sql.conformance.test.ts` |
+| Email one-time PIN | OTP sign-in, mail through Mailpit | `packages/identity/test/otp.mailpit.test.ts` |
+| Workspaces | Postgres and S3 (MinIO), keyed | `targets/selfhosted/workspace/test/conformance.stack.test.ts` |
+| Vault | engine on the Postgres vault store | `targets/selfhosted/vault/test/postgres.conformance.test.ts` |
+
+Each suite works in its own fresh schema (and object prefix) and drops it afterwards, so running it against a shared
+stack is safe. Pass `--postgres-url`, `--s3-endpoint`, `--smtp-url` and `--mailpit-url` for a second stack.
+
 ## Running a second stack
 
 Other work may already be using a stack named `harbour` on the default ports. A second one on the same machine needs
@@ -77,7 +95,8 @@ docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
 The tests take the matching URLs: `HARBOUR_DATABASE_URL`, `S3_ENDPOINT`, `--base` for the spike scripts and
-`--base-url` and `--mailpit-url` for the gateway test.
+`--base-url` and `--mailpit-url` for the gateway test, and `--postgres-url`, `--s3-endpoint`, `--smtp-url` and
+`--mailpit-url` for `apps/selfhosted/test/bindings.ts`.
 
 ## What runs
 

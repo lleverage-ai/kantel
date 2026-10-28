@@ -11,6 +11,7 @@
 // Pin @earendil-works/pi-durable exactly: a Pi upgrade can change its SQL, and
 // the suite is what tells us whether the translation still holds.
 
+import { createHash } from "node:crypto";
 import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
@@ -120,9 +121,15 @@ export class PostgresSqliteDatabase implements SqliteDatabase {
 	static async open(options: PostgresDatabaseOptions): Promise<PostgresSqliteDatabase> {
 		if (!/^[a-z_][a-z0-9_]*$/.test(options.schema)) throw new Error(`invalid schema ${options.schema}`);
 		const client = new pg.Client({ connectionString: options.connectionString });
-		await client.connect();
-		await client.query(`CREATE SCHEMA IF NOT EXISTS ${options.schema}`);
-		await client.query(`SET search_path TO ${options.schema}`);
+		try {
+			await client.connect();
+			await client.query(`CREATE SCHEMA IF NOT EXISTS ${options.schema}`);
+			await client.query(`SET search_path TO ${options.schema}`);
+		} catch (error) {
+			// Nothing else holds the client yet: end it, or a failed open leaks a connection.
+			await client.end().catch(() => {});
+			throw error;
+		}
 		return new PostgresSqliteDatabase(client, options.fence);
 	}
 
@@ -199,6 +206,6 @@ export async function openPostgresStorage(options: PostgresDatabaseOptions): Pro
 
 /** A stable, valid schema name for a session ID. */
 export function piSchemaFor(sessionId: string): string {
-	const hash = new Bun.CryptoHasher("sha256").update(sessionId).digest("hex").slice(0, 24);
+	const hash = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
 	return `pi_${hash}`;
 }
