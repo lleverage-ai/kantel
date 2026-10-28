@@ -8,11 +8,18 @@
 	"exports": {
 		".": "./src/index.ts"
 	},
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json",
+		"test": "vitest run"
+	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*",
 		"@harbour/workspace": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*"
+		"@harbour/testing": "workspace:*",
+		"@types/node": "24.19.2",
+		"typescript": "7.0.2",
+		"vitest": "4.1.12"
 	}
 }
