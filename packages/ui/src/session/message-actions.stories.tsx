@@ -2,7 +2,12 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { assistant, FIXTURE_NOW, finishedTurn, liveTurn, user } from "./fixtures.ts";
 import { AssistantMessage, UserMessage } from "./message.tsx";
-import { MessageActions } from "./message-actions.tsx";
+import {
+	type MessageActionHandlers,
+	MessageActions,
+	MessageActionsContext,
+	MessageEditor,
+} from "./message-actions.tsx";
 import { Transcript } from "./transcript.tsx";
 import "./stories.css";
 
@@ -33,6 +38,93 @@ export const Shown: Story = () => (
 				<AssistantMessage item={answered} actions showActions />
 			</Column>
 		</Section>
+	</Sheet>
+);
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** A host that can branch: Fork takes a moment, Edit from here sends after one. */
+const branching: MessageActionHandlers = {
+	fork: () => wait(800),
+	edit: () => wait(800),
+};
+
+/** With a host that can branch: Edit from here under the person's message, Fork from this response under the answer. */
+export const WithBranching: Story = () => (
+	<Sheet
+		title="Edit from here and Fork"
+		intro="With a host that can branch a session, the person's message has Edit from here, and the agent's final answer has Fork from this response. While a run is going, Edit from here is off and says why."
+	>
+		<MessageActionsContext.Provider value={branching}>
+			<Section title="A person's message">
+				<Column>
+					<UserMessage item={asked} showActions />
+				</Column>
+			</Section>
+			<Section title="The agent's final answer">
+				<Column>
+					<AssistantMessage item={answered} actions showActions />
+				</Column>
+			</Section>
+		</MessageActionsContext.Provider>
+		<MessageActionsContext.Provider value={{ ...branching, editBlocked: "Stop the run to edit a message" }}>
+			<Section title="While a run is going">
+				<Column>
+					<UserMessage item={asked} showActions />
+				</Column>
+			</Section>
+		</MessageActionsContext.Provider>
+		<MessageActionsContext.Provider
+			value={{
+				fork: () => wait(300).then(() => Promise.reject(new Error("You can't start a session in this project"))),
+			}}
+		>
+			<Section title="A fork the host refused">
+				<Column>
+					<AssistantMessage item={answered} actions showActions />
+				</Column>
+			</Section>
+		</MessageActionsContext.Provider>
+	</Sheet>
+);
+
+/** Edit from here, open: the bubble becomes a field with Cancel and Send. */
+export const Editing: Story = () => (
+	<Sheet
+		title="Editing a message"
+		intro="Edit from here turns the message into a field. Enter sends and reruns the session from this message; Shift+Enter starts a new line; Escape cancels."
+	>
+		<Section title="Open">
+			<Column>
+				<div className="hb-user-message">
+					<MessageEditor text={asked.text} onSend={() => wait(800)} onCancel={() => {}} />
+				</div>
+			</Column>
+		</Section>
+		<Section title="Refused">
+			<Column>
+				<div className="hb-user-message">
+					<MessageEditor
+						text={asked.text}
+						onSend={() => Promise.reject(new Error("Stop the run before editing a message"))}
+						onCancel={() => {}}
+						autoFocus={false}
+					/>
+				</div>
+			</Column>
+		</Section>
+	</Sheet>
+);
+
+/** In a transcript with a host that can branch: hover a message for its actions; Edit from here opens in place. */
+export const BranchingInTranscript: Story = () => (
+	<Sheet
+		title="Branching in a transcript"
+		intro="Hover the person's message for Edit from here, or the final answer for Fork from this response."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={finishedTurn} messageActions={branching} />
+		</div>
 	</Sheet>
 );
 

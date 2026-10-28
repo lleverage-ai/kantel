@@ -12,9 +12,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
 	type Conversation,
+	type ConversationId,
 	type ConversationView,
 	createRegistry,
 	defineExtension,
+	type EntryRecord,
 	type Extension,
 	Harness,
 	type Registry,
@@ -46,6 +48,7 @@ import {
 	type ProjectAccess,
 	type PromptInput,
 	type Sandboxes,
+	type SessionBranching,
 	type SessionDirectory,
 	type SessionEnd,
 	type SessionEndHook,
@@ -61,6 +64,7 @@ import {
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+import { ACTIVE_CONVERSATION, copyEntries, entryBefore } from "./branching.ts";
 import { historyAnchor, historyLimit, readHistory } from "./history.ts";
 import {
 	ConversationProjector,
@@ -146,6 +150,8 @@ export interface SessionRuntimeService {
 	readonly history: SessionHistory;
 	/** The models each session may name and what it runs with now, for a client's model and thinking pickers. */
 	readonly models: SessionModels;
+	/** Forking a session from an answer, and editing a message to rerun from it (proposed, issue #6). */
+	readonly branching: SessionBranching;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -208,13 +214,20 @@ interface OpenSession {
 	readonly profile: AgentProfile;
 	readonly sequence: number;
 	readonly harness: Harness;
-	readonly conversation: Conversation;
+	/** The conversation the session shows and runs: the root, or the fork an edit made (`branching.ts`). */
+	conversation: Conversation;
 	/** The session's Pi models: what its prompts may name (`SessionModels`). */
 	readonly models: Models;
 	readonly registry: Registry;
-	readonly view: AttachedReplicatedState<ConversationView>;
-	readonly stream: MemorySessionStream;
-	readonly projector: ConversationProjector;
+	view: AttachedReplicatedState<ConversationView>;
+	/** Stops following `view`. */
+	unsubscribeView: () => void;
+	stream: MemorySessionStream;
+	projector: ConversationProjector;
+	/** Every `watch` of the session, so an edit can move each onto the new stream. */
+	readonly watchers: Set<Watcher>;
+	/** An edit in progress: a second one is refused until it is in. */
+	editing: boolean;
 	/**
 	 * Stream publishes and directory writes, in order. Each step runs whether or not the one before it failed; a failure
 	 * reaches whoever awaited that step.
@@ -224,8 +237,8 @@ interface OpenSession {
 	unsaved: boolean;
 	/** The record last queued for writing. */
 	saved: SessionRecord;
-	/** Names this opening of the session's stream in the cursors it gives out. */
-	readonly generation: string;
+	/** Names this opening of the session's stream in the cursors it gives out; an edit starts a new one. */
+	generation: string;
 	/** Bumped on every reinstall of the session's host tools, so an older, slower one never installs over a newer one. */
 	toolsVersion: number;
 	/** The latest reinstall of the session's host tools. */
@@ -247,6 +260,14 @@ interface OpenSession {
 	/** The store records the session as closed. */
 	durablyClosed: boolean;
 	stopWatching(): void;
+}
+
+/** One `watch`: its connection to the session's current stream, which an edit replaces. */
+interface Watcher {
+	closed: boolean;
+	connection?: { close(): Promise<void> };
+	/** Connects to the session's current stream: after `resumeFrom`, or with a snapshot. */
+	connect(resumeFrom: string | undefined): Promise<void>;
 }
 
 /** Runs `step` after `queue` settles, whether it resolved or rejected. */
@@ -433,7 +454,25 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	};
 
 	const publish = (session: OpenSession, ops: readonly DeltaOp[]) => {
-		if (ops.length > 0) session.publishing = after(session.publishing, () => session.stream.publish(ops));
+		// The stream the ops were projected for: an edit may replace the session's stream before the step runs.
+		const stream = session.stream;
+		if (ops.length > 0) session.publishing = after(session.publishing, () => stream.publish(ops));
+	};
+
+	const newStream = (record: SessionRecord) =>
+		createMemorySessionStream({
+			sessionId: record.id,
+			...(options.pageSize === undefined ? {} : { pageSize: options.pageSize }),
+			...(record.title === undefined ? {} : { title: record.title }),
+			now: () => clock.now(),
+		});
+
+	const agentOf = (profile: AgentProfile) => {
+		const model = resolveModel(profile.model);
+		return {
+			model: { provider: model.provider, modelId: model.modelId },
+			...(profile.model.thinking === undefined ? {} : { thinkingLevel: profile.model.thinking }),
+		};
 	};
 
 	const applyStatus = (session: OpenSession) => {
@@ -552,8 +591,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		}
 	};
 
-	/** Opens the session's Harness on its storage, or returns it if it is open already. */
-	const ensureOpen = (stored: StoredSession): Promise<OpenSession> => {
+	/**
+	 * Opens the session's Harness on its storage, or returns it if it is open already. `seed` is the history a forked
+	 * session starts with, copied into its root conversation when the root is created.
+	 */
+	const ensureOpen = (stored: StoredSession, seed?: readonly EntryRecord[]): Promise<OpenSession> => {
 		const id = stored.record.id;
 		// A session is in `open` before it is ready (so registration changes reach it while its tools install); callers
 		// wait for the opening to finish.
@@ -562,14 +604,14 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const current = open.get(id);
 		if (current !== undefined) return Promise.resolve(current);
 		if (closed) return Promise.reject(new HarbourError("unavailable", "The session runtime is closed"));
-		const started = openSession(stored).finally(() => opening.delete(id));
+		const started = openSession(stored, seed).finally(() => opening.delete(id));
 		opening.set(id, started);
 		return started;
 	};
 
-	const openSession = async (stored: StoredSession): Promise<OpenSession> => {
+	const openSession = async (stored: StoredSession, seed?: readonly EntryRecord[]): Promise<OpenSession> => {
 		const { record, profile } = stored;
-		const model = resolveModel(profile.model);
+		const agent = agentOf(profile);
 		const registry = createRegistry();
 		// No tools yet: they are installed once the session is open, where a registration change also reaches it.
 		registry.install(extensionFor({ profile }, []));
@@ -587,11 +629,14 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		let view: AttachedReplicatedState<ConversationView>;
 		try {
 			conversation = await harness.root(context, {
-				agent: {
-					model: { provider: model.provider, modelId: model.modelId },
-					...(profile.model.thinking === undefined ? {} : { thinkingLevel: profile.model.thinking }),
-				},
+				agent,
+				...(seed === undefined ? {} : { init: (tx, conversationId) => copyEntries(tx, conversationId, seed) }),
 			});
+			// After an edit the session shows the fork the edit made, not the root.
+			const active = (await harness.snapshot(ACTIVE_CONVERSATION, context))?.conversationId;
+			if (active !== undefined && active !== conversation.id) {
+				conversation = (await harness.conversation(active as ConversationId, context)) ?? conversation;
+			}
 			view = await conversation.viewState(context);
 		} catch (error) {
 			await harness.close(context).catch(() => undefined);
@@ -606,13 +651,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			models: sessionModels,
 			registry,
 			view,
-			stream: createMemorySessionStream({
-				sessionId: record.id,
-				...(options.pageSize === undefined ? {} : { pageSize: options.pageSize }),
-				...(record.title === undefined ? {} : { title: record.title }),
-				now: () => clock.now(),
-			}),
+			unsubscribeView: () => {},
+			stream: newStream(record),
 			projector: new ConversationProjector({ now: () => clock.now() }),
+			watchers: new Set(),
+			editing: false,
 			publishing: Promise.resolve(),
 			unsaved: false,
 			saved: record,
@@ -630,7 +673,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		};
 		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
-		const unsubscribe = view.subscribe(() => sync(session));
+		session.unsubscribeView = view.subscribe(() => sync(session));
 		// The Harness closes itself after a failed storage call. Its timer goes with it; the session stays in `open`, so
 		// calls fail rather than racing a second opening against this one's queued writes and close.
 		const unsubscribeClose = harness.subscribeClose(() => {
@@ -639,9 +682,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			session.sleepTimer = undefined;
 		});
 		session.stopWatching = () => {
-			unsubscribe();
+			session.unsubscribeView();
 			unsubscribeClose();
-			view.dispose();
+			session.view.dispose();
 		};
 		try {
 			// A registration change may start a newer install meanwhile; opening finishes once the latest is in.
@@ -950,7 +993,26 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await sync(session);
 			const prefix = `${session.generation}.`;
 			const resumeFrom = watchOptions.after?.startsWith(prefix) ? watchOptions.after.slice(prefix.length) : undefined;
-			return session.stream.connect(resumeFrom, (frame) => onFrame(framesIn(session.generation, frame)));
+			// An edit replaces the session's stream; the watcher then connects to the new one, which starts it with a hello
+			// and a snapshot, as a client that reconnects gets.
+			const watcher: Watcher = {
+				closed: false,
+				async connect(after) {
+					const { stream, generation } = session;
+					const connection = await stream.connect(after, (frame) => onFrame(framesIn(generation, frame)));
+					if (watcher.closed) await connection.close();
+					else watcher.connection = connection;
+				},
+			};
+			session.watchers.add(watcher);
+			await watcher.connect(resumeFrom);
+			return {
+				async close() {
+					watcher.closed = true;
+					session.watchers.delete(watcher);
+					await watcher.connection?.close();
+				},
+			};
 		},
 		async snapshot(ctx, sessionId) {
 			await requireStored(ctx, sessionId);
@@ -1021,6 +1083,146 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				updatedAt: now,
 			};
 			return modelStateOf(await models(draft), profile, undefined);
+		},
+	};
+
+	/**
+	 * Makes `conversation` the one the session shows and runs: a new projection of it on a new stream, under a new
+	 * generation, and every watcher moved onto that stream with a snapshot. The old stream gets nothing more.
+	 */
+	const activate = async (session: OpenSession, conversation: Conversation): Promise<void> => {
+		const view = await conversation.viewState(BACKGROUND_CONTEXT);
+		// Everything the old view queued goes to the old stream first (`publish` holds the stream it projected for).
+		await session.publishing.catch(() => undefined);
+		session.unsubscribeView();
+		session.view.dispose();
+		session.conversation = conversation;
+		session.view = view;
+		session.projector = new ConversationProjector({ now: () => clock.now() });
+		session.stream = newStream(session.record);
+		session.generation = crypto.randomUUID().slice(0, 8);
+		session.unsubscribeView = view.subscribe(() => sync(session));
+		await sync(session);
+		for (const watcher of [...session.watchers]) {
+			const previous = watcher.connection;
+			watcher.connection = undefined;
+			await previous?.close();
+			if (!watcher.closed) await watcher.connect(undefined);
+		}
+	};
+
+	const branching: SessionBranching = {
+		async fork(ctx, sessionId, input) {
+			const stored = await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.fork");
+			const source = await ensureOpen(stored);
+			await sync(source);
+			const found = source.projector.entryOf(input.itemId);
+			if (found?.kind !== "assistant") {
+				throw new HarbourError("not_found", `No answer ${input.itemId} in session ${sessionId}`);
+			}
+			const from = source.record;
+			const { profile } = stored;
+			// A new session in the source's project, under the same check as creating one there.
+			await check(ctx, { projectId: from.projectId, needed: "operator", operation: "session.create" });
+			// Refuses before anything is written when the agent's model no longer resolves.
+			agentOf(profile);
+			// The history as of the answer, as Pi would start a fork of it: from the newest head through the answer.
+			const history = await source.conversation.context(piContext(ctx), { at: found.entry.id });
+			const now = clock.now();
+			const title = input.title ?? `${from.title ?? "Session"} (fork)`;
+			const record: SessionRecord = {
+				id: crypto.randomUUID(),
+				organisationId: from.organisationId,
+				projectId: from.projectId,
+				agentId: from.agentId,
+				...(from.workspaceId === undefined ? {} : { workspaceId: from.workspaceId }),
+				title,
+				status: "idle",
+				labels: { ...from.labels },
+				createdBy: ctx.actor,
+				createdAt: now,
+				updatedAt: now,
+			};
+			const created = await store.createSession({ record, profile, aborts: 0, closed: false });
+			await ensureOpen(created, history.entries);
+			await audit([
+				{
+					id: `session:${record.id}:created`,
+					at: now,
+					source: "session",
+					type: "session.created",
+					actor: ctx.actor,
+					organisationId: record.organisationId,
+					projectId: record.projectId,
+					sessionId: record.id,
+					agentId: record.agentId,
+					subject: { kind: "session", id: record.id },
+					data: { labels: record.labels, forkedFrom: { sessionId, itemId: input.itemId } },
+				},
+			]);
+			return record;
+		},
+		async edit(ctx, sessionId, input) {
+			const stored = await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "operator", "session.edit");
+			if (stored.closed || open.get(sessionId)?.closed === true) {
+				throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+			}
+			if (input.text.trim() === "") throw new HarbourError("invalid", "An edited message needs text");
+			const session = await ensureOpen(stored);
+			if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+			if (session.editing) throw new HarbourError("conflict", `Session ${sessionId} is already being edited`);
+			await sync(session);
+			if (session.projector.status === "running") {
+				throw new HarbourError("conflict", "Stop the run before editing a message");
+			}
+			const found = session.projector.entryOf(input.itemId);
+			if (found?.kind !== "user") {
+				throw new HarbourError("not_found", `No message ${input.itemId} in session ${sessionId}`);
+			}
+			session.editing = true;
+			try {
+				const previous = session.conversation;
+				const before = entryBefore(session.view.value.entries, found.entry.id);
+				const context = piContext(ctx);
+				// From just before the message: Pi's fork keeps everything up to there, and the agent's settings as they were.
+				// The first message has nothing before it, so the session starts a new conversation with its profile's agent.
+				const next =
+					before === undefined
+						? await session.harness.createConversation(
+								{ ownership: { kind: "ownerless" }, agent: agentOf(session.profile) },
+								context,
+							)
+						: await previous.fork(before.id, { ownership: { kind: "ownerless" } }, context);
+				await session.harness.commit(async (tx) => {
+					const active = await tx.doc(ACTIVE_CONVERSATION);
+					active.conversationId = next.id;
+				}, context);
+				await activate(session, next);
+				// Input that reached the old conversation meanwhile goes no further.
+				await admitting(session, () => previous.abort(context));
+				const { record } = session;
+				await audit([
+					{
+						id: `session:${sessionId}:edited:${next.id}`,
+						at: clock.now(),
+						source: "session",
+						type: "session.edited",
+						actor: ctx.actor,
+						organisationId: record.organisationId,
+						projectId: record.projectId,
+						sessionId,
+						agentId: record.agentId,
+						subject: { kind: "session", id: sessionId },
+						data: { itemId: input.itemId },
+					},
+				]);
+			} finally {
+				session.editing = false;
+			}
+			const { itemId: _itemId, ...prompt } = input;
+			return submit(ctx, sessionId, prompt, "prompt");
 		},
 	};
 
@@ -1326,6 +1528,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		runtime,
 		history,
 		models: sessionModelsService,
+		branching,
 		directory,
 		profiles,
 		hostTools,
