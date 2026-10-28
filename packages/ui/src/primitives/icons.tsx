@@ -112,6 +112,12 @@ export const FileIcon = (props: IconProps) => (
 		<path d="M9 1.75V5.5h3.75" />
 	</Svg>
 );
+/** A project: a folder, as T3 Code's sidebar shows one. */
+export const FolderIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M1.75 4.25A1.25 1.25 0 0 1 3 3h3.25l1.5 1.75H13a1.25 1.25 0 0 1 1.25 1.25v6A1.25 1.25 0 0 1 13 13.25H3A1.25 1.25 0 0 1 1.75 12z" />
+	</Svg>
+);
 export const EyeIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" />
@@ -169,5 +175,42 @@ export const QuestionIcon = (props: IconProps) => (
 export const PlusIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M8 3v10M3 8h10" />
+	</Svg>
+);
+/** Attach a file. */
+export const PaperclipIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M13.25 7.6l-5.3 5.3a3.25 3.25 0 0 1-4.6-4.6l5.65-5.65a2.17 2.17 0 0 1 3.07 3.07L6.4 11.4a1.08 1.08 0 0 1-1.53-1.53l5.13-5.12" />
+	</Svg>
+);
+export const ImageIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="2" y="2.75" width="12" height="10.5" rx="1.75" />
+		<circle cx="5.75" cy="6.25" r="1.1" />
+		<path d="M2.5 12l3.6-3.6a1 1 0 0 1 1.4 0l1.5 1.5 1.1-1.1a1 1 0 0 1 1.4 0L14 11.4" />
+	</Svg>
+);
+/** A text file: lines on a page. For pasted text the composer turned into an attachment. */
+export const TextFileIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M9 1.75H4.5A1.25 1.25 0 0 0 3.25 3v10a1.25 1.25 0 0 0 1.25 1.25h7A1.25 1.25 0 0 0 12.75 13V5.5z" />
+		<path d="M9 1.75V5.5h3.75M5.75 8.5h4.5M5.75 11h3" />
+	</Svg>
+);
+/** Steer: the composer's icon-only button for a message to a running agent. */
+export const SteerIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M3.5 13v-3.5A3 3 0 0 1 6.5 6.5h7M10.5 3.5l3 3-3 3" />
+	</Svg>
+);
+export const RetryIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.75v2.5h-2.5" />
+	</Svg>
+);
+/** A model: a four-point spark. */
+export const SparkIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M8 1.75c.4 3.3 2.95 5.85 6.25 6.25-3.3.4-5.85 2.95-6.25 6.25C7.6 10.95 5.05 8.4 1.75 8 5.05 7.6 7.6 5.05 8 1.75z" />
 	</Svg>
 );

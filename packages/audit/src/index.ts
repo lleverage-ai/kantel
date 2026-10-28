@@ -95,6 +95,26 @@ export function typeMatches(type: string, wanted: string): boolean {
 }
 
 /**
+ * The vault record of `kind` (`vault.item` or `vault.grant`) an event is about: its subject when the subject is of that
+ * kind, or else `data[key]` (`itemId` or `grantId`) when it is a string. The SQL store indexes the same expression.
+ */
+function aboutRecord(event: AuditEventInput, kind: string, key: string): string | undefined {
+	if (event.subject?.kind === kind) return event.subject.id;
+	const value = event.data?.[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+/** The vault item an event is about, as `AuditQuery.itemId` matches it. */
+export function eventItemId(event: AuditEventInput): string | undefined {
+	return aboutRecord(event, "vault.item", "itemId");
+}
+
+/** The vault grant an event is about, as `AuditQuery.grantId` matches it. */
+export function eventGrantId(event: AuditEventInput): string | undefined {
+	return aboutRecord(event, "vault.grant", "grantId");
+}
+
+/**
  * Whether `event` matches every field `query` sets. `from` is inclusive and `to` exclusive. The organisation and the
  * order (`newestFirst`) are the store's business, not this check's.
  */
@@ -108,6 +128,8 @@ export function matchesQuery(event: AuditEventInput, query: AuditQuery): boolean
 		(query.type === undefined || typeMatches(event.type, query.type)) &&
 		(query.subject === undefined ||
 			(event.subject?.kind === query.subject.kind && event.subject.id === query.subject.id)) &&
+		(query.itemId === undefined || eventItemId(event) === query.itemId) &&
+		(query.grantId === undefined || eventGrantId(event) === query.grantId) &&
 		(query.from === undefined || event.at >= query.from) &&
 		(query.to === undefined || event.at < query.to)
 	);

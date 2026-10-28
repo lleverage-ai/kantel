@@ -13,6 +13,7 @@
 		"./sql": "./src/sql.ts",
 		"./otp": "./src/otp.ts",
 		"./otp/http": "./src/otp-http.ts",
+		"./http": "./src/http.ts",
 		"./smtp": "./src/smtp.ts",
 		"./testing": "./src/testing.ts"
 	},

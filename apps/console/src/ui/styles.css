@@ -163,13 +163,6 @@ body {
 	min-height: 0;
 }
 
-.console-composer {
-	display: flex;
-	justify-content: center;
-	padding: var(--hb-space-3) var(--hb-space-7);
-	padding-bottom: max(var(--hb-space-5), env(safe-area-inset-bottom));
-}
-
 .console-fresh {
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-xs);

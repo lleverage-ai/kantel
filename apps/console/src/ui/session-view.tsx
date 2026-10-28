@@ -11,10 +11,10 @@ import {
 	type Status,
 	Transcript,
 } from "@harbour/ui";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
-import { composerState, offersFollowUp, type SessionActions } from "./actions.ts";
+import { composerState, offersFollowUp, type SessionActions, transcriptWorking } from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -108,12 +108,16 @@ export function SessionView({
 	}, [menu]);
 
 	const { control } = actions;
+	const working = useMemo(
+		() => transcriptWorking(state.status, actions.promptedAt),
+		[state.status, actions.promptedAt],
+	);
 
 	return (
 		<div className="console">
 			<SessionHeader
 				title={state.title}
-				status={headerStatus(state.status, state.items)}
+				status={actions.promptedAt === undefined ? headerStatus(state.status, state.items) : "working"}
 				connection={connectionOf(state.connection)}
 				loading={state.freshness.state === "loading" && state.title === ""}
 				onBack={onBack}
@@ -176,32 +180,35 @@ export function SessionView({
 						items={state.items}
 						hasOlder={state.hasEarlier}
 						loadingOlder={state.loadingOlder}
+						olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
 						onLoadOlder={client.loadOlder}
 						loading={state.freshness.state === "loading"}
 						error={state.error}
+						working={working}
 						onRowRender={recordRow}
+						dock={
+							<Composer
+								state={composerState(control, state.status, actions.sending)}
+								disabledReason={control.live ? undefined : control.reason}
+								label="Message"
+								banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
+								value={actions.draft}
+								onChange={actions.onDraft}
+								{...actions.pickers}
+								footer={
+									offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+										<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+											Send after this run
+										</Button>
+									) : undefined
+								}
+								onSend={actions.onSend}
+								onSteer={actions.onSteer}
+								onStop={actions.onStop}
+							/>
+						}
 					/>
 				</Profiled>
-			</div>
-			<div className="console-composer">
-				<Composer
-					state={composerState(control, state.status, actions.sending)}
-					disabledReason={control.live ? undefined : control.reason}
-					label="Message"
-					banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
-					value={actions.draft}
-					onChange={actions.onDraft}
-					footer={
-						offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-							<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-								Send after this run
-							</Button>
-						) : undefined
-					}
-					onSend={actions.onSend}
-					onSteer={actions.onSteer}
-					onStop={actions.onStop}
-				/>
 			</div>
 			{profiling ? <ProfilePanel client={client} /> : null}
 		</div>

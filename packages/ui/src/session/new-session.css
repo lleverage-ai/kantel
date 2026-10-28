@@ -1,0 +1,26 @@
+/* Above the session list, with the room the list keeps between its groups. */
+.hb-new-session-row {
+	margin-bottom: var(--hb-space-5);
+}
+
+/* The plus sits in the leading slot's faint colour; the words are the row's own. */
+.hb-new-session-row .hb-list-row-leading {
+	color: var(--hb-text-muted);
+}
+
+/* Disabled: no hover, dimmed words, and the reason wraps under them instead of being cut off. */
+.hb-new-session-row-disabled .hb-list-row:hover {
+	background: none;
+}
+
+.hb-new-session-row-disabled .hb-list-row-leading {
+	color: var(--hb-text-disabled);
+}
+
+.hb-new-session-row-disabled .hb-list-row-title {
+	color: var(--hb-text-faint);
+}
+
+.hb-new-session-row-disabled .hb-list-row-meta {
+	white-space: normal;
+}

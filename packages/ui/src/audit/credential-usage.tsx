@@ -106,7 +106,7 @@ export function CredentialUsagePanel({
 								session.projectId === undefined
 									? undefined
 									: (directory.project?.(session.projectId) ?? session.projectId);
-							const sessionHref = links.session?.(session.sessionId);
+							const sessionHref = links.session?.(session.sessionId, undefined, session.projectId);
 							return (
 								<li key={session.sessionId} className="hb-audit-usage-row">
 									<div className="hb-audit-usage-session">

@@ -3,8 +3,8 @@ import { memo } from "react";
 import { Disclosure } from "../primitives/controls.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
-import { Elapsed } from "../primitives/time.tsx";
 import { Markdown } from "./markdown.tsx";
+import { WorkingIndicator } from "./working-indicator.tsx";
 import "./message.css";
 
 // The transcript's messages, after T3 Code (TimelineUserMessageRow.tsx:432-459, TimelineAssistantRows.tsx:26-72):
@@ -26,24 +26,27 @@ export const UserMessage = memo(function UserMessage({ item }: { item: UserItem 
 });
 
 /**
- * While the agent works before its first word, after T3 Code's working row (TimelineWorkGroupRows.tsx:274-300): a
- * muted "Working for 12s", timed from when the turn started. Only the `Elapsed` leaf ticks, on the shared clock. It
- * is a timer named "Working", whose implicit aria-live is off, so screen readers are not told every second. Without a
- * start time it says "Working".
+ * A thought as it streams, before the answer's first word, after T3 Code's live reasoning preview
+ * (TimelineWorkGroupRows.tsx:503-581): "Thinking", then the newest lines of the thought, muted and clamped to four, so
+ * the reader sees the agent think without the transcript jumping as the thought grows. The whole thought is behind
+ * the "Thought it through" disclosure once the answer starts.
  */
-function WorkingRow({ since }: { since: number | undefined }) {
-	if (since === undefined) return <div className="hb-working">Working</div>;
+function ThinkingPreview({ thinking }: { thinking: string }) {
 	return (
-		<div className="hb-working" role="timer" aria-label="Working">
-			Working for <Elapsed since={since} />
+		<div className="hb-assistant-message-thinking-live">
+			<span className="hb-assistant-message-thinking-label">Thinking</span>
+			<div className="hb-assistant-message-thought-window">
+				<p className="hb-assistant-message-thought">{thinking}</p>
+			</div>
 		</div>
 	);
 }
 
 /**
  * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
- * caret sits at the end of the text; before any text or thought arrives, "Working for 12s" says it is working, timed
- * from `turnStartedAt` (when the turn started), or "Working" without it.
+ * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview;
+ * before any text or thought arrives, "Working for 12s" says it is working, timed from `turnStartedAt` (when the turn
+ * started), or "Working" without it.
  */
 export const AssistantMessage = memo(function AssistantMessage({
 	item,
@@ -58,14 +61,19 @@ export const AssistantMessage = memo(function AssistantMessage({
 	return (
 		<div className={`hb-assistant-message${streaming ? " hb-assistant-message-streaming" : ""}`}>
 			{thinking ? (
-				<Disclosure
-					className="hb-assistant-message-thinking"
-					summary={streaming && text === "" ? "Thinking" : "Thought it through"}
-				>
-					<p className="hb-assistant-message-thought">{thinking}</p>
-				</Disclosure>
+				streaming && text === "" ? (
+					<ThinkingPreview thinking={thinking} />
+				) : (
+					<Disclosure className="hb-assistant-message-thinking" summary="Thought it through">
+						<p className="hb-assistant-message-thought">{thinking}</p>
+					</Disclosure>
+				)
 			) : null}
-			{text !== "" ? <Markdown text={text} /> : streaming && !thinking ? <WorkingRow since={turnStartedAt} /> : null}
+			{text !== "" ? (
+				<Markdown text={text} />
+			) : streaming && !thinking ? (
+				<WorkingIndicator since={turnStartedAt} />
+			) : null}
 		</div>
 	);
 });

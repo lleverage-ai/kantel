@@ -4,15 +4,18 @@
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
-import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
+import type { ComposerModelOption, SessionSummary, ThinkingLevel, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
-/** Who the console acts as. Stubbed for recorded sessions; the API client is whoever Access signed in. */
+/** Who the console acts as: whoever `GET /v1/me` names on the API, a stand-in for recorded sessions. */
 export type ConsoleActor = {
 	readonly id: string;
 	readonly name: string;
+	readonly email?: string;
 	/** True while sign-in is a stand-in, so the shell can say so. */
 	readonly stubbed: boolean;
+	/** Ends the session, when the console signed in itself (an email code). Access ends its own at the edge. */
+	readonly signOut?: () => Promise<void>;
 };
 
 export type ProjectSummary = {
@@ -36,9 +39,49 @@ export type SessionControl =
 			readonly reason: string;
 	  };
 
+/** Whether the signed-in person may start a session in a project, and why not when they can't. */
+export type StartAccess =
+	| { readonly allowed: true }
+	| {
+			readonly allowed: false;
+			/** Shown under New session and in the composer, such as a viewer's "Starting one needs the operator role." */
+			readonly reason: string;
+	  };
+
+/**
+ * What a new session in a project runs with: the agent, on its own model. The model and thinking level a person picks
+ * on New session go with its first message (`modelChoices` gives what to offer).
+ */
+export type StartOptions = {
+	readonly agentId: string;
+	readonly agentName: string;
+};
+
+/** A session to create: the project, the agent and its title. */
+export type CreateInput = {
+	readonly projectId: string;
+	readonly agentId: string;
+	readonly title?: string;
+};
+
 export type SendOptions = {
 	/** Retrying with the same id sends once. */
 	readonly requestId?: string;
+	/** The model the run and the session's later runs use: a `ModelChoices.models` id. Absent keeps the session's. */
+	readonly model?: string;
+	/** The thinking level, as `model`. Absent keeps the session's, clamped to the model. */
+	readonly thinking?: ThinkingLevel;
+};
+
+/** The composer's model and thinking pickers for a session, or for one about to start. */
+export type ModelChoices = {
+	/** The models the session may use, from the organisation's and project's configuration. */
+	readonly models: readonly ComposerModelOption[];
+	/** What the session runs with now: its agent's until a message names another. */
+	readonly model?: string;
+	readonly thinking?: ThinkingLevel;
+	/** The agent profile's level, marked Default in the thinking picker. */
+	readonly defaultThinking?: ThinkingLevel;
 };
 
 /** A directory's entries, sorted or not, and whether there were more than the console reads. */
@@ -76,7 +119,23 @@ export interface ConsoleClient {
 	transport(sessionId: string): Transport;
 	/** The project a session belongs to, or undefined when there's no such session. */
 	projectOf(sessionId: string): Promise<string | undefined>;
+	/** Whether New session is offered in a project: the API refuses a viewer, so the console says so first. */
+	mayStart(projectId: string): StartAccess;
+	/** The agent a new session in the project runs. Rejects when no agent may run there. */
+	startOptions(projectId: string, signal?: AbortSignal): Promise<StartOptions>;
+	/** Creates an idle session and resolves with its id; its first message is a `prompt`. */
+	create(input: CreateInput): Promise<string>;
 	control(sessionId: string): SessionControl;
+	/**
+	 * What the composer's model and thinking pickers offer: a session's, or with `start`, a new session's in the project.
+	 * Absent on a client that can't choose (a recorded session); there are no pickers then.
+	 */
+	modelChoices?(
+		target:
+			| { readonly sessionId: string }
+			| { readonly start: { readonly projectId: string; readonly agentId: string } },
+		signal?: AbortSignal,
+	): Promise<ModelChoices>;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;
 	/** Joins the running turn after its current tool round. */

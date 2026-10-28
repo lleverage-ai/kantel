@@ -20,6 +20,19 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - `AgentProfiles`: `put`, `get`, `list`. `HostToolBridge`: `register` (returns a subscription), `list`.
 - `SessionEndHook`: `register(name, teardown)`. The runtime runs every registered teardown when a session is closed or
   aborted; the in-memory components register as `sandbox`, `browser`, `capability` and `vault`.
+- Proposed, implemented by the runtime and served over HTTP (`test/session-models.test.ts`, not yet in the suite):
+  `SessionModels` (`listModels`, `modelState` and `startModels`: the `ModelOption`s a session's prompts may name,
+  what it runs with and what its profile names, for a client's model and thinking pickers) and `PromptInput.model` and
+  `PromptInput.thinking`. A choice is kept with the session's Pi Durable conversation (`configure`), so it applies
+  from the next model call, to every later run, and after the session reopens; a level the model lacks is clamped
+  with pi's `clampThinkingLevel`. `@harbour/ui`'s composer takes the same shapes.
+- Proposed, not yet implemented: `PromptInput.attachments` (`PromptAttachment`, a reference to a file the host
+  uploaded). The runtime and the HTTP handler ignore `attachments` until they adopt them, and still require `text`.
+- Proposed (open question 15 in docs/contracts.md): `SessionHistory.history`, a session's transcript in pages, newest
+  first, served as `history` on the runtime service and `GET /sessions/:id/history`. The `history:` suite cases run
+  with `{ history: true }`: the latest page first and cursors back to the start without a repeat or a gap; pages
+  behind a cursor unchanged while new turns arrive; `before` an item a client holds; `invalid` for a malformed
+  request, `not_found` for an unknown item or session, and project access refusing an operator outside the project.
 
 ## Rules and the suite cases that enforce them
 
@@ -134,7 +147,7 @@ secret is stored with the registration, so the store is as sensitive as the secr
 `createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@harbour/runtime/memory`
 is `createSessionRuntime` over `createMemorySessionStore()`, with one Harness per session on Pi Durable's
 `MemoryStorage`. The profile's prompt layers become one system prompt
-section, and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
+section, and are the whole of it: Harbour adds no text of its own, so a profile with no layers sends no system prompt; and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
 placed as a `harbour.user` entry recording how it was sent. `ConversationProjector` (`project.ts`) diffs Pi's committed
 view into protocol ops on a `createMemorySessionStream`; status is `running` while Pi has a run, `failed` after a model
 error, `idle` otherwise and `done` after close. Audit: `session.created`, `session.prompted`, `session.steered`,
@@ -196,3 +209,5 @@ suites, and the targets wiring `harbourModels` to it. Until then no target passe
 - Pi types appear in the exports of `@harbour/runtime` (the projector, `hostToolAsPiTool`) for targets to reuse; hosts
   should import only `@harbour/contracts`.
 - Should a host's tools be offered to the model only when registered (as now), or always, failing at call time?
+- How the runtime reads a `PromptAttachment`'s bytes: through the host that uploaded it (a host tool or a signed URL),
+  or from a store the platform owns. See open question 14 in docs/contracts.md.

@@ -1,15 +1,17 @@
 // The audit view's logic against the in-memory audit store: the filters as queries, the credential summary that
 // answers the definition of done, JSONL export, and paging through 100k events with the store's cursors.
 
-import type { AuditEvent } from "@harbour/contracts";
+import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { type AuditEvent, systemContext } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR } from "../primitives/format.ts";
 import {
 	actorFromKey,
 	actorKey,
 	actorName,
+	credentialChoices,
 	describeEvent,
-	matchesCredential,
+	eventItemId,
 	rangeBounds,
 	readAll,
 	toJsonl,
@@ -23,6 +25,7 @@ import {
 	links,
 	ORGANISATION,
 	SECOND_ORGANISATION,
+	storeSource,
 	yesterday,
 } from "./fixtures.ts";
 import { credentialUsage } from "./usage.ts";
@@ -38,7 +41,33 @@ describe("filters", () => {
 			projectId: "prj_billing",
 			from: FIXTURE_NOW - HOUR,
 		});
-		expect(toQuery({ range: "all", kind: "all", projectId: "" }, FIXTURE_NOW)).toEqual({ newestFirst: true });
+		expect(toQuery({ range: "all", kind: "all", projectId: "", credential: "" }, FIXTURE_NOW)).toEqual({
+			newestFirst: true,
+		});
+		expect(toQuery({ range: "all", kind: "approval", credential: "itm_linear" }, FIXTURE_NOW)).toEqual({
+			newestFirst: true,
+			type: "vault.decision.",
+			itemId: "itm_linear",
+		});
+	});
+
+	it("leave the credential to the store, so its first page is the credential's however far back it was used", async () => {
+		// The Linear key's events are all older than 6,000 others: more than the 25 pages the view used to read for it.
+		const events = generateEvents(8000).sort((a, b) => a.at - b.at);
+		const isLinear = (event: (typeof events)[number]) =>
+			eventItemId({ ...event, seq: 0, recordedAt: event.at }) === "itm_linear";
+		const recent = events.slice(-6000).filter((event) => !isLinear(event));
+		const older = events.slice(0, -6000);
+		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
+		await store.append(systemContext("fixture"), [...older, ...recent]);
+		const source = storeSource(store, { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION });
+		const page = await source.query(toQuery({ range: "all", kind: "all", credential: "itm_linear" }, FIXTURE_NOW), {
+			limit: 200,
+		});
+		const expected = older.filter((event) => event.organisationId === ORGANISATION && isLinear(event));
+		expect(expected.length).toBeGreaterThan(0);
+		expect(page.items.length).toBe(Math.min(200, expected.length));
+		expect(page.items.every((event) => eventItemId(event) === "itm_linear")).toBe(true);
 	});
 
 	it("carry the organisation for the host to bind, and read only that organisation's rows", async () => {
@@ -50,6 +79,17 @@ describe("filters", () => {
 		expect(labs.items.length).toBeGreaterThan(0);
 		expect(labs.items.every((event) => event.organisationId === SECOND_ORGANISATION)).toBe(true);
 		expect(home.items.every((event) => event.organisationId === ORGANISATION)).toBe(true);
+	});
+
+	it("offer the credentials the log names, for a host with no vault to list them from", async () => {
+		const { source } = await createAuditScenario(500);
+		const credentials = await credentialChoices(source);
+		expect(credentials).toContainEqual({ value: "itm_linear", label: "Linear API key" });
+		expect(new Set(credentials.map((choice) => choice.value)).size).toBe(credentials.length);
+		expect(credentials.map((choice) => choice.label)).toEqual(
+			[...credentials.map((choice) => choice.label)].sort((a, b) => a.localeCompare(b, "en-GB")),
+		);
+		expect(await credentialChoices(source, { organisationId: "org_nobody" })).toEqual([]);
 	});
 
 	it("make yesterday the calendar day before today, in local time", () => {
@@ -104,12 +144,23 @@ describe("rows", () => {
 		expect(describeEvent(event).action).toBe("browser session opened");
 	});
 
-	it("match the credential filter on the event's item", () => {
+	it("name the item an event is about as the store's itemId filter does", () => {
 		const use = find("vault.use.injected");
-		expect(matchesCredential(use, use.data!.itemId as string)).toBe(true);
-		expect(matchesCredential(use, "itm_other")).toBe(false);
-		expect(matchesCredential(find("session.created"), undefined)).toBe(true);
-		expect(matchesCredential(find("session.created"), "itm_linear")).toBe(false);
+		expect(eventItemId(use)).toBe(use.data!.itemId);
+		expect(eventItemId(find("session.created"))).toBeUndefined();
+		expect(eventItemId({ ...use, subject: { kind: "vault.item", id: "itm_new" } })).toBe("itm_new");
+	});
+
+	it("link sessions with the event's project, for hosts whose session pages sit under one", () => {
+		const prompt = find("session.prompted");
+		const seen: unknown[] = [];
+		describeEvent(prompt, directory, {
+			session: (...args) => {
+				seen.push(args);
+				return "#";
+			},
+		});
+		expect(seen).toEqual([[prompt.sessionId, prompt.subject!.id, prompt.projectId]]);
 	});
 });
 
@@ -135,16 +186,35 @@ describe("which sessions used the Linear key yesterday, and who approved it", ()
 		for (const session of usage.sessions) for (const via of session.via) expect(usage.approvals.has(via)).toBe(true);
 	});
 
+	it("reads only the credential's uses and one approval per grant, filtered by the store", async () => {
+		const scenario = await createAuditScenario(4000);
+		const queries: string[] = [];
+		let rows = 0;
+		const counted: typeof scenario.source = {
+			async query(query, page) {
+				queries.push(query.grantId === undefined ? `uses of ${query.itemId}` : `approval of ${query.grantId}`);
+				const result = await scenario.source.query(query, page);
+				rows += result.items.length;
+				return result;
+			},
+		};
+		const { from, to } = rangeBounds("yesterday", FIXTURE_NOW);
+		const usage = await credentialUsage(counted, { itemId: yesterday.itemId, from: from!, to: to! });
+		const uses = usage.sessions.reduce((sum, session) => sum + session.injected + session.refused, 0);
+		expect(queries[0]).toBe(`uses of ${yesterday.itemId}`);
+		expect(queries.slice(1).sort()).toEqual(
+			[...usage.approvals.keys()].map((grantId) => `approval of ${grantId}`).sort(),
+		);
+		expect(rows).toBe(uses + usage.unattributed + usage.approvals.size);
+	});
+
 	it("is read from the organisation the timeline shows", async () => {
 		const scenario = await createAuditScenario(4000);
 		const sessionsIn = async (organisationId: string) => {
 			const ids = new Set<string>();
-			for await (const page of readAll(
-				scenario.source,
-				{ organisationId, type: "vault.use." },
-				{ credential: "itm_github" },
-			))
-				for (const event of page) if (event.sessionId !== undefined) ids.add(event.sessionId);
+			for await (const page of readAll(scenario.source, { organisationId, type: "vault.use." }))
+				for (const event of page)
+					if (event.sessionId !== undefined && event.data?.itemId === "itm_github") ids.add(event.sessionId);
 			return ids;
 		};
 		const found: Set<string>[] = [];

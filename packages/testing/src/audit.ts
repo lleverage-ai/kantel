@@ -433,6 +433,139 @@ export function createAuditConformance(options: {
 			);
 		}),
 
+		test("narrows by vault item and grant, by the record's subject or a string in data, and pages by them", async ({
+			store,
+		}) => {
+			const t = 2_000_000;
+			const tom = actors.human("tom");
+			const agent = actors.agent("agent-1", "session-1");
+			const vault = (id: string, at: number, fields: EventFields) =>
+				auditEvent(id, at, { source: "vault", projectId: PROJECT, ...fields });
+			await store.append(WORKER, [
+				vault("created", t, {
+					type: "vault.item.created",
+					actor: tom,
+					subject: { kind: "vault.item", id: "item-linear" },
+					data: { name: "Linear API key" },
+				}),
+				vault("asked", t + 1, {
+					type: "vault.proposal.created",
+					actor: agent,
+					sessionId: "session-1",
+					subject: { kind: "vault.proposal", id: "proposal-1" },
+					data: { itemId: "item-linear" },
+				}),
+				vault("approved", t + 2, {
+					type: "vault.decision.approved",
+					actor: tom,
+					subject: { kind: "vault.proposal", id: "proposal-1" },
+					data: { itemId: "item-linear", grantId: "grant-1" },
+				}),
+				vault("used", t + 3, {
+					type: "vault.use.injected",
+					actor: agent,
+					sessionId: "session-1",
+					subject: { kind: "vault.use", id: "use-1" },
+					data: { itemId: "item-linear", grantId: "grant-1", host: "api.linear.app" },
+				}),
+				vault("other-item", t + 4, {
+					type: "vault.use.injected",
+					actor: agent,
+					sessionId: "session-1",
+					data: { itemId: "item-github", grantId: "grant-2" },
+				}),
+				vault("stopped", t + 5, {
+					type: "vault.grant.revoked",
+					actor: tom,
+					subject: { kind: "vault.grant", id: "grant-1" },
+					data: { reason: "done" },
+				}),
+				// Only a string names a record: an ID that is a number, a list or nested deeper is not one.
+				vault("not-a-string", t + 6, { type: "vault.custom.noted", data: { itemId: 42, grantId: ["grant-1"] } }),
+				vault("nested", t + 7, { type: "vault.custom.noted", data: { route: { itemId: "item-linear" } } }),
+				// The subject wins over data: this event is about item-github, whatever its data says.
+				vault("subject-wins", t + 8, {
+					type: "vault.item.created",
+					subject: { kind: "vault.item", id: "item-github" },
+					data: { itemId: "item-linear" },
+				}),
+				// Another kind of subject with the same ID is not the record.
+				vault("same-id-other-kind", t + 9, {
+					type: "vault.policy.revoked",
+					subject: { kind: "vault.policy", id: "item-linear" },
+				}),
+				auditEvent("other-org", t + 10, {
+					organisationId: OTHER_ORG,
+					source: "vault",
+					type: "vault.use.injected",
+					data: { itemId: "item-linear", grantId: "grant-1" },
+				}),
+				vault("elsewhere", t + 11, {
+					type: "vault.use.injected",
+					projectId: OTHER_PROJECT,
+					data: { itemId: "item-linear", grantId: "grant-1" },
+				}),
+				auditEvent("org-wide", t + 12, {
+					source: "vault",
+					type: "vault.use.injected",
+					actor: actors.system("egress"),
+					data: { itemId: "item-linear" },
+				}),
+			]);
+
+			assert.deepEqual(
+				await queryIds(store, { itemId: "item-linear" }),
+				["created", "asked", "approved", "used", "elsewhere", "org-wide"],
+				"item: its subject, or data.itemId as a string",
+			);
+			assert.deepEqual(
+				await queryIds(store, { itemId: "item-github" }),
+				["other-item", "subject-wins"],
+				"an item's subject wins over its data",
+			);
+			assert.deepEqual(
+				await queryIds(store, { grantId: "grant-1" }),
+				["approved", "used", "stopped", "elsewhere"],
+				"grant: its subject, or data.grantId as a string",
+			);
+			assert.deepEqual(await queryIds(store, { itemId: "42" }), [], "a number is not an ID");
+			assert.deepEqual(await queryIds(store, { itemId: "grant-1" }), [], "a grant is not an item");
+			assert.deepEqual(await queryIds(store, { grantId: "item-linear" }), [], "an item is not a grant");
+			assert.deepEqual(await queryIds(store, { itemId: "item-linear" }, outsider), ["other-org"], "organisation");
+			assert.deepEqual(
+				await queryIds(store, { itemId: "item-linear", grantId: "grant-1", type: "vault.use.", newestFirst: true }),
+				["elsewhere", "used"],
+				"they combine with the other fields",
+			);
+			assert.deepEqual(
+				await queryIds(store, { grantId: "grant-1", type: "vault.decision.approved", to: t + 3 }),
+				["approved"],
+				"who approved a grant, in one read",
+			);
+			assert.deepEqual(
+				await queryIds(store, { itemId: "item-linear", sessionId: "session-1" }),
+				["asked", "used"],
+				"and with a session",
+			);
+			assert.deepEqual(
+				(await allPages(store, { itemId: "item-linear", newestFirst: true }, 2)).events.map((event) => event.id),
+				["org-wide", "elsewhere", "used", "approved", "asked", "created"],
+				"pages by cursor",
+			);
+			if (options.projectAccess === true) {
+				assert.deepEqual(
+					await queryIds(store, { itemId: "item-linear" }, projectViewer),
+					["created", "asked", "approved", "used"],
+					"a project viewer sees only the project's rows",
+				);
+				assert.deepEqual(
+					await queryIds(store, { grantId: "grant-1" }, stranger),
+					["elsewhere"],
+					"and an operator on another project only its",
+				);
+			}
+		}),
+
 		test("pages through 250 rows 100 at a time, each row once, while rows are appended between pages", async ({
 			store,
 		}) => {

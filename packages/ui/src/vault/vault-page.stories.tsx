@@ -46,7 +46,8 @@ function ScenarioPage({
 	state?: FixtureState;
 	setup?: Setup;
 	viewer?: Viewer;
-	passkey?: PasskeyCheck;
+	/** `null`: a host with no passkeys yet, which approves on its sign-in alone. */
+	passkey?: PasskeyCheck | null;
 	options?: ScenarioOptions;
 }) {
 	const [scenario, setScenario] = useState<VaultScenario>();
@@ -134,7 +135,7 @@ function ScenarioPage({
 				{...(initial === undefined ? {} : { initial })}
 				onDecide={onDecide}
 				onDecided={refresh}
-				passkey={passkey}
+				{...(passkey === null ? {} : { passkey })}
 				grants={{
 					grants,
 					onStop,
@@ -227,6 +228,9 @@ const tryItSetup: Setup = async (scenario) => ({ proposalId: scenario.proposals.
 export const TryTheCode: Story = () => <ScenarioPage setup={tryItSetup} />;
 
 export const PasskeyCancelled: Story = () => <ScenarioPage state="read" passkey={fakePasskey("cancelled")} />;
+
+/** A host with no passkeys yet, such as the Cloudflare deployment today: Approve rests on the Access sign-in. */
+export const NoPasskey: Story = () => <ScenarioPage state="route" passkey={null} />;
 
 export const ForwardedLink: Story = () => <ScenarioPage state="proposed" viewer={people.alex} />;
 

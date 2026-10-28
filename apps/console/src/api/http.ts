@@ -1,28 +1,45 @@
 // The console on the session API (`@harbour/runtime/http`, served under `/v1` by the gateway). Same-origin: behind
 // Cloudflare Access the browser's Access cookie signs every call in, and the edge adds the token the gateway checks,
-// so this client sends no credential of its own. `pnpm dev` proxies `/v1` to a local gateway and adds a dev token
-// there (vite.config.ts).
+// so this client sends no credential of its own; signed in with an email code, `headers` adds the session's bearer
+// (identity.ts). `pnpm dev` proxies `/v1` to a local gateway and adds a dev token there (vite.config.ts).
 //
 // What the API has and hasn't yet:
-// - Sessions: listed per project, each one's frames streamed as server-sent events, prompt, steer, follow-up and abort.
-// - No list of projects and no "who am I": the projects are the ones the caller's sessions are in, named by id, and
-//   the actor is whoever Access signed in. Identity's HTTP API (M1-BE7) will answer both.
+// - Sessions: listed per project, each one's frames streamed over a compressed WebSocket (socket.ts) or, where there is
+//   none, as server-sent events; prompt, steer, follow-up and abort.
+// - Who is signed in and their projects: identity's `GET /v1/me` (identity.ts, before this client is made) and
+//   `GET /v1/projects`, every page, named, the most recently active first.
 // - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
-// - No history pages: the snapshot is the whole transcript, so a history request is answered with an empty page.
+// - History pages: the stream's snapshot is the latest page; a `history` frame the client sends is `GET
+//   /v1/sessions/:id/history?before=<its first item>`, whose newest-first page comes back as a `history` frame,
+//   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
 
-import type { HistoryPage, ServerFrame, SessionStatus } from "@harbour/protocol";
+import {
+	type AgentProfile,
+	type HeldRole,
+	type Project,
+	protocolHistoryPage,
+	roleSatisfies,
+	type SessionHistoryPage,
+	type SessionModelState,
+} from "@harbour/contracts";
+import type { ServerFrame, SessionStatus } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
-import type { Transport } from "../state/session-client.ts";
+import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
+	ConsoleActor,
 	ConsoleClient,
+	ModelChoices,
 	ProjectSummary,
 	SendOptions,
 	SessionControl,
+	StartAccess,
+	StartOptions,
 	WorkspaceFiles,
 	WorkspaceListing,
 } from "./client.ts";
+import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
@@ -47,10 +64,37 @@ export type ApiClientOptions = {
 	/** Where the session API is. Default `/v1`, on the console's own origin. */
 	baseUrl?: string;
 	fetch?: typeof fetch;
-	/** Headers for every call; tests sign in with a bearer here. The browser needs none. */
+	/** Headers for every call: an email-code session's bearer, or a test's. Behind Access the browser needs none. */
 	headers?: () => Record<string, string>;
 	listPollMs?: number;
+	/** Who `GET /v1/me` said is signed in. */
+	actor?: ConsoleActor;
+	/**
+	 * The roles `GET /v1/me` said they hold, which decide where New session is offered. Without them it is offered
+	 * everywhere, and the API refuses a viewer.
+	 */
+	roles?: readonly HeldRole[];
+	/** Called on any 401: the session is over, and the console asks to sign in again. */
+	onUnauthenticated?: () => void;
+	/**
+	 * Opens a session's event socket. Default the browser's `WebSocket`; `false` reads every session as server-sent
+	 * events. The socket is used only while `headers` add no credential (behind Access the cookie signs it in; a browser
+	 * can't put a bearer on a socket), and once one fails to open the client reads event streams for the rest of its life.
+	 */
+	openSocket?: OpenSocket | false;
+	/** The page the API's paths are relative to, for the socket's URL. Default the page's own location. */
+	origin?: string;
+	/** Told how each session's events came: over a socket, with its extensions, or as an event stream. */
+	onTransport?: (sessionId: string, how: TransportKind) => void;
 };
+
+/** How a session's events reach the console. */
+export type TransportKind = { readonly kind: "websocket"; readonly extensions: string } | { readonly kind: "sse" };
+
+const browserSocket: OpenSocket | undefined =
+	typeof WebSocket === "undefined" ? undefined : (url) => new WebSocket(url) as unknown as ReturnType<OpenSocket>;
+
+const SIGNED_IN: ConsoleActor = { id: "access", name: "Signed in", stubbed: false };
 
 /** An error the API answered with, or a network failure, in words for the console. */
 export class ApiError extends Error {
@@ -75,6 +119,40 @@ async function errorOf(response: Response): Promise<ApiError> {
 	return new ApiError("unavailable", `Harbour answered ${response.status}`);
 }
 
+/** Why a viewer sees New session dimmed. */
+export const VIEWER_REASON = "You can watch this project's sessions. Starting one needs the operator role.";
+
+/** Whether `roles` let someone start a session in the project: operator or above there, or across the organisation. */
+export function startAccess(roles: readonly HeldRole[] | undefined, projectId: string): StartAccess {
+	if (roles === undefined) return { allowed: true };
+	const may = roles.some(
+		(held) => (held.projectId === undefined || held.projectId === projectId) && roleSatisfies(held.role, "operator"),
+	);
+	return may ? { allowed: true } : { allowed: false, reason: VIEWER_REASON };
+}
+
+/**
+ * The agent a new session in the project runs: one of the project's own profiles, else one for the whole organisation,
+ * the first by name. Undefined when none may run there.
+ */
+export function agentFor(profiles: readonly AgentProfile[], projectId: string): AgentProfile | undefined {
+	const byName = (a: AgentProfile, b: AgentProfile) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+	return (
+		[...profiles].filter((profile) => profile.projectId === projectId).sort(byName)[0] ??
+		[...profiles].filter((profile) => profile.projectId === undefined).sort(byName)[0]
+	);
+}
+
+/** The API's model state as the composer's pickers take it. */
+export function modelChoicesOf(state: SessionModelState): ModelChoices {
+	return {
+		models: state.models,
+		...(state.selected === undefined ? {} : { model: state.selected.model }),
+		...(state.selected?.thinking === undefined ? {} : { thinking: state.selected.thinking }),
+		...(state.defaults?.thinking === undefined ? {} : { defaultThinking: state.defaults.thinking }),
+	};
+}
+
 /** The list's status for a session: an idle session has nothing running, so it reads as settled. */
 const listStatus = (status: SessionStatus): SessionStatus => (status === "idle" ? "done" : status);
 const active = (status: SessionStatus) => status === "running" || status === "waiting";
@@ -83,6 +161,11 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const base = (options.baseUrl ?? "/v1").replace(/\/+$/, "");
 	const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
 	const pollMs = options.listPollMs ?? LIST_POLL_MS;
+	const openSocket = options.openSocket === false ? undefined : (options.openSocket ?? browserSocket);
+	const origin = options.origin ?? (typeof location === "undefined" ? undefined : location.href);
+	/** Cleared for good when a socket fails to open: the gateway, a proxy or the network won't carry one. */
+	let socketsWork = openSocket !== undefined && origin !== undefined;
+	const socketAllowed = () => socketsWork && Object.keys(options.headers?.() ?? {}).length === 0;
 	const sessionUrl = (id: string, rest = "") => `${base}/sessions/${encodeURIComponent(id)}${rest}`;
 
 	/** The project each session we've seen is in. */
@@ -115,7 +198,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			if (init.signal?.aborted) throw reason;
 			throw new ApiError("unavailable", "Can't reach Harbour. Check your connection.");
 		}
-		if (!response.ok) throw await errorOf(response);
+		if (!response.ok) {
+			if (response.status === 401) options.onUnauthenticated?.();
+			throw await errorOf(response);
+		}
 		return response;
 	};
 	const getJson = async <T>(path: string, signal?: AbortSignal): Promise<T> =>
@@ -144,6 +230,34 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			cursor = page.nextCursor;
 		} while (cursor !== undefined);
 		return records;
+	};
+
+	/** Every project the caller can see (`GET /v1/projects`), following the pages. */
+	const listProjects = async (): Promise<Project[]> => {
+		const projects: Project[] = [];
+		let cursor: string | undefined;
+		do {
+			const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
+			if (cursor !== undefined) query.set("cursor", cursor);
+			const page = await getJson<Page<Project>>(`${base}/projects?${query}`);
+			projects.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return projects;
+	};
+
+	/** Every agent profile the caller can see (`GET /v1/profiles`), following the pages. */
+	const listProfiles = async (signal?: AbortSignal): Promise<AgentProfile[]> => {
+		const profiles: AgentProfile[] = [];
+		let cursor: string | undefined;
+		do {
+			const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
+			if (cursor !== undefined) query.set("cursor", cursor);
+			const page = await getJson<Page<AgentProfile>>(`${base}/profiles?${query}`, signal);
+			profiles.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return profiles;
 	};
 
 	const isUnread = (record: SessionRecord, firstListing: boolean): boolean => {
@@ -205,20 +319,33 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const send = (sessionId: string, action: string, text: string, sendOptions?: SendOptions) =>
 		post(
 			sessionUrl(sessionId, `/${action}`),
-			{ text, ...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }) },
+			{
+				text,
+				...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
+				...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
+				...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+			},
 			sendOptions?.requestId,
 		);
 
 	return {
-		actor: { id: "access", name: "Signed in", stubbed: false },
+		actor: options.actor ?? SIGNED_IN,
 
 		async projects(): Promise<readonly ProjectSummary[]> {
+			const [projects, sessions] = await Promise.all([listProjects(), listSessions()]);
 			const recent = new Map<string, number>();
-			for (const record of await listSessions()) {
+			for (const record of sessions) {
 				recent.set(record.projectId, Math.max(recent.get(record.projectId) ?? 0, record.updatedAt));
 			}
-			// The most recently active project first, so the home page opens it.
-			return [...recent].sort((a, b) => b[1] - a[1]).map(([id]) => ({ id, name: id }));
+			// The most recently active project first, so the home page opens it; projects with no sessions by name.
+			return [...projects]
+				.sort(
+					(a, b) =>
+						(recent.get(b.id) ?? 0) - (recent.get(a.id) ?? 0) ||
+						a.name.localeCompare(b.name) ||
+						a.id.localeCompare(b.id),
+				)
+				.map((project) => ({ id: project.id, name: project.name }));
 		},
 
 		watchSessions(projectId, onChange) {
@@ -252,8 +379,30 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				connect(receive, lost) {
 					const controller = new AbortController();
 					let closed = false;
-					const stream = async (after: string | undefined) => {
+					let socket: { close(): void } | undefined;
+					const stream = (after: string | undefined) => {
 						const query = after === undefined ? "" : `?after=${encodeURIComponent(after)}`;
+						if (!socketAllowed() || openSocket === undefined || origin === undefined) return void events(query);
+						socket = watchOverSocket(openSocket, socketUrl(sessionUrl(sessionId, `/events${query}`), origin), {
+							receive: (frame) => {
+								if (!closed) receive(frame);
+							},
+							opened: (extensions) => options.onTransport?.(sessionId, { kind: "websocket", extensions }),
+							// No socket here: read the event stream now, and from now on.
+							failed: () => {
+								socket = undefined;
+								if (closed) return;
+								socketsWork = false;
+								void events(query);
+							},
+							lost: () => {
+								socket = undefined;
+								if (!closed) lost?.();
+							},
+						});
+					};
+					const events = async (query: string) => {
+						options.onTransport?.(sessionId, { kind: "sse" });
 						let response: Response;
 						try {
 							response = await call(sessionUrl(sessionId, `/events${query}`), {
@@ -282,20 +431,31 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 						}
 						if (!closed) lost?.();
 					};
+					// The page before an item the client holds. Anchored on the item, so new turns don't shift it.
+					const history = async (before: string, limit: number) => {
+						const params = new URLSearchParams({ before, limit: String(limit) });
+						try {
+							const page = await getJson<SessionHistoryPage>(
+								sessionUrl(sessionId, `/history?${params}`),
+								controller.signal,
+							);
+							if (!closed) receive({ type: "history", page: protocolHistoryPage(page) });
+						} catch (reason) {
+							if (closed) return;
+							const message = reason instanceof Error ? reason.message : String(reason);
+							receive({ type: "error", code: HISTORY_ERROR, message });
+						}
+					};
 					return {
 						send(frame) {
 							if (closed) return;
 							if (frame.type === "hello") void stream(frame.after);
-							else {
-								const page: HistoryPage = { sessionId, items: [], hasEarlier: false };
-								queueMicrotask(() => {
-									if (!closed) receive({ type: "history", page });
-								});
-							}
+							else void history(frame.before, frame.limit);
 						},
 						close() {
 							closed = true;
 							controller.abort();
+							socket?.close();
 						},
 					};
 				},
@@ -315,7 +475,36 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			}
 		},
 
+		mayStart: (projectId) => startAccess(options.roles, projectId),
+
+		async startOptions(projectId, signal): Promise<StartOptions> {
+			const agent = agentFor(await listProfiles(signal), projectId);
+			if (agent === undefined) {
+				throw new ApiError("not_found", "No agent can run in this project yet. An admin needs to add one.");
+			}
+			return { agentId: agent.id, agentName: agent.name };
+		},
+
+		async create(input) {
+			const response = await call(`${base}/sessions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(input),
+			});
+			const record = (await response.json()) as SessionRecord;
+			projectOfSession.set(record.id, record.projectId);
+			return record.id;
+		},
+
 		control: (): SessionControl => ({ live: true }),
+
+		async modelChoices(target, signal): Promise<ModelChoices> {
+			const path =
+				"sessionId" in target
+					? sessionUrl(target.sessionId, "/models")
+					: `${base}/profiles/${encodeURIComponent(target.start.agentId)}/models?${new URLSearchParams({ projectId: target.start.projectId })}`;
+			return modelChoicesOf(await getJson<SessionModelState>(path, signal));
+		},
 
 		prompt: (sessionId, text, sendOptions) => send(sessionId, "prompt", text, sendOptions),
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),

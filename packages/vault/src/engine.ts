@@ -131,27 +131,31 @@ interface Read<T> {
 }
 
 /** The project and session a record is scoped to; empty for an organisation's own records. */
-type Scope = Pick<AccessCheck, "projectId" | "sessionId">;
+export type Scope = Pick<AccessCheck, "projectId" | "sessionId">;
 
-function itemScope(item: VaultItem): Scope {
+/** An item is in a project when a project owns it. */
+export function itemScope(item: VaultItem): Scope {
 	return item.owner.kind === "project" ? { projectId: item.owner.projectId } : {};
 }
 
-function proposalScope(proposal: Proposal): Scope {
+/** A proposal is in its `projectId` and its requester's session. */
+export function proposalScope(proposal: Proposal): Scope {
 	return {
 		...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
 		...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
 	};
 }
 
-function selectorScope(selector: PolicySelector): Scope {
+/** A grant or policy is in its selector's project and session. */
+export function selectorScope(selector: PolicySelector): Scope {
 	return {
 		...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
 		...(selector.sessionId === undefined ? {} : { sessionId: selector.sessionId }),
 	};
 }
 
-function scoped(scope: Scope): boolean {
+/** Whether a record is in a project or session at all; one in neither is the organisation's own. */
+export function scoped(scope: Scope): boolean {
 	return scope.projectId !== undefined || scope.sessionId !== undefined;
 }
 

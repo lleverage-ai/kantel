@@ -41,6 +41,7 @@ import {
 	type HostToolHandler,
 	type IdentityDirectory,
 	type ModelChoice,
+	type ModelThinking,
 	type OrganisationId,
 	type ProjectAccess,
 	type PromptInput,
@@ -48,7 +49,10 @@ import {
 	type SessionDirectory,
 	type SessionEnd,
 	type SessionEndHook,
+	type SessionHistory,
 	type SessionId,
+	type SessionModelState,
+	type SessionModels,
 	type SessionRecord,
 	type SessionRuntime,
 	type Submission,
@@ -57,6 +61,7 @@ import {
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+import { historyAnchor, historyLimit, readHistory } from "./history.ts";
 import {
 	ConversationProjector,
 	createSessionEndHook,
@@ -69,6 +74,14 @@ import {
 	type ResolvedModel,
 	runResultOf,
 } from "./index.ts";
+import {
+	clampThinking,
+	isModelThinking,
+	modelOptions,
+	optionIdOf,
+	requestedChoice,
+	shownThinking,
+} from "./session-models.ts";
 import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
 
 export interface SessionRuntimeOptions {
@@ -129,6 +142,10 @@ export interface SessionRuntimeOptions {
 
 export interface SessionRuntimeService {
 	readonly runtime: SessionRuntime;
+	/** Each session's transcript in pages, newest first, for a client scrolling back (proposed, issue #6). */
+	readonly history: SessionHistory;
+	/** The models each session may name and what it runs with now, for a client's model and thinking pickers. */
+	readonly models: SessionModels;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -192,6 +209,8 @@ interface OpenSession {
 	readonly sequence: number;
 	readonly harness: Harness;
 	readonly conversation: Conversation;
+	/** The session's Pi models: what its prompts may name (`SessionModels`). */
+	readonly models: Models;
 	readonly registry: Registry;
 	readonly view: AttachedReplicatedState<ConversationView>;
 	readonly stream: MemorySessionStream;
@@ -584,6 +603,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			sequence: stored.sequence,
 			harness,
 			conversation,
+			models: sessionModels,
 			registry,
 			view,
 			stream: createMemorySessionStream({
@@ -726,6 +746,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		if (input.text === "") throw new HarbourError("invalid", "A prompt needs text");
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+		const chose = await applyChoice(ctx, session, input);
 		const pi = await admitting(session, () =>
 			session.conversation.submit(
 				{
@@ -762,10 +783,81 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				sessionId,
 				agentId: record.agentId,
 				subject: { kind: "session.submission", id },
-				data: input.requestId === undefined ? { via } : { via, requestId: input.requestId },
+				data: {
+					via,
+					...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+					...(chose === undefined ? {} : chose),
+				},
 			},
 		]);
 		return submission;
+	};
+
+	/**
+	 * A prompt's `model` and `thinking`, kept with the session's conversation: Pi Durable reads them at each model call's
+	 * start, so they apply from the run's next call and to every later run, and survive the session reopening. A level
+	 * the model lacks is clamped to the nearest it has. Returns what changed, for the audit event, or undefined.
+	 */
+	const applyChoice = async (
+		ctx: CallContext,
+		session: OpenSession,
+		input: PromptInput,
+	): Promise<{ model?: string; thinking?: ModelThinking } | undefined> => {
+		if (input.model === undefined && input.thinking === undefined) return undefined;
+		const asked = requestedChoice(session.models, input);
+		const agent = await session.conversation.agent(piContext(ctx));
+		const current =
+			agent.model === undefined ? undefined : session.models.getModel(agent.model.provider, agent.model.modelId);
+		const model = asked.model ?? current;
+		if (model === undefined) throw new HarbourError("invalid", "The session has no model to think with");
+		const level = clampThinking(
+			model,
+			asked.thinking ?? (isModelThinking(agent.thinkingLevel) ? agent.thinkingLevel : "off"),
+		);
+		const sameModel = agent.model?.provider === model.provider && agent.model.modelId === model.id;
+		if (sameModel && agent.thinkingLevel === level) return undefined;
+		await session.conversation.configure(
+			{
+				...(sameModel ? {} : { model: { provider: model.provider, modelId: model.id } }),
+				...(agent.thinkingLevel === level ? {} : { thinkingLevel: level }),
+			},
+			piContext(ctx),
+		);
+		return {
+			...(sameModel ? {} : { model: optionIdOf(model) }),
+			...(agent.thinkingLevel === level ? {} : { thinking: level }),
+		};
+	};
+
+	/** What a session's pickers show, off its models, the conversation's agent and the profile. */
+	const modelStateOf = (
+		sessionModels: Models,
+		profile: AgentProfile,
+		agent: { readonly model?: { provider: string; modelId: string }; readonly thinkingLevel?: string } | undefined,
+	): SessionModelState => {
+		const profileModel = resolveModel(profile.model);
+		const options = modelOptions(sessionModels, profileModel);
+		const defaultModel = sessionModels.getModel(profileModel.provider, profileModel.modelId);
+		const defaultThinking = shownThinking(defaultModel, profile.model.thinking ?? "off");
+		const defaults =
+			defaultModel === undefined
+				? undefined
+				: { model: optionIdOf(defaultModel), ...(defaultThinking === undefined ? {} : { thinking: defaultThinking }) };
+		if (agent === undefined)
+			return { models: options, ...(defaults === undefined ? {} : { defaults, selected: defaults }) };
+		const current =
+			agent.model === undefined ? undefined : sessionModels.getModel(agent.model.provider, agent.model.modelId);
+		const level = isModelThinking(agent.thinkingLevel) ? agent.thinkingLevel : "off";
+		const thinking = current === undefined ? undefined : shownThinking(current, level);
+		const selected =
+			current === undefined
+				? undefined
+				: { model: optionIdOf(current), ...(thinking === undefined ? {} : { thinking }) };
+		return {
+			models: options,
+			...(selected === undefined ? {} : { selected }),
+			...(defaults === undefined ? {} : { defaults }),
+		};
 	};
 
 	const runtime: SessionRuntime = {
@@ -892,6 +984,56 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			} finally {
 				session.closing = undefined;
 			}
+		},
+	};
+
+	const sessionModelsService: SessionModels = {
+		async listModels(ctx, sessionId) {
+			return (await sessionModelsService.modelState(ctx, sessionId)).models;
+		},
+		async modelState(ctx, sessionId) {
+			await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.models");
+			const session = await requireOpen(ctx, sessionId);
+			const agent = await session.conversation.agent(piContext(ctx));
+			return modelStateOf(session.models, session.profile, agent);
+		},
+		async startModels(ctx, start) {
+			const profile = await requireProfile(ctx, start.agentId);
+			if (start.projectId === "") throw new HarbourError("invalid", "A session needs a project");
+			if (profile.projectId !== undefined && profile.projectId !== start.projectId) {
+				throw new HarbourError("invalid", `Agent profile ${profile.id} is for another project`);
+			}
+			await check(ctx, { projectId: start.projectId, needed: "operator", operation: "session.models.start" });
+			if (typeof models !== "function") return modelStateOf(models, profile, undefined);
+			// The models a session there would get: the same call a new session makes when it opens, for a session ID that
+			// no session has, so nothing is pinned for it.
+			const now = clock.now();
+			const draft: SessionRecord = {
+				id: crypto.randomUUID(),
+				organisationId: ctx.organisationId,
+				projectId: start.projectId,
+				agentId: profile.id,
+				status: "idle",
+				labels: {},
+				createdBy: ctx.actor,
+				createdAt: now,
+				updatedAt: now,
+			};
+			return modelStateOf(await models(draft), profile, undefined);
+		},
+	};
+
+	const history: SessionHistory = {
+		async history(ctx, sessionId, request = {}) {
+			await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.history");
+			// A malformed request is refused before the session is opened for it.
+			historyLimit(request.limit);
+			historyAnchor(request);
+			const session = await requireOpen(ctx, sessionId);
+			await sync(session);
+			return readHistory(session.stream, sessionId, request);
 		},
 	};
 
@@ -1182,6 +1324,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	return {
 		runtime,
+		history,
+		models: sessionModelsService,
 		directory,
 		profiles,
 		hostTools,

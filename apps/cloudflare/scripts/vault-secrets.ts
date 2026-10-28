@@ -4,7 +4,7 @@
  * a secret left out keeps the value it already has on the Worker, and none is ever deleted.
  *
  * Each value is checked before anything is deployed: the vault key must be 32 bytes of base64, and a component's
- * shared key at least 16 characters. A bad value fails the run rather than deploy a vault that cannot start. Nothing
+ * shared key and CPA's key at least 16 characters. A bad value fails the run rather than deploy a vault that cannot start. Nothing
  * here prints a value.
  *
  * Usage: node scripts/vault-secrets.ts --out <file>. Prints the names it wrote; writes `file=<path>` to
@@ -15,11 +15,15 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-/** Kept in step with `VaultVars` in src/vault.ts; test/vault.test.ts checks they agree. */
+/**
+ * Kept in step with `VaultVars` in src/vault.ts and CPA's key in src/models.ts (which the vault object keeps as an
+ * item); test/vault.test.ts checks they agree.
+ */
 export const VAULT_SECRETS = [
 	"HARBOUR_VAULT_KEY",
 	"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN",
 	"HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN",
+	"HARBOUR_CPA_API_KEY",
 ] as const;
 
 export type VaultSecret = (typeof VAULT_SECRETS)[number];
@@ -33,6 +37,11 @@ function isVaultKey(value: string): boolean {
 	}
 }
 
+/** A shared key: at least 16 characters, with no spaces. */
+export function isStrongToken(value: string): boolean {
+	return value.length >= 16 && !/\s/.test(value);
+}
+
 /** The vault secrets that are set, checked. Throws naming every bad one (never its value). */
 export function vaultSecrets(env: Readonly<Record<string, string | undefined>>): Partial<Record<VaultSecret, string>> {
 	const secrets: Partial<Record<VaultSecret, string>> = {};
@@ -40,7 +49,9 @@ export function vaultSecrets(env: Readonly<Record<string, string | undefined>>):
 	for (const name of VAULT_SECRETS) {
 		const value = (env[name] ?? "").trim();
 		if (value === "") continue;
-		const ok = name === "HARBOUR_VAULT_KEY" ? isVaultKey(value) : value.length >= 16 && !/\s/.test(value);
+		// CPA's key is held to the components' rule too: a short key would slip past the model gateway's redaction and
+		// could be guessed from its item's name (src/models.ts).
+		const ok = name === "HARBOUR_VAULT_KEY" ? isVaultKey(value) : isStrongToken(value);
 		if (!ok) {
 			invalid.push(
 				name === "HARBOUR_VAULT_KEY"

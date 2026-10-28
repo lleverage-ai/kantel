@@ -11,6 +11,8 @@
 	"workers_dev": false,
 	"preview_urls": false,
 	"observability": { "enabled": true },
+	// The dynamic-worker isolate's code (scripts/build-isolate.ts), imported as text for the Worker Loader.
+	"rules": [{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true }],
 	"assets": {
 		"directory": "../console/dist",
 		"binding": "ASSETS",
@@ -18,6 +20,9 @@
 		// The API and health check always reach the Worker; every other path is the console.
 		"run_worker_first": ["/v1/*", "/healthz"]
 	},
+	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
+	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so.
+	"worker_loaders": [{ "binding": "LOADER" }],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "STACK", "class_name": "HarbourStack" },
@@ -31,7 +36,9 @@
 		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] }
 	],
 	// Named but not given IDs: the first real deploy creates them (wrangler's automatic provisioning), later deploys find
-	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces.
+	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. The deploy can point
+	// them at others made elsewhere (HARBOUR_D1_DATABASE_NAME with HARBOUR_D1_DATABASE_ID, HARBOUR_R2_BUCKET; see
+	// scripts/deploy-config.ts), such as ones created in another region.
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour" }],
 	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces" }],
 	"vars": {
@@ -40,7 +47,18 @@
 		"HARBOUR_ACCESS_TEAM_DOMAIN": "",
 		"HARBOUR_ACCESS_AUD": "",
 		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
-		"HARBOUR_ADMIN_EMAIL": ""
+		"HARBOUR_ADMIN_EMAIL": "",
+		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the HARBOUR_CPA_API_KEY secret.
+		"HARBOUR_DEFAULT_MODEL": "claude-sonnet-5-5",
+		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
+		// dynamic-worker, the same shell in a Dynamic Worker per session. The measurement can run on either.
+		"HARBOUR_ISOLATE_BACKEND": "in-process",
+		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
+		// them as server-sent events. Anything else serves both, and the console prefers the socket.
+		"HARBOUR_SESSION_WEBSOCKET": "on",
+		// The location hint the stack and vault objects are created with (src/route.ts): weur, the region Amsterdam is in.
+		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
+		"HARBOUR_LOCATION_HINT": "weur"
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.
@@ -56,6 +74,7 @@
 				"not_found_handling": "single-page-application",
 				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*"]
 			},
+			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {
 				"bindings": [
 					{ "name": "STACK", "class_name": "HarbourStack" },
@@ -69,6 +88,9 @@
 				"HARBOUR_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
 				"HARBOUR_ACCESS_AUD": "harbour-dev-aud",
 				"HARBOUR_ADMIN_EMAIL": "dev@harbour.test",
+				// The name the console shows for the dev admin (src/config.ts); deployed, the admin's email stands in for it.
+				"HARBOUR_ADMIN_NAME": "Dev admin",
+				"HARBOUR_LOCATION_HINT": "weur",
 				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001") and the
 				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
 				// secrets; scripts/deploy-config.ts refuses them as vars.

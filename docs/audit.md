@@ -22,9 +22,13 @@ behind its `ConsoleAudit` seam.
 - **Links:** vault requests, approvals, denials and wrong codes link to the vault page for the proposal. Credential
   uses and session events link to the session, at the turn when the event names one (`session.submission` or
   `session.tool` subjects). The host builds the URLs (`links.session`, `links.proposal`).
+- **Credential:** the store filters by it (`AuditQuery.itemId`), so every page is a full page of the credential's
+  events however far back they are, and the export is exact too.
 - **Credential summary:** with a credential picked, a panel above the timeline lists the sessions that used it in the
   range, how often (and how many uses were refused), first and last use, and who approved each grant those uses went
-  through, linked to the vault request. Uses under a standing policy say so.
+  through, linked to the vault request. Uses under a standing policy say so. It reads the credential's uses in the
+  range (`itemId`), then one row per grant they went through (`grantId`), however long before the range it was
+  approved.
 - **Keyboard:** the timeline is one Tab stop, on the current row's chevron and link. The up and down arrows move
   between rows, Home and End jump to the newest and oldest loaded, and Enter opens a row. Tab then goes on to *Load
   older events*, so the foot of the list is one press away however many rows are loaded.
@@ -81,28 +85,27 @@ import { AuditView } from "@harbour/ui";
 
 `source` is the `AuditStore.query` bound to the viewer. Agents can't read the audit log, so the host only builds one
 for a person or the system. The directory turns IDs into names; an unknown ID shows as itself. A link builder that
-returns `undefined` leaves that row unlinked, for a record the host can't open.
+returns `undefined` leaves that row unlinked, for a record the host can't open. `links.session` gets the event's
+`projectId` as a third argument, for a host whose session pages sit under their project.
+
+On the console's API source (`?source=api`, the gateway's `/v1/audit/events`), rows link to
+`/projects/<project>/sessions/<session>#turn=<id>`, and the *Credential* choices and item names come from the log's own
+`vault.item.created` events (`credentialChoices`), as there is no vault or identity API for the console yet. People
+show by ID, and there is no organisation picker, until identity has an API.
 
 ## Gaps in the contract
 
-`AuditQuery` takes one type or prefix and the fields on the event, but not the event's data. The view works around
-this, and lane 6's query API should close it:
-
-1. **No credential filter.** Credential uses and approvals name the vault item only in `data.itemId`. The view reads
-   pages of the chosen kind and matches the item itself. A narrow filter over a long range may read many pages for a
-   few rows (the status line says how many were read), and the view stops after 25 pages per *Load older events*.
-   When those pages hold no match, the view says none of the events it read match and offers *Look further back*,
-   not an empty log. An `itemId` filter would make it exact.
-2. **No grant filter.** The summary finds each grant's approval by reading `vault.decision.approved` events up to the
-   range's end. A `grantId` filter (or `data` match) would make that one read.
-3. **One type per query.** A kind such as "policy changes" can't cover both `vault.policy.*` and
+1. **One type per query.** A kind such as "policy changes" can't cover both `vault.policy.*` and
    `capability.grant.*`. A list of types would let *What* group them.
+
+The credential and grant filters this section used to list are now `AuditQuery.itemId` and `grantId`, matched by
+every store on an index (see `packages/audit/CONTRACT.md`).
 
 ## Stories and checks
 
 Every state has a story under **Audit/Audit view**: default, loading, empty, empty with filters, error, an error on a
 later page, long content, mobile, streaming (new events arriving), *Large* (100k), *Sparse matches* (a credential
-last used behind more than one load of other events), and the definition-of-done story
+last used behind 6,000 other events, found on the first page), and the definition-of-done story
 *Linear key yesterday*, plus approvals, refused access, one project's sandbox events and one person's actions.
 
 ```sh

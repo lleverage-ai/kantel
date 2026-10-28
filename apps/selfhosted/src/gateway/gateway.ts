@@ -48,6 +48,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 
 	const sessions: SessionApi = createSessionApi({
 		runtime: runtime.runtime,
+		models: runtime.models,
 		directory: runtime.directory,
 		profiles: runtime.profiles,
 		hostTools: runtime.hostTools,

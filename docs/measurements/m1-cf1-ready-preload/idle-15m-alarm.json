@@ -1,0 +1,1931 @@
+{
+	"mode": "idle",
+	"batch": "idle-15m-alarm",
+	"startedAt": "2026-10-28T07:59:45.293Z",
+	"params": {
+		"runs": 30,
+		"idleMs": 900000,
+		"gapMs": 1000,
+		"paceMs": 1000,
+		"keepAlive": "alarm",
+		"manifestFrom": "workspace-do",
+		"workspaceId": "ws-bench"
+	},
+	"where": {
+		"colo": "FRA",
+		"poolColo": "AMS",
+		"workspaceColo": "AMS",
+		"clientMs": 73
+	},
+	"summary": {
+		"readyMs": {
+			"n": 30,
+			"p50": 106,
+			"p95": 328,
+			"min": 82,
+			"max": 444
+		},
+		"clientMs": {
+			"n": 30,
+			"p50": 224,
+			"p95": 473,
+			"min": 124,
+			"max": 671
+		},
+		"claimMs": {
+			"n": 30,
+			"p50": 32,
+			"p95": 246,
+			"min": 28,
+			"max": 247
+		},
+		"handoutCallMs": {
+			"n": 30,
+			"p50": 69,
+			"p95": 281,
+			"min": 43,
+			"max": 304
+		},
+		"manifestMs": {
+			"n": 30,
+			"p50": 21,
+			"p95": 37,
+			"min": 10,
+			"max": 107
+		},
+		"sessionRttMs": {
+			"n": 30,
+			"p50": 10,
+			"p95": 16,
+			"min": 3,
+			"max": 18
+		},
+		"poolRttMs": {
+			"n": 30,
+			"p50": 21,
+			"p95": 36,
+			"min": 14,
+			"max": 38
+		},
+		"isolateReused": 17,
+		"doInMemory": 0,
+		"harnessInMemory": 0,
+		"idleMs": {
+			"n": 30,
+			"p50": 900253,
+			"p95": 900514,
+			"min": 900197,
+			"max": 901014
+		},
+		"warmMs": {
+			"n": 30,
+			"p50": 598,
+			"p95": 933,
+			"min": 463,
+			"max": 982
+		},
+		"workerColos": {
+			"FRA": 30
+		},
+		"doColos": {
+			"AMS": 16,
+			"FRA": 14
+		},
+		"failures": 0
+	},
+	"failures": [],
+	"results": [
+		{
+			"sessionId": "sess-25a1ef98-8691-42c3-a58f-49220338ae7c",
+			"slot": "idle-15m-alarm-0",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 444,
+			"phases": {
+				"claimMs": 140,
+				"handoutCallMs": 304
+			},
+			"rtt": {
+				"sessionMs": 11,
+				"poolMs": 22
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "558ecc49-faaa-44d8-a45d-3778b6818569",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 901014,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 107,
+				"listMs": 69,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 176
+			},
+			"who": {
+				"instance": "d12c20c3-e7a9-4307-b0e2-57d3cb9258fc",
+				"constructedAt": 1793175286860,
+				"codeFetches": 1
+			},
+			"clientMs": 671
+		},
+		{
+			"sessionId": "sess-af0ebf41-b17a-41bc-b30f-3bf81a1c7a4e",
+			"slot": "idle-15m-alarm-1",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 97,
+			"phases": {
+				"claimMs": 34,
+				"handoutCallMs": 63
+			},
+			"rtt": {
+				"sessionMs": 10,
+				"poolMs": 23
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "328feeca-893f-4c36-9c72-236492dfeb74",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900237,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 21,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 21
+			},
+			"who": {
+				"instance": "a540c082-2cf6-425e-9d46-9917b98855a7",
+				"constructedAt": 1793175287989,
+				"codeFetches": 0
+			},
+			"clientMs": 175
+		},
+		{
+			"sessionId": "sess-78aba8f3-9f88-4000-97ca-4585d5c650aa",
+			"slot": "idle-15m-alarm-2",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 82,
+			"phases": {
+				"claimMs": 31,
+				"handoutCallMs": 51
+			},
+			"rtt": {
+				"sessionMs": 4,
+				"poolMs": 38
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "12d65132-16ca-4742-849d-965412bd6be4",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900205,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 23,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 23
+			},
+			"who": {
+				"instance": "0c2269fd-0749-4359-829b-9cb5c114960e",
+				"constructedAt": 1793175289682,
+				"codeFetches": 0
+			},
+			"clientMs": 473
+		},
+		{
+			"sessionId": "sess-079072e3-3a9d-4893-8424-f4beec90ffa7",
+			"slot": "idle-15m-alarm-3",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 94,
+			"phases": {
+				"claimMs": 29,
+				"handoutCallMs": 65
+			},
+			"rtt": {
+				"sessionMs": 4,
+				"poolMs": 15
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "96711213-ccfd-47e6-aa56-c719c9ef249b",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900218,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 37,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 37
+			},
+			"who": {
+				"instance": "93f8af06-e436-405c-a0c4-6ccbc76ea3d4",
+				"constructedAt": 1793175291180,
+				"codeFetches": 0
+			},
+			"clientMs": 162
+		},
+		{
+			"sessionId": "sess-f42af824-c41b-4f1f-8084-754d74e8b9bb",
+			"slot": "idle-15m-alarm-4",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 98,
+			"phases": {
+				"claimMs": 39,
+				"handoutCallMs": 59
+			},
+			"rtt": {
+				"sessionMs": 11,
+				"poolMs": 19
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "2eadc3d9-45a9-4f03-b4a4-2fc59bbae9d2",
+				"calls": 48,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900249,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 15,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 15
+			},
+			"who": {
+				"instance": "b16d4f2c-1db2-4ef8-86b0-6dc00e7242f4",
+				"constructedAt": 1793175293112,
+				"codeFetches": 0
+			},
+			"clientMs": 183
+		},
+		{
+			"sessionId": "sess-72b7b668-ae7f-4a15-8900-7708f95f64d8",
+			"slot": "idle-15m-alarm-5",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 99,
+			"phases": {
+				"claimMs": 30,
+				"handoutCallMs": 69
+			},
+			"rtt": {
+				"sessionMs": 13,
+				"poolMs": 26
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "84fb6ed5-065a-46cd-a5f6-4f1a8c2c1435",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900496,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 15,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 15
+			},
+			"who": {
+				"instance": "faa935f4-196a-4e1b-8272-88c1d7c341f4",
+				"constructedAt": 1793175294793,
+				"codeFetches": 0
+			},
+			"clientMs": 190
+		},
+		{
+			"sessionId": "sess-263d6990-22f3-4003-94e8-e54f2d353c96",
+			"slot": "idle-15m-alarm-6",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 290,
+			"phases": {
+				"claimMs": 247,
+				"handoutCallMs": 43
+			},
+			"rtt": {
+				"sessionMs": 10,
+				"poolMs": 19
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "e6e8bc00-003a-41c4-9954-7206d5a9a7c8",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900428,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 11,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 11
+			},
+			"who": {
+				"instance": "bb881264-6874-4874-9987-258b81628eda",
+				"constructedAt": 1793175296566,
+				"codeFetches": 0
+			},
+			"clientMs": 369
+		},
+		{
+			"sessionId": "sess-24290cb8-0d79-4678-865d-31fbbd42b01e",
+			"slot": "idle-15m-alarm-7",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 257,
+			"phases": {
+				"claimMs": 37,
+				"handoutCallMs": 220
+			},
+			"rtt": {
+				"sessionMs": 14,
+				"poolMs": 26
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "f5114ea9-870f-468c-ac0f-bda08ab4505d",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900305,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 16,
+				"listMs": 65,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 81
+			},
+			"who": {
+				"instance": "a7ad5124-b7c4-49eb-9e2a-b71f77afaf5c",
+				"constructedAt": 1793175298423,
+				"codeFetches": 1
+			},
+			"clientMs": 321
+		},
+		{
+			"sessionId": "sess-832bfb6f-cace-44e8-823f-c1d7f324efa2",
+			"slot": "idle-15m-alarm-8",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 266,
+			"phases": {
+				"claimMs": 31,
+				"handoutCallMs": 235
+			},
+			"rtt": {
+				"sessionMs": 5,
+				"poolMs": 14
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "16b34167-e864-44e8-8acc-bfeac5d344ee",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900298,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 27,
+				"listMs": 68,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 95
+			},
+			"who": {
+				"instance": "cda98d6b-e218-4d03-a8fd-e54b3c6428f7",
+				"constructedAt": 1793175300095,
+				"codeFetches": 1
+			},
+			"clientMs": 303
+		},
+		{
+			"sessionId": "sess-c0a982f7-bb99-4068-b84f-df88f1d662cf",
+			"slot": "idle-15m-alarm-9",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 277,
+			"phases": {
+				"claimMs": 39,
+				"handoutCallMs": 238
+			},
+			"rtt": {
+				"sessionMs": 18,
+				"poolMs": 21
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "b0d0368e-f8fe-4b20-808b-cf0c1e9c7e3c",
+				"calls": 43,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900402,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 16,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 16
+			},
+			"who": {
+				"instance": "6cf8a864-c892-4f63-8d0a-ac65865494f5",
+				"constructedAt": 1793175301935,
+				"codeFetches": 0
+			},
+			"clientMs": 368
+		},
+		{
+			"sessionId": "sess-8fc32308-4ac2-45f7-aff2-22e001316490",
+			"slot": "idle-15m-alarm-10",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 186,
+			"phases": {
+				"claimMs": 36,
+				"handoutCallMs": 150
+			},
+			"rtt": {
+				"sessionMs": 10,
+				"poolMs": 19
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "0b15565a-d7da-4d8a-87ec-debc2f79e91d",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900238,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 22,
+				"listMs": 68,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 90
+			},
+			"who": {
+				"instance": "da03dd6f-761e-43a3-890f-f36932a2f1cd",
+				"constructedAt": 1793175303769,
+				"codeFetches": 1
+			},
+			"clientMs": 236
+		},
+		{
+			"sessionId": "sess-bbfae204-7191-4e6b-bd9c-9509a6022c28",
+			"slot": "idle-15m-alarm-11",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 101,
+			"phases": {
+				"claimMs": 37,
+				"handoutCallMs": 64
+			},
+			"rtt": {
+				"sessionMs": 8,
+				"poolMs": 32
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "d6238a90-aaa9-42f4-a5ee-ac2c2740a275",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900214,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 27,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 27
+			},
+			"who": {
+				"instance": "c6fedbe6-a61d-4593-b7e9-2fb91fdc73a6",
+				"constructedAt": 1793175305321,
+				"codeFetches": 0
+			},
+			"clientMs": 163
+		},
+		{
+			"sessionId": "sess-f536e273-e85b-409b-8c43-b8026adbb6e3",
+			"slot": "idle-15m-alarm-12",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 328,
+			"phases": {
+				"claimMs": 246,
+				"handoutCallMs": 82
+			},
+			"rtt": {
+				"sessionMs": 4,
+				"poolMs": 21
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "2b7038ba-44ab-4228-825e-84f1fabc4af1",
+				"calls": 3,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900468,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 21,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 21
+			},
+			"who": {
+				"instance": "f8365464-b8bb-4195-8415-1e6f98c31571",
+				"constructedAt": 1793175307477,
+				"codeFetches": 0
+			},
+			"clientMs": 373
+		},
+		{
+			"sessionId": "sess-ac79102a-f6fb-4b9f-8637-23f5754fb215",
+			"slot": "idle-15m-alarm-13",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 127,
+			"phases": {
+				"claimMs": 31,
+				"handoutCallMs": 96
+			},
+			"rtt": {
+				"sessionMs": 6,
+				"poolMs": 19
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "d525e76c-518b-4e25-ab73-ea05e16f3eb2",
+				"calls": 45,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900224,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 35,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 35
+			},
+			"who": {
+				"instance": "634d39b1-c19a-49bd-9c4c-12ac38d2f7e2",
+				"constructedAt": 1793175308990,
+				"codeFetches": 0
+			},
+			"clientMs": 173
+		},
+		{
+			"sessionId": "sess-0a010683-8076-4f8b-9c52-fbe3f4b57baf",
+			"slot": "idle-15m-alarm-14",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 243,
+			"phases": {
+				"claimMs": 38,
+				"handoutCallMs": 205
+			},
+			"rtt": {
+				"sessionMs": 15,
+				"poolMs": 16
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "fa551c62-52a6-49d2-a6e8-0caf9dbb455c",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900314,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 12,
+				"listMs": 61,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 73
+			},
+			"who": {
+				"instance": "3872ddf4-8269-435a-a46d-017449c9f6f6",
+				"constructedAt": 1793175310796,
+				"codeFetches": 1
+			},
+			"clientMs": 322
+		},
+		{
+			"sessionId": "sess-c30df981-512a-4552-9034-d841f4d641b4",
+			"slot": "idle-15m-alarm-15",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 257,
+			"phases": {
+				"claimMs": 28,
+				"handoutCallMs": 229
+			},
+			"rtt": {
+				"sessionMs": 11,
+				"poolMs": 23
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "f65ec095-89ad-4d77-a522-d2e474db30b7",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900301,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 15,
+				"listMs": 67,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 82
+			},
+			"who": {
+				"instance": "6b389307-00bb-4635-ae3e-85d04397683f",
+				"constructedAt": 1793175312460,
+				"codeFetches": 1
+			},
+			"clientMs": 358
+		},
+		{
+			"sessionId": "sess-d96e9f08-77b9-4bdf-be98-ee1c63887066",
+			"slot": "idle-15m-alarm-16",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 95,
+			"phases": {
+				"claimMs": 30,
+				"handoutCallMs": 65
+			},
+			"rtt": {
+				"sessionMs": 9,
+				"poolMs": 36
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "d5807637-2761-4e5b-a3aa-8ef7114da6ee",
+				"calls": 48,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900202,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 32,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 32
+			},
+			"who": {
+				"instance": "b2fe7f1e-fc35-4a54-b795-273fd760bce9",
+				"constructedAt": 1793175313992,
+				"codeFetches": 0
+			},
+			"clientMs": 384
+		},
+		{
+			"sessionId": "sess-c7693679-5456-4ea8-bf73-4c95c215954c",
+			"slot": "idle-15m-alarm-17",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 252,
+			"phases": {
+				"claimMs": 30,
+				"handoutCallMs": 222
+			},
+			"rtt": {
+				"sessionMs": 11,
+				"poolMs": 21
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "903dbf3d-3e14-41a9-85a0-91644b98e18f",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900339,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 15,
+				"listMs": 78,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 93
+			},
+			"who": {
+				"instance": "8a2d91a8-4d12-4562-abef-aeecd56c6871",
+				"constructedAt": 1793175315786,
+				"codeFetches": 1
+			},
+			"clientMs": 340
+		},
+		{
+			"sessionId": "sess-64c480e9-c973-453d-8b3f-28c254580a7a",
+			"slot": "idle-15m-alarm-18",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 311,
+			"phases": {
+				"claimMs": 30,
+				"handoutCallMs": 281
+			},
+			"rtt": {
+				"sessionMs": 4,
+				"poolMs": 31
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "55a375f8-c17b-4622-9ab1-0dbea518b1e2",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900284,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 22,
+				"listMs": 105,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 127
+			},
+			"who": {
+				"instance": "ad5e283c-b4ab-4dc0-8b54-4d1facec5378",
+				"constructedAt": 1793175317453,
+				"codeFetches": 1
+			},
+			"clientMs": 367
+		},
+		{
+			"sessionId": "sess-411de150-be5a-4455-93b0-f3f042373778",
+			"slot": "idle-15m-alarm-19",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 138,
+			"phases": {
+				"claimMs": 36,
+				"handoutCallMs": 102
+			},
+			"rtt": {
+				"sessionMs": 16,
+				"poolMs": 19
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "d87a9591-14ea-47ab-8c80-6b086d048a3e",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900286,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 27,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 27
+			},
+			"who": {
+				"instance": "d60c619e-8284-478c-b165-5ff91981c832",
+				"constructedAt": 1793175318861,
+				"codeFetches": 0
+			},
+			"clientMs": 224
+		},
+		{
+			"sessionId": "sess-f0d16523-e006-4119-bd07-fcd04bd15297",
+			"slot": "idle-15m-alarm-20",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 98,
+			"phases": {
+				"claimMs": 36,
+				"handoutCallMs": 62
+			},
+			"rtt": {
+				"sessionMs": 3,
+				"poolMs": 25
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "05a36abe-81b4-4a17-bd0b-00f252cf9b0e",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900234,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 24,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 24
+			},
+			"who": {
+				"instance": "f87734eb-3e43-4afa-a32b-7fa1a92faf51",
+				"constructedAt": 1793175320427,
+				"codeFetches": 0
+			},
+			"clientMs": 144
+		},
+		{
+			"sessionId": "sess-e3422c1a-b41d-46f6-8669-1254fa0a4920",
+			"slot": "idle-15m-alarm-21",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 83,
+			"phases": {
+				"claimMs": 28,
+				"handoutCallMs": 55
+			},
+			"rtt": {
+				"sessionMs": 6,
+				"poolMs": 14
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "4c6952dc-cae0-4e3f-915b-2c24a3463225",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900218,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 24,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 24
+			},
+			"who": {
+				"instance": "aa34f721-afdb-46c0-8219-0f98bf4c0f63",
+				"constructedAt": 1793175322088,
+				"codeFetches": 0
+			},
+			"clientMs": 124
+		},
+		{
+			"sessionId": "sess-f99a4c99-4af2-43e6-bf02-5a15117440ca",
+			"slot": "idle-15m-alarm-22",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 82,
+			"phases": {
+				"claimMs": 32,
+				"handoutCallMs": 50
+			},
+			"rtt": {
+				"sessionMs": 7,
+				"poolMs": 25
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "81f42555-df8c-4b77-8c00-185d339dd847",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900197,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 21,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 21
+			},
+			"who": {
+				"instance": "b29c7df0-b3e7-4c7e-b52f-62b7fbb35b88",
+				"constructedAt": 1793175323843,
+				"codeFetches": 0
+			},
+			"clientMs": 142
+		},
+		{
+			"sessionId": "sess-3ee334a5-0905-475b-88ea-ad09838fcf56",
+			"slot": "idle-15m-alarm-23",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 91,
+			"phases": {
+				"claimMs": 33,
+				"handoutCallMs": 58
+			},
+			"rtt": {
+				"sessionMs": 4,
+				"poolMs": 15
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "6ec7c813-23df-497e-a7b3-98f30ceb71ac",
+				"calls": 48,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900382,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 21,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 21
+			},
+			"who": {
+				"instance": "af53bea4-7e0c-404e-bab8-5376b5490ec0",
+				"constructedAt": 1793175326028,
+				"codeFetches": 0
+			},
+			"clientMs": 155
+		},
+		{
+			"sessionId": "sess-b5f064c0-171e-4325-9733-5ed3dd26c785",
+			"slot": "idle-15m-alarm-24",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 100,
+			"phases": {
+				"claimMs": 32,
+				"handoutCallMs": 68
+			},
+			"rtt": {
+				"sessionMs": 5,
+				"poolMs": 19
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "8ed1635f-f8e9-45d9-9d6e-b37eb5fb7c21",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900253,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 24,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 24
+			},
+			"who": {
+				"instance": "52b8c27b-7fc0-412b-8319-6d16a0969c0b",
+				"constructedAt": 1793175327558,
+				"codeFetches": 0
+			},
+			"clientMs": 161
+		},
+		{
+			"sessionId": "sess-c9d80e95-6d91-4f8c-9611-1fece83172f5",
+			"slot": "idle-15m-alarm-25",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 290,
+			"phases": {
+				"claimMs": 35,
+				"handoutCallMs": 255
+			},
+			"rtt": {
+				"sessionMs": 14,
+				"poolMs": 24
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "764290df-6611-4b8c-8a03-43125c4aa33a",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900366,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 10,
+				"listMs": 71,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 81
+			},
+			"who": {
+				"instance": "7ceeddb7-29d4-4022-8e8d-9543a89f7973",
+				"constructedAt": 1793175329662,
+				"codeFetches": 1
+			},
+			"clientMs": 346
+		},
+		{
+			"sessionId": "sess-24de1e5c-535d-4532-b31c-fe3b9d200a94",
+			"slot": "idle-15m-alarm-26",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 260,
+			"phases": {
+				"claimMs": 32,
+				"handoutCallMs": 228
+			},
+			"rtt": {
+				"sessionMs": 15,
+				"poolMs": 16
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "5552b170-c6cd-4f99-a5ab-40f38d598d26",
+				"calls": 2,
+				"reused": false
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900514,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 19,
+				"listMs": 66,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 85
+			},
+			"who": {
+				"instance": "df597231-df3b-42ca-9881-e1cc7ed6e94a",
+				"constructedAt": 1793175331711,
+				"codeFetches": 1
+			},
+			"clientMs": 337
+		},
+		{
+			"sessionId": "sess-0857504c-dd38-4220-96c9-0ff758bd60e6",
+			"slot": "idle-15m-alarm-27",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 95,
+			"phases": {
+				"claimMs": 31,
+				"handoutCallMs": 64
+			},
+			"rtt": {
+				"sessionMs": 13,
+				"poolMs": 18
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "f605fdcd-2bf8-4bc7-9ada-4ac9c0b9fae3",
+				"calls": 48,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900209,
+			"keepAlive": "alarm",
+			"pings": 44,
+			"timings": {
+				"manifestMs": 20,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 20
+			},
+			"who": {
+				"instance": "f1538a4b-dfe0-461b-96b2-336f06122c28",
+				"constructedAt": 1793175333293,
+				"codeFetches": 0
+			},
+			"clientMs": 149
+		},
+		{
+			"sessionId": "sess-cc12a361-a0c3-4d3d-aa6a-2e539edbd9cc",
+			"slot": "idle-15m-alarm-28",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 90,
+			"phases": {
+				"claimMs": 28,
+				"handoutCallMs": 62
+			},
+			"rtt": {
+				"sessionMs": 11,
+				"poolMs": 22
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "6c63bf85-4873-4b9a-b563-9870d65c627f",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900251,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 14,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 14
+			},
+			"who": {
+				"instance": "2e32a11d-76cd-4a2e-8945-83fe67fa35a2",
+				"constructedAt": 1793175334754,
+				"codeFetches": 0
+			},
+			"clientMs": 145
+		},
+		{
+			"sessionId": "sess-0e493f4c-7d8f-48b3-bb1c-54a675a31a6f",
+			"slot": "idle-15m-alarm-29",
+			"colo": "FRA",
+			"manifestFrom": "workspace-do",
+			"readyMs": 106,
+			"phases": {
+				"claimMs": 36,
+				"handoutCallMs": 70
+			},
+			"rtt": {
+				"sessionMs": 6,
+				"poolMs": 20
+			},
+			"entries": 66,
+			"lines": "77",
+			"isolate": {
+				"boot": "43592ff0-9863-43bc-86c2-75cabb2c716b",
+				"calls": 49,
+				"reused": true
+			},
+			"doInMemory": false,
+			"harnessInMemory": false,
+			"idleMs": 900209,
+			"keepAlive": "alarm",
+			"pings": 45,
+			"timings": {
+				"manifestMs": 22,
+				"listMs": 0,
+				"lsMs": 0,
+				"harnessMs": 0,
+				"handoutMs": 22
+			},
+			"who": {
+				"instance": "ed803245-45d9-4c2d-92d5-d534ba1991b2",
+				"constructedAt": 1793175336373,
+				"codeFetches": 0
+			},
+			"clientMs": 155
+		}
+	],
+	"warms": [
+		{
+			"slot": "idle-15m-alarm-0",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 504,
+			"isolate": {
+				"boot": "e37f3f57-cde1-4f54-a0dc-a6e55f193ef2",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 83,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "b73c73e9-cd48-4154-b8ec-8e38ab0e6d39",
+				"constructedAt": 1793174385763,
+				"codeFetches": 1
+			},
+			"clientMs": 1128
+		},
+		{
+			"slot": "idle-15m-alarm-1",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 571,
+			"isolate": {
+				"boot": "328feeca-893f-4c36-9c72-236492dfeb74",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 112,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "ef03dbe6-cd61-4dff-930a-b4fb8319e23a",
+				"constructedAt": 1793174387811,
+				"codeFetches": 1
+			},
+			"clientMs": 649
+		},
+		{
+			"slot": "idle-15m-alarm-2",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 591,
+			"isolate": {
+				"boot": "12d65132-16ca-4742-849d-965412bd6be4",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 88,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "6c1e70e1-c1dd-4cec-8ee5-11576caeca66",
+				"constructedAt": 1793174389520,
+				"codeFetches": 1
+			},
+			"clientMs": 660
+		},
+		{
+			"slot": "idle-15m-alarm-3",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 463,
+			"isolate": {
+				"boot": "96711213-ccfd-47e6-aa56-c719c9ef249b",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 102,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "7b110ded-b648-4732-96c3-1832ec74d05d",
+				"constructedAt": 1793174391025,
+				"codeFetches": 1
+			},
+			"clientMs": 527
+		},
+		{
+			"slot": "idle-15m-alarm-4",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 687,
+			"isolate": {
+				"boot": "2eadc3d9-45a9-4f03-b4a4-2fc59bbae9d2",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 78,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "a81a8f7e-a2f6-4e49-b71b-8e1f6a2e499e",
+				"constructedAt": 1793174392785,
+				"codeFetches": 1
+			},
+			"clientMs": 743
+		},
+		{
+			"slot": "idle-15m-alarm-5",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 716,
+			"isolate": {
+				"boot": "84fb6ed5-065a-46cd-a5f6-4f1a8c2c1435",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 152,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "f16a8147-24de-4788-a7b0-46c53161fe79",
+				"constructedAt": 1793174394484,
+				"codeFetches": 1
+			},
+			"clientMs": 1033
+		},
+		{
+			"slot": "idle-15m-alarm-6",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 486,
+			"isolate": {
+				"boot": "e6e8bc00-003a-41c4-9954-7206d5a9a7c8",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 70,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "b3a63fef-9441-4455-bc7e-2a492998aa00",
+				"constructedAt": 1793174396422,
+				"codeFetches": 1
+			},
+			"clientMs": 578
+		},
+		{
+			"slot": "idle-15m-alarm-7",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 598,
+			"isolate": {
+				"boot": "7f756fa9-7949-4be7-b837-8be59ba038cb",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 156,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "41024ea1-7703-433a-a46f-00cf879cba0c",
+				"constructedAt": 1793174397962,
+				"codeFetches": 1
+			},
+			"clientMs": 656
+		},
+		{
+			"slot": "idle-15m-alarm-8",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 586,
+			"isolate": {
+				"boot": "ff648aa9-62a8-4b31-b54b-c806c332a837",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 102,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "1950d01e-91b8-4039-9b78-b5ecf2d7ab95",
+				"constructedAt": 1793174399695,
+				"codeFetches": 1
+			},
+			"clientMs": 676
+		},
+		{
+			"slot": "idle-15m-alarm-9",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 621,
+			"isolate": {
+				"boot": "318a1be2-0665-4dc0-a59f-234c2eae6ead",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 74,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "920d2fd9-3816-4358-a82f-69c83a97c1f9",
+				"constructedAt": 1793174401459,
+				"codeFetches": 1
+			},
+			"clientMs": 738
+		},
+		{
+			"slot": "idle-15m-alarm-10",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 933,
+			"isolate": {
+				"boot": "f659c297-c54f-4a48-b4be-78b5a34f8a9a",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 152,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "f7adbce6-3a78-48de-b5d9-dca4b17b5978",
+				"constructedAt": 1793174403379,
+				"codeFetches": 1
+			},
+			"clientMs": 1007
+		},
+		{
+			"slot": "idle-15m-alarm-11",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 667,
+			"isolate": {
+				"boot": "d6238a90-aaa9-42f4-a5ee-ac2c2740a275",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 103,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "6cfea0b8-6c6d-4d8a-8684-665be6d1ecd8",
+				"constructedAt": 1793174405172,
+				"codeFetches": 1
+			},
+			"clientMs": 720
+		},
+		{
+			"slot": "idle-15m-alarm-12",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 662,
+			"isolate": {
+				"boot": "47f40cac-0db2-47ef-82ce-cb22c0d2f3b9",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 146,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "8d97f06f-f9eb-4ad3-9a44-380a5e6bd50d",
+				"constructedAt": 1793174406863,
+				"codeFetches": 1
+			},
+			"clientMs": 781
+		},
+		{
+			"slot": "idle-15m-alarm-13",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 655,
+			"isolate": {
+				"boot": "cf77825f-12b0-4fff-8252-35abd5d3faa7",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 76,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "98a54e51-575a-4395-9643-2757d5cac546",
+				"constructedAt": 1793174408690,
+				"codeFetches": 1
+			},
+			"clientMs": 720
+		},
+		{
+			"slot": "idle-15m-alarm-14",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 650,
+			"isolate": {
+				"boot": "13b8cd40-e715-4003-897e-a351898e41e0",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 73,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "1ac407f7-ac39-41ad-a91e-db6ed2a200e2",
+				"constructedAt": 1793174410409,
+				"codeFetches": 1
+			},
+			"clientMs": 710
+		},
+		{
+			"slot": "idle-15m-alarm-15",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 550,
+			"isolate": {
+				"boot": "b19af720-234a-4577-8ab6-8c08b304db09",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 72,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "d1ebf438-682f-4c0b-85bf-d159d33c0d10",
+				"constructedAt": 1793174412087,
+				"codeFetches": 1
+			},
+			"clientMs": 646
+		},
+		{
+			"slot": "idle-15m-alarm-16",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 589,
+			"isolate": {
+				"boot": "d5807637-2761-4e5b-a3aa-8ef7114da6ee",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 72,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "bb24e07c-ac0a-4dd8-8d30-943d36d8f6e4",
+				"constructedAt": 1793174413718,
+				"codeFetches": 1
+			},
+			"clientMs": 647
+		},
+		{
+			"slot": "idle-15m-alarm-17",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 600,
+			"isolate": {
+				"boot": "3f4e8fa3-00b5-40c5-a6dc-b341ad3fb0f5",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 73,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "633523f4-9e43-4911-bdd9-cf2df4d04cbd",
+				"constructedAt": 1793174415374,
+				"codeFetches": 1
+			},
+			"clientMs": 679
+		},
+		{
+			"slot": "idle-15m-alarm-18",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 614,
+			"isolate": {
+				"boot": "160623b8-0ea7-4ae4-92e4-d12a572493b5",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 75,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "defe03d2-588e-4345-9b29-eccbc8d995d0",
+				"constructedAt": 1793174417094,
+				"codeFetches": 1
+			},
+			"clientMs": 705
+		},
+		{
+			"slot": "idle-15m-alarm-19",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 566,
+			"isolate": {
+				"boot": "d87a9591-14ea-47ab-8c80-6b086d048a3e",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 72,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "c0065db9-b4e4-44ff-b398-7a8eb4b88dac",
+				"constructedAt": 1793174418724,
+				"codeFetches": 1
+			},
+			"clientMs": 655
+		},
+		{
+			"slot": "idle-15m-alarm-20",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 503,
+			"isolate": {
+				"boot": "05a36abe-81b4-4a17-bd0b-00f252cf9b0e",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 60,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "fc2fb432-c08d-46b4-b149-67594cda7801",
+				"constructedAt": 1793174420324,
+				"codeFetches": 1
+			},
+			"clientMs": 572
+		},
+		{
+			"slot": "idle-15m-alarm-21",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 592,
+			"isolate": {
+				"boot": "4c6952dc-cae0-4e3f-915b-2c24a3463225",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 75,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "f0d28ec3-212a-4d92-b1f8-9bfa2f845532",
+				"constructedAt": 1793174421970,
+				"codeFetches": 1
+			},
+			"clientMs": 653
+		},
+		{
+			"slot": "idle-15m-alarm-22",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 600,
+			"isolate": {
+				"boot": "81f42555-df8c-4b77-8c00-185d339dd847",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 61,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "66631cfe-20dd-4042-8c7a-28330f3e6c8e",
+				"constructedAt": 1793174423717,
+				"codeFetches": 1
+			},
+			"clientMs": 701
+		},
+		{
+			"slot": "idle-15m-alarm-23",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 825,
+			"isolate": {
+				"boot": "6ec7c813-23df-497e-a7b3-98f30ceb71ac",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 130,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "9ff2dd40-bda8-4224-aa30-9322acb2a75f",
+				"constructedAt": 1793174425516,
+				"codeFetches": 1
+			},
+			"clientMs": 1035
+		},
+		{
+			"slot": "idle-15m-alarm-24",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 633,
+			"isolate": {
+				"boot": "8ed1635f-f8e9-45d9-9d6e-b37eb5fb7c21",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 78,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "90d97644-f9c3-4527-b53c-3a0af3d84baa",
+				"constructedAt": 1793174427396,
+				"codeFetches": 1
+			},
+			"clientMs": 711
+		},
+		{
+			"slot": "idle-15m-alarm-25",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 738,
+			"isolate": {
+				"boot": "0fa8e58d-224d-4763-a55f-9567684d4f3e",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 72,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "b7eef456-c916-4007-882e-c9151efcba7a",
+				"constructedAt": 1793174429224,
+				"codeFetches": 1
+			},
+			"clientMs": 832
+		},
+		{
+			"slot": "idle-15m-alarm-26",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 982,
+			"isolate": {
+				"boot": "c206c99c-7432-400c-8ef0-7e66db1aeab9",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 261,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "aef768b8-57b1-4f10-b02a-84cb8e471784",
+				"constructedAt": 1793174430936,
+				"codeFetches": 1
+			},
+			"clientMs": 1053
+		},
+		{
+			"slot": "idle-15m-alarm-27",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 590,
+			"isolate": {
+				"boot": "f605fdcd-2bf8-4bc7-9ada-4ac9c0b9fae3",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 73,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "12ad67ad-5d8d-428d-930e-c346be77ca3f",
+				"constructedAt": 1793174433011,
+				"codeFetches": 1
+			},
+			"clientMs": 660
+		},
+		{
+			"slot": "idle-15m-alarm-28",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"warmMs": 575,
+			"isolate": {
+				"boot": "6c63bf85-4873-4b9a-b563-9870d65c627f",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 88,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "5568a803-468a-4bd6-9264-93a1dadb6fb1",
+				"constructedAt": 1793174434608,
+				"codeFetches": 1
+			},
+			"clientMs": 647
+		},
+		{
+			"slot": "idle-15m-alarm-29",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"warmMs": 523,
+			"isolate": {
+				"boot": "43592ff0-9863-43bc-86c2-75cabb2c716b",
+				"calls": 2
+			},
+			"timings": {
+				"harnessMs": 0,
+				"loadMs": 80,
+				"firstExecMs": 0
+			},
+			"who": {
+				"instance": "54da24bf-dbba-452c-b0a5-76ecffc488e5",
+				"constructedAt": 1793174436239,
+				"codeFetches": 1
+			},
+			"clientMs": 586
+		}
+	]
+}

@@ -4,7 +4,8 @@
 
 import { type AuditClientOptions, createAuditClient } from "@harbour/audit/http";
 import { ORGANISATION_HEADER } from "@harbour/contracts";
-import type { AuditSource } from "@harbour/ui";
+import { type AuditSource, credentialChoices } from "@harbour/ui";
+import { sessionTurnPath } from "../app/router.ts";
 import type { ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
@@ -47,15 +48,22 @@ export function auditApiSource(options: AuditApiSourceOptions): AuditSource {
 /**
  * The audit log on the gateway this console is served by (`source=api`). Same-origin, like the session API: behind
  * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. With no identity API yet, there
- * is no list of organisations or names: the log is the caller's own organisation's, rows name people and items by id,
- * and only the filters' free choices apply.
+ * is no list of organisations or people: the log is the caller's own organisation's and rows name people by ID. The
+ * credentials to filter by, and their names, come from the log's own `vault.item.created` events. Rows link to the
+ * session they came from, at the turn when the event names one.
  */
 export function apiAudit(options: Partial<AuditApiSourceOptions> = {}): ConsoleAudit {
+	const source = auditApiSource({ baseUrl: "", ...options });
 	return {
-		source: auditApiSource({ baseUrl: "", ...options }),
+		source,
 		directory: {},
-		links: {},
+		links: {
+			// Session pages sit under their project; an event that names none stays unlinked.
+			session: (sessionId, turn, projectId) =>
+				projectId === undefined ? undefined : sessionTurnPath(projectId, sessionId, turn),
+		},
 		choices: {},
+		credentials: () => credentialChoices(source),
 		pollMs: 10_000,
 	};
 }

@@ -8,7 +8,9 @@
  * - `sessions`: the session runtime, as the runtime lane's `SessionRuntimeDurableObjectCore` over the stack Durable
  *   Object's SQLite and alarm: its directory, profiles, host registrations and each session's Pi storage, and the
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
- * - `workspaces`: workspace heads, versions and blobs (R2);
+ * - `workspaces`: workspace heads, versions and blobs (R2). A seed's git source is fetched as a GitHub tarball
+ *   (`createGitHubTarballFetcher`, #81) over `StackOptions.gitFetch`;
+ * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
@@ -18,14 +20,20 @@ import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import {
 	type AgentProfile,
+	type AuditSink,
 	type AuditStore,
 	type Authenticator,
 	type CallContext,
 	type Clock,
 	type IdentityDirectory,
+	isHarbourError,
+	type LeaseEndReason,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
+	type PromptLayer,
+	type SignInMethod,
+	type SystemContext,
 	systemClock,
 } from "@harbour/contracts";
 import { createAuthenticator } from "@harbour/identity/authenticator";
@@ -40,12 +48,26 @@ import {
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
 import type { SqlDriver } from "@harbour/sql";
-import type { KeyedWorkspaces } from "@harbour/workspace";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createStoredWorkspaces, type WorkspaceStore } from "@harbour/workspace/stored";
+import type { ApprovalVault } from "@harbour/vault/approval-api";
+import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
+import {
+	createMemoryWorkspaceStore,
+	createStoredWorkspaces,
+	type StoredWorkspaces,
+	type WorkspaceStore,
+} from "@harbour/workspace/stored";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
+import type { StackModels } from "./models.ts";
+import { memoiseRoleOf } from "./role-memo.ts";
+import {
+	createStackSandboxes,
+	DEFAULT_ISOLATE_BACKEND,
+	type ExtraIsolateBackends,
+	type IsolateBackendName,
+	type StackSandboxes,
+} from "./sandboxes.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -55,6 +77,20 @@ const BOOTSTRAP: CallContext = {
 
 /** The agent every new deployment has, so a session can be created before any host registers its own profiles. */
 export const DEFAULT_AGENT_ID = "assistant";
+
+/**
+ * The prompt layer earlier releases wrote into the default profile on every start. Harbour adds no prompt of its own:
+ * the prompt is the user's (their profile's `promptLayers`), and empty until they set one. A stored default profile
+ * still carrying this exact layer has it removed on the next start; nothing else of the user's is touched.
+ */
+const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Harbour." };
+
+/** The prompt layers the default profile keeps across starts: the user's own, without the retired layer. */
+export function userPromptLayers(stored: AgentProfile | undefined): readonly PromptLayer[] {
+	return (stored?.promptLayers ?? []).filter(
+		(layer) => layer.name !== RETIRED_DEFAULT_LAYER.name || layer.text !== RETIRED_DEFAULT_LAYER.text,
+	);
+}
 
 /** What the bootstrap made, saved after each step so a restart (or a retry after a failed start) reuses it. */
 export interface BootstrapRecord {
@@ -116,17 +152,44 @@ export interface StackOptions {
 	readonly clock?: Clock;
 	/** Used to fetch Access's signing keys. Default the global `fetch`; tests and `wrangler dev` pass a mock issuer's. */
 	readonly accessFetch?: typeof fetch;
+	/**
+	 * Fetches a seed's git ref from GitHub. Default the global `fetch`, which reads public repositories without
+	 * credentials; tests pass a stand-in. Private repositories wait for the vault's egress `fetch`.
+	 */
+	readonly gitFetch?: typeof fetch;
+	/**
+	 * The vault the approval API calls: the VaultDO over RPC (`approvalVaultOver`), or an in-process vault in tests. It
+	 * checks only the organisation; the gateway makes the project checks with the runtime's access. Without it the
+	 * gateway serves no approval API.
+	 */
+	readonly vault?: ApprovalVault;
 	readonly storage?: StackStorage;
+	/**
+	 * The models sessions run on, given the stack's audit store for `model.call` events: the model gateway
+	 * (`createGatewayModels`) when the Worker can reach CPA. Default the echo model.
+	 */
+	readonly models?: (deps: { readonly audit: AuditSink; readonly clock: Clock }) => StackModels;
+	/** The isolate backend sessions run on. Default `in-process`. */
+	readonly isolateBackend?: IsolateBackendName;
+	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
+	readonly extraIsolateBackends?: ExtraIsolateBackends;
 }
 
 export interface Stack {
 	readonly identity: IdentityDirectory;
 	readonly runtime: SessionRuntimeService;
-	readonly workspaces: KeyedWorkspaces;
+	readonly workspaces: StoredWorkspaces;
+	/** The runtime's project access: who may do what in which project. */
+	readonly access: ProjectAccess;
+	readonly sandboxes: StackSandboxes;
 	readonly audit: AuditStore;
 	readonly authenticator: Authenticator;
+	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
+	readonly signIn: readonly SignInMethod[];
 	/** Host registrations that outlive the object (durable runtime only), for the session API. */
 	readonly hosts?: DurableHosts;
+	/** The vault behind the approval API, when the stack has one (`StackOptions.vault`). */
+	readonly vault?: ApprovalVault;
 	readonly organisation: Organisation;
 	readonly project: Project;
 	/** The organisation's first admin: the invited person, or a placeholder no one can sign in as. */
@@ -183,7 +246,28 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	}
 	const authenticator = createAuthenticator({ identity, providers });
 
-	const runtimeOptions = { clock, audit, identity, models: createEchoModels() };
+	const models: StackModels = options.models?.({ audit, clock }) ?? { models: createEchoModels() };
+	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
+	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
+	let built: StackSandboxes | undefined;
+	const lateSandboxes = (): StackSandboxes => {
+		if (built === undefined) throw new Error("the sandboxes are not ready");
+		return built;
+	};
+	const runtimeOptions = {
+		clock,
+		audit,
+		// The runtime's project access (and so the workspaces', sandboxes' and audit reads') asks for a role per item;
+		// one lookup per request is enough (`src/role-memo.ts`).
+		identity: memoiseRoleOf(identity, { clock }),
+		...models,
+		sandboxes: {
+			releaseSession: (ctx: CallContext, sessionId: string, reason?: LeaseEndReason) =>
+				// A session can end while the stack is still starting (resumed and aborted), before any lease exists.
+				built === undefined ? Promise.resolve() : lateSandboxes().releaseSession(ctx, sessionId, reason),
+			sweep: async (ctx: SystemContext) => (built === undefined ? [] : lateSandboxes().sweep(ctx)),
+		},
+	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
 	const core =
@@ -202,16 +286,36 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
-		const workspaces =
-			storage.workspaces === undefined
-				? createMemoryWorkspaces({ clock, audit, access })
-				: createStoredWorkspaces({ store: storage.workspaces, clock, audit, access });
+		const seeders = {
+			git: createGitHubTarballFetcher({ fetch: options.gitFetch ?? ((input, init) => fetch(input, init)) }),
+		};
+		const workspaces = createStoredWorkspaces({
+			store: storage.workspaces ?? createMemoryWorkspaceStore(),
+			clock,
+			audit,
+			access,
+			seeders,
+		});
+		built = createStackSandboxes({
+			workspaces,
+			access,
+			audit,
+			clock,
+			backend: options.isolateBackend ?? DEFAULT_ISOLATE_BACKEND,
+			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
+		});
+		const sandboxes = built;
 
 		const { organisation, project, admin } = await bootstrap({
 			identity,
 			store: storage.bootstrap ?? createMemoryBootstrapStore(),
 			...(driver === undefined ? {} : { finder: sqlBootstrapFinder(driver) }),
 			adminEmail: options.config.adminEmail,
+			adminName: options.config.adminName,
+		});
+		const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
+			if (isHarbourError(error, "not_found")) return undefined;
+			throw error;
 		});
 		const profile: AgentProfile = {
 			id: DEFAULT_AGENT_ID,
@@ -219,7 +323,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			projectId: project.id,
 			name: "Assistant",
 			model: { route: "default" },
-			promptLayers: [{ name: "role", text: "You are a helpful assistant running on Harbour." }],
+			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
+			promptLayers: userPromptLayers(stored),
 			tools: [],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
@@ -231,9 +336,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			identity,
 			runtime,
 			workspaces,
+			access,
+			sandboxes,
 			audit,
 			authenticator,
+			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
+			...(options.vault === undefined ? {} : { vault: options.vault }),
 			organisation,
 			project,
 			admin,
@@ -263,6 +372,7 @@ async function bootstrap(options: {
 	readonly store: BootstrapStore;
 	readonly finder?: BootstrapFinder;
 	readonly adminEmail: string | undefined;
+	readonly adminName: string | undefined;
 }): Promise<{ organisation: Organisation; project: Project; admin: CallContext }> {
 	const { store, finder } = options;
 	let saved = await store.load();
@@ -284,10 +394,11 @@ async function bootstrapOnce(
 		readonly store: BootstrapStore;
 		readonly finder?: BootstrapFinder;
 		readonly adminEmail: string | undefined;
+		readonly adminName: string | undefined;
 	},
 	saved: BootstrapRecord,
 ): Promise<{ organisation: Organisation; project: Project; admin: CallContext }> {
-	const { identity, store, finder, adminEmail } = options;
+	const { identity, store, finder, adminEmail, adminName } = options;
 	let record = saved;
 	const remember = async (step: BootstrapRecord): Promise<void> => {
 		record = { ...record, ...step };
@@ -297,7 +408,7 @@ async function bootstrapOnce(
 	let userId = record.userId ?? (await finder?.user(adminEmail));
 	if (userId === undefined) {
 		const user = await identity.createUser(BOOTSTRAP, {
-			name: adminEmail ?? "Bootstrap admin",
+			name: adminName ?? adminEmail ?? "Bootstrap admin",
 			...(adminEmail === undefined ? {} : { email: adminEmail }),
 		});
 		userId = user.id;

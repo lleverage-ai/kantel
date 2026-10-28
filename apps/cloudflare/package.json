@@ -7,8 +7,9 @@
 	"license": "Apache-2.0",
 	"scripts": {
 		"build:console": "pnpm --filter @harbour/console build",
-		"dev": "pnpm build:console && wrangler dev --env dev",
-		"deploy:dry-run": "pnpm build:console && wrangler deploy --dry-run --outdir dist --env=\"\"",
+		"build:isolate": "node scripts/build-isolate.ts",
+		"dev": "pnpm build:console && pnpm build:isolate && wrangler dev --env dev",
+		"deploy:dry-run": "pnpm build:console && pnpm build:isolate && wrangler deploy --dry-run --outdir dist --env=\"\"",
 		"deploy:config": "node scripts/deploy-config.ts",
 		"deploy:check-access": "node scripts/check-access.ts",
 		"typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
@@ -21,6 +22,8 @@
 		"@harbour/cloudflare-workspace": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/identity": "workspace:*",
+		"@harbour/model-gateway": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
 		"@harbour/runtime": "workspace:*",
 		"@harbour/runtime-cloudflare": "workspace:*",
 		"@harbour/sql": "workspace:*",
@@ -30,7 +33,9 @@
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "5.20261027.1",
+		"@harbour/testing": "workspace:*",
 		"@types/node": "24.19.2",
+		"esbuild": "0.28.2",
 		"typescript": "7.0.2",
 		"vitest": "4.1.12",
 		"wrangler": "4.153.0"
