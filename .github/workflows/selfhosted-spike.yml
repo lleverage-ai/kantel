@@ -25,31 +25,12 @@ jobs:
   selfhosted:
     # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       HARBOUR_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
       HARBOUR_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
-      # The runner shares the host's Docker with other Harbour stacks (the default `harbour` and `harbour-m1sh`, on
-      # the default and 581xx ports). So CI runs a second stack as deploy/compose/README.md describes: its own
-      # project per run (`down -v` then removes only this run's containers and volumes), image tag, ports, `control`
-      # subnet, vault container and sandbox network prefix. One runner runs one job at a time, so runs never overlap
-      # on these ports; a second runner would need its own.
-      COMPOSE_PROJECT_NAME: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      HARBOUR_IMAGE_TAG: ci-stack
-      HARBOUR_PG_PORT: "56532"
-      HARBOUR_S3_PORT: "59200"
-      HARBOUR_ISOLATE_PORT: "58280"
-      HARBOUR_HOST_A_PORT: "58281"
-      HARBOUR_HOST_B_PORT: "58282"
-      HARBOUR_GATEWAY_PORT: "58290"
-      HARBOUR_MAILPIT_PORT: "58325"
-      HARBOUR_SMTP_PORT: "58326"
-      HARBOUR_CONTROL_PREFIX: "10.250.93"
-      HARBOUR_VAULT_CONTAINER: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}-vault-proxy
-      HARBOUR_SANDBOX_NETWORK: harbour-ci-sbx
-      # What the tests run outside the stack connect to.
-      HARBOUR_DATABASE_URL: postgres://harbour:harbour@127.0.0.1:56532/harbour
-      S3_ENDPOINT: http://127.0.0.1:59200
+      # The stack runs in a Docker daemon of its own (see "Start this run's Docker daemon"), not the host's.
+      DIND_NAME: harbour-ci-dind-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -77,10 +58,53 @@ jobs:
         working-directory: apps/vault-proxy
         run: bun test
 
+      # The runner shares the host's Docker with other Harbour stacks, and the session hosts' sandbox janitor removes
+      # every `harbour.owner` container on its daemon whose owner it doesn't know: stacks on one daemon delete each
+      # other's sandboxes. So this run's stack gets a Docker daemon of its own, a throwaway docker:dind container
+      # (privileged, on the default bridge, never the host network), and every docker and compose command below talks
+      # to it over TLS. The stack keeps compose.yaml's defaults inside it: nothing it publishes reaches the host's
+      # ports, so it can't clash with the host's stacks or another run.
+      #
+      # compose.yaml bind-mounts two files from the checkout (the vault policy and the research site), which the
+      # daemon resolves on its own filesystem: the checkout is mounted into it, read-only, at the same path.
+      #
+      # compose.yaml publishes on 127.0.0.1, which inside the daemon is its own loopback. One socat per published port,
+      # on the daemon's network namespace, forwards the daemon's bridge address to it; the tests use that address.
+      - name: Start this run's Docker daemon
+        run: |
+          docker run --detach --privileged --name "$DIND_NAME" \
+            --env DOCKER_TLS_CERTDIR=/certs --volume /var/lib/docker \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
+            docker:29-dind
+          for _ in $(seq 1 60); do
+            docker exec "$DIND_NAME" docker info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec "$DIND_NAME" docker info --format 'daemon {{.ServerVersion}}, {{.Driver}}'
+          ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_NAME")"
+          test -n "$ip"
+          certs="$RUNNER_TEMP/$DIND_NAME-certs"
+          docker cp "$DIND_NAME:/certs/client" "$certs"
+          export DOCKER_HOST="tcp://$ip:2376" DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH="$certs"
+          docker info --format 'reached {{.Name}} over TLS'
+          for port in 55432 59000 58080 58081 58082 58090 58025 58125; do
+            docker run --detach --network host --name "forward-$port" alpine/socat:1.8.0.3 \
+              "tcp-listen:$port,fork,reuseaddr,bind=$ip" "tcp:127.0.0.1:$port"
+          done
+          {
+            echo "DOCKER_HOST=$DOCKER_HOST"
+            echo "DOCKER_TLS_VERIFY=1"
+            echo "DOCKER_CERT_PATH=$certs"
+            echo "STACK=$ip"
+            # What the tests run outside the stack connect to.
+            echo "HARBOUR_DATABASE_URL=postgres://harbour:harbour@$ip:55432/harbour"
+            echo "S3_ENDPOINT=http://$ip:59000"
+          } >> "$GITHUB_ENV"
+
       # Compose needs buildx to build with BuildKit; without it, it falls back to the classic builder, which ignores
       # the per-Dockerfile ignore files (apps/selfhosted/Dockerfile.dockerignore) and copies the checkout's
       # node_modules into the image. The runner's user has no buildx plugin, so install it for the user (no sudo) and
-      # build on the daemon's own BuildKit, as on GitHub's images.
+      # build on this run's daemon's own BuildKit, as on GitHub's images.
       - uses: docker/setup-buildx-action@v3
         with:
           version: v0.37.2
@@ -91,7 +115,7 @@ jobs:
 
       # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)
-        run: bun spike/conformance/run.ts --target=selfhosted --base "http://127.0.0.1:$HARBOUR_HOST_A_PORT"
+        run: bun spike/conformance/run.ts --target=selfhosted --base "http://$STACK:58081"
 
       # The M1 gateway in the stack: sessions, workspace reads, audit queries and
       # the console, over HTTP behind the API-key authenticator; then mail: a
@@ -100,8 +124,8 @@ jobs:
       - name: M1 gateway and Mailpit end to end
         run: >
           bun apps/selfhosted/test/gateway/stack.ts
-          --base-url "http://127.0.0.1:$HARBOUR_GATEWAY_PORT"
-          --mailpit-url "http://127.0.0.1:$HARBOUR_MAILPIT_PORT"
+          --base-url "http://$STACK:58090"
+          --mailpit-url "http://$STACK:58025"
 
       # Each real implementation the self-hosted deployment binds (runtime,
       # audit, identity and OTP sign-in, workspaces, vault) against its
@@ -112,18 +136,18 @@ jobs:
           bun apps/selfhosted/test/bindings.ts --markdown "$GITHUB_STEP_SUMMARY"
           --postgres-url "$HARBOUR_DATABASE_URL"
           --s3-endpoint "$S3_ENDPOINT"
-          --smtp-url "smtp://127.0.0.1:$HARBOUR_SMTP_PORT?starttls=off"
-          --mailpit-url "http://127.0.0.1:$HARBOUR_MAILPIT_PORT"
+          --smtp-url "smtp://$STACK:58125?starttls=off"
+          --mailpit-url "http://$STACK:58025"
 
       - name: Scripted task
-        run: bun spike/scenario/run.ts --base "http://127.0.0.1:$HARBOUR_HOST_A_PORT"
+        run: bun spike/scenario/run.ts --base "http://$STACK:58081"
 
       - name: Kill the session owner mid tool call
         run: >
           bun spike/scenario/run.ts --crash
           --kill-cmd "docker compose -f deploy/compose/compose.yaml kill host-a"
-          --base "http://127.0.0.1:$HARBOUR_HOST_A_PORT"
-          --fallback "http://127.0.0.1:$HARBOUR_HOST_B_PORT"
+          --base "http://$STACK:58081"
+          --fallback "http://$STACK:58082"
 
       # --no-deps: bring back host-a only. Without it compose on the runner
       # also recreated the isolate host, vault proxy and migrations.
@@ -140,8 +164,8 @@ jobs:
           HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
           HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          bun spikes/scenario/run.ts --base-url "http://127.0.0.1:$HARBOUR_HOST_A_PORT" > "$RUNNER_TEMP/shared-scenario.json"
-          bun spikes/scenario/run.ts --base-url "http://127.0.0.1:$HARBOUR_HOST_A_PORT" --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"
+          bun spikes/scenario/run.ts --base-url "http://$STACK:58081" > "$RUNNER_TEMP/shared-scenario.json"
+          bun spikes/scenario/run.ts --base-url "http://$STACK:58081" --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"
 
       - name: Canary appears nowhere
         run: deploy/compose/scripts/check-canary.sh
@@ -160,6 +184,11 @@ jobs:
         if: failure()
         run: docker compose -f deploy/compose/compose.yaml logs --no-color --timestamps --tail 300
 
+      # On the host's daemon: removing the daemon's container and its anonymous volume removes the whole stack,
+      # its images and its sandboxes with it.
       - name: Tear down
         if: always()
-        run: docker compose -f deploy/compose/compose.yaml down -v --remove-orphans
+        run: |
+          unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          docker rm --force --volumes "$DIND_NAME" || true
+          rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP"/shared-scenario*.json
