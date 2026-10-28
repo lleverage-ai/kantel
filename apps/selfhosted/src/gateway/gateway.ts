@@ -5,6 +5,8 @@
 //   /auth/otp/start, /verify    email one-time PIN sign-in (@harbour/identity/otp/http), no credentials, limited per
 //   /auth/session/end           client address; it issues Harbour sessions (`hbs_…`), which every API below accepts
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
+//   /v1/me, /v1/projects        who is signed in and their projects, and a host app's API keys (@harbour/identity/http);
+//   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
 //   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
@@ -19,6 +21,7 @@ import {
 	SESSION_END_PATH,
 } from "@harbour/contracts";
 import { createAuthenticator, withAuthentication } from "@harbour/identity/authenticator";
+import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
 import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
@@ -111,6 +114,13 @@ export function createGateway(options: GatewayOptions): Gateway {
 
 	const audit = createAuditQueryHandler({ store: components.audit, authenticator });
 
+	// The console asks `/v1/me` first; its 401 says how a person signs in here, and without a mailer nobody can.
+	const identity = createIdentityHandler({
+		identity: components.identity,
+		authenticator,
+		signIn: signIn === undefined ? [] : ["email_otp"],
+	});
+
 	// The read API takes a context per request; the authentication wrapper turns failures into 401 and 403 first.
 	const callers = new WeakMap<Request, CallContext>();
 	const readWorkspaces = createWorkspaceReadApi({
@@ -157,6 +167,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await workspaces(request);
 				}
 				if (path.startsWith(AUDIT_PREFIX)) return await audit(request);
+				if (isIdentityPath(path)) return await identity(request);
 				if (path === "/v1" || path.startsWith("/v1/")) return await sessions.fetch(request);
 				if (consoleAssets !== undefined) return await consoleAssets(request);
 				return json({ error: { code: "not_found", message: "No such route" } }, 404);
