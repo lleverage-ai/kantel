@@ -4,8 +4,10 @@
  * in Node.
  *
  * - **The isolate tier** runs on one of the backends in `ISOLATE_BACKENDS`, chosen by `HARBOUR_ISOLATE_BACKEND`.
- *   `in-process` is #94's just-bash shell running in this object, over the same workspaces (default). Each backend
- *   gets its own sandboxes, so the isolate-ready measurement can run on any of them while sessions use the chosen one.
+ *   `in-process` is #94's just-bash shell running in this object, over the same workspaces (default).
+ *   `dynamic-worker` runs the same shell in a Dynamic Worker per session (`src/dynamic-worker.ts`), when the Worker
+ *   has the `LOADER` binding. Each backend gets its own sandboxes, so the isolate-ready measurement can run on any of
+ *   them while sessions use the chosen one.
  * - **The container tier** is not on Cloudflare yet: a command routed to it (`git`, `node`, `python` and the rest of
  *   `DEFAULT_TIER_ROUTES`) is refused `unavailable`.
  * - **Leases** are kept in memory. An isolate lease holds no state outside its workspace, so one lost to an eviction
@@ -33,7 +35,7 @@ import {
 import type { StoredWorkspaces } from "@harbour/workspace/stored";
 
 /** The isolate backends this Worker can run. */
-export const ISOLATE_BACKENDS = ["in-process"] as const;
+export const ISOLATE_BACKENDS = ["in-process", "dynamic-worker"] as const;
 export type IsolateBackendName = (typeof ISOLATE_BACKENDS)[number];
 export const DEFAULT_ISOLATE_BACKEND: IsolateBackendName = "in-process";
 

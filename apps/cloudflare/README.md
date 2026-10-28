@@ -53,17 +53,39 @@ restart finds the same organisation rather than making another. Sessions run on 
 
 **The isolate backend is a switch** (28 Oct 2026). `HARBOUR_ISOLATE_BACKEND` picks where the isolate tier runs, so
 the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
-runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate (a Dynamic Worker per session
-through a `worker_loaders` binding, as the M0 spike ran it), is not built yet. The container tier is not on
+runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate, runs the same shell in a
+Dynamic Worker per session through the `LOADER` (`worker_loaders`) binding, as the M0 spike ran it
+(`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. The container tier is not on
 Cloudflare yet: a command routed to it is refused `unavailable`.
+
+How `dynamic-worker` works:
+
+- **One isolate per session and workspace.** The loader ID names the organisation, session, workspace and a digest
+  of the isolate's code, so a session's later commands reuse its warm isolate, sessions never share one, and a deploy
+  that changes the isolate never reuses an old one.
+- **The workspace crosses as a capability.** The isolate (`src/isolate/entry.ts`, bundled by
+  `scripts/build-isolate.ts` into `generated/isolate.bundle.txt`) has no bindings and no network
+  (`globalOutbound: null`, so `curl` fails). Each command passes it a `WorkspacePort`, an RPC target in
+  `HarbourStack`, that lists a version and reads bodies and mounts with the caller's context, which the isolate never
+  sees. It can't write: what a command changed comes back in the result, and the tiered sandboxes commit it before the
+  tool call returns, as for `in-process`.
+- **Cancellation** can't cross RPC. A cancelled command's port refuses further reads and its result is dropped, so
+  nothing is committed; the command stops at its next read or its `timeoutMs`.
 
 ## Measuring isolate-ready
 
-`POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" }` (`src/measure.ts`), signed in like any
-API call. Each run creates a new session on a 61-file measurement workspace (made once per object start), runs
-`ls -1R` in the session's isolate, answers `{ backend, exitCode, listed, timings }` (server milliseconds for
-`session`, `isolate` and `total`, plus the sandbox's own phases), and closes the session. Run it 50 times and take
-p50 and p95 of the client's wall time and of `timings.total`.
+`POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" | "dynamic-worker", "placement"?: true }`
+(`src/measure.ts`), signed in like any API call. Each run creates a new session on a 61-file measurement workspace
+(made once per object start), runs `ls -1R` in the session's isolate, answers `{ backend, exitCode, listed, timings }`
+(server milliseconds for `signIn`, `session`, `isolate` and `total`, plus the sandbox's own phases; `total` leaves out
+`signIn`), and closes the session. On `dynamic-worker`, `isolate.call` is the round trip into the isolate and
+`isolate.cold` is 1 when the command loaded it. Run it 50 times and take p50 and p95 of the client's wall time and of
+`timings.total`.
+
+With `"placement": true` the answer adds `placement`, probed after the run: `objectColo` (the colo the stack object's
+own subrequest to Cloudflare's `/cdn-cgi/trace` reaches, so where the object runs), `edgeColo` (`request.cf.colo`),
+and D1's `region`, `colo` and `primary` from its query `meta` (`served_by_region`, `served_by_colo`,
+`served_by_primary`), with five `SELECT 1` round trips and D1's own `sql_duration_ms` for each.
 
 ## The vault (VaultDO)
 
@@ -129,8 +151,9 @@ that directory to start afresh. `--env dev` runs `src/dev.ts`: the deployed Work
 verifies with the real provider) and the two `/__dev/` routes. It is never the deployed entry point, and
 `test/gateway.test.ts` checks that no other module imports it.
 
-`pnpm --filter @harbour/cloudflare deploy:dry-run` builds the console and bundles the deployed Worker into `dist/`
-without contacting Cloudflare.
+`pnpm --filter @harbour/cloudflare deploy:dry-run` builds the console and the dynamic-worker isolate and bundles the
+deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs the Worker Loader locally too, so
+`HARBOUR_ISOLATE_BACKEND=dynamic-worker` (or the measurement's `backend`) works on a laptop.
 
 ## Deploy
 
@@ -203,6 +226,7 @@ https://developers.cloudflare.com/workers-vpc/reference/pricing/), checked 27 Oc
 | D1 (identity, audit) | 25 bn rows read, 50 M written, 5 GB | well under | $0 |
 | R2 (workspaces) | 10 GB-month, 1 M class A, 10 M class B | < 1 GB, < 0.1 M ops | $0 |
 | Workers VPC (`MODELS`) | free during the open beta | | $0 |
+| Dynamic Workers (`dynamic-worker` backend, added 28 Oct 2026) | 1,000 unique Dynamic Workers a month; requests and CPU count as Workers' | one per session and workspace on each day it runs a command; 51 per 50-run measurement | $0 while sessions use `in-process`; past 1,000 a month, $0.002 each per day |
 | Model tokens | | through CLIProxyAPI on Sal's host | not billed by Cloudflare |
 
 Estimate: **about $0 a month on top of the account's $5 Workers Paid minimum**, as long as the account's other
@@ -222,6 +246,12 @@ What would move it:
 - **The container tier**, when it lands: Containers bill per instance-second, so it will dominate. It gets its own
   line here with that step.
 - **Workers VPC** pricing after its beta.
+- **Sessions on `dynamic-worker`.** Cloudflare counts a Dynamic Worker per loader ID and code version per day
+  (https://developers.cloudflare.com/dynamic-workers/pricing/), and Harbour's loader ID is per session and workspace,
+  so the count is the sessions that run a command each day, plus one per deploy for each session still in use. At
+  M1's scale that is well inside 1,000 a month; 100 sessions a day would be about 3,000 a month, about $4 past the
+  allowance. Each command is one request into the isolate, and its startup CPU (parsing the 1.25 MB bundle) is billed
+  as Workers CPU.
 
 The VaultDO adds a second object, active only while it answers an egress decision or a key read, so its duration
 stays far inside the allowance.
