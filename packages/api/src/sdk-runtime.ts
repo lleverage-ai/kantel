@@ -20,6 +20,11 @@ export interface CallOptions {
 	readonly signal?: AbortSignal;
 	/** Sent as `harbour-request-id`, which correlates the call in Harbour's audit trail. */
 	readonly requestId?: string;
+	/**
+	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
+	 * call's answer and does nothing again. Use a new key, such as a UUID, for each new call.
+	 */
+	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };
 }
 
@@ -90,6 +95,7 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
 	if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
 	const doFetch = options.fetch ?? fetch;

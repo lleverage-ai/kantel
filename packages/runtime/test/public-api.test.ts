@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 async function setUp() {
-	const { models } = createScriptedModel();
+	const { models, script } = createScriptedModel();
 	const memory = createMemoryRuntime({ models });
 	const api = createSessionApi({
 		runtime: memory.runtime,
@@ -46,8 +46,10 @@ async function setUp() {
 	const fetchApi = (input: string | URL | Request, init?: RequestInit) => api.fetch(new Request(input, init));
 	const client = createHarbourClient({ baseUrl: "https://harbour.test/v1", token: "host", fetch: fetchApi });
 	await memory.profiles.put({ actor: host.actor, organisationId: ORG }, profile);
-	return { client, fetchApi };
+	return { client, fetchApi, memory, script };
 }
+
+const asHost = { actor: host.actor, organisationId: ORG };
 
 async function failure(promise: Promise<unknown>): Promise<HarbourApiError> {
 	try {
@@ -147,5 +149,96 @@ describe("public API: sessions", () => {
 		expect(await notJson.json()).toEqual({ error: { code: "invalid", message: "The body is not JSON" } });
 		const badReason = await call("/sessions/ses-1/abort", { method: "POST", body: JSON.stringify({ reason: 7 }) });
 		expect(badReason.status).toBe(400);
+	});
+});
+
+describe("public API: messages", () => {
+	it("sends a prompt, and the session answers it", async () => {
+		const { client, memory, script } = await setUp();
+		script.reply({ text: "Hello back" });
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		const submission = await client.sendMessage(session.id, { text: "Hello" });
+		expect(submission).toMatchObject({ sessionId: session.id, via: "prompt" });
+		expect(await memory.runtime.wait(asHost, session.id, submission.id)).toMatchObject({ answer: "Hello back" });
+	});
+
+	it("sends a steer or a follow-up by `via`", async () => {
+		const { client } = await setUp();
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		expect((await client.sendMessage(session.id, { via: "steer", text: "Faster" })).via).toBe("steer");
+		expect((await client.sendMessage(session.id, { via: "followUp", text: "Then this" })).via).toBe("followUp");
+	});
+
+	it("answers a replay with the same Idempotency-Key with the first submission, and sends nothing again", async () => {
+		const { client, memory, script } = await setUp();
+		script.reply({ text: "Once" }, { text: "Twice" });
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		const first = await client.sendMessage(session.id, { text: "Go" }, { idempotencyKey: "msg-1" });
+		expect(first.requestId).toBe("msg-1");
+		const again = await client.sendMessage(session.id, { text: "Go" }, { idempotencyKey: "msg-1" });
+		expect(again).toEqual(first);
+		expect(await memory.runtime.wait(asHost, session.id, first.id)).toMatchObject({ answer: "Once" });
+		const later = await client.sendMessage(session.id, { text: "Go" }, { idempotencyKey: "msg-1" });
+		expect(later).toEqual(first);
+		expect(script.requests).toHaveLength(1);
+		const snapshot = await memory.runtime.snapshot(asHost, session.id);
+		expect(snapshot.items.filter((item) => item.kind === "user")).toHaveLength(1);
+	});
+
+	it("refuses a key reused for another kind of message, and sends nothing", async () => {
+		const { client, memory } = await setUp();
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		const first = await client.sendMessage(session.id, { text: "Go" }, { idempotencyKey: "msg-2" });
+		await memory.runtime.wait(asHost, session.id, first.id);
+		const reused = await failure(
+			client.sendMessage(session.id, { via: "steer", text: "Go" }, { idempotencyKey: "msg-2" }),
+		);
+		expect([reused.status, reused.code]).toEqual([409, "conflict"]);
+		const snapshot = await memory.runtime.snapshot(asHost, session.id);
+		expect(snapshot.items.filter((item) => item.kind === "user")).toHaveLength(1);
+	});
+
+	it("refuses an empty message, an unknown via and a malformed key", async () => {
+		const { client } = await setUp();
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		expect((await failure(client.sendMessage(session.id, { text: "" }))).code).toBe("invalid");
+		expect((await failure(client.sendMessage(session.id, { via: "shout", text: "Hi" } as never))).code).toBe("invalid");
+		for (const key of ["has space", "x".repeat(256)]) {
+			const refused = await failure(client.sendMessage(session.id, { text: "Hi" }, { idempotencyKey: key }));
+			expect([refused.status, refused.code]).toEqual([400, "invalid"]);
+		}
+	});
+
+	it("refuses a message to a closed or unknown session", async () => {
+		const { client } = await setUp();
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		await client.closeSession(session.id);
+		expect((await failure(client.sendMessage(session.id, { text: "Hi" }))).code).toBe("conflict");
+		expect((await failure(client.sendMessage("ses-missing", { text: "Hi" }))).code).toBe("not_found");
+	});
+
+	it("sends a new session its first message", async () => {
+		const { client, memory, script } = await setUp();
+		script.reply({ text: "Started" });
+		const created = await client.createSession({
+			projectId: PROJECT,
+			agentId: "assistant",
+			message: { text: "Begin" },
+		});
+		expect(created.submission).toMatchObject({ sessionId: created.id, via: "prompt" });
+		expect(await memory.runtime.wait(asHost, created.id, created.submission?.id as string)).toMatchObject({
+			answer: "Started",
+		});
+	});
+
+	it("closes a new session whose first message is refused, and answers the refusal", async () => {
+		const { client } = await setUp();
+		const refused = await failure(
+			client.createSession({ projectId: PROJECT, agentId: "assistant", message: { text: "Hi", model: "no-such" } }),
+		);
+		expect(refused.code).toBe("invalid");
+		const [session] = (await client.listSessions({ projectId: PROJECT })).items;
+		expect(session).toBeDefined();
+		expect((await failure(client.sendMessage(session?.id as string, { text: "Again" }))).code).toBe("conflict");
 	});
 });

@@ -4,7 +4,14 @@
  */
 import type { ErrorCode } from "@harbour/contracts";
 import type { TSchema } from "typebox";
-import { pathParameters, type RouteDefinition, STATUS_BY_CODE, UNAUTHENTICATED_STATUS } from "./route.ts";
+import {
+	IDEMPOTENCY_KEY_HEADER,
+	MAX_IDEMPOTENCY_KEY_LENGTH,
+	pathParameters,
+	type RouteDefinition,
+	STATUS_BY_CODE,
+	UNAUTHENTICATED_STATUS,
+} from "./route.ts";
 import { ErrorBody } from "./schema.ts";
 
 export type JsonSchema = { [key: string]: unknown };
@@ -88,6 +95,17 @@ function parameters(route: RouteDefinition, registry: SchemaRegistry): JsonSchem
 				schema: registry.use(rest),
 			});
 		}
+	}
+	if (route.idempotent === true) {
+		out.push({
+			name: IDEMPOTENCY_KEY_HEADER,
+			in: "header",
+			required: false,
+			description:
+				"A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer " +
+				"and does nothing again.",
+			schema: { type: "string", minLength: 1, maxLength: MAX_IDEMPOTENCY_KEY_LENGTH },
+		});
 	}
 	return out;
 }

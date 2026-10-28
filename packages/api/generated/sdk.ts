@@ -29,6 +29,31 @@ export type Actor =
 			readonly component: string;
 	  };
 
+/** A new session, with its first message's submission when it was sent one. */
+export interface CreatedSession {
+	/** The session's ID. */
+	readonly id: string;
+	readonly organisationId: string;
+	readonly projectId: string;
+	/** The agent profile the session runs. */
+	readonly agentId: string;
+	readonly parentSessionId?: string;
+	readonly workspaceId?: string;
+	readonly title?: string;
+	readonly status: SessionStatus;
+	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
+	readonly labels: Labels;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	/** A message the session accepted. */
+	readonly submission?: Submission;
+}
+
+/** Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: "run-42" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`. */
 export interface CreateSessionBody {
 	/** The project the session runs in. */
 	readonly projectId: string;
@@ -41,6 +66,17 @@ export interface CreateSessionBody {
 	readonly workspaceId?: string;
 	/** Creates a child session owned by this parent; aborting the parent aborts it. */
 	readonly parentSessionId?: string;
+	/** The session's first prompt, sent as soon as it exists. */
+	readonly message?: FirstMessage;
+}
+
+/** The session's first prompt, sent as soon as it exists. */
+export interface FirstMessage {
+	/** The message's words. */
+	readonly text: string;
+	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
+	readonly model?: string;
+	readonly thinking?: ThinkingLevel;
 }
 
 /** Host labels, such as `{ docketTask: "TASK-3347" }`. */
@@ -61,6 +97,20 @@ export interface ListSessionsQuery {
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
 }
+
+/** A message to the session's agent. `via` defaults to `prompt`. */
+export interface MessageBody {
+	/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends. */
+	readonly via?: MessageVia;
+	/** The message's words. */
+	readonly text: string;
+	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
+	readonly model?: string;
+	readonly thinking?: ThinkingLevel;
+}
+
+/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends. */
+export type MessageVia = "prompt" | "steer" | "followUp";
 
 export interface SessionPage {
 	readonly items: readonly SessionRecord[];
@@ -91,6 +141,19 @@ export interface SessionRecord {
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
 
+/** A message the session accepted. */
+export interface Submission {
+	/** The submission's ID, which names the run the message started or joined. */
+	readonly id: string;
+	readonly sessionId: string;
+	/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends. */
+	readonly via: MessageVia;
+	/** The `Idempotency-Key` it was sent with. */
+	readonly requestId?: string;
+}
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 // Runtime
 
 // The SDK's runtime, copied into `generated/sdk.ts` as it is, so the SDK is one file with no imports. Keep it free of
@@ -115,6 +178,11 @@ export interface CallOptions {
 	readonly signal?: AbortSignal;
 	/** Sent as `harbour-request-id`, which correlates the call in Harbour's audit trail. */
 	readonly requestId?: string;
+	/**
+	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
+	 * call's answer and does nothing again. Use a new key, such as a UUID, for each new call.
+	 */
+	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };
 }
 
@@ -185,6 +253,7 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
 	if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
 	const doFetch = options.fetch ?? fetch;
@@ -203,8 +272,8 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 
 /** Harbour's public API, one method per route. */
 export interface HarbourClient {
-	/** Create a session. Starts a session of an agent profile in a project. Needs the operator role on the project. `POST /sessions` */
-	createSession(body: CreateSessionBody, options?: CallOptions): Promise<SessionRecord>;
+	/** Create a session. Starts a session of an agent profile in a project, and sends it `message` when there is one. Needs the operator role on the project. If the first message is refused, the session is closed and the refusal answered. `POST /sessions` */
+	createSession(body: CreateSessionBody, options?: CallOptions): Promise<CreatedSession>;
 	/** List sessions. The sessions the caller may see, newest first, a page at a time. `GET /sessions` */
 	listSessions(query?: ListSessionsQuery, options?: CallOptions): Promise<SessionPage>;
 	/** Get a session. `GET /sessions/{sessionId}` */
@@ -213,6 +282,8 @@ export interface HarbourClient {
 	closeSession(sessionId: string, options?: CallOptions): Promise<void>;
 	/** Abort a session's run. Stops what the session is doing now. The session stays open and takes new messages. `POST /sessions/{sessionId}/abort` */
 	abortSession(sessionId: string, body?: AbortSessionBody, options?: CallOptions): Promise<void>;
+	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
+	sendMessage(sessionId: string, body: MessageBody, options?: CallOptions): Promise<Submission>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -226,5 +297,7 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/close` }, callOptions),
 		abortSession: (sessionId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/abort`, body }, callOptions),
+		sendMessage: (sessionId, body, callOptions) =>
+			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/messages`, body }, callOptions),
 	};
 }
