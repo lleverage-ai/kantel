@@ -11,7 +11,8 @@
 		"./tiered": "./src/tiered.ts",
 		"./isolate": "./src/isolate.ts",
 		"./sweeper": "./src/sweeper.ts",
-		"./pi-env": "./src/pi-env.ts"
+		"./pi-env": "./src/pi-env.ts",
+		"./dependencies": "./src/dependencies.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*",

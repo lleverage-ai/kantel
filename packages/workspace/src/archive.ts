@@ -79,6 +79,63 @@ export async function unpackArchive(
 	return files;
 }
 
+/**
+ * Regular files as a ustar tarball, as `parseTar` reads them back: a path longer than the header's name field gets a
+ * pax `path` record. Modes are kept (0o644 when absent).
+ */
+export function packTar(files: Iterable<SeedFile>): Uint8Array {
+	const encoder = new TextEncoder();
+	const blocks: Uint8Array[] = [];
+	const header = (name: Uint8Array, size: number, mode: number, type: string): Uint8Array => {
+		const block = new Uint8Array(512);
+		block.set(name.subarray(0, 100), 0);
+		const octal = (value: number, at: number, width: number) =>
+			block.set(encoder.encode(`${value.toString(8).padStart(width - 1, "0")}\0`), at);
+		octal(mode & 0o7777, 100, 8);
+		octal(0, 108, 8);
+		octal(0, 116, 8);
+		octal(size, 124, 12);
+		octal(0, 136, 12);
+		block.set(encoder.encode("        "), 148);
+		block.set(encoder.encode(type), 156);
+		block.set(encoder.encode("ustar\x0000"), 257);
+		let sum = 0;
+		for (const byte of block) sum += byte;
+		block.set(encoder.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+		return block;
+	};
+	const body = (data: Uint8Array) => {
+		blocks.push(data);
+		const pad = (512 - (data.byteLength % 512)) % 512;
+		if (pad > 0) blocks.push(new Uint8Array(pad));
+	};
+	for (const file of files) {
+		const name = encoder.encode(file.path);
+		if (name.byteLength > 100) {
+			// `<length> path=<value>\n`, where the length counts the whole record, its own digits included.
+			const rest = ` path=${file.path}\n`;
+			const restBytes = encoder.encode(rest).byteLength;
+			let length = restBytes + 1;
+			while (String(length).length + restBytes !== length) length = String(length).length + restBytes;
+			const record = encoder.encode(`${length}${rest}`);
+			blocks.push(header(encoder.encode("PaxHeader"), record.byteLength, 0o644, "x"));
+			body(record);
+		}
+		blocks.push(header(name, file.content.byteLength, file.mode ?? 0o644, "0"));
+		body(file.content);
+	}
+	blocks.push(new Uint8Array(1024));
+	let total = 0;
+	for (const block of blocks) total += block.byteLength;
+	const tar = new Uint8Array(total);
+	let offset = 0;
+	for (const block of blocks) {
+		tar.set(block, offset);
+		offset += block.byteLength;
+	}
+	return tar;
+}
+
 async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number, what: string): Promise<Uint8Array> {
 	const chunks: Uint8Array[] = [];
 	let total = 0;

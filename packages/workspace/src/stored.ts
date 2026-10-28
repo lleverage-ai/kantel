@@ -46,7 +46,7 @@ import {
 	sha256Hex,
 	toBytes,
 } from "./index.ts";
-import { resolveSeed, type Seeders } from "./seed.ts";
+import { dependencyStage, resolveSeed, type Seeders, sendSeedStatus } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
@@ -528,6 +528,21 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				const record: WorkspaceRecord = { ...head.record, mounts, updatedAt: clock.now() };
 				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) return record;
 				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the remount");
+				head = await load(ctx, id);
+			}
+		},
+
+		async recordDependencies(ctx, id, update) {
+			let head = await load(ctx, id);
+			await checks.requireWorkspace(ctx, head.record, "operator", "workspace.seed");
+			for (let attempt = 1; ; attempt++) {
+				// Checked against each head loaded: a racing stage that recorded first leaves this one in conflict.
+				const { record, event } = dependencyStage(head.record, head.organisationId, update, clock.now());
+				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) {
+					sendSeedStatus(options.onSeedStatus, event);
+					return record;
+				}
+				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the update");
 				head = await load(ctx, id);
 			}
 		},

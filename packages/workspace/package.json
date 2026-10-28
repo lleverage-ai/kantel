@@ -17,7 +17,8 @@
 		"./seed-spec": "./src/seed-spec.ts",
 		"./archive": "./src/archive.ts",
 		"./git-tarball": "./src/git-tarball.ts",
-		"./export": "./src/export.ts"
+		"./export": "./src/export.ts",
+		"./dependency-layers": "./src/dependency-layers.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*"

@@ -37,7 +37,7 @@ import {
 	normalizeWorkspacePath,
 	toBytes,
 } from "./index.ts";
-import { resolveSeed, type Seeders } from "./seed.ts";
+import { dependencyStage, resolveSeed, type Seeders, sendSeedStatus } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
@@ -369,6 +369,15 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			const mounts = state.record.mounts.map((existing, at) => (at === index ? mount : existing));
 			state.record = { ...state.record, mounts, updatedAt: clock.now() };
 			return state.record;
+		},
+
+		async recordDependencies(ctx, id, update) {
+			const state = load(ctx, id);
+			await checks.requireWorkspace(ctx, state.record, "operator", "workspace.seed");
+			const { record, event } = dependencyStage(state.record, state.organisationId, update, clock.now());
+			state.record = record;
+			sendSeedStatus(options.onSeedStatus, event);
+			return record;
 		},
 
 		async export(ctx, id, prefixes, options) {
