@@ -134,6 +134,13 @@ export interface AuditQuery {
 	readonly source?: AuditSource;
 	/** An exact type, or a prefix ending in `.` (`vault.` matches every vault event). */
 	readonly type?: string;
+	/**
+	 * Any of these types, each exact or a prefix ending in `.` as for `type`: `["vault.policy.", "capability.grant."]`
+	 * is every policy change. It narrows like any other field, so with `type` an event must match both. The list holds 1
+	 * to `MAX_AUDIT_QUERY_TYPES` non-empty types without a comma (the search parameter is comma-separated); a store
+	 * rejects any other with `invalid`.
+	 */
+	readonly types?: readonly string[];
 	readonly subject?: { readonly kind: string; readonly id: string };
 	/**
 	 * Events about this vault item: its subject is the `vault.item`, or else `data.itemId` is this ID as a string (uses,
@@ -190,6 +197,9 @@ export interface AuditOutbox extends AuditSink {
  * may not view), 404 `not_found`, 503 `unavailable`.
  */
 export const AUDIT_EVENTS_PATH = "/v1/audit/events";
+
+/** The most types `AuditQuery.types` may list. */
+export const MAX_AUDIT_QUERY_TYPES = 20;
 export const AUDIT_EVENT_PATH = "/v1/audit/event";
 
 export interface AuditEventsResponse {
@@ -209,8 +219,8 @@ export interface AuditErrorResponse {
 /**
  * Search parameter names. An actor is `actorKind` with `actorId` (a user, service or agent ID, or a system component),
  * plus `actorKeyId` for a service's key and `actorSessionId` for an agent's session. A subject is `subjectKind` with
- * `subjectId`. `itemId` and `grantId` are `AuditQuery`'s. Times are epoch milliseconds. `order` is `oldest` (default)
- * or `newest`.
+ * `subjectId`. `itemId` and `grantId` are `AuditQuery`'s. `types` is `AuditQuery.types` joined with commas. Times are
+ * epoch milliseconds. `order` is `oldest` (default) or `newest`.
  */
 export const AUDIT_QUERY_PARAMS = [
 	"projectId",
@@ -222,6 +232,7 @@ export const AUDIT_QUERY_PARAMS = [
 	"actorSessionId",
 	"source",
 	"type",
+	"types",
 	"subjectKind",
 	"subjectId",
 	"itemId",
@@ -264,6 +275,7 @@ export function auditQueryToSearchParams(query: AuditQuery, page: PageRequest = 
 	}
 	set("source", query.source);
 	set("type", query.type);
+	set("types", query.types?.join(","));
 	set("subjectKind", query.subject?.kind);
 	set("subjectId", query.subject?.id);
 	set("itemId", query.itemId);
@@ -278,7 +290,8 @@ export function auditQueryToSearchParams(query: AuditQuery, page: PageRequest = 
 
 /**
  * Reads a query and page from search parameters. Rejects with `invalid` on an unknown parameter, a repeated one, an
- * actor or subject missing its other half, a time or limit that is not a whole number, or an unknown order.
+ * actor or subject missing its other half, a time or limit that is not a whole number, an empty entry in `types`, or an
+ * unknown order.
  */
 export function auditQueryFromSearchParams(params: URLSearchParams): {
 	readonly query: AuditQuery;
@@ -348,6 +361,11 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 		throw new HarbourError("invalid", "A subject needs both subjectKind and subjectId");
 	}
 
+	const types = text("types")?.split(",");
+	if (types?.some((type) => type === "")) {
+		throw new HarbourError("invalid", "Audit query parameter types has an empty type");
+	}
+
 	const order = text("order");
 	if (order !== undefined && order !== "oldest" && order !== "newest") {
 		throw new HarbourError("invalid", "order must be oldest or newest");
@@ -364,6 +382,7 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 		...optional("actor", actor),
 		...optional("source", text("source") as AuditSource | undefined),
 		...optional("type", text("type")),
+		...optional("types", types),
 		...optional(
 			"subject",
 			subjectKind === undefined || subjectId === undefined ? undefined : { kind: subjectKind, id: subjectId },
