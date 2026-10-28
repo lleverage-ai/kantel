@@ -53,6 +53,9 @@
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
 		// dynamic-worker, the same shell in a Dynamic Worker per session. The measurement can run on either.
 		"HARBOUR_ISOLATE_BACKEND": "in-process",
+		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
+		// them as server-sent events. Anything else serves both, and the console prefers the socket.
+		"HARBOUR_SESSION_WEBSOCKET": "on",
 		// The location hint the stack and vault objects are created with (src/route.ts): weur, the region Amsterdam is in.
 		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
 		"HARBOUR_LOCATION_HINT": "weur"

@@ -5,7 +5,7 @@ import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
 import { apiAudit } from "./api/audit-http.ts";
 import type { ConsoleClient } from "./api/client.ts";
-import { createApiClient } from "./api/http.ts";
+import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
 import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "./api/oversight.ts";
@@ -44,6 +44,16 @@ const asked = params.get("source");
 if (asked === "api" || asked === "recorded") sessionStorage.setItem(SOURCE_KEY, asked);
 const source = sessionStorage.getItem(SOURCE_KEY) ?? import.meta.env.VITE_HARBOUR_SOURCE ?? "api";
 
+// How a session's events come on `api`: over a compressed WebSocket by default, or as server-sent events with
+// `?transport=sse` (kept for the tab, like the source; `?transport=websocket` goes back). The switch is for comparing
+// the two and for a network that mangles sockets; without a socket the client falls back by itself.
+const TRANSPORT_KEY = "harbour.console.transport";
+const askedTransport = params.get("transport");
+if (askedTransport === "sse" || askedTransport === "websocket") sessionStorage.setItem(TRANSPORT_KEY, askedTransport);
+const sockets = sessionStorage.getItem(TRANSPORT_KEY) !== "sse";
+/** How each session's events came, for the evidence script. */
+const transports = new Map<string, TransportKind>();
+
 // The evidence script reads the open session's client and host from the page, and the vault fixture's proposals.
 let current: { sessionId: string; session: SessionClient } | undefined;
 let proposals: Readonly<Record<string, string>> | undefined;
@@ -74,6 +84,9 @@ Object.assign(window, {
 		},
 		get proposals() {
 			return proposals;
+		},
+		get transport() {
+			return current === undefined ? undefined : transports.get(current.sessionId);
 		},
 	},
 });
@@ -183,6 +196,8 @@ function SignedInConsole({
 				roles: state.me.roles,
 				headers: state.headers,
 				onUnauthenticated,
+				...(sockets ? {} : { openSocket: false }),
+				onTransport: (sessionId, how) => transports.set(sessionId, how),
 			}),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
