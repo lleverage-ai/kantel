@@ -44,7 +44,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Contract | Interface | Reference implementation | Suite (cases) | Notes |
 | --- | --- | --- | --- | --- |
 | Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@harbour/identity/memory`, `createProjectAccess` | `registerIdentityConformance` (19) | [identity](../packages/identity/CONTRACT.md) |
-| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` (proposed: `SessionModels`) | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (23) | [runtime](../packages/runtime/CONTRACT.md) |
+| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` (proposed: `SessionModels`, `SessionHistory`) | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (23) | [runtime](../packages/runtime/CONTRACT.md) |
 | Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
 | Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (26) | [workspace](../packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (21) | [sandbox](../packages/sandbox/CONTRACT.md) |
@@ -249,3 +249,11 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
     open: how the runtime reads an attachment's bytes (through the host that uploaded it, by a host tool or a signed
     URL, or from a store the platform owns), and whether the organisation's configuration also sets attachment limits
     (count, size, types) next to the model list.
+15. **Session history pages. Proposed (28 Oct 2026), implemented in the in-memory and SQL runtimes, the session API
+    and the Cloudflare gateway (issue #6).** `SessionHistory.history(ctx, sessionId, { cursor | before, limit })`
+    answers a `SessionHistoryPage`, newest first, `nextCursor` while older items exist (limit default 50, at most
+    200, a viewer may read it). A cursor names an item, not an offset, so the pages behind it stay the same while new
+    turns arrive; `before` pages back from an item a client already holds, as the protocol's `history` frame does.
+    Opt-in suite cases: `registerRuntimeConformance(..., { history: true })`. Still open: whether the targets'
+    runtimes (the SessionDO, the self-hosted gateway) serve it before it is settled, and whether it joins
+    `SessionRuntime` or stays its own interface.

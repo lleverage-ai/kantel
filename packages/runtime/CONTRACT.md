@@ -25,6 +25,11 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
   a file the host uploaded). `@harbour/ui`'s composer takes the same shapes. The in-memory runtime and the HTTP
   handler ignore `model` and `attachments` until they adopt them, and still require `text`; no suite case covers them
   yet.
+- Proposed (open question 15 in docs/contracts.md): `SessionHistory.history`, a session's transcript in pages, newest
+  first, served as `history` on the runtime service and `GET /sessions/:id/history`. The `history:` suite cases run
+  with `{ history: true }`: the latest page first and cursors back to the start without a repeat or a gap; pages
+  behind a cursor unchanged while new turns arrive; `before` an item a client holds; `invalid` for a malformed
+  request, `not_found` for an unknown item or session, and project access refusing an operator outside the project.
 
 ## Rules and the suite cases that enforce them
 
