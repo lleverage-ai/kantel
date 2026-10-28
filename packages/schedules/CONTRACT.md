@@ -18,7 +18,9 @@ Execution is retried rather than exactly-once: a handler keys its idempotent mar
 ## Key operations
 
 `create`, `update`, `pause`, `resume`, `end` for humans and services. `preview` lists the next due times without
-materialising them. A scheduler loop calls `tick`; runners call `claim`, then `complete` or, for checks, `reportCheck`.
+materialising them. A scheduler loop calls `tick`; runners call `claim`, `renew` while a run is long, then `complete`
+or, for checks, `reportCheck`. Proposed (issue #23): `claim` returns a `ClaimedOccurrence`, the occurrence with its
+schedule, so a runner knows what to run without another call, and `renew` extends a held lease.
 The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `@harbour/schedules`, with
 `zonedToUtc` and `utcToZoned`, compute due times with `Intl.DateTimeFormat` only.
 
@@ -39,7 +41,8 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
   it completes".
 - Claims are exclusive under a lease, the oldest first, and only a live claimant finishes: "claims the oldest claimable
   occurrence first", "keeps a claim exclusive until its lease passes, then hands it over and refuses the first runner",
-  "lets only the claimant report a check".
+  "lets only the claimant report a check", "renews a held claim's lease, and refuses to renew one that lapsed or another
+  runner holds".
 - Several schedulers may share one store: "two schedulers ticking at once materialise each due time once, and racing
   runners never share a claim" (the provider's `peer` is a second store over the same storage).
 - A restart neither drops nor duplicates an occurrence (issue #23's definition of done): "a restart neither drops nor
@@ -61,17 +64,17 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
   does not backfill paused time on resume".
 - Input is validated: "rejects an invalid time zone, a bad HH:MM, or both or neither of at and repeat as invalid".
 - Organisation isolation: "hides another organisation's schedules as not found".
-- Worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `tick`, `claim`, `complete`
-  and `reportCheck` take a `SystemContext`. No caller, a human, a service or an agent is `forbidden`, audited once as
-  `access.denied`, and changes nothing: no occurrence is materialised, claimed or settled. Case: "worker calls: tick,
-  claim, complete and reportCheck refuse every caller but system, and change nothing".
+- Worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `tick`, `claim`, `renew`,
+  `complete` and `reportCheck` take a `SystemContext`. No caller, a human, a service or an agent is `forbidden`,
+  audited once as `access.denied`, and changes nothing: no occurrence is materialised, claimed, renewed or settled.
+  Case: "worker calls: tick, claim, renew, complete and reportCheck refuse every caller but system, and change nothing".
 - Project access (settled question 7): a schedule owned by `{ kind: "project" }` is checked against its `projectId`
   through `ProjectAccess.require`, after the organisation lookup (another organisation's schedule stays `not_found`) and
   after the agent rule (agents stay `forbidden` on changes, unaudited). `create`, `update`, `pause`, `resume` and `end`
   need `operator`; `get`, `preview` and `listOccurrences` need `viewer`. Operations are `schedules.<method>`, with
   subject `{ kind: "schedules.schedule", id }` once the schedule exists. `list` keeps a project's schedules only when
   the caller `allows` viewer on that project, before the page is cut. Organisation- and user-owned schedules have no
-  project check. `tick`, `claim`, `complete` and `reportCheck` are worker calls (below). Cases: "project
+  project check. `tick`, `claim`, `renew`, `complete` and `reportCheck` are worker calls (below). Cases: "project
   access: refuses an operator outside the project every change and read of its schedule, changing nothing", "project
   access: refuses an agent whose session belongs to another project, changing nothing", "project access: refuses an
   agent whose session was closed", "project access: lists leave out another project's schedules, and pages hold only
@@ -112,7 +115,38 @@ idempotent statements) first. It passes the whole suite on PGlite, `node:sqlite`
   by the occurrence's new token, so a runner whose lease lapsed changes nothing.
 - Every time is the injected clock's, passed in as a parameter; the database's clock is never read.
 
-Neither store runs a scheduler loop; that is the next part of issue #23.
+## The scheduler loop and its handlers
+
+`createScheduleRunner({ schedules, runnerId, handlers, clock?, timers?, leaseMs?, concurrency?, timeoutMs?, onRaised?,
+onError? })` in `@harbour/schedules/runner` runs over either store. `runOnce()` ticks, then claims and runs
+occurrences `concurrency` at a time until none is claimable; a target calls it from its alarm (a Durable Object alarm,
+a timer) or calls `start(intervalMs)`. Any number of runners may share one store. Its tests (`test/runner.test.ts`)
+drive it with the manual clock and manual timers:
+
+- A run holds its lease while its handler works, renewing it every third of `leaseMs` until the handler returns. If a
+  renewal is refused, another runner has the occurrence: the handler's signal aborts and its result is dropped
+  (`lost`), so a run is finished once.
+- Execution is at least once, finishing exactly once: a runner that dies leaves its lease to lapse and the next runner
+  runs the same occurrence as attempt 2. `stop()` aborts runs in flight and leaves them to lapse the same way
+  (`interrupted`). Handlers make a retry safe by keying what they do by the occurrence's ID.
+- A handler past its kind's time limit (default 10 minutes, a task 2 hours) is aborted; the attempt fails once it
+  returns, and the lease is held until then, so the next attempt never overlaps it.
+- A check's outcome goes through `reportCheck`; what it raised goes to `onRaised` for the host to act on.
+
+`@harbour/schedules/handlers` has one handler per kind, after Sal's:
+
+- `createTaskHandler({ runtime, directory, waitForRun? })` starts a session through the public session API only:
+  `runtime.create` (labelled `harbour.schedule` and `harbour.occurrence`), `runtime.prompt` with `requestId`
+  `schedule:<occurrence>`, then `runtime.wait`. A retried run finds the session by its label and the prompt by its
+  `requestId`, so it starts neither twice. The payload is `{ agentId, message, projectId?, title?, labels? }`;
+  `projectId` defaults to the owning project.
+- `createReminderHandler({ deliver, quietHours? })` hands the reminder to the host, keyed by the occurrence's ID, with
+  `holdUntil` when it fell in the owner's quiet hours and is not `urgent`.
+- `createCheckHandler({ execute })` runs the check's command (its payload) through the target's executor, with no
+  model, and reads it by Sal's contract (`parseCheckOutput`): exit 0 healthy, 3 findings as JSON, anything else a
+  failed run; a timeout or output on 3 that breaks the contract is a failed run.
+
+The container executor for checks and the wiring into each target's alarm belong to the targets.
 
 ## Open questions
 
