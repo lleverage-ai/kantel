@@ -23,7 +23,11 @@ const key = process.env.HARBOUR_CPA_API_KEY;
 /** CPA's model IDs, or why they couldn't be read. Only the status is reported, never the request or its key. */
 async function cpaListing(root: string, apiKey: string): Promise<readonly string[] | string> {
 	try {
-		const response = await fetch(`${root}/models`, { headers: { authorization: `Bearer ${apiKey}` } });
+		const response = await fetch(`${root}/models`, {
+			headers: { authorization: `Bearer ${apiKey}` },
+			// It runs while the file is collected, where no test timeout applies; this bounds the body read too.
+			signal: AbortSignal.timeout(10_000),
+		});
 		if (!response.ok) return `CPA's /v1/models answered ${response.status}`;
 		return parseCatalogueListing(await response.json()).map((model) => model.id);
 	} catch (error) {
