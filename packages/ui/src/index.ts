@@ -53,10 +53,38 @@ export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
-export { type ComposerState, type PrimaryAction, primaryAction, shouldSend } from "./session/composer-model.ts";
+export {
+	type AttachSource,
+	attachmentKind,
+	type ComposerAttachment,
+	type ComposerAttachmentKind,
+	type ComposerAttachments,
+	type Upload,
+	type UploadContext,
+	useComposerAttachments,
+} from "./session/composer-attachments.tsx";
+export {
+	type AttachmentLimits,
+	type ComposerState,
+	checkFiles,
+	DEFAULT_PASTE_FOLD,
+	limitsSummary,
+	type PasteFold,
+	type PrimaryAction,
+	primaryAction,
+	type RejectedFile,
+	shouldSend,
+} from "./session/composer-model.ts";
 export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
 export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
+export {
+	type ComposerModelOption,
+	filterModels,
+	ModelPicker,
+	type ModelPickerProps,
+	selectedModel,
+} from "./session/model-picker.tsx";
 export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
 export {
 	ConnectionState,

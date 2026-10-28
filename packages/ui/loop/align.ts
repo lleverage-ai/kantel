@@ -169,6 +169,146 @@ export function measureAlignment(): Misalignment[] {
 		const line = text === null ? null : textLine(text);
 		if (icon !== null && visible(icon) && line !== null) compare("notice icon", notice, centre(icon), line.centre);
 	}
+
+	// The composer. A control with words: the words on the control's centre, its icons on the words. A part that
+	// should be there and can't be measured fails.
+	const labelled = (
+		check: string,
+		control: Element,
+		label: Element | null,
+		icons: Iterable<Element>,
+		centred: boolean,
+	): { centre: number; baseline: number } | null => {
+		if (!visible(control)) return null;
+		const line = label === null ? null : textLine(label);
+		if (line === null) {
+			unmeasured(`${check} label`, control);
+			return null;
+		}
+		if (centred) compare(`${check} label`, control, line.centre, centre(control));
+		for (const icon of icons) if (visible(icon)) compare(`${check} icon`, control, centre(icon), line.centre);
+		return line;
+	};
+	// Model picker: the trigger's name on its centre, the spark and chevron on the name; each row's capability icon,
+	// tick and "Default" on the model's name (the description, when there is one, sits below it).
+	for (const trigger of root.querySelectorAll(".hb-model-trigger"))
+		labelled(
+			"model trigger",
+			trigger,
+			trigger.querySelector(".hb-model-trigger-label"),
+			trigger.querySelectorAll(":scope > .hb-icon"),
+			true,
+		);
+	for (const option of root.querySelectorAll(".hb-model-option")) {
+		const name = option.querySelector(".hb-model-option-name");
+		const single = option.querySelector(".hb-model-option-detail") === null;
+		const line = labelled(
+			"model row",
+			option,
+			name,
+			option.querySelectorAll(".hb-model-option-cap, .hb-model-option-check > .hb-icon"),
+			single,
+		);
+		const badge = option.querySelector(".hb-model-option-default");
+		const badgeLine = badge === null ? null : textLine(badge);
+		if (line !== null && badgeLine !== null) compare("model row default", option, badgeLine.baseline, line.baseline);
+	}
+	// The search field's magnifier on the field's words. A field has no text node to measure, but a one-line field
+	// centres its line in its content box, so its baseline is that centre plus half the font's ascent less its descent.
+	for (const search of root.querySelectorAll(".hb-model-search")) {
+		const icon = search.querySelector(":scope > .hb-icon");
+		const input = search.querySelector("input");
+		if (icon === null || input === null || !visible(icon)) continue;
+		const style = getComputedStyle(input);
+		canvas.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+		const metrics = canvas.measureText("H");
+		const box = input.getBoundingClientRect();
+		const top = box.top + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.borderTopWidth);
+		const bottom = box.bottom - Number.parseFloat(style.paddingBottom) - Number.parseFloat(style.borderBottomWidth);
+		const baseline = (top + bottom) / 2 + (metrics.fontBoundingBoxAscent - metrics.fontBoundingBoxDescent) / 2;
+		compare("model search icon", search, centre(icon), baseline - metrics.actualBoundingBoxAscent / 2);
+	}
+	// Attachment chips (files and pasted text): the name on the chip's centre, the icon and buttons on the name, the
+	// size on the name's baseline.
+	for (const chip of root.querySelectorAll(".hb-composer-chip")) {
+		const line = labelled(
+			"attachment chip",
+			chip,
+			chip.querySelector(".hb-composer-chip-name"),
+			chip.querySelectorAll(":scope > .hb-icon, .hb-composer-chip-button > .hb-icon"),
+			true,
+		);
+		for (const meta of chip.querySelectorAll(".hb-composer-chip-meta, .hb-composer-progress-text")) {
+			const metaLine = visible(meta) ? textLine(meta) : null;
+			if (line !== null && metaLine !== null) compare("attachment chip size", chip, metaLine.baseline, line.baseline);
+		}
+	}
+	// Image thumbnails' remove and retry buttons, and a resting file square: the icon on its box.
+	for (const box of root.querySelectorAll(
+		".hb-composer-thumb-remove, .hb-composer-thumb-retry, span.hb-composer-rest-thumb",
+	)) {
+		const icon = box.querySelector(":scope > .hb-icon");
+		if (icon !== null && visible(box)) compare("composer icon box", box, centre(icon), centre(box));
+	}
+	// The resting count (+2) on the resting squares' centre, the upload percentage on its veil.
+	for (const more of root.querySelectorAll(".hb-composer-rest-more")) {
+		const row = more.parentElement;
+		const square = row?.querySelector(".hb-composer-rest-thumb");
+		const line = visible(more) ? textLine(more) : null;
+		if (square !== null && square !== undefined && line !== null)
+			compare("resting count", more, line.centre, centre(square));
+	}
+	// Notes (a blocked send, a failed upload) and the folded reason: the icon on the first line.
+	for (const note of root.querySelectorAll(".hb-composer-note"))
+		labelled(
+			"composer note",
+			note,
+			note.querySelector(":scope > span"),
+			note.querySelectorAll(":scope > .hb-icon"),
+			false,
+		);
+	// Words beside the primary action (Send, Steer, Stop): a resting composer's one-line field and a disabled
+	// composer's one-line reason, level with the button. A field has no text node, so its first line is placed from its
+	// font: the line box starts at the content box's top, with the font's content area centred in it.
+	for (const composer of root.querySelectorAll(".hb-composer")) {
+		const action = composer.querySelector(".hb-composer-action");
+		if (action === null || !visible(action)) continue;
+		const field = composer.hasAttribute("data-rest") ? composer.querySelector("textarea") : null;
+		if (field !== null && visible(field)) {
+			const style = getComputedStyle(field);
+			canvas.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+			const metrics = canvas.measureText("H");
+			const line = Number.parseFloat(style.lineHeight);
+			const top =
+				field.getBoundingClientRect().top +
+				Number.parseFloat(style.paddingTop) +
+				Number.parseFloat(style.borderTopWidth) -
+				field.scrollTop;
+			const baseline = top + line / 2 + (metrics.fontBoundingBoxAscent - metrics.fontBoundingBoxDescent) / 2;
+			if (Number.isFinite(line))
+				compare("resting field", composer, baseline - metrics.actualBoundingBoxAscent / 2, centre(action));
+			else unmeasured("resting field", composer);
+		}
+		const reason = composer.querySelector(".hb-composer-reason-text");
+		if (reason !== null && visible(reason)) {
+			const line = textLine(reason);
+			const size = Number.parseFloat(getComputedStyle(reason).fontSize);
+			const oneLine = reason.getBoundingClientRect().height < size * 2;
+			if (line === null) unmeasured("disabled reason", composer);
+			else if (oneLine) compare("disabled reason", composer, line.centre, centre(action));
+		}
+	}
+	// The send hint: the key's word on the words beside it.
+	for (const hint of root.querySelectorAll(".hb-composer-hint")) {
+		const key = hint.querySelector(".hb-kbd");
+		const words = hint.querySelector(":scope > span:not(.hb-kbd)");
+		const keyLine = key === null || !visible(hint) ? null : textLine(key);
+		const wordsLine = words === null ? null : textLine(words);
+		if (keyLine !== null && wordsLine !== null && key !== null) {
+			compare("send hint key", hint, keyLine.centre, centre(key));
+			compare("send hint words", hint, wordsLine.centre, centre(key));
+		}
+	}
 	return out;
 }
 
