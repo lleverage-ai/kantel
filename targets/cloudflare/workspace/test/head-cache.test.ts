@@ -34,13 +34,31 @@ describe("Cloudflare workspaces with a head cache", () => {
 		expect((await plain.get(ctx, record.id)).head).toBe(2);
 	});
 
-	it("loads a head once from R2 when the cache is empty, as after a restart", async () => {
+	it("loads a head once from R2 when the cache is empty, as on the first start after this change", async () => {
 		const prefix = `m1-cf1/${crypto.randomUUID()}`;
 		const record = await createCloudflareWorkspaces({ bucket: r2.bucket, prefix }).create(ctx, { owner, seed });
 		const { bucket, counts } = countingHeads(r2.bucket);
 		const workspaces = createCloudflareWorkspaces({ bucket, prefix, headCache: memoryHeadCache() });
 		for (let i = 0; i < 3; i++) expect((await workspaces.get(ctx, record.id)).head).toBe(1);
 		expect(counts.heads).toBe(1);
+	});
+
+	it("reuses the heads a restarted store finds in its persisted cache, and commits on them", async () => {
+		const prefix = `m1-cf1/${crypto.randomUUID()}`;
+		const cache = memoryHeadCache();
+		const first = createCloudflareWorkspaces({ bucket: r2.bucket, prefix, headCache: cache });
+		const record = await first.create(ctx, { owner, seed });
+		await first.commit(ctx, record.id, { baseVersion: 1, changes: [{ op: "put", path: "a.txt", content: "v2" }] });
+
+		// A new store over the same cache and bucket: the object after an eviction, with nothing in memory.
+		const { bucket, counts } = countingHeads(r2.bucket);
+		const second = createCloudflareWorkspaces({ bucket, prefix, headCache: cache });
+		expect((await second.get(ctx, record.id)).head).toBe(2);
+		await second.commit(ctx, record.id, { baseVersion: 2, changes: [{ op: "put", path: "a.txt", content: "v3" }] });
+		expect(text((await second.read(ctx, record.id, "a.txt")).content)).toBe("v3");
+		expect((await second.history(ctx, record.id)).items.map((item) => item.version)).toEqual([3, 2, 1, 0]);
+		expect(counts.heads).toBe(0);
+		expect((await createCloudflareWorkspaces({ bucket: r2.bucket, prefix }).get(ctx, record.id)).head).toBe(3);
 	});
 
 	it("drops a head another writer moved when its next write fails on it", async () => {
@@ -136,13 +154,13 @@ describe("Cloudflare workspaces with a head cache", () => {
 			bucket: r2.bucket,
 			prefix,
 			headCache: {
-				get: async () => {
+				get: () => {
 					throw new Error("down");
 				},
-				set: async () => {
+				set: () => {
 					throw new Error("down");
 				},
-				delete: async () => undefined,
+				delete: () => undefined,
 			},
 		});
 		expect((await broken.load(record.id))?.record.head).toBe(0);

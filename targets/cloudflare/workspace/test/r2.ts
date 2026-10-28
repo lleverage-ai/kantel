@@ -19,11 +19,11 @@ export function memoryHeadCache(): HeadCache & { readonly heads: Map<string, Cac
 	const heads = new Map<string, CachedHead>();
 	return {
 		heads,
-		get: async (id) => heads.get(id),
-		set: async (id, head) => {
+		get: (id) => heads.get(id),
+		set: (id, head) => {
 			heads.set(id, head);
 		},
-		delete: async (id) => {
+		delete: (id) => {
 			heads.delete(id);
 		},
 	};

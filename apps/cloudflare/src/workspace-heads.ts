@@ -7,7 +7,7 @@
  * SessionDO; see README.md's Decisions). The store drops a head before writing it and puts back only what it wrote, and
  * a head made stale some other way fails the next write's conditional put, which drops it.
  *
- * Synchronous storage (`ctx.storage.kv`), so a get, set and delete apply in the order they are called.
+ * Synchronous storage (`ctx.storage.kv`), as `HeadCache` requires: a get, set and delete apply when called, in order.
  */
 
 import type { CachedHead, HeadCache } from "@harbour/cloudflare-workspace";
@@ -25,16 +25,16 @@ export const WORKSPACE_HEAD_PREFIX = "workspace-head:";
 export function durableHeadCache(kv: SyncKvLike): HeadCache {
 	const key = (id: WorkspaceId) => `${WORKSPACE_HEAD_PREFIX}${id}`;
 	return {
-		async get(id) {
+		get(id) {
 			const value = kv.get<CachedHead>(key(id));
 			return value !== undefined && typeof value.etag === "string" && typeof value.text === "string"
 				? value
 				: undefined;
 		},
-		async set(id, head) {
+		set(id, head) {
 			kv.put<CachedHead>(key(id), { etag: head.etag, text: head.text });
 		},
-		async delete(id) {
+		delete(id) {
 			kv.delete(key(id));
 		},
 	};

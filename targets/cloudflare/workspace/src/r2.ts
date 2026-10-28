@@ -56,13 +56,15 @@ export interface CachedHead {
 }
 
 /**
- * Somewhere to keep heads in front of R2, such as a Durable Object's storage. A failed `get` or `set` is only a miss; a
- * failed `delete` fails the write it comes before.
+ * Somewhere to keep heads in front of R2, such as a Durable Object's synchronous storage (`ctx.storage.kv`).
+ * Synchronous on purpose: the store's guards decide whether to `set` just before calling it, so each call must take
+ * effect when it is made, in call order. A failed `get` or `set` is only a miss; a failed `delete` fails the write it
+ * comes before.
  */
 export interface HeadCache {
-	get(id: WorkspaceId): Promise<CachedHead | undefined>;
-	set(id: WorkspaceId, head: CachedHead): Promise<void>;
-	delete(id: WorkspaceId): Promise<void>;
+	get(id: WorkspaceId): CachedHead | undefined;
+	set(id: WorkspaceId, head: CachedHead): void;
+	delete(id: WorkspaceId): void;
 }
 
 export interface R2WorkspaceStoreOptions {
@@ -104,22 +106,25 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 	const inFlight = new Map<WorkspaceId, number>();
 	const inFlightOf = (id: WorkspaceId) => inFlight.get(id) ?? 0;
 
-	async function cached(id: WorkspaceId): Promise<CachedHead | undefined> {
+	function cached(id: WorkspaceId): CachedHead | undefined {
 		try {
-			return await headCache?.get(id);
+			return headCache?.get(id);
 		} catch (error) {
 			console.warn("harbour: the workspace head cache could not be read", error);
 			return undefined;
 		}
 	}
 
-	async function remember(id: WorkspaceId, since: number, head: CachedHead): Promise<void> {
+	// No await between the check and the `set`, so nothing can start in between.
+	function remember(id: WorkspaceId, since: number, head: CachedHead): void {
 		if (headCache === undefined || writesOf(id) !== since) return;
 		try {
-			await headCache.set(id, head);
+			headCache.set(id, head);
 		} catch (error) {
 			console.warn("harbour: the workspace head cache could not be written", error);
-			await headCache.delete(id).catch(() => undefined);
+			try {
+				headCache.delete(id);
+			} catch {}
 		}
 	}
 
@@ -133,9 +138,9 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		writes.set(id, since);
 		inFlight.set(id, inFlightOf(id) + 1);
 		try {
-			await headCache.delete(id);
+			headCache.delete(id);
 			const written = await write();
-			if (written !== undefined) await remember(id, since, written);
+			if (written !== undefined) remember(id, since, written);
 			return written !== undefined;
 		} finally {
 			const left = inFlightOf(id) - 1;
@@ -147,7 +152,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 	async function documentOf(current: LoadedHead): Promise<HeadDocument> {
 		const known = documents.get(current);
 		if (known !== undefined) return known;
-		const hit = await cached(current.record.id);
+		const hit = cached(current.record.id);
 		if (hit !== undefined && hit.etag === current.token) return parseHead(hit.text, current.record.id);
 		const object = await bucket.get(headKey(current.record.id));
 		if (object === null || object.etag !== current.token) {
@@ -202,7 +207,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 
 	return {
 		async load(id) {
-			const hit = await cached(id);
+			const hit = cached(id);
 			if (hit !== undefined) return loaded(parseHead(hit.text, id), hit.etag);
 			const since = writesOf(id);
 			const quiet = inFlightOf(id) === 0;
@@ -210,7 +215,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 			if (object === null) return undefined;
 			const text = await object.text();
 			const head = loaded(parseHead(text, id), object.etag);
-			if (quiet) await remember(id, since, { etag: object.etag, text });
+			if (quiet) remember(id, since, { etag: object.etag, text });
 			return head;
 		},
 

@@ -15,7 +15,8 @@ first, so history and old versions read from `ws/<id>/versions/<n>.json`. Blobs 
 `@harbour/workspace/stored`'s keys under the prefix.
 
 With `headCache`, each head's document and etag are kept in front of R2 (the Cloudflare app keeps them in its stack
-object's storage), so a load makes no R2 request. Every write drops the cached head before it starts and puts back only
+object's synchronous storage; the cache must be synchronous, so each call applies when made), so a load makes no R2
+request. Every write drops the cached head before it starts and puts back only
 what it wrote, if no other write overlapped it; a load caches what it read only if no write was in flight or started
 meanwhile. Use it only where every write goes through the one store. A head moved anywhere else stays cached until a
 write here fails its conditional put on it, which drops it.

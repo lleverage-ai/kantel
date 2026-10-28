@@ -14,21 +14,21 @@ function memoryKv(): SyncKvLike & { readonly values: Map<string, unknown> } {
 }
 
 describe("workspace heads in the stack object's storage", () => {
-	it("keeps each head under its own prefixed key, and drops it", async () => {
+	it("keeps each head under its own prefixed key, and drops it", () => {
 		const kv = memoryKv();
 		const cache = durableHeadCache(kv);
-		expect(await cache.get("ws-1")).toBeUndefined();
-		await cache.set("ws-1", { etag: "e1", text: "{}" });
+		expect(cache.get("ws-1")).toBeUndefined();
+		cache.set("ws-1", { etag: "e1", text: "{}" });
 		expect(kv.values.get(`${WORKSPACE_HEAD_PREFIX}ws-1`)).toEqual({ etag: "e1", text: "{}" });
-		expect(await cache.get("ws-1")).toEqual({ etag: "e1", text: "{}" });
-		expect(await cache.get("ws-2")).toBeUndefined();
-		await cache.delete("ws-1");
-		expect(await cache.get("ws-1")).toBeUndefined();
+		expect(cache.get("ws-1")).toEqual({ etag: "e1", text: "{}" });
+		expect(cache.get("ws-2")).toBeUndefined();
+		cache.delete("ws-1");
+		expect(cache.get("ws-1")).toBeUndefined();
 	});
 
-	it("treats a malformed entry as a miss", async () => {
+	it("treats a malformed entry as a miss", () => {
 		const kv = memoryKv();
 		kv.put(`${WORKSPACE_HEAD_PREFIX}ws-1`, { etag: 1 });
-		expect(await durableHeadCache(kv).get("ws-1")).toBeUndefined();
+		expect(durableHeadCache(kv).get("ws-1")).toBeUndefined();
 	});
 });
