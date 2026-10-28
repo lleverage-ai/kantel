@@ -20,7 +20,9 @@
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
 		"@harbour/contracts": "workspace:*",
-		"@harbour/protocol": "workspace:*"
+		"@harbour/memory": "workspace:*",
+		"@harbour/protocol": "workspace:*",
+		"@harbour/skills": "workspace:*"
 	},
 	"devDependencies": {
 		"@harbour/browser": "workspace:*",

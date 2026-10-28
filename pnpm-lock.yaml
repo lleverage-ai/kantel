@@ -411,9 +411,15 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@harbour/memory":
+        specifier: workspace:*
+        version: link:../memory
       "@harbour/protocol":
         specifier: workspace:*
         version: link:../protocol
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../skills
     devDependencies:
       "@harbour/browser":
         specifier: workspace:*
