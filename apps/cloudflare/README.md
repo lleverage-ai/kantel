@@ -104,6 +104,10 @@ Every API call authenticates with `createAuthenticator` from `@harbour/identity`
 - Host apps: `Authorization: Bearer hbr_…`, an API key scoped to projects.
 
 The team domain and AUD come as a pair; one without the other is refused (503) rather than served with sign-in off.
+Project access asks identity for the caller's role on every item a list returns, and each answer is two or three D1
+queries, so the runtime's directory looks a role up once per request (`src/role-memo.ts`): memoised per signed-in
+actor object, which the authenticator makes afresh for each request, and for at most 1 s.
+
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
 
