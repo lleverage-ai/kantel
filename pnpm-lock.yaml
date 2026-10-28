@@ -40,6 +40,9 @@ importers:
       "@harbour/identity":
         specifier: workspace:*
         version: link:../../packages/identity
+      "@harbour/model-gateway":
+        specifier: workspace:*
+        version: link:../model-gateway
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -62,6 +65,9 @@ importers:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../packages/testing
       "@types/node":
         specifier: 24.19.2
         version: 24.19.2

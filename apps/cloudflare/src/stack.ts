@@ -18,6 +18,7 @@ import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import {
 	type AgentProfile,
+	type AuditSink,
 	type AuditStore,
 	type Authenticator,
 	type CallContext,
@@ -46,6 +47,7 @@ import { createStoredWorkspaces, type WorkspaceStore } from "@harbour/workspace/
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
+import type { StackModels } from "./models.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -117,6 +119,11 @@ export interface StackOptions {
 	/** Used to fetch Access's signing keys. Default the global `fetch`; tests and `wrangler dev` pass a mock issuer's. */
 	readonly accessFetch?: typeof fetch;
 	readonly storage?: StackStorage;
+	/**
+	 * The models sessions run on, given the stack's audit store for `model.call` events: the model gateway
+	 * (`createGatewayModels`) when the Worker can reach CPA. Default the echo model.
+	 */
+	readonly models?: (deps: { readonly audit: AuditSink; readonly clock: Clock }) => StackModels;
 }
 
 export interface Stack {
@@ -183,7 +190,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	}
 	const authenticator = createAuthenticator({ identity, providers });
 
-	const runtimeOptions = { clock, audit, identity, models: createEchoModels() };
+	const models: StackModels = options.models?.({ audit, clock }) ?? { models: createEchoModels() };
+	const runtimeOptions = { clock, audit, identity, ...models };
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
 	const core =
