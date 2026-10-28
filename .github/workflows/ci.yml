@@ -15,8 +15,10 @@ permissions:
 jobs:
   check:
     name: Install, typecheck, lint and test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    runs-on: [self-hosted, harbour]
+    # Four test workers on a shared host take about 7 minutes; GitHub-hosted took about 4.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +52,11 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # The runner's host has 48 cores shared with other work. Left alone, vitest starts a worker per core, and the
+      # PGlite suites run past their 10 s timeout. Four workers is a GitHub-hosted runner's size, what they were tuned on.
       - name: Test
+        env:
+          VITEST_MAX_WORKERS: "4"
         run: |
           pnpm test
           pnpm -r --if-present test
