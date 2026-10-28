@@ -29,9 +29,10 @@ permissions:
 jobs:
   image:
     name: Build, check and record the sandbox image
-    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget. It runs
-    # one job at a time for every workflow, so this job stays lean.
-    runs-on: [self-hosted, harbour]
+    # Harbour's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
+    # budget. `gvisor` marks a runner whose Docker has the runsc and runsc-kvm runtimes; jobs use them through Docker,
+    # never runsc or sudo directly. Each runner runs one job at a time for every workflow, so this job stays lean.
+    runs-on: [self-hosted, harbour, gvisor]
     timeout-minutes: 30
     env:
       # This run's own tag on the host's Docker, removed in "Clean up", so runs never overwrite each other's image.
@@ -100,7 +101,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           printf '{"commit":"%s","digest":"%s"}\n' "$GITHUB_SHA" "$digest" > "$RUNNER_TEMP/sandbox-image.digest.json"
 
+      # The digest is already in the job summary above, and nothing downloads this artifact. The upload counts against
+      # the account's Actions artifact storage, so a full quota mustn't fail the image check.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: sandbox-image-digest
           path: ${{ runner.temp }}/sandbox-image.digest.json
