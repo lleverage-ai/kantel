@@ -20,6 +20,11 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - `AgentProfiles`: `put`, `get`, `list`. `HostToolBridge`: `register` (returns a subscription), `list`.
 - `SessionEndHook`: `register(name, teardown)`. The runtime runs every registered teardown when a session is closed or
   aborted; the in-memory components register as `sandbox`, `browser`, `capability` and `vault`.
+- Proposed, not yet implemented: `SessionModels.listModels` (the `ModelOption`s a session's prompts may name, for a
+  client's model picker) and `PromptInput.model` and `PromptInput.attachments` (`PromptAttachment`, a reference to
+  a file the host uploaded). `@harbour/ui`'s composer takes the same shapes. The in-memory runtime and the HTTP
+  handler ignore `model` and `attachments` until they adopt them, and still require `text`; no suite case covers them
+  yet.
 
 ## Rules and the suite cases that enforce them
 
@@ -196,3 +201,5 @@ suites, and the targets wiring `harbourModels` to it. Until then no target passe
 - Pi types appear in the exports of `@harbour/runtime` (the projector, `hostToolAsPiTool`) for targets to reuse; hosts
   should import only `@harbour/contracts`.
 - Should a host's tools be offered to the model only when registered (as now), or always, failing at call time?
+- How the runtime reads a `PromptAttachment`'s bytes: through the host that uploaded it (a host tool or a signed URL),
+  or from a store the platform owns. See open question 14 in docs/contracts.md.

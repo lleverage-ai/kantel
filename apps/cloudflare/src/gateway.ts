@@ -6,6 +6,7 @@
  * | `POST /v1/workspaces` | the workspace write API (`@harbour/workspace/write-api`): a seeded workspace, operators only |
  * | `/v1/workspaces/…` | the workspace read API (`@harbour/workspace/read-api`, PR #58) |
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
+ * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -14,10 +15,15 @@
 import { createAuditQueryHandler } from "@harbour/audit/http";
 import { AUDIT_EVENT_PATH, AUDIT_EVENTS_PATH, type AuthenticatedCaller, callContextFor } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
-import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
+import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
+import { MEASURE_PATH, measureIsolateReady, measurementWorkspace } from "./measure.ts";
+import { readLimited } from "./route.ts";
 import type { Stack } from "./stack.ts";
+
+/** The measurement's body is `{ "backend"?: string }`: a few bytes. */
+const MEASURE_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
 
@@ -51,36 +57,92 @@ export function createGateway(stack: Stack): Gateway {
 	// The read API takes a call context, not an authenticator, and answers a refused one as 403. The gateway
 	// authenticates first, so a missing or bad credential is a 401 with a challenge, as on every other route.
 	const callers = new WeakMap<Request, AuthenticatedCaller>();
-	const authenticate = async (request: Request) => {
+	const callContext = async (request: Request) => {
 		const caller = callers.get(request);
 		if (caller === undefined) throw new Error("the gateway did not authenticate this request");
 		const requestId = request.headers.get("harbour-request-id") ?? undefined;
 		return callContextFor(caller, { ...(requestId === undefined ? {} : { requestId }), signal: request.signal });
 	};
-	const workspaces = createWorkspaceReadApi({ workspaces: stack.workspaces, authenticate });
+	const workspaces = createWorkspaceReadApi({ workspaces: stack.workspaces, authenticate: callContext });
 	// The write route is tried first: it answers only `POST /v1/workspaces`, which the read API would refuse as 405. The
 	// stack's workspaces seed git refs with its fetcher; nothing here acquires a sandbox.
 	const createWorkspace = createWorkspaceWriteApi({
 		workspaces: stack.workspaces,
 		access: stack.access,
-		authenticate,
+		authenticate: callContext,
 	});
+
+	/** The caller, or the response refusing them: 401 with a challenge for a missing or bad credential. */
+	const authenticate = async (request: Request): Promise<AuthenticatedCaller | Response> => {
+		try {
+			return await stack.authenticator.authenticate(request);
+		} catch (error) {
+			const refused = authenticationFailureResponse(error);
+			if (refused !== undefined) return refused;
+			return Response.json({ error: { code: "unavailable", message: "Sign-in is unavailable" } }, { status: 503 });
+		}
+	};
+
+	const workspace = measurementWorkspace(stack);
+	const measure = async (request: Request): Promise<Response> => {
+		if (request.method !== "POST") {
+			return Response.json(
+				{ error: { code: "invalid", message: "POST only" } },
+				{ status: 405, headers: { allow: "POST", "cache-control": "no-store" } },
+			);
+		}
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		let input: { backend?: string } = {};
+		const bytes = await readLimited(request, MEASURE_BODY_LIMIT).catch(() => undefined);
+		if (bytes === undefined) {
+			return Response.json(
+				{ error: { code: "invalid", message: `The body is unreadable or larger than ${MEASURE_BODY_LIMIT} bytes` } },
+				{ status: 413, headers: { "cache-control": "no-store" } },
+			);
+		}
+		const text = new TextDecoder().decode(bytes);
+		if (text.trim() !== "") {
+			const parsed: unknown = (() => {
+				try {
+					return JSON.parse(text);
+				} catch {
+					return undefined;
+				}
+			})();
+			const backend = (parsed as { backend?: unknown } | undefined)?.backend;
+			if (typeof parsed !== "object" || parsed === null || (backend !== undefined && typeof backend !== "string")) {
+				return Response.json(
+					{ error: { code: "invalid", message: 'The body is { "backend"?: string }' } },
+					{ status: 400, headers: { "cache-control": "no-store" } },
+				);
+			}
+			input = backend === undefined ? {} : { backend };
+		}
+		try {
+			const ctx = callContextFor(caller, { signal: request.signal });
+			return Response.json(await measureIsolateReady(stack, ctx, workspace, input), {
+				headers: { "cache-control": "no-store" },
+			});
+		} catch (error) {
+			return errorResponse(error);
+		}
+	};
 
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
 			if (under(path, WORKSPACE_READ_API_BASE)) {
-				try {
-					callers.set(request, await stack.authenticator.authenticate(request));
-				} catch (error) {
+				const caller = await authenticate(request);
+				if (caller instanceof Response) {
 					// A refused write's body is never read; cancel it so the stream isn't left open.
 					await request.body?.cancel().catch(() => undefined);
-					const refused = authenticationFailureResponse(error);
-					if (refused !== undefined) return refused;
-					return Response.json({ error: { code: "unavailable", message: "Sign-in is unavailable" } }, { status: 503 });
+					return caller;
 				}
+				callers.set(request, caller);
 				return (await createWorkspace(request)) ?? (await workspaces(request)) ?? notFound();
 			}
+			if (path === MEASURE_PATH) return measure(request);
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();

@@ -1,0 +1,25 @@
+{
+	"name": "@harbour/spike-ready-preload",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "#17 option (a): measure a pre-loaded isolate per SessionDO on Cloudflare against today's cold path",
+	"license": "Apache-2.0",
+	"scripts": {
+		"build:isolate": "node scripts/build-isolate.mjs",
+		"typecheck": "tsc -p tsconfig.json",
+		"deploy": "pnpm build:isolate && wrangler deploy"
+	},
+	"dependencies": {
+		"@earendil-works/chord": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
+		"@harbour/isolate-host": "workspace:*"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "5.20261027.1",
+		"esbuild": "0.28.2",
+		"typescript": "7.0.2",
+		"wrangler": "4.153.0"
+	}
+}

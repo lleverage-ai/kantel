@@ -144,6 +144,8 @@ jobs:
           HARBOUR_VAULT_KEY: ${{ secrets.HARBOUR_VAULT_KEY }}
           HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_MODEL_GATEWAY_TOKEN }}
           HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN }}
+          # CLIProxyAPI's client key: the vault object keeps it as the model gateway's platform item (src/models.ts).
+          HARBOUR_CPA_API_KEY: ${{ secrets.HARBOUR_CPA_API_KEY }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.

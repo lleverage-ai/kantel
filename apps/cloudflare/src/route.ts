@@ -50,7 +50,7 @@ async function buffered(request: Request, limit: number): Promise<Request | Resp
 }
 
 /** The whole body, or `undefined` once it passes `limit` bytes. Counts what arrives, not what Content-Length claims. */
-async function readLimited(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | undefined> {
+export async function readLimited(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | undefined> {
 	const declared = Number(request.headers.get("content-length") ?? "0");
 	if (declared > limit) return undefined;
 	if (request.body === null) return new Uint8Array();

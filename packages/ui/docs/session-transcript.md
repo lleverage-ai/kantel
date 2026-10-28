@@ -22,7 +22,12 @@ parent's height.
 ```
 
 Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `loading`, `empty`, `error`,
-`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `className`.
+`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `dock`, `className`.
+
+`dock` floats a node, usually a `Composer`, over the transcript's foot, as T3 Code's thread does: the list scrolls
+under its glass, and the end of the list makes room for it (its measured height plus 16px). A docked `Composer`
+rests (folds to one line) while the reader scrolls back and comes back at the end; files dropped anywhere on the
+transcript go to it. See [session-composer.md](session-composer.md#docked-in-a-transcript).
 
 **Not for** short lists of messages outside a session (a preview, a search result): render `UserMessage` and
 `AssistantMessage` directly. Not a live region: screen readers are not read every token.
@@ -40,6 +45,11 @@ Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `
 - *Working:* while the last answer streams with no words and no thought yet, the transcript ends with "Working for
   12s" (`AssistantMessage`'s working row), timed from when the turn started: the last message the person sent before
   the answer, other than a steer. When that message is not loaded (it is in an older page), it says "Working".
+- *Docked:* with `dock`, "Scroll to end" sits just above the dock, and the empty state and skeleton stay clear of
+  it. A wheel gesture of 24px or more up the list, a finger dragging it, or Page Up or Home rests a docked composer;
+  reaching the end, "Scroll to end" or focusing the composer wakes it. While it rests the room at the end keeps the
+  expanded composer's height, so the text you are reading doesn't move when it folds. Dragging files over the
+  transcript shows a dashed frame with "Drop files to attach" and the host's limits, while the composer takes files.
 - Cards render through `renderCard`, with the host's handlers. Without it they show read-only, from the same
   components: a vault request's terms and binding code, a question and its options, a browser request's reason,
   each waiting with nothing to press. A card is never reduced to its type.
@@ -56,7 +66,8 @@ never renders a row on its own. `renderCard` is a row prop: pass a stable functi
 changes. `onRowRender` is
 read through a ref and never causes a render; `apps/console` feeds it to its `?profile=1` panel. One `ResizeObserver`
 on the list's content and its viewport keeps the end in view while following, including when the viewport is
-resized (a phone's keyboard opening).
+resized (a phone's keyboard opening). Docked, one more `ResizeObserver` measures the dock, and passive wheel, touch
+and key listeners on the list decide when the composer rests; none of them renders unless the resting state changes.
 
 ### groupTranscript
 

@@ -1,0 +1,1613 @@
+{
+	"mode": "cold",
+	"batch": "cold",
+	"startedAt": "2026-10-28T07:52:04.214Z",
+	"params": {
+		"runs": 50,
+		"idleMs": 60000,
+		"gapMs": 1000,
+		"paceMs": 1000,
+		"keepAlive": "none",
+		"manifestFrom": "workspace-do",
+		"workspaceId": "ws-bench"
+	},
+	"summary": {
+		"readyMs": {
+			"n": 50,
+			"p50": 1046,
+			"p95": 1404,
+			"min": 820,
+			"max": 1539
+		},
+		"clientMs": {
+			"n": 50,
+			"p50": 1078,
+			"p95": 1441,
+			"min": 842,
+			"max": 1602
+		},
+		"firstContactMs": {
+			"n": 50,
+			"p50": 415,
+			"p95": 567,
+			"min": 325,
+			"max": 896
+		},
+		"setupMs": {
+			"n": 50,
+			"p50": 258,
+			"p95": 419,
+			"min": 176,
+			"max": 537
+		},
+		"listMs": {
+			"n": 50,
+			"p50": 325,
+			"p95": 442,
+			"min": 261,
+			"max": 824
+		},
+		"workerColos": {
+			"FRA": 50
+		},
+		"doColos": {
+			"FRA": 16,
+			"AMS": 34
+		},
+		"failures": 0
+	},
+	"failures": [],
+	"results": [
+		{
+			"sessionId": "cold-1de18408-ac44-4a2c-a117-3691b5597bae",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 959,
+			"phases": {
+				"firstContactMs": 383,
+				"setupMs": 231,
+				"listMs": 345
+			},
+			"setup": {
+				"workspaceMs": 187,
+				"setupMs": 187
+			},
+			"list": {
+				"manifestMs": 221,
+				"listMs": 85,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "bfe0b753-b252-4a30-8440-aab76f661538",
+				"calls": 2
+			},
+			"who": {
+				"instance": "07e62795-74f4-45ea-8e39-40e7890ddeb3",
+				"constructedAt": 1793173924725,
+				"codeFetches": 1
+			},
+			"clientMs": 1127
+		},
+		{
+			"sessionId": "cold-261dec0f-f051-418e-a5d8-32be15bc6e95",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 915,
+			"phases": {
+				"firstContactMs": 377,
+				"setupMs": 262,
+				"listMs": 276
+			},
+			"setup": {
+				"workspaceMs": 202,
+				"setupMs": 202
+			},
+			"list": {
+				"manifestMs": 184,
+				"listMs": 62,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "1263bb7b-222e-470d-a389-5b47bcc7532f",
+				"calls": 2
+			},
+			"who": {
+				"instance": "aca9f0b3-ea03-4adc-9e30-a34607fafc65",
+				"constructedAt": 1793173926715,
+				"codeFetches": 1
+			},
+			"clientMs": 936
+		},
+		{
+			"sessionId": "cold-b5e5e2fa-01dd-4b17-849d-d55ead5c56ab",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1131,
+			"phases": {
+				"firstContactMs": 404,
+				"setupMs": 366,
+				"listMs": 361
+			},
+			"setup": {
+				"workspaceMs": 300,
+				"setupMs": 300
+			},
+			"list": {
+				"manifestMs": 257,
+				"listMs": 67,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "99eba586-6768-4d14-a3f7-ff7fdfd94de6",
+				"calls": 2
+			},
+			"who": {
+				"instance": "5be9278c-cd71-4fcb-880c-8a1089385fa9",
+				"constructedAt": 1793173928696,
+				"codeFetches": 1
+			},
+			"clientMs": 1179
+		},
+		{
+			"sessionId": "cold-0b5498f8-7468-442e-96d1-c0917f7b13f9",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 930,
+			"phases": {
+				"firstContactMs": 359,
+				"setupMs": 253,
+				"listMs": 318
+			},
+			"setup": {
+				"workspaceMs": 204,
+				"setupMs": 204
+			},
+			"list": {
+				"manifestMs": 224,
+				"listMs": 57,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "d38ba47c-571f-4f34-a6e3-76a593bc40f5",
+				"calls": 2
+			},
+			"who": {
+				"instance": "a56144d7-13eb-428c-8ba6-013df8d11831",
+				"constructedAt": 1793173930817,
+				"codeFetches": 1
+			},
+			"clientMs": 957
+		},
+		{
+			"sessionId": "cold-f80cb237-dff1-41f8-9300-f919e4ceeb57",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1352,
+			"phases": {
+				"firstContactMs": 407,
+				"setupMs": 537,
+				"listMs": 408
+			},
+			"setup": {
+				"workspaceMs": 226,
+				"setupMs": 226
+			},
+			"list": {
+				"manifestMs": 207,
+				"listMs": 111,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "ffb59f18-8a34-4f12-9039-a1885e2294c5",
+				"calls": 2
+			},
+			"who": {
+				"instance": "08fc1863-4104-403e-9d88-2d109ed7e034",
+				"constructedAt": 1793173932824,
+				"codeFetches": 1
+			},
+			"clientMs": 1382
+		},
+		{
+			"sessionId": "cold-7b8ebef8-fa32-4345-868c-0015c3fdab61",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1090,
+			"phases": {
+				"firstContactMs": 535,
+				"setupMs": 234,
+				"listMs": 321
+			},
+			"setup": {
+				"workspaceMs": 194,
+				"setupMs": 194
+			},
+			"list": {
+				"manifestMs": 175,
+				"listMs": 87,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "dc068006-fbd1-4ace-805d-79a515264b1a",
+				"calls": 2
+			},
+			"who": {
+				"instance": "ece13e32-5aaa-4838-a98b-834db51e9c84",
+				"constructedAt": 1793173935323,
+				"codeFetches": 1
+			},
+			"clientMs": 1140
+		},
+		{
+			"sessionId": "cold-beeea4f3-3890-438c-8d5a-db8fb1354cef",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1096,
+			"phases": {
+				"firstContactMs": 481,
+				"setupMs": 295,
+				"listMs": 320
+			},
+			"setup": {
+				"workspaceMs": 242,
+				"setupMs": 242
+			},
+			"list": {
+				"manifestMs": 172,
+				"listMs": 97,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "5e95afca-2a38-460f-a24d-e6b712c0d5ef",
+				"calls": 2
+			},
+			"who": {
+				"instance": "cfdca0cd-25c2-4e30-8746-d2ca09959de8",
+				"constructedAt": 1793173937456,
+				"codeFetches": 1
+			},
+			"clientMs": 1158
+		},
+		{
+			"sessionId": "cold-6ffe4229-734d-44eb-bdfb-49a864cfa40c",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 968,
+			"phases": {
+				"firstContactMs": 348,
+				"setupMs": 248,
+				"listMs": 372
+			},
+			"setup": {
+				"workspaceMs": 188,
+				"setupMs": 188
+			},
+			"list": {
+				"manifestMs": 272,
+				"listMs": 71,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "56da6aed-4c4f-4b49-b133-1d82a3d6f75e",
+				"calls": 2
+			},
+			"who": {
+				"instance": "821c7183-c088-452e-84dc-0bf8387605dd",
+				"constructedAt": 1793173939434,
+				"codeFetches": 1
+			},
+			"clientMs": 991
+		},
+		{
+			"sessionId": "cold-3f3744c2-9c3c-4cb2-b0ee-0006ec1d9980",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1058,
+			"phases": {
+				"firstContactMs": 469,
+				"setupMs": 289,
+				"listMs": 300
+			},
+			"setup": {
+				"workspaceMs": 218,
+				"setupMs": 218
+			},
+			"list": {
+				"manifestMs": 191,
+				"listMs": 72,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "6fe165eb-7f92-43b0-841a-a41ec1389fa9",
+				"calls": 2
+			},
+			"who": {
+				"instance": "c92b8b91-68b7-4e24-beff-c87ede36e40a",
+				"constructedAt": 1793173941566,
+				"codeFetches": 1
+			},
+			"clientMs": 1091
+		},
+		{
+			"sessionId": "cold-a997da62-2d28-4ed9-aae2-9b7010077b95",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1034,
+			"phases": {
+				"firstContactMs": 484,
+				"setupMs": 230,
+				"listMs": 320
+			},
+			"setup": {
+				"workspaceMs": 179,
+				"setupMs": 179
+			},
+			"list": {
+				"manifestMs": 203,
+				"listMs": 72,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "1af3266d-7cbd-4f16-b76e-fdcbd7841670",
+				"calls": 2
+			},
+			"who": {
+				"instance": "4203150e-dd39-4534-a1d6-64dbcfcd84c6",
+				"constructedAt": 1793173943655,
+				"codeFetches": 1
+			},
+			"clientMs": 1061
+		},
+		{
+			"sessionId": "cold-4628056e-65f4-40f7-ab30-255904ce9681",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1161,
+			"phases": {
+				"firstContactMs": 559,
+				"setupMs": 258,
+				"listMs": 344
+			},
+			"setup": {
+				"workspaceMs": 210,
+				"setupMs": 210
+			},
+			"list": {
+				"manifestMs": 188,
+				"listMs": 103,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "828fb0ab-9c95-4d22-8223-724f40e55a48",
+				"calls": 2
+			},
+			"who": {
+				"instance": "6a99dd73-d1a2-40bf-92b9-faa4b898e71b",
+				"constructedAt": 1793173945778,
+				"codeFetches": 1
+			},
+			"clientMs": 1196
+		},
+		{
+			"sessionId": "cold-ffb96454-240b-4883-8823-53101aeca7ef",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1046,
+			"phases": {
+				"firstContactMs": 401,
+				"setupMs": 274,
+				"listMs": 371
+			},
+			"setup": {
+				"workspaceMs": 222,
+				"setupMs": 222
+			},
+			"list": {
+				"manifestMs": 185,
+				"listMs": 107,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "7ccfc2fe-f5f6-4801-b473-b6d3db56c2eb",
+				"calls": 2
+			},
+			"who": {
+				"instance": "7dde92e5-4003-4140-aa12-682e35c9967f",
+				"constructedAt": 1793173947832,
+				"codeFetches": 1
+			},
+			"clientMs": 1076
+		},
+		{
+			"sessionId": "cold-adf651bd-45bd-4211-b2eb-9d4b8db672d4",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1085,
+			"phases": {
+				"firstContactMs": 368,
+				"setupMs": 396,
+				"listMs": 321
+			},
+			"setup": {
+				"workspaceMs": 347,
+				"setupMs": 347
+			},
+			"list": {
+				"manifestMs": 209,
+				"listMs": 70,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "4f71678c-edf6-4530-b614-2af0216fc6a2",
+				"calls": 2
+			},
+			"who": {
+				"instance": "745e891d-8cee-422b-86b0-73beb6423830",
+				"constructedAt": 1793173949923,
+				"codeFetches": 1
+			},
+			"clientMs": 1141
+		},
+		{
+			"sessionId": "cold-1159f5b0-4c96-4663-9506-f4cd9ffba51e",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1088,
+			"phases": {
+				"firstContactMs": 457,
+				"setupMs": 302,
+				"listMs": 329
+			},
+			"setup": {
+				"workspaceMs": 236,
+				"setupMs": 236
+			},
+			"list": {
+				"manifestMs": 237,
+				"listMs": 64,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "1a6657d0-8539-4600-840c-4b3bd6d88725",
+				"calls": 2
+			},
+			"who": {
+				"instance": "4eb3c06c-ee0b-48ec-9330-97f4a946c5ae",
+				"constructedAt": 1793173952125,
+				"codeFetches": 1
+			},
+			"clientMs": 1109
+		},
+		{
+			"sessionId": "cold-954fb72d-a48d-4d73-891c-988eecb50620",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 928,
+			"phases": {
+				"firstContactMs": 415,
+				"setupMs": 240,
+				"listMs": 273
+			},
+			"setup": {
+				"workspaceMs": 195,
+				"setupMs": 195
+			},
+			"list": {
+				"manifestMs": 180,
+				"listMs": 60,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "12aa250d-f385-42b2-b954-4df0d5e6545c",
+				"calls": 2
+			},
+			"who": {
+				"instance": "ec560953-e460-4b56-986f-c9195a1bb6eb",
+				"constructedAt": 1793173954224,
+				"codeFetches": 1
+			},
+			"clientMs": 980
+		},
+		{
+			"sessionId": "cold-033c0b02-9478-4ca8-89c5-b5f006e3f1cf",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1004,
+			"phases": {
+				"firstContactMs": 394,
+				"setupMs": 288,
+				"listMs": 322
+			},
+			"setup": {
+				"workspaceMs": 233,
+				"setupMs": 233
+			},
+			"list": {
+				"manifestMs": 204,
+				"listMs": 74,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "6a0d113f-74d2-4823-ad21-bdfe4f5d674f",
+				"calls": 2
+			},
+			"who": {
+				"instance": "f353ec83-e8d6-449f-b1fa-8c53e284a261",
+				"constructedAt": 1793173956159,
+				"codeFetches": 1
+			},
+			"clientMs": 1031
+		},
+		{
+			"sessionId": "cold-571e37bb-b9ab-4f14-8a6b-f3a61aadb46a",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1052,
+			"phases": {
+				"firstContactMs": 364,
+				"setupMs": 310,
+				"listMs": 378
+			},
+			"setup": {
+				"workspaceMs": 263,
+				"setupMs": 263
+			},
+			"list": {
+				"manifestMs": 187,
+				"listMs": 124,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "22d85260-ccca-4eb9-ab45-a0c483350231",
+				"calls": 2
+			},
+			"who": {
+				"instance": "d739b4c7-f53d-4203-ace7-5336b5377487",
+				"constructedAt": 1793173958165,
+				"codeFetches": 1
+			},
+			"clientMs": 1078
+		},
+		{
+			"sessionId": "cold-452752d9-ad8a-4377-b371-23bb92b32420",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 820,
+			"phases": {
+				"firstContactMs": 330,
+				"setupMs": 217,
+				"listMs": 273
+			},
+			"setup": {
+				"workspaceMs": 168,
+				"setupMs": 168
+			},
+			"list": {
+				"manifestMs": 177,
+				"listMs": 60,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "75797acb-e37b-49b8-8ff3-cb2c801b9db8",
+				"calls": 2
+			},
+			"who": {
+				"instance": "fd3bad98-5b08-43cd-bed2-e2e4b1ef9c84",
+				"constructedAt": 1793173960214,
+				"codeFetches": 1
+			},
+			"clientMs": 847
+		},
+		{
+			"sessionId": "cold-7a803031-0148-4443-a27e-a129145b4f7d",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1178,
+			"phases": {
+				"firstContactMs": 553,
+				"setupMs": 280,
+				"listMs": 345
+			},
+			"setup": {
+				"workspaceMs": 219,
+				"setupMs": 219
+			},
+			"list": {
+				"manifestMs": 241,
+				"listMs": 69,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "ba70999d-8a70-4e0c-bcdb-d1f2781ec4f5",
+				"calls": 2
+			},
+			"who": {
+				"instance": "d13f8372-6b61-4a3c-ad89-e2340fd6f5e1",
+				"constructedAt": 1793173962284,
+				"codeFetches": 1
+			},
+			"clientMs": 1204
+		},
+		{
+			"sessionId": "cold-f31e0544-1b58-4e0d-ab15-ab1f276b71a9",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1055,
+			"phases": {
+				"firstContactMs": 375,
+				"setupMs": 311,
+				"listMs": 369
+			},
+			"setup": {
+				"workspaceMs": 234,
+				"setupMs": 234
+			},
+			"list": {
+				"manifestMs": 174,
+				"listMs": 136,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "489dff4b-64d1-4971-9fc2-53847df86bfe",
+				"calls": 2
+			},
+			"who": {
+				"instance": "61e90423-7102-4ecc-abee-ebbf0745a9d4",
+				"constructedAt": 1793173964316,
+				"codeFetches": 1
+			},
+			"clientMs": 1086
+		},
+		{
+			"sessionId": "cold-75789eca-3065-44c5-aaa3-379ff3d9fd58",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 997,
+			"phases": {
+				"firstContactMs": 446,
+				"setupMs": 257,
+				"listMs": 294
+			},
+			"setup": {
+				"workspaceMs": 204,
+				"setupMs": 204
+			},
+			"list": {
+				"manifestMs": 188,
+				"listMs": 67,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "2b7e565e-6d53-47ee-8437-74723ba10815",
+				"calls": 2
+			},
+			"who": {
+				"instance": "699949b1-1317-47fe-aa19-a9be8475cb49",
+				"constructedAt": 1793173966489,
+				"codeFetches": 1
+			},
+			"clientMs": 1045
+		},
+		{
+			"sessionId": "cold-834010be-9986-4277-a2ef-4dfe197f2237",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1102,
+			"phases": {
+				"firstContactMs": 564,
+				"setupMs": 221,
+				"listMs": 317
+			},
+			"setup": {
+				"workspaceMs": 181,
+				"setupMs": 181
+			},
+			"list": {
+				"manifestMs": 178,
+				"listMs": 91,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "8fbf69aa-d481-44bf-bd17-5148408cbce7",
+				"calls": 2
+			},
+			"who": {
+				"instance": "d857cec2-3bac-4288-b5d0-8c33ace09cf2",
+				"constructedAt": 1793173968628,
+				"codeFetches": 1
+			},
+			"clientMs": 1153
+		},
+		{
+			"sessionId": "cold-5872816a-1b06-4569-86e7-0e7dd8a88c1d",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1000,
+			"phases": {
+				"firstContactMs": 455,
+				"setupMs": 242,
+				"listMs": 303
+			},
+			"setup": {
+				"workspaceMs": 188,
+				"setupMs": 188
+			},
+			"list": {
+				"manifestMs": 207,
+				"listMs": 64,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "3969b502-aa74-45a6-807f-bad2f79dccf0",
+				"calls": 2
+			},
+			"who": {
+				"instance": "859e9bc1-38e0-4a26-9765-a58ba8921330",
+				"constructedAt": 1793173970704,
+				"codeFetches": 1
+			},
+			"clientMs": 1050
+		},
+		{
+			"sessionId": "cold-7e581e06-dd58-4046-a366-5235aeff0cf5",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 1231,
+			"phases": {
+				"firstContactMs": 569,
+				"setupMs": 285,
+				"listMs": 377
+			},
+			"setup": {
+				"workspaceMs": 187,
+				"setupMs": 187
+			},
+			"list": {
+				"manifestMs": 286,
+				"listMs": 59,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "5b5489d3-b14a-4e1f-91a1-a6fb47cf7d15",
+				"calls": 2
+			},
+			"who": {
+				"instance": "b064e6e2-76bc-411e-b4b8-8cff24d4de74",
+				"constructedAt": 1793173972774,
+				"codeFetches": 1
+			},
+			"clientMs": 1254
+		},
+		{
+			"sessionId": "cold-a356f630-2d3f-4cd2-8293-20376b57d668",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1288,
+			"phases": {
+				"firstContactMs": 484,
+				"setupMs": 516,
+				"listMs": 288
+			},
+			"setup": {
+				"workspaceMs": 458,
+				"setupMs": 458
+			},
+			"list": {
+				"manifestMs": 167,
+				"listMs": 77,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "4fabf274-9d17-45d7-b93f-32b920e32d85",
+				"calls": 2
+			},
+			"who": {
+				"instance": "c65b02d4-6021-474c-af31-a4fc8d5e142c",
+				"constructedAt": 1793173975009,
+				"codeFetches": 1
+			},
+			"clientMs": 1318
+		},
+		{
+			"sessionId": "cold-f30d7909-822f-4ab8-bdb9-320c8a669420",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1077,
+			"phases": {
+				"firstContactMs": 501,
+				"setupMs": 273,
+				"listMs": 303
+			},
+			"setup": {
+				"workspaceMs": 195,
+				"setupMs": 195
+			},
+			"list": {
+				"manifestMs": 198,
+				"listMs": 69,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "17eef7e6-f794-4b09-9859-845c101e1a44",
+				"calls": 2
+			},
+			"who": {
+				"instance": "0dc7de31-4a56-46ee-98b3-36abdb822a21",
+				"constructedAt": 1793173977337,
+				"codeFetches": 1
+			},
+			"clientMs": 1106
+		},
+		{
+			"sessionId": "cold-884b9546-aa37-40e8-951d-0c357e154604",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 961,
+			"phases": {
+				"firstContactMs": 426,
+				"setupMs": 221,
+				"listMs": 314
+			},
+			"setup": {
+				"workspaceMs": 178,
+				"setupMs": 178
+			},
+			"list": {
+				"manifestMs": 217,
+				"listMs": 61,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "0eb39716-a0c0-4e78-9a8d-fbd7eeeda5a3",
+				"calls": 2
+			},
+			"who": {
+				"instance": "bf7eeec6-b195-4340-bce0-c5dea2344da8",
+				"constructedAt": 1793173979387,
+				"codeFetches": 1
+			},
+			"clientMs": 987
+		},
+		{
+			"sessionId": "cold-ed657ff8-eec6-488c-b2c0-5f379f9512c2",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1138,
+			"phases": {
+				"firstContactMs": 389,
+				"setupMs": 307,
+				"listMs": 442
+			},
+			"setup": {
+				"workspaceMs": 228,
+				"setupMs": 228
+			},
+			"list": {
+				"manifestMs": 259,
+				"listMs": 126,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "1e7f72e4-8574-4485-899c-10a25f4b1602",
+				"calls": 2
+			},
+			"who": {
+				"instance": "58193592-225a-4f47-9177-c903b26341e3",
+				"constructedAt": 1793173981333,
+				"codeFetches": 1
+			},
+			"clientMs": 1168
+		},
+		{
+			"sessionId": "cold-c45a4262-7a54-4ed9-be35-da1fa3aadaed",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1145,
+			"phases": {
+				"firstContactMs": 567,
+				"setupMs": 268,
+				"listMs": 310
+			},
+			"setup": {
+				"workspaceMs": 207,
+				"setupMs": 207
+			},
+			"list": {
+				"manifestMs": 195,
+				"listMs": 71,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "72a5fae5-56cc-42c5-ba38-f8551c654f91",
+				"calls": 2
+			},
+			"who": {
+				"instance": "053a5a1a-01c8-45ff-a008-a2e40243baff",
+				"constructedAt": 1793173983681,
+				"codeFetches": 1
+			},
+			"clientMs": 1172
+		},
+		{
+			"sessionId": "cold-fdb179ad-a0d9-4264-8f4f-ced3ff7c75dc",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1075,
+			"phases": {
+				"firstContactMs": 463,
+				"setupMs": 329,
+				"listMs": 283
+			},
+			"setup": {
+				"workspaceMs": 266,
+				"setupMs": 266
+			},
+			"list": {
+				"manifestMs": 153,
+				"listMs": 79,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "0f429b2a-55dd-4b2f-8bf6-5ff977eca553",
+				"calls": 2
+			},
+			"who": {
+				"instance": "3b35f81b-1cb2-4515-899c-41caf6e7da00",
+				"constructedAt": 1793173985749,
+				"codeFetches": 1
+			},
+			"clientMs": 1112
+		},
+		{
+			"sessionId": "cold-57b96ada-e925-4d26-b932-5970f51561d2",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 987,
+			"phases": {
+				"firstContactMs": 355,
+				"setupMs": 242,
+				"listMs": 390
+			},
+			"setup": {
+				"workspaceMs": 195,
+				"setupMs": 195
+			},
+			"list": {
+				"manifestMs": 224,
+				"listMs": 100,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "d836eba0-bf37-4378-b04d-14fd6223db40",
+				"calls": 2
+			},
+			"who": {
+				"instance": "f0879d10-36ab-450a-81bf-695930c8f031",
+				"constructedAt": 1793173987764,
+				"codeFetches": 1
+			},
+			"clientMs": 1026
+		},
+		{
+			"sessionId": "cold-2e82cb33-8747-4e31-a12e-7f6f5252ad67",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 902,
+			"phases": {
+				"firstContactMs": 364,
+				"setupMs": 222,
+				"listMs": 316
+			},
+			"setup": {
+				"workspaceMs": 176,
+				"setupMs": 176
+			},
+			"list": {
+				"manifestMs": 199,
+				"listMs": 72,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "8097038a-8878-46a5-82ae-0aa1b9d5b106",
+				"calls": 2
+			},
+			"who": {
+				"instance": "c44e542c-0733-4766-a710-3a284db1ae7e",
+				"constructedAt": 1793173989802,
+				"codeFetches": 1
+			},
+			"clientMs": 936
+		},
+		{
+			"sessionId": "cold-327d6c44-03a5-468e-a477-3c56bea73b49",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 959,
+			"phases": {
+				"firstContactMs": 325,
+				"setupMs": 264,
+				"listMs": 370
+			},
+			"setup": {
+				"workspaceMs": 214,
+				"setupMs": 214
+			},
+			"list": {
+				"manifestMs": 258,
+				"listMs": 69,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "eaec763f-a59f-490e-97e7-189f2e0be558",
+				"calls": 2
+			},
+			"who": {
+				"instance": "aa450375-a328-447b-92dc-673454d93a51",
+				"constructedAt": 1793173991699,
+				"codeFetches": 1
+			},
+			"clientMs": 995
+		},
+		{
+			"sessionId": "cold-bfb37f32-a094-4195-92c0-9e146b7acdd5",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 916,
+			"phases": {
+				"firstContactMs": 329,
+				"setupMs": 257,
+				"listMs": 330
+			},
+			"setup": {
+				"workspaceMs": 218,
+				"setupMs": 218
+			},
+			"list": {
+				"manifestMs": 209,
+				"listMs": 72,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "9b9bdc60-5935-4c62-a869-6b9c7b3cd6ae",
+				"calls": 2
+			},
+			"who": {
+				"instance": "07a1315d-7688-4051-9fec-7a7703890713",
+				"constructedAt": 1793173993694,
+				"codeFetches": 1
+			},
+			"clientMs": 944
+		},
+		{
+			"sessionId": "cold-fbc38448-5f31-42a5-ad2b-2a6b13448688",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 947,
+			"phases": {
+				"firstContactMs": 392,
+				"setupMs": 233,
+				"listMs": 322
+			},
+			"setup": {
+				"workspaceMs": 184,
+				"setupMs": 184
+			},
+			"list": {
+				"manifestMs": 222,
+				"listMs": 64,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "3179afe0-8846-4b08-8968-a1a1a3efc2d9",
+				"calls": 2
+			},
+			"who": {
+				"instance": "c3b2da20-2a8e-4a94-9d32-cceb969edbc1",
+				"constructedAt": 1793173995704,
+				"codeFetches": 1
+			},
+			"clientMs": 975
+		},
+		{
+			"sessionId": "cold-b2409caf-1cc6-4e68-a2ef-c26a7629557a",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1404,
+			"phases": {
+				"firstContactMs": 445,
+				"setupMs": 419,
+				"listMs": 540
+			},
+			"setup": {
+				"workspaceMs": 341,
+				"setupMs": 341
+			},
+			"list": {
+				"manifestMs": 354,
+				"listMs": 120,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "6182f507-381a-4bbc-a016-a3fa183f81e6",
+				"calls": 2
+			},
+			"who": {
+				"instance": "cbb1630e-e6dd-4c89-a99b-d71f129fb02c",
+				"constructedAt": 1793173997729,
+				"codeFetches": 1
+			},
+			"clientMs": 1441
+		},
+		{
+			"sessionId": "cold-f6db518c-c3bd-4be2-a865-be3ed0a4d181",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1168,
+			"phases": {
+				"firstContactMs": 522,
+				"setupMs": 266,
+				"listMs": 380
+			},
+			"setup": {
+				"workspaceMs": 208,
+				"setupMs": 208
+			},
+			"list": {
+				"manifestMs": 262,
+				"listMs": 73,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "abbf7b48-c0ba-4722-b329-41a89e388f71",
+				"calls": 2
+			},
+			"who": {
+				"instance": "744421a4-1843-47d0-b92c-9909634bae3a",
+				"constructedAt": 1793174000254,
+				"codeFetches": 1
+			},
+			"clientMs": 1201
+		},
+		{
+			"sessionId": "cold-dbf003aa-72e8-4a65-b262-355b853234f5",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1445,
+			"phases": {
+				"firstContactMs": 896,
+				"setupMs": 224,
+				"listMs": 325
+			},
+			"setup": {
+				"workspaceMs": 181,
+				"setupMs": 181
+			},
+			"list": {
+				"manifestMs": 212,
+				"listMs": 70,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "8d088000-a89d-4ffb-8411-b6d98711dfce",
+				"calls": 2
+			},
+			"who": {
+				"instance": "9f42cca7-a0ad-41dc-8084-dcbec6d5d677",
+				"constructedAt": 1793174002763,
+				"codeFetches": 1
+			},
+			"clientMs": 1469
+		},
+		{
+			"sessionId": "cold-606b8511-1cc2-42b0-b57e-bb670896da42",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1135,
+			"phases": {
+				"firstContactMs": 495,
+				"setupMs": 215,
+				"listMs": 425
+			},
+			"setup": {
+				"workspaceMs": 171,
+				"setupMs": 171
+			},
+			"list": {
+				"manifestMs": 172,
+				"listMs": 216,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "d20f77c1-e402-4ca1-b8c1-9ea9d29c740f",
+				"calls": 2
+			},
+			"who": {
+				"instance": "73d50eff-cbc4-4a51-9e62-f16feb34bd04",
+				"constructedAt": 1793174004876,
+				"codeFetches": 1
+			},
+			"clientMs": 1160
+		},
+		{
+			"sessionId": "cold-146a7006-b632-4b8b-8741-be7c7cdc13fd",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 947,
+			"phases": {
+				"firstContactMs": 373,
+				"setupMs": 269,
+				"listMs": 305
+			},
+			"setup": {
+				"workspaceMs": 200,
+				"setupMs": 200
+			},
+			"list": {
+				"manifestMs": 204,
+				"listMs": 68,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "93f100b0-fa52-4315-99cb-1dc073aa7e9c",
+				"calls": 2
+			},
+			"who": {
+				"instance": "4c2fab3c-833b-4350-b5b9-cf47cd1cbaf0",
+				"constructedAt": 1793174006946,
+				"codeFetches": 1
+			},
+			"clientMs": 973
+		},
+		{
+			"sessionId": "cold-a009d86b-444d-41f9-97b8-2f13d5cdc39d",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 823,
+			"phases": {
+				"firstContactMs": 352,
+				"setupMs": 202,
+				"listMs": 269
+			},
+			"setup": {
+				"workspaceMs": 161,
+				"setupMs": 161
+			},
+			"list": {
+				"manifestMs": 173,
+				"listMs": 66,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "0ca6251c-61d9-4f7c-88d6-e8d2a2c12aa3",
+				"calls": 2
+			},
+			"who": {
+				"instance": "a8d75da5-ec7e-427e-af30-5cccfb380956",
+				"constructedAt": 1793174008897,
+				"codeFetches": 1
+			},
+			"clientMs": 842
+		},
+		{
+			"sessionId": "cold-3f912ef5-61b6-4339-8dfc-d7470f66ee5f",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1083,
+			"phases": {
+				"firstContactMs": 474,
+				"setupMs": 254,
+				"listMs": 355
+			},
+			"setup": {
+				"workspaceMs": 200,
+				"setupMs": 200
+			},
+			"list": {
+				"manifestMs": 184,
+				"listMs": 109,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "42f15a09-d186-4325-82e7-3f0db3ba2255",
+				"calls": 2
+			},
+			"who": {
+				"instance": "03603dcc-2100-4895-b3ad-6f6e731f1cd1",
+				"constructedAt": 1793174010865,
+				"codeFetches": 1
+			},
+			"clientMs": 1110
+		},
+		{
+			"sessionId": "cold-affee787-1d8c-4a0e-8bf4-643d5e849d5c",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1539,
+			"phases": {
+				"firstContactMs": 438,
+				"setupMs": 277,
+				"listMs": 824
+			},
+			"setup": {
+				"workspaceMs": 226,
+				"setupMs": 226
+			},
+			"list": {
+				"manifestMs": 712,
+				"listMs": 76,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "5a116151-9bf9-431f-965b-c7ebd5aaf8fb",
+				"calls": 2
+			},
+			"who": {
+				"instance": "86cf8f37-d87c-400b-af2c-365f102d76b5",
+				"constructedAt": 1793174012971,
+				"codeFetches": 1
+			},
+			"clientMs": 1602
+		},
+		{
+			"sessionId": "cold-5d20e8fa-1096-4faa-8d0b-d136bc07c82e",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1031,
+			"phases": {
+				"firstContactMs": 374,
+				"setupMs": 265,
+				"listMs": 392
+			},
+			"setup": {
+				"workspaceMs": 199,
+				"setupMs": 199
+			},
+			"list": {
+				"manifestMs": 222,
+				"listMs": 105,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "8c932f01-eb89-4446-ab33-21162aa32be9",
+				"calls": 2
+			},
+			"who": {
+				"instance": "70b0fdec-29e5-4e24-bb7d-c1bcfdc0102b",
+				"constructedAt": 1793174015476,
+				"codeFetches": 1
+			},
+			"clientMs": 1060
+		},
+		{
+			"sessionId": "cold-bfa2d2f1-12dc-4fa3-bcfa-2b712cc42f92",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 878,
+			"phases": {
+				"firstContactMs": 417,
+				"setupMs": 176,
+				"listMs": 285
+			},
+			"setup": {
+				"workspaceMs": 144,
+				"setupMs": 144
+			},
+			"list": {
+				"manifestMs": 184,
+				"listMs": 62,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "aa22cc87-c066-42c9-b5d6-9d2904540d94",
+				"calls": 2
+			},
+			"who": {
+				"instance": "78317645-ce9a-4e18-a1e2-de0acab82e7d",
+				"constructedAt": 1793174017569,
+				"codeFetches": 1
+			},
+			"clientMs": 899
+		},
+		{
+			"sessionId": "cold-c35be971-f0d1-43ce-b7b3-3431e5ad9b86",
+			"colo": "FRA",
+			"doColo": "FRA",
+			"readyMs": 845,
+			"phases": {
+				"firstContactMs": 363,
+				"setupMs": 221,
+				"listMs": 261
+			},
+			"setup": {
+				"workspaceMs": 181,
+				"setupMs": 181
+			},
+			"list": {
+				"manifestMs": 179,
+				"listMs": 54,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "cb75d28c-f8ed-41f6-aa3d-964c9a35f69c",
+				"calls": 2
+			},
+			"who": {
+				"instance": "3a210142-22eb-4bd7-bd56-05ad0d6e5070",
+				"constructedAt": 1793174019427,
+				"codeFetches": 1
+			},
+			"clientMs": 864
+		},
+		{
+			"sessionId": "cold-bc5e6b33-22ad-400d-b1fd-40a115b871c9",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1016,
+			"phases": {
+				"firstContactMs": 348,
+				"setupMs": 314,
+				"listMs": 354
+			},
+			"setup": {
+				"workspaceMs": 267,
+				"setupMs": 267
+			},
+			"list": {
+				"manifestMs": 239,
+				"listMs": 62,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "ae2daa8f-efd2-4502-9d8e-8040de6dd81b",
+				"calls": 2
+			},
+			"who": {
+				"instance": "4aab5be9-342b-4d12-b609-d2169eb31d62",
+				"constructedAt": 1793174021283,
+				"codeFetches": 1
+			},
+			"clientMs": 1046
+		},
+		{
+			"sessionId": "cold-b570dba5-8ba5-4634-91fa-92fb790c44b5",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1037,
+			"phases": {
+				"firstContactMs": 426,
+				"setupMs": 234,
+				"listMs": 377
+			},
+			"setup": {
+				"workspaceMs": 188,
+				"setupMs": 188
+			},
+			"list": {
+				"manifestMs": 179,
+				"listMs": 112,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "2dfad145-38cb-430d-8649-27302f2c7d01",
+				"calls": 2
+			},
+			"who": {
+				"instance": "1540e80d-33bd-4a2a-8851-d83c763587fa",
+				"constructedAt": 1793174023414,
+				"codeFetches": 1
+			},
+			"clientMs": 1069
+		},
+		{
+			"sessionId": "cold-6b9b0443-9dab-4bc5-b8ea-151f1db755f0",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 1080,
+			"phases": {
+				"firstContactMs": 483,
+				"setupMs": 242,
+				"listMs": 355
+			},
+			"setup": {
+				"workspaceMs": 197,
+				"setupMs": 197
+			},
+			"list": {
+				"manifestMs": 242,
+				"listMs": 72,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "9894d55d-4f81-4a82-b5e2-af723a972025",
+				"calls": 2
+			},
+			"who": {
+				"instance": "ffb8255d-9590-4270-9add-fb115047acf4",
+				"constructedAt": 1793174025537,
+				"codeFetches": 1
+			},
+			"clientMs": 1107
+		},
+		{
+			"sessionId": "cold-49792f93-10bd-4d58-99fd-5b8fe7807192",
+			"colo": "FRA",
+			"doColo": "AMS",
+			"readyMs": 948,
+			"phases": {
+				"firstContactMs": 329,
+				"setupMs": 258,
+				"listMs": 361
+			},
+			"setup": {
+				"workspaceMs": 203,
+				"setupMs": 203
+			},
+			"list": {
+				"manifestMs": 251,
+				"listMs": 69,
+				"lsMs": 0
+			},
+			"lines": "77",
+			"isolate": {
+				"boot": "5be9976f-70af-46e6-943f-e7cb203c65ba",
+				"calls": 2
+			},
+			"who": {
+				"instance": "de3757bd-b829-46c6-ba0f-24d62796a6a3",
+				"constructedAt": 1793174027497,
+				"codeFetches": 1
+			},
+			"clientMs": 983
+		}
+	],
+	"warms": []
+}

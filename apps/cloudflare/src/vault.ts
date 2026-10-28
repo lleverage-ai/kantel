@@ -16,10 +16,20 @@
  */
 
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import { type AuditSink, type Clock, HarbourError, type SystemContext, systemClock } from "@harbour/contracts";
+import {
+	type AuditSink,
+	type CallContext,
+	type Clock,
+	HarbourError,
+	PLATFORM_ORGANISATION,
+	type SystemContext,
+	systemClock,
+	systemContext,
+} from "@harbour/contracts";
 import type { SqlDriver } from "@harbour/sql";
 import { createSharedKeyAuthenticator, EGRESS_API_PATHS } from "@harbour/vault/egress-api";
 import { type SqlStorageLike, VaultDurableObjectCore } from "@harbour/vault-cloudflare";
+import { CPA_HOST, CPA_INJECTION, cpaItemName, cpaKey, type ModelsVars } from "./models.ts";
 
 export interface VaultVars {
 	readonly HARBOUR_VAULT_KEY?: string;
@@ -97,6 +107,54 @@ export function vaultAuditSink(driver: SqlDriver, clock: Clock = systemClock): A
 			await store.append(ctx, events);
 		},
 	};
+}
+
+/** Where the vault object remembers the platform items it made, by name: its own key-value storage. */
+export interface SeededItems {
+	get(name: string): Promise<string | undefined>;
+	put(name: string, itemId: string): Promise<void>;
+}
+
+const MIN_CPA_KEY_LENGTH = 16;
+
+/** The caller that makes the deployment's platform items: Harbour's operator, outside every organisation. */
+export const VAULT_SEED_CONTEXT: CallContext = {
+	...systemContext("cloudflare.vault-seed"),
+	organisationId: PLATFORM_ORGANISATION,
+};
+
+/**
+ * The platform item holding CPA's key (`src/models.ts`): the one this object made for this key, or a new one, bound to
+ * CPA's host. Refuses (`unavailable`) when the Worker has no `HARBOUR_CPA_API_KEY`, or a short one: the model
+ * gateway's redaction skips very short secrets, and the item's name would let a short key be guessed. A new key makes
+ * a new item, as the vault has no way to replace an item's value, so the gateway never reads the old one again.
+ */
+export async function seedCpaItem(
+	core: Pick<VaultDurableObjectCore, "vault">,
+	seeded: SeededItems,
+	vars: ModelsVars,
+): Promise<string> {
+	const key = cpaKey(vars);
+	if (key === undefined) {
+		throw new HarbourError("unavailable", "The vault has no CLIProxyAPI key: set HARBOUR_CPA_API_KEY");
+	}
+	// The deploy refuses a short key too (scripts/vault-secrets.ts); this catches one set another way.
+	if (key.length < MIN_CPA_KEY_LENGTH || /\s/.test(key)) {
+		throw new HarbourError("unavailable", "HARBOUR_CPA_API_KEY must be at least 16 characters with no spaces");
+	}
+	const name = await cpaItemName(key);
+	const existing = await seeded.get(name);
+	if (existing !== undefined) return existing;
+	const item = await core.vault.putItem(VAULT_SEED_CONTEXT, {
+		owner: { kind: "platform" },
+		name,
+		description: "CLIProxyAPI's client key, from the HARBOUR_CPA_API_KEY Worker secret",
+		hosts: [CPA_HOST],
+		injection: CPA_INJECTION,
+		value: key,
+	});
+	await seeded.put(name, item.id);
+	return item.id;
 }
 
 /** The vault's answer when it cannot start: no detail beyond the code, as on the egress API. */

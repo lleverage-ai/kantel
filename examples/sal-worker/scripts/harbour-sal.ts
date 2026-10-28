@@ -12,11 +12,20 @@
  *     "tasks": [ { "task": "TASK-1", "brief": "<file>" } ], "now": "<ISO>" }
  * Paths are absolute or relative to the config file (`~` is not expanded). `mode` is Pi's search mode for the root
  * (default `pi`): `agents` for what Pi finds under `~/.agents/skills`.
+ *
+ * `--store <dir>` keeps memory and skills in the durable SQL stores instead of the in-memory ones: a `node:sqlite`
+ * database at `<dir>/harbour.db` and file bodies under `<dir>/objects`. Run it twice on one directory to check a restart
+ * gives the same output.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
+import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
+import { syncSqliteDriver } from "@harbour/sql/sqlite";
+import { salRecallRenderer } from "../src/recall-renderer.ts";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource, type SalSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker, type SalRecallLimits, startSalWorkerSession } from "../src/worker.ts";
 
@@ -38,7 +47,7 @@ interface ParityConfig {
 	readonly now?: string;
 }
 
-const { values } = parseArgs({ options: { config: { type: "string" } } });
+const { values } = parseArgs({ options: { config: { type: "string" }, store: { type: "string" } } });
 if (values.config === undefined) throw new Error("--config is required");
 const configPath = resolve(values.config);
 const base = dirname(configPath);
@@ -52,7 +61,38 @@ const sources = config.skills.map((entry): { source: SalSkillSource; ref?: strin
 			: directorySkillSource({ id: entry.id, root: resolve(base, entry.dir), mode: entry.mode ?? "pi" });
 	return entry.ref === undefined ? { source } : { source, ref: entry.ref };
 });
+
+/** An `ObjectBucket` over a directory; keys are content digests, so a file is never rewritten with other bytes. */
+function directoryBucket(root: string): ObjectBucket {
+	return {
+		async get(key) {
+			try {
+				return new Uint8Array(readFileSync(join(root, key)));
+			} catch {
+				return undefined;
+			}
+		},
+		async put(key, bytes) {
+			mkdirSync(dirname(join(root, key)), { recursive: true });
+			writeFileSync(join(root, key), bytes);
+		},
+	};
+}
+
+async function durableStores(dir: string) {
+	mkdirSync(dir, { recursive: true });
+	const driver = syncSqliteDriver(new DatabaseSync(join(dir, "harbour.db")));
+	await migrateMemory(driver);
+	await migrateSkills(driver);
+	const clock = { now: () => now };
+	return {
+		memory: createSqlMemory({ driver, clock, renderer: salRecallRenderer() }),
+		skills: createSqlSkills({ driver, clock, objects: directoryBucket(join(dir, "objects")) }),
+	};
+}
+
 const host = await prepareSalWorker({
+	...(values.store === undefined ? {} : { stores: await durableStores(resolve(values.store)) }),
 	organisationId: "tom",
 	memory: { ...config.memory, repo: resolve(base, config.memory.repo) },
 	skills: sources,

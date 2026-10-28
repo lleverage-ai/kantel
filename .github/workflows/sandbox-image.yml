@@ -29,38 +29,47 @@ permissions:
 jobs:
   image:
     name: Build, check and record the sandbox image
-    runs-on: ubuntu-24.04
+    # Harbour's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
+    # budget. `gvisor` marks a runner whose Docker has the runsc and runsc-kvm runtimes; jobs use them through Docker,
+    # never runsc or sudo directly. Each runner runs one job at a time for every workflow, so this job stays lean.
+    runs-on: [self-hosted, harbour, gvisor]
     timeout-minutes: 30
+    env:
+      # This run's own tag on the host's Docker, removed in "Clean up", so runs never overwrite each other's image.
+      IMAGE: harbour-sandbox:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      # The container tier tests label everything they create `<this>-<random>.*` (never `harbour.owner`, so a Harbour
+      # stack's sandbox janitor on the host's daemon can't see it), and "Clean up" removes whatever is left with it.
+      HARBOUR_TEST_LABEL_PREFIX: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
+      # The runner's user has no buildx plugin, so install it for the user (no sudo) and build on the host daemon's own
+      # BuildKit, as selfhosted-spike.yml does on its daemon. The docker driver still writes the image digest to the
+      # metadata file.
       - uses: docker/setup-buildx-action@v3
+        with:
+          version: v0.37.2
+          driver: docker
 
       - name: Build
         run: >
           docker buildx build images/sandbox
           --load --provenance=false
-          --tag harbour-sandbox:ci
+          --tag "$IMAGE"
           --metadata-file "$RUNNER_TEMP/sandbox-image.json"
 
       - name: Check the tools
         run: >
-          docker run --rm harbour-sandbox:ci bash -c
+          docker run --rm "$IMAGE" bash -c
           'set -e; id; bun --version; node --version; pnpm --version; git --version; gh --version;
           jq --version; rg --version; python3 --version; linear-cli --version'
 
-      # gVisor from its apt repository; the runner has no KVM guarantee, so CI uses the default platform (`runsc`)
-      # where Sal's host uses `runsc-kvm`. Both are the same sandbox; only the platform differs.
-      - name: Install gVisor
+      # Sal's host is bare metal and its Docker already has gVisor registered as `runsc` and `runsc-kvm` (the runner's
+      # user can't install anything, and needn't). The host's own stacks use `runsc-kvm`, so CI tests on that.
+      - name: gVisor on the host's Docker
         run: |
-          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
-            | sudo tee /etc/apt/sources.list.d/gvisor.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y runsc
-          sudo runsc install
-          sudo systemctl restart docker
-          docker run --rm --runtime runsc harbour-sandbox:ci uname -a
+          docker info --format 'runtimes: {{range $name, $_ := .Runtimes}}{{$name}} {{end}}'
+          docker run --rm --runtime runsc-kvm "$IMAGE" uname -a
 
       - uses: actions/setup-node@v4
         with:
@@ -72,16 +81,17 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
 
+      # On the host's daemon: the cases' containers have no network (`NetworkMode: none`) and only their own labels.
       - name: Container tier tests on gVisor
         env:
           HARBOUR_TEST_DOCKER: "1"
-          HARBOUR_TEST_SANDBOX_IMAGE: harbour-sandbox:ci
-          HARBOUR_TEST_SANDBOX_RUNTIME: runsc
+          HARBOUR_TEST_SANDBOX_IMAGE: ${{ env.IMAGE }}
+          HARBOUR_TEST_SANDBOX_RUNTIME: runsc-kvm
         run: pnpm --filter @harbour/selfhosted-sandbox test
 
       - name: Record the digest
         run: |
-          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/sandbox-image.json")
+          digest=$(node -p 'require(process.argv[1])["containerimage.digest"]' "$RUNNER_TEMP/sandbox-image.json")
           test "${digest#sha256:}" != "$digest"
           {
             echo "### Sandbox image"
@@ -91,7 +101,23 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           printf '{"commit":"%s","digest":"%s"}\n' "$GITHUB_SHA" "$digest" > "$RUNNER_TEMP/sandbox-image.digest.json"
 
+      # The digest is already in the job summary above, and nothing downloads this artifact. The upload counts against
+      # the account's Actions artifact storage, so a full quota mustn't fail the image check.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: sandbox-image-digest
           path: ${{ runner.temp }}/sandbox-image.digest.json
+
+      # Also after a failure or a cancelled run (a re-push): the tests' own cleanup may not have run. Only this run's
+      # labels and tag; the layers stay in the host's build cache for the next run.
+      - name: Clean up
+        if: always()
+        run: |
+          prefix="$HARBOUR_TEST_LABEL_PREFIX-"
+          containers="$(docker ps --all --no-trunc --format '{{.ID}} {{.Labels}}' | grep -F "$prefix" | cut -d' ' -f1 || true)"
+          [ -z "$containers" ] || docker rm --force --volumes $containers
+          volumes="$(docker volume ls --format '{{.Name}} {{.Labels}}' | grep -F "$prefix" | cut -d' ' -f1 || true)"
+          [ -z "$volumes" ] || docker volume rm $volumes
+          if [ -n "$(docker image ls --quiet "$IMAGE")" ]; then docker image rm "$IMAGE"; fi
+          rm -f "$RUNNER_TEMP/sandbox-image.json" "$RUNNER_TEMP/sandbox-image.digest.json"
