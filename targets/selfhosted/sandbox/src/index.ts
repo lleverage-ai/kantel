@@ -2,6 +2,8 @@ export {
 	createDockerContainerBackend,
 	type DockerContainerBackend,
 	type DockerContainerBackendOptions,
+	type ProxyCredentials,
+	type SandboxNetwork,
 } from "./container.ts";
 export {
 	type ContainerSummary,

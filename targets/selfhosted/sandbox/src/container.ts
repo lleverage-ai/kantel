@@ -47,10 +47,15 @@ export interface DockerContainerBackendOptions {
 	readonly memoryBytes?: number;
 	readonly nanoCpus?: number;
 	/**
-	 * An existing internal Docker network whose only exit is the vault proxy at `proxyUrl`. Absent: the container has
-	 * no network at all (`NetworkMode: none`).
+	 * The vault proxy, the only way out. Absent: the container has no network at all (`NetworkMode: none`). See
+	 * `SandboxNetwork`.
 	 */
-	readonly network?: { readonly name: string; readonly proxyUrl: string };
+	readonly network?: SandboxNetwork;
+	/**
+	 * The credentials the vault proxy knows each lease by. Absent: requests through the proxy carry none, and the proxy
+	 * cannot tell one lease's from another's.
+	 */
+	readonly proxyCredentials?: ProxyCredentials;
 	/** Prefix of every label this backend sets and filters on; default `harbour`. */
 	readonly labelPrefix?: string;
 	readonly clock?: Clock;
@@ -58,6 +63,49 @@ export interface DockerContainerBackendOptions {
 	readonly execTimeoutMs?: number;
 	/** Bytes kept of each of stdout and stderr; beyond it the output is cut and `truncated` set. Default 1 MiB. */
 	readonly maxOutputBytes?: number;
+}
+
+/**
+ * How sandboxes reach the vault proxy.
+ *
+ * - `isolation: "shared"` (the default): `name` is an existing internal network whose only exit is the proxy, and every
+ *   lease's container joins it. Sandboxes on it can reach each other.
+ * - `isolation: "per-lease"`: each lease gets an internal network of its own, `<name>-<random>`, created with its
+ *   container and removed with it, and the proxy's container (`proxyContainer`) is connected to it under the proxy
+ *   URL's host name. The proxy is the container's only peer, so no sandbox can reach another. Needs a host name, not an
+ *   address, in `proxyUrl`.
+ */
+export interface SandboxNetwork {
+	readonly name: string;
+	/** Such as `http://vault-proxy:3128`. */
+	readonly proxyUrl: string;
+	readonly isolation?: "shared" | "per-lease";
+	/** With `per-lease`: the proxy's container name or ID. Default: the proxy URL's host. */
+	readonly proxyContainer?: string;
+	/**
+	 * With `per-lease`: an IPv4 range, such as `10.248.0.0/16`, that each lease's network takes a free /28 of. Default:
+	 * Docker's own address pools, which hold only about 30 networks on a daemon with default settings.
+	 */
+	readonly subnetPool?: string;
+}
+
+/**
+ * Per-lease credentials for the vault proxy. The backend puts the token in the container's `HTTP(S)_PROXY` as
+ * `http://sbx:<token>@<proxy>`, so every request the sandbox sends through the proxy carries it (as
+ * `Proxy-Authorization: Basic`); the proxy resolves it to the lease's organisation, project, agent and session, which
+ * is what the vault decides egress on. The token is not a credential for anything else.
+ */
+export interface ProxyCredentials {
+	/**
+	 * The token for the lease, each time its container is created (again after a host restart). `ctx` is the call that
+	 * creates it. Letters, digits, `-`, `_`, `.` and `~` only.
+	 */
+	issue(input: { readonly ctx: CallContext; readonly lease: SandboxLease }): Promise<string>;
+	/**
+	 * Called once the lease's container and network are gone (`ended`, a fresh container, or the janitor). Must be safe
+	 * to repeat: a failure fails that call, which can then be retried.
+	 */
+	revoke(leaseId: string): Promise<void>;
 }
 
 export interface DockerContainerBackend extends ContainerBackend {
@@ -345,6 +393,15 @@ type Fence = "closing" | "ended";
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** What a proxy token may hold: it goes into a URL's userinfo unescaped. */
+const PROXY_TOKEN = /^[A-Za-z0-9._~-]+$/;
+/** The user name in the proxy URL; the token is the password, as the vault proxy reads it. */
+const PROXY_USER = "sbx";
+/** Each per-lease network is a /28 of the subnet pool: the gateway, the proxy and the sandbox, with room to spare. */
+const LEASE_SUBNET_PREFIX = 28;
+const LEASE_SUBNET_SIZE = 2 ** (32 - LEASE_SUBNET_PREFIX);
+/** Random /28s tried before giving up on a crowded pool. */
+const SUBNET_ATTEMPTS = 8;
 
 export function createDockerContainerBackend(options: DockerContainerBackendOptions): DockerContainerBackend {
 	return new DockerContainerTier(options);
@@ -357,7 +414,9 @@ class DockerContainerTier implements DockerContainerBackend {
 	readonly #runtime: string;
 	readonly #memoryBytes: number | undefined;
 	readonly #nanoCpus: number | undefined;
-	readonly #network: { readonly name: string; readonly proxyUrl: string } | undefined;
+	readonly #network: SandboxNetwork | undefined;
+	readonly #subnets: { readonly base: number; readonly count: number } | undefined;
+	readonly #credentials: ProxyCredentials | undefined;
 	readonly #prefix: string;
 	readonly #clock: Clock;
 	readonly #execTimeoutMs: number;
@@ -380,6 +439,14 @@ class DockerContainerTier implements DockerContainerBackend {
 		this.#memoryBytes = options.memoryBytes;
 		this.#nanoCpus = options.nanoCpus;
 		this.#network = options.network;
+		this.#subnets = checkNetwork(options.network);
+		this.#credentials = options.proxyCredentials;
+		if (this.#credentials !== undefined && this.#network === undefined) {
+			throw new HarbourError(
+				"invalid",
+				"proxyCredentials needs a network: without one there is no proxy to send them to",
+			);
+		}
 		this.#prefix = options.labelPrefix ?? "harbour";
 		this.#clock = options.clock ?? systemClock;
 		this.#execTimeoutMs = positive(options.execTimeoutMs, DEFAULT_EXEC_TIMEOUT_MS, "execTimeoutMs");
@@ -486,19 +553,25 @@ class DockerContainerTier implements DockerContainerBackend {
 		this.#checkOpen();
 		const leaseKey = this.#label("lease");
 		const expiryKey = this.#label("expires-at");
-		const reapable = (labels: Readonly<Record<string, string>> | null) => {
+		const reaped = new Set<string>();
+		const reapable = (labels: Readonly<Record<string, string>> | null | undefined) => {
 			const expiresAt = Number(labels?.[expiryKey]);
 			if (!Number.isFinite(expiresAt) || expiresAt > now) return false;
 			const leaseId = labels?.[leaseKey];
-			return leaseId === undefined || !(this.#states.has(leaseId) || this.#creating.has(leaseId));
+			if (leaseId === undefined) return true;
+			if (this.#states.has(leaseId) || this.#creating.has(leaseId)) return false;
+			reaped.add(leaseId);
+			return true;
 		};
+		const containers = (await this.#docker.listContainers([expiryKey])).filter((item) => reapable(item.Labels));
+		const networks = (await this.#docker.listNetworks([expiryKey])).filter((item) => reapable(item.Labels));
+		const volumes = (await this.#docker.listVolumes([expiryKey])).filter((item) => reapable(item.Labels));
+		// Credentials first: a revocation that fails leaves the lease's resources, and so the lease, for the next pass.
+		if (this.#credentials !== undefined) for (const leaseId of reaped) await this.#credentials.revoke(leaseId);
 		let removed = 0;
-		for (const container of await this.#docker.listContainers([expiryKey])) {
-			if (reapable(container.Labels) && (await this.#docker.removeContainer(container.Id))) removed++;
-		}
-		for (const volume of await this.#docker.listVolumes([expiryKey])) {
-			if (reapable(volume.Labels)) await this.#docker.removeVolume(volume.Name);
-		}
+		for (const container of containers) if (await this.#docker.removeContainer(container.Id)) removed++;
+		for (const network of networks) await this.#removeNetwork(network.Id);
+		for (const volume of volumes) await this.#docker.removeVolume(volume.Name);
 		return removed;
 	}
 
@@ -537,7 +610,7 @@ class DockerContainerTier implements DockerContainerBackend {
 		};
 		try {
 			const mounts = await this.#stageMounts(ctx, record, labels);
-			const network = await this.#networkConfig();
+			const network = await this.#networkConfig(ctx, lease, labels);
 			const id = await this.#docker.createContainer({
 				Image: this.#image,
 				Entrypoint: ["/bin/sh", "-c", KEEPALIVE_SCRIPT],
@@ -595,13 +668,70 @@ class DockerContainerTier implements DockerContainerBackend {
 		}
 	}
 
-	/** Removes every container, then every volume, labelled with the lease. Safe to repeat. */
+	/**
+	 * Revokes the lease's proxy credentials, then removes every container, then every network and volume, labelled with
+	 * it. Credentials first, so a revocation that fails leaves the lease's resources for a retry or the janitor rather
+	 * than a live token with nothing left to find it by. Safe to repeat.
+	 */
 	async #removeLease(leaseId: string): Promise<void> {
 		const label = `${this.#label("lease")}=${leaseId}`;
+		await this.#credentials?.revoke(leaseId);
 		for (const container of await this.#docker.listContainers([label])) {
 			await this.#docker.removeContainer(container.Id);
 		}
+		if (this.#network?.isolation === "per-lease") {
+			for (const network of await this.#docker.listNetworks([label])) await this.#removeNetwork(network.Id);
+		}
 		for (const volume of await this.#docker.listVolumes([label])) await this.#docker.removeVolume(volume.Name);
+	}
+
+	/** Disconnects the proxy from a lease's network, which then has no members left, and removes it. */
+	async #removeNetwork(id: string): Promise<void> {
+		if (this.#network !== undefined) await this.#docker.disconnectNetwork(id, this.#proxyContainer(this.#network));
+		await this.#docker.removeNetwork(id);
+	}
+
+	#proxyContainer(network: SandboxNetwork): string {
+		return network.proxyContainer ?? new URL(network.proxyUrl).hostname;
+	}
+
+	/**
+	 * A new internal network for one lease, labelled as its other resources are, with the proxy connected to it under
+	 * the proxy URL's host name. With a subnet pool, it takes a random free /28 of it; Docker refuses one that overlaps
+	 * a network it has, and another is tried.
+	 */
+	async #createLeaseNetwork(
+		network: SandboxNetwork,
+		labels: Readonly<Record<string, string>>,
+	): Promise<{ readonly id: string; readonly proxyAddress: string }> {
+		const networkLabels = { ...labels, [this.#label("role")]: "network" };
+		const name = () => `${network.name}-${randomHex(6)}`;
+		let id: string | undefined;
+		if (this.#subnets === undefined) {
+			id = await this.#docker.createInternalNetwork(name(), networkLabels);
+		} else {
+			for (let attempt = 1; id === undefined; attempt++) {
+				const index = Math.floor(Math.random() * this.#subnets.count);
+				const subnet = `${ipv4(this.#subnets.base + index * LEASE_SUBNET_SIZE)}/${LEASE_SUBNET_PREFIX}`;
+				try {
+					id = await this.#docker.createInternalNetwork(name(), networkLabels, subnet);
+				} catch (error) {
+					if (attempt >= SUBNET_ATTEMPTS) throw error;
+				}
+			}
+		}
+		const host = new URL(network.proxyUrl).hostname;
+		await this.#docker.connectNetwork(id, this.#proxyContainer(network), [host]);
+		const inspected = await this.#docker.inspectNetwork(id);
+		const proxyName = this.#proxyContainer(network);
+		const proxy = Object.entries(inspected.Containers ?? {}).find(
+			([containerId, container]) => container.Name === proxyName || containerId.startsWith(proxyName),
+		)?.[1];
+		const proxyAddress = proxy?.IPv4Address.split("/")[0];
+		if (proxyAddress === undefined || proxyAddress === "") {
+			throw new HarbourError("unavailable", `the vault proxy ${proxyName} did not join the lease's network`);
+		}
+		return { id, proxyAddress };
 	}
 
 	/**
@@ -685,7 +815,11 @@ class DockerContainerTier implements DockerContainerBackend {
 		return entries;
 	}
 
-	async #networkConfig(): Promise<{
+	async #networkConfig(
+		ctx: CallContext,
+		lease: SandboxLease,
+		labels: Readonly<Record<string, string>>,
+	): Promise<{
 		readonly mode: string;
 		readonly extraHosts: string[];
 		readonly env: string[];
@@ -696,7 +830,14 @@ class DockerContainerTier implements DockerContainerBackend {
 		const url = new URL(network.proxyUrl);
 		const host = url.hostname;
 		const extraHosts: string[] = [];
-		if (!isIpLiteral(host)) {
+		let mode = network.name;
+		// The CA first: it needs no lease resources, so a proxy that is down fails the lease before any are made.
+		const ca = await this.#vaultCa(network.proxyUrl);
+		if (network.isolation === "per-lease") {
+			const created = await this.#createLeaseNetwork(network, labels);
+			mode = created.id;
+			extraHosts.push(`${host}:${created.proxyAddress}`);
+		} else if (!isIpLiteral(host)) {
 			// gVisor cannot reach Docker's embedded DNS on a user-defined network, so the proxy's address on this network
 			// goes into /etc/hosts.
 			const inspected = await this.#docker.inspectNetwork(network.name);
@@ -707,9 +848,19 @@ class DockerContainerTier implements DockerContainerBackend {
 			}
 			extraHosts.push(`${host}:${address}`);
 		}
-		const proxy = network.proxyUrl;
+		let proxy = network.proxyUrl;
+		if (this.#credentials !== undefined) {
+			const token = await this.#credentials.issue({ ctx, lease });
+			if (!PROXY_TOKEN.test(token)) {
+				throw new HarbourError("invalid", "a proxy token may hold only letters, digits, '-', '_', '.' and '~'");
+			}
+			const withToken = new URL(network.proxyUrl);
+			withToken.username = PROXY_USER;
+			withToken.password = token;
+			proxy = withToken.href.replace(/\/$/, "");
+		}
 		return {
-			mode: network.name,
+			mode,
 			extraHosts,
 			env: [
 				`HTTP_PROXY=${proxy}`,
@@ -721,7 +872,7 @@ class DockerContainerTier implements DockerContainerBackend {
 					(name) => `${name}=${CA_PATH}`,
 				),
 			],
-			ca: await this.#vaultCa(network.proxyUrl),
+			ca,
 		};
 	}
 
@@ -1201,6 +1352,49 @@ function dropSubtree(kinds: Map<string, Kind>, path: string): void {
 
 function isIpLiteral(host: string): boolean {
 	return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith("[");
+}
+
+/**
+ * Checks a network option and returns its subnet pool as a base address and the number of lease subnets in it.
+ * Per-lease networks find the proxy by name, so the proxy URL needs a host name.
+ */
+function checkNetwork(network: SandboxNetwork | undefined): { base: number; count: number } | undefined {
+	if (network === undefined) return undefined;
+	const isolation = network.isolation ?? "shared";
+	if (isolation !== "shared" && isolation !== "per-lease") {
+		throw new HarbourError("invalid", `network isolation must be "shared" or "per-lease", not ${String(isolation)}`);
+	}
+	if (isolation === "shared") {
+		if (network.subnetPool !== undefined || network.proxyContainer !== undefined) {
+			throw new HarbourError("invalid", "subnetPool and proxyContainer apply only to per-lease networks");
+		}
+		return undefined;
+	}
+	if (isIpLiteral(new URL(network.proxyUrl).hostname)) {
+		throw new HarbourError("invalid", "per-lease networks need the proxy URL to name the proxy by host name");
+	}
+	if (network.subnetPool === undefined) return undefined;
+	const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(network.subnetPool);
+	const octets = match?.slice(1, 5).map(Number) ?? [];
+	const prefix = Number(match?.[5]);
+	if (match === null || octets.some((octet) => octet > 255) || prefix > LEASE_SUBNET_PREFIX || prefix < 8) {
+		throw new HarbourError(
+			"invalid",
+			`subnetPool must be an IPv4 range from /8 to /${LEASE_SUBNET_PREFIX}, such as 10.248.0.0/16`,
+		);
+	}
+	const address = octets.reduce((sum, octet) => sum * 256 + octet, 0);
+	const size = 2 ** (32 - prefix);
+	if (address % size !== 0) throw new HarbourError("invalid", `subnetPool ${network.subnetPool} has host bits set`);
+	return { base: address, count: size / LEASE_SUBNET_SIZE };
+}
+
+function ipv4(address: number): string {
+	return [24, 16, 8, 0].map((shift) => Math.floor(address / 2 ** shift) % 256).join(".");
+}
+
+function randomHex(bytes: number): string {
+	return [...crypto.getRandomValues(new Uint8Array(bytes))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Splits arguments into runs whose total size stays within ARGUMENT_BUDGET. */
