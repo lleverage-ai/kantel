@@ -148,9 +148,10 @@ misses by 14 ms in process and 34 ms on Dynamic Workers.**
   (`isolate.cold` 1 in all 50), and that call took 189 / 322 ms p50 / p95, which is now the largest single item in a
   cold run on that backend.
 - **The cold batches' server p95 is not trustworthy.** In 20 of the 100 cold runs (9 in process, 11 on Dynamic
-  Workers) the server's `session` timer (1.0–2.1 s) was longer than the client's whole wall time for the same call
-  (0.8–1.2 s), which can't be real latency. None of the 100 warm runs, and none of the 300 runs before the move, did
-  this. The cause isn't found; the server's start mark looks stale in those runs. Without those 20 runs the cold
+  Workers) the server's `total` was longer than the client's whole wall time for the same call, which can't be real
+  latency. In 12 of them the `session` step alone was (up to 2.1 s against a wall time of 0.8–1.2 s). None of the
+  100 warm runs, and none of the 360 runs before the move, did this. The cause isn't found; the server's start mark
+  looks stale in those runs. Without those 20 runs the cold
   server time is 411 / 709 ms (in process) and 638 / 825 ms (Dynamic Workers). The client wall times have no such
   outliers, so read cold p95 from those.
 - **Placement is fixed per object.** The stack object was already in `LHR` and stays there; a location hint only
