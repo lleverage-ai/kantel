@@ -127,3 +127,18 @@ describe("ConversationProjector", () => {
 		expect(projector.status).toBe("done");
 	});
 });
+
+describe("toolLabel", () => {
+	it("says in plain words what a browser tool is doing, and names any other tool", () => {
+		expect(toolLabel("browser_open", { url: "https://en.wikipedia.org/wiki/Harbour" })).toBe(
+			"Opening en.wikipedia.org",
+		);
+		expect(toolLabel("browser_open", {})).toBe("Opening a browser");
+		expect(toolLabel("browser_act", { action: "goto", url: "https://example.com/a" })).toBe("Going to example.com");
+		expect(toolLabel("browser_act", { action: "look" })).toBe("Reading the page");
+		expect(toolLabel("browser_act", { action: "press", key: "Enter" })).toBe("Pressing Enter");
+		expect(toolLabel("browser_act", { action: "goto", url: "not a url" })).toBe("Going to a page");
+		expect(toolLabel("browser_screenshot", {})).toBe("Taking a screenshot");
+		expect(toolLabel("lookup", { url: "https://example.com" })).toBe("Calling lookup");
+	});
+});

@@ -18,6 +18,8 @@ import {
 	type NoticeItem,
 	type SessionStatus,
 	type Timestamp,
+	TOOL_IMAGE_TYPES,
+	type ToolImage,
 	type ToolItem,
 	type ToolItemStatus,
 	type UserItem,
@@ -38,8 +40,92 @@ export function harbourUserEntry(via: UserItemVia, requestId?: string): InputEnt
 }
 
 /** The plain-language chip label of a tool call. */
-export function toolLabel(name: string): string {
-	return `Calling ${name}`;
+export function toolLabel(name: string, args?: unknown): string {
+	return browserToolLabel(name, args) ?? `Calling ${name}`;
+}
+
+function hostOf(url: unknown): string | undefined {
+	if (typeof url !== "string") return undefined;
+	try {
+		return new URL(url).host || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Labels for the browser's tools (`@harbour/browser`), from their arguments. */
+function browserToolLabel(name: string, args: unknown): string | undefined {
+	if (!name.startsWith("browser_")) return undefined;
+	const input = typeof args === "object" && args !== null ? (args as { readonly [key: string]: unknown }) : {};
+	const host = hostOf(input.url);
+	switch (name) {
+		case "browser_request":
+			return "Asking for a browser";
+		case "browser_open":
+			return host === undefined ? "Opening a browser" : `Opening ${host}`;
+		case "browser_screenshot":
+			return "Taking a screenshot";
+		case "browser_close":
+			return "Closing the browser";
+		case "browser_act":
+			switch (input.action) {
+				case "goto":
+					return host === undefined ? "Going to a page" : `Going to ${host}`;
+				case "look":
+					return "Reading the page";
+				case "click":
+					return "Clicking on the page";
+				case "fill":
+					return "Typing into the page";
+				case "select":
+					return "Choosing an option";
+				case "check":
+					return "Ticking a box";
+				case "press":
+					return typeof input.key === "string" ? `Pressing ${input.key}` : "Pressing a key";
+				case "scroll":
+					return "Scrolling the page";
+				case "wait":
+					return "Waiting for the page";
+				default:
+					return "Using the browser";
+			}
+		default:
+			return undefined;
+	}
+}
+
+/** The most images one tool item carries; a tool returning more shows its first ones. */
+export const MAX_TOOL_IMAGES = 4;
+
+function toolImage(value: unknown): ToolImage | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { mimeType, data } = value as { readonly mimeType?: unknown; readonly data?: unknown };
+	if (typeof data !== "string" || data === "") return undefined;
+	if (!(TOOL_IMAGE_TYPES as readonly unknown[]).includes(mimeType)) return undefined;
+	return { mimeType: mimeType as ToolImage["mimeType"], data };
+}
+
+/**
+ * The images a tool result shows: its image content (what the model sees), then the images in its UI details
+ * (`details.images`, for the transcript only), raster types only, at most `MAX_TOOL_IMAGES`.
+ */
+export function toolImagesOf(message: Pick<ToolResultMessage, "content" | "details">): ToolImage[] {
+	const images: ToolImage[] = [];
+	const content = typeof message.content === "string" ? [] : message.content;
+	for (const block of content) {
+		if (block.type !== "image") continue;
+		const image = toolImage(block);
+		if (image !== undefined) images.push(image);
+	}
+	const details = message.details as { readonly images?: unknown } | undefined;
+	if (typeof details === "object" && details !== null && Array.isArray(details.images)) {
+		for (const value of details.images) {
+			const image = toolImage(value);
+			if (image !== undefined) images.push(image);
+		}
+	}
+	return images.slice(0, MAX_TOOL_IMAGES);
 }
 
 /** Tool result diagnostics that mean the call stopped before it finished. */
@@ -168,7 +254,7 @@ export class ConversationProjector {
 				at: this.#now(),
 				callId: block.id,
 				name: block.name,
-				label: toolLabel(block.name),
+				label: toolLabel(block.name, block.arguments),
 				status: "running",
 				args: block.arguments,
 			};
@@ -196,7 +282,14 @@ export class ConversationProjector {
 		const diagnostics = (entry.data as { diagnostics?: readonly { code?: string }[] } | undefined)?.diagnostics ?? [];
 		const interrupted = diagnostics.some((diagnostic) => INTERRUPTED_CODES.has(diagnostic.code ?? ""));
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
-		const item: ToolItem = { ...running, status, output: textOf(message.content), endedAt: this.#now() };
+		const images = toolImagesOf(message);
+		const item: ToolItem = {
+			...running,
+			status,
+			output: textOf(message.content),
+			...(images.length === 0 ? {} : { images }),
+			endedAt: this.#now(),
+		};
 		ops.push({ op: "replace", item });
 	}
 
