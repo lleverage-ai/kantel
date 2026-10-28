@@ -1,7 +1,8 @@
 # workerd config for Harbour's self-hosted isolate host.
 #
-# One Worker (the host) with a workerLoader binding. The host loads one
-# Dynamic Worker per session and points its globalOutbound at the vault proxy.
+# One Worker (the host) with a workerLoader binding. The host gives each
+# session its own Dynamic Worker, from a pre-loaded pool unless
+# ISOLATE_POOL_SIZE=0, and points its globalOutbound at the vault proxy.
 # workerd is "not a hardened sandbox": run this container under gVisor
 # (HARBOUR_ISOLATE_RUNTIME=runsc in deploy/compose) or a microVM in production.
 
@@ -37,6 +38,9 @@ const hostWorker :Workerd.Worker = (
     (name = "S3_ACCESS_KEY", fromEnvironment = "S3_ACCESS_KEY"),
     (name = "S3_SECRET_KEY", fromEnvironment = "S3_SECRET_KEY"),
     (name = "VAULT_ISOLATE_KEY", fromEnvironment = "VAULT_ISOLATE_KEY"),
+    # Pre-loaded isolates kept ready for new sessions (loader.ts). Unset: 4.
+    # 0 loads one isolate per session on its first call, as in M0.
+    (name = "ISOLATE_POOL_SIZE", fromEnvironment = "ISOLATE_POOL_SIZE"),
   ],
   globalOutbound = "internal",
 );

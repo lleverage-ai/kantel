@@ -100,6 +100,64 @@ the raw file and in the table, marked.
   `raw/isolate-ready-2026-10-27T21-09-39.json` (the re-run of a, d and f). Every run, with its server phases,
   the load samples and the bundle sizes.
 
+## The pool as built (`harness/pool.ts`), 27 October 2026
+
+The pre-loaded pool is now in `images/isolate-host` (on unless `ISOLATE_POOL_SIZE=0`). `harness/pool.ts` builds
+the image's own `src/` and `config.capnp` unchanged, runs them on the image's workerd with a fake vault proxy, and
+measures as M0's `apps/selfhosted/src/measure.ts` does. Each run is: a new session's `/list` (isolate.ready),
+another new session's first `ls -R | wc -l` (isolate.first), then that session's second (isolate.warm). As in
+M0 and `IsolateRunner`, `/list` fetches the manifest and `/exec` is sent it. There is one warm-up, not recorded,
+then 50 runs. Load1 is read before every run, and the batch's minimum and maximum are
+below.
+
+It measures two cadences:
+
+- **Paced:** each new session arrives once the pool is full again. The pool refills only in quiet spells: 25 ms
+  with no `/list` or `/exec` in flight from any session. Pi's sessions leave such gaps, because a model call sits
+  between commands, but this batch doesn't test how often they come with many sessions running.
+- **Back-to-back:** every request follows the last at once, a burst with no quiet time, so the pool empties after
+  its four isolates.
+
+| Mode | Cadence | Round | ready p50 / p95 (min–max) | first p50 / p95 | warm p50 / p95 | pool hits | load1 (min–max) |
+|---|---|---|---|---|---|---|---|
+| off (`0`) | back-to-back | 1 | 118.4 / 129.8 ms (109.5–135.9) | 184.2 / 207.4 | 37.0 / 42.4 | | 8.07–9.24 |
+| | | 2 | 120.9 / 137.4 ms (112.0–150.0) | 181.7 / 203.0 | 36.6 / 49.6 | | 7.46–8.08 |
+| pool (4) | paced | 1 | **6.2 / 7.4 ms** (5.2–9.2) | 69.7 / 80.2 | 36.8 / 40.6 | 50 of 50 | 7.65–8.56 |
+| | | 2 | **6.4 / 7.4 ms** (5.1–9.1) | 71.0 / 79.1 | 37.3 / 48.9 | 50 of 50 | 7.50–8.14 |
+| pool (4) | back-to-back | 1 | 118.2 / 134.5 ms (6.1–143.5) | 183.1 / 198.5 | 36.5 / 39.5 | 2 of 50 | 8.07–8.78 |
+| | | 2 | 121.4 / 137.9 ms (6.6–154.5) | 184.6 / 199.4 | 37.0 / 46.9 | 2 of 50 | 7.45–8.25 |
+
+All times are in ms. None of the batches was flagged as skewed: load1 stayed below 36 (three quarters of the 48
+threads) and moved by less than 6 within each batch. The two rounds agree, so nothing was re-run. An earlier run
+of the same build, without the manifest on `/exec` and at load1 10–19, gave paced 6.4–6.5 / 7.9–10.0 ms. It was
+not kept.
+
+What the numbers show:
+
+- **Paced, the target is met with room to spare:** 6.2–6.4 ms p50 and 7.4 ms p95, against 100 / 300 ms.
+  A new session's first command also gets faster, 70–71 ms against about 183 ms, because its isolate is
+  already loaded. Commands in a session that already has its isolate cost the same in both modes.
+- **Back-to-back, the pool is no worse than off.** The pool's first hand-outs hit, then it is empty and each
+  session loads its own isolate, as today. Every load still holds workerd's one thread for about 125 ms, so one
+  process sustains about eight new sessions a second, with or without a pool. A larger `ISOLATE_POOL_SIZE`
+  absorbs a bigger burst.
+- **Refilling in quiet spells was chosen after measuring.** An earlier build refilled 20 ms after each hand-out.
+  Back-to-back, it kept ready at 6 ms, but every command arriving during a refill load waited for it: warm rose
+  from 40 to 293 ms p50. That build wasn't committed, and its raw data wasn't kept.
+
+The behaviour checks run with `--check`, 22 of them, all passing in both modes:
+
+- listing;
+- lazy reads, and writes into the session's own workspace;
+- each session's own ID on egress to the vault;
+- a blob name that isn't a SHA-256 digest is refused;
+- the pool refills after a hand-out;
+- every value of the switch.
+
+Raw: `raw/pool-2026-10-27T22-21-38.json`. Unit tests for the pool's bookkeeping (hand-out, idle expiry with no
+other call, the quiet spell, single-flight refill) are in `images/isolate-host/test/pool.test.ts` and run with
+`pnpm test`.
+
 ## What can't be measured here
 
 - **Cloudflare.** Every Cloudflare number in the design doc comes from M0-CF1. SessionDO creation, R2 round

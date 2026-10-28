@@ -4,6 +4,12 @@
 	"compilerOptions": {
 		"types": ["node"]
 	},
-	"include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "vitest.config.ts"],
+	"include": [
+		"packages/*/src/**/*.ts",
+		"packages/*/test/**/*.ts",
+		"images/isolate-host/src/pool.ts",
+		"images/isolate-host/test/**/*.ts",
+		"vitest.config.ts"
+	],
 	"exclude": ["packages/ui"]
 }
