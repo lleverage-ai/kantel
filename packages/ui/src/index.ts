@@ -169,7 +169,12 @@ export {
 	type ToolCallGroupProps,
 	toolIcon,
 } from "./session/tool-call.tsx";
-export { type RowRenderPhase, Transcript, type TranscriptProps } from "./session/transcript.tsx";
+export {
+	type RowRenderPhase,
+	Transcript,
+	type TranscriptProps,
+	type TranscriptWorking,
+} from "./session/transcript.tsx";
 export { groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
@@ -179,6 +184,7 @@ export {
 	VaultApprovalCardSkeleton,
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
+export { WorkingIndicator, type WorkingIndicatorProps } from "./session/working-indicator.tsx";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";

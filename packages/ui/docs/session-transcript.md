@@ -42,9 +42,15 @@ transcript go to it. See [session-composer.md](session-composer.md#docked-in-a-t
 - *Loading:* `loading` with no items shows two skeleton turns. With items, `loading` is ignored and the list shows.
 - *Empty:* no items and not loading shows `empty`, or "No messages yet" with "Send a message to start the session."
 - *Error:* `error` shows in an error `Notice` above the list; the list stays usable below it.
-- *Working:* while the last answer streams with no words and no thought yet, the transcript ends with "Working for
-  12s" (`AssistantMessage`'s working row), timed from when the turn started: the last message the person sent before
-  the answer, other than a steer. When that message is not loaded (it is in an older page), it says "Working".
+- *Working:* with `working`, the session is working on a turn, and the transcript ends with a `WorkingIndicator`,
+  "Working for 12s", after T3 Code's turn-level working row (`TimelineWorkGroupRows.tsx:274-308`): from the moment a
+  message is sent until the run settles, before the first token, between tool calls and while the answer streams.
+  `working` is `true` (timed from the last message the person sent, other than a steer) or `{ since, label }` (timed
+  from when the host sent it, before the message is back from the stream). With no `working`, a last answer that
+  streams with no words and no thought shows the same row itself (`AssistantMessage`'s working row), so a host that
+  doesn't pass `working` still shows it before the first word. The two never show together. When the turn's message
+  is not loaded (it is in an older page), it says "Working". The row alone is a list: a message just sent to an empty
+  session shows it, not the empty state.
 - *Docked:* with `dock`, "Scroll to end" sits just above the dock, and the empty state and skeleton stay clear of
   it. A wheel gesture of 24px or more up the list, a finger dragging it, or Page Up or Home rests a docked composer;
   reaching the end, "Scroll to end" or focusing the composer wakes it. While it rests the room at the end keeps the
@@ -169,13 +175,13 @@ sent while the agent was working (`via` is `steer` or `followUp`). `UserMessage(
 `AssistantMessage({ item, turnStartedAt? })`; `turnStartedAt` is when the answer's turn started, which `Transcript`
 passes.
 
-**States:** a thought (`item.thinking`) sits behind a disclosure, "Thinking" while streaming with no text yet and
-"Thought it through" after. While streaming with text, a soft caret sits after the last word. While streaming with
+**States:** while streaming with no text yet, a thought (`item.thinking`) streams live under "Thinking", its newest
+four lines in a window that doesn't grow, after T3 Code's live reasoning preview (`TimelineWorkGroupRows.tsx:503-581`);
+once the first word arrives it folds behind a "Thought it through" disclosure. While streaming with text, a soft caret sits after the last word. While streaming with
 no text and no thought, the working row says the agent is working, after T3 Code's (`TimelineWorkGroupRows.tsx`,
 `WorkingTimelineRow`): "Working for 12s" in muted `--hb-text-sm` with tabular numbers, the time an `Elapsed` from
 `turnStartedAt`; "Working" with no time when there is no `turnStartedAt`. It is one line as tall as the answer's
-first line, so the first word takes its place without the row moving. With a time it is a `role="timer"` named
-"Working", whose implicit `aria-live` is off: screen readers can read it but are not told every second.
+first line, so the first word takes its place without the row moving. It is a `WorkingIndicator`; see below.
 
 **Not for** host notices (`NoticeRow`) or tool output (`ToolCallChip`).
 
@@ -184,6 +190,24 @@ first line, so the first word takes its place without the row moving. With a tim
 **Cost:** memoised on `item` and `turnStartedAt`; Markdown re-parses only the last block as text streams. The caret
 is the only animation, CSS only, and stops under reduced motion (it stays, still). The working row's timer is an
 `Elapsed` on the shared one-second clock: only that leaf renders each second, never the message or its row.
+
+### WorkingIndicator
+
+**For** saying the agent is working on a turn, live: the working status's pulsing dot, then "Working for 12s" in
+muted `--hb-text-sm` with tabular numbers, the words under a slow light sweep (`--hb-duration-shimmer`), after T3
+Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
+say, for another kind of work).
+
+**States:** with `since`, it counts from it and is a `role="timer"` named after the label, whose implicit `aria-live`
+is off: screen readers can read it but are not told every second. Without `since` it says the label alone, as a
+`role="status"`, announced once. The dot sits on the words' baseline and moves up onto the middle of their capitals
+(`--hb-on-cap`), as `StatusLabel`'s does.
+
+**Not for** a session's status in a header or a list (`StatusLabel`), or a control that is busy (a button's own
+spinner).
+
+**Cost:** memoised on its props. The dot's pulse and the sweep are CSS only and stop under reduced motion; the timer
+is an `Elapsed` on the shared one-second clock, so only that leaf renders each second.
 
 ### NoticeRow
 

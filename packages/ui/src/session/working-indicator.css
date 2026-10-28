@@ -1,0 +1,58 @@
+/* The turn's working row: the working dot, then "Working for 12s" in muted small type with tabular numbers, so the
+   timer does not shift as it counts. One line as tall as an answer's first line. The dot sits on the words' baseline
+   and moves up onto the middle of their capitals (--hb-on-cap), as StatusLabel's does, so it looks centred on the
+   words in any font. */
+.hb-working-indicator {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	padding: var(--hb-space-1) 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: calc(var(--hb-text-md) * var(--hb-leading-prose));
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.hb-working-indicator > .hb-status-dot {
+	translate: 0 var(--hb-on-cap);
+}
+
+/* A light sweeps across the words, after T3 Code's shimmer: the text is painted by a gradient a little brighter in
+   the middle, moved across it. Under reduced motion it stops, and the words stay muted. */
+.hb-working-indicator-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	background:
+		linear-gradient(
+			90deg,
+			var(--hb-text-faint) 0%,
+			var(--hb-text-faint) 40%,
+			var(--hb-text) 50%,
+			var(--hb-text-faint) 60%,
+			var(--hb-text-faint) 100%
+		)
+		0 0 / 300% 100%;
+	background-clip: text;
+	color: transparent;
+	animation: hb-working-sweep var(--hb-duration-shimmer) linear infinite;
+}
+
+@keyframes hb-working-sweep {
+	from {
+		background-position: 100% 0;
+	}
+	to {
+		background-position: 0 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-working-indicator-text {
+		animation: none;
+		background: none;
+		color: var(--hb-text-muted);
+	}
+}

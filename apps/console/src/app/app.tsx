@@ -10,9 +10,10 @@ import {
 	SignedInAs,
 	Spinner,
 } from "@harbour/ui";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "../api/oversight.ts";
+import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
@@ -198,6 +199,8 @@ export function App({
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
+	const [live, setLive] = useState<LiveSummary>();
+	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
 	const sessionProject = useSessionProject(client, sessionId);
 
 	// In-app links navigate without reloading the page.
@@ -335,6 +338,7 @@ export function App({
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
 				onOpen={onOpen}
+				onLive={setLive}
 			/>
 		);
 	} else {
@@ -402,7 +406,7 @@ export function App({
 								/>
 							)}
 							<SessionList
-								sessions={list.sessions}
+								sessions={sessions}
 								selectedId={sessionId}
 								hrefFor={hrefFor}
 								loading={list.loading}
