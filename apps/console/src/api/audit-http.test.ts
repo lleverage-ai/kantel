@@ -10,7 +10,7 @@ import {
 } from "@harbour/contracts";
 import { readAll, toQuery } from "@harbour/ui";
 import { describe, expect, it } from "vitest";
-import { apiAudit, auditApiSource } from "./audit-http.ts";
+import { apiAudit, auditApiSource, readAuditScope } from "./audit-http.ts";
 
 const NOW = Date.UTC(2026, 9, 27, 12);
 
@@ -119,6 +119,7 @@ describe("the audit log over the audit query API", () => {
 		});
 		// No identity API yet: no organisations or people to choose from.
 		expect(audit.choices).toEqual({});
+		expect(audit.scope).toBeDefined();
 		expect(await audit.credentials?.()).toEqual([
 			{ value: "itm_github", label: "GitHub token" },
 			{ value: "itm_linear", label: "Linear API key" },
@@ -128,10 +129,95 @@ describe("the audit log over the audit query API", () => {
 		);
 		expect(audit.links.session?.("ses_1", undefined, "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
 		expect(audit.links.session?.("ses_1", "ses_1/4")).toBeUndefined();
+		// Without the vault page there is nowhere to open a vault request.
 		expect(audit.links.proposal).toBeUndefined();
 		const page = await audit.source.query(toQuery({ range: "all", kind: "all" }, NOW), { limit: 5 });
 		expect(page.items).toHaveLength(5);
 		expect(page.nextCursor).toBeDefined();
+	});
+
+	it("links rows about a vault request to its page when the console has the vault page", () => {
+		const audit = apiAudit({ vaultRequests: true });
+		expect(audit.links.proposal?.("prp_1/a")).toBe("/vault/proposals/prp_1%2Fa");
+		expect(audit.links.session?.("ses_1", undefined, "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
+	});
+
+	it("reads the projects, agents and sessions to filter by from the session API, every page", async () => {
+		const seen: string[] = [];
+		const session = (id: string, agentId: string, updatedAt: number, title?: string) => ({
+			id,
+			organisationId: "org_a",
+			projectId: "prj_billing",
+			agentId,
+			status: "idle",
+			labels: {},
+			createdBy: { kind: "human", userId: "usr_tom" },
+			createdAt: 0,
+			updatedAt,
+			...(title === undefined ? {} : { title }),
+		});
+		const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input));
+			seen.push(`${url.pathname}${url.search} ${new Headers(init?.headers).get("authorization")}`);
+			const json = (body: unknown, status = 200) => Response.json(body, { status });
+			switch (url.pathname) {
+				case "/v1/projects":
+					return json({
+						items: [
+							{ id: "prj_data", name: "Data" },
+							{ id: "prj_billing", name: "Billing" },
+						],
+					});
+				case "/v1/sessions":
+					return url.searchParams.get("cursor") === null
+						? json({ items: [session("ses_old", "agt_sweep", 1, "Overnight sweep")], nextCursor: "1" })
+						: json({ items: [session("ses_new", "agt_triage", 2), session("ses_mid", "agt_sweep", 1.5, "Triage")] });
+				case "/v1/profiles":
+					return json({ items: [{ id: "agt_sweep", name: "Billing sweeper" }] });
+				default:
+					return json({ error: { code: "not_found", message: "No route" } }, 404);
+			}
+		}) as typeof fetch;
+		const scope = await readAuditScope({
+			baseUrl: "https://harbour.test",
+			fetch: fetcher,
+			headers: () => ({ authorization: "Bearer tom" }),
+		});
+		expect(scope).toEqual({
+			projects: [
+				{ value: "prj_billing", label: "Billing" },
+				{ value: "prj_data", label: "Data" },
+			],
+			// An agent no profile names shows by its ID.
+			agents: [
+				{ value: "agt_triage", label: "agt_triage" },
+				{ value: "agt_sweep", label: "Billing sweeper" },
+			],
+			sessions: [
+				{ value: "ses_new", label: "Untitled session ses_new" },
+				{ value: "ses_mid", label: "Triage" },
+				{ value: "ses_old", label: "Overnight sweep" },
+			],
+		});
+		expect(seen).toContain("/v1/sessions?limit=200&cursor=1 Bearer tom");
+	});
+
+	it("reads the scope without agent names when profiles can't be read, and fails when sessions can't", async () => {
+		const serve = (failing: string) =>
+			(async (input: RequestInfo | URL) => {
+				const { pathname } = new URL(String(input));
+				if (pathname === failing)
+					return Response.json({ error: { code: "forbidden", message: "No" } }, { status: 403 });
+				if (pathname === "/v1/sessions") {
+					return Response.json({ items: [{ id: "ses_1", agentId: "agt_1", projectId: "prj_1", updatedAt: 1 }] });
+				}
+				return Response.json({ items: [] });
+			}) as typeof fetch;
+		const scope = await readAuditScope({ baseUrl: "https://harbour.test", fetch: serve("/v1/profiles") });
+		expect(scope.agents).toEqual([{ value: "agt_1", label: "agt_1" }]);
+		await expect(readAuditScope({ baseUrl: "https://harbour.test", fetch: serve("/v1/sessions") })).rejects.toThrow(
+			"403",
+		);
 	});
 
 	it("passes the server's refusal through for an organisation the caller isn't in", async () => {
