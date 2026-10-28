@@ -42,6 +42,7 @@ Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 M
 | `GET /sessions/:id` | `directory.get` | `SessionRecord` |
 | `GET /sessions/:id/children` | `directory.children` | `{ items }` |
 | `GET /sessions/:id/snapshot` | `runtime.snapshot` | `SessionSnapshot` |
+| `GET /sessions/:id/history?cursor&before&limit` | `history.history`, when the API has `history` | `SessionHistoryPage` |
 | `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId? }`) | 202 `Submission` |
 | `POST /sessions/:id/abort` | `runtime.abort` (body `{ reason? }`) | 204 |
 | `POST /sessions/:id/close` | `runtime.close` | 204 |
@@ -57,6 +58,12 @@ Errors are `{ error: { code, message, details? } }` with the HarbourError code: 
 `not_found` 404, `conflict` and `aborted` 409, `expired` 410, `refused` 422, `exhausted` 429, `not_supported` 501,
 `unavailable` 503. Any other error is a bare 500 `unavailable`, never its message. The client turns each back into a
 `HarbourError` with the same code.
+
+`history` is the transcript in pages, newest first (`SessionHistory`, proposed). With no query it is the latest
+`limit` items (default 50, at most 200); `?cursor=` takes a page's `nextCursor` and `?before=<item id>` pages back
+from an item a client already holds, such as a snapshot's first. A cursor names an item, not an offset, so pages
+behind it stay the same while new turns arrive. The API serves it only when it is given `history` (the runtime's);
+without it the route is `not_found`.
 
 `result` waits up to `timeoutMs` (default 25 s, at most 120 s) and answers 202 while the run goes on; the client polls
 until it ends. Submission IDs hold a `/`, which is why they go in the query.

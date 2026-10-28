@@ -176,6 +176,7 @@ export function SessionView({
 						items={state.items}
 						hasOlder={state.hasEarlier}
 						loadingOlder={state.loadingOlder}
+						olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
 						onLoadOlder={client.loadOlder}
 						loading={state.freshness.state === "loading"}
 						error={state.error}

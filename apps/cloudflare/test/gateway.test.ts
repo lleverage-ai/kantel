@@ -123,6 +123,41 @@ describe("the gateway", () => {
 		expect(((await listed.json()) as { items: { id: string }[] }).items.map((item) => item.id)).toEqual([session.id]);
 	});
 
+	it("mounts a session's history: the latest turns first, and a cursor pages back", async () => {
+		const { call, signedIn, stack, withKey } = await setup();
+		const headers = { ...(await signedIn()), "content-type": "application/json" };
+		const created = await call("/v1/sessions", headers, {
+			method: "POST",
+			body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID }),
+		});
+		const session = (await created.json()) as { id: string };
+		for (const text of ["one", "two", "three"]) {
+			const prompted = await call(`/v1/sessions/${session.id}/prompt`, headers, {
+				method: "POST",
+				body: JSON.stringify({ text }),
+			});
+			const submission = (await prompted.json()) as { id: string };
+			await call(
+				`/v1/sessions/${session.id}/result?submission=${encodeURIComponent(submission.id)}&timeoutMs=5000`,
+				headers,
+			);
+		}
+		type Page = { items: { text: string }[]; nextCursor?: string };
+		const latest = await call(`/v1/sessions/${session.id}/history?limit=2`, headers);
+		expect(latest.status).toBe(200);
+		const first = (await latest.json()) as Page;
+		expect(first.items.map((item) => item.text)).toEqual(["Echo: three", "three"]);
+		const older = await call(
+			`/v1/sessions/${session.id}/history?limit=10&cursor=${encodeURIComponent(first.nextCursor ?? "")}`,
+			withKey,
+		);
+		const rest = (await older.json()) as Page;
+		expect(rest.items.map((item) => item.text)).toEqual(["Echo: two", "two", "Echo: one", "one"]);
+		expect(rest.nextCursor).toBeUndefined();
+		expect((await call(`/v1/sessions/${session.id}/history`)).status).toBe(401);
+		expect((await call(`/v1/sessions/${session.id}/history?limit=0`, headers)).status).toBe(400);
+	});
+
 	it("refuses Access tokens for another AUD, another team domain, an expired one and an uninvited email", async () => {
 		const { call, signedIn, stack } = await setup();
 		const other = createMockAccess({ teamDomain: "someone-else.cloudflareaccess.com", audience: AUD });

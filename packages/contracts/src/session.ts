@@ -5,7 +5,14 @@
  *
  * Pi types never appear here; the runtime projects Pi Durable's transcript onto `@harbour/protocol` items.
  */
-import type { ServerFrame, SessionSnapshot, SessionStatus, Usage } from "@harbour/protocol";
+import type {
+	HistoryPage,
+	ServerFrame,
+	SessionSnapshot,
+	SessionStatus,
+	TranscriptItem,
+	Usage,
+} from "@harbour/protocol";
 import type {
 	Actor,
 	AgentId,
@@ -165,6 +172,63 @@ export interface SessionModels {
 	 * viewer on the session's project; another organisation's session is `not_found`.
 	 */
 	listModels(ctx: CallContext, sessionId: SessionId): Promise<readonly ModelOption[]>;
+}
+
+/** The most items one history page holds; a larger `limit` is cut to it. */
+export const SESSION_HISTORY_MAX_LIMIT = 200;
+/** Items in a history page when the request gives no `limit`. */
+export const SESSION_HISTORY_DEFAULT_LIMIT = 50;
+
+/**
+ * Which page of a session's transcript to read. With neither `cursor` nor `before`, the latest page: the newest
+ * `limit` items. Give at most one of the two.
+ */
+export interface SessionHistoryRequest {
+	/** A previous page's `nextCursor`: the page of items older than that page's oldest. Opaque. */
+	readonly cursor?: string;
+	/**
+	 * The page of items older than this item ID, such as a snapshot's `items[0].id`: what the protocol's `history` frame
+	 * names as `before`, so a client holding a snapshot pages back from it.
+	 */
+	readonly before?: string;
+	/** At most this many items, from 1. Default `SESSION_HISTORY_DEFAULT_LIMIT`, cut to `SESSION_HISTORY_MAX_LIMIT`. */
+	readonly limit?: number;
+}
+
+/** One page of a session's transcript, newest first. */
+export interface SessionHistoryPage {
+	readonly sessionId: SessionId;
+	/** Newest first: `items[0]` is the newest item in the page, `items.at(-1)` its oldest. */
+	readonly items: readonly TranscriptItem[];
+	/** Present when older items exist: pass it as `cursor` for the page before this one. */
+	readonly nextCursor?: string;
+}
+
+/**
+ * Proposed (28 Oct 2026, for the session view's scroll-back, issue #6): a session's transcript in pages, newest first,
+ * so a client shows the latest turns at once and loads older ones as the reader scrolls back. A separate interface, as
+ * `SessionModels` is, so that no existing `SessionRuntime` has to change to adopt it.
+ *
+ * A cursor names the oldest item of the page that gave it, and items are only ever appended (an item that changes, an
+ * answer streaming, keeps its ID and place), so the pages behind a cursor stay the same while new turns arrive: paging
+ * back never repeats or skips an item. Items are the ones a snapshot and `watch` deliver, with the same IDs, and the
+ * IDs survive the runtime reopening the session, so a cursor does too.
+ */
+export interface SessionHistory {
+	/**
+	 * A page of the session's items, newest first. The caller needs viewer on the session's project; another
+	 * organisation's session is `not_found`. A malformed cursor, a `limit` below 1, or both `cursor` and `before`, is
+	 * `invalid`; a `before` or cursor naming an item the session doesn't have is `not_found`.
+	 */
+	history(ctx: CallContext, sessionId: SessionId, request?: SessionHistoryRequest): Promise<SessionHistoryPage>;
+}
+
+/**
+ * A history page as the protocol's `history` frame carries it, for a client that keeps its transcript oldest first and
+ * puts each page in front: the same items, oldest first, with `hasEarlier` when older items exist.
+ */
+export function protocolHistoryPage(page: SessionHistoryPage): HistoryPage {
+	return { sessionId: page.sessionId, items: [...page.items].reverse(), hasEarlier: page.nextCursor !== undefined };
 }
 
 export interface Submission {

@@ -23,6 +23,8 @@ import {
 export const COALESCE_MS = 200;
 export const RECONNECT_MS = [500, 1000, 2000, 4000];
 export const HISTORY_PAGE = 120;
+/** The code of the error frame a transport sends when an earlier page fails; the session itself is unaffected. */
+export const HISTORY_ERROR = "history";
 
 /** A connection to the session host: the session API's event stream (`api/http.ts`) or a recorded host. */
 export type Connection = {
@@ -63,6 +65,8 @@ export type SessionState = {
 	/** True while items before `items[0]` exist on the host. */
 	readonly hasEarlier: boolean;
 	readonly loadingOlder: boolean;
+	/** Why the last earlier page didn't load, until it is asked for again. */
+	readonly olderError?: string;
 	readonly connection: ConnectionHealth;
 	readonly freshness: Freshness;
 	readonly resumes: readonly ResumeRecord[];
@@ -199,7 +203,7 @@ export class SessionClient {
 		const { hasEarlier, loadingOlder, items } = this.state;
 		const first = items[0];
 		if (!hasEarlier || loadingOlder || first === undefined || this.connection === undefined) return;
-		this.set({ loadingOlder: true });
+		this.set({ loadingOlder: true, olderError: undefined });
 		this.send({ type: "history", sessionId: this.state.sessionId, before: first.id, limit: HISTORY_PAGE });
 	};
 
@@ -227,14 +231,16 @@ export class SessionClient {
 				const older = frame.page.items.filter((item) => !known.has(item.id));
 				const items = [...older, ...this.state.items];
 				if (this.view !== undefined) this.view = { ...this.view, items, hasEarlier: frame.page.hasEarlier };
-				this.set({ items, hasEarlier: frame.page.hasEarlier, loadingOlder: false });
+				this.set({ items, hasEarlier: frame.page.hasEarlier, loadingOlder: false, olderError: undefined });
 				return;
 			}
 			case "delta":
 				this.delta(frame.delta);
 				return;
 			case "error":
-				this.set({ error: `${frame.code}: ${frame.message}`, loadingOlder: false });
+				// An earlier page that failed leaves the session as it was: the transcript offers to try again.
+				if (frame.code === HISTORY_ERROR) this.set({ olderError: frame.message, loadingOlder: false });
+				else this.set({ error: `${frame.code}: ${frame.message}`, loadingOlder: false });
 				return;
 		}
 	}

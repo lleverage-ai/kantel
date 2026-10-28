@@ -67,9 +67,12 @@ function projectsRoute(projects: Map<string, string>) {
 	};
 }
 
-async function setUp() {
+async function setUp(options: { pageSize?: number } = {}) {
 	const { models, script } = createScriptedModel();
-	const memory = createMemoryRuntime({ models });
+	const memory = createMemoryRuntime({
+		models,
+		...(options.pageSize === undefined ? {} : { pageSize: options.pageSize }),
+	});
 	const api = createSessionApi({
 		...memory,
 		authenticator: staticTokenAuthenticator({ tom }),
@@ -103,7 +106,15 @@ async function setUp() {
 		cleanups.push(() => session.stop());
 		return session;
 	};
-	return { memory, script, client, create, open, apiFetch, projects };
+	/** Runs `texts` as turns, each answered `Re: <text>`, straight on the runtime. */
+	const converse = async (sessionId: string, ...texts: string[]) => {
+		for (const text of texts) {
+			script.reply({ text: `Re: ${text}` });
+			const submitted = await memory.runtime.prompt(ctx, sessionId, { text });
+			await memory.runtime.wait(ctx, sessionId, submitted.id);
+		}
+	};
+	return { memory, script, client, create, open, apiFetch, projects, converse };
 }
 
 const texts = (session: SessionClient) =>
@@ -372,6 +383,70 @@ describe("the console on the session API", () => {
 		await eventually(() => texts(session).includes("assistant:Once"), "the answer");
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(texts(session)).toEqual(["prompt:Hello", "assistant:Once"]);
+	});
+
+	it("shows the latest page first, then pages earlier turns in front from the history route while new turns arrive", async () => {
+		const { converse, create, open } = await setUp({ pageSize: 4 });
+		const id = await create("proj-a");
+		await converse(id, "One", "Two", "Three");
+		const session = open(id);
+		await eventually(() => session.getState().items.length > 0, "the snapshot");
+		expect(texts(session)).toEqual(["prompt:Two", "assistant:Re: Two", "prompt:Three", "assistant:Re: Three"]);
+		expect(session.getState().hasEarlier).toBe(true);
+		// New turns land behind what is shown; the page before the first item is the same.
+		await converse(id, "Four");
+		await eventually(() => texts(session).includes("assistant:Re: Four"), "the new turn");
+		const held = session.getState().items;
+		session.loadOlder();
+		expect(session.getState().loadingOlder).toBe(true);
+		await eventually(() => !session.getState().loadingOlder, "the earlier page");
+		expect(texts(session)).toEqual([
+			"prompt:One",
+			"assistant:Re: One",
+			"prompt:Two",
+			"assistant:Re: Two",
+			"prompt:Three",
+			"assistant:Re: Three",
+			"prompt:Four",
+			"assistant:Re: Four",
+		]);
+		expect(session.getState().hasEarlier).toBe(false);
+		expect(session.getState().items.slice(2)).toEqual(held);
+		expect(session.getState().items[2]).toBe(held[0]);
+		expect(session.getState().olderError).toBeUndefined();
+	});
+
+	it("says an earlier page failed without ending the session, and loads it when asked again", async () => {
+		const { apiFetch, converse, create } = await setUp({ pageSize: 2 });
+		const id = await create("proj-a");
+		await converse(id, "One", "Two");
+		let failNext = true;
+		const flaky = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				if (failNext && new URL(request.url).pathname.endsWith("/history")) {
+					failNext = false;
+					return Response.json({ error: { code: "unavailable", message: "Try later" } }, { status: 503 });
+				}
+				return apiFetch(request);
+			},
+		});
+		const session = new SessionClient(flaky.transport(id), id);
+		session.start();
+		cleanups.push(() => session.stop());
+		await eventually(() => session.getState().items.length === 2, "the snapshot");
+		session.loadOlder();
+		await eventually(() => session.getState().olderError !== undefined, "the failed page");
+		expect(session.getState()).toMatchObject({ loadingOlder: false, hasEarlier: true });
+		expect(session.getState().error).toBeUndefined();
+		expect(session.getState().connection.status).toBe("open");
+		session.loadOlder();
+		expect(session.getState().olderError).toBeUndefined();
+		await eventually(() => !session.getState().loadingOlder, "the retried page");
+		expect(texts(session)).toEqual(["prompt:One", "assistant:Re: One", "prompt:Two", "assistant:Re: Two"]);
+		expect(session.getState().hasEarlier).toBe(false);
 	});
 
 	it("says why a call was refused, in words", async () => {

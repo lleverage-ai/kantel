@@ -48,6 +48,7 @@ import {
 	type SessionDirectory,
 	type SessionEnd,
 	type SessionEndHook,
+	type SessionHistory,
 	type SessionId,
 	type SessionRecord,
 	type SessionRuntime,
@@ -57,6 +58,7 @@ import {
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+import { historyAnchor, historyLimit, readHistory } from "./history.ts";
 import {
 	ConversationProjector,
 	createSessionEndHook,
@@ -129,6 +131,8 @@ export interface SessionRuntimeOptions {
 
 export interface SessionRuntimeService {
 	readonly runtime: SessionRuntime;
+	/** Each session's transcript in pages, newest first, for a client scrolling back (proposed, issue #6). */
+	readonly history: SessionHistory;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -895,6 +899,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		},
 	};
 
+	const history: SessionHistory = {
+		async history(ctx, sessionId, request = {}) {
+			await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.history");
+			// A malformed request is refused before the session is opened for it.
+			historyLimit(request.limit);
+			historyAnchor(request);
+			const session = await requireOpen(ctx, sessionId);
+			await sync(session);
+			return readHistory(session.stream, sessionId, request);
+		},
+	};
+
 	const directory: SessionDirectory = {
 		async get(ctx, sessionId) {
 			const stored = await requireStored(ctx, sessionId);
@@ -1182,6 +1199,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	return {
 		runtime,
+		history,
 		directory,
 		profiles,
 		hostTools,

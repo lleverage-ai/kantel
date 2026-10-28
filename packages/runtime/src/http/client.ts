@@ -18,6 +18,8 @@ import {
 	type RunResult,
 	type SessionDirectory,
 	type SessionFilter,
+	type SessionHistory,
+	type SessionHistoryPage,
 	type SessionRecord,
 	type SessionRuntime,
 	type Submission,
@@ -60,6 +62,8 @@ export interface SessionApiClientOptions {
 
 export interface SessionApiClient {
 	readonly runtime: SessionRuntime;
+	/** `GET /sessions/:id/history`: the transcript in pages, newest first. */
+	readonly history: SessionHistory;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -126,6 +130,17 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 	};
 
 	const sessionPath = (sessionId: string, rest = "") => `/sessions/${segment(sessionId)}${rest}`;
+
+	const history: SessionHistory = {
+		history(ctx, sessionId, request = {}) {
+			const params = new URLSearchParams();
+			if (request.cursor !== undefined) params.set("cursor", request.cursor);
+			if (request.before !== undefined) params.set("before", request.before);
+			if (request.limit !== undefined) params.set("limit", String(request.limit));
+			const query = params.toString();
+			return call<SessionHistoryPage>(ctx, "GET", sessionPath(sessionId, `/history${query === "" ? "" : `?${query}`}`));
+		},
+	};
 
 	const runtime: SessionRuntime = {
 		create: (ctx, input) => call<SessionRecord>(ctx, "POST", "/sessions", input),
@@ -270,5 +285,5 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 		},
 	};
 
-	return { runtime, directory, profiles, hostTools };
+	return { runtime, history, directory, profiles, hostTools };
 }
