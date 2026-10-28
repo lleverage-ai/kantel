@@ -92,20 +92,22 @@ run, was 356 / 401 ms and 354 / 457 ms p50 / p95.
 p95 on the server.** Both backends take the same time again.
 
 - **The command and the isolate cost nothing measurable when warm.** On `dynamic-worker`, `isolate.cold` was 0 and
-  `isolate.call` 0 ms in all 50 (the warm-up's cold load was 312 ms). The sandbox's own phases (`isolate.manifest`,
+  `isolate.call` 0 ms in all 50 (the warm-up's cold `isolate.call` was 312 ms). The sandbox's own phases (`isolate.manifest`,
   `isolate.exec`, `isolate.scan`) were 0 ms in a 10-run batch that kept every run's timings
   ([`…T20-36-13Z-warm-in-process-timings.json`](isolate-ready-2026-10-28T20-36-13Z-warm-in-process-timings.json)).
-  Worker timers only move on I/O, so the ~285 ms is the run's I/O: the sandbox layer's workspace, session and lease
-  checks and its audit, a few storage round trips.
+  Worker timers only move on I/O, so the ~285 ms is most likely the run's I/O: the sandbox layer's workspace,
+  session and lease checks and its audit. `total` doesn't break that down by call.
 - **Those round trips are still remote.** All six placement probes (warm-up and after, three batches) said what
   they did at 18:21: object `LHR`, D1 `ENAM` (`ORD`, primary). From the object, `SELECT 1` took 122 ms p50 (46–313,
-  30 queries) and an R2 `head` 133 ms p50 (73–199, 30). Two or three of those make the ~285 ms. The measurement's own
+  30 queries) and an R2 `head` 133 ms p50 (73–199, 30); R2 doesn't report its location. Two or three such round trips
+  would add up to the ~285 ms. The measurement's own
   lookup of the session took 227 ms p50 (195–366) on top, outside `total`.
 - **The client's ~0.9 s wall time** is sign-in (~360 ms), the lookup (~230 ms) and the run (~285 ms), plus the trip
   from brwsr's browser to the edge.
 
-So the remaining gap is where D1 and R2 are, not the isolate: moving them to `weur`, next to the object, is the next
-step (#140 lets CI bind a new database and bucket), and these batches run again after it.
+So the remaining gap most likely comes from where D1 and R2 are rather than the isolate, but that is an inference
+until it is measured: the next step is moving them to `weur`, next to the object (#140 lets CI bind a new database
+and bucket), and running these batches again.
 
 ## Where the time goes
 
@@ -213,11 +215,23 @@ Each file holds that script's output, `runs` included: `status`, `wall` (client 
 `session`, `isolate`, `exit` and `listed` per run, plus the warm-up and the summary. The two later files add
 `signIn`, `call` and `cold` per run, and `placement` on the warm-up and `after`.
 
-The warm batch is the same `call`, on one session that it closes whatever happens:
+The warm batch runs on one session, which it closes whatever happens (in a fresh page, not after the script above):
 
 ```js
+const backend = "in-process"; // or "dynamic-worker"
+const call = async (body) => {
+  const t0 = performance.now();
+  const r = await fetch("/v1/measurements/isolate-ready", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ backend, ...body }),
+  });
+  const j = await r.json();
+  return { status: r.status, wall: performance.now() - t0, sessionId: j.sessionId, warm: j.warm,
+           server: j.timings?.total, timings: j.timings, exit: j.exitCode,
+           ...(body.placement ? { placement: j.placement } : {}) };
+};
 const warmup = await call({ keep: true, placement: true }); // a cold run that leaves its session open
 const runs = [];
+let after;
 try {
   for (let i = 0; i < 50; i++) runs.push(await call({ sessionId: warmup.sessionId }));
   after = await call({ sessionId: warmup.sessionId, placement: true });
@@ -228,7 +242,7 @@ try {
 }
 ```
 
-with `call(body)` sending `{ backend, ...body }` and keeping `sessionId`, `warm` and `timings` from each answer. The warm
+The same `q` gives the percentiles. The warm
 files hold `warmup`, `runs`, `after`, `closed` (the close's status) and `summary`; the `-timings` file keeps every
 run's whole `timings`. A run answers 409 if the session is closed, and 400 if it isn't a measurement session on that
 backend. Right after a deploy, wait until the object has restarted on the new code: a warm-up answered by the old
