@@ -23,11 +23,33 @@ on:
 
 jobs:
   selfhosted:
-    runs-on: ubuntu-24.04
+    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    runs-on: [self-hosted, harbour]
     timeout-minutes: 30
     env:
       HARBOUR_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
       HARBOUR_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
+      # The runner shares the host's Docker with other Harbour stacks (the default `harbour` and `harbour-m1sh`, on
+      # the default and 581xx ports). So CI runs a second stack as deploy/compose/README.md describes: its own
+      # project per run (`down -v` then removes only this run's containers and volumes), image tag, ports, `control`
+      # subnet, vault container and sandbox network prefix. One runner runs one job at a time, so runs never overlap
+      # on these ports; a second runner would need its own.
+      COMPOSE_PROJECT_NAME: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      HARBOUR_IMAGE_TAG: ci-stack
+      HARBOUR_PG_PORT: "56532"
+      HARBOUR_S3_PORT: "59200"
+      HARBOUR_ISOLATE_PORT: "58280"
+      HARBOUR_HOST_A_PORT: "58281"
+      HARBOUR_HOST_B_PORT: "58282"
+      HARBOUR_GATEWAY_PORT: "58290"
+      HARBOUR_MAILPIT_PORT: "58325"
+      HARBOUR_SMTP_PORT: "58326"
+      HARBOUR_CONTROL_PREFIX: "10.250.93"
+      HARBOUR_VAULT_CONTAINER: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}-vault-proxy
+      HARBOUR_SANDBOX_NETWORK: harbour-ci-sbx
+      # What the tests run outside the stack connect to.
+      HARBOUR_DATABASE_URL: postgres://harbour:harbour@127.0.0.1:56532/harbour
+      S3_ENDPOINT: http://127.0.0.1:59200
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -57,7 +79,7 @@ jobs:
 
       # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)
-        run: bun spike/conformance/run.ts --target=selfhosted
+        run: bun spike/conformance/run.ts --target=selfhosted --base "http://127.0.0.1:$HARBOUR_HOST_A_PORT"
 
       # The M1 gateway in the stack: sessions, workspace reads, audit queries and
       # the console, over HTTP behind the API-key authenticator; then mail: a
@@ -66,24 +88,30 @@ jobs:
       - name: M1 gateway and Mailpit end to end
         run: >
           bun apps/selfhosted/test/gateway/stack.ts
-          --base-url http://127.0.0.1:58090
-          --mailpit-url http://127.0.0.1:58025
+          --base-url "http://127.0.0.1:$HARBOUR_GATEWAY_PORT"
+          --mailpit-url "http://127.0.0.1:$HARBOUR_MAILPIT_PORT"
 
       # Each real implementation the self-hosted deployment binds (runtime,
       # audit, identity and OTP sign-in, workspaces, vault) against its
       # contract's conformance suite, on this stack's Postgres, MinIO and
       # Mailpit. The table goes to the job summary.
       - name: Bindings against the stack
-        run: bun apps/selfhosted/test/bindings.ts --markdown "$GITHUB_STEP_SUMMARY"
+        run: >
+          bun apps/selfhosted/test/bindings.ts --markdown "$GITHUB_STEP_SUMMARY"
+          --postgres-url "$HARBOUR_DATABASE_URL"
+          --s3-endpoint "$S3_ENDPOINT"
+          --smtp-url "smtp://127.0.0.1:$HARBOUR_SMTP_PORT?starttls=off"
+          --mailpit-url "http://127.0.0.1:$HARBOUR_MAILPIT_PORT"
 
       - name: Scripted task
-        run: bun spike/scenario/run.ts --base http://127.0.0.1:58081
+        run: bun spike/scenario/run.ts --base "http://127.0.0.1:$HARBOUR_HOST_A_PORT"
 
       - name: Kill the session owner mid tool call
         run: >
           bun spike/scenario/run.ts --crash
           --kill-cmd "docker compose -f deploy/compose/compose.yaml kill host-a"
-          --fallback http://127.0.0.1:58082
+          --base "http://127.0.0.1:$HARBOUR_HOST_A_PORT"
+          --fallback "http://127.0.0.1:$HARBOUR_HOST_B_PORT"
 
       # --no-deps: bring back host-a only. Without it compose on the runner
       # also recreated the isolate host, vault proxy and migrations.
@@ -100,8 +128,8 @@ jobs:
           HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
           HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 > "$RUNNER_TEMP/shared-scenario.json"
-          bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"
+          bun spikes/scenario/run.ts --base-url "http://127.0.0.1:$HARBOUR_HOST_A_PORT" > "$RUNNER_TEMP/shared-scenario.json"
+          bun spikes/scenario/run.ts --base-url "http://127.0.0.1:$HARBOUR_HOST_A_PORT" --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"
 
       - name: Canary appears nowhere
         run: deploy/compose/scripts/check-canary.sh
