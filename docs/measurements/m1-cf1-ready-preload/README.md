@@ -10,10 +10,10 @@ session's own isolate, timed in the routing Worker. Runs are sequential and pace
 
 | File | What each run does | n | Ready p50 / p95 (ms) | Isolate loaded at hand-out | DOs placed |
 | --- | --- | --- | --- | --- | --- |
-| [`cold.json`](cold.json) | Today's path: new SessionDO, setup (R2 head ×2, `Harness.open`, conversation), list (R2 head and manifest, new isolate) | 50 | **1,046 / 1,404** | — | FRA 16, AMS 34 |
+| [`cold.json`](cold.json) | Today's path, as a lean rebuild of M0-CF1's bench (no leases; two R2 reads in the listing where M0-CF1 makes four): new SessionDO, setup (R2 head ×2, `Harness.open`, conversation), list (R2 head and manifest, new isolate) | 50 | **1,046 / 1,404** | — | FRA 16, AMS 34 |
 | [`hot.json`](hot.json) | Warm a pool object, hand it out 1 s later; manifest from the WorkspaceDO | 50 | **79 / 170** | 50 of 50 | FRA 20, AMS 30 |
 | [`hot-r2.json`](hot-r2.json) | As `hot`, with the head and manifest read from R2 | 20 | 272 / 421 | 20 of 20 | FRA 13, AMS 7 |
-| [`idle-60s.json`](idle-60s.json) | Hand out after 60 s idle (the object has hibernated) | 50 | 225 / 417 | 23 of 50 | FRA 20, AMS 30 |
+| [`idle-60s.json`](idle-60s.json) | Hand out after 60 s idle (every object was a new instance: hibernated or evicted) | 50 | 225 / 417 | 23 of 50 | FRA 20, AMS 30 |
 | [`idle-15m.json`](idle-15m.json) | Hand out after 15 min idle, no keep-alive | 40 | 321 / 569 | 0 of 40 | FRA 12, AMS 28 |
 | [`idle-15m-timer.json`](idle-15m-timer.json) | 15 min, a 20 s `setTimeout` chain pinging the isolate (object pinned in memory) | 30 | 168 / 510 | 14 of 30 | FRA 11, AMS 19 |
 | [`idle-15m-alarm.json`](idle-15m-alarm.json) | 15 min, a 20 s alarm pinging the isolate (object may hibernate between) | 30 | 106 / 328 | 20 of 30 | FRA 14, AMS 16 |
@@ -35,14 +35,14 @@ Phases (p50 / p95, ms):
 | | List (in the DO: R2 head and manifest 204 / 286, isolate load 72 / 126) | 325 / 442 |
 | `hot` | Claim from the pool directory (bare round trip 8 / 16) | 24 / 81 |
 | | Hand-out call (bare round trip 11 / 15; manifest from the WorkspaceDO 19 / 101) | 53 / 130 |
-| all pool batches | Warm one object (Harness, conversation, isolate load and one `ls`), off the critical path | 534–598 / 744–933 |
+| all pool batches | Warm one object (Harness, conversation, isolate load and one `ls`), off the critical path | 501–598 / 744–933 |
 
 How to read the files:
 
 - `isolate.reused` is true when the isolate `warm()` loaded is still the one answering. "Loaded at hand-out" counts
   `isolate.calls > 2`: the isolate had answered calls before the hand-out's list and `ls` (warm's, or a keep-alive
   ping's after a reload), so the hand-out did not load it. `who.codeFetches` counts loader callbacks in the object's
-  current instance: in the timer batch some objects reloaded their isolate on 44 of 45 pings.
+  current instance (warm, pings and hand-out): in the timer batch some objects ran it 44 times against 44 pings.
 - `doInMemory` is false when the object's instance changed since `warm()` (hibernated or evicted); `harnessInMemory`
   likewise for Pi Durable's Harness, which the hand-out then reopens in parallel with the listing.
 - In-DO timings (`timings`, `setup`, `list`) read 0 for CPU-only work and for calls into the Dynamic Worker, because

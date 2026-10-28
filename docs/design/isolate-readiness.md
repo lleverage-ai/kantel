@@ -203,10 +203,12 @@ hand-out, is 180–320 ms p50. Over a pool, p50 depends on how long objects wait
   just-bash is compiled and has run once.
 - **Hand-out.** A new session claims an object from a pool directory (a Durable Object). The object writes its
   slot-to-session map once and takes the manifest from a WorkspaceDO (step 2). It then lists the workspace in the
-  slot's isolate, passing a `WorkspaceScope` with the call, as in the self-hosted pool. If the object has hibernated,
-  its Harness reopens in parallel with the listing.
-- **Cold path.** M0-CF1's bench, rebuilt in the same Worker: a new SessionDO, setup (two R2 head reads,
-  `Harness.open`, a conversation), then the head and manifest from R2 and a Dynamic Worker never loaded before.
+  slot's isolate, passing a `WorkspaceScope` with the call, as in the self-hosted pool. If the object has hibernated
+  or been evicted, its Harness reopens in parallel with the listing.
+- **Cold path.** M0-CF1's bench phases, rebuilt in the same Worker: a new SessionDO, setup (two R2 head reads,
+  `Harness.open`, a conversation), then the head and manifest from R2 and a Dynamic Worker never loaded before. It
+  is leaner than M0-CF1's: no leases or exec bookkeeping, and two R2 reads in the listing where M0-CF1's path makes
+  four. Treat it as a slightly optimistic stand-in for today's path.
 - **Isolate code.** The same in both arms: the self-hosted sandbox (`images/isolate-host/src/sandbox.ts`, 1.25 MiB
   with just-bash).
 - **Ready.** M0-CF1's definition: the workspace (61 files) is listed by `ls -1R` in the session's isolate. It is
@@ -222,28 +224,31 @@ hand-out, is 180–320 ms p50. Over a pool, p50 depends on how long objects wait
 | Cold, today's path | 50 | **1,046 / 1,404 ms** | — |
 | Pre-loaded, handed out 1 s after warming | 50 | **79 / 170 ms** | 50 of 50 |
 | The same, manifest from R2 instead of the WorkspaceDO | 20 | 272 / 421 ms | 20 of 20 |
-| After 60 s idle (object hibernated) | 50 | 225 / 417 ms (hits 86, misses 265 p50) | 23 of 50 |
+| After 60 s idle (object hibernated or evicted) | 50 | 225 / 417 ms (hits 86, misses 265 p50) | 23 of 50 |
 | After 15 min idle, no keep-alive | 40 | 321 / 569 ms | 0 of 40 |
 | After 15 min, alarm every 20 s pinging the isolate | 30 | 106 / 328 ms (hits 98, misses 257 p50) | 20 of 30 |
 | After 15 min, `setTimeout` every 20 s (object pinned in memory) | 30 | 168 / 510 ms (hits 89, misses 182 p50) | 14 of 30 |
 
 What the numbers show:
 
-- **A hot hand-out meets the target with room for the network.** At 79 ms p50 it is two round trips from the Worker
-  to objects that may sit in another colo. The claim is 24 ms (bare round trip 8), and it includes a durable SQLite
+- **A hot hand-out meets the target, measured in the Worker as M0-CF1 measured it.** A client in Germany saw 118 ms
+  p50, because its own round trip to FRA comes on top. The 79 ms p50 is two round trips from the Worker to objects
+  that may sit in another colo. The claim is 24 ms (bare round trip 8), and it includes a durable SQLite
   write. The hand-out call is 53 ms (bare round trip 11). It includes a WorkspaceDO read (19 ms); the remaining
   23 ms or so is the slot-to-session write and the two calls into the warm isolate.
 - **The hot manifest is required.** Reading the head and manifest from R2 adds about 190 ms p50 (272 against 79).
-- **Hibernation costs little; losing the isolate costs a lot.** After 60 s every object had hibernated, so it woke
-  and reopened its Harness. When the isolate survived, ready was still 86 ms p50, 7 ms above a hot hand-out. When it
+- **Hibernation costs little; losing the isolate costs a lot.** After 60 s every object was a new instance (hibernated
+  or evicted; the spike can't tell which), so it woke and reopened its Harness. When the isolate survived, ready was still 86 ms p50, 7 ms above a hot hand-out. When it
   did not, ready was 265 ms p50. The extra 180 ms is the load itself (about 70 ms p50 and 120 ms p95, measured in the
   object, against the 310 ms this doc estimated) plus just-bash's first run in a new isolate. That run is CPU only, so
   Workers clocks can't time it on its own.
 - **Worker Loader drops idle isolates, and a ping only partly helps.** Without pings, none of the isolates survived
   15 minutes. An alarm every 20 s kept 20 of 30 loaded. Pinning the object in memory with a timer did worse: some
-  objects' loader callbacks ran on 44 of their 45 pings. Keeping the Durable Object alive does not keep its Dynamic
+  objects ran their loader callback 44 times in 15 minutes against 44 pings, so nearly every ping reloaded the
+  isolate. Keeping the Durable Object alive does not keep its Dynamic
   Worker loaded. The docs say as much: "Two requests are never guaranteed to reach the same isolate."
-- **The cold path is 1,046 ms p50** (first contact 415, setup 258, list 325), in line with M0-CF1's 1,208.
+- **The cold path is 1,046 ms p50** (first contact 415, setup 258, list 325). That is about 160 ms under
+  M0-CF1's 1,208, which fits its leaner listing.
 
 ### Memory and cost of keeping isolates loaded
 
