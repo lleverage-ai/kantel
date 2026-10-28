@@ -17,7 +17,11 @@ import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { MEASURE_PATH, measureIsolateReady, measurementWorkspace } from "./measure.ts";
+import { readLimited } from "./route.ts";
 import type { Stack } from "./stack.ts";
+
+/** The measurement's body is `{ "backend"?: string }`: a few bytes. */
+const MEASURE_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
 
@@ -83,7 +87,14 @@ export function createGateway(stack: Stack): Gateway {
 		const caller = await authenticate(request);
 		if (caller instanceof Response) return caller;
 		let input: { backend?: string } = {};
-		const text = await request.text();
+		const bytes = await readLimited(request, MEASURE_BODY_LIMIT).catch(() => undefined);
+		if (bytes === undefined) {
+			return Response.json(
+				{ error: { code: "invalid", message: `The body is unreadable or larger than ${MEASURE_BODY_LIMIT} bytes` } },
+				{ status: 413, headers: { "cache-control": "no-store" } },
+			);
+		}
+		const text = new TextDecoder().decode(bytes);
 		if (text.trim() !== "") {
 			const parsed: unknown = (() => {
 				try {

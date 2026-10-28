@@ -8,11 +8,12 @@
  * 2. runs `ls -1R` in that session's isolate on the chosen backend (default: the one sessions use);
  * 3. answers the times, then closes the session, which ends its lease.
  *
- * The measurement workspace is the M0 fixture's shape: 61 small files, made once per object start in the project and
- * reused, so a run measures the session and the isolate, not seeding. The caller needs operator access to the project,
+ * The measurement workspace is the M0 fixture's shape: 61 small files, made once in the project and reused, so a run
+ * measures the session and the isolate, not seeding. After a restart it is found again through the last measurement
+ * session's `workspaceId` (sessions are labelled `measurement: isolate-ready`), so restarts don't add workspaces. The caller needs operator access to the project,
  * as for any session. Server times leave out the round trip to the caller; the script times that too.
  */
-import { type CallContext, HarbourError, type WorkspaceId } from "@harbour/contracts";
+import { type CallContext, HarbourError, isHarbourError, type WorkspaceId } from "@harbour/contracts";
 import { type IsolateBackendName, isIsolateBackend } from "./sandboxes.ts";
 import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";
 
@@ -34,21 +35,56 @@ export interface IsolateReady {
 
 const round = (ms: number) => Math.round(ms * 10) / 10;
 
-/** The measurement workspace: made on the first run, then the same one for every run until the object restarts. */
+/** The labels every measurement session carries; the last one's workspace is the measurement workspace. */
+export const MEASURE_LABELS = { measurement: "isolate-ready" } as const;
+
+/**
+ * The measurement workspace: the last measurement session's, or made on the first run; then the same one for every run.
+ * A workspace whose seeding commit failed is kept and its commit retried, not replaced.
+ */
 export function measurementWorkspace(stack: Stack): (ctx: CallContext) => Promise<WorkspaceId> {
 	let made: Promise<WorkspaceId> | undefined;
+	let unseeded: WorkspaceId | undefined;
+	const previous = async (ctx: CallContext): Promise<WorkspaceId | undefined> => {
+		const page = await stack.runtime.directory.list(
+			ctx,
+			{ projectId: stack.project.id, labels: MEASURE_LABELS },
+			{ limit: 1 },
+		);
+		const workspaceId = page.items[0]?.workspaceId;
+		if (workspaceId === undefined) return undefined;
+		try {
+			await stack.workspaces.get(ctx, workspaceId);
+			return workspaceId;
+		} catch (error) {
+			if (isHarbourError(error, "not_found")) return undefined;
+			throw error;
+		}
+	};
 	return (ctx) => {
 		if (made === undefined) {
 			const making = (async () => {
-				const owner = { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id } as const;
-				const workspace = await stack.workspaces.create(ctx, { owner });
+				if (unseeded === undefined) {
+					const found = await previous(ctx);
+					if (found !== undefined) return found;
+					const owner = {
+						kind: "project",
+						organisationId: stack.organisation.id,
+						projectId: stack.project.id,
+					} as const;
+					unseeded = (await stack.workspaces.create(ctx, { owner })).id;
+				}
+				const workspaceId = unseeded;
+				const record = await stack.workspaces.get(ctx, workspaceId);
 				const changes = Array.from({ length: MEASURE_FILES }, (_, i) => ({
 					op: "put" as const,
 					path: `${i < 30 ? "src" : i < 50 ? "docs" : "test"}/file-${String(i).padStart(2, "0")}.txt`,
 					content: `measurement file ${i}\n`,
 				}));
-				await stack.workspaces.commit(ctx, workspace.id, { baseVersion: workspace.head, changes });
-				return workspace.id;
+				// Puts are idempotent, so a retry after a commit that did land only makes an empty version.
+				await stack.workspaces.commit(ctx, workspaceId, { baseVersion: record.head, changes });
+				unseeded = undefined;
+				return workspaceId;
 			})();
 			made = making;
 			making.catch(() => {
@@ -76,7 +112,7 @@ export async function measureIsolateReady(
 		projectId: stack.project.id,
 		agentId: DEFAULT_AGENT_ID,
 		title: "Isolate-ready measurement",
-		labels: { measurement: "isolate-ready", backend },
+		labels: { ...MEASURE_LABELS, backend },
 		workspaceId,
 	});
 	const created = performance.now();
