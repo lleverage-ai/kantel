@@ -34,11 +34,17 @@ import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runti
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
-import { MEASURE_PATH, measureIsolateReady, measurementWorkspace, type PlacementProbe } from "./measure.ts";
+import {
+	MEASURE_PATH,
+	type MeasureInput,
+	measureIsolateReady,
+	measurementWorkspace,
+	type PlacementProbe,
+} from "./measure.ts";
 import { readLimited } from "./route.ts";
 import type { Stack } from "./stack.ts";
 
-/** The measurement's body is `{ "backend"?: string, "placement"?: boolean }`: a few bytes. */
+/** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"? }`: a few bytes. */
 const MEASURE_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
@@ -174,7 +180,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		const caller = await authenticate(request);
 		if (caller instanceof Response) return caller;
 		const signedIn = Math.round((performance.now() - signingIn) * 10) / 10;
-		let input: { backend?: string } = {};
+		let input: MeasureInput = {};
 		let placement = false;
 		const bytes = await readLimited(request, MEASURE_BODY_LIMIT).catch(() => undefined);
 		if (bytes === undefined) {
@@ -192,19 +198,35 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return undefined;
 				}
 			})();
-			const body = parsed as { backend?: unknown; placement?: unknown } | undefined;
+			const body = parsed as
+				| { backend?: unknown; placement?: unknown; keep?: unknown; sessionId?: unknown }
+				| undefined;
 			if (
 				typeof parsed !== "object" ||
 				parsed === null ||
 				(body?.backend !== undefined && typeof body.backend !== "string") ||
-				(body?.placement !== undefined && typeof body.placement !== "boolean")
+				(body?.placement !== undefined && typeof body.placement !== "boolean") ||
+				(body?.keep !== undefined && typeof body.keep !== "boolean") ||
+				(body?.sessionId !== undefined && (typeof body.sessionId !== "string" || body.sessionId === "")) ||
+				// A warm run's session is open already: `keep` is for the cold run that opens it.
+				(body?.keep === true && body.sessionId !== undefined)
 			) {
 				return Response.json(
-					{ error: { code: "invalid", message: 'The body is { "backend"?: string, "placement"?: boolean }' } },
+					{
+						error: {
+							code: "invalid",
+							message:
+								'The body is { "backend"?: string, "placement"?: boolean, "keep"?: boolean } or { "sessionId": string, "backend"?: string, "placement"?: boolean }',
+						},
+					},
 					{ status: 400, headers: { "cache-control": "no-store" } },
 				);
 			}
-			input = typeof body?.backend === "string" ? { backend: body.backend } : {};
+			input = {
+				...(typeof body?.backend === "string" ? { backend: body.backend } : {}),
+				...(body?.keep === true ? { keep: true } : {}),
+				...(typeof body?.sessionId === "string" ? { sessionId: body.sessionId } : {}),
+			};
 			placement = body?.placement === true;
 		}
 		try {

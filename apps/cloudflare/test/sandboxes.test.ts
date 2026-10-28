@@ -187,6 +187,62 @@ describe("the isolate-ready measurement", () => {
 		expect(MEASURE_COMMAND).toBe("ls -1R");
 	});
 
+	it("keeps a session open on request, runs warm on it again and again, and leaves closing it to the caller", async () => {
+		const { stack, measure } = await setup();
+		type Run = {
+			sessionId: string;
+			workspaceId: string;
+			warm: boolean;
+			open: boolean;
+			exitCode: number;
+			listed: number;
+			timings: Record<string, number>;
+		};
+		const warmup = (await (await measure({ keep: true })).json()) as Run;
+		expect(warmup).toMatchObject({ warm: false, open: true, exitCode: 0 });
+		expect(await stack.runtime.directory.get(stack.admin, warmup.sessionId)).not.toMatchObject({ status: "done" });
+		const [lease] = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });
+		expect(lease).toBeDefined();
+
+		for (let i = 0; i < 3; i++) {
+			const response = await measure({ sessionId: warmup.sessionId });
+			expect(response.status).toBe(200);
+			const run = (await response.json()) as Run;
+			expect(run).toMatchObject({
+				sessionId: warmup.sessionId,
+				workspaceId: warmup.workspaceId,
+				warm: true,
+				open: true,
+				exitCode: 0,
+				listed: warmup.listed,
+			});
+			for (const phase of ["lookup", "isolate", "total"]) expect(run.timings[phase]).toBeTypeOf("number");
+			expect(run.timings.session).toBeUndefined();
+		}
+		// The same lease every time: the runs are on the warm session, not new ones.
+		const live = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });
+		expect(live.map((each) => each.id)).toEqual([lease!.id]);
+
+		// Closing it ends the lease; a warm run on a closed session is refused.
+		await stack.runtime.runtime.close(stack.admin, warmup.sessionId);
+		const after = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });
+		expect(after).toHaveLength(0);
+		expect((await measure({ sessionId: warmup.sessionId })).status).toBe(409);
+	});
+
+	it("runs warm only on an open measurement session on the same backend", async () => {
+		const { stack, measure, workspace, session } = await setup();
+		const other = await session(await workspace());
+		expect((await measure({ sessionId: other.id })).status).toBe(400);
+		const warmup = (await (await measure({ keep: true })).json()) as { sessionId: string };
+		expect((await measure({ sessionId: warmup.sessionId, backend: "dynamic-worker" })).status).not.toBe(200);
+		expect((await measure({ sessionId: "no-such-session" })).status).toBe(404);
+		expect((await measure({ sessionId: warmup.sessionId, keep: true })).status).toBe(400);
+		expect((await measure({ sessionId: "" })).status).toBe(400);
+		expect((await measure({ keep: "yes" })).status).toBe(400);
+		await stack.runtime.runtime.close(stack.admin, warmup.sessionId);
+	});
+
 	it("refuses an unknown backend, a bad body, another method and an anonymous caller", async () => {
 		const { measure } = await setup();
 		expect((await measure({ backend: "dynamic-everything" })).status).toBe(400);

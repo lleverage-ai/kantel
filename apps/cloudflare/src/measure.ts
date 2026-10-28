@@ -2,12 +2,21 @@
  * The isolate-ready measurement (#17's definition of done: a new session's isolate is ready, its workspace listed, in
  * ≤100 ms p50 and ≤300 ms p95 on the deployed stack, 50 runs, as in M0).
  *
- * `POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" | "dynamic-worker", "placement"?: true }`,
- * signed in like any API call. One run:
+ * `POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" | "dynamic-worker", "placement"?: true,
+ * "keep"?: true, "sessionId"?: string }`, signed in like any API call. A cold run (the default):
  *
  * 1. creates a new session in the caller's default project, on the measurement workspace;
  * 2. runs `ls -1R` in that session's isolate on the chosen backend (default: the one sessions use);
  * 3. answers the times, then closes the session, which ends its lease.
+ *
+ * A warm batch (#17's target is for a warm session) opens one session and runs on it again and again:
+ *
+ * - `keep: true` makes a cold run that leaves its session open (the warm-up), and answers its `sessionId`;
+ * - `sessionId` runs `ls -1R` again on that open measurement session, on the same backend, and leaves it open: its
+ *   lease and the backend's isolate are already there, so the run measures a warm session's command. Its `total` is
+ *   the run alone; `lookup`, the session's directory read that checks it is a measurement session, is answered
+ *   beside it, because a real session's tool call already has its session;
+ * - the caller closes the session with the session API (`POST /v1/sessions/:id/close`), which ends its lease.
  *
  * With `placement`, the answer also says where the stack runs (`Placement`): the stack object's colo, the request's
  * edge colo, and D1's region, colo and per-query latency as the object sees them. It is probed after the run, so it
@@ -19,6 +28,7 @@
  * as for any session. Server times leave out the round trip to the caller; the script times that too.
  */
 import { type CallContext, HarbourError, isHarbourError, type WorkspaceId } from "@harbour/contracts";
+import type { TieredSandboxes } from "@harbour/sandbox/tiered";
 import { type IsolateBackendName, isIsolateBackend } from "./sandboxes.ts";
 import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";
 
@@ -31,6 +41,10 @@ export interface IsolateReady {
 	readonly backend: IsolateBackendName;
 	readonly sessionId: string;
 	readonly workspaceId: WorkspaceId;
+	/** A run on an open session (`sessionId`), not a new one. */
+	readonly warm: boolean;
+	/** The session is still open: `keep` or a warm run. The caller closes it. */
+	readonly open: boolean;
 	readonly exitCode: number;
 	/** Lines `ls -1R` printed, so a run that listed nothing is visible. */
 	readonly listed: number;
@@ -120,16 +134,25 @@ export function measurementWorkspace(stack: Stack): (ctx: CallContext) => Promis
 	};
 }
 
+export interface MeasureInput {
+	readonly backend?: string;
+	/** Leave the new session open after the run: the warm-up of a warm batch. */
+	readonly keep?: boolean;
+	/** Run on this open measurement session instead of a new one: a warm run. */
+	readonly sessionId?: string;
+}
+
 export async function measureIsolateReady(
 	stack: Stack,
 	ctx: CallContext,
 	workspace: (ctx: CallContext) => Promise<WorkspaceId>,
-	input: { readonly backend?: string },
+	input: MeasureInput,
 ): Promise<IsolateReady> {
 	const backend = input.backend ?? stack.sandboxes.backend;
 	if (!isIsolateBackend(backend)) throw new HarbourError("invalid", `No isolate backend ${backend}`);
 	const sandboxes = stack.sandboxes.on(backend);
 	if (sandboxes === undefined) throw new HarbourError("unavailable", `This Worker has no ${backend} isolate backend`);
+	if (input.sessionId !== undefined) return warmRun(stack, ctx, backend, sandboxes, input.sessionId);
 	const workspaceId = await workspace(ctx);
 
 	const started = performance.now();
@@ -141,6 +164,7 @@ export async function measureIsolateReady(
 		workspaceId,
 	});
 	const created = performance.now();
+	let kept = false;
 	try {
 		const result = await sandboxes.run(ctx, {
 			sessionId: session.id,
@@ -149,10 +173,14 @@ export async function measureIsolateReady(
 			request: { command: MEASURE_COMMAND },
 		});
 		const ran = performance.now();
+		// Kept open only when the run answered: a failed warm-up's session is closed like any other.
+		kept = input.keep === true;
 		return {
 			backend,
 			sessionId: session.id,
 			workspaceId,
+			warm: false,
+			open: kept,
 			exitCode: result.exitCode,
 			listed: result.stdout.split("\n").filter((line) => line !== "").length,
 			timings: {
@@ -164,6 +192,51 @@ export async function measureIsolateReady(
 		};
 	} finally {
 		// Ends the session's lease through the runtime's sandbox teardown; the session stays listed, as done.
-		await stack.runtime.runtime.close(ctx, session.id).catch(() => undefined);
+		if (!kept) await stack.runtime.runtime.close(ctx, session.id).catch(() => undefined);
 	}
+}
+
+/** `ls -1R` again on an open measurement session on `backend`: its lease and isolate are warm. It stays open. */
+async function warmRun(
+	stack: Stack,
+	ctx: CallContext,
+	backend: IsolateBackendName,
+	sandboxes: TieredSandboxes,
+	sessionId: string,
+): Promise<IsolateReady> {
+	const looking = performance.now();
+	const session = await stack.runtime.directory.get(ctx, sessionId);
+	const workspaceId = session.workspaceId;
+	if (
+		session.projectId !== stack.project.id ||
+		session.labels.measurement !== MEASURE_LABELS.measurement ||
+		session.labels.backend !== backend ||
+		workspaceId === undefined
+	) {
+		throw new HarbourError("invalid", `Session ${sessionId} is not an isolate-ready measurement session on ${backend}`);
+	}
+	if (session.status === "done") throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+	const started = performance.now();
+	const result = await sandboxes.run(ctx, {
+		sessionId: session.id,
+		workspaceId,
+		tool: "bash",
+		request: { command: MEASURE_COMMAND },
+	});
+	const ran = performance.now();
+	return {
+		backend,
+		sessionId: session.id,
+		workspaceId,
+		warm: true,
+		open: true,
+		exitCode: result.exitCode,
+		listed: result.stdout.split("\n").filter((line) => line !== "").length,
+		timings: {
+			lookup: round(started - looking),
+			isolate: round(ran - started),
+			total: round(ran - started),
+			...result.timings,
+		},
+	};
 }
