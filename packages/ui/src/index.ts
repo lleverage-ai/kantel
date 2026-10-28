@@ -58,6 +58,19 @@ export {
 	signInProblem,
 } from "./identity/sign-in-model.ts";
 export { initials, SignedInAs, type SignedInAsProps } from "./identity/signed-in-as.tsx";
+// The memory page.
+export { ConceptDetail, type ConceptDetailProps } from "./memory/concept-detail.tsx";
+export {
+	bindMemory,
+	conceptHistory,
+	groupConcepts,
+	type MemoryApi,
+	type MemoryPageSource,
+	writeSentence,
+} from "./memory/memory-model.ts";
+export { MemoryPage, type MemoryPageProps, type MemoryView } from "./memory/memory-page.tsx";
+export { MemoryProposals, type MemoryProposalsProps } from "./memory/memory-proposals.tsx";
+export { MemoryRecall, type MemoryRecallProps } from "./memory/memory-recall.tsx";
 export {
 	Button,
 	type ButtonProps,
@@ -91,6 +104,20 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
+// The schedules page.
+export {
+	bindSchedules,
+	recurrenceText,
+	type SchedulesApi,
+	type SchedulesSource,
+	timingText,
+} from "./schedules/schedules-model.ts";
+export {
+	ScheduleDetail,
+	type ScheduleDetailProps,
+	SchedulesPage,
+	type SchedulesPageProps,
+} from "./schedules/schedules-page.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
@@ -191,6 +218,18 @@ export {
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
 export { WorkingIndicator, type WorkingIndicatorProps } from "./session/working-indicator.tsx";
+// The skills page.
+export { SkillEditor, type SkillEditorProps, type SkillEditorTarget } from "./skills/skill-editor.tsx";
+export {
+	bindSkills,
+	bindSkillsAuthor,
+	type OwnerChoice,
+	type SkillsApi,
+	type SkillsAuthor,
+	type SkillsAuthorApi,
+	type SkillsSource,
+} from "./skills/skills-model.ts";
+export { SkillDetail, type SkillDetailProps, SkillsPage, type SkillsPageProps } from "./skills/skills-page.tsx";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
