@@ -14,7 +14,14 @@
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
 
-import { type Project, protocolHistoryPage, type SessionHistoryPage } from "@harbour/contracts";
+import {
+	type AgentProfile,
+	type HeldRole,
+	type Project,
+	protocolHistoryPage,
+	roleSatisfies,
+	type SessionHistoryPage,
+} from "@harbour/contracts";
 import type { ServerFrame, SessionStatus } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
@@ -24,6 +31,8 @@ import type {
 	ProjectSummary,
 	SendOptions,
 	SessionControl,
+	StartAccess,
+	StartOptions,
 	WorkspaceFiles,
 	WorkspaceListing,
 } from "./client.ts";
@@ -56,6 +65,11 @@ export type ApiClientOptions = {
 	listPollMs?: number;
 	/** Who `GET /v1/me` said is signed in. */
 	actor?: ConsoleActor;
+	/**
+	 * The roles `GET /v1/me` said they hold, which decide where New session is offered. Without them it is offered
+	 * everywhere, and the API refuses a viewer.
+	 */
+	roles?: readonly HeldRole[];
 	/** Called on any 401: the session is over, and the console asks to sign in again. */
 	onUnauthenticated?: () => void;
 };
@@ -83,6 +97,30 @@ async function errorOf(response: Response): Promise<ApiError> {
 		// Not the API's JSON: a proxy's page, say.
 	}
 	return new ApiError("unavailable", `Harbour answered ${response.status}`);
+}
+
+/** Why a viewer sees New session dimmed. */
+export const VIEWER_REASON = "You can watch this project's sessions. Starting one needs the operator role.";
+
+/** Whether `roles` let someone start a session in the project: operator or above there, or across the organisation. */
+export function startAccess(roles: readonly HeldRole[] | undefined, projectId: string): StartAccess {
+	if (roles === undefined) return { allowed: true };
+	const may = roles.some(
+		(held) => (held.projectId === undefined || held.projectId === projectId) && roleSatisfies(held.role, "operator"),
+	);
+	return may ? { allowed: true } : { allowed: false, reason: VIEWER_REASON };
+}
+
+/**
+ * The agent a new session in the project runs: one of the project's own profiles, else one for the whole organisation,
+ * the first by name. Undefined when none may run there.
+ */
+export function agentFor(profiles: readonly AgentProfile[], projectId: string): AgentProfile | undefined {
+	const byName = (a: AgentProfile, b: AgentProfile) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+	return (
+		[...profiles].filter((profile) => profile.projectId === projectId).sort(byName)[0] ??
+		[...profiles].filter((profile) => profile.projectId === undefined).sort(byName)[0]
+	);
 }
 
 /** The list's status for a session: an idle session has nothing running, so it reads as settled. */
@@ -171,6 +209,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			cursor = page.nextCursor;
 		} while (cursor !== undefined);
 		return projects;
+	};
+
+	/** Every agent profile the caller can see (`GET /v1/profiles`), following the pages. */
+	const listProfiles = async (signal?: AbortSignal): Promise<AgentProfile[]> => {
+		const profiles: AgentProfile[] = [];
+		let cursor: string | undefined;
+		do {
+			const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
+			if (cursor !== undefined) query.set("cursor", cursor);
+			const page = await getJson<Page<AgentProfile>>(`${base}/profiles?${query}`, signal);
+			profiles.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return profiles;
 	};
 
 	const isUnread = (record: SessionRecord, firstListing: boolean): boolean => {
@@ -358,6 +410,27 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				if (reason instanceof ApiError && reason.code === "not_found") return undefined;
 				throw reason;
 			}
+		},
+
+		mayStart: (projectId) => startAccess(options.roles, projectId),
+
+		async startOptions(projectId, signal): Promise<StartOptions> {
+			const agent = agentFor(await listProfiles(signal), projectId);
+			if (agent === undefined) {
+				throw new ApiError("not_found", "No agent can run in this project yet. An admin needs to add one.");
+			}
+			return { agentId: agent.id, agentName: agent.name };
+		},
+
+		async create(input) {
+			const response = await call(`${base}/sessions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(input),
+			});
+			const record = (await response.json()) as SessionRecord;
+			projectOfSession.set(record.id, record.projectId);
+			return record.id;
 		},
 
 		control: (): SessionControl => ({ live: true }),

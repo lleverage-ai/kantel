@@ -178,7 +178,12 @@ function SignedInConsole({
 		const audit = apiAudit({ headers: state.headers });
 		const keys = apiKeys(identity.client, state.me);
 		return {
-			client: createApiClient({ actor: state.actor, headers: state.headers, onUnauthenticated }),
+			client: createApiClient({
+				actor: state.actor,
+				roles: state.me.roles,
+				headers: state.headers,
+				onUnauthenticated,
+			}),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
 				(vault): Oversight => ({ vault, audit, ...(keys === undefined ? {} : { keys }) }),

@@ -39,6 +39,32 @@ export type SessionControl =
 			readonly reason: string;
 	  };
 
+/** Whether the signed-in person may start a session in a project, and why not when they can't. */
+export type StartAccess =
+	| { readonly allowed: true }
+	| {
+			readonly allowed: false;
+			/** Shown under New session and in the composer, such as a viewer's "Starting one needs the operator role." */
+			readonly reason: string;
+	  };
+
+/**
+ * What a new session in a project runs with: the agent, on its own model. No API lists the models a session may use
+ * before it exists or takes one at creation yet (`SessionModels` and `PromptInput.model` are proposed in
+ * @harbour/contracts), so there is no model picker on New session.
+ */
+export type StartOptions = {
+	readonly agentId: string;
+	readonly agentName: string;
+};
+
+/** A session to create: the project, the agent and its title. */
+export type CreateInput = {
+	readonly projectId: string;
+	readonly agentId: string;
+	readonly title?: string;
+};
+
 export type SendOptions = {
 	/** Retrying with the same id sends once. */
 	readonly requestId?: string;
@@ -79,6 +105,12 @@ export interface ConsoleClient {
 	transport(sessionId: string): Transport;
 	/** The project a session belongs to, or undefined when there's no such session. */
 	projectOf(sessionId: string): Promise<string | undefined>;
+	/** Whether New session is offered in a project: the API refuses a viewer, so the console says so first. */
+	mayStart(projectId: string): StartAccess;
+	/** The agent a new session in the project runs. Rejects when no agent may run there. */
+	startOptions(projectId: string, signal?: AbortSignal): Promise<StartOptions>;
+	/** Creates an idle session and resolves with its id; its first message is a `prompt`. */
+	create(input: CreateInput): Promise<string>;
 	control(sessionId: string): SessionControl;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;

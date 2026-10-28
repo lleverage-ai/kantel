@@ -3,6 +3,7 @@
 //
 //   /                                         the first project
 //   /projects/:projectId                      a project's sessions
+//   /projects/:projectId/new                  a new session in the project: the composer, before it exists
 //   /projects/:projectId/sessions/:sessionId  one session
 //   /vault                                    the vault page: your active grants
 //   /vault/proposals/:proposalId              one vault request to decide, beside your active grants: the link the
@@ -21,6 +22,7 @@ import { useSyncExternalStore } from "react";
 export type Route =
 	| { readonly name: "home" }
 	| { readonly name: "project"; readonly projectId: string }
+	| { readonly name: "new-session"; readonly projectId: string }
 	| { readonly name: "session"; readonly projectId: string; readonly sessionId: string }
 	| { readonly name: "vault" }
 	| { readonly name: "vault-request"; readonly proposalId: string }
@@ -52,6 +54,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
+		if (projectId !== undefined && parts[2] === "new" && parts.length === 3) return { name: "new-session", projectId };
 		const sessionId = parts[3] === undefined ? undefined : segment(parts[3]);
 		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined) {
 			if (parts.length === 4) return { name: "session", projectId, sessionId };
@@ -65,6 +68,7 @@ export function parseRoute(pathname: string): Route {
 }
 
 export const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+export const newSessionPath = (projectId: string): string => `${projectPath(projectId)}/new`;
 export const sessionPath = (projectId: string, sessionId: string): string =>
 	`${projectPath(projectId)}/sessions/${encodeURIComponent(sessionId)}`;
 /** A session at one turn: the submission or tool call an audit event names, as the session's `#turn=<id>`. */

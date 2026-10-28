@@ -1,16 +1,29 @@
-import { ApiKeysPage, Badge, Button, EmptyState, ListRow, Notice, SessionList, SignedInAs, Spinner } from "@harbour/ui";
+import {
+	ApiKeysPage,
+	Badge,
+	Button,
+	EmptyState,
+	ListRow,
+	NewSessionRow,
+	Notice,
+	SessionList,
+	SignedInAs,
+	Spinner,
+} from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "../api/oversight.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
+import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
 	filesPath,
 	interceptLinks,
 	KEYS_PATH,
 	navigate,
+	newSessionPath,
 	parseRoute,
 	projectPath,
 	type Route,
@@ -179,7 +192,9 @@ export function App({
 	const { projects, error: projectsError } = useProjects(client);
 
 	const projectId =
-		route.name === "project" || route.name === "session" || route.name === "files" ? route.projectId : undefined;
+		route.name === "project" || route.name === "session" || route.name === "files" || route.name === "new-session"
+			? route.projectId
+			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
@@ -289,6 +304,15 @@ export function App({
 				</EmptyState>
 			</div>
 		);
+	} else if (route.name === "new-session") {
+		main = (
+			<NewSessionScreen
+				client={client}
+				projectId={route.projectId}
+				projects={projects}
+				{...(narrow ? { onBack: back } : {})}
+			/>
+		);
 	} else if (route.name === "files") {
 		main = (
 			<FilesScreen
@@ -316,12 +340,22 @@ export function App({
 	} else {
 		main = (
 			<div className="shell-empty">
-				<EmptyState title="No session open">Pick a session from the list to watch it.</EmptyState>
+				{project !== undefined && client.mayStart(project.id).allowed ? (
+					<EmptyState
+						title="No session open"
+						action={<ListRow title="New session" href={newSessionPath(project.id)} density="compact" />}
+					>
+						Pick a session from the list to watch it, or start a new one.
+					</EmptyState>
+				) : (
+					<EmptyState title="No session open">Pick a session from the list to watch it.</EmptyState>
+				)}
 			</div>
 		);
 	}
 
-	const pane = sessionId !== undefined || missing || unknownProject || organisationPage ? "main" : "list";
+	const newSession = route.name === "new-session" && project !== undefined;
+	const pane = sessionId !== undefined || newSession || missing || unknownProject || organisationPage ? "main" : "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
 	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
@@ -334,10 +368,12 @@ export function App({
 			? "Page not found"
 			: unknownSession
 				? "Session not found"
-				: sessionId === undefined
+				: sessionId === undefined && !newSession
 					? `${project?.name ?? "Harbour"} sessions`
 					: undefined;
 	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
+	const start = project === undefined ? undefined : client.mayStart(project.id);
+	const startBlocked = start === undefined || start.allowed ? {} : { disabledReason: start.reason };
 
 	return (
 		<div className="shell hb-app" data-pane={pane}>
@@ -358,6 +394,13 @@ export function App({
 					{organisationPage ? null : (
 						<>
 							<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
+							{project === undefined ? null : (
+								<NewSessionRow
+									href={newSessionPath(project.id)}
+									selected={route.name === "new-session"}
+									{...startBlocked}
+								/>
+							)}
 							<SessionList
 								sessions={list.sessions}
 								selectedId={sessionId}

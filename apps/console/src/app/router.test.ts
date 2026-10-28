@@ -3,6 +3,7 @@ import {
 	AUDIT_PATH,
 	filesPath,
 	KEYS_PATH,
+	newSessionPath,
 	parseRoute,
 	projectPath,
 	sessionPath,
@@ -17,6 +18,12 @@ describe("routes", () => {
 		expect(parseRoute("/projects/sal")).toEqual({ name: "project", projectId: "sal" });
 		expect(parseRoute("/projects/sal/")).toEqual({ name: "project", projectId: "sal" });
 		expect(parseRoute("/projects/sal/sessions/s-1")).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
+	});
+
+	it("parses a project's new session page", () => {
+		expect(newSessionPath("my project")).toBe("/projects/my%20project/new");
+		expect(parseRoute(newSessionPath("my project"))).toEqual({ name: "new-session", projectId: "my project" });
+		expect(parseRoute("/projects/sal/new/extra")).toMatchObject({ name: "not-found" });
 	});
 
 	it("round-trips ids that need encoding", () => {

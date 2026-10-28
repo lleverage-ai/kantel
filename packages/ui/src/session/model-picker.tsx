@@ -1,5 +1,15 @@
-import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon, ChevronDownIcon, ImageIcon, SearchIcon, SparkIcon } from "../primitives/icons.tsx";
+import {
+	type KeyboardEvent,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { CheckIcon, ChevronDownIcon, FolderIcon, ImageIcon, SearchIcon, SparkIcon } from "../primitives/icons.tsx";
 import "./model-picker.css";
 
 /**
@@ -78,12 +88,67 @@ export type ModelPickerProps = {
 	defaultOpen?: boolean;
 };
 
+/** The words and icon of one kind of picker: the composer's models, or a new session's projects. */
+type PickerWords = {
+	readonly icon: (size: "sm" | "md") => ReactNode;
+	/** "Model", as the trigger's accessible name starts. */
+	readonly noun: string;
+	/** "Models", the list's name. */
+	readonly plural: string;
+	readonly choose: string;
+	readonly search: string;
+	readonly none: (query: string) => string;
+};
+
+const MODEL_WORDS: PickerWords = {
+	icon: (size) => <SparkIcon size={size} className="hb-model-trigger-icon" />,
+	noun: "Model",
+	plural: "Models",
+	choose: "Choose a model",
+	search: "Search models",
+	none: (query) => `No model matches "${query}".`,
+};
+
+const PROJECT_WORDS: PickerWords = {
+	icon: (size) => <FolderIcon size={size} className="hb-model-trigger-icon" />,
+	noun: "Project",
+	plural: "Projects",
+	choose: "Choose a project",
+	search: "Search projects",
+	none: (query) => `No project matches "${query}".`,
+};
+
+/** A project a new session can start in, as `ProjectPicker` lists it. */
+export type ProjectOption = {
+	id: string;
+	label: string;
+	/** One short line under the name. */
+	description?: string;
+	/** Set when the person can't start a session there; the list shows it, dimmed, with this reason. */
+	disabledReason?: string;
+};
+
+export type ProjectPickerProps = Omit<ModelPickerProps, "models"> & { projects: readonly ProjectOption[] };
+
+/**
+ * Which project a new session starts in: the model picker's button and searchable list, with a folder for the spark.
+ * For the composer's `footer` on a new session, as T3 Code puts the project beside a new thread's model. A project the
+ * person can't start a session in shows dimmed with its reason.
+ */
+export function ProjectPicker({ projects, ...rest }: ProjectPickerProps) {
+	return <Picker {...rest} models={projects} words={PROJECT_WORDS} />;
+}
+
 /**
  * The composer's model picker: a quiet toolbar button with the model's name that opens a searchable list above it,
  * grouped by provider, as T3 Code's ProviderModelPicker. Type to filter; Up and Down move, Enter chooses, Escape
  * closes. A model the session can't use now shows dimmed with its reason.
  */
-export function ModelPicker({
+export function ModelPicker(props: ModelPickerProps) {
+	return <Picker {...props} words={MODEL_WORDS} />;
+}
+
+function Picker({
 	models,
 	value,
 	onChange,
@@ -92,7 +157,8 @@ export function ModelPicker({
 	onOpenChange,
 	returnFocus,
 	defaultOpen = false,
-}: ModelPickerProps) {
+	words,
+}: ModelPickerProps & { words: PickerWords }) {
 	const [open, setOpenState] = useState(defaultOpen);
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState<string | undefined>(undefined);
@@ -220,7 +286,7 @@ export function ModelPicker({
 		if (!visible.some((model) => model.id === active)) setActive(visible[0]?.id);
 	};
 
-	const label = chosen?.label ?? "Choose a model";
+	const label = chosen?.label ?? words.choose;
 
 	return (
 		<div className={`hb-model-picker hb-model-picker-${size}`} ref={root}>
@@ -230,18 +296,18 @@ export function ModelPicker({
 				className="hb-model-trigger hb-focusable"
 				aria-haspopup="listbox"
 				aria-expanded={open}
-				aria-label={`Model: ${label}`}
+				aria-label={`${words.noun}: ${label}`}
 				title={chosen?.provider ? `${label}, ${chosen.provider}` : label}
 				disabled={disabled || models.length === 0}
 				onClick={() => (open ? close("trigger") : setOpen(true))}
 				onKeyDown={onTriggerKey}
 			>
-				<SparkIcon size={size === "xs" ? "sm" : "md"} className="hb-model-trigger-icon" />
+				{words.icon(size === "xs" ? "sm" : "md")}
 				<span className="hb-model-trigger-label">{label}</span>
 				<ChevronDownIcon size="sm" className="hb-model-trigger-chevron" />
 			</button>
 			{open ? (
-				<div className="hb-model-popover" role="dialog" aria-label="Choose a model">
+				<div className="hb-model-popover" role="dialog" aria-label={words.choose}>
 					<div className="hb-model-search" data-focus-surface="">
 						<SearchIcon size="sm" className="hb-model-search-icon" />
 						<input
@@ -249,12 +315,12 @@ export function ModelPicker({
 							className="hb-model-search-input"
 							type="text"
 							role="combobox"
-							aria-label="Search models"
+							aria-label={words.search}
 							aria-expanded="true"
 							aria-controls={listId}
 							aria-autocomplete="list"
 							aria-activedescendant={active === undefined ? undefined : optionId(active)}
-							placeholder="Search models"
+							placeholder={words.search}
 							value={query}
 							onChange={(event) => changeQuery(event.target.value)}
 							onKeyDown={onSearchKey}
@@ -262,16 +328,16 @@ export function ModelPicker({
 							spellCheck={false}
 						/>
 					</div>
-					<div className="hb-model-list" ref={list} id={listId} role="listbox" aria-label="Models">
+					<div className="hb-model-list" ref={list} id={listId} role="listbox" aria-label={words.plural}>
 						{filtered.length === 0 ? (
-							<p className="hb-model-empty">No model matches "{query}".</p>
+							<p className="hb-model-empty">{words.none(query)}</p>
 						) : (
 							groups.map((group) => (
 								// biome-ignore lint/a11y/useSemanticElements: a listbox's groups are ARIA groups; a fieldset isn't allowed in one.
 								<div
 									key={group.provider || "models"}
 									role="group"
-									aria-label={group.provider || "Models"}
+									aria-label={group.provider || words.plural}
 									className="hb-model-group"
 								>
 									{showGroups && group.provider !== "" ? (

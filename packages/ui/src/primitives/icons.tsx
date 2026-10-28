@@ -112,6 +112,12 @@ export const FileIcon = (props: IconProps) => (
 		<path d="M9 1.75V5.5h3.75" />
 	</Svg>
 );
+/** A project: a folder, as T3 Code's sidebar shows one. */
+export const FolderIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M1.75 4.25A1.25 1.25 0 0 1 3 3h3.25l1.5 1.75H13a1.25 1.25 0 0 1 1.25 1.25v6A1.25 1.25 0 0 1 13 13.25H3A1.25 1.25 0 0 1 1.75 12z" />
+	</Svg>
+);
 export const EyeIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" />

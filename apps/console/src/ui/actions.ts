@@ -49,6 +49,25 @@ export function createRequestIds(newId: () => string = () => crypto.randomUUID()
 	};
 }
 
+/** The longest title a new session takes from its first message. */
+export const TITLE_MAX = 80;
+
+/**
+ * A new session's title from its first message, as T3 Code names a thread: the first line that has words, cut at a
+ * word to `TITLE_MAX` characters with an ellipsis. Undefined for a message with no words.
+ */
+export function titleFrom(text: string): string | undefined {
+	const line = text
+		.split("\n")
+		.map((part) => part.replace(/\s+/g, " ").trim())
+		.find((part) => part !== "");
+	if (line === undefined) return undefined;
+	if (line.length <= TITLE_MAX) return line;
+	const cut = line.slice(0, TITLE_MAX - 1);
+	const space = cut.lastIndexOf(" ");
+	return `${(space > TITLE_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 /** Whether the composer offers "Send after this run": the agent is running and there is something to send. */
 export function offersFollowUp(control: SessionControl, status: SessionStatus, sending: boolean, draft: string) {
 	return control.live && !sending && status === "running" && draft.trim() !== "";

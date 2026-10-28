@@ -164,6 +164,14 @@ type ComposerModelOption = {
 };
 ```
 
+#### Project picker
+
+`ProjectPicker` is the model picker's button and searchable list for projects, with a folder icon: which project a new
+session starts in, for the composer's `footer` on a new-session page, as T3 Code puts the project beside a new thread.
+Each `ProjectOption` has an `id`, a `label`, an optional `description`, and a `disabledReason` for a project the
+person can't start a session in (a viewer's), shown dimmed with the reason and not chosen. Not for switching the
+project a running session is in: a session stays in the project it started in.
+
 **Keyboard**
 
 - Enter sends, or steers while the agent runs. Shift+Enter is a new line (`shouldSend()`).
