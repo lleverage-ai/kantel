@@ -30,11 +30,12 @@ function fakeGitHub() {
 	return { calls, fetch };
 }
 
-async function setup(options: { access?: boolean } = {}) {
+async function setup(options: { access?: boolean; adminName?: string } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		...(options.access === false ? {} : { HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, HARBOUR_ACCESS_AUD: AUD }),
 		HARBOUR_ADMIN_EMAIL: ADMIN,
+		...(options.adminName === undefined ? {} : { HARBOUR_ADMIN_NAME: options.adminName }),
 	});
 	const github = fakeGitHub();
 	const stack = await createStack({ config, accessFetch: mock.fetch, gitFetch: github.fetch });
@@ -84,6 +85,8 @@ describe("the gateway", () => {
 			`/v1/sessions?projectId=${stack.project.id}`,
 			"/v1/workspaces/ws-1/files",
 			"/v1/audit/events",
+			"/v1/me",
+			"/v1/projects",
 		]) {
 			const response = await call(path);
 			expect(response.status, path).toBe(401);
@@ -240,6 +243,42 @@ describe("the gateway", () => {
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { items: { type: string }[] };
 		expect(body.items.map((event) => event.type)).toEqual(["identity.project.created"]);
+	});
+
+	it("mounts who is signed in and their projects, with the admin's name and the project names", async () => {
+		const { call, signedIn, stack } = await setup({ adminName: "Tom Davies" });
+		const headers = await signedIn();
+		const me = await call("/v1/me", headers);
+		expect(me.status).toBe(200);
+		expect(await me.json()).toEqual({
+			actor: stack.admin.actor,
+			organisationId: stack.organisation.id,
+			method: "cloudflare_access",
+			name: "Tom Davies",
+			email: ADMIN,
+			roles: [{ role: "admin" }],
+		});
+		await stack.identity.createProject(stack.admin, { name: "Website" });
+		const projects = await call("/v1/projects", headers);
+		expect(((await projects.json()) as { items: { name: string }[] }).items.map((project) => project.name)).toEqual([
+			"Default",
+			"Website",
+		]);
+	});
+
+	it("names Access as the way to sign in on a 401 from /v1/me, and no way when Access is off", async () => {
+		const withAccess = await setup();
+		const refused = (await (await withAccess.call("/v1/me")).json()) as { error: { signIn?: string[] } };
+		expect(refused.error.signIn).toEqual(["cloudflare_access"]);
+		const withoutAccess = await setup({ access: false });
+		const bare = (await (await withoutAccess.call("/v1/me")).json()) as { error: { signIn?: string[] } };
+		expect(bare.error.signIn).toEqual([]);
+		expect((await withoutAccess.call("/v1/me", withoutAccess.withKey)).status).toBe(200);
+	});
+
+	it("names the admin by their email when the deployment gives no name", async () => {
+		const { call, signedIn } = await setup();
+		expect(((await (await call("/v1/me", await signedIn())).json()) as { name: string }).name).toBe(ADMIN);
 	});
 
 	it("answers 404 for a path under no API", async () => {

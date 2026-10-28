@@ -1,21 +1,23 @@
 // The console on the session API (`@harbour/runtime/http`, served under `/v1` by the gateway). Same-origin: behind
 // Cloudflare Access the browser's Access cookie signs every call in, and the edge adds the token the gateway checks,
-// so this client sends no credential of its own. `pnpm dev` proxies `/v1` to a local gateway and adds a dev token
-// there (vite.config.ts).
+// so this client sends no credential of its own; signed in with an email code, `headers` adds the session's bearer
+// (identity.ts). `pnpm dev` proxies `/v1` to a local gateway and adds a dev token there (vite.config.ts).
 //
 // What the API has and hasn't yet:
 // - Sessions: listed per project, each one's frames streamed as server-sent events, prompt, steer, follow-up and abort.
-// - No list of projects and no "who am I": the projects are the ones the caller's sessions are in, named by id, and
-//   the actor is whoever Access signed in. Identity's HTTP API (M1-BE7) will answer both.
+// - Who is signed in and their projects: identity's `GET /v1/me` (identity.ts, before this client is made) and
+//   `GET /v1/projects`, every page, named, the most recently active first.
 // - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
 // - No history pages: the snapshot is the whole transcript, so a history request is answered with an empty page.
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
 
+import type { Project } from "@harbour/contracts";
 import type { HistoryPage, ServerFrame, SessionStatus } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 import type {
+	ConsoleActor,
 	ConsoleClient,
 	ProjectSummary,
 	SendOptions,
@@ -47,10 +49,16 @@ export type ApiClientOptions = {
 	/** Where the session API is. Default `/v1`, on the console's own origin. */
 	baseUrl?: string;
 	fetch?: typeof fetch;
-	/** Headers for every call; tests sign in with a bearer here. The browser needs none. */
+	/** Headers for every call: an email-code session's bearer, or a test's. Behind Access the browser needs none. */
 	headers?: () => Record<string, string>;
 	listPollMs?: number;
+	/** Who `GET /v1/me` said is signed in. */
+	actor?: ConsoleActor;
+	/** Called on any 401: the session is over, and the console asks to sign in again. */
+	onUnauthenticated?: () => void;
 };
+
+const SIGNED_IN: ConsoleActor = { id: "access", name: "Signed in", stubbed: false };
 
 /** An error the API answered with, or a network failure, in words for the console. */
 export class ApiError extends Error {
@@ -115,7 +123,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			if (init.signal?.aborted) throw reason;
 			throw new ApiError("unavailable", "Can't reach Harbour. Check your connection.");
 		}
-		if (!response.ok) throw await errorOf(response);
+		if (!response.ok) {
+			if (response.status === 401) options.onUnauthenticated?.();
+			throw await errorOf(response);
+		}
 		return response;
 	};
 	const getJson = async <T>(path: string, signal?: AbortSignal): Promise<T> =>
@@ -144,6 +155,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			cursor = page.nextCursor;
 		} while (cursor !== undefined);
 		return records;
+	};
+
+	/** Every project the caller can see (`GET /v1/projects`), following the pages. */
+	const listProjects = async (): Promise<Project[]> => {
+		const projects: Project[] = [];
+		let cursor: string | undefined;
+		do {
+			const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
+			if (cursor !== undefined) query.set("cursor", cursor);
+			const page = await getJson<Page<Project>>(`${base}/projects?${query}`);
+			projects.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return projects;
 	};
 
 	const isUnread = (record: SessionRecord, firstListing: boolean): boolean => {
@@ -210,15 +235,23 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		);
 
 	return {
-		actor: { id: "access", name: "Signed in", stubbed: false },
+		actor: options.actor ?? SIGNED_IN,
 
 		async projects(): Promise<readonly ProjectSummary[]> {
+			const [projects, sessions] = await Promise.all([listProjects(), listSessions()]);
 			const recent = new Map<string, number>();
-			for (const record of await listSessions()) {
+			for (const record of sessions) {
 				recent.set(record.projectId, Math.max(recent.get(record.projectId) ?? 0, record.updatedAt));
 			}
-			// The most recently active project first, so the home page opens it.
-			return [...recent].sort((a, b) => b[1] - a[1]).map(([id]) => ({ id, name: id }));
+			// The most recently active project first, so the home page opens it; projects with no sessions by name.
+			return [...projects]
+				.sort(
+					(a, b) =>
+						(recent.get(b.id) ?? 0) - (recent.get(a.id) ?? 0) ||
+						a.name.localeCompare(b.name) ||
+						a.id.localeCompare(b.id),
+				)
+				.map((project) => ({ id: project.id, name: project.name }));
 		},
 
 		watchSessions(projectId, onChange) {

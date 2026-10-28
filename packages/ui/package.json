@@ -36,6 +36,8 @@
 	},
 	"devDependencies": {
 		"@harbour/audit": "workspace:*",
+		"@harbour/identity": "workspace:*",
+		"@harbour/testing": "workspace:*",
 		"@ladle/react": "5.1.1",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",

@@ -7,12 +7,15 @@
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
-/** Who the console acts as. Stubbed for recorded sessions; the API client is whoever Access signed in. */
+/** Who the console acts as: whoever `GET /v1/me` names on the API, a stand-in for recorded sessions. */
 export type ConsoleActor = {
 	readonly id: string;
 	readonly name: string;
+	readonly email?: string;
 	/** True while sign-in is a stand-in, so the shell can say so. */
 	readonly stubbed: boolean;
+	/** Ends the session, when the console signed in itself (an email code). Access ends its own at the edge. */
+	readonly signOut?: () => Promise<void>;
 };
 
 export type ProjectSummary = {

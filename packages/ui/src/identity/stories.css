@@ -1,0 +1,58 @@
+/* Story-only frames for the identity components. The sign-in screen fills a page-sized frame, as the console mounts
+   it; the sidebar footer sits at the sidebar's width, on the sidebar's panel. */
+
+.hb-story-sign-in {
+	display: flex;
+	flex-direction: column;
+	min-height: calc(var(--hb-space-11) * 14);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+}
+
+.hb-story-live {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) var(--hb-sidebar-width);
+	gap: var(--hb-space-7);
+	align-items: start;
+}
+
+.hb-story-note {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-story-code {
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-md);
+}
+
+.hb-story-sidebar {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	width: 100%;
+	max-width: var(--hb-sidebar-width);
+}
+
+.hb-story-sidebar-foot {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	padding: var(--hb-space-4) var(--hb-space-5);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+@media (max-width: 640px) {
+	.hb-story-live {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.hb-story-sign-in {
+		min-height: calc(var(--hb-space-11) * 12);
+	}
+}

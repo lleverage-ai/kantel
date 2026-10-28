@@ -73,6 +73,8 @@
 				"HARBOUR_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
 				"HARBOUR_ACCESS_AUD": "harbour-dev-aud",
 				"HARBOUR_ADMIN_EMAIL": "dev@harbour.test",
+				// The name the console shows for the dev admin (src/config.ts); deployed, the admin's email stands in for it.
+				"HARBOUR_ADMIN_NAME": "Dev admin",
 				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001") and the
 				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
 				// secrets; scripts/deploy-config.ts refuses them as vars.

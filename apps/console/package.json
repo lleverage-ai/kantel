@@ -25,6 +25,7 @@
 	"dependencies": {
 		"@harbour/audit": "workspace:*",
 		"@harbour/contracts": "workspace:*",
+		"@harbour/identity": "workspace:*",
 		"@harbour/protocol": "workspace:*",
 		"@harbour/ui": "workspace:*",
 		"react": "19.3.1",

@@ -30,6 +30,7 @@ import {
 	type Organisation,
 	type Project,
 	type ProjectAccess,
+	type SignInMethod,
 	type SystemContext,
 	systemClock,
 } from "@harbour/contracts";
@@ -159,6 +160,8 @@ export interface Stack {
 	readonly sandboxes: StackSandboxes;
 	readonly audit: AuditStore;
 	readonly authenticator: Authenticator;
+	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
+	readonly signIn: readonly SignInMethod[];
 	/** Host registrations that outlive the object (durable runtime only), for the session API. */
 	readonly hosts?: DurableHosts;
 	readonly organisation: Organisation;
@@ -280,6 +283,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			store: storage.bootstrap ?? createMemoryBootstrapStore(),
 			...(driver === undefined ? {} : { finder: sqlBootstrapFinder(driver) }),
 			adminEmail: options.config.adminEmail,
+			adminName: options.config.adminName,
 		});
 		const profile: AgentProfile = {
 			id: DEFAULT_AGENT_ID,
@@ -303,6 +307,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			sandboxes,
 			audit,
 			authenticator,
+			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
 			organisation,
 			project,
@@ -333,6 +338,7 @@ async function bootstrap(options: {
 	readonly store: BootstrapStore;
 	readonly finder?: BootstrapFinder;
 	readonly adminEmail: string | undefined;
+	readonly adminName: string | undefined;
 }): Promise<{ organisation: Organisation; project: Project; admin: CallContext }> {
 	const { store, finder } = options;
 	let saved = await store.load();
@@ -354,10 +360,11 @@ async function bootstrapOnce(
 		readonly store: BootstrapStore;
 		readonly finder?: BootstrapFinder;
 		readonly adminEmail: string | undefined;
+		readonly adminName: string | undefined;
 	},
 	saved: BootstrapRecord,
 ): Promise<{ organisation: Organisation; project: Project; admin: CallContext }> {
-	const { identity, store, finder, adminEmail } = options;
+	const { identity, store, finder, adminEmail, adminName } = options;
 	let record = saved;
 	const remember = async (step: BootstrapRecord): Promise<void> => {
 		record = { ...record, ...step };
@@ -367,7 +374,7 @@ async function bootstrapOnce(
 	let userId = record.userId ?? (await finder?.user(adminEmail));
 	if (userId === undefined) {
 		const user = await identity.createUser(BOOTSTRAP, {
-			name: adminEmail ?? "Bootstrap admin",
+			name: adminName ?? adminEmail ?? "Bootstrap admin",
 			...(adminEmail === undefined ? {} : { email: adminEmail }),
 		});
 		userId = user.id;
