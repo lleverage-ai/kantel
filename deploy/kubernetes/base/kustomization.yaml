@@ -1,0 +1,39 @@
+# Harbour self-hosted on Kubernetes: the M1 gateway (sessions, workspace reads, audit queries, sign-in and the
+# console) with the stores it runs on (Postgres, S3 on MinIO) and the SMTP server sign-in codes go to (Mailpit).
+#
+#   kubectl apply -k deploy/kubernetes/base           # any cluster that can pull harbour-selfhosted
+#   kubectl apply -k deploy/kubernetes/overlays/kind  # kind, with the image loaded into the nodes
+#
+# The same services and settings as the `gateway`, `postgres`, `minio` and `mailpit` services in
+# deploy/compose/compose.yaml; see README.md for what isn't here yet.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: harbour
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: harbour
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - minio.yaml
+  - mailpit.yaml
+  - gateway.yaml
+# Development credentials, the same as compose's. Replace them (an overlay's secretGenerator with behavior: replace,
+# or a Secret from your own secret store) before anything but a throwaway cluster.
+secretGenerator:
+  - name: harbour-postgres
+    literals:
+      - POSTGRES_USER=harbour
+      - POSTGRES_PASSWORD=harbour
+      - POSTGRES_DB=harbour
+      - HARBOUR_DATABASE_URL=postgres://harbour:harbour@postgres:5432/harbour
+  - name: harbour-s3
+    literals:
+      - MINIO_ROOT_USER=harbour
+      - MINIO_ROOT_PASSWORD=harbour-dev-secret
+      - S3_ACCESS_KEY=harbour
+      - S3_SECRET_KEY=harbour-dev-secret
+images:
+  - name: harbour-selfhosted
+    newTag: dev

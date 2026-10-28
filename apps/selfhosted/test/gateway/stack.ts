@@ -2,8 +2,14 @@
 //
 //   bun apps/selfhosted/test/gateway/stack.ts [--base-url http://127.0.0.1:58090] [--mailpit-url http://127.0.0.1:58025]
 //
+// or against the Kubernetes manifests (deploy/kubernetes), running commands in the gateway with kubectl:
+//
+//   bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58290 --mailpit-url http://127.0.0.1:58225 \
+//     --exec "kubectl --namespace harbour exec deploy/gateway --"
+//
 // It reads the gateway's bootstrap (organisation, project, workspace and API key) from the running `gateway`
-// container with `docker compose exec`, so it follows COMPOSE_PROJECT_NAME like every other compose command, then
+// container with `docker compose exec` (so it follows COMPOSE_PROJECT_NAME like every other compose command), or
+// with the command --exec names, then
 // makes the same pass as the in-process test. Then it checks mail: the gateway reports its SMTP server, and a message
 // sent from inside the gateway container through its own HARBOUR_SMTP_URL is readable through Mailpit's API. Prints
 // one line per check and exits 1 if any failed.
@@ -23,12 +29,22 @@ const { values } = parseArgs({
 			default: process.env.HARBOUR_MAILPIT_URL ?? `http://127.0.0.1:${process.env.HARBOUR_MAILPIT_PORT ?? "58025"}`,
 		},
 		compose: { type: "string", default: "deploy/compose/compose.yaml" },
+		// A command, split on spaces, that runs the words after it in the gateway's container.
+		exec: { type: "string" },
 	},
 });
 const baseUrl = values["base-url"];
 
-const inGateway = (...command: string[]) =>
-	spawnSync("docker", ["compose", "-f", values.compose, "exec", "-T", "gateway", ...command], { encoding: "utf8" });
+const [execFile = "docker", ...execArgs] = values.exec?.trim().split(/\s+/) ?? [
+	"docker",
+	"compose",
+	"-f",
+	values.compose,
+	"exec",
+	"-T",
+	"gateway",
+];
+const inGateway = (...command: string[]) => spawnSync(execFile, [...execArgs, ...command], { encoding: "utf8" });
 
 const read = inGateway("cat", "/var/lib/harbour/bootstrap.json");
 if (read.status !== 0) {

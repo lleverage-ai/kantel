@@ -1,0 +1,37 @@
+# The base on a kind cluster made from kind.yaml, with harbour-selfhosted:dev loaded into its node:
+#
+#   kind create cluster --config deploy/kubernetes/overlays/kind/kind.yaml
+#   docker build -f apps/selfhosted/Dockerfile -t harbour-selfhosted:dev .
+#   kind load docker-image --name harbour harbour-selfhosted:dev
+#   kubectl apply -k deploy/kubernetes/overlays/kind
+#
+# The gateway and Mailpit's web UI are NodePorts that kind.yaml publishes on the machine's loopback: the gateway and
+# console at http://127.0.0.1:58290, Mailpit at http://127.0.0.1:58225. Those ports differ from compose's (58090,
+# 58025), so a kind cluster and the compose stacks can run side by side.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: { kind: Service, name: gateway }
+    patch: |
+      - op: add
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30090
+  - target: { kind: Service, name: mailpit }
+    patch: |
+      - op: add
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/1/nodePort
+        value: 30025
+  # Loaded with `kind load`, never pulled: a pull would fail rather than run something else.
+  - target: { kind: Deployment, name: gateway }
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never

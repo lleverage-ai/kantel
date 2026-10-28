@@ -1,0 +1,85 @@
+# The M1 gateway: sessions, workspace reads, audit queries and sign-in behind the API-key authenticator, and the
+# console, on port 8080. Its runtime, audit, identity and workspace stores are on Postgres (schema harbour_m1) and
+# MinIO (prefix m1/workspaces/), and it writes its bootstrap organisation, project, workspace and API key to the
+# `gateway-state` volume, so a restart reuses them.
+#
+# One replica, replaced rather than rolled: the state volume is ReadWriteOnce, and host-tool callbacks are held in
+# the gateway's process (apps/selfhosted/README.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+spec:
+  selector: { app.kubernetes.io/name: gateway }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gateway-state
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 64Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: gateway }
+    spec:
+      initContainers:
+        # The gateway migrates and bootstraps on start, so it waits for Postgres rather than crash-looping until it's
+        # up. The same image as postgres.yaml's, for pg_isready.
+        - name: wait-for-postgres
+          image: postgres:17-alpine
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -t 2; do sleep 1; done"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+      containers:
+        - name: gateway
+          image: harbour-selfhosted
+          command: ["bun", "src/gateway/main.ts"]
+          env:
+            - { name: HARBOUR_BOOTSTRAP_FILE, value: /var/lib/harbour/bootstrap.json }
+            - { name: HARBOUR_CONSOLE_DIR, value: /harbour/apps/console/dist }
+            # Where sign-in codes are sent (#15, email one-time PIN): Mailpit here; any relay in production (smtp://
+            # with STARTTLS, or smtps://).
+            - { name: HARBOUR_SMTP_URL, value: "smtp://mailpit:1025" }
+            - { name: HARBOUR_MAIL_FROM, value: "Harbour <harbour@harbour.localhost>" }
+            - name: HARBOUR_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: harbour-postgres, key: HARBOUR_DATABASE_URL } }
+            - { name: HARBOUR_GATEWAY_SCHEMA, value: harbour_m1 }
+            - { name: S3_ENDPOINT, value: "http://minio:9000" }
+            - { name: S3_BUCKET, value: harbour }
+            - name: S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: harbour-s3, key: S3_ACCESS_KEY } }
+            - name: S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: harbour-s3, key: S3_SECRET_KEY } }
+            - { name: HARBOUR_GATEWAY_S3_PREFIX, value: m1/workspaces/ }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+          volumeMounts:
+            - { name: state, mountPath: /var/lib/harbour }
+      volumes:
+        - name: state
+          persistentVolumeClaim: { claimName: gateway-state }

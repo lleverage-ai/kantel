@@ -1,0 +1,170 @@
+name: self-hosted on kind (M1-SH1)
+
+# deploy/kubernetes on a kind cluster: the gateway image built from this commit, the manifests applied with the kind
+# overlay, then the gateway's end-to-end test (the same one the compose stack runs) through the cluster's NodePorts,
+# before and after the gateway is replaced, so its bootstrap and data are shown to outlive the pod.
+#
+# kube-proxy needs the kernel's REJECT support (xt_REJECT, or nft_reject_inet in nftables mode) to program any Service.
+# Without it no ClusterIP works, so CoreDNS and the volume provisioner never reach the API server and nothing with a
+# volume starts; "Cluster state on failure" prints kube-proxy's log for that case. Until the runners' host can load
+# those modules, this runs only for changes to the manifests and this file (and by hand), not for every gateway change
+# or on main.
+on:
+  pull_request:
+    paths:
+      - "deploy/kubernetes/**"
+      - ".github/workflows/selfhosted-kind.yml"
+  workflow_dispatch: {}
+
+# As in selfhosted-spike.yml: a re-push cancels the older pull request run; runs on main each get a group of their own.
+concurrency:
+  group: selfhosted-kind-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  KIND_VERSION: v0.33.0
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+
+jobs:
+  kind:
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 30
+    env:
+      # The cluster runs in a Docker daemon of its own, as the compose stack does in selfhosted-spike.yml.
+      DIND_NAME: harbour-ci-kind-${{ github.run_id }}-${{ github.run_attempt }}
+      IMAGE: harbour-selfhosted:dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Bun
+        run: |
+          npm install --global bun@1.3.14
+          bun --version
+
+      - name: Install kind
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kind" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-linux-amd64"
+          echo "$KIND_SHA256  $RUNNER_TEMP/bin/kind" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/bin/kind"
+          # kubectl is the node's own, run in it with the cluster's admin kubeconfig: the API server publishes on the
+          # daemon's loopback, which the runner can't reach, and the node already has a kubectl of the cluster's
+          # version.
+          cat > "$RUNNER_TEMP/bin/kubectl" <<'EOF'
+          #!/usr/bin/env bash
+          exec docker exec --interactive harbour-control-plane kubectl --kubeconfig /etc/kubernetes/admin.conf "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/kubectl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # A throwaway docker:dind daemon (privileged, on the default bridge), as selfhosted-spike.yml starts one: kind's
+      # node container and everything in the cluster live and die with it. kind publishes the NodePorts on the
+      # daemon's loopback (overlays/kind/kind.yaml); one socat per port, on the daemon's network namespace, forwards
+      # its bridge address to them.
+      - name: Start this run's Docker daemon
+        run: |
+          docker run --detach --privileged --name "$DIND_NAME" \
+            --env DOCKER_TLS_CERTDIR=/certs --volume /var/lib/docker \
+            docker:29-dind
+          for _ in $(seq 1 60); do
+            docker exec "$DIND_NAME" docker info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec "$DIND_NAME" docker info --format 'daemon {{.ServerVersion}}, {{.Driver}}, cgroup v{{.CgroupVersion}}'
+          ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_NAME")"
+          test -n "$ip"
+          certs="$RUNNER_TEMP/$DIND_NAME-certs"
+          docker cp "$DIND_NAME:/certs/client" "$certs"
+          export DOCKER_HOST="tcp://$ip:2376" DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH="$certs"
+          docker info --format 'reached {{.Name}} over TLS'
+          for port in 58290 58225; do
+            docker run --detach --network host --name "forward-$port" alpine/socat:1.8.0.3 \
+              "tcp-listen:$port,fork,reuseaddr,bind=$ip" "tcp:127.0.0.1:$port"
+          done
+          {
+            echo "DOCKER_HOST=$DOCKER_HOST"
+            echo "DOCKER_TLS_VERIFY=1"
+            echo "DOCKER_CERT_PATH=$certs"
+            echo "STACK=$ip"
+          } >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          version: v0.37.2
+          driver: docker
+
+      - name: Create the cluster
+        run: kind create cluster --config deploy/kubernetes/overlays/kind/kind.yaml --wait 3m
+
+      - name: Build the gateway image and load it into the node
+        run: |
+          docker build --file apps/selfhosted/Dockerfile --tag "$IMAGE" .
+          kind load docker-image --name harbour "$IMAGE"
+
+      - name: Apply deploy/kubernetes/overlays/kind
+        run: |
+          docker cp deploy/kubernetes harbour-control-plane:/harbour-kubernetes
+          kubectl apply --kustomize /harbour-kubernetes/overlays/kind
+          kubectl --namespace harbour rollout status statefulset/postgres --timeout 3m
+          kubectl --namespace harbour rollout status statefulset/minio --timeout 3m
+          kubectl --namespace harbour rollout status deployment/mailpit --timeout 3m
+          kubectl --namespace harbour rollout status deployment/gateway --timeout 5m
+
+      - name: Gateway end to end on the cluster
+        run: >
+          bun apps/selfhosted/test/gateway/stack.ts
+          --base-url "http://$STACK:58290"
+          --mailpit-url "http://$STACK:58225"
+          --exec "kubectl --namespace harbour exec deploy/gateway --"
+
+      # A new pod on the same state volume and database: the same organisation, project, workspace and API key.
+      - name: Replace the gateway pod, then end to end again
+        run: |
+          before="$(kubectl --namespace harbour exec deploy/gateway -- cat /var/lib/harbour/bootstrap.json)"
+          kubectl --namespace harbour rollout restart deployment/gateway
+          kubectl --namespace harbour rollout status deployment/gateway --timeout 5m
+          after="$(kubectl --namespace harbour exec deploy/gateway -- cat /var/lib/harbour/bootstrap.json)"
+          if [ "$before" != "$after" ]; then
+            echo "::error::the gateway's bootstrap changed when its pod was replaced"
+            exit 1
+          fi
+          bun apps/selfhosted/test/gateway/stack.ts \
+            --base-url "http://$STACK:58290" \
+            --mailpit-url "http://$STACK:58225" \
+            --exec "kubectl --namespace harbour exec deploy/gateway --"
+
+      - name: Cluster state on failure
+        if: failure() && env.STACK != ''
+        run: |
+          kubectl --namespace harbour get all,pvc --output wide || true
+          kubectl --namespace harbour get events --sort-by .lastTimestamp || true
+          kubectl --namespace kube-system logs daemonset/kube-proxy --tail 30 || true
+          for workload in deployment/gateway statefulset/postgres statefulset/minio deployment/mailpit; do
+            echo "::group::$workload"
+            kubectl --namespace harbour describe "$workload" || true
+            kubectl --namespace harbour logs "$workload" --all-containers --tail 200 || true
+            echo "::endgroup::"
+          done
+
+      # On the host's daemon: removing the daemon's container and its anonymous volume removes the cluster with it.
+      - name: Tear down
+        if: always()
+        run: |
+          unset DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          present() { docker ps --all --quiet --filter "name=^/${DIND_NAME}\$"; }
+          for _ in 1 2 3; do
+            if ids="$(present)"; then
+              [ -z "$ids" ] && break
+              docker rm --force --volumes "$DIND_NAME" || sleep 5
+            else
+              sleep 5
+            fi
+          done
+          if ! ids="$(present)" || [ -n "$ids" ]; then
+            echo "::error::could not confirm $DIND_NAME was removed"
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP/bin/kind" "$RUNNER_TEMP/bin/kubectl"
