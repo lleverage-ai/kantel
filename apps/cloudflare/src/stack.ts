@@ -9,6 +9,7 @@
  *   Object's SQLite and alarm: its directory, profiles, host registrations and each session's Pi storage, and the
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
  * - `workspaces`: workspace heads, versions and blobs (R2);
+ * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
@@ -24,9 +25,11 @@ import {
 	type CallContext,
 	type Clock,
 	type IdentityDirectory,
+	type LeaseEndReason,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
+	type SystemContext,
 	systemClock,
 } from "@harbour/contracts";
 import { createAuthenticator } from "@harbour/identity/authenticator";
@@ -41,13 +44,23 @@ import {
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
 import type { SqlDriver } from "@harbour/sql";
-import type { KeyedWorkspaces } from "@harbour/workspace";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createStoredWorkspaces, type WorkspaceStore } from "@harbour/workspace/stored";
+import {
+	createMemoryWorkspaceStore,
+	createStoredWorkspaces,
+	type StoredWorkspaces,
+	type WorkspaceStore,
+} from "@harbour/workspace/stored";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
 import type { StackModels } from "./models.ts";
+import {
+	createStackSandboxes,
+	DEFAULT_ISOLATE_BACKEND,
+	type ExtraIsolateBackends,
+	type IsolateBackendName,
+	type StackSandboxes,
+} from "./sandboxes.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -124,12 +137,17 @@ export interface StackOptions {
 	 * (`createGatewayModels`) when the Worker can reach CPA. Default the echo model.
 	 */
 	readonly models?: (deps: { readonly audit: AuditSink; readonly clock: Clock }) => StackModels;
+	/** The isolate backend sessions run on. Default `in-process`. */
+	readonly isolateBackend?: IsolateBackendName;
+	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
+	readonly extraIsolateBackends?: ExtraIsolateBackends;
 }
 
 export interface Stack {
 	readonly identity: IdentityDirectory;
 	readonly runtime: SessionRuntimeService;
-	readonly workspaces: KeyedWorkspaces;
+	readonly workspaces: StoredWorkspaces;
+	readonly sandboxes: StackSandboxes;
 	readonly audit: AuditStore;
 	readonly authenticator: Authenticator;
 	/** Host registrations that outlive the object (durable runtime only), for the session API. */
@@ -191,7 +209,25 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const authenticator = createAuthenticator({ identity, providers });
 
 	const models: StackModels = options.models?.({ audit, clock }) ?? { models: createEchoModels() };
-	const runtimeOptions = { clock, audit, identity, ...models };
+	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
+	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
+	let built: StackSandboxes | undefined;
+	const lateSandboxes = (): StackSandboxes => {
+		if (built === undefined) throw new Error("the sandboxes are not ready");
+		return built;
+	};
+	const runtimeOptions = {
+		clock,
+		audit,
+		identity,
+		...models,
+		sandboxes: {
+			releaseSession: (ctx: CallContext, sessionId: string, reason?: LeaseEndReason) =>
+				// A session can end while the stack is still starting (resumed and aborted), before any lease exists.
+				built === undefined ? Promise.resolve() : lateSandboxes().releaseSession(ctx, sessionId, reason),
+			sweep: async (ctx: SystemContext) => (built === undefined ? [] : lateSandboxes().sweep(ctx)),
+		},
+	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
 	const core =
@@ -210,10 +246,21 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
-		const workspaces =
-			storage.workspaces === undefined
-				? createMemoryWorkspaces({ clock, audit, access })
-				: createStoredWorkspaces({ store: storage.workspaces, clock, audit, access });
+		const workspaces = createStoredWorkspaces({
+			store: storage.workspaces ?? createMemoryWorkspaceStore(),
+			clock,
+			audit,
+			access,
+		});
+		built = createStackSandboxes({
+			workspaces,
+			access,
+			audit,
+			clock,
+			backend: options.isolateBackend ?? DEFAULT_ISOLATE_BACKEND,
+			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
+		});
+		const sandboxes = built;
 
 		const { organisation, project, admin } = await bootstrap({
 			identity,
@@ -239,6 +286,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			identity,
 			runtime,
 			workspaces,
+			sandboxes,
 			audit,
 			authenticator,
 			...(core === undefined ? {} : { hosts: runtime.hosts }),

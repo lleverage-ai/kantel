@@ -42,7 +42,9 @@
 		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
 		"HARBOUR_ADMIN_EMAIL": "",
 		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the HARBOUR_CPA_API_KEY secret.
-		"HARBOUR_DEFAULT_MODEL": "claude-sonnet-5-5"
+		"HARBOUR_DEFAULT_MODEL": "claude-sonnet-5-5",
+		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object.
+		"HARBOUR_ISOLATE_BACKEND": "in-process"
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.

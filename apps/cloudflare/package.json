@@ -22,6 +22,7 @@
 		"@harbour/contracts": "workspace:*",
 		"@harbour/identity": "workspace:*",
 		"@harbour/model-gateway": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
 		"@harbour/runtime": "workspace:*",
 		"@harbour/runtime-cloudflare": "workspace:*",
 		"@harbour/sql": "workspace:*",
