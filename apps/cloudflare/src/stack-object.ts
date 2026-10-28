@@ -1,8 +1,8 @@
 /**
  * `HarbourStack`: the Durable Object that hosts the stack and its gateway. Its state is durable (#17, step 2):
  *
- * - the identity directory and the audit store in D1 (`DB`);
- * - workspaces in R2 (`WORKSPACES`);
+ * - the identity directory, the audit store, skills and memory in D1 (`DB`);
+ * - workspaces in R2 (`WORKSPACES`), and skill files' bodies beside them under `skills/`;
  * - the session runtime (`SessionRuntimeDurableObjectCore` from `@harbour/runtime-cloudflare`): its directory,
  *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
@@ -20,6 +20,7 @@ import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
 import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } from "@harbour/contracts";
 import type { AcceptWebSocket } from "@harbour/runtime/http";
+import { r2ObjectBucket } from "@harbour/skills/sql";
 import { d1Driver } from "@harbour/sql/sqlite";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import type { GatewayVars } from "./config.ts";
@@ -265,6 +266,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				prefix: WORKSPACE_PREFIX,
 				headCache: durableHeadCache(storage.kv),
 			}),
+			// The skills store keys every body `skills/…`, so it shares the workspaces' bucket (and its placement) apart.
+			skillObjects: r2ObjectBucket(this.env.WORKSPACES),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
