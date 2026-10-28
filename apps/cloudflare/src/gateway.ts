@@ -5,6 +5,7 @@
  * | --- | --- |
  * | `/v1/workspaces/…` | the workspace read API (`@harbour/workspace/read-api`, PR #58) |
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
+ * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -13,8 +14,9 @@
 import { createAuditQueryHandler } from "@harbour/audit/http";
 import { AUDIT_EVENT_PATH, AUDIT_EVENTS_PATH, type AuthenticatedCaller, callContextFor } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
-import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
+import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
+import { MEASURE_PATH, measureIsolateReady, measurementWorkspace } from "./measure.ts";
 import type { Stack } from "./stack.ts";
 
 export const API_BASE = "/v1";
@@ -59,19 +61,66 @@ export function createGateway(stack: Stack): Gateway {
 		},
 	});
 
+	/** The caller, or the response refusing them: 401 with a challenge for a missing or bad credential. */
+	const authenticate = async (request: Request): Promise<AuthenticatedCaller | Response> => {
+		try {
+			return await stack.authenticator.authenticate(request);
+		} catch (error) {
+			const refused = authenticationFailureResponse(error);
+			if (refused !== undefined) return refused;
+			return Response.json({ error: { code: "unavailable", message: "Sign-in is unavailable" } }, { status: 503 });
+		}
+	};
+
+	const workspace = measurementWorkspace(stack);
+	const measure = async (request: Request): Promise<Response> => {
+		if (request.method !== "POST") {
+			return Response.json(
+				{ error: { code: "invalid", message: "POST only" } },
+				{ status: 405, headers: { allow: "POST", "cache-control": "no-store" } },
+			);
+		}
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		let input: { backend?: string } = {};
+		const text = await request.text();
+		if (text.trim() !== "") {
+			const parsed: unknown = (() => {
+				try {
+					return JSON.parse(text);
+				} catch {
+					return undefined;
+				}
+			})();
+			const backend = (parsed as { backend?: unknown } | undefined)?.backend;
+			if (typeof parsed !== "object" || parsed === null || (backend !== undefined && typeof backend !== "string")) {
+				return Response.json(
+					{ error: { code: "invalid", message: 'The body is { "backend"?: string }' } },
+					{ status: 400, headers: { "cache-control": "no-store" } },
+				);
+			}
+			input = backend === undefined ? {} : { backend };
+		}
+		try {
+			const ctx = callContextFor(caller, { signal: request.signal });
+			return Response.json(await measureIsolateReady(stack, ctx, workspace, input), {
+				headers: { "cache-control": "no-store" },
+			});
+		} catch (error) {
+			return errorResponse(error);
+		}
+	};
+
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
 			if (under(path, WORKSPACE_READ_API_BASE)) {
-				try {
-					callers.set(request, await stack.authenticator.authenticate(request));
-				} catch (error) {
-					const refused = authenticationFailureResponse(error);
-					if (refused !== undefined) return refused;
-					return Response.json({ error: { code: "unavailable", message: "Sign-in is unavailable" } }, { status: 503 });
-				}
+				const caller = await authenticate(request);
+				if (caller instanceof Response) return caller;
+				callers.set(request, caller);
 				return (await workspaces(request)) ?? notFound();
 			}
+			if (path === MEASURE_PATH) return measure(request);
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();
