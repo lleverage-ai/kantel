@@ -12,19 +12,20 @@
  *   which the isolate never sees. The isolate has no bindings and no network (`globalOutbound: null`).
  * - **Changes come back in the result.** The isolate can't write; the tiered sandboxes commit what the command
  *   changed before the tool call returns, exactly as for `in-process`, so the next command, on either backend, sees it.
- * - **Cancellation.** An `AbortSignal` can't cross RPC. When the caller cancels, the port refuses the isolate's next
- *   read, and the result is dropped (`aborted`), so nothing is committed; the command itself stops at its next read
- *   or its own `timeoutMs`.
+ * - **Cancellation.** An `AbortSignal` can't cross RPC. When the caller can cancel, the isolate polls the port's
+ *   `cancelled()` and aborts the shell, which stops at its next statement, as in process; the port also refuses reads
+ *   once cancelled. The caller's promise rejects with `aborted` as soon as it cancels, and whatever the isolate
+ *   answers after that is dropped, so nothing is committed.
  */
 import { type CallContext, HarbourError, type WorkspaceId } from "@harbour/contracts";
-import { createWorkspacePort, type ShellRequest, type WorkspacePort } from "@harbour/sandbox/isolate";
+import { createWorkspacePort, type ShellRequest } from "@harbour/sandbox/isolate";
 import type { BackendExec, BackendOutput, IsolateBackend } from "@harbour/sandbox/tiered";
 import { listAll, type ModedFileEntry, type StoredWorkspaces } from "@harbour/workspace/stored";
-import type { IsolateOutcome } from "./isolate/runner.ts";
+import type { IsolateExecOptions, IsolateOutcome, IsolatePort } from "./isolate/runner.ts";
 
 /** The isolate's entry point, as the loader's stub answers it (`src/isolate/entry.ts`). */
 export interface IsolateEntrypoint {
-	exec(port: WorkspacePort, request: ShellRequest): Promise<IsolateOutcome>;
+	exec(port: IsolatePort, request: ShellRequest, options?: IsolateExecOptions): Promise<IsolateOutcome>;
 }
 
 /** Loads (or finds, warm) the isolate with this ID. */
@@ -80,7 +81,7 @@ export interface DynamicWorkerIsolateOptions {
 	/** Changes with the isolate's code (`bundleId`); part of every loader ID. */
 	readonly bundleId: string;
 	/** Makes the port passable to the isolate: an `RpcTarget` on Cloudflare. Default: as is (tests). */
-	readonly expose?: (port: WorkspacePort) => WorkspacePort;
+	readonly expose?: (port: IsolatePort) => IsolatePort;
 }
 
 /** The loader ID of a session's isolate on one workspace. */
@@ -98,6 +99,17 @@ function requireNotCancelled(ctx: CallContext): void {
 }
 
 const round = (ms: number) => Math.round(ms * 10) / 10;
+
+/** `work`, or `aborted` as soon as `signal` aborts; a later answer from `work` is dropped. */
+function untilCancelled<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return work;
+	return new Promise<T>((resolve, reject) => {
+		const cancel = () => reject(new HarbourError("aborted", "the command was cancelled"));
+		if (signal.aborted) cancel();
+		signal.addEventListener("abort", cancel, { once: true });
+		work.then(resolve, reject).finally(() => signal.removeEventListener("abort", cancel));
+	});
+}
 
 export function createDynamicWorkerIsolateBackend(
 	workspaces: StoredWorkspaces,
@@ -128,10 +140,11 @@ export function createDynamicWorkerIsolateBackend(
 		};
 	}
 
-	/** The command's port: the caller's reads at `version`, refused once the caller cancels. */
-	function portFor(ctx: CallContext, id: WorkspaceId, version: number): WorkspacePort {
+	/** The command's port: the caller's reads at `version`, refused once the caller cancels, and whether it has. */
+	function portFor(ctx: CallContext, id: WorkspaceId, version: number): IsolatePort {
 		const inner = createWorkspacePort(workspaces, ctx, id, version, { entries: cachedEntries(ctx, id) });
 		return {
+			cancelled: async () => ctx.signal?.aborted === true,
 			entries: async (at) => {
 				requireNotCancelled(ctx);
 				return inner.entries(at);
@@ -173,9 +186,11 @@ export function createDynamicWorkerIsolateBackend(
 				...(request.stdin === undefined ? {} : { stdin: request.stdin }),
 				...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
 			};
-			const { isolate: life, ...outcome } = await isolate.exec(
-				expose(portFor(ctx, lease.workspaceId, record.head)),
-				shell,
+			const { isolate: life, ...outcome } = await untilCancelled(
+				isolate.exec(expose(portFor(ctx, lease.workspaceId, record.head)), shell, {
+					cancellable: ctx.signal !== undefined,
+				}),
+				ctx.signal,
 			);
 			// A cancelled command's output and changes are dropped: the caller commits nothing.
 			requireNotCancelled(ctx);

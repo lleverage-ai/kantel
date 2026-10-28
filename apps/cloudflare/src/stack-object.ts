@@ -19,13 +19,13 @@
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
 import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } from "@harbour/contracts";
-import type { WorkspacePort } from "@harbour/sandbox/isolate";
 import { d1Driver } from "@harbour/sql/sqlite";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
+import type { IsolatePort } from "./isolate/runner.ts";
 import type { Placement } from "./measure.ts";
 import { cpaKey, createGatewayModels, defaultModel, type ModelsVars } from "./models.ts";
 import { VAULT_NAME } from "./route.ts";
@@ -54,11 +54,14 @@ export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars {
  * A command's workspace port as an RPC target, so the Dynamic Worker isolate can call it: each call runs here, in the
  * stack object, with the caller's context, which the isolate never sees.
  */
-class WorkspacePortTarget extends RpcTarget implements WorkspacePort {
-	readonly #port: WorkspacePort;
-	constructor(port: WorkspacePort) {
+class IsolatePortTarget extends RpcTarget implements IsolatePort {
+	readonly #port: IsolatePort;
+	constructor(port: IsolatePort) {
 		super();
 		this.#port = port;
+	}
+	cancelled() {
+		return this.#port.cancelled();
 	}
 	entries(version: number) {
 		return this.#port.entries(version);
@@ -131,7 +134,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 							"dynamic-worker": createDynamicWorkerIsolateBackend(workspaces, {
 								load: workerLoaderIsolates(loader, ISOLATE_BUNDLE),
 								bundleId: ISOLATE_BUNDLE_ID,
-								expose: (port) => new WorkspacePortTarget(port),
+								expose: (port) => new IsolatePortTarget(port),
 							}),
 						}),
 					}),

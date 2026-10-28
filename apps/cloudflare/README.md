@@ -69,8 +69,10 @@ How `dynamic-worker` works:
   `HarbourStack`, that lists a version and reads bodies and mounts with the caller's context, which the isolate never
   sees. It can't write: what a command changed comes back in the result, and the tiered sandboxes commit it before the
   tool call returns, as for `in-process`.
-- **Cancellation** can't cross RPC. A cancelled command's port refuses further reads and its result is dropped, so
-  nothing is committed; the command stops at its next read or its `timeoutMs`.
+- **Cancellation:** an `AbortSignal` can't cross RPC, so while a cancellable command runs the isolate asks the port
+  every 50 ms whether the caller has cancelled, and aborts the shell when it has; the shell stops at its next
+  statement, as in process. The caller's call rejects `aborted` at once, and anything the isolate answers later is
+  dropped, so nothing is committed.
 
 ## Measuring isolate-ready
 

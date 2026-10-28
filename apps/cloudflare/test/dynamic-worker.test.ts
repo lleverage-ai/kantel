@@ -3,7 +3,7 @@
 // data and the workspace port cross the boundary. The tiered sandboxes and the measurement run on it as on Cloudflare.
 import { type CallContext, isHarbourError } from "@harbour/contracts";
 import { createMockAccess } from "@harbour/identity/testing";
-import type { ShellRequest, WorkspacePort } from "@harbour/sandbox/isolate";
+import type { ShellRequest } from "@harbour/sandbox/isolate";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import {
@@ -17,7 +17,12 @@ import {
 	workerLoaderIsolates,
 } from "../src/dynamic-worker.ts";
 import { createGateway } from "../src/gateway.ts";
-import { createIsolateRunner, type IsolateRunner } from "../src/isolate/runner.ts";
+import {
+	createIsolateRunner,
+	type IsolateExecOptions,
+	type IsolatePort,
+	type IsolateRunner,
+} from "../src/isolate/runner.ts";
 import { MEASURE_FILES, MEASURE_PATH, type Placement } from "../src/measure.ts";
 import { isolateBackendName } from "../src/sandboxes.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
@@ -38,27 +43,31 @@ function fakeLoader() {
 	const isolates = new Map<string, IsolateRunner>();
 	const codes: IsolateCode[] = [];
 	const entrypoints: (string | undefined)[] = [];
+	/** Each command as the isolate ran it, settled when the isolate finished it (not when the caller stopped waiting). */
+	const runs: Promise<unknown>[] = [];
 	const loader: WorkerLoaderLike = {
 		get(id, code) {
 			return {
 				getEntrypoint(name) {
 					entrypoints.push(name);
 					return {
-						async exec(port: WorkspacePort, request: ShellRequest) {
+						async exec(port: IsolatePort, request: ShellRequest, options?: IsolateExecOptions) {
 							let runner = isolates.get(id);
 							if (runner === undefined) {
 								codes.push(await code());
 								runner = createIsolateRunner();
 								isolates.set(id, runner);
 							}
-							return structuredClone(await runner.exec(port, structuredClone(request)));
+							const ran = runner.exec(port, structuredClone(request), structuredClone(options));
+							runs.push(ran.catch((error: unknown) => error));
+							return structuredClone(await ran);
 						},
 					};
 				},
 			};
 		},
 	};
-	return { loader, isolates, codes, entrypoints };
+	return { loader, isolates, codes, entrypoints, runs };
 }
 
 async function setup(options: { placement?: () => Promise<Placement> } = {}) {
@@ -170,7 +179,34 @@ describe("the dynamic-worker isolate backend", () => {
 		]);
 	});
 
-	it("drops a cancelled command's output and changes", async () => {
+	it("stops a running command when its caller cancels, committing nothing", async () => {
+		const { stack, fake, workspace, session, run } = await setup();
+		const workspaceId = await workspace();
+		const { id: sessionId } = await session(workspaceId);
+		const before = (await stack.workspaces.get(stack.admin, workspaceId)).head;
+		const controller = new AbortController();
+		const started = performance.now();
+		const running = run(
+			{ ...stack.admin, signal: controller.signal },
+			sessionId,
+			workspaceId,
+			"echo a > a.txt; sleep 5; echo b > b.txt",
+		);
+		setTimeout(() => controller.abort(), 100);
+		await expect(running).rejects.toSatisfy((error: unknown) => isHarbourError(error, "aborted"));
+		// The isolate itself stopped, well before the sleep would have ended.
+		const stopped = await fake.runs[0];
+		expect(String(stopped)).toMatch(/cancelled|aborted/);
+		expect(performance.now() - started).toBeLessThan(2_000);
+		expect((await stack.workspaces.get(stack.admin, workspaceId)).head).toBe(before);
+		for (const path of ["a.txt", "b.txt"]) {
+			await expect(stack.workspaces.read(stack.admin, workspaceId, path)).rejects.toSatisfy((error: unknown) =>
+				isHarbourError(error, "not_found"),
+			);
+		}
+	});
+
+	it("drops a command cancelled before it starts", async () => {
 		const { stack, workspace, session, run } = await setup();
 		const workspaceId = await workspace();
 		const { id: sessionId } = await session(workspaceId);
