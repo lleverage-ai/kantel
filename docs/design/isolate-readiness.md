@@ -247,6 +247,7 @@ What the numbers show:
   objects ran their loader callback 44 times in 15 minutes against 44 pings, so nearly every ping reloaded the
   isolate. Keeping the Durable Object alive does not keep its Dynamic
   Worker loaded. The docs say as much: "Two requests are never guaranteed to reach the same isolate."
+  (https://developers.cloudflare.com/dynamic-workers/api-reference/)
 - **The cold path is 1,046 ms p50** (first contact 415, setup 258, list 325). That is about 160 ms under
   M0-CF1's 1,208, which fits its leaner listing.
 
