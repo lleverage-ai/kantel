@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { getPlatformProxy } from "wrangler";
-import type { R2BucketLike } from "../src/index.ts";
+import type { CachedHead, HeadCache, R2BucketLike } from "../src/index.ts";
 
 /**
  * The R2 binding from ../wrangler.jsonc through wrangler's platform proxy: the same local R2 (workerd's) that
@@ -12,6 +12,36 @@ export async function localR2(): Promise<{ bucket: R2BucketLike; dispose: () => 
 		persist: false,
 	});
 	return { bucket: proxy.env.WORKSPACES, dispose: () => proxy.dispose() };
+}
+
+/** A head cache in a map, as the stack object's storage keeps one. */
+export function memoryHeadCache(): HeadCache & { readonly heads: Map<string, CachedHead> } {
+	const heads = new Map<string, CachedHead>();
+	return {
+		heads,
+		get: async (id) => heads.get(id),
+		set: async (id, head) => {
+			heads.set(id, head);
+		},
+		delete: async (id) => {
+			heads.delete(id);
+		},
+	};
+}
+
+/** Counts reads of workspace heads through a bucket. */
+export function countingHeads(bucket: R2BucketLike): { bucket: R2BucketLike; counts: { heads: number } } {
+	const counts = { heads: 0 };
+	return {
+		counts,
+		bucket: {
+			get(key) {
+				if (key.endsWith("/head")) counts.heads++;
+				return bucket.get(key);
+			},
+			put: (key, value, options) => bucket.put(key, value, options),
+		},
+	};
 }
 
 /** Counts reads of blobs and trees through a bucket. */

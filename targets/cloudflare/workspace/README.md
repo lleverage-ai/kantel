@@ -14,8 +14,14 @@ exists). The head carries the versions not yet archived; the commit that moves t
 first, so history and old versions read from `ws/<id>/versions/<n>.json`. Blobs and trees are
 `@harbour/workspace/stored`'s keys under the prefix.
 
+With `headCache`, each head's document and etag are kept in front of R2 (the Cloudflare app keeps them in its stack
+object's storage), so a load makes no R2 request. Every write drops the cached head before it starts and puts back only
+what it wrote, if no other write overlapped it; a load caches what it read only if no write was in flight or started
+meanwhile. Use it only where every write goes through the one store. A head moved anywhere else stays cached until a
+write here fails its conditional put on it, which drops it.
+
 ## Tests
 
 `pnpm test` runs the workspace conformance suite (with project access and the keyed `ensure` cases, and again with
-workspace-backed `/project`) and the 10,000-file listing on the local R2 that `wrangler dev` serves, through
+workspace-backed `/project`, and with a head cache), the head cache's own cases, and the 10,000-file listing on the local R2 that `wrangler dev` serves, through
 wrangler's `getPlatformProxy` and `wrangler.jsonc` here. Nothing is deployed and nothing persists.
