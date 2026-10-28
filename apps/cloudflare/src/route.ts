@@ -12,7 +12,7 @@
  *   APIs, served by the `HarbourStack` Durable Object.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
-import { API_KEYS_PATH } from "@harbour/contracts";
+import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
@@ -30,10 +30,55 @@ export interface Answers {
 	fetch(request: Request): Promise<Response>;
 }
 
+/** Durable Objects' location hints (Cloudflare's `DurableObjectLocationHint`): regions, never a city or colo. */
+export const LOCATION_HINTS = [
+	"wnam",
+	"enam",
+	"sam",
+	"weur",
+	"eeur",
+	"apac",
+	"apac-ne",
+	"apac-se",
+	"oc",
+	"afr",
+	"me",
+] as const;
+export type LocationHint = (typeof LOCATION_HINTS)[number];
+/** Western Europe: the region Amsterdam (and London) are in. */
+export const DEFAULT_LOCATION_HINT: LocationHint = "weur";
+
+export interface PlacementVars {
+	/**
+	 * Where the stack and vault objects are created (`LOCATION_HINTS`). Default `weur`. A hint applies only when an
+	 * object is first created: an object that exists stays where it is, whatever this says.
+	 */
+	readonly HARBOUR_LOCATION_HINT?: string;
+}
+
+export function isLocationHint(value: string): value is LocationHint {
+	return (LOCATION_HINTS as readonly string[]).includes(value);
+}
+
+/** The hint the objects are created with. Refuses (`invalid`) one Cloudflare doesn't take. */
+export function locationHint(vars: PlacementVars): LocationHint {
+	const value = (vars.HARBOUR_LOCATION_HINT ?? "").trim();
+	if (value === "") return DEFAULT_LOCATION_HINT;
+	if (!isLocationHint(value)) {
+		throw new HarbourError("invalid", `HARBOUR_LOCATION_HINT must be one of: ${LOCATION_HINTS.join(", ")}`);
+	}
+	return value;
+}
+
 /** What routing needs of a Durable Object namespace, typed without workers-types so Node tests can stand one in. */
-export interface NamedObjects<Id> {
+export interface NamedObjects<Id, Stub = Answers> {
 	idFromName(name: string): Id;
-	get(id: Id): Answers;
+	get(id: Id, options?: { locationHint?: LocationHint }): Stub;
+}
+
+/** The one object of `name` in `namespace`, created (the first time only) where `vars` hints. */
+export function namedObject<Id, Stub>(namespace: NamedObjects<Id, Stub>, name: string, vars: PlacementVars): Stub {
+	return namespace.get(namespace.idFromName(name), { locationHint: locationHint(vars) });
 }
 
 /** The largest body the vault's API takes: an egress request or a key read is a few hundred bytes of JSON. */
@@ -83,7 +128,7 @@ export async function readLimited(request: Request, limit: number): Promise<Uint
 }
 
 /** What routing needs from the Worker's bindings. */
-export interface RouteEnv<StackId = unknown, VaultId = unknown> {
+export interface RouteEnv<StackId = unknown, VaultId = unknown> extends PlacementVars {
 	readonly STACK: NamedObjects<StackId>;
 	readonly VAULTS: NamedObjects<VaultId>;
 	readonly ASSETS: Answers;
@@ -104,21 +149,21 @@ export async function routeRequest<StackId, VaultId>(
 				? await buffered(request, VAULT_BODY_LIMIT)
 				: new Request(request.url, { method: request.method, headers: request.headers });
 		if (forwarded instanceof Response) return forwarded;
-		return env.VAULTS.get(env.VAULTS.idFromName(VAULT_NAME)).fetch(forwarded);
+		return namedObject(env.VAULTS, VAULT_NAME, env).fetch(forwarded);
 	}
+	const stack = () => namedObject(env.STACK, STACK_NAME, env);
 	if (request.method === "POST" && path === WORKSPACES_PATH) {
 		// The same for creating a workspace: the stack refuses a caller without operator rights before it reads the seed.
 		const forwarded = await buffered(request, WORKSPACE_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
-		return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(forwarded);
+		return stack().fetch(forwarded);
 	}
 	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
 		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
 		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
-		return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(forwarded);
+		return stack().fetch(forwarded);
 	}
-	const stack = () => env.STACK.get(env.STACK.idFromName(STACK_NAME));
 	if (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`)) return stack().fetch(request);
 	if (path === "/v1" || path.startsWith("/v1/")) return stack().fetch(request);
 	return env.ASSETS.fetch(request);

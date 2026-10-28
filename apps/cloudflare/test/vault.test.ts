@@ -138,17 +138,38 @@ describe("the VaultDO's core", () => {
 });
 
 describe("routing", () => {
-	function namespace(name: string, seen: string[]) {
+	function namespace(name: string, seen: string[], hints: (string | undefined)[] = []) {
 		return {
 			idFromName: (objectName: string) => `${name}:${objectName}`,
-			get: (id: string) => ({
-				fetch: async (request: Request) => {
-					seen.push(`${id} ${new URL(request.url).pathname}`);
-					return new Response(null, { status: 204 });
-				},
-			}),
+			get: (id: string, options?: { locationHint?: string }) => {
+				hints.push(options?.locationHint);
+				return {
+					fetch: async (request: Request) => {
+						seen.push(`${id} ${new URL(request.url).pathname}`);
+						return new Response(null, { status: 204 });
+					},
+				};
+			},
 		};
 	}
+
+	it("asks for both objects with the location hint: weur unless the Worker's var says otherwise", async () => {
+		const hints: (string | undefined)[] = [];
+		const env = {
+			STACK: namespace("stack", [], hints),
+			VAULTS: namespace("vault", [], hints),
+			ASSETS: { fetch: async () => new Response(null, { status: 204 }) },
+		};
+		await routeRequest(new Request(`${BASE}/v1/sessions`), env);
+		await routeRequest(new Request(`${BASE}/v1/egress/decisions`), env);
+		await routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, HARBOUR_LOCATION_HINT: " eeur " });
+		expect(hints).toEqual(["weur", "weur", "eeur"]);
+		await expect(
+			routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, HARBOUR_LOCATION_HINT: "ams" }),
+		).rejects.toThrow(/HARBOUR_LOCATION_HINT must be one of/);
+		// The console's assets need no object.
+		await routeRequest(new Request(`${BASE}/`), { ...env, HARBOUR_LOCATION_HINT: "ams" });
+	});
 
 	it("sends the egress decision API to the one vault object and every other /v1 path to the stack", async () => {
 		const seen: string[] = [];

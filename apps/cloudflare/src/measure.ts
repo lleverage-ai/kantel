@@ -52,6 +52,8 @@ export interface Placement {
 		/** `SELECT 1` in turn from the object: the round trip, and D1's own `timings.sql_duration_ms`. */
 		readonly queries: readonly { readonly roundTripMs: number; readonly sqlMs?: number }[];
 	};
+	/** The workspace bucket's round trip from the object: `head`s of a key that doesn't exist, in turn. */
+	readonly r2?: { readonly queries: readonly { readonly roundTripMs: number }[] };
 }
 
 export type PlacementProbe = (request: Request) => Promise<Placement>;

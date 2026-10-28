@@ -18,7 +18,7 @@ import { type CallContext, HarbourError, type SessionRecord } from "@harbour/con
 import { createMockAccess, type MockAccess } from "@harbour/identity/testing";
 import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
-import { VAULT_NAME } from "./route.ts";
+import { namedObject, VAULT_NAME } from "./route.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
 import { type Env, HarbourStackBase, STACK_NAME } from "./stack-object.ts";
 import { HarbourVault as DeployedHarbourVault } from "./vault-object.ts";
@@ -83,7 +83,7 @@ export class HarbourStack extends HarbourStackBase {
 			session("Check the month's payouts"),
 		]);
 		const vaults = this.env.VAULTS as unknown as DurableObjectNamespace<HarbourVault>;
-		const seeded = await vaults.get(vaults.idFromName(VAULT_NAME)).devSeed({
+		const seeded = await namedObject(vaults, VAULT_NAME, this.env).devSeed({
 			admin: { actor: admin.actor, organisationId: admin.organisationId },
 			agents: { release: agentIn(release), linear: agentIn(linear), billing: agentIn(billing) },
 		});
@@ -129,7 +129,7 @@ export class HarbourStack extends HarbourStackBase {
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
-		if (url.pathname.startsWith(DEV_PREFIX)) return env.STACK.get(env.STACK.idFromName(STACK_NAME)).fetch(request);
+		if (url.pathname.startsWith(DEV_PREFIX)) return namedObject(env.STACK, STACK_NAME, env).fetch(request);
 		return routeRequest(request, env);
 	},
 } satisfies ExportedHandler<Env>;
