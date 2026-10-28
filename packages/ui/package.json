@@ -15,6 +15,7 @@
 		"./tokens": "./src/tokens/tokens.ts",
 		"./vault/fixtures": "./src/vault/fixtures.ts",
 		"./audit/fixtures": "./src/audit/fixtures.ts",
+		"./workspace/image-fixture": "./src/workspace/image-fixture.ts",
 		"./token-lint": "./scripts/token-lint.ts"
 	},
 	"scripts": {
@@ -35,6 +36,7 @@
 	},
 	"devDependencies": {
 		"@harbour/audit": "workspace:*",
+		"@harbour/identity": "workspace:*",
 		"@ladle/react": "5.1.1",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",

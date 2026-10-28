@@ -316,6 +316,8 @@ export function generateEvents(count: number, end = FIXTURE_NOW, seed = 7): Audi
 			actor: human("usr_tom"),
 			organisationId: ORGANISATION,
 			subject: { kind: "vault.item", id: itemId },
+			// As the vault writes it: the item's name and hosts, never its value.
+			data: { name: items[itemId]?.name ?? itemId, hosts: [items[itemId]?.host ?? ""], hasValue: true },
 		});
 	events.push({
 		id: id("policy"),

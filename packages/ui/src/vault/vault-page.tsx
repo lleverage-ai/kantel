@@ -52,8 +52,12 @@ export type VaultRequestViewProps = {
 	now?: number;
 	/** Sends the decision to the vault. Rejects with the vault's error, which the page explains. */
 	onDecide: (input: DecisionInput) => Promise<Decision>;
-	/** Asks for the approver's passkey before an approval or a paste. See `webAuthnPasskey`. */
-	passkey: PasskeyCheck;
+	/**
+	 * Asks for the approver's passkey before an approval or a paste. See `webAuthnPasskey`. Without it, on a host with no
+	 * passkeys yet, the page approves on the host's sign-in alone and says so, rather than claim a passkey it never asked
+	 * for.
+	 */
+	passkey?: PasskeyCheck;
 	/** Called after a decision lands, for the host to reload the request and the grants. */
 	onDecided?: (decision: Decision) => void;
 	/** Stops the request's grant from its settled view. Without it there is no Stop there. */
@@ -319,22 +323,9 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 	const approve = async () => {
 		if (blocker !== undefined) return;
 		setRefusal(undefined);
-		setPhase("passkey");
-		try {
-			const confirmed = await passkey({
-				proposalId: proposal.id,
-				termsHash: proposal.termsHash,
-				action: isSecret ? "paste" : "approve",
-			});
-			if (confirmed === "cancelled") {
-				setRefusal({ kind: "passkey", message: "You cancelled the passkey, so nothing was approved." });
-				setPhase("idle");
-				return;
-			}
-		} catch {
-			setRefusal({ kind: "passkey", message: "Your passkey couldn't be checked, so nothing was approved. Try again." });
-			setPhase("idle");
-			return;
+		if (passkey !== undefined) {
+			const checked = await checkPasskey(passkey);
+			if (!checked) return;
 		}
 		setPhase("approving");
 		try {
@@ -354,6 +345,28 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 			setRefusal(reason);
 		} finally {
 			setPhase("idle");
+		}
+	};
+
+	/** Asks for the passkey; false, with the reason shown, when the approval must not go ahead. */
+	const checkPasskey = async (check: PasskeyCheck): Promise<boolean> => {
+		setPhase("passkey");
+		try {
+			const confirmed = await check({
+				proposalId: proposal.id,
+				termsHash: proposal.termsHash,
+				action: isSecret ? "paste" : "approve",
+			});
+			if (confirmed === "cancelled") {
+				setRefusal({ kind: "passkey", message: "You cancelled the passkey, so nothing was approved." });
+				setPhase("idle");
+				return false;
+			}
+			return true;
+		} catch {
+			setRefusal({ kind: "passkey", message: "Your passkey couldn't be checked, so nothing was approved. Try again." });
+			setPhase("idle");
+			return false;
 		}
 	};
 
@@ -469,13 +482,19 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 					<Button
 						variant="primary"
 						size="md"
-						icon={<KeyIcon size="sm" />}
+						icon={passkey === undefined ? <CheckCircleIcon size="sm" /> : <KeyIcon size="sm" />}
 						busy={phase === "passkey" || phase === "approving"}
 						disabled={blocker !== undefined || busy}
 						aria-describedby={blocker === undefined ? undefined : `${id}-blocker`}
 						onClick={() => void approve()}
 					>
-						{isSecret ? "Paste and approve with passkey" : "Approve with passkey"}
+						{passkey === undefined
+							? isSecret
+								? "Paste and approve"
+								: "Approve"
+							: isSecret
+								? "Paste and approve with passkey"
+								: "Approve with passkey"}
 					</Button>
 					<Button
 						size="md"
@@ -492,7 +511,10 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 						? "Waiting for your passkey."
 						: phase === "approving"
 							? "Approving."
-							: (blocker ?? "Your passkey confirms it's you. The agent carries on once you've decided.")}
+							: (blocker ??
+								(passkey === undefined
+									? "You're approving as the person signed in here. The agent carries on once you've decided."
+									: "Your passkey confirms it's you. The agent carries on once you've decided."))}
 				</p>
 				<p className={`hb-vault-countdown-line${urgent ? " hb-vault-countdown-urgent" : ""}`}>
 					{timeLeft(proposal.expiresAt, now)} to decide
@@ -744,7 +766,8 @@ export type VaultPageProps = {
 	vaultHost?: string;
 	now?: number;
 	onDecide: VaultRequestViewProps["onDecide"];
-	passkey: PasskeyCheck;
+	/** See `VaultRequestViewProps.passkey`. */
+	passkey?: PasskeyCheck;
 	onDecided?: VaultRequestViewProps["onDecided"];
 	initial?: VaultRequestViewProps["initial"];
 	/** The viewer's active grants, each with Stop. */
@@ -814,7 +837,7 @@ export function VaultPage({
 				request={request}
 				viewer={viewer}
 				onDecide={onDecide}
-				passkey={passkey}
+				{...(passkey === undefined ? {} : { passkey })}
 				onStopGrant={stopGrant}
 				{...(now === undefined ? {} : { now })}
 				{...(onDecided === undefined ? {} : { onDecided })}

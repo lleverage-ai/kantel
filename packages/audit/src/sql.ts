@@ -43,6 +43,20 @@ const ROWS_PER_INSERT: Readonly<Record<SqlDialect, number>> = { postgres: 200, s
 /** The advisory lock key every Postgres append takes, so rows commit in `seq` order. */
 const APPEND_LOCK = "SELECT pg_advisory_xact_lock(7316102018)";
 
+/**
+ * The vault record of `kind` a row is about, read from its stored event as `eventItemId` and `eventGrantId` read it: the
+ * subject's ID when the subject is of that kind, or else `data.<key>` when it is a string; otherwise null. The indexes
+ * on it and the queries that use them must use this exact text, so it is built in one place.
+ */
+function aboutExpression(dialect: SqlDialect, kind: "vault.item" | "vault.grant", key: "itemId" | "grantId"): string {
+	return dialect === "postgres"
+		? `(CASE WHEN (CAST(event AS jsonb) -> 'subject' ->> 'kind') = '${kind}' THEN (CAST(event AS jsonb) -> 'subject' ->> 'id') WHEN jsonb_typeof(CAST(event AS jsonb) -> 'data' -> '${key}') = 'string' THEN (CAST(event AS jsonb) -> 'data' ->> '${key}') END)`
+		: `(CASE WHEN json_extract(event, '$.subject.kind') = '${kind}' THEN json_extract(event, '$.subject.id') WHEN json_type(event, '$.data.${key}') = 'text' THEN json_extract(event, '$.data.${key}') END)`;
+}
+
+const itemExpression = (dialect: SqlDialect) => aboutExpression(dialect, "vault.item", "itemId");
+const grantExpression = (dialect: SqlDialect) => aboutExpression(dialect, "vault.grant", "grantId");
+
 /** The tables and indexes, for `migrateAudit` or a target's own migrations. Every statement is idempotent. */
 export function auditSchema(dialect: SqlDialect): readonly string[] {
 	const key = dialect === "postgres" ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
@@ -71,6 +85,10 @@ export function auditSchema(dialect: SqlDialect): readonly string[] {
 		"CREATE INDEX IF NOT EXISTS audit_events_by_session ON audit_events (organisation_id, session_id, seq)",
 		"CREATE INDEX IF NOT EXISTS audit_events_by_actor ON audit_events (organisation_id, actor_kind, actor_id, seq)",
 		"CREATE INDEX IF NOT EXISTS audit_events_by_time ON audit_events (at)",
+		// The vault item and grant each row is about, for `AuditQuery.itemId` and `grantId`. They index an expression over the
+		// stored event rather than a column of their own, so a database made before them needs no backfill.
+		`CREATE INDEX IF NOT EXISTS audit_events_by_item ON audit_events (organisation_id, ${itemExpression(dialect)}, seq)`,
+		`CREATE INDEX IF NOT EXISTS audit_events_by_grant ON audit_events (organisation_id, ${grantExpression(dialect)}, seq)`,
 		// The projects each organisation's rows name ("-" for none, "p:<id>" for a project), so an access-filtered query
 		// reads a handful of rows here instead of a DISTINCT over the whole log. Retention leaves entries behind, which
 		// costs one extra access check and nothing else.
@@ -207,7 +225,7 @@ function inJsonList(dialect: SqlDialect, column: string): string {
 }
 
 /** The `WHERE` conditions and parameters for the fields of `query`, after the organisation. */
-function queryConditions(query: AuditQuery): { conditions: string[]; params: SqlValue[] } {
+function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: string[]; params: SqlValue[] } {
 	const conditions: string[] = [];
 	const params: SqlValue[] = [];
 	const equal = (column: string, value: SqlValue) => {
@@ -235,6 +253,8 @@ function queryConditions(query: AuditQuery): { conditions: string[]; params: Sql
 		}
 	}
 	if (query.subject !== undefined) equal("subject", subjectColumn(query.subject));
+	if (query.itemId !== undefined) equal(itemExpression(dialect), query.itemId);
+	if (query.grantId !== undefined) equal(grantExpression(dialect), query.grantId);
 	if (query.from !== undefined) {
 		conditions.push("at >= ?");
 		params.push(query.from);
@@ -310,7 +330,7 @@ export function createSqlAuditStore(options: SqlAuditStoreOptions): AuditStore {
 				}));
 			}
 			const newestFirst = query.newestFirst === true;
-			const { conditions, params } = queryConditions(query);
+			const { conditions, params } = queryConditions(driver.dialect, query);
 			const where = ["organisation_id = ?", ...conditions];
 			const values: SqlValue[] = [ctx.organisationId, ...params];
 			if (checkedProject !== undefined && query.projectId === undefined) {

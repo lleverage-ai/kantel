@@ -20,6 +20,7 @@ How a host maps the read API onto the props:
 | `files?path=<dir>` in flight | `directories.set(dir, { status: "loading" })` (or leave the directory out: it shows as loading) |
 | `files?path=<dir>` failed | `directories.set(dir, { status: "error", message })`, the error body's message in words |
 | `content?path=<file>`, text | `{ status: "ready", text, size, version }` (`Harbour-Version` header) for `FileViewer`, `{ status: "ready", markdown, updatedAt }` for `NoteViewer` |
+| `content?path=<file>`, an image (`image/png`, `jpeg`, `gif`, `webp`, `avif`, `bmp`) | `{ status: "image", src, size, contentType }`, `src` an object URL the host made from the bytes (revoked when the file changes) |
 | `content?path=<file>`, not text | `{ status: "binary", size, contentType }` |
 | `content?path=<file>`, 413 | `{ status: "too-large", size }` (the size from `stat` or the listing) |
 
@@ -28,8 +29,9 @@ The root directory is `""`. Paths are the API's: relative (`src/app.ts`), or abs
 `@harbour/contracts`: `WorkspaceEntry` is declared structurally, and a contracts `FileEntry` is one.
 
 The content route serves every file as bytes with `X-Content-Type-Options: nosniff`, and HTML and SVG as
-`text/plain`. The viewers keep to that: `FileViewer` renders text as text (never as HTML), and `NoteViewer` renders
-Markdown with raw HTML skipped.
+`text/plain`. The viewers keep to that: `FileViewer` renders text as text (never as HTML) and only raster image types
+as images (an SVG arrives as text, so it shows as its source), and `NoteViewer` renders Markdown with raw HTML
+skipped.
 
 ## FileTree
 
@@ -105,9 +107,9 @@ Pure helpers, exported from the library:
 
 ## FileViewer
 
-**For** one file's text, read-only: source, config, logs. A header with the name, its folder (muted) and its size,
-Copy (the whole text, icon only), an optional Back button for a phone and an `actions` slot; then the text in mono
-with line numbers in a gutter. Long lines scroll sideways rather than wrap, with the numbers held at the left; the
+**For** one file's text, read-only: source, config, logs, and images. A header with the name, its folder (muted) and
+its size, Copy (the whole text, icon only), an optional Back button for a phone and an `actions` slot; then the text in
+mono with line numbers in a gutter. Long lines scroll sideways rather than wrap, with the numbers held at the left; the
 text scrolls vertically within the viewer, which fills the height its host gives it.
 
 Props: `path`, `state` (`FileViewState`), `onBack`, `actions`.
@@ -117,23 +119,28 @@ Props: `path`, `state` (`FileViewState`), `onBack`, `actions`.
 - Loading: placeholder lines.
 - Error: an error notice with the message, under the header.
 - Ready: the text. An empty file says "This file is empty".
+- Image: the picture centred on a sunken backdrop with a hairline at its edge, fitted to the viewer and never scaled
+  up past its own pixels; its pixel size ("640 × 360 px") joins the header once it has loaded. One the browser can't
+  decode says "This image can't be shown here", with its content type, rather than showing a broken image.
 - Binary: "This file can't be shown here", with the content type when given.
 - Too large: "This file is too large to show here", with its size. The read API answers 413 over 16 MiB.
 - Over 5,000 lines: the first 5,000, and a notice saying how many more lines aren't shown. Copy still copies all of
   it.
 
-**Not for** Markdown notes people read rather than inspect (use `NoteViewer`), images (show them with an `img` from
-the content route), or diffs. It doesn't highlight syntax.
+**Not for** Markdown notes people read rather than inspect (use `NoteViewer`), or diffs. It doesn't highlight syntax,
+or zoom and pan an image.
 
 **Keyboard and accessibility:** the viewer is a region named by the file's name. The text is a region named
 "Contents of" the file, and one Tab stop, so it can be scrolled with the arrow keys. Line numbers are hidden from
-screen readers and can't be selected, so copying a selection copies only the text. Back and Copy are buttons with
-words for names.
+screen readers and can't be selected, so copying a selection copies only the text. An image is in a region named
+"Image" and the file's name, one Tab stop for scrolling, with the file's name as its `alt`. Back and Copy are buttons
+with words for names.
 
 **Cost:** the text is split into lines once per text (memoised); the numbers and the text are two text nodes, not an
 element per line, so a 5,000-line file is two DOM nodes in the body. Past 5,000 lines the rest isn't rendered,
 which bounds layout and memory for logs and generated files; the notice says so, so nothing is hidden silently.
-No timers; Copy holds a 1.5 second timer only after a copy.
+No timers; Copy holds a 1.5 second timer only after a copy. An image decodes off the main thread (`decoding="async"`);
+the host holds its bytes once, as an object URL.
 
 ## NoteViewer
 

@@ -158,6 +158,73 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
+		it("a directory made before key details gains them on migrate, and keys issued before then still list and sign in", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const old = createSqlIdentity({ driver, clock });
+				const { admin, alpha, service } = await tenant(old);
+				const before = await old.issueApiKey(admin, { serviceId: service.id, projectIds: [alpha.id], role: "viewer" });
+				// As a deployment from before names and last use: no details table at all.
+				await driver.query("DROP TABLE identity_api_key_details");
+				await migrateIdentity(driver);
+				await migrateIdentity(driver);
+
+				const first = createSqlIdentity({ driver, clock });
+				const second = createSqlIdentity({ driver, clock });
+				expect(await first.listApiKeys(admin)).toEqual([before.key]);
+				const named = await first.issueApiKey(admin, {
+					serviceId: service.id,
+					projectIds: [alpha.id],
+					role: "operator",
+					name: "Sal's supervisor",
+				});
+				const usedAt = clock.now();
+				await second.authenticateApiKey(WORKER, before.secret);
+				await second.authenticateApiKey(WORKER, named.secret);
+				expect(await first.listApiKeys(admin)).toEqual([
+					{ ...before.key, lastUsedAt: usedAt },
+					{ ...named.key, name: "Sal's supervisor", lastUsedAt: usedAt },
+				]);
+
+				// Another instance's use moves the time on once the recorded one is a minute old, whatever this one cached.
+				const later = clock.advance(61_000);
+				await first.authenticateApiKey(WORKER, named.secret);
+				await second.authenticateApiKey(WORKER, named.secret);
+				expect((await second.listApiKeys(admin)).find((key) => key.id === named.key.id)?.lastUsedAt).toBe(later);
+
+				// The secret is in neither table.
+				const rows = JSON.stringify([
+					...(await driver.query("SELECT * FROM identity_api_keys")),
+					...(await driver.query("SELECT * FROM identity_api_key_details")),
+				]);
+				expect(rows).not.toContain(named.secret);
+				expect(rows).not.toContain(before.secret);
+			});
+		});
+
+		it("a key revoked on one instance is refused on its next call through another's authenticator", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const first = createSqlIdentity({ driver, clock });
+				const second = createSqlIdentity({ driver, clock });
+				const { admin, alpha, service } = await tenant(first);
+				const issued = await first.issueApiKey(admin, {
+					serviceId: service.id,
+					projectIds: [alpha.id],
+					role: "operator",
+					name: "CI",
+				});
+				const authenticator = createAuthenticator({ identity: second });
+				const request = { headers: new Headers({ authorization: `Bearer ${issued.secret}` }) };
+				expect((await authenticator.authenticate(request)).method).toBe("api_key");
+				await first.revokeApiKey(admin, issued.key.id);
+				await expect(authenticator.authenticate(request)).rejects.toMatchObject({
+					code: "forbidden",
+					details: { authentication: "invalid" },
+				});
+			});
+		});
+
 		it("pages listProjects in creation order, each project once", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });

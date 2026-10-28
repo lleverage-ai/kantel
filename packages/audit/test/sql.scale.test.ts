@@ -1,6 +1,7 @@
 /**
  * Paging stays fast at 100k events: the SQL store pages by `seq` on indexes that lead with the organisation, so a page
- * deep in the log, a session's page and an access-filtered page each cost about what the first page does.
+ * deep in the log, a session's page, a credential's or grant's page and an access-filtered page each cost about what the
+ * first page does.
  */
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import {
@@ -19,6 +20,12 @@ const PROJECTS = 10;
 const SESSIONS = 1_000;
 const ORGANISATION = "org_scale";
 const SEED_BATCH = 1_000;
+/**
+ * Every vault event names one of these items and grants; one item's uses are a sparse few hundred of the 100k rows,
+ * across every project (101 is prime to the 10 projects).
+ */
+const ITEMS = 101;
+const GRANTS = 1_000;
 /** Every page here takes under 10 ms on each target locally; this leaves room for a slow CI runner. */
 const PAGE_BUDGET_MS = 100;
 
@@ -50,7 +57,10 @@ function event(index: number): AuditEventInput {
 		organisationId: ORGANISATION,
 		projectId: `p${session % PROJECTS}`,
 		sessionId: `ses-${session}`,
-		data: { index },
+		data:
+			index % 3 === 0
+				? { index, itemId: `item-${(index / 3) % ITEMS}`, grantId: `grant-${(index / 3) % GRANTS}` }
+				: { index },
 	};
 }
 
@@ -167,12 +177,30 @@ for (const kind of kinds) {
 					),
 				).toBe(true);
 
+				// One credential's uses, newest first, with no project: 330 of the 100k rows, a sparse match the access filter
+				// halves.
+				const item = await page("item", () =>
+					store.query(caller, { itemId: "item-7", type: "vault.", newestFirst: true }, { limit: 100 }),
+				);
+				expect(item.result.items).toHaveLength(100);
+				expect(item.result.items.every((row) => row.data?.itemId === "item-7")).toBe(true);
+				expect(item.result.items.every((row) => Number(row.projectId?.slice(1)) % 2 === 0)).toBe(true);
+
+				// Who approved a grant: its rows, in one project.
+				const grant = await page("grant", () =>
+					store.query(caller, { grantId: "grant-42", projectId: "p6" }, { limit: 100 }),
+				);
+				expect(grant.result.items.length).toBeGreaterThan(0);
+				expect(grant.result.items.every((row) => row.data?.grantId === "grant-42")).toBe(true);
+
 				const timings = {
 					first: first.ms,
 					deep: deep.ms,
 					session: session.ms,
 					newest: newest.ms,
 					unscoped: unscoped.ms,
+					item: item.ms,
+					grant: grant.ms,
 				};
 				for (const [name, ms] of Object.entries(timings)) {
 					expect(ms, `${name} page took ${ms.toFixed(1)} ms`).toBeLessThan(PAGE_BUDGET_MS);

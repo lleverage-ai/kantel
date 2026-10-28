@@ -10,12 +10,15 @@ import type { Plugin } from "vite";
 const ACCESS_HEADER = "cf-access-jwt-assertion";
 /** Hop-by-hop headers, and the ones fetch has already acted on, which mustn't be passed on. */
 const DROP = new Set(["connection", "keep-alive", "transfer-encoding", "host", "content-length", "content-encoding"]);
-export function devGateway(target: string): Plugin {
+export function devGateway(target: string, email?: string): Plugin {
+	// `HARBOUR_DEV_EMAIL` (vite.config.ts) signs in as someone other than the dev admin, such as the viewer
+	// `POST /__dev/vault-seed` invites, to see a forwarded vault request as they do.
+	const tokenUrl = `${target}/__dev/access-token${email === undefined ? "" : `?email=${encodeURIComponent(email)}`}`;
 	// A new token for every call. The local gateway keeps its state, mock issuer included, in memory and starts afresh
 	// when wrangler restarts its object. A token from before a restart would be refused, and would make the new issuer's
 	// keys be fetched before it has any, so its tokens are refused too until the key cache's 30-second cooldown ends.
 	const accessToken = async (): Promise<string> => {
-		const response = await fetch(`${target}/__dev/access-token`);
+		const response = await fetch(tokenUrl);
 		if (!response.ok) throw new Error(`the gateway's /__dev/access-token answered ${response.status}`);
 		return ((await response.json()) as { token: string }).token;
 	};

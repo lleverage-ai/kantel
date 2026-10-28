@@ -29,6 +29,7 @@ describe("audit query search parameters", () => {
 		{ actor: { kind: "system", component: "vault" } },
 		{ source: "vault", type: "vault.", subject: { kind: "vault.proposal", id: "x&y=z" } },
 		{ from: 0, to: 1_800_000_000_000, newestFirst: true },
+		{ itemId: "item/linear key", grantId: "grant&1", type: "vault.use." },
 	];
 	it("round-trips every query field and the page", () => {
 		for (const query of queries) {
@@ -51,6 +52,8 @@ describe("audit query search parameters", () => {
 			"actorKind=human&actorId=u&actorSessionId=s",
 			"actorKeyId=k",
 			"subjectKind=k",
+			"itemId=",
+			"grantId=a&grantId=b",
 			"from=yesterday",
 			"to=1.5",
 			"limit=0",
@@ -99,6 +102,8 @@ async function setup() {
 		actor: { kind: "system", component: "vault" },
 		organisationId: organisation.id,
 		projectId,
+		// Odd uses are the Linear key's, through one grant; even ones another item's.
+		data: at % 2 === 1 ? { itemId: "item-linear", grantId: "grant-1" } : { itemId: "item-github" },
 	});
 	const events = [
 		...Array.from({ length: 5 }, (_, i) => event(`vault:use:alpha/${i}`, alpha.id, clock.now() + i)),
@@ -133,6 +138,21 @@ describe("the audit query API", () => {
 		await expect(api.get("vault:use:beta/0")).rejects.toMatchObject({ code: "forbidden" });
 		expect((await api.get("vault:use:alpha/0")).id).toBe("vault:use:alpha/0");
 		await expect(api.get("missing")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("filters by vault item and grant on the server", async () => {
+		const { alpha, alphaKey, client } = await setup();
+		const api = client(alphaKey.secret);
+		const linear = await api.query({ itemId: "item-linear", newestFirst: true });
+		const expected = (await api.query({ newestFirst: true })).items
+			.filter((row) => row.data?.itemId === "item-linear")
+			.map((row) => row.id);
+		expect(expected.length).toBeGreaterThan(0);
+		expect(linear.items.map((row) => row.id)).toEqual(expected);
+		const grant = await api.query({ grantId: "grant-1", projectId: alpha.id }, { limit: 1 });
+		expect(grant.items.map((row) => row.data?.grantId)).toEqual(["grant-1"]);
+		expect(grant.nextCursor === undefined).toBe(expected.length === 1);
+		expect((await api.query({ grantId: "grant-2" })).items).toEqual([]);
 	});
 
 	it("answers 401 without credentials, 400 for a bad query, 404 and 405 for bad routes", async () => {

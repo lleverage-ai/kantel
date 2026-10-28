@@ -1,0 +1,711 @@
+{
+	"backend": "dynamic-worker",
+	"startedAt": "2026-10-28T18:21:23.642Z",
+	"from": "/healthz",
+	"warmup": {
+		"status": 200,
+		"wall": 2891.7000000001863,
+		"server": 1451,
+		"session": 378,
+		"isolate": 1073,
+		"signIn": 321,
+		"call": 122,
+		"cold": 1,
+		"exit": 0,
+		"listed": 68,
+		"placement": {
+			"objectColo": "LHR",
+			"edgeColo": "LHR",
+			"d1": {
+				"region": "ENAM",
+				"colo": "ORD",
+				"primary": true,
+				"queries": [
+					{
+						"roundTripMs": 119,
+						"sqlMs": 0.1912
+					},
+					{
+						"roundTripMs": 110,
+						"sqlMs": 0.2387
+					},
+					{
+						"roundTripMs": 123,
+						"sqlMs": 0.2318
+					},
+					{
+						"roundTripMs": 107,
+						"sqlMs": 0.1769
+					},
+					{
+						"roundTripMs": 116,
+						"sqlMs": 0.2247
+					}
+				]
+			}
+		}
+	},
+	"runs": [
+		{
+			"status": 200,
+			"wall": 2193.5,
+			"server": 1360,
+			"session": 408,
+			"isolate": 952,
+			"signIn": 339,
+			"call": 127,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2340.899999999441,
+			"server": 1460,
+			"session": 402,
+			"isolate": 1058,
+			"signIn": 373,
+			"call": 176,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2264.4000000003725,
+			"server": 1467,
+			"session": 399,
+			"isolate": 1068,
+			"signIn": 355,
+			"call": 117,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2165.5999999996275,
+			"server": 1387,
+			"session": 399,
+			"isolate": 988,
+			"signIn": 339,
+			"call": 130,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2171.7999999998137,
+			"server": 1399,
+			"session": 405,
+			"isolate": 994,
+			"signIn": 349,
+			"call": 124,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2171.5,
+			"server": 1403,
+			"session": 418,
+			"isolate": 985,
+			"signIn": 371,
+			"call": 105,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2215.899999999441,
+			"server": 1421,
+			"session": 412,
+			"isolate": 1009,
+			"signIn": 354,
+			"call": 110,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2620.800000000745,
+			"server": 1646,
+			"session": 467,
+			"isolate": 1179,
+			"signIn": 472,
+			"call": 115,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2749.699999999255,
+			"server": 1915,
+			"session": 429,
+			"isolate": 1486,
+			"signIn": 347,
+			"call": 141,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2193,
+			"server": 1108,
+			"session": 385,
+			"isolate": 723,
+			"signIn": 349,
+			"call": 110,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2201.600000000559,
+			"server": 1396,
+			"session": 390,
+			"isolate": 1006,
+			"signIn": 353,
+			"call": 143,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2164.5999999996275,
+			"server": 1103,
+			"session": 392,
+			"isolate": 711,
+			"signIn": 347,
+			"call": 115,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2138.100000000559,
+			"server": 1392,
+			"session": 400,
+			"isolate": 992,
+			"signIn": 356,
+			"call": 114,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2155.0999999996275,
+			"server": 1110,
+			"session": 410,
+			"isolate": 700,
+			"signIn": 388,
+			"call": 122,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2228.7999999998137,
+			"server": 1421,
+			"session": 423,
+			"isolate": 998,
+			"signIn": 351,
+			"call": 117,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2654.300000000745,
+			"server": 1910,
+			"session": 505,
+			"isolate": 1405,
+			"signIn": 370,
+			"call": 127,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2407.7999999998137,
+			"server": 1542,
+			"session": 429,
+			"isolate": 1113,
+			"signIn": 358,
+			"call": 181,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2430.7999999998137,
+			"server": 1572,
+			"session": 438,
+			"isolate": 1134,
+			"signIn": 381,
+			"call": 128,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2166.5,
+			"server": 1424,
+			"session": 414,
+			"isolate": 1010,
+			"signIn": 363,
+			"call": 116,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2441.899999999441,
+			"server": 1499,
+			"session": 408,
+			"isolate": 1091,
+			"signIn": 363,
+			"call": 119,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2329.300000000745,
+			"server": 1552,
+			"session": 462,
+			"isolate": 1090,
+			"signIn": 327,
+			"call": 121,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2636,
+			"server": 1749,
+			"session": 460,
+			"isolate": 1289,
+			"signIn": 367,
+			"call": 216,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2492.699999999255,
+			"server": 1657,
+			"session": 443,
+			"isolate": 1214,
+			"signIn": 416,
+			"call": 135,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2437.800000000745,
+			"server": 1652,
+			"session": 442,
+			"isolate": 1210,
+			"signIn": 367,
+			"call": 201,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2338.399999999441,
+			"server": 1525,
+			"session": 414,
+			"isolate": 1111,
+			"signIn": 374,
+			"call": 153,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2648.2000000001863,
+			"server": 1846,
+			"session": 502,
+			"isolate": 1344,
+			"signIn": 390,
+			"call": 168,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2661.5,
+			"server": 1739,
+			"session": 471,
+			"isolate": 1268,
+			"signIn": 386,
+			"call": 212,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2543.9000000003725,
+			"server": 1703,
+			"session": 455,
+			"isolate": 1248,
+			"signIn": 427,
+			"call": 187,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2418.5999999996275,
+			"server": 1651,
+			"session": 469,
+			"isolate": 1182,
+			"signIn": 379,
+			"call": 141,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2565.0999999996275,
+			"server": 1719,
+			"session": 501,
+			"isolate": 1218,
+			"signIn": 443,
+			"call": 116,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2431.7000000001863,
+			"server": 1476,
+			"session": 456,
+			"isolate": 1020,
+			"signIn": 365,
+			"call": 128,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2243.7000000001863,
+			"server": 1447,
+			"session": 415,
+			"isolate": 1032,
+			"signIn": 354,
+			"call": 124,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2153.7000000001863,
+			"server": 1392,
+			"session": 413,
+			"isolate": 979,
+			"signIn": 358,
+			"call": 119,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2174.699999999255,
+			"server": 1417,
+			"session": 421,
+			"isolate": 996,
+			"signIn": 353,
+			"call": 160,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2162.9000000003725,
+			"server": 1371,
+			"session": 405,
+			"isolate": 966,
+			"signIn": 365,
+			"call": 105,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2255.5,
+			"server": 1464,
+			"session": 426,
+			"isolate": 1038,
+			"signIn": 349,
+			"call": 129,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2170.7999999998137,
+			"server": 1388,
+			"session": 419,
+			"isolate": 969,
+			"signIn": 372,
+			"call": 112,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2544.100000000559,
+			"server": 1644,
+			"session": 445,
+			"isolate": 1199,
+			"signIn": 388,
+			"call": 169,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2390.899999999441,
+			"server": 1572,
+			"session": 489,
+			"isolate": 1083,
+			"signIn": 376,
+			"call": 147,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2700.2000000001863,
+			"server": 1863,
+			"session": 459,
+			"isolate": 1404,
+			"signIn": 373,
+			"call": 122,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2475.4000000003725,
+			"server": 1481,
+			"session": 431,
+			"isolate": 1050,
+			"signIn": 357,
+			"call": 159,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2641.699999999255,
+			"server": 1756,
+			"session": 467,
+			"isolate": 1289,
+			"signIn": 351,
+			"call": 163,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2297.100000000559,
+			"server": 1568,
+			"session": 428,
+			"isolate": 1140,
+			"signIn": 366,
+			"call": 132,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2238.7000000001863,
+			"server": 1478,
+			"session": 419,
+			"isolate": 1059,
+			"signIn": 345,
+			"call": 174,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2184.399999999441,
+			"server": 1395,
+			"session": 417,
+			"isolate": 978,
+			"signIn": 361,
+			"call": 110,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2343.7000000001863,
+			"server": 1498,
+			"session": 436,
+			"isolate": 1062,
+			"signIn": 320,
+			"call": 201,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2372.7999999998137,
+			"server": 1611,
+			"session": 464,
+			"isolate": 1147,
+			"signIn": 392,
+			"call": 174,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2324.600000000559,
+			"server": 1601,
+			"session": 418,
+			"isolate": 1183,
+			"signIn": 389,
+			"call": 106,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2980.199999999255,
+			"server": 2197,
+			"session": 456,
+			"isolate": 1741,
+			"signIn": 346,
+			"call": 218,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		},
+		{
+			"status": 200,
+			"wall": 2319.600000000559,
+			"server": 1496,
+			"session": 431,
+			"isolate": 1065,
+			"signIn": 374,
+			"call": 139,
+			"cold": 1,
+			"exit": 0,
+			"listed": 68
+		}
+	],
+	"after": {
+		"status": 200,
+		"wall": 3630.7000000001863,
+		"server": 1722,
+		"session": 454,
+		"isolate": 1268,
+		"signIn": 486,
+		"call": 139,
+		"cold": 1,
+		"exit": 0,
+		"listed": 68,
+		"placement": {
+			"objectColo": "LHR",
+			"edgeColo": "LHR",
+			"d1": {
+				"region": "ENAM",
+				"colo": "ORD",
+				"primary": true,
+				"queries": [
+					{
+						"roundTripMs": 129,
+						"sqlMs": 0.263
+					},
+					{
+						"roundTripMs": 111,
+						"sqlMs": 0.2071
+					},
+					{
+						"roundTripMs": 112,
+						"sqlMs": 0.1656
+					},
+					{
+						"roundTripMs": 256,
+						"sqlMs": 0.2287
+					},
+					{
+						"roundTripMs": 120,
+						"sqlMs": 0.1923
+					}
+				]
+			}
+		}
+	},
+	"summary": {
+		"backend": "dynamic-worker",
+		"ok": 50,
+		"wallP50": 2329.300000000745,
+		"wallP95": 2700.2000000001863,
+		"serverP50": 1496,
+		"serverP95": 1910,
+		"sessionP50": 426,
+		"sessionP95": 501,
+		"isolateP50": 1065,
+		"isolateP95": 1405,
+		"signInP50": 363,
+		"signInP95": 427,
+		"callP50": 128,
+		"callP95": 212,
+		"cold": 50
+	},
+	"endedAt": "2026-10-28T18:23:29.942Z"
+}

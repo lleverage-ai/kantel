@@ -7,8 +7,9 @@
  *   HARBOUR_TEST_DOCKER=1 pnpm --filter @harbour/selfhosted-sandbox test
  *
  * Optional: HARBOUR_TEST_SANDBOX_IMAGE, HARBOUR_TEST_SANDBOX_RUNTIME (`runc` where gVisor is not installed) and
- * HARBOUR_TEST_DOCKER_SOCKET. Every case labels what it creates with its own `harbour-test-<random>` prefix and removes
- * it afterwards.
+ * HARBOUR_TEST_DOCKER_SOCKET. Every case labels what it creates with its own `<base>-<random>` prefix and removes it
+ * afterwards; the base is HARBOUR_TEST_LABEL_PREFIX (default `harbour-test`), which CI sets per run so it can remove
+ * whatever a cancelled run left behind.
  */
 import { release } from "node:os";
 import type { CallContext, OwnerRef, WorkspaceId } from "@harbour/contracts";
@@ -26,13 +27,14 @@ const enabled = process.env.HARBOUR_TEST_DOCKER === "1";
 const image = process.env.HARBOUR_TEST_SANDBOX_IMAGE ?? "harbour-sandbox:dev";
 const runtime = process.env.HARBOUR_TEST_SANDBOX_RUNTIME ?? "runsc-kvm";
 const socketPath = process.env.HARBOUR_TEST_DOCKER_SOCKET;
+const labelBase = process.env.HARBOUR_TEST_LABEL_PREFIX || "harbour-test";
 const docker = new DockerClient(socketPath === undefined ? {} : { socketPath });
 
 /** Every label prefix a case used, removed again in afterAll in case a case's own cleanup failed. */
 const prefixes = new Set<string>();
 
 function newPrefix(): string {
-	const prefix = `harbour-test-${crypto.randomUUID().slice(0, 8)}`;
+	const prefix = `${labelBase}-${crypto.randomUUID().slice(0, 8)}`;
 	prefixes.add(prefix);
 	return prefix;
 }

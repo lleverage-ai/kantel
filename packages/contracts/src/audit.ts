@@ -135,6 +135,16 @@ export interface AuditQuery {
 	/** An exact type, or a prefix ending in `.` (`vault.` matches every vault event). */
 	readonly type?: string;
 	readonly subject?: { readonly kind: string; readonly id: string };
+	/**
+	 * Events about this vault item: its subject is the `vault.item`, or else `data.itemId` is this ID as a string (uses,
+	 * requests, approvals and policies name the item they are for).
+	 */
+	readonly itemId?: string;
+	/**
+	 * Events about this vault grant: its subject is the `vault.grant`, or else `data.grantId` is this ID as a string (the
+	 * approval that made the grant, and every use through it).
+	 */
+	readonly grantId?: string;
 	/** Inclusive lower bound on `at`. */
 	readonly from?: Timestamp;
 	/** Exclusive upper bound on `at`. */
@@ -199,7 +209,8 @@ export interface AuditErrorResponse {
 /**
  * Search parameter names. An actor is `actorKind` with `actorId` (a user, service or agent ID, or a system component),
  * plus `actorKeyId` for a service's key and `actorSessionId` for an agent's session. A subject is `subjectKind` with
- * `subjectId`. Times are epoch milliseconds. `order` is `oldest` (default) or `newest`.
+ * `subjectId`. `itemId` and `grantId` are `AuditQuery`'s. Times are epoch milliseconds. `order` is `oldest` (default)
+ * or `newest`.
  */
 export const AUDIT_QUERY_PARAMS = [
 	"projectId",
@@ -213,6 +224,8 @@ export const AUDIT_QUERY_PARAMS = [
 	"type",
 	"subjectKind",
 	"subjectId",
+	"itemId",
+	"grantId",
 	"from",
 	"to",
 	"order",
@@ -253,6 +266,8 @@ export function auditQueryToSearchParams(query: AuditQuery, page: PageRequest = 
 	set("type", query.type);
 	set("subjectKind", query.subject?.kind);
 	set("subjectId", query.subject?.id);
+	set("itemId", query.itemId);
+	set("grantId", query.grantId);
 	set("from", query.from);
 	set("to", query.to);
 	if (query.newestFirst === true) set("order", "newest");
@@ -353,6 +368,8 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 			"subject",
 			subjectKind === undefined || subjectId === undefined ? undefined : { kind: subjectKind, id: subjectId },
 		),
+		...optional("itemId", text("itemId")),
+		...optional("grantId", text("grantId")),
 		...optional("from", whole("from")),
 		...optional("to", whole("to")),
 		...(order === "newest" ? { newestFirst: true } : {}),

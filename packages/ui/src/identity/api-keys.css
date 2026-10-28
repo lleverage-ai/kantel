@@ -1,0 +1,245 @@
+/* The API keys page: a heading with New key, the secret once, the form, then the keys. Revoke is always visible (not
+   on hover), so it works the same with touch. */
+
+.hb-api-keys {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-9);
+	width: 100%;
+	max-width: var(--hb-content-width);
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-api-keys p {
+	margin: 0;
+}
+
+.hb-api-keys-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--hb-space-5) var(--hb-space-7);
+	padding-bottom: var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-api-keys-heading {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-api-keys-title {
+	margin: 0;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+}
+
+.hb-api-keys-lede {
+	color: var(--hb-text-muted);
+}
+
+.hb-api-keys-issued-title,
+.hb-api-keys-form-title {
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+	overflow-wrap: anywhere;
+}
+
+.hb-api-keys-issued-title:focus {
+	outline: none;
+}
+
+.hb-api-keys-issued-body,
+.hb-api-keys-fields {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+.hb-api-keys-secret {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-api-keys-secret-text {
+	flex: 1;
+	min-width: 0;
+	padding: var(--hb-space-4) var(--hb-space-5);
+	border: var(--hb-hairline) solid var(--hb-border-input);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	overflow-wrap: anywhere;
+	user-select: all;
+}
+
+.hb-api-keys-issued-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-api-keys-choice {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-api-keys-choice-label {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-api-keys-choice-hint {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-api-keys-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+}
+
+.hb-api-keys-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	min-width: 0;
+}
+
+.hb-api-keys-list-head {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+}
+
+.hb-api-keys-list-title {
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-api-keys-count {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-api-keys-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+}
+
+.hb-api-keys-rows {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+}
+
+.hb-api-keys-ended .hb-api-keys-rows {
+	margin-top: var(--hb-space-3);
+}
+
+.hb-api-key-row {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	min-width: 0;
+	padding: var(--hb-space-5) var(--hb-space-6);
+}
+
+.hb-api-key-row + .hb-api-key-row {
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-api-key-row-main {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--hb-space-5);
+	min-width: 0;
+}
+
+.hb-api-key-row-icon {
+	flex: none;
+	margin-top: var(--hb-space-1);
+	color: var(--hb-text-faint);
+}
+
+.hb-api-key-row-text {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-api-key-row-title {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-api-key-row-name {
+	font-weight: var(--hb-weight-medium);
+	overflow-wrap: anywhere;
+}
+
+.hb-api-key-row-ended .hb-api-key-row-name {
+	color: var(--hb-text-muted);
+}
+
+.hb-api-key-row-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-api-key-confirm {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	padding: var(--hb-space-5) var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-status-error-line);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-status-error-soft);
+}
+
+.hb-api-key-confirm-text {
+	overflow-wrap: anywhere;
+}
+
+.hb-api-key-row-error {
+	color: var(--hb-status-error);
+	font-size: var(--hb-text-xs);
+}
