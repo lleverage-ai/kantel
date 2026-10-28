@@ -110,7 +110,8 @@ idempotent statements) first. It passes the whole suite on PGlite, `node:sqlite`
   the occurrence's primary key, `<scheduleId>@<dueAt>`, keeps a due time to one row.
 - `claim` is one `UPDATE … RETURNING` of the oldest claimable occurrence that re-checks it is still claimable; on
   Postgres the candidate is picked `FOR UPDATE SKIP LOCKED`.
-- `complete` and `reportCheck` finish an occurrence only while the runner holds it with a live lease. A check run's
+- `complete` and `reportCheck` finish an occurrence only while the runner holds it with a live lease, read from the
+  clock just before the guarded write, so reads that outlast the lease cannot settle it. A check run's
   failure count and its raised findings (`schedule_findings`, per schedule and key) change in the same batch, guarded
   by the occurrence's new token, so a runner whose lease lapsed changes nothing.
 - Every time is the injected clock's, passed in as a parameter; the database's clock is never read.
@@ -128,7 +129,9 @@ drive it with the manual clock and manual timers:
   (`lost`), so a run is finished once.
 - Execution is at least once, finishing exactly once: a runner that dies leaves its lease to lapse and the next runner
   runs the same occurrence as attempt 2. `stop()` aborts runs in flight and leaves them to lapse the same way
-  (`interrupted`). Handlers make a retry safe by keying what they do by the occurrence's ID.
+  (`interrupted`), as does a claim that lands after `stop`. Handlers make a retry safe by keying what they do by the
+  occurrence's ID, and fence a side effect a retry could repeat with `run.holdLease()`: it renews the lease now and
+  rejects once another runner may have the occurrence.
 - A handler past its kind's time limit (default 10 minutes, a task 2 hours) is aborted; the attempt fails once it
   returns, and the lease is held until then, so the next attempt never overlaps it.
 - A check's outcome goes through `reportCheck`; what it raised goes to `onRaised` for the host to act on.
@@ -138,7 +141,8 @@ drive it with the manual clock and manual timers:
 - `createTaskHandler({ runtime, directory, waitForRun? })` starts a session through the public session API only:
   `runtime.create` (labelled `harbour.schedule` and `harbour.occurrence`), `runtime.prompt` with `requestId`
   `schedule:<occurrence>`, then `runtime.wait`. A retried run finds the session by its label and the prompt by its
-  `requestId`, so it starts neither twice. The payload is `{ agentId, message, projectId?, title?, labels? }`;
+  `requestId`. Listing and creating are not atomic, so it prompts only after `holdLease`; an attempt that lost the
+  occurrence closes the session it created unprompted ("two attempts racing past a stalled create prompt one session"). The payload is `{ agentId, message, projectId?, title?, labels? }`;
   `projectId` defaults to the owning project.
 - `createReminderHandler({ deliver, quietHours? })` hands the reminder to the host, keyed by the occurrence's ID, with
   `holdUntil` when it fell in the owner's quiet hours and is not `urgent`.

@@ -43,6 +43,12 @@ export interface OccurrenceRun {
 	readonly organisationId: OrganisationId;
 	/** Aborts when the run's lease is lost (`conflict`), its time limit passes (`aborted`) or the runner stops. */
 	readonly signal: AbortSignal;
+	/**
+	 * Renews the lease now and resolves while this run still holds it; rejects (`conflict`, and aborts `signal`) once
+	 * another runner may have the occurrence. Call it just before a side effect a retry could repeat: no other runner can
+	 * claim the occurrence for a lease after it resolves, and one that already has it makes it reject.
+	 */
+	holdLease(): Promise<void>;
 }
 
 /** How a run ended: a finished occurrence, or for a check its report, which the store settles. */
@@ -171,14 +177,21 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 		};
 		const startedAt = clock.now();
 		const controller = new AbortController();
+		// Any run in flight when the runner stops is left to lapse, even one already winding down from its time limit.
 		let interrupted = false;
 		const onStop = () => {
-			if (controller.signal.aborted) return;
 			interrupted = true;
-			controller.abort(stopping.signal.reason);
+			if (!controller.signal.aborted) controller.abort(stopping.signal.reason);
 		};
 		stopping.signal.addEventListener("abort", onStop, { once: true });
 		let lost = false;
+		/** Marks the lease lost and tells the handler; the run's result is then dropped. */
+		const loseLease = (error: unknown) => {
+			if (lost) return;
+			lost = true;
+			report(error, occurrence);
+			if (!controller.signal.aborted) controller.abort(new HarbourError("conflict", "The run's lease was lost"));
+		};
 		/** Set once the handler returned; a renewal still in flight then neither re-arms nor counts as lost. */
 		let done = false;
 		let renewal: unknown;
@@ -191,15 +204,21 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 						if (!done) renew();
 					},
 					(error: unknown) => {
-						if (done) return;
-						lost = true;
-						report(error, occurrence);
-						controller.abort(new HarbourError("conflict", "The run's lease was lost"));
+						if (!done) loseLease(error);
 					},
 				);
 			}, leaseMs / 3);
 		};
 		renew();
+		const holdLease = async () => {
+			if (lost) throw new HarbourError("conflict", "The run's lease was lost");
+			try {
+				await schedules.renew(ctx, occurrence.id, runnerId, leaseMs);
+			} catch (error) {
+				loseLease(error);
+				throw error;
+			}
+		};
 		const deadline = timers.setTimeout(
 			() => controller.abort(new HarbourError("aborted", `The ${schedule.kind} run passed its time limit`)),
 			timeoutFor(schedule.kind),
@@ -215,6 +234,7 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 					schedule,
 					organisationId: organisationOf(schedule),
 					signal: controller.signal,
+					holdLease,
 				};
 				outcome = await handler(runInput);
 				if (controller.signal.aborted && !lost) {
@@ -250,6 +270,10 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 							schedule,
 							organisationId: organisationOf(schedule),
 							signal: controller.signal,
+							// The occurrence is finished: there is no lease left to hold.
+							holdLease: async () => {
+								throw new HarbourError("conflict", "The run has finished");
+							},
 						});
 					} catch (error) {
 						report(error, occurrence);
@@ -291,6 +315,18 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 				}
 				if (claimed === undefined) {
 					drained = true;
+					break;
+				}
+				if (stopping.signal.aborted) {
+					// Stopped while the claim was in flight: start nothing, and leave the claim to lapse.
+					records.push({
+						occurrenceId: claimed.id,
+						scheduleId: claimed.scheduleId,
+						kind: claimed.schedule.kind,
+						attempt: claimed.attempt,
+						durationMs: 0,
+						status: "interrupted",
+					});
 					break;
 				}
 				const running = run(claimed).then((record) => {

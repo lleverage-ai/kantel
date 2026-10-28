@@ -101,8 +101,8 @@ export function taskPayload(schedule: Schedule): TaskPayload & { readonly projec
 }
 
 export interface TaskHandlerOptions {
-	/** The public session API: `create`, `prompt` and `wait`. */
-	readonly runtime: Pick<SessionRuntime, "create" | "prompt" | "wait">;
+	/** The public session API: `create`, `prompt`, `wait`, and `close` for a session a lapsed attempt orphaned. */
+	readonly runtime: Pick<SessionRuntime, "create" | "prompt" | "wait" | "close">;
 	/** Finds a session an earlier attempt of the same occurrence started. */
 	readonly directory: Pick<SessionDirectory, "list">;
 	/**
@@ -115,8 +115,13 @@ export interface TaskHandlerOptions {
 /**
  * Starts a session for each `task` occurrence through the public session API: creates it (labelled with the schedule
  * and occurrence), prompts it with the payload's message (`requestId` is the occurrence's ID) and, by default, waits
- * for its run to end. A retried run finds the session by its label and the prompt by its `requestId`, so it starts
- * neither twice. The run succeeds when the session answered and fails otherwise.
+ * for its run to end. The run succeeds when the session answered and fails otherwise.
+ *
+ * A retry prompts once. A retried run finds the session by its label and the prompt by its `requestId`. Listing and
+ * creating are not atomic, so two attempts could each create a session; the prompt is fenced by `holdLease`: an
+ * attempt prompts only once it has renewed its lease, after its session exists. An attempt whose lease another runner
+ * took cannot renew it, so it closes the session it created and never prompts; a later attempt cannot claim the
+ * occurrence until the prompting one's lease lapses, by when its session is listed.
  */
 export function createTaskHandler(options: TaskHandlerOptions): OccurrenceHandler {
 	const waitForRun = options.waitForRun ?? true;
@@ -136,6 +141,16 @@ export function createTaskHandler(options: TaskHandlerOptions): OccurrenceHandle
 				title: payload.title ?? schedule.title,
 				labels: { ...payload.labels, [SCHEDULE_LABEL]: schedule.id, ...marker },
 			}));
+		try {
+			await run.holdLease();
+		} catch (error) {
+			if (existing === undefined) {
+				// Another runner has the occurrence and may have made its own session: this one stays unprompted.
+				const { signal: _aborted, ...unsignalled } = ctx;
+				await options.runtime.close(unsignalled, session.id).catch(() => undefined);
+			}
+			throw error;
+		}
 		const submission = await options.runtime.prompt(ctx, session.id, {
 			text: payload.message,
 			requestId: `schedule:${occurrence.id}`,

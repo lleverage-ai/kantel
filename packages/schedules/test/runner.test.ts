@@ -162,6 +162,7 @@ describe("the scheduler loop", () => {
 				schedule: dead!.schedule,
 				organisationId: "org-1",
 				signal: new AbortController().signal,
+				holdLease: async () => {},
 			});
 			clock.advance(2 * MINUTE);
 
@@ -180,6 +181,107 @@ describe("the scheduler loop", () => {
 		} finally {
 			await memory.close();
 		}
+	});
+
+	it("two attempts racing past a stalled create prompt one session: the one whose lease was taken closes its own", async () => {
+		const clock = new ManualClock(START);
+		const schedules = createMemorySchedules({ clock });
+		const { memory, script } = await memoryRuntime();
+		try {
+			const schedule = await schedules.create(
+				human,
+				hourly(clock, { payload: { agentId: "agent-1", message: "Run the report" } }),
+			);
+			script.reply({ text: "Done" }, { text: "Should not be asked" });
+			const gate = deferred();
+			let creates = 0;
+			const runtime = {
+				create: async (...args: Parameters<typeof memory.runtime.create>) => {
+					creates += 1;
+					// The first attempt's create is slow to become visible; the second's is not.
+					if (creates === 1) await gate.promise;
+					return memory.runtime.create(...args);
+				},
+				prompt: memory.runtime.prompt.bind(memory.runtime),
+				wait: memory.runtime.wait.bind(memory.runtime),
+				close: memory.runtime.close.bind(memory.runtime),
+			};
+			const handler = createTaskHandler({ runtime, directory: memory.directory });
+			const errors: unknown[] = [];
+			const a = createScheduleRunner({
+				schedules,
+				runnerId: "a",
+				clock,
+				timers: new ManualTimers(clock),
+				leaseMs: MINUTE,
+				handlers: { task: handler },
+				onError: (error) => errors.push(error),
+			});
+			const b = createScheduleRunner({
+				schedules,
+				runnerId: "b",
+				clock,
+				timers: new ManualTimers(clock),
+				leaseMs: MINUTE,
+				handlers: { task: handler },
+			});
+			clock.advance(HOUR);
+			const passA = a.runOnce();
+			await settle();
+			// Runner a stalls past its lease inside create; runner b takes the occurrence over and runs it.
+			clock.advance(2 * MINUTE);
+			expect(await b.runOnce()).toMatchObject([{ status: "succeeded", attempt: 2 }]);
+			gate.resolve();
+			expect(await passA).toMatchObject([{ status: "lost", attempt: 1 }]);
+
+			expect(script.requests).toHaveLength(1);
+			const sessions = (await memory.directory.list(operator, { labels: { [SCHEDULE_LABEL]: schedule.id } })).items;
+			expect(sessions).toHaveLength(2);
+			const [occurrence] = (await schedules.listOccurrences(human, schedule.id)).items;
+			const prompted = (occurrence!.result as { sessionId: string }).sessionId;
+			const orphan = sessions.find((session) => session.id !== prompted);
+			expect(orphan?.status).not.toBe("running");
+			expect(orphan?.status).not.toBe("idle");
+			expect(errors).toHaveLength(1);
+		} finally {
+			await memory.close();
+		}
+	});
+
+	it("a runner stopped while a claim is in flight starts nothing, and leaves the claim to lapse", async () => {
+		const clock = new ManualClock(START);
+		const schedules = createMemorySchedules({ clock });
+		await schedules.create(human, hourly(clock));
+		const gate = deferred();
+		const slowClaims: Schedules = Object.create(schedules);
+		Object.assign(slowClaims, {
+			claim: async (...args: Parameters<Schedules["claim"]>) => {
+				const claimed = await schedules.claim(...args);
+				await gate.promise;
+				return claimed;
+			},
+		});
+		const ran: string[] = [];
+		const runner = createScheduleRunner({
+			schedules: slowClaims,
+			runnerId: "a",
+			clock,
+			timers: new ManualTimers(clock),
+			handlers: {
+				task: async (run) => {
+					ran.push(run.occurrence.id);
+					return { status: "succeeded" };
+				},
+			},
+		});
+		clock.advance(HOUR);
+		const pass = runner.runOnce();
+		await settle();
+		const stopped = runner.stop();
+		gate.resolve();
+		await stopped;
+		expect(await pass).toMatchObject([{ status: "interrupted", attempt: 1 }]);
+		expect(ran).toEqual([]);
 	});
 
 	it("fails a task occurrence whose payload names no agent, and carries on", async () => {
