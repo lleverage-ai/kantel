@@ -26,10 +26,12 @@ import {
 	type CallContext,
 	type Clock,
 	type IdentityDirectory,
+	isHarbourError,
 	type LeaseEndReason,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
+	type PromptLayer,
 	type SignInMethod,
 	type SystemContext,
 	systemClock,
@@ -75,6 +77,20 @@ const BOOTSTRAP: CallContext = {
 
 /** The agent every new deployment has, so a session can be created before any host registers its own profiles. */
 export const DEFAULT_AGENT_ID = "assistant";
+
+/**
+ * The prompt layer earlier releases wrote into the default profile on every start. Harbour adds no prompt of its own:
+ * the prompt is the user's (their profile's `promptLayers`), and empty until they set one. A stored default profile
+ * still carrying this exact layer has it removed on the next start; nothing else of the user's is touched.
+ */
+const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Harbour." };
+
+/** The prompt layers the default profile keeps across starts: the user's own, without the retired layer. */
+export function userPromptLayers(stored: AgentProfile | undefined): readonly PromptLayer[] {
+	return (stored?.promptLayers ?? []).filter(
+		(layer) => layer.name !== RETIRED_DEFAULT_LAYER.name || layer.text !== RETIRED_DEFAULT_LAYER.text,
+	);
+}
 
 /** What the bootstrap made, saved after each step so a restart (or a retry after a failed start) reuses it. */
 export interface BootstrapRecord {
@@ -297,13 +313,18 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			adminEmail: options.config.adminEmail,
 			adminName: options.config.adminName,
 		});
+		const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
+			if (isHarbourError(error, "not_found")) return undefined;
+			throw error;
+		});
 		const profile: AgentProfile = {
 			id: DEFAULT_AGENT_ID,
 			organisationId: organisation.id,
 			projectId: project.id,
 			name: "Assistant",
 			model: { route: "default" },
-			promptLayers: [{ name: "role", text: "You are a helpful assistant running on Harbour." }],
+			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
+			promptLayers: userPromptLayers(stored),
 			tools: [],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
