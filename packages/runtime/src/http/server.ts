@@ -20,6 +20,8 @@ import {
 	type PromptInput,
 	type SessionDirectory,
 	type SessionFilter,
+	type SessionHistory,
+	type SessionHistoryRequest,
 	type SessionRuntime,
 	type SessionStatus,
 	type Subscription,
@@ -45,6 +47,8 @@ import {
 
 export interface SessionApiOptions {
 	readonly runtime: SessionRuntime;
+	/** Serves `GET /sessions/:id/history`, the transcript in pages, newest first: the runtime's `history`. */
+	readonly history?: SessionHistory;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -138,6 +142,19 @@ function pageOf(params: URLSearchParams): PageRequest {
 	return {
 		...(limit === null ? {} : { limit: Number(limit) }),
 		...(cursor === null ? {} : { cursor }),
+	};
+}
+
+/** `?cursor=` or `?before=`, and `?limit=`. */
+function historyRequestOf(params: URLSearchParams): SessionHistoryRequest {
+	const cursor = params.get("cursor");
+	const before = params.get("before");
+	const limit = params.get("limit");
+	if (limit !== null && !/^\d{1,4}$/.test(limit)) throw new HarbourError("invalid", "limit must be a number");
+	return {
+		...(cursor === null ? {} : { cursor }),
+		...(before === null ? {} : { before }),
+		...(limit === null ? {} : { limit: Number(limit) }),
 	};
 }
 
@@ -253,6 +270,9 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				return json({ items: await directory.children(ctx, sessionId) });
 			case "GET snapshot":
 				return json(await runtime.snapshot(ctx, sessionId));
+			case "GET history":
+				if (options.history === undefined) break;
+				return json(await options.history.history(ctx, sessionId, historyRequestOf(url.searchParams)));
 			case "POST prompt":
 				return json(await runtime.prompt(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST steer":

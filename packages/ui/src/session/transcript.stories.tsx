@@ -217,12 +217,25 @@ export const LongContent: Story = () => (
 	</Sheet>
 );
 
-const history = longTranscript(60);
+// Paging back through a long session, as the console does over the session API's history route: the latest page
+// first, then a page before the oldest item shown each time the reader nears the top.
+const history = longTranscript(500);
 const PAGE = 40;
+const noop = () => {};
 
-/** Starts on the last page; scrolling near the top loads the page before it, keeping your place. */
-function OlderPagesDemo() {
-	const [start, setStart] = useState(history.length - PAGE);
+/** Starts on the last page; scrolling near the top loads the page before it after `delayMs`, keeping your place. */
+function PagingDemo({
+	items,
+	title,
+	intro,
+	delayMs = 700,
+}: {
+	items: readonly TranscriptItem[];
+	title: string;
+	intro: string;
+	delayMs?: number;
+}) {
+	const [start, setStart] = useState(Math.max(0, items.length - PAGE));
 	const [loadingOlder, setLoadingOlder] = useState(false);
 	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 	useEffect(() => () => clearTimeout(timer.current), []);
@@ -231,18 +244,15 @@ function OlderPagesDemo() {
 		setLoadingOlder(true);
 		timer.current = setTimeout(() => {
 			timer.current = undefined;
-			setStart((value) => Math.max(0, value - PAGE));
 			setLoadingOlder(false);
-		}, 700);
-	}, []);
+			setStart((value) => Math.max(0, value - PAGE));
+		}, delayMs);
+	}, [delayMs]);
 	return (
-		<Sheet
-			title="Transcript paging"
-			intro="Not one of the required states: the older-history path. Scroll up to load the previous page; the visible rows stay where they are."
-		>
+		<Sheet title={title} intro={intro}>
 			<div className="hb-story-transcript-frame">
 				<Transcript
-					items={history.slice(start)}
+					items={items.slice(start)}
 					hasOlder={start > 0}
 					loadingOlder={loadingOlder}
 					onLoadOlder={onLoadOlder}
@@ -252,7 +262,50 @@ function OlderPagesDemo() {
 	);
 }
 
-export const OlderPages: Story = () => <OlderPagesDemo />;
+export const OlderPages: Story = () => (
+	<PagingDemo
+		items={history}
+		title="Transcript paging"
+		intro="A session of 500 turns (2,000 items) opens on its latest 40 items. Scroll up: each page before the oldest shown loads as you near the top, and the rows you are reading stay where they are. At the very top it says where the session starts."
+	/>
+);
+
+export const OlderPagesMobile: Story = () => (
+	<PagingDemo items={history} title="Transcript paging at 420px" intro="The same long session on a phone." />
+);
+OlderPagesMobile.meta = { width: 420 };
+
+const lastPage = history.slice(-PAGE);
+
+export const OlderPagesLoading: Story = () => (
+	<Sheet
+		title="Transcript loading an earlier page"
+		intro="The reader has scrolled to the top of what is loaded; the page before it is on its way."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={lastPage} hasOlder loadingOlder onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
+
+export const OlderPagesError: Story = () => (
+	<Sheet title="Transcript after a failed page" intro="Loading the page before these failed; Try again asks for it.">
+		<div className="hb-story-transcript-frame">
+			<Transcript items={lastPage} hasOlder olderError="Couldn't load earlier messages." onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
+
+export const StartOfSession: Story = () => (
+	<Sheet
+		title="Transcript at the start of the session"
+		intro="A paged transcript with every item loaded: nothing older, so it begins with where the session starts."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={longTranscript(2)} onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
 
 export const Mobile: Story = () => (
 	<Sheet title="Transcript at 420px" intro="The default session on a phone.">

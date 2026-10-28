@@ -29,7 +29,8 @@ import "./transcript.css";
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
 // new output only while the reader is at the bottom (T3 Code's useTimelineFollow.ts:162-196): scrolling up stops
 // following, and returning to the bottom, or the "Scroll to end" button, starts it again. Near the top it asks for
-// the previous history page, and keeps the reader's place when that page is put in front.
+// the previous history page, and keeps the reader's place when that page is put in front. Once there is nothing
+// older, a paged transcript starts with a quiet "Start of the session" divider, so the reader knows they have it all.
 
 /** How close to the bottom still counts as at the bottom, in CSS pixels. */
 const AT_BOTTOM_PX = 48;
@@ -41,7 +42,13 @@ const BUFFER_PX = 600;
 // A fixed spacer always sits after the last row, so the bottom padding never belongs to a real row: if it did, the
 // row that was last would render again, to lose it, every time an item arrived.
 const END = { end: true } as const;
-type Entry = TranscriptRow | typeof END;
+// The top of a paged transcript once there is nothing older. It is an entry of the list, not an overlay, so it
+// scrolls with the rows; it is put in front as an older page would be, keeping the reader's place.
+const START = { start: true } as const;
+type Entry = TranscriptRow | typeof END | typeof START;
+
+const entryKey = (entry: Entry | undefined): string | undefined =>
+	entry === undefined ? undefined : "end" in entry ? "end" : "start" in entry ? "start" : entry.id;
 
 /**
  * Without a renderCard, a card shows read-only: everything it says (a vault request's terms and binding code, a
@@ -136,6 +143,11 @@ export type TranscriptProps = {
 	loadingOlder?: boolean;
 	onLoadOlder?: () => void;
 	/**
+	 * Loading the previous page failed: says why at the top, with "Try again" (which calls `onLoadOlder`). While it is
+	 * set, scrolling near the top doesn't ask again on its own.
+	 */
+	olderError?: ReactNode;
+	/**
 	 * Renders a card item (an approval, a question), with the host's handlers. Keep it stable: every row re-renders
 	 * when it changes. Without it cards show read-only, from the same components.
 	 */
@@ -177,6 +189,7 @@ export function Transcript({
 	hasOlder = false,
 	loadingOlder = false,
 	onLoadOlder,
+	olderError,
 	renderCard,
 	loading = false,
 	empty,
@@ -192,7 +205,10 @@ export function Transcript({
 		previousRows.current = next;
 		return next;
 	}, [items]);
-	const entries = useMemo<Entry[]>(() => [...rows, END], [rows]);
+	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
+	const paged = onLoadOlder !== undefined;
+	const atStart = paged && !hasOlder && rows.length > 0;
+	const entries = useMemo<Entry[]>(() => (atStart ? [START, ...rows, END] : [...rows, END]), [rows, atStart]);
 
 	// When each streaming answer's turn started, by row id: the time of the last message the person sent before it,
 	// other than a steer (a steer joins the turn under way). The working row times the turn from it. A number, so the
@@ -224,9 +240,15 @@ export function Transcript({
 	const count = useRef(0);
 	const showList = rows.length > 0;
 
-	// Prepending older items: tell the virtualiser to keep the visible content still (virtua's `shift`).
-	const firstId = items[0]?.id;
-	const prepended = first.current !== undefined && firstId !== first.current && items.length > count.current;
+	// Prepending older rows, or the start divider: tell the virtualiser to keep the visible content still (virtua's
+	// `shift`). Compared on the list's entries, so a page that arrives with the divider is one shift, not two.
+	const firstKey = entryKey(entries[0]);
+	const prepended =
+		first.current !== undefined &&
+		firstKey !== first.current &&
+		firstKey !== "end" &&
+		entries.length > count.current &&
+		count.current > 1;
 
 	const toBottom = useCallback(() => {
 		const handle = list.current;
@@ -235,9 +257,9 @@ export function Transcript({
 	}, [rows.length]);
 
 	useLayoutEffect(() => {
-		const initial = first.current === undefined && items.length > 0;
-		first.current = firstId;
-		count.current = items.length;
+		const initial = (first.current === undefined || first.current === "end") && rows.length > 0;
+		first.current = firstKey;
+		count.current = entries.length;
 		if (initial || (following.current && !prepended)) toBottom();
 	});
 
@@ -272,9 +294,10 @@ export function Transcript({
 			} else if (offset < lastOffset.current) following.current = false;
 			lastOffset.current = offset;
 			setShowEnd(!following.current);
-			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder) onLoadOlder?.();
+			// After a failed page only "Try again" asks again, or every scroll event would.
+			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
 		},
-		[hasOlder, loadingOlder, onLoadOlder],
+		[hasOlder, loadingOlder, olderError, onLoadOlder],
 	);
 
 	const scrollToEnd = useCallback(() => {
@@ -435,12 +458,16 @@ export function Transcript({
 					{(entry, index) =>
 						"end" in entry ? (
 							<div key="end" className="hb-transcript-end" aria-hidden="true" />
+						) : "start" in entry ? (
+							<div key="start" className="hb-transcript-start">
+								<div className="hb-transcript-column hb-transcript-start-rule">Start of the session</div>
+							</div>
 						) : (
 							<Row
 								key={entry.id}
 								row={entry}
 								first={index === 0 && !hasOlder}
-								turnStart={index > 0 && entry.kind === "item" && entry.item.kind === "user"}
+								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
 								turnStartedAt={turnStarts.get(entry.id)}
 								renderCard={renderCard}
 								report={report}
@@ -452,6 +479,15 @@ export function Transcript({
 					<div className="hb-transcript-older" role="status">
 						<Spinner size="sm" />
 						Loading earlier messages
+					</div>
+				) : olderError && hasOlder ? (
+					<div className="hb-transcript-older hb-transcript-older-error" role="alert">
+						<span className="hb-transcript-older-text">{olderError}</span>
+						{onLoadOlder === undefined ? null : (
+							<Button variant="ghost" size="sm" onClick={onLoadOlder}>
+								Try again
+							</Button>
+						)}
 					</div>
 				) : null}
 				{showEnd ? (

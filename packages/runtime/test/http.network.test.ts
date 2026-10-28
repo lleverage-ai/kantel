@@ -100,6 +100,7 @@ registerRuntimeConformance(
 		});
 		const api = createSessionApi({
 			runtime: memory.runtime,
+			history: memory.history,
 			directory: memory.directory,
 			profiles: memory.profiles,
 			hostTools: memory.hostTools,
@@ -132,5 +133,5 @@ registerRuntimeConformance(
 			await memory.close();
 		}
 	},
-	{ projectAccess: true },
+	{ projectAccess: true, history: true },
 );

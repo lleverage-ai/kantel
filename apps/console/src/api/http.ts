@@ -8,14 +8,16 @@
 // - Who is signed in and their projects: identity's `GET /v1/me` (identity.ts, before this client is made) and
 //   `GET /v1/projects`, every page, named, the most recently active first.
 // - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
-// - No history pages: the snapshot is the whole transcript, so a history request is answered with an empty page.
+// - History pages: the stream's snapshot is the latest page; a `history` frame the client sends is `GET
+//   /v1/sessions/:id/history?before=<its first item>`, whose newest-first page comes back as a `history` frame,
+//   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
 
-import type { Project } from "@harbour/contracts";
-import type { HistoryPage, ServerFrame, SessionStatus } from "@harbour/protocol";
+import { type Project, protocolHistoryPage, type SessionHistoryPage } from "@harbour/contracts";
+import type { ServerFrame, SessionStatus } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
-import type { Transport } from "../state/session-client.ts";
+import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
 	ConsoleClient,
@@ -315,16 +317,26 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 						}
 						if (!closed) lost?.();
 					};
+					// The page before an item the client holds. Anchored on the item, so new turns don't shift it.
+					const history = async (before: string, limit: number) => {
+						const params = new URLSearchParams({ before, limit: String(limit) });
+						try {
+							const page = await getJson<SessionHistoryPage>(
+								sessionUrl(sessionId, `/history?${params}`),
+								controller.signal,
+							);
+							if (!closed) receive({ type: "history", page: protocolHistoryPage(page) });
+						} catch (reason) {
+							if (closed) return;
+							const message = reason instanceof Error ? reason.message : String(reason);
+							receive({ type: "error", code: HISTORY_ERROR, message });
+						}
+					};
 					return {
 						send(frame) {
 							if (closed) return;
 							if (frame.type === "hello") void stream(frame.after);
-							else {
-								const page: HistoryPage = { sessionId, items: [], hasEarlier: false };
-								queueMicrotask(() => {
-									if (!closed) receive({ type: "history", page });
-								});
-							}
+							else void history(frame.before, frame.limit);
 						},
 						close() {
 							closed = true;

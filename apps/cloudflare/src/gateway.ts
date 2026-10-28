@@ -9,6 +9,7 @@
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
  * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
+ * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -86,6 +87,8 @@ async function requesterNames(stack: Stack, ctx: CallContext, proposal: Proposal
 export function createGateway(stack: Stack): Gateway {
 	const sessions: SessionApi = createSessionApi({
 		runtime: stack.runtime.runtime,
+		// The console's scroll-back: older turns, a page at a time, before the snapshot's.
+		history: stack.runtime.history,
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,
