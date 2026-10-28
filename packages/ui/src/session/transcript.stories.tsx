@@ -125,6 +125,94 @@ function WorkingDemo() {
 
 export const Working: Story = () => <WorkingDemo />;
 
+/** A message just sent: the session works on the turn, but nothing of the answer has arrived yet. */
+function JustSentDemo() {
+	const [items] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("js", "Now run the full suite and open a PR."), at: Date.now() - 2_000 },
+	]);
+	return (
+		<Sheet
+			title="Transcript just sent"
+			intro="The turn has started (working) and no item of the answer has arrived. The transcript ends with the working row at once, so the reader sees the agent has the message before its first token."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} working />
+			</div>
+		</Sheet>
+	);
+}
+
+export const JustSent: Story = () => <JustSentDemo />;
+
+/** Between steps of a turn: a call has finished, the next has not started, so only the turn's working row moves. */
+function WorkingBetweenStepsDemo() {
+	const [items] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("bs", "Now run the full suite and open a PR."), at: Date.now() - 41_000 },
+		assistant("bs-a", "I'll run the whole suite first.", { secondsAgo: 40 }),
+		tool("bs-t", "bash", "Ran pnpm test", { args: { command: "pnpm test" }, seconds: 31 }),
+	]);
+	return (
+		<Sheet
+			title="Transcript working between steps"
+			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The working row stays at the end, counting from the prompt."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} working />
+			</div>
+		</Sheet>
+	);
+}
+
+export const WorkingBetweenSteps: Story = () => <WorkingBetweenStepsDemo />;
+
+const thought =
+	"The user wants the full suite and a PR. The billing fix touched the retry path, so the idempotency tests are the ones most likely to fail. I should run everything rather than only the billing package, because the worker shares the queue client. If the suite passes I will push the branch and open the PR with a description of the double charge and how the key is reused on retry."
+		.split(" ")
+		.filter((word) => word !== "");
+
+/** A thought streams a word every 80ms, then the answer starts and the thought folds behind its disclosure. */
+function ThinkingDemo() {
+	const [items, setItems] = useState<TranscriptItem[]>(() => [
+		...finishedTurn,
+		{ ...user("tu", "Now run the full suite and open a PR."), at: Date.now() - 4_000 },
+		assistant("ta", "", { streaming: true, secondsAgo: 1 }),
+	]);
+	useEffect(() => {
+		let tick = 0;
+		const timer = setInterval(() => {
+			tick++;
+			setItems((previous) => {
+				const last = previous.at(-1);
+				if (last?.kind !== "assistant") return previous;
+				const next =
+					tick <= thought.length
+						? { ...last, thinking: `${last.thinking ?? ""}${tick === 1 ? "" : " "}${thought[tick - 1]}` }
+						: {
+								...last,
+								text: `${last.text}${last.text === "" ? "" : " "}${streamed[tick - thought.length - 1] ?? ""}`,
+							};
+				return [...previous.slice(0, -1), next];
+			});
+			if (tick >= thought.length + 40) clearInterval(timer);
+		}, 80);
+		return () => clearInterval(timer);
+	}, []);
+	return (
+		<Sheet
+			title="Transcript thinking"
+			intro="A thought streams live, its newest four lines under Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
+		>
+			<div className="hb-story-transcript-frame">
+				<Transcript items={items} working />
+			</div>
+		</Sheet>
+	);
+}
+
+export const Thinking: Story = () => <ThinkingDemo />;
+
 const failed: TranscriptItem[] = [
 	user("eu", "Run the billing migration against staging.", 120),
 	tool("et1", "read", "Read migrations/0042_idempotency.sql", { args: { path: "migrations/0042_idempotency.sql" } }),

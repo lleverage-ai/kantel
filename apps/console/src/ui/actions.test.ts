@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { composerState, createRequestIds, offersFollowUp, TITLE_MAX, titleFrom } from "./actions.ts";
+import { composerState, createRequestIds, offersFollowUp, TITLE_MAX, titleFrom, transcriptWorking } from "./actions.ts";
+
+describe("the transcript's working row", () => {
+	it("shows from the moment a prompt is sent, timed from then, before the host says it runs", () => {
+		expect(transcriptWorking("done", 1_000)).toEqual({ since: 1_000 });
+	});
+
+	it("follows the host's status otherwise", () => {
+		expect(transcriptWorking("running", undefined)).toBe(true);
+		expect(transcriptWorking("waiting", undefined)).toBe(false);
+		expect(transcriptWorking("done", undefined)).toBe(false);
+	});
+});
 
 describe("a new session's title", () => {
 	it("is the first line with words, its spaces folded", () => {

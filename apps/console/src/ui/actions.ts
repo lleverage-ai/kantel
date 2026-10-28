@@ -17,6 +17,11 @@ export type SessionActions = {
 	onStop: () => void;
 	/** A send is on its way. */
 	sending: boolean;
+	/**
+	 * When the person last sent a prompt (epoch ms), until the session's status first moves after it. The transcript
+	 * shows the turn working from this moment, before the host has said so.
+	 */
+	promptedAt?: number;
 	/** Why the last send or stop failed, shown on the composer until the next one. */
 	failure?: string;
 	/** The composer's model and thinking pickers, when the session offers a choice. */
@@ -25,6 +30,18 @@ export type SessionActions = {
 		"models" | "model" | "onModelChange" | "thinking" | "defaultThinking" | "onThinkingChange"
 	>;
 };
+
+/**
+ * Whether the transcript shows the turn working, and from when, after T3 Code (ChatView.tsx:1394-1398): from the moment
+ * a prompt is sent, not when the host first says the session runs, so the working row is there before the first token.
+ */
+export function transcriptWorking(
+	status: SessionStatus,
+	promptedAt: number | undefined,
+): false | true | { readonly since: number } {
+	if (promptedAt !== undefined) return { since: promptedAt };
+	return status === "running";
+}
 
 /**
  * The composer's state for a session: disabled (with the reason) when it can't be controlled, a spinner while a send
