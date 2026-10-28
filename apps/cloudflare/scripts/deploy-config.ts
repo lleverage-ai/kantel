@@ -6,7 +6,13 @@
  * - `account_id` from `CLOUDFLARE_ACCOUNT_ID`;
  * - the zone route `<HARBOUR_HOSTNAME>/*` on the hostname's zone (console and gateway on one hostname);
  * - the Access team domain and AUD, and the first admin's email, as vars;
- * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `HARBOUR_MODELS_VPC_SERVICE_ID`.
+ * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `HARBOUR_MODELS_VPC_SERVICE_ID`;
+ * - optionally, where the data lives (`OPTIONAL_DEPLOY_VARIABLES`): another D1 database for `DB`
+ *   (`HARBOUR_D1_DATABASE_NAME` with its `HARBOUR_D1_DATABASE_ID`), another bucket for `WORKSPACES`
+ *   (`HARBOUR_R2_BUCKET`), and the objects' location hint (`HARBOUR_LOCATION_HINT`). Unset, `wrangler.jsonc`'s own
+ *   names and hint stand, so the deploy binds exactly what it did before. They exist so data made in another region
+ *   can be swapped in without a code change; the database and bucket must exist first, or wrangler's automatic
+ *   provisioning creates a bucket of that name wherever it likes (the database is bound by ID, so a wrong one fails).
  *
  * `--mode deploy` needs every variable and refuses to write a config without them. `--mode dry-run` fills a missing
  * one with a placeholder, so `wrangler deploy --dry-run` still checks the whole config's shape before the account is
@@ -30,6 +36,54 @@ export const DEPLOY_VARIABLES = [
 ] as const;
 
 export type DeployVariable = (typeof DEPLOY_VARIABLES)[number];
+
+/** Set only to move the data: each overrides what `wrangler.jsonc` names. */
+export const OPTIONAL_DEPLOY_VARIABLES = [
+	"HARBOUR_D1_DATABASE_NAME",
+	"HARBOUR_D1_DATABASE_ID",
+	"HARBOUR_R2_BUCKET",
+	"HARBOUR_LOCATION_HINT",
+] as const;
+export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
+
+/** The D1 and R2 bindings the optional variables point elsewhere. */
+export const D1_BINDING = "DB";
+export const R2_BINDING = "WORKSPACES";
+
+/** Durable Objects' location hints, as `src/route.ts`'s `LOCATION_HINTS` (a test keeps the two the same). */
+export const LOCATION_HINTS = [
+	"wnam",
+	"enam",
+	"sam",
+	"weur",
+	"eeur",
+	"apac",
+	"apac-ne",
+	"apac-se",
+	"oc",
+	"afr",
+	"me",
+] as const;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const OPTIONAL_CHECKS: Readonly<
+	Record<OptionalDeployVariable, { readonly test: (value: string) => boolean; readonly expect: string }>
+> = {
+	HARBOUR_D1_DATABASE_NAME: {
+		test: (v) => /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(v),
+		expect: "a D1 database name (lower-case letters, digits, hyphens and underscores)",
+	},
+	HARBOUR_D1_DATABASE_ID: { test: (v) => UUID.test(v), expect: "the D1 database's ID (a UUID)" },
+	HARBOUR_R2_BUCKET: {
+		test: (v) => /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(v),
+		expect: "an R2 bucket name (3-63 lower-case letters, digits and hyphens)",
+	},
+	HARBOUR_LOCATION_HINT: {
+		test: (v) => (LOCATION_HINTS as readonly string[]).includes(v),
+		expect: `one of ${LOCATION_HINTS.join(", ")}`,
+	},
+};
 export type DeployMode = "deploy" | "dry-run";
 
 /** The binding name the model gateway will use for CLIProxyAPI (step 2 of #17). */
@@ -88,7 +142,7 @@ const CHECKS: Readonly<Record<DeployVariable, { readonly test: (value: string) =
 			expect: "the Access application's AUD tag (hex)",
 		},
 		HARBOUR_MODELS_VPC_SERVICE_ID: {
-			test: (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
+			test: (v) => UUID.test(v),
 			expect: "the Workers VPC service's ID (a UUID)",
 		},
 		HARBOUR_ADMIN_EMAIL: { test: isEmail, expect: "an email address" },
@@ -102,6 +156,12 @@ export interface DeployValues {
 	readonly accessAud: string;
 	readonly modelsVpcServiceId: string;
 	readonly adminEmail: string;
+	/** Another D1 database for `DB`, when set. */
+	readonly d1?: { readonly name: string; readonly id: string };
+	/** Another bucket for `WORKSPACES`, when set. */
+	readonly r2Bucket?: string;
+	/** The objects' location hint, when set. */
+	readonly locationHint?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -123,7 +183,25 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	const invalid = DEPLOY_VARIABLES.filter((name) => !missing.includes(name))
 		.filter((name) => !CHECKS[name].test((env[name] ?? "").trim()))
 		.map((name) => `${name} must be ${CHECKS[name].expect}`);
+	const optional = (name: OptionalDeployVariable): string | undefined => {
+		const given = (env[name] ?? "").trim();
+		return given === "" ? undefined : given;
+	};
+	for (const name of OPTIONAL_DEPLOY_VARIABLES) {
+		const given = optional(name);
+		if (given !== undefined && !OPTIONAL_CHECKS[name].test(given)) {
+			invalid.push(`${name} must be ${OPTIONAL_CHECKS[name].expect}`);
+		}
+	}
+	const d1Name = optional("HARBOUR_D1_DATABASE_NAME");
+	const d1Id = optional("HARBOUR_D1_DATABASE_ID");
+	// Bound by ID as well as name, so a database that doesn't exist fails the deploy instead of being created.
+	if ((d1Name === undefined) !== (d1Id === undefined)) {
+		invalid.push("Set both HARBOUR_D1_DATABASE_NAME and HARBOUR_D1_DATABASE_ID, or neither");
+	}
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
+	const r2Bucket = optional("HARBOUR_R2_BUCKET");
+	const hint = optional("HARBOUR_LOCATION_HINT");
 
 	const value = (name: Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">): string =>
 		missing.includes(name) ? PLACEHOLDERS[name] : (env[name] ?? "").trim();
@@ -135,8 +213,20 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		accessAud: value("HARBOUR_ACCESS_AUD"),
 		modelsVpcServiceId: value("HARBOUR_MODELS_VPC_SERVICE_ID"),
 		adminEmail: value("HARBOUR_ADMIN_EMAIL"),
+		...(d1Name === undefined || d1Id === undefined ? {} : { d1: { name: d1Name, id: d1Id.toLowerCase() } }),
+		...(r2Bucket === undefined ? {} : { r2Bucket }),
+		...(hint === undefined ? {} : { locationHint: hint }),
 		placeholders: missing,
 	};
+}
+
+/** `list` with the entry for `binding` changed; refuses a list without one. */
+function rebind(list: unknown, key: string, binding: string, change: Record<string, string>): unknown[] {
+	const entries = Array.isArray(list) ? (list as unknown[]) : [];
+	const bound = (entry: unknown) =>
+		typeof entry === "object" && entry !== null && (entry as { binding?: unknown }).binding === binding;
+	if (!entries.some(bound)) throw new Error(`wrangler.jsonc has no ${key} entry for ${binding} to point elsewhere`);
+	return entries.map((entry) => (bound(entry) ? { ...(entry as object), ...change } : entry));
 }
 
 type RawConfig = Readonly<Record<string, unknown>>;
@@ -154,6 +244,19 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 		throw new Error("wrangler.jsonc must set workers_dev and preview_urls to false: those URLs bypass Access");
 	}
 	const { $schema: _schema, env: _env, ...base } = raw;
+	const data = {
+		...(values.d1 === undefined
+			? {}
+			: {
+					d1_databases: rebind(raw.d1_databases, "d1_databases", D1_BINDING, {
+						database_name: values.d1.name,
+						database_id: values.d1.id,
+					}),
+				}),
+		...(values.r2Bucket === undefined
+			? {}
+			: { r2_buckets: rebind(raw.r2_buckets, "r2_buckets", R2_BINDING, { bucket_name: values.r2Bucket }) }),
+	};
 	const vars = typeof raw.vars === "object" && raw.vars !== null ? raw.vars : {};
 	// A var would show the value in the dashboard, and wrangler refuses a var and a secret of one name.
 	for (const name of VAULT_SECRETS) {
@@ -161,6 +264,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	}
 	return {
 		...base,
+		...data,
 		...(values.accountId === undefined ? {} : { account_id: values.accountId }),
 		// A zone route, not a custom domain: the zone's `*.myslop.app/*` route to `myslop-apps` would take precedence over
 		// a custom domain on the same hostname, while between routes the most specific pattern wins (#17, Route).
@@ -170,6 +274,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			HARBOUR_ACCESS_TEAM_DOMAIN: values.accessTeamDomain,
 			HARBOUR_ACCESS_AUD: values.accessAud,
 			HARBOUR_ADMIN_EMAIL: values.adminEmail,
+			...(values.locationHint === undefined ? {} : { HARBOUR_LOCATION_HINT: values.locationHint }),
 		},
 		vpc_services: [{ binding: MODELS_BINDING, service_id: values.modelsVpcServiceId }],
 	};
@@ -188,6 +293,12 @@ async function main(): Promise<void> {
 	const out = resolve(args.out);
 	writeFileSync(out, `${JSON.stringify(deployConfig(rawConfig, values), null, "\t")}\n`);
 	console.log(`Wrote ${out} for ${mode === "deploy" ? `a deploy to ${values.hostname}` : "a dry run"}`);
+	const moved = [
+		...(values.d1 === undefined ? [] : [`D1 ${values.d1.name} (${values.d1.id})`]),
+		...(values.r2Bucket === undefined ? [] : [`R2 ${values.r2Bucket}`]),
+		...(values.locationHint === undefined ? [] : [`location hint ${values.locationHint}`]),
+	];
+	if (moved.length > 0) console.log(`Overridden: ${moved.join(", ")}`);
 	if (values.placeholders.length > 0) {
 		console.log(`Placeholders (not set yet): ${values.placeholders.join(", ")}`);
 	}

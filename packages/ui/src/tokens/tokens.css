@@ -138,4 +138,27 @@
 	/* Layers. */
 	--hb-z-float: 20;
 	--hb-z-overlay: 40;
+
+	/*
+	 * The composer, after T3 Code's ComposerSurface (apps/web/src/index.css): frosted glass over the transcript, a
+	 * near-invisible outline with a one-pixel highlight on its top edge, and a field that grows from about two lines
+	 * to about nine and then scrolls.
+	 */
+	--hb-glass: color-mix(in srgb, var(--hb-raised) 80%, transparent);
+	--hb-glass-blur: blur(16px) saturate(1.08);
+	--hb-glass-outline: rgb(255 255 255 / 0.07);
+	--hb-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.03);
+	--hb-composer-leading: 1.625;
+	--hb-composer-field-min: 40px;
+	--hb-composer-field-max: 200px;
+	--hb-composer-narrow: 640px; /* below it the composer rests whenever it isn't in use; mirrored in composer.tsx */
+	--hb-composer-banner-inset: 22px;
+	--hb-thumb: 64px;
+	--hb-thumb-scrim: rgb(0 0 0 / 0.65);
+	--hb-on-solid: #ffffff; /* text and icons on a solid status colour, such as the Stop button */
+	--hb-drop-fill: color-mix(in srgb, var(--hb-accent) 5%, transparent);
+	--hb-drop-line: color-mix(in srgb, var(--hb-accent) 60%, transparent);
+	--hb-popover-width: 20rem;
+	--hb-popover-height: 22rem;
+	--hb-menu-width: 12rem; /* a short menu of choices, such as the composer's thinking levels */
 }

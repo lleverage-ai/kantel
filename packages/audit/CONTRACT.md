@@ -5,7 +5,7 @@
 One append-only record of what happened, for every organisation. Components never write to it directly: each puts
 events in an outbox inside its own transaction, and a relay drains the outbox to the store with retries. The store is
 idempotent by organisation and event id, so a retry never adds a row. Humans, services and the system read it by actor, organisation,
-project, session, subject and time; agents cannot.
+project, session, subject, vault item, vault grant and time; agents cannot.
 
 ## Records
 
@@ -19,7 +19,7 @@ project, session, subject and time; agents cannot.
 
 `outbox.append` → `outbox.drain(store)` → `store.query` / `store.get`. `setRetention` and `applyRetention` are the only
 way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`, `actorMatches`, `typeMatches`,
-`assertValidAuditEvent` and `findSecret`.
+`eventItemId`, `eventGrantId`, `assertValidAuditEvent` and `findSecret`.
 
 ## Rules and the suite cases that enforce them
 
@@ -34,6 +34,12 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
 - Rows come in `seq` order (or reversed with `newestFirst`); every query field narrows; a type ending in `.` is a prefix;
   actors compare by kind and ID (a service's key only when asked); `from` is inclusive and `to` exclusive: "returns rows
   in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time".
+- `itemId` and `grantId` match the vault item or grant an event is about: its subject when that is a `vault.item` or
+  `vault.grant`, or else `data.itemId` or `data.grantId` when it is a string (a number, a list or a nested field is not
+  an ID). They combine with every other field, page by cursor and keep to the rows the caller may see: "narrows by vault
+  item and grant, by the record's subject or a string in data, and pages by them". So "which sessions used the Linear
+  key yesterday" is one query (`type: "vault.use."`, `itemId`, `from`, `to`) and "who approved this grant" another
+  (`type: "vault.decision.approved"`, `grantId`).
 - Cursors are the last `seq` seen, so paging is stable while rows are appended: "pages through 250 rows 100 at a time,
   each row once, while rows are appended between pages".
 - Organisation isolation: "never returns another organisation's rows, and get is not_found for them".
@@ -75,7 +81,7 @@ The audit view (M1-FE3) and host apps read the store through two `GET` routes, d
   `AuditStore.query` with the query and page as search parameters. `auditQueryToSearchParams` writes them and
   `auditQueryFromSearchParams` reads them: `projectId`, `sessionId`, `agentId`, `actorKind` with `actorId` (plus
   `actorKeyId` for a service's key, `actorSessionId` for an agent), `source`, `type` (a prefix when it ends in `.`),
-  `subjectKind` with `subjectId`, `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and
+  `subjectKind` with `subjectId`, `itemId`, `grantId`, `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and
   `cursor`. An unknown, repeated, empty or half-given parameter is `invalid`.
 - `GET /v1/audit/event?id=<id>` (`AUDIT_EVENT_PATH`) answers `AuditEventResponse` (`{ event }`): `AuditStore.get`. The
   id is a search parameter, not a path segment, because sources choose ids and one may be `.` or hold a `/`.
@@ -113,8 +119,12 @@ Postgres.
   Postgres each append takes an advisory lock first, so rows commit in `seq` order and a reader paging by cursor never
   skips a row that commits late. Pages are cut in SQL on indexes that lead with the organisation; a query without a
   project or session checks access once per project the organisation's rows name, then pages over those projects.
+  `itemId` and `grantId` are matched on indexes over an expression of the stored event (`audit_events_by_item` and
+  `audit_events_by_grant`: organisation, the record's ID as `eventItemId` and `eventGrantId` read it, `seq`), so a
+  database made before them needs no new column or backfill; `migrateAudit` adds the two indexes.
   `sql.scale.test.ts` seeds 100,000 events and checks that the first page, a page near the end, a session's page,
-  newest-first and an access-filtered page each take under 100 ms and use an index (each takes under 10 ms locally).
+  newest-first, an access-filtered page, one credential's sparse uses and one grant's rows each take under 100 ms and
+  use an index (each takes under 10 ms locally).
 - `createSqlAuditOutbox({ driver, clock? })` keeps the queue in `audit_outbox`. A producer queues its events in its
   own transaction with `auditOutboxStatements(events)`: in the same D1 or SQLite `batch` as its own writes, or on
   Postgres through `postgresClientDriver(client)` over the client its transaction runs on. Its records and their

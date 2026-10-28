@@ -107,8 +107,10 @@ unreadable paths skipped, and background jobs killed before the final snapshot. 
 proxy: each lease's own network holds only it and the proxy, its proxied requests carry its own token, one lease cannot
 reach another's address, and ending or reaping a lease removes its network and revokes its token (these need the host
 to resolve `.localhost` names, as systemd-resolved does, and are skipped where it does not). Optional: `HARBOUR_TEST_SANDBOX_IMAGE` (default `harbour-sandbox:dev`), `HARBOUR_TEST_SANDBOX_RUNTIME`
-(default `runsc-kvm`) and `HARBOUR_TEST_DOCKER_SOCKET`. Every case labels what it creates with its own
-`harbour-test-<random>` prefix and removes it afterwards.
+(default `runsc-kvm`), `HARBOUR_TEST_DOCKER_SOCKET` and `HARBOUR_TEST_LABEL_PREFIX` (default `harbour-test`). Every case
+labels what it creates with its own `<HARBOUR_TEST_LABEL_PREFIX>-<random>` prefix and removes it afterwards; CI sets a
+per-run base so it can also remove what a cancelled run left behind. None of it carries `harbour.owner`, so a Harbour
+stack's sandbox janitor on the same daemon never sees it.
 
 ## Known gaps
 

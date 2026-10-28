@@ -28,10 +28,11 @@ registerRuntimeConformance(
 				model: script,
 				releasedSessions: deps.releasedSessions,
 				sessionEnd: memory.sessionEnd,
+				history: memory.history,
 			});
 		} finally {
 			await memory.close();
 		}
 	},
-	{ projectAccess: true },
+	{ projectAccess: true, history: true },
 );

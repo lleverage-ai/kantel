@@ -64,12 +64,13 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `TextField` | A labelled single-line input | The composer |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
+| `WorkingIndicator` | The agent working on a turn, live: "Working for 12s" with the working dot | A session's status in a header or list (use `StatusLabel`) |
 | `Kbd` | A key or chord in text | |
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
 | `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
 | Icons | 16px line icons in currentColor | Decoration |
 | `FileTree` | A workspace's files as a keyboard-navigable tree, read-only | Choosing where to write, or flat search results (use `ListRow`) |
-| `FileViewer` | One file's text with line numbers, read-only | Notes people read (use `NoteViewer`), images, diffs |
+| `FileViewer` | One file's text with line numbers, or an image, read-only | Notes people read (use `NoteViewer`), diffs |
 | `NoteViewer` | A Markdown note from a workspace, rendered at a reading measure | Editing, or Markdown in a session (use the transcript) |
 
 Session components (the transcript, tool-call chip, composer, session header, session list and approval cards) are

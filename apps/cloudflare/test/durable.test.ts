@@ -164,6 +164,37 @@ describe("the stack over durable storage", () => {
 		expect(((await audit.json()) as { items: unknown[] }).items).toHaveLength(1);
 	});
 
+	it("keeps the prompt the user set on the default profile across restarts, and adds none of its own", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const made = await first.stack.runtime.profiles.get(first.stack.admin, DEFAULT_AGENT_ID);
+		expect(made.promptLayers).toEqual([]);
+
+		const layers = [{ name: "organisation", text: "You work for Lleverage." }];
+		await first.stack.runtime.profiles.put(first.stack.admin, { ...made, promptLayers: layers });
+		await first.stack.close();
+
+		const second = await start(storage);
+		const kept = await second.stack.runtime.profiles.get(second.stack.admin, DEFAULT_AGENT_ID);
+		expect(kept.promptLayers).toEqual(layers);
+	});
+
+	it("drops the prompt layer earlier releases wrote into the default profile, and only that", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const made = await first.stack.runtime.profiles.get(first.stack.admin, DEFAULT_AGENT_ID);
+		const mine = { name: "project", text: "Answer in Dutch." };
+		await first.stack.runtime.profiles.put(first.stack.admin, {
+			...made,
+			promptLayers: [{ name: "role", text: "You are a helpful assistant running on Harbour." }, mine],
+		});
+		await first.stack.close();
+
+		const second = await start(storage);
+		const kept = await second.stack.runtime.profiles.get(second.stack.admin, DEFAULT_AGENT_ID);
+		expect(kept.promptLayers).toEqual([mine]);
+	});
+
 	it("reads sessions the object stored before it hosted the session core", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harbour-sessions-"));
 		const file = join(dir, "object.sqlite");
@@ -315,6 +346,43 @@ describe("the stack over durable storage", () => {
 		expect(await bootstrap.load()).toMatchObject({ organisationId: stack.organisation.id });
 		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
 		expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
+	});
+
+	it("looks the caller's role up once per request, not once per listed session", async () => {
+		const storage = await durableStorage();
+		const sql = storage.sql!;
+		let roleQueries = 0;
+		const counted: StackStorage = {
+			...storage,
+			sql: {
+				dialect: sql.dialect,
+				query: (text, params) => {
+					// `roleOf`'s query; sign-in's membership check (`SELECT 1 …`) is separate and not memoised.
+					if (text.includes("SELECT role FROM identity_role_bindings")) roleQueries++;
+					return sql.query(text, params);
+				},
+				batch: (statements) => sql.batch(statements),
+			},
+		};
+		const { stack, call } = await start(counted);
+		for (let i = 0; i < 20; i++) {
+			const created = await call("/v1/sessions", {
+				method: "POST",
+				body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, title: `S${i}` }),
+			});
+			expect(created.status).toBe(201);
+		}
+
+		roleQueries = 0;
+		const listed = await call("/v1/sessions?limit=50");
+		expect(listed.status).toBe(200);
+		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(20);
+		expect(roleQueries).toBe(1);
+
+		// The next request signs in again and looks again.
+		roleQueries = 0;
+		expect((await call(`/v1/sessions?projectId=${stack.project.id}`)).status).toBe(200);
+		expect(roleQueries).toBe(1);
 	});
 });
 

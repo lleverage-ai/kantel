@@ -15,7 +15,9 @@
  */
 import {
 	type Actor,
+	API_KEY_LAST_USED_PRECISION_MS,
 	type ApiKey,
+	type ApiKeyId,
 	type AuditEventType,
 	type Authentication,
 	type CallContext,
@@ -53,7 +55,14 @@ import {
 	sqlNumber,
 	sqlOptionalString,
 } from "@harbour/sql";
-import { apiKeyPrefix, generateApiKeySecret, hashApiKeySecret, strongestRole } from "./index.ts";
+import {
+	apiKeyName,
+	apiKeyPrefix,
+	generateApiKeySecret,
+	hashApiKeySecret,
+	lastUsedIsStale,
+	strongestRole,
+} from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
 import { otpSchema } from "./otp-sql.ts";
 
@@ -146,6 +155,14 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			revoked_at ${time}
 		)`,
 		"CREATE INDEX IF NOT EXISTS identity_api_keys_by_organisation ON identity_api_keys (organisation_id, seq)",
+		// A key's name and when it was last used, in a table of their own so that a directory made before them gains
+		// them with a `CREATE TABLE IF NOT EXISTS`, and a use writes here rather than to the key's row. A key issued
+		// before it has no row until its first use.
+		`CREATE TABLE IF NOT EXISTS identity_api_key_details (
+			key_id TEXT PRIMARY KEY,
+			name TEXT,
+			last_used_at ${time}
+		)`,
 		...otpSchema(dialect),
 	];
 }
@@ -206,13 +223,17 @@ type ApiKeyRow = {
 	created_at: unknown;
 	expires_at: unknown;
 	revoked_at: unknown;
+	name: unknown;
+	last_used_at: unknown;
 };
 type FoundRow = { found: unknown };
 
 const PROJECT_COLUMNS = "p.id, p.organisation_id, p.name, p.created_at";
 const USER_COLUMNS = "id, name, email, external_subject, created_in_organisation_id, created_at";
 const BINDING_COLUMNS = "organisation_id, principal_kind, principal_id, scope, role, granted_at, granted_by";
-const KEY_COLUMNS = "id, service_id, organisation_id, project_ids, role, prefix, created_at, expires_at, revoked_at";
+/** Every key column, with its details; follow with a `WHERE` on `k`. */
+const SELECT_KEYS =
+	"SELECT k.id, k.service_id, k.organisation_id, k.project_ids, k.role, k.prefix, k.created_at, k.expires_at, k.revoked_at, d.name, d.last_used_at FROM identity_api_keys k LEFT JOIN identity_api_key_details d ON d.key_id = k.id";
 
 interface StoredUser {
 	readonly user: User;
@@ -278,6 +299,8 @@ function bindingOf(row: BindingRow): RoleBinding {
 function apiKeyOf(row: ApiKeyRow): ApiKey {
 	const expiresAt = optionalNumber(row.expires_at);
 	const revokedAt = optionalNumber(row.revoked_at);
+	const name = sqlOptionalString(row.name);
+	const lastUsedAt = optionalNumber(row.last_used_at);
 	const projectIds = (JSON.parse(String(row.project_ids)) as unknown[]).map(String);
 	return Object.freeze({
 		id: String(row.id),
@@ -286,7 +309,9 @@ function apiKeyOf(row: ApiKeyRow): ApiKey {
 		projectIds: Object.freeze(projectIds),
 		role: String(row.role) as Role,
 		prefix: String(row.prefix),
+		...(name === undefined ? {} : { name }),
 		createdAt: sqlNumber(row.created_at),
+		...(lastUsedAt === undefined ? {} : { lastUsedAt }),
 		...(expiresAt === undefined ? {} : { expiresAt }),
 		...(revokedAt === undefined ? {} : { revokedAt }),
 	});
@@ -333,13 +358,37 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 	const keyIsLive = (key: ApiKey): boolean =>
 		key.revokedAt === undefined && (key.expiresAt === undefined || clock.now() < key.expiresAt);
 
+	/** When this instance last recorded each key's use, so a busy key skips the write it would not change. */
+	const usesRecorded = new Map<ApiKeyId, number>();
+
+	/**
+	 * Records a key's use, at most once per `API_KEY_LAST_USED_PRECISION_MS`: the upsert moves `last_used_at` on only
+	 * when it is unset or that much older, whichever instance wrote it. A failed write never fails the call it records.
+	 */
+	async function recordUse(key: ApiKey): Promise<void> {
+		const now = clock.now();
+		if (!lastUsedIsStale(key.lastUsedAt, now) || !lastUsedIsStale(usesRecorded.get(key.id), now)) return;
+		if (usesRecorded.size >= 10_000) usesRecorded.clear();
+		usesRecorded.set(key.id, now);
+		try {
+			await driver.query(
+				`INSERT INTO identity_api_key_details (key_id, name, last_used_at) VALUES (?, NULL, ?)
+				 ON CONFLICT (key_id) DO UPDATE SET last_used_at = excluded.last_used_at
+				 WHERE identity_api_key_details.last_used_at IS NULL OR identity_api_key_details.last_used_at <= ?`,
+				[key.id, now, now - API_KEY_LAST_USED_PRECISION_MS],
+			);
+		} catch {
+			usesRecorded.delete(key.id);
+		}
+	}
+
 	async function exists(text: string, params: readonly SqlValue[]): Promise<boolean> {
 		return (await driver.query<FoundRow>(text, params)).length > 0;
 	}
 
 	async function keyById(keyId: unknown): Promise<ApiKey | undefined> {
 		if (typeof keyId !== "string") return undefined;
-		const [row] = await driver.query<ApiKeyRow>(`SELECT ${KEY_COLUMNS} FROM identity_api_keys WHERE id = ?`, [keyId]);
+		const [row] = await driver.query<ApiKeyRow>(`${SELECT_KEYS} WHERE k.id = ?`, [keyId]);
 		return row === undefined ? undefined : apiKeyOf(row);
 	}
 
@@ -935,6 +984,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			for (const projectId of projectIds) await requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
 			await serviceIn(ctx.organisationId, input.serviceId);
 			const role = requireRoleValue(input.role);
+			const name = apiKeyName(input.name);
 			const now = clock.now();
 			if (input.expiresAt !== undefined && input.expiresAt <= now) {
 				throw new HarbourError("invalid", "a key cannot expire before it is issued");
@@ -947,12 +997,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				projectIds: Object.freeze(projectIds),
 				role,
 				prefix: apiKeyPrefix(secret),
+				...(name === undefined ? {} : { name }),
 				createdAt: now,
 				...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
 			});
-			await driver.query(
-				"INSERT INTO identity_api_keys (id, secret_hash, service_id, organisation_id, project_ids, role, prefix, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
-				[
+			const insertKey = {
+				sql: "INSERT INTO identity_api_keys (id, secret_hash, service_id, organisation_id, project_ids, role, prefix, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+				params: [
 					key.id,
 					await hashApiKeySecret(secret),
 					key.serviceId,
@@ -963,6 +1014,18 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					now,
 					key.expiresAt ?? null,
 				],
+			};
+			// The key and its name land together or not at all.
+			await driver.batch(
+				name === undefined
+					? [insertKey]
+					: [
+							insertKey,
+							{
+								sql: "INSERT INTO identity_api_key_details (key_id, name, last_used_at) VALUES (?, ?, NULL)",
+								params: [key.id, name],
+							},
+						],
 			);
 			await emit(
 				ctx,
@@ -973,6 +1036,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					serviceId: key.serviceId,
 					projectIds: [...key.projectIds],
 					role,
+					...(name === undefined ? {} : { name }),
 					...(key.expiresAt === undefined ? {} : { expiresAt: key.expiresAt }),
 				},
 			);
@@ -1004,12 +1068,11 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			const serviceId = input?.serviceId;
 			const rows =
 				serviceId === undefined
-					? await driver.query<ApiKeyRow>(
-							`SELECT ${KEY_COLUMNS} FROM identity_api_keys WHERE organisation_id = ? ORDER BY seq`,
-							[ctx.organisationId],
-						)
+					? await driver.query<ApiKeyRow>(`${SELECT_KEYS} WHERE k.organisation_id = ? ORDER BY k.seq`, [
+							ctx.organisationId,
+						])
 					: await driver.query<ApiKeyRow>(
-							`SELECT ${KEY_COLUMNS} FROM identity_api_keys WHERE organisation_id = ? AND service_id = ? ORDER BY seq`,
+							`${SELECT_KEYS} WHERE k.organisation_id = ? AND k.service_id = ? ORDER BY k.seq`,
 							[ctx.organisationId, String(serviceId)],
 						);
 			const administers = new Map<ProjectId, Promise<boolean>>();
@@ -1042,13 +1105,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			await requireSystem(ctx, "identity.authenticateApiKey", workerOptions);
 			let key: ApiKey | undefined;
 			if (typeof secret === "string") {
-				const [row] = await driver.query<ApiKeyRow>(
-					`SELECT ${KEY_COLUMNS} FROM identity_api_keys WHERE secret_hash = ?`,
-					[await hashApiKeySecret(secret)],
-				);
+				const [row] = await driver.query<ApiKeyRow>(`${SELECT_KEYS} WHERE k.secret_hash = ?`, [
+					await hashApiKeySecret(secret),
+				]);
 				key = row === undefined ? undefined : apiKeyOf(row);
 			}
 			if (key === undefined || !keyIsLive(key)) throw forbidden("the API key is not valid");
+			await recordUse(key);
 			return {
 				actor: { kind: "service", serviceId: key.serviceId, keyId: key.id },
 				organisationId: key.organisationId,

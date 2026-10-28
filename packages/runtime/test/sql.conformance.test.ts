@@ -33,11 +33,12 @@ registerRuntimeConformance(
 				model: script,
 				releasedSessions: deps.releasedSessions,
 				sessionEnd: service.sessionEnd,
+				history: service.history,
 			});
 		} finally {
 			await service.close();
 			await db.close();
 		}
 	},
-	{ projectAccess: true },
+	{ projectAccess: true, history: true },
 );

@@ -9,6 +9,9 @@ name: Cloudflare deploy (M1-CF1)
 #   secret   CLOUDFLARE_API_TOKEN
 #   vars     CLOUDFLARE_ACCOUNT_ID, HARBOUR_HOSTNAME, HARBOUR_ACCESS_TEAM_DOMAIN, HARBOUR_ACCESS_AUD,
 #            HARBOUR_MODELS_VPC_SERVICE_ID, HARBOUR_ADMIN_EMAIL (the first admin, invited by email)
+#   optional vars, only to move the data (apps/cloudflare/scripts/deploy-config.ts); unset, wrangler.jsonc's stand:
+#            HARBOUR_D1_DATABASE_NAME with HARBOUR_D1_DATABASE_ID (another D1 database for DB),
+#            HARBOUR_R2_BUCKET (another bucket for WORKSPACES), HARBOUR_LOCATION_HINT (the objects' hint)
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            HARBOUR_VAULT_KEY (without it the vault answers 503), HARBOUR_VAULT_MODEL_GATEWAY_TOKEN,
 #            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN
@@ -54,7 +57,8 @@ permissions:
 jobs:
   deploy:
     name: Build, dry run, and deploy when set up
-    runs-on: ubuntu-latest
+    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    runs-on: [self-hosted, harbour]
     timeout-minutes: 20
     env:
       WRANGLER_SEND_METRICS: "false"
@@ -65,6 +69,11 @@ jobs:
       HARBOUR_ACCESS_AUD: ${{ vars.HARBOUR_ACCESS_AUD }}
       HARBOUR_MODELS_VPC_SERVICE_ID: ${{ vars.HARBOUR_MODELS_VPC_SERVICE_ID }}
       HARBOUR_ADMIN_EMAIL: ${{ vars.HARBOUR_ADMIN_EMAIL }}
+      # Optional: where the data lives. Empty keeps wrangler.jsonc's database, bucket and hint.
+      HARBOUR_D1_DATABASE_NAME: ${{ vars.HARBOUR_D1_DATABASE_NAME }}
+      HARBOUR_D1_DATABASE_ID: ${{ vars.HARBOUR_D1_DATABASE_ID }}
+      HARBOUR_R2_BUCKET: ${{ vars.HARBOUR_R2_BUCKET }}
+      HARBOUR_LOCATION_HINT: ${{ vars.HARBOUR_LOCATION_HINT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -126,6 +135,10 @@ jobs:
       - name: Build the console
         run: pnpm --filter @harbour/cloudflare build:console
 
+      # The dynamic-worker isolate's code, which the Worker imports as text for the Worker Loader (src/dynamic-worker.ts).
+      - name: Build the dynamic-worker isolate
+        run: pnpm --filter @harbour/cloudflare build:isolate
+
       # Placeholders stand in for unset variables in a dry run; deploy mode refuses to write a config without them.
       - name: Write the deploy config
         working-directory: apps/cloudflare
@@ -143,6 +156,8 @@ jobs:
           HARBOUR_VAULT_KEY: ${{ secrets.HARBOUR_VAULT_KEY }}
           HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_MODEL_GATEWAY_TOKEN }}
           HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN }}
+          # CLIProxyAPI's client key: the vault object keeps it as the model gateway's platform item (src/models.ts).
+          HARBOUR_CPA_API_KEY: ${{ secrets.HARBOUR_CPA_API_KEY }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.

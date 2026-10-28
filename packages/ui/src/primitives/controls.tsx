@@ -134,6 +134,60 @@ export function TextField({
 	);
 }
 
+export type SelectOption = { readonly value: string; readonly label: string };
+
+/**
+ * A labelled choice of one from a list too long for a SegmentedControl: a project, a model. The browser's own select,
+ * so the keyboard, a screen reader and a phone's picker all work as people expect.
+ */
+export function SelectField({
+	label,
+	hint,
+	error,
+	options,
+	className,
+	id: suppliedId,
+	...rest
+}: Omit<ComponentProps<"select">, "children" | "multiple"> & {
+	label: string;
+	options: readonly SelectOption[];
+	hint?: string;
+	error?: string;
+}) {
+	const generatedId = useId();
+	const id = suppliedId ?? generatedId;
+	const described = error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
+	return (
+		<div className={`hb-text-field${className ? ` ${className}` : ""}`}>
+			<label className="hb-text-field-label" htmlFor={id}>
+				{label}
+			</label>
+			<select
+				id={id}
+				className="hb-input hb-select hb-focusable"
+				aria-invalid={error !== undefined || undefined}
+				aria-describedby={described}
+				{...rest}
+			>
+				{options.map((option) => (
+					<option key={option.value} value={option.value}>
+						{option.label}
+					</option>
+				))}
+			</select>
+			{error !== undefined ? (
+				<p id={`${id}-error`} className="hb-text-field-error">
+					{error}
+				</p>
+			) : hint !== undefined ? (
+				<p id={`${id}-hint`} className="hb-text-field-hint">
+					{hint}
+				</p>
+			) : null}
+		</div>
+	);
+}
+
 export type SegmentOption<T extends string> = { value: T; label: string; count?: number };
 
 /**

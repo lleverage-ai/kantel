@@ -38,7 +38,14 @@ import {
 	type User,
 	type UserId,
 } from "@harbour/contracts";
-import { apiKeyPrefix, generateApiKeySecret, hashApiKeySecret, strongestRole } from "./index.ts";
+import {
+	apiKeyName,
+	apiKeyPrefix,
+	generateApiKeySecret,
+	hashApiKeySecret,
+	lastUsedIsStale,
+	strongestRole,
+} from "./index.ts";
 
 /** Identity appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("identity");
@@ -464,6 +471,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			for (const projectId of projectIds) requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
 			serviceIn(ctx.organisationId, input.serviceId);
 			const role = requireRoleValue(input.role);
+			const name = apiKeyName(input.name);
 			const now = clock.now();
 			if (input.expiresAt !== undefined && input.expiresAt <= now) {
 				throw new HarbourError("invalid", "a key cannot expire before it is issued");
@@ -476,6 +484,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				projectIds: Object.freeze(projectIds),
 				role,
 				prefix: apiKeyPrefix(secret),
+				...(name === undefined ? {} : { name }),
 				createdAt: now,
 				...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
 			});
@@ -490,6 +499,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 					serviceId: key.serviceId,
 					projectIds: [...key.projectIds],
 					role,
+					...(name === undefined ? {} : { name }),
 					...(key.expiresAt === undefined ? {} : { expiresAt: key.expiresAt }),
 				},
 			);
@@ -529,6 +539,8 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			const keyId = typeof secret === "string" ? apiKeyIdsByHash.get(await hashApiKeySecret(secret)) : undefined;
 			const key = keyId === undefined ? undefined : apiKeys.get(keyId);
 			if (key === undefined || !keyIsLive(key)) throw forbidden("the API key is not valid");
+			const now = clock.now();
+			if (lastUsedIsStale(key.lastUsedAt, now)) apiKeys.set(key.id, Object.freeze({ ...key, lastUsedAt: now }));
 			return {
 				actor: { kind: "service", serviceId: key.serviceId, keyId: key.id },
 				organisationId: key.organisationId,

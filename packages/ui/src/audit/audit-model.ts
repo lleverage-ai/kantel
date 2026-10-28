@@ -1,5 +1,5 @@
-// The audit view's logic, apart from React: what the filters mean as an `AuditQuery`, what the contract can't filter
-// on (a credential) and so is matched here, how each event reads as one line, where it links, and JSONL export.
+// The audit view's logic, apart from React: what the filters mean as an `AuditQuery` (the credential included, as the
+// store's `itemId`), how each event reads as one line, where it links, and JSONL export.
 
 import type { Actor, AuditEvent, AuditQuery, JsonValue, Page, PageRequest } from "@harbour/contracts";
 import { DAY, HOUR } from "../primitives/format.ts";
@@ -71,7 +71,7 @@ export interface AuditFilters {
 	readonly projectId?: string;
 	readonly agentId?: string;
 	readonly sessionId?: string;
-	/** A vault item ID. The contract has no filter for it, so it is matched here, over the pages the store returns. */
+	/** A vault item ID, matched by the store as `AuditQuery.itemId`: its uses, requests, approvals and policies. */
 	readonly credential?: string;
 }
 
@@ -140,7 +140,7 @@ export function actorFromKey(key: string): Actor | undefined {
 
 const set = (value: string | undefined): value is string => value !== undefined && value !== "";
 
-/** The filters as the store's query, newest first. The credential filter is left to `matchesCredential`. */
+/** The filters as the store's query, newest first. */
 export function toQuery(filters: AuditFilters, now: number): AuditViewQuery {
 	const type = KINDS.find((kind) => kind.value === filters.kind)?.type;
 	const actor = set(filters.actor) ? actorFromKey(filters.actor) : undefined;
@@ -153,21 +153,20 @@ export function toQuery(filters: AuditFilters, now: number): AuditViewQuery {
 		...(set(filters.projectId) ? { projectId: filters.projectId } : {}),
 		...(set(filters.agentId) ? { agentId: filters.agentId } : {}),
 		...(set(filters.sessionId) ? { sessionId: filters.sessionId } : {}),
+		...(set(filters.credential) ? { itemId: filters.credential } : {}),
 		...(from === undefined ? {} : { from }),
 		...(to === undefined ? {} : { to }),
 	};
 }
 
-/** The vault item an event is about, from its data: uses, proposals, approvals and new items name it. */
+/**
+ * The vault item an event is about, as the store's `itemId` filter matches it: its subject when that is a `vault.item`
+ * (a new item), or else `data.itemId` (uses, proposals, approvals and policies).
+ */
 export function eventItemId(event: AuditEvent): string | undefined {
-	if (event.type === "vault.item.created" && event.subject?.kind === "vault.item") return event.subject.id;
+	if (event.subject?.kind === "vault.item") return event.subject.id;
 	const itemId = event.data?.itemId;
 	return typeof itemId === "string" ? itemId : undefined;
-}
-
-/** Whether an event passes the credential filter; every event passes when it isn't set. */
-export function matchesCredential(event: AuditEvent, credential: string | undefined): boolean {
-	return !set(credential) || eventItemId(event) === credential;
 }
 
 /** Whether any filter narrows the log, for the "Clear filters" action and the empty state's copy. */
@@ -196,8 +195,11 @@ export interface AuditDirectory {
 
 /** Where rows link. Absent builders, and undefined from one (a record the host can't open), leave rows unlinked. */
 export interface AuditLinks {
-	/** A session, at the turn an event came from when the event names one. */
-	session?(sessionId: string, turn?: string): string | undefined;
+	/**
+	 * A session, at the turn an event came from when the event names one (a `session.submission` or `session.tool`
+	 * subject), with the project the event names, for a host whose session pages sit under their project.
+	 */
+	session?(sessionId: string, turn?: string, projectId?: string): string | undefined;
 	/** The vault page for a proposal (its decision lives there too). */
 	proposal?(proposalId: string): string | undefined;
 }
@@ -246,7 +248,8 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 		event.subject?.kind === "session.submission" || event.subject?.kind === "session.tool"
 			? event.subject.id
 			: undefined;
-	const sessionHref = event.sessionId === undefined ? undefined : links.session?.(event.sessionId, turn);
+	const sessionHref =
+		event.sessionId === undefined ? undefined : links.session?.(event.sessionId, turn, event.projectId);
 	const sessionLink =
 		sessionHref === undefined || event.sessionId === undefined
 			? undefined
@@ -351,13 +354,43 @@ export function exportName(filters: AuditFilters, now: number): string {
 }
 
 /**
+ * The vault items an organisation's log names, from their `vault.item.created` events, as the credential filter's
+ * choices: each item once, labelled with its name (its ID when the event has none), sorted by label. For a host with no
+ * vault API to list items from, such as the console on the gateway; the same list names items in rows.
+ */
+export async function credentialChoices(
+	source: AuditSource,
+	options: { organisationId?: string; signal?: AbortSignal } = {},
+): Promise<{ readonly value: string; readonly label: string }[]> {
+	const names = new Map<string, string>();
+	for await (const page of readAll(
+		source,
+		{
+			type: "vault.item.created",
+			newestFirst: true,
+			...(options.organisationId === undefined ? {} : { organisationId: options.organisationId }),
+		},
+		options.signal === undefined ? {} : { signal: options.signal },
+	)) {
+		for (const event of page) {
+			const itemId = eventItemId(event);
+			// Newest first: an item created again (a pasted secret for a requested one) keeps its latest name.
+			if (itemId !== undefined && !names.has(itemId)) names.set(itemId, text(event.data?.name) ?? itemId);
+		}
+	}
+	return [...names]
+		.map(([value, label]) => ({ value, label }))
+		.sort((a, b) => a.label.localeCompare(b.label, "en-GB") || a.value.localeCompare(b.value));
+}
+
+/**
  * Reads every page the query matches, oldest first is not assumed: pages come in the query's order. Stops early when
- * `signal` aborts. The credential filter is applied as pages arrive.
+ * `signal` aborts.
  */
 export async function* readAll(
 	source: AuditSource,
 	query: AuditViewQuery,
-	options: { credential?: string; pageSize?: number; signal?: AbortSignal } = {},
+	options: { pageSize?: number; signal?: AbortSignal } = {},
 ): AsyncGenerator<AuditEvent[], void, void> {
 	let cursor: string | undefined;
 	const cancelled = () => options.signal?.aborted === true;
@@ -368,7 +401,7 @@ export async function* readAll(
 			...(cursor === undefined ? {} : { cursor }),
 		});
 		if (cancelled()) return;
-		yield page.items.filter((event) => matchesCredential(event, options.credential));
+		yield [...page.items];
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);
 }

@@ -2,7 +2,7 @@ import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { systemContext } from "@harbour/contracts";
 import { useEffect, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
-import { type AuditFilters, type AuditSource, matchesCredential } from "./audit-model.ts";
+import { type AuditFilters, type AuditSource, eventItemId } from "./audit-model.ts";
 import { AuditView, type AuditViewProps } from "./audit-view.tsx";
 import {
 	type AuditScenario,
@@ -140,15 +140,15 @@ const nothingMatches: AuditFilters = { range: "hour", kind: "identity", credenti
 export const EmptyFiltered: Story = () => <ScenarioView filters={nothingMatches} />;
 
 /**
- * The Linear key was last used weeks ago, behind more than a load's worth of other events: the view says none of the
- * recent ones match and offers to look further back, rather than claiming nothing does.
+ * The Linear key was last used weeks ago, behind 6,000 other events. The store filters by credential, so its first
+ * page is the key's own events, however far back they are.
  */
 const sparseSource: AuditSource = (() => {
 	const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
 	const events = generateEvents(8000).sort((a, b) => a.at - b.at);
 	const recent = events
 		.slice(-6000)
-		.filter((event) => !matchesCredential({ ...event, seq: 0, recordedAt: event.at }, "itm_linear"));
+		.filter((event) => eventItemId({ ...event, seq: 0, recordedAt: event.at }) !== "itm_linear");
 	const ready = store.append(systemContext("fixture"), [...events.slice(0, -6000), ...recent]);
 	const viewer = { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION } as const;
 	return {

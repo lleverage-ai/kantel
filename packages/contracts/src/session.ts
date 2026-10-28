@@ -5,7 +5,14 @@
  *
  * Pi types never appear here; the runtime projects Pi Durable's transcript onto `@harbour/protocol` items.
  */
-import type { ServerFrame, SessionSnapshot, SessionStatus, Usage } from "@harbour/protocol";
+import type {
+	HistoryPage,
+	ServerFrame,
+	SessionSnapshot,
+	SessionStatus,
+	TranscriptItem,
+	Usage,
+} from "@harbour/protocol";
 import type {
 	Actor,
 	AgentId,
@@ -22,6 +29,7 @@ import type {
 	Timestamp,
 	WorkspaceId,
 } from "./common.ts";
+import type { ModelThinking } from "./models.ts";
 import type { SandboxPolicy } from "./sandbox.ts";
 
 export type { SessionStatus } from "@harbour/protocol";
@@ -84,10 +92,187 @@ export interface CreateSessionInput {
 	readonly parentSessionId?: SessionId;
 }
 
+/**
+ * A file a person attached to a prompt (the composer's picker, a drop or a paste), already uploaded by the host. The
+ * host owns the upload: where the bytes are stored, scanning and size limits. The prompt carries only this reference.
+ *
+ * Proposed (27 Oct 2026, alongside `@harbour/ui`'s composer): the reference runtime doesn't read attachments yet, and
+ * how it reads one through the host that uploaded it is open question 14 in docs/contracts.md.
+ */
+export interface PromptAttachment {
+	/** The host's ID for the upload. Unique within the prompt. */
+	readonly id: string;
+	/** The file's name as the person saw it, such as `invoice.pdf` or `pasted-text.txt`. */
+	readonly name: string;
+	/** The MIME type, such as `image/png` or `text/plain`. */
+	readonly type: string;
+	/** In bytes. */
+	readonly size: number;
+	/**
+	 * `image`: a PNG, JPEG, GIF or WebP a model can look at; `file`: any other file; `text`: a large paste the composer
+	 * folded into a file instead of the prompt's text.
+	 */
+	readonly kind: "image" | "file" | "text";
+}
+
 export interface PromptInput {
+	/** The prompt's words. Proposed: may be empty when `attachments` has at least one item. */
 	readonly text: string;
 	/** Retrying with the same requestId returns the same submission instead of submitting twice. */
 	readonly requestId?: string;
+	/** Proposed: files the host uploaded for this prompt, in the order the person attached them. */
+	readonly attachments?: readonly PromptAttachment[];
+	/**
+	 * Proposed: a `ModelOption.id` from `SessionModels.listModels`, which this input's run and the session's later runs
+	 * use (a steer's from the run's next model call). Absent keeps the session's current model. An ID the session can't
+	 * use is `invalid`, and one with a
+	 * `disabledReason` is `refused`; an image attachment for a model whose `capabilities.images` is `false` is `invalid`.
+	 */
+	readonly model?: string;
+	/**
+	 * Proposed: the thinking level this input's run and the session's later runs use, as `model` is. A level the model
+	 * doesn't support runs as the nearest one it does (pi's `clampThinkingLevel`); choosing another model without a level
+	 * keeps the session's level, clamped the same way. Absent keeps the session's current level.
+	 */
+	readonly thinking?: ModelThinking;
+}
+
+/**
+ * One model a person may choose for a session: one of the models `ModelGateway.config` lists for it (a route, or a
+ * route's model override), as the composer's model picker shows it. The organisation's and project's configuration
+ * (connectors, routes and the project's policy, see models.ts) decide the list; this only describes it.
+ */
+export interface ModelOption {
+	/** `ModelGatewayModel.id`: a route name such as `default`, or `<route>:<modelId>` for an override. */
+	readonly id: string;
+	/** What a person reads, such as `Claude Sonnet 4.5`. */
+	readonly label: string;
+	/** Who serves the model, for grouping the list, such as `Anthropic`. */
+	readonly provider?: string;
+	/** One short line, such as `Fast, for small edits`. */
+	readonly description?: string;
+	/** What the model takes. A field left out is unknown, and clients act only on what is given. */
+	readonly capabilities?: {
+		/** Reads images: `ModelGatewayModel.input` includes `image`. */
+		readonly images?: boolean;
+		/** The thinking levels it supports: the levels `ModelGatewayModel.thinkingLevelMap` doesn't map to `null`. */
+		readonly thinking?: readonly ModelThinking[];
+	};
+	/**
+	 * The model the session runs with when a prompt names none: its agent profile's route, until a prompt names
+	 * another. At most one option.
+	 */
+	readonly default?: boolean;
+	/** Set when the model is listed but can't be chosen now, with the reason a person reads. Shown dimmed, not hidden. */
+	readonly disabledReason?: string;
+}
+
+/** A model and thinking level: what a session runs with, or what its agent profile names. */
+export interface ModelSelection {
+	/** A `ModelOption.id`. */
+	readonly model: string;
+	/** Absent for a model that can't think. */
+	readonly thinking?: ModelThinking;
+}
+
+/** What a client's model and thinking pickers show for a session, or for a session about to be created. */
+export interface SessionModelState {
+	/** As `listModels` gives them. */
+	readonly models: readonly ModelOption[];
+	/**
+	 * What the session's next model call uses: its agent profile's, until a prompt names another model or level. Kept
+	 * with the session's conversation, so it outlives the process. Absent when the session's model isn't one it may name.
+	 */
+	readonly selected?: ModelSelection;
+	/**
+	 * What the session's agent profile names, from the organisation's or project's configuration: the `default` option
+	 * and the profile's thinking level (`off` when it names none).
+	 */
+	readonly defaults?: ModelSelection;
+}
+
+/** A session not created yet: the project it will be in and the agent profile it will run. */
+export interface SessionModelsStart {
+	readonly projectId: ProjectId;
+	readonly agentId: AgentId;
+}
+
+/**
+ * Proposed (27 Oct 2026): the models a session's prompts may name, for a client's model picker. A separate interface so
+ * that no existing `SessionRuntime` has to change to adopt it.
+ */
+export interface SessionModels {
+	/**
+	 * The models the session may use, in the order to show them: what the gateway's `config` lists for the session,
+	 * after the project's policy, with exactly one `default` when the session's own route is among them. The caller needs
+	 * viewer on the session's project; another organisation's session is `not_found`.
+	 */
+	listModels(ctx: CallContext, sessionId: SessionId): Promise<readonly ModelOption[]>;
+	/** `listModels`, with what the session runs with now and what its profile names. Access as `listModels`. */
+	modelState(ctx: CallContext, sessionId: SessionId): Promise<SessionModelState>;
+	/**
+	 * What a session the caller is about to create would list, so a New session screen can offer the choice before the
+	 * session exists; its first prompt carries the choice. `selected` is `defaults`. The caller needs operator on the
+	 * project, as `create` does; a profile for another project is `invalid`.
+	 */
+	startModels(ctx: CallContext, start: SessionModelsStart): Promise<SessionModelState>;
+}
+
+/** The most items one history page holds; a larger `limit` is cut to it. */
+export const SESSION_HISTORY_MAX_LIMIT = 200;
+/** Items in a history page when the request gives no `limit`. */
+export const SESSION_HISTORY_DEFAULT_LIMIT = 50;
+
+/**
+ * Which page of a session's transcript to read. With neither `cursor` nor `before`, the latest page: the newest
+ * `limit` items. Give at most one of the two.
+ */
+export interface SessionHistoryRequest {
+	/** A previous page's `nextCursor`: the page of items older than that page's oldest. Opaque. */
+	readonly cursor?: string;
+	/**
+	 * The page of items older than this item ID, such as a snapshot's `items[0].id`: what the protocol's `history` frame
+	 * names as `before`, so a client holding a snapshot pages back from it.
+	 */
+	readonly before?: string;
+	/** At most this many items, from 1. Default `SESSION_HISTORY_DEFAULT_LIMIT`, cut to `SESSION_HISTORY_MAX_LIMIT`. */
+	readonly limit?: number;
+}
+
+/** One page of a session's transcript, newest first. */
+export interface SessionHistoryPage {
+	readonly sessionId: SessionId;
+	/** Newest first: `items[0]` is the newest item in the page, `items.at(-1)` its oldest. */
+	readonly items: readonly TranscriptItem[];
+	/** Present when older items exist: pass it as `cursor` for the page before this one. */
+	readonly nextCursor?: string;
+}
+
+/**
+ * Proposed (28 Oct 2026, for the session view's scroll-back, issue #6): a session's transcript in pages, newest first,
+ * so a client shows the latest turns at once and loads older ones as the reader scrolls back. A separate interface, as
+ * `SessionModels` is, so that no existing `SessionRuntime` has to change to adopt it.
+ *
+ * A cursor names the oldest item of the page that gave it, and items are only ever appended (an item that changes, an
+ * answer streaming, keeps its ID and place), so the pages behind a cursor stay the same while new turns arrive: paging
+ * back never repeats or skips an item. Items are the ones a snapshot and `watch` deliver, with the same IDs, and the
+ * IDs survive the runtime reopening the session, so a cursor does too.
+ */
+export interface SessionHistory {
+	/**
+	 * A page of the session's items, newest first. The caller needs viewer on the session's project; another
+	 * organisation's session is `not_found`. A malformed cursor, a `limit` below 1, or both `cursor` and `before`, is
+	 * `invalid`; a `before` or cursor naming an item the session doesn't have is `not_found`.
+	 */
+	history(ctx: CallContext, sessionId: SessionId, request?: SessionHistoryRequest): Promise<SessionHistoryPage>;
+}
+
+/**
+ * A history page as the protocol's `history` frame carries it, for a client that keeps its transcript oldest first and
+ * puts each page in front: the same items, oldest first, with `hasEarlier` when older items exist.
+ */
+export function protocolHistoryPage(page: SessionHistoryPage): HistoryPage {
+	return { sessionId: page.sessionId, items: [...page.items].reverse(), hasEarlier: page.nextCursor !== undefined };
 }
 
 export interface Submission {
