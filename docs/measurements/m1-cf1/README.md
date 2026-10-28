@@ -2,7 +2,8 @@
 
 Three batches of 50 runs, each after one warm-up call, recorded 28 Oct 2026 against `https://harbour.myslop.app`, the M1
 stack as CI deploys it (`apps/cloudflare`, one `HarbourStack` Durable Object, D1 for identity and audit, R2 for
-workspaces). The isolate backend is `in-process` (#94's just-bash inside the object), the only one built so far. The
+workspaces). The first three batches use the `in-process` isolate backend (#94's just-bash inside the object); the two
+later ones compare it with `dynamic-worker` (#135) and record where the object and D1 run (below). The
 measurement is `POST /v1/measurements/isolate-ready` (`apps/cloudflare/src/measure.ts`). Each run creates a new session
 on the 61-file measurement workspace, runs `ls -1R` in that session's isolate (68 non-empty output lines), answers its
 timings and closes the session. Server `total` runs from the session's create to the end of the command. It leaves
@@ -32,6 +33,41 @@ M0-CF1 was (1,208 / 2,055 ms, [M0-CF1](../m0-cf1/README.md)), but for a differen
   ["only advance or increment after I/O occurs"](https://developers.cloudflare.com/workers/runtime-apis/performance/).
   So `total` is mostly time spent waiting on storage and other I/O. CPU-only work isn't measured: the smoke test's
   call reported `isolate.exec` and `isolate.scan` as 0 ms, which says nothing about their CPU cost.
+
+## Dynamic Workers, and where D1 runs (28 Oct 2026, 18:21 UTC)
+
+Two more batches of 50, one per backend, back to back from `/healthz`, after #135 deployed the `dynamic-worker`
+backend. Each warm-up and a call after the 50 runs also asked for `placement` (probed after the run, so it adds nothing
+to its times): the object's colo, the edge's, D1's region and colo, and five `SELECT 1` round trips from the object.
+
+| Batch | Deployed `main` | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 | `session` p50 / p95 | `isolate` p50 / p95 | Sign-in p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| [`…T18-21-23Z-dynamic-worker.json`](isolate-ready-2026-10-28T18-21-23Z-dynamic-worker.json) | `7f0b931` (#135) | 2,329 / 2,700 (2,138–2,980) | **1,496 / 1,910** | 426 / 501 | 1,065 / 1,405 | 363 / 427 |
+| [`…T18-23-40Z-in-process-placement.json`](isolate-ready-2026-10-28T18-23-40Z-in-process-placement.json) | `367388b` (#137) | 2,442 / 2,991 (1,726–4,334) | **1,533 / 1,885** | 480 / 616 | 1,031 / 1,382 | 378 / 442 |
+
+50 of 50 answered 200 with exit code 0 in both. The in-process batch ran on the next deploy (#137, API keys), which
+changed neither backend.
+
+**Verdict: switching backend changed nothing measurable; the remote D1 round trips are most likely the bulk of the
+miss.** Neither batch measured a co-located object and D1, so what that would reach is an expectation, not a result.
+
+- **The two backends take the same time.** Server p50 1,496 ms on Dynamic Workers against 1,533 ms in process. Each
+  run is a new session, so each loads a new Dynamic Worker (`isolate.cold` was 1 in all 50), and the call into it
+  (`isolate.call`: load, the RPC both ways and the command, with its manifest read over the port) took **128 / 212 ms**
+  p50 / p95. That call alone is already over the 100 ms p50 target, with a cold load every time. The other ~0.9 s
+  of `isolate` is the same storage round trips the in-process backend waits on.
+- **D1's primary is in North America; the object is in London.** All four placement probes answered: object `LHR`, D1
+  region `ENAM`, colo `ORD`, `served_by_primary` true. The edge was `LHR` or `AMS`, wherever brwsr's browser came in.
+- **Each D1 query costs about 120 ms from the object, almost none of it SQL.** The 20 `SELECT 1` round trips took
+  120 ms p50 (107–256 ms); D1 reported at most 0.38 ms of SQL in any of them. These probes don't separate the
+  network from D1's own overhead, but the distance (London to Chicago) fits. They agree with the inference below of
+  about 100 ms a query: sign-in's ~370 ms matches its three D1 queries.
+
+With the object and D1 together (either moved), those round trips should shrink to a few milliseconds each, leaving
+the Dynamic Worker call and the object's own work; that needs measuring again before it counts. The cold Dynamic
+Worker load (128 ms p50) would then be the next thing in the way. Which to move is a decision for #17, not taken
+here: D1's location is set when a database is created (a location hint), so moving it means a new database and
+its data copied, and the object's is set on its first use, so moving it means a new object name with a location hint.
 
 ## Where the time goes
 
@@ -64,10 +100,9 @@ Round trips from the same signed-in page (15 calls each for the first three rows
 
 What would get near the target, roughly in order of payoff:
 
-1. **D1's location, then fewer D1 round trips.** About 100 ms per query suggests the `harbour` database's primary
-   isn't next to the object. Read replicas, or keeping the identity rows the object reads on every request in its own
-   SQLite, would cut every call. Seeing where `harbour` lives is a read in the Cloudflare dashboard (D1 → `harbour`),
-   not done here.
+1. **D1's location, then fewer D1 round trips.** The `harbour` database's primary is in `ENAM` (`ORD`) and the object
+   in `LHR`, about 120 ms a query (above). Putting them together, read replicas, or keeping the identity rows the
+   object reads on every request in its own SQLite, would cut every call.
 2. **Sign-in once per token, not once per request.** A short cache keyed on the Access JWT would save about 0.3 s a
    call. That's the identity lane's authenticator.
 3. **Audit off the critical path.** Append after the answer (`ctx.waitUntil`), not before it, both in the measured
@@ -113,19 +148,23 @@ From the same signed-in brwsr context:
 From a signed-in page on the hostname, such as `/healthz` (not the console, which polls into the same object):
 
 ```js
-const backend = "in-process"; // later also "dynamic-worker"
-const call = async () => {
+const backend = "in-process"; // or "dynamic-worker"
+const call = async (placement = false) => {
   const t0 = performance.now();
   const r = await fetch("/v1/measurements/isolate-ready", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ backend }),
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(placement ? { backend, placement: true } : { backend }),
   });
   const j = await r.json();
   return { status: r.status, wall: performance.now() - t0, server: j.timings?.total, session: j.timings?.session,
-           isolate: j.timings?.isolate, exit: j.exitCode, listed: j.listed };
+           isolate: j.timings?.isolate, signIn: j.timings?.signIn, call: j.timings?.["isolate.call"],
+           cold: j.timings?.["isolate.cold"], exit: j.exitCode, listed: j.listed,
+           ...(placement ? { placement: j.placement } : {}) };
 };
-await call(); // warm-up: the first call after an object start seeds the measurement workspace
+const warmup = await call(true); // the first call after an object start seeds the measurement workspace
 const runs = [];
 for (let i = 0; i < 50; i++) runs.push(await call());
+const after = await call(true);
 const q = (xs, p) => [...xs].sort((a, b) => a - b)[Math.ceil(p * xs.length) - 1];
 ({ ok: runs.filter((x) => x.status === 200 && x.exit === 0).length,
    wallP50: q(runs.map((x) => x.wall), 0.5), wallP95: q(runs.map((x) => x.wall), 0.95),
@@ -133,4 +172,5 @@ const q = (xs, p) => [...xs].sort((a, b) => a - b)[Math.ceil(p * xs.length) - 1]
 ```
 
 Each file holds that script's output, `runs` included: `status`, `wall` (client ms), `server` (`timings.total`),
-`session`, `isolate`, `exit` and `listed` per run, plus the warm-up and the summary.
+`session`, `isolate`, `exit` and `listed` per run, plus the warm-up and the summary. The two later files add
+`signIn`, `call` and `cold` per run, and `placement` on the warm-up and `after`.
