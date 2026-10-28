@@ -3,6 +3,7 @@ import type { ConsoleClient } from "../api/client.ts";
 import { SessionClient } from "../state/session-client.ts";
 import { createRequestIds, type SessionActions } from "../ui/actions.ts";
 import { SessionView } from "../ui/session-view.tsx";
+import { useModelPickers } from "./model-choices.ts";
 
 /**
  * One open session: a SessionClient over the console client's transport, started while the screen is shown, and the
@@ -30,6 +31,7 @@ export function SessionScreen({
 	const [failure, setFailure] = useState<string>();
 	const [draft, setDraft] = useState("");
 	const requestIds = useMemo(() => createRequestIds(), []);
+	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
 
 	useEffect(() => {
 		session.start();
@@ -63,7 +65,7 @@ export function SessionScreen({
 
 	/** Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one. */
 	const send = (how: "prompt" | "steer" | "followUp", text: string) =>
-		void run(() => client[how](sessionId, text, { requestId: requestIds.for(how, text) }), text);
+		void run(() => client[how](sessionId, text, { requestId: requestIds.for(how, text), ...pickers.send }), text);
 
 	const actions: SessionActions = {
 		control: client.control(sessionId),
@@ -75,6 +77,7 @@ export function SessionScreen({
 		onSteer: (text) => send("steer", text),
 		onFollowUp: (text) => send("followUp", text),
 		onStop: () => void run(() => client.cancel(sessionId)),
+		pickers: pickers.composer,
 	};
 
 	return <SessionView client={session} project={project} actions={actions} onBack={onBack} onFiles={onFiles} />;

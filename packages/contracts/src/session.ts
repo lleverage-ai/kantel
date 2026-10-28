@@ -129,6 +129,12 @@ export interface PromptInput {
 	 * `disabledReason` is `refused`; an image attachment for a model whose `capabilities.images` is `false` is `invalid`.
 	 */
 	readonly model?: string;
+	/**
+	 * Proposed: the thinking level this input's run and the session's later runs use, as `model` is. A level the model
+	 * doesn't support runs as the nearest one it does (pi's `clampThinkingLevel`); choosing another model without a level
+	 * keeps the session's level, clamped the same way. Absent keeps the session's current level.
+	 */
+	readonly thinking?: ModelThinking;
 }
 
 /**
@@ -161,6 +167,36 @@ export interface ModelOption {
 	readonly disabledReason?: string;
 }
 
+/** A model and thinking level: what a session runs with, or what its agent profile names. */
+export interface ModelSelection {
+	/** A `ModelOption.id`. */
+	readonly model: string;
+	/** Absent for a model that can't think. */
+	readonly thinking?: ModelThinking;
+}
+
+/** What a client's model and thinking pickers show for a session, or for a session about to be created. */
+export interface SessionModelState {
+	/** As `listModels` gives them. */
+	readonly models: readonly ModelOption[];
+	/**
+	 * What the session's next model call uses: its agent profile's, until a prompt names another model or level. Kept
+	 * with the session's conversation, so it outlives the process. Absent when the session's model isn't one it may name.
+	 */
+	readonly selected?: ModelSelection;
+	/**
+	 * What the session's agent profile names, from the organisation's or project's configuration: the `default` option
+	 * and the profile's thinking level (`off` when it names none).
+	 */
+	readonly defaults?: ModelSelection;
+}
+
+/** A session not created yet: the project it will be in and the agent profile it will run. */
+export interface SessionModelsStart {
+	readonly projectId: ProjectId;
+	readonly agentId: AgentId;
+}
+
 /**
  * Proposed (27 Oct 2026): the models a session's prompts may name, for a client's model picker. A separate interface so
  * that no existing `SessionRuntime` has to change to adopt it.
@@ -172,6 +208,14 @@ export interface SessionModels {
 	 * viewer on the session's project; another organisation's session is `not_found`.
 	 */
 	listModels(ctx: CallContext, sessionId: SessionId): Promise<readonly ModelOption[]>;
+	/** `listModels`, with what the session runs with now and what its profile names. Access as `listModels`. */
+	modelState(ctx: CallContext, sessionId: SessionId): Promise<SessionModelState>;
+	/**
+	 * What a session the caller is about to create would list, so a New session screen can offer the choice before the
+	 * session exists; its first prompt carries the choice. `selected` is `defaults`. The caller needs operator on the
+	 * project, as `create` does; a profile for another project is `invalid`.
+	 */
+	startModels(ctx: CallContext, start: SessionModelsStart): Promise<SessionModelState>;
 }
 
 /** The most items one history page holds; a larger `limit` is cut to it. */

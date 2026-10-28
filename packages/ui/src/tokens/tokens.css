@@ -160,4 +160,5 @@
 	--hb-drop-line: color-mix(in srgb, var(--hb-accent) 60%, transparent);
 	--hb-popover-width: 20rem;
 	--hb-popover-height: 22rem;
+	--hb-menu-width: 12rem; /* a short menu of choices, such as the composer's thinking levels */
 }

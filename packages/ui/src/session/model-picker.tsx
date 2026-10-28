@@ -11,6 +11,7 @@ import {
 } from "react";
 import { CheckIcon, ChevronDownIcon, FolderIcon, ImageIcon, SearchIcon, SparkIcon } from "../primitives/icons.tsx";
 import "./model-picker.css";
+import type { ThinkingLevel } from "./thinking-model.ts";
 
 /**
  * One model a session may run with, as the host's model catalogue lists it. The organisation's or project's
@@ -29,6 +30,11 @@ export type ComposerModelOption = {
 	capabilities?: {
 		/** Reads images. With `false`, an image in the draft blocks sending, with the reason. */
 		images?: boolean;
+		/**
+		 * The thinking levels it supports, such as `["off", "low", "medium", "high"]`. The composer's thinking picker
+		 * offers them, and hides for a model without any but `off`.
+		 */
+		thinking?: readonly ThinkingLevel[];
 	};
 	/** The catalogue's default, chosen when the host passes no `model`. */
 	default?: boolean;
@@ -86,6 +92,11 @@ export type ModelPickerProps = {
 	returnFocus?: () => void;
 	/** Open on mount, for a story or a test. */
 	defaultOpen?: boolean;
+	/**
+	 * Ends the button with a chevron. Default true; the composer leaves it out so the thinking level reads on from the
+	 * model's name ("Sonnet 5.5 High"), as T3 Code's does.
+	 */
+	chevron?: boolean;
 };
 
 /** The words and icon of one kind of picker: the composer's models, or a new session's projects. */
@@ -157,6 +168,7 @@ function Picker({
 	onOpenChange,
 	returnFocus,
 	defaultOpen = false,
+	chevron = true,
 	words,
 }: ModelPickerProps & { words: PickerWords }) {
 	const [open, setOpenState] = useState(defaultOpen);
@@ -304,7 +316,7 @@ function Picker({
 			>
 				{words.icon(size === "xs" ? "sm" : "md")}
 				<span className="hb-model-trigger-label">{label}</span>
-				<ChevronDownIcon size="sm" className="hb-model-trigger-chevron" />
+				{chevron ? <ChevronDownIcon size="sm" className="hb-model-trigger-chevron" /> : null}
 			</button>
 			{open ? (
 				<div className="hb-model-popover" role="dialog" aria-label={words.choose}>

@@ -49,6 +49,8 @@ import {
 	submits,
 } from "./composer-model.ts";
 import { type ComposerModelOption, ModelPicker, selectedModel } from "./model-picker.tsx";
+import { offeredLevels, type ThinkingLevel } from "./thinking-model.ts";
+import { ThinkingPicker } from "./thinking-picker.tsx";
 import "./composer.css";
 
 export type { ComposerState } from "./composer-model.ts";
@@ -89,6 +91,15 @@ export type ComposerProps = {
 	/** The chosen model's id. Without it the catalogue's default shows as chosen. */
 	model?: string;
 	onModelChange?: (id: string) => void;
+	/**
+	 * The chosen thinking level. The picker after the model's name offers the chosen model's
+	 * `capabilities.thinking`, shows this clamped to them (`chosenThinking`), and hides for a model that can't think.
+	 */
+	thinking?: ThinkingLevel;
+	/** The level the session runs with when nobody chose one: shown when `thinking` is left out, and marked Default. */
+	defaultThinking?: ThinkingLevel;
+	/** Without it there is no thinking picker. */
+	onThinkingChange?: (level: ThinkingLevel) => void;
 
 	/** The draft's attachments, as the host reports them. */
 	attachments?: readonly ComposerAttachment[];
@@ -190,6 +201,9 @@ export function Composer({
 	models,
 	model,
 	onModelChange,
+	thinking,
+	defaultThinking,
+	onThinkingChange,
 	attachments = [],
 	onAttach,
 	onRemoveAttachment,
@@ -221,6 +235,8 @@ export function Composer({
 	// Models.
 	const chosen = models === undefined || models.length === 0 ? undefined : selectedModel(models, model);
 	const showModels = models !== undefined && models.length > 0 && onModelChange !== undefined;
+	const levels = useMemo(() => offeredLevels(chosen?.capabilities?.thinking), [chosen]);
+	const showThinking = levels.length > 0 && onThinkingChange !== undefined;
 
 	// Attachments, and what stops the draft going.
 	const ready = useMemo(() => attachments.filter((attachment) => attachment.status === "ready"), [attachments]);
@@ -243,7 +259,9 @@ export function Composer({
 
 	// Resting: focus, the picker and a wrapped draft keep the composer expanded.
 	const [focused, setFocused] = useState(false);
-	const [menuOpen, setMenuOpen] = useState(false);
+	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
+	const menuOpen = modelMenuOpen || thinkingMenuOpen;
 	const [narrow, setNarrow] = useState(false);
 	const [wraps, setWraps] = useState(false);
 	const [dragDepth, setDragDepth] = useState(0);
@@ -551,7 +569,7 @@ export function Composer({
 			? { level: "error" as const, text: rejected }
 			: undefined;
 
-	const hasControls = !showReason && (showModels || (footer !== undefined && footer !== null));
+	const hasControls = !showReason && (showModels || showThinking || (footer !== undefined && footer !== null));
 	const attachTitle = limitsText === "" ? "Attach files" : `Attach files. ${limitsText}.`;
 
 	return (
@@ -629,7 +647,20 @@ export function Composer({
 									onChange={onModelChange}
 									disabled={disabled}
 									size={rest ? "xs" : "sm"}
-									onOpenChange={setMenuOpen}
+									onOpenChange={setModelMenuOpen}
+									returnFocus={focusField}
+									chevron={false}
+								/>
+							) : null}
+							{showThinking && onThinkingChange !== undefined ? (
+								<ThinkingPicker
+									levels={levels}
+									value={thinking}
+									defaultLevel={defaultThinking}
+									onChange={onThinkingChange}
+									disabled={disabled}
+									size={rest ? "xs" : "sm"}
+									onOpenChange={setThinkingMenuOpen}
 									returnFocus={focusField}
 								/>
 							) : null}

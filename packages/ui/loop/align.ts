@@ -213,6 +213,26 @@ export function measureAlignment(): Misalignment[] {
 		const badgeLine = badge === null ? null : textLine(badge);
 		if (line !== null && badgeLine !== null) compare("model row default", option, badgeLine.baseline, line.baseline);
 	}
+	// Thinking picker: the level on its button's centre and on the model's name beside it; each row's name on the row's
+	// centre, the tick on the name and "Default" on its baseline.
+	for (const trigger of root.querySelectorAll(".hb-thinking-trigger")) {
+		const line = labelled("thinking trigger", trigger, trigger.querySelector(".hb-thinking-trigger-label"), [], true);
+		const model = trigger.closest(".hb-composer-controls")?.querySelector(".hb-model-trigger .hb-model-trigger-label");
+		const modelLine = model === null || model === undefined ? null : textLine(model);
+		if (line !== null && modelLine !== null) compare("thinking on model", trigger, line.baseline, modelLine.baseline);
+	}
+	for (const option of root.querySelectorAll(".hb-thinking-option")) {
+		const line = labelled(
+			"thinking row",
+			option,
+			option.querySelector(".hb-thinking-option-name"),
+			option.querySelectorAll(".hb-thinking-option-check > .hb-icon"),
+			true,
+		);
+		const badge = option.querySelector(".hb-thinking-option-default");
+		const badgeLine = badge === null ? null : textLine(badge);
+		if (line !== null && badgeLine !== null) compare("thinking row default", option, badgeLine.baseline, line.baseline);
+	}
 	// The search field's magnifier on the field's words. A field has no text node to measure, but a one-line field
 	// centres its line in its content box, so its baseline is that centre plus half the font's ascent less its descent.
 	for (const search of root.querySelectorAll(".hb-model-search")) {

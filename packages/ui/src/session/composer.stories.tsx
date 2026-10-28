@@ -11,6 +11,7 @@ import type { AttachmentLimits } from "./composer-model.ts";
 import { finishedTurn, liveTurn, longTranscript, question } from "./fixtures.ts";
 import type { ComposerModelOption } from "./model-picker.tsx";
 import { QuestionCard } from "./question-card.tsx";
+import type { ThinkingLevel } from "./thinking-model.ts";
 import { Transcript } from "./transcript.tsx";
 import "./stories.css";
 
@@ -18,13 +19,16 @@ export default { title: "Session/Composer" } satisfies StoryDefault;
 
 // Fixtures: a model catalogue as an organisation's configuration might give it, attachment limits, and drafts.
 
+const anthropicLevels: ThinkingLevel[] = ["off", "low", "medium", "high", "max"];
+const openaiLevels: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
+
 const models: ComposerModelOption[] = [
 	{
 		id: "anthropic/claude-sonnet-4-5",
 		label: "Claude Sonnet 4.5",
 		provider: "Anthropic",
 		description: "The default for coding work",
-		capabilities: { images: true },
+		capabilities: { images: true, thinking: anthropicLevels },
 		default: true,
 	},
 	{
@@ -32,17 +36,22 @@ const models: ComposerModelOption[] = [
 		label: "Claude Opus 4.1",
 		provider: "Anthropic",
 		description: "Slower, for the hardest problems",
-		capabilities: { images: true },
+		capabilities: { images: true, thinking: anthropicLevels },
 	},
 	{
 		id: "anthropic/claude-haiku-4-5",
 		label: "Claude Haiku 4.5",
 		provider: "Anthropic",
 		description: "Fast, for small edits",
-		capabilities: { images: true },
+		capabilities: { images: true, thinking: anthropicLevels },
 	},
-	{ id: "openai/gpt-5", label: "GPT-5", provider: "OpenAI", capabilities: { images: true } },
-	{ id: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI", capabilities: { images: true } },
+	{ id: "openai/gpt-5", label: "GPT-5", provider: "OpenAI", capabilities: { images: true, thinking: openaiLevels } },
+	{
+		id: "openai/gpt-5-mini",
+		label: "GPT-5 mini",
+		provider: "OpenAI",
+		capabilities: { images: true, thinking: openaiLevels },
+	},
 	{
 		id: "xai/grok-code-fast-1",
 		label: "Grok Code Fast",
@@ -130,6 +139,7 @@ function Live({
 }: Partial<ComposerProps> & { state?: ComposerState; initialModel?: string }) {
 	const [sent, setSent] = useState<string[]>([]);
 	const [model, setModel] = useState(initialModel);
+	const [thinking, setThinking] = useState<ThinkingLevel | undefined>(undefined);
 	const uploads = useComposerAttachments(pretendUpload);
 	const send = (text: string) => {
 		const files = uploads.take();
@@ -144,6 +154,9 @@ function Live({
 				models={models}
 				model={model}
 				onModelChange={setModel}
+				thinking={thinking}
+				defaultThinking="medium"
+				onThinkingChange={setThinking}
 				attachments={uploads.attachments}
 				onAttach={uploads.attach}
 				onRemoveAttachment={uploads.remove}
@@ -162,6 +175,8 @@ const still = {
 	onSend: () => {},
 	models,
 	onModelChange: () => {},
+	defaultThinking: "medium",
+	onThinkingChange: () => {},
 	onAttach: () => {},
 	onRemoveAttachment: () => {},
 	onRetryAttachment: () => {},
@@ -335,12 +350,12 @@ export const LongContent: Story = () => (
 	</Sheet>
 );
 
-/** Opens the model picker once mounted, as a click on it would. */
-function OpenPicker({ children }: { children: ReactNode }) {
+/** Opens a picker once mounted, as a click on it would: the model's by default. */
+function OpenPicker({ children, trigger = ".hb-model-trigger" }: { children: ReactNode; trigger?: string }) {
 	const frame = useRef<HTMLDivElement>(null);
 	useEffect(() => {
-		frame.current?.querySelector<HTMLButtonElement>(".hb-model-trigger")?.click();
-	}, []);
+		frame.current?.querySelector<HTMLButtonElement>(trigger)?.click();
+	}, [trigger]);
 	return (
 		<div ref={frame} className="hb-story-picker-frame">
 			{children}
@@ -359,6 +374,28 @@ export const ModelPickerOpen: Story = () => (
 	</Sheet>
 );
 ModelPickerOpen.storyName = "Model picker open";
+
+export const ThinkingPickerOpen: Story = () => (
+	<Sheet
+		title="Composer, thinking picker open"
+		intro="The thinking level reads on from the model's name, as T3 Code's does, and opens the levels the chosen model supports, with the session's default marked. A model that can't think has no thinking picker: choose Grok Code Fast to see it go. A level the new model lacks shows as its nearest one."
+	>
+		<OpenPicker trigger=".hb-thinking-trigger">
+			<Live />
+		</OpenPicker>
+		<Section title="A model without thinking">
+			<Column>
+				<Composer state="idle" {...still} model="xai/grok-code-fast-1" />
+			</Column>
+		</Section>
+		<Section title="A chosen level, on a model with different levels">
+			<Column>
+				<Composer state="idle" {...still} model="openai/gpt-5" thinking="max" />
+			</Column>
+		</Section>
+	</Sheet>
+);
+ThinkingPickerOpen.storyName = "Thinking picker open";
 
 export const WithAttachments: Story = () => (
 	<Sheet

@@ -99,6 +99,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		runtime: stack.runtime.runtime,
 		// The console's scroll-back: older turns, a page at a time, before the snapshot's.
 		history: stack.runtime.history,
+		// The composer's model and thinking pickers: a session's models, and a new session's before it exists.
+		models: stack.runtime.models,
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,

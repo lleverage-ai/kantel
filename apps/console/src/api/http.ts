@@ -21,6 +21,7 @@ import {
 	protocolHistoryPage,
 	roleSatisfies,
 	type SessionHistoryPage,
+	type SessionModelState,
 } from "@harbour/contracts";
 import type { ServerFrame, SessionStatus } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
@@ -28,6 +29,7 @@ import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
 	ConsoleClient,
+	ModelChoices,
 	ProjectSummary,
 	SendOptions,
 	SessionControl,
@@ -121,6 +123,16 @@ export function agentFor(profiles: readonly AgentProfile[], projectId: string): 
 		[...profiles].filter((profile) => profile.projectId === projectId).sort(byName)[0] ??
 		[...profiles].filter((profile) => profile.projectId === undefined).sort(byName)[0]
 	);
+}
+
+/** The API's model state as the composer's pickers take it. */
+export function modelChoicesOf(state: SessionModelState): ModelChoices {
+	return {
+		models: state.models,
+		...(state.selected === undefined ? {} : { model: state.selected.model }),
+		...(state.selected?.thinking === undefined ? {} : { thinking: state.selected.thinking }),
+		...(state.defaults?.thinking === undefined ? {} : { defaultThinking: state.defaults.thinking }),
+	};
 }
 
 /** The list's status for a session: an idle session has nothing running, so it reads as settled. */
@@ -284,7 +296,12 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const send = (sessionId: string, action: string, text: string, sendOptions?: SendOptions) =>
 		post(
 			sessionUrl(sessionId, `/${action}`),
-			{ text, ...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }) },
+			{
+				text,
+				...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
+				...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
+				...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+			},
 			sendOptions?.requestId,
 		);
 
@@ -434,6 +451,14 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		},
 
 		control: (): SessionControl => ({ live: true }),
+
+		async modelChoices(target, signal): Promise<ModelChoices> {
+			const path =
+				"sessionId" in target
+					? sessionUrl(target.sessionId, "/models")
+					: `${base}/profiles/${encodeURIComponent(target.start.agentId)}/models?${new URLSearchParams({ projectId: target.start.projectId })}`;
+			return modelChoicesOf(await getJson<SessionModelState>(path, signal));
+		},
 
 		prompt: (sessionId, text, sendOptions) => send(sessionId, "prompt", text, sendOptions),
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),

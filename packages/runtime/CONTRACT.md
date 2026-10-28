@@ -20,11 +20,14 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - `AgentProfiles`: `put`, `get`, `list`. `HostToolBridge`: `register` (returns a subscription), `list`.
 - `SessionEndHook`: `register(name, teardown)`. The runtime runs every registered teardown when a session is closed or
   aborted; the in-memory components register as `sandbox`, `browser`, `capability` and `vault`.
-- Proposed, not yet implemented: `SessionModels.listModels` (the `ModelOption`s a session's prompts may name, for a
-  client's model picker) and `PromptInput.model` and `PromptInput.attachments` (`PromptAttachment`, a reference to
-  a file the host uploaded). `@harbour/ui`'s composer takes the same shapes. The in-memory runtime and the HTTP
-  handler ignore `model` and `attachments` until they adopt them, and still require `text`; no suite case covers them
-  yet.
+- Proposed, implemented by the runtime and served over HTTP (`test/session-models.test.ts`, not yet in the suite):
+  `SessionModels` (`listModels`, `modelState` and `startModels`: the `ModelOption`s a session's prompts may name,
+  what it runs with and what its profile names, for a client's model and thinking pickers) and `PromptInput.model` and
+  `PromptInput.thinking`. A choice is kept with the session's Pi Durable conversation (`configure`), so it applies
+  from the next model call, to every later run, and after the session reopens; a level the model lacks is clamped
+  with pi's `clampThinkingLevel`. `@harbour/ui`'s composer takes the same shapes.
+- Proposed, not yet implemented: `PromptInput.attachments` (`PromptAttachment`, a reference to a file the host
+  uploaded). The runtime and the HTTP handler ignore `attachments` until they adopt them, and still require `text`.
 - Proposed (open question 15 in docs/contracts.md): `SessionHistory.history`, a session's transcript in pages, newest
   first, served as `history` on the runtime service and `GET /sessions/:id/history`. The `history:` suite cases run
   with `{ history: true }`: the latest page first and cursors back to the start without a repeat or a gap; pages

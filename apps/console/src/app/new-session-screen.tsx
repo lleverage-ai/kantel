@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient, ProjectSummary, StartOptions } from "../api/client.ts";
 import { createRequestIds, titleFrom } from "../ui/actions.ts";
 import { NewSessionView } from "../ui/new-session-view.tsx";
+import { useModelPickers } from "./model-choices.ts";
 import { navigate, newSessionPath, sessionPath } from "./router.ts";
 
 type Options = { readonly projectId: string } & (
@@ -61,6 +62,20 @@ export function NewSessionScreen({
 
 	const blocked = !access.allowed ? access.reason : current?.state === "failed" ? current.reason : undefined;
 
+	// What the new session may run with, once its agent is known; the picks go with its first message.
+	const pickers = useModelPickers(
+		client,
+		options === undefined ? undefined : { start: { projectId, agentId: options.agentId } },
+	);
+	const { model: chosenModel, thinking: chosenThinking } = pickers.send;
+	const choice = useMemo(
+		() => ({
+			...(chosenModel === undefined ? {} : { model: chosenModel }),
+			...(chosenThinking === undefined ? {} : { thinking: chosenThinking }),
+		}),
+		[chosenModel, chosenThinking],
+	);
+
 	/** A message sent before the agent was known, sent once it is. */
 	const [pending, setPending] = useState<string>();
 
@@ -86,7 +101,7 @@ export function NewSessionScreen({
 					});
 					created.current = { projectId, sessionId };
 				}
-				await client.prompt(sessionId, text, { requestId: requestIds.for("prompt", text) });
+				await client.prompt(sessionId, text, { requestId: requestIds.for("prompt", text), ...choice });
 				requestIds.sent();
 				created.current = undefined;
 				navigate(sessionPath(projectId, sessionId));
@@ -99,7 +114,7 @@ export function NewSessionScreen({
 				setSending(false);
 			}
 		},
-		[client, options, sending, pending, projectId, requestIds],
+		[client, options, sending, pending, projectId, requestIds, choice],
 	);
 
 	// Once the agent is known, a message that was waiting for it goes; if it can't be known, the message stays a draft.
@@ -126,6 +141,7 @@ export function NewSessionScreen({
 				...(options === undefined ? {} : { agentName: options.agentName }),
 				draft,
 				sending,
+				pickers: pickers.composer,
 				...(blocked === undefined ? {} : { blocked }),
 				...(failure === undefined ? {} : { failure }),
 			}}
