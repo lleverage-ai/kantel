@@ -113,6 +113,13 @@ politely. `iconOnly` for tight rows.
 
 **Not for** the composer, which has its own multi-line field.
 
+### TextAreaField
+
+**For** a labelled multi-line input for text a person writes out, such as a scheduled task's prompt. Same frame,
+hint and error as `TextField`; its height follows `rows` and the person can drag it taller.
+
+**Not for** the composer, which sends on Enter and has attachments.
+
 ### SegmentedControl
 
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
@@ -155,3 +162,19 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
   measure, with when it was last updated.
 - **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
   `formatBytes` and others), exported for hosts.
+
+## Schedules
+
+The schedule form, in `src/schedules/form/`. The schedules list, a schedule's detail and its run history are in
+`src/schedules/` beside it.
+
+- **`ScheduleForm`**: creates or edits a task (an agent and a prompt) or a check (a command), repeating every N
+  minutes, hours or days, on weekdays, on chosen days of the week or on a day of the month, or once; with its time
+  zone, an optional limit on runs, a check's re-raise settings, and the next five due times beside it as the person
+  types. Editing offers End after a confirmation. The prompt goes to the agent exactly as written. The preview uses
+  `previewDue` from `@harbour/schedules`, the scheduler's own function, on each render; no timers.
+- **`ScheduleWrites`**: the calls the form makes, `create`, `update` and `end`, shaped like `Schedules` with the
+  viewer's call context bound (`bindScheduleWrites`). `@harbour/ui/schedules/form/fixtures` has one over the
+  in-memory store at a fixed time, for stories, tests and a console without the API.
+- **Payloads**: a task's is `{ agentId, prompt }`, a check's is its argument list (`taskPayload`,
+  `readTaskPayload`, `readCheckPayload`). A schedule whose payload is another shape keeps it when edited.
