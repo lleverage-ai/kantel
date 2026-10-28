@@ -13,13 +13,13 @@
  */
 import {
 	type Actor,
-	assertAuditQueryTypes,
 	type AuditEvent,
 	type AuditEventInput,
 	type AuditOutbox,
 	type AuditQuery,
 	type AuditSink,
 	type AuditStore,
+	assertAuditQueryTypes,
 	type CallContext,
 	type Clock,
 	HarbourError,

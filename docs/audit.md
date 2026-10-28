@@ -90,9 +90,15 @@ returns `undefined` leaves that row unlinked, for a record the host can't open. 
 `projectId` as a third argument, for a host whose session pages sit under their project.
 
 On the console's API source (`?source=api`, the gateway's `/v1/audit/events`), rows link to
-`/projects/<project>/sessions/<session>#turn=<id>`, and the *Credential* choices and item names come from the log's own
-`vault.item.created` events (`credentialChoices`), as there is no vault or identity API for the console yet. People
-show by ID, and there is no organisation picker, until identity has an API.
+`/projects/<project>/sessions/<session>#turn=<id>`, and vault requests, approvals and denials to the console's vault
+page, `/vault/proposals/<id>` (unlinked on a gateway with no approval API, where there is no vault page). The
+*Credential* choices and item names come from the log's own `vault.item.created` events (`credentialChoices`), as
+there is no vault API for the console yet. Each time the log opens it also reads `ConsoleAudit.lookups`
+(`auditLookups` in `apps/console/src/api/audit-http.ts`): *Project* lists identity's `GET /v1/projects`, *Agent* the
+agents the sessions in `GET /v1/sessions` ran, named by their profile (`GET /v1/profiles`), and *Session* the 200 most
+recently active of those sessions, by title. The same lists name projects, agents and sessions in rows. A list that
+can't be read leaves its filter hidden. People show by ID, and there is no organisation picker, until identity can
+list an organisation's members and a person's organisations.
 
 ## Gaps in the contract
 

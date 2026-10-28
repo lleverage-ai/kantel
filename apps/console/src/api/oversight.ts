@@ -44,12 +44,27 @@ export interface ConsoleKeys {
 	readonly roles: readonly HeldRole[];
 }
 
+/** The audit view's filter options, by filter. */
+export type AuditChoices = NonNullable<AuditViewProps["choices"]>;
+
+/** Filter options and names a host reads when the audit log opens, rather than knowing them up front. */
+export interface AuditLookups {
+	readonly choices: AuditChoices;
+	readonly directory: AuditDirectory;
+}
+
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */
 export interface ConsoleAudit {
 	readonly source: AuditSource;
 	readonly directory: AuditDirectory;
 	readonly links: AuditLinks;
-	readonly choices: NonNullable<AuditViewProps["choices"]>;
+	readonly choices: AuditChoices;
+	/**
+	 * Reads more filter options and names each time the audit log opens, for a host with no list of them up front: the
+	 * gateway's projects, agents and sessions. They are laid over `choices` and `directory`; a failed read leaves both
+	 * as they were.
+	 */
+	readonly lookups?: () => Promise<AuditLookups>;
 	/**
 	 * Reads the credentials to filter by, each time the audit log opens, for a host with no list of them up front. They
 	 * become the *Credential* choices and name the items in rows. A failed read leaves both as they were.

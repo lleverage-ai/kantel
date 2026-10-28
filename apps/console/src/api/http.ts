@@ -49,9 +49,10 @@ export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
 
 /** A session as the API lists it: the parts of `SessionRecord` (`@harbour/contracts`) the console reads. */
-type SessionRecord = {
+export type SessionRecord = {
 	readonly id: string;
 	readonly projectId: string;
+	readonly agentId: string;
 	readonly title?: string;
 	readonly status: SessionStatus;
 	readonly workspaceId?: string;
@@ -157,7 +158,16 @@ export function modelChoicesOf(state: SessionModelState): ModelChoices {
 const listStatus = (status: SessionStatus): SessionStatus => (status === "idle" ? "done" : status);
 const active = (status: SessionStatus) => status === "running" || status === "waiting";
 
-export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
+/**
+ * The console client on the session API, plus the lists the audit log's filters read (audit-http.ts): every session
+ * the caller can see, across projects, and every agent profile. Both follow the API's pages, as `projects` does.
+ */
+export interface ApiConsoleClient extends ConsoleClient {
+	sessionRecords(): Promise<readonly SessionRecord[]>;
+	agentProfiles(): Promise<readonly AgentProfile[]>;
+}
+
+export function createApiClient(options: ApiClientOptions = {}): ApiConsoleClient {
 	const base = (options.baseUrl ?? "/v1").replace(/\/+$/, "");
 	const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
 	const pollMs = options.listPollMs ?? LIST_POLL_MS;
@@ -330,6 +340,9 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 
 	return {
 		actor: options.actor ?? SIGNED_IN,
+
+		sessionRecords: () => listSessions(),
+		agentProfiles: () => listProfiles(),
 
 		async projects(): Promise<readonly ProjectSummary[]> {
 			const [projects, sessions] = await Promise.all([listProjects(), listSessions()]);

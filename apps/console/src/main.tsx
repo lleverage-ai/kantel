@@ -188,23 +188,33 @@ function SignedInConsole({
 			identity.forget();
 			onSignedOut();
 		};
-		const audit = apiAudit({ headers: state.headers });
 		const keys = apiKeys(identity.client, state.me);
-		return {
-			client: createApiClient({
-				actor: state.actor,
-				roles: state.me.roles,
+		const client = createApiClient({
+			actor: state.actor,
+			roles: state.me.roles,
+			headers: state.headers,
+			onUnauthenticated,
+			...(sockets ? {} : { openSocket: false }),
+			onTransport: (sessionId, how) => transports.set(sessionId, how),
+		});
+		// The audit log's Project filter lists identity's projects; its Agent and Session filters, the sessions the
+		// session API lists, with their agents named by profile. Vault rows link to the vault page when there is one.
+		const audit = (vaultPage: boolean) =>
+			apiAudit({
 				headers: state.headers,
-				onUnauthenticated,
-				...(sockets ? {} : { openSocket: false }),
-				onTransport: (sessionId, how) => transports.set(sessionId, how),
-			}),
+				vaultPage,
+				projects: () => identity.client.allProjects(),
+				sessions: () => client.sessionRecords(),
+				agents: () => client.agentProfiles(),
+			});
+		return {
+			client,
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
-				(vault): Oversight => ({ vault, audit, ...(keys === undefined ? {} : { keys }) }),
+				(vault): Oversight => ({ vault, audit: audit(true), ...(keys === undefined ? {} : { keys }) }),
 				(error: unknown): Oversight => {
 					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
-					return { audit, ...(keys === undefined ? {} : { keys }) };
+					return { audit: audit(false), ...(keys === undefined ? {} : { keys }) };
 				},
 			),
 		};
