@@ -105,6 +105,10 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   the chevron, with the full date and time as its title. Hidden, it is out of the flow, so it never costs the label
   width. Focus anywhere in the call shows it, so it is there for the keyboard too.
 - **Open:** the arguments and the output.
+- **Images:** a call that returned images (`item.images`, such as a browser's screenshot of the page it left) shows
+  them under the row, open or not, at most `--hb-tool-image-width` wide, so a person watches the browser move without
+  opening anything. Each is a button ("Open full size") that opens the image in a new tab; its alt text says which
+  call it came after. `ToolImages({ item, images? })` draws them, for a host that shows a call's images elsewhere.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").
@@ -149,7 +153,8 @@ under "Worked for …" (`MessagesTimeline.logic.ts`), the calls carry no duratio
 the one place the time is told; collapsing only larger groups would leave a short one with no time at all.
 
 A failed or interrupted call stays visible while the group is collapsed: it is shown under the summary, so a failure
-is never hidden behind "Worked for". Expanded, it is in its place among the others.
+is never hidden behind "Worked for". Expanded, it is in its place among the others. The last image the group's calls
+returned (the page a browser ended on) also stays under the folded summary.
 
 **Not for** calls from different turns: the transcript ends a group at any other item.
 
