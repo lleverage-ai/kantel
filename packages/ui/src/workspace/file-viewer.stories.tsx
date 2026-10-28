@@ -3,6 +3,7 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import { FileViewer } from "./file-viewer.tsx";
 import { longSourceFile, overCapFile, sourceFile } from "./fixtures.ts";
+import { retriesChartBytes, retriesChartDataUrl } from "./image-fixture.ts";
 import "./stories.css";
 
 export default { title: "Workspace/File viewer" } satisfies StoryDefault;
@@ -61,7 +62,10 @@ export const CantShow: Story = () => (
 	>
 		<Section title="Binary">
 			<div className="hb-story-viewer-frame hb-story-viewer-frame-short">
-				<FileViewer path="logo.png" state={{ status: "binary", size: 48_211, contentType: "image/png" }} />
+				<FileViewer
+					path="dist/billing-sync.wasm"
+					state={{ status: "binary", size: 48_211, contentType: "application/wasm" }}
+				/>
 			</div>
 		</Section>
 		<Section title="Too large">
@@ -72,6 +76,49 @@ export const CantShow: Story = () => (
 	</Sheet>
 );
 CantShow.storyName = "Can't show";
+
+const chartSize = retriesChartBytes().byteLength;
+
+export const Image: Story = () => (
+	<Sheet
+		title="File viewer: an image"
+		intro="A PNG, JPEG, GIF or WebP from the content route, fitted to the viewer on a sunken backdrop and never scaled past its own pixels. Its pixel size joins the header once it has loaded. One the browser can't decode says so."
+	>
+		<Section title="A chart the session made">
+			<div className="hb-story-viewer-frame">
+				<FileViewer
+					path="notes/retries-per-night.png"
+					state={{ status: "image", src: retriesChartDataUrl, size: chartSize, contentType: "image/png" }}
+				/>
+			</div>
+		</Section>
+		<Section title="Can't be decoded">
+			<div className="hb-story-viewer-frame hb-story-viewer-frame-short">
+				<FileViewer
+					path="assets/logo.png"
+					state={{ status: "image", src: "data:image/png;base64,iVBORw0KGgo=", size: 16, contentType: "image/png" }}
+				/>
+			</div>
+		</Section>
+	</Sheet>
+);
+
+export const ImagePhone: Story = () => (
+	<Sheet
+		title="File viewer: an image at 420px"
+		intro="On a phone the image fits the screen's width, with Back to the tree."
+	>
+		<div className="hb-story-viewer-frame hb-story-viewer-frame-tall">
+			<FileViewer
+				path="notes/retries-per-night.png"
+				state={{ status: "image", src: retriesChartDataUrl, size: chartSize, contentType: "image/png" }}
+				onBack={back}
+			/>
+		</div>
+	</Sheet>
+);
+ImagePhone.storyName = "Image, phone";
+ImagePhone.meta = { width: 420 };
 
 export const LongContent: Story = () => (
 	<Sheet
