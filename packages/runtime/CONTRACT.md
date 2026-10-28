@@ -144,7 +144,7 @@ secret is stored with the registration, so the store is as sensitive as the secr
 `createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@harbour/runtime/memory`
 is `createSessionRuntime` over `createMemorySessionStore()`, with one Harness per session on Pi Durable's
 `MemoryStorage`. The profile's prompt layers become one system prompt
-section, and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
+section, and are the whole of it: Harbour adds no text of its own, so a profile with no layers sends no system prompt; and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
 placed as a `harbour.user` entry recording how it was sent. `ConversationProjector` (`project.ts`) diffs Pi's committed
 view into protocol ops on a `createMemorySessionStream`; status is `running` while Pi has a run, `failed` after a model
 error, `idle` otherwise and `done` after close. Audit: `session.created`, `session.prompted`, `session.steered`,

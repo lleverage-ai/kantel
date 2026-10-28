@@ -164,6 +164,37 @@ describe("the stack over durable storage", () => {
 		expect(((await audit.json()) as { items: unknown[] }).items).toHaveLength(1);
 	});
 
+	it("keeps the prompt the user set on the default profile across restarts, and adds none of its own", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const made = await first.stack.runtime.profiles.get(first.stack.admin, DEFAULT_AGENT_ID);
+		expect(made.promptLayers).toEqual([]);
+
+		const layers = [{ name: "organisation", text: "You work for Lleverage." }];
+		await first.stack.runtime.profiles.put(first.stack.admin, { ...made, promptLayers: layers });
+		await first.stack.close();
+
+		const second = await start(storage);
+		const kept = await second.stack.runtime.profiles.get(second.stack.admin, DEFAULT_AGENT_ID);
+		expect(kept.promptLayers).toEqual(layers);
+	});
+
+	it("drops the prompt layer earlier releases wrote into the default profile, and only that", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const made = await first.stack.runtime.profiles.get(first.stack.admin, DEFAULT_AGENT_ID);
+		const mine = { name: "project", text: "Answer in Dutch." };
+		await first.stack.runtime.profiles.put(first.stack.admin, {
+			...made,
+			promptLayers: [{ name: "role", text: "You are a helpful assistant running on Harbour." }, mine],
+		});
+		await first.stack.close();
+
+		const second = await start(storage);
+		const kept = await second.stack.runtime.profiles.get(second.stack.admin, DEFAULT_AGENT_ID);
+		expect(kept.promptLayers).toEqual([mine]);
+	});
+
 	it("reads sessions the object stored before it hosted the session core", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harbour-sessions-"));
 		const file = join(dir, "object.sqlite");

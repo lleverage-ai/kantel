@@ -83,13 +83,13 @@ function vaultObject(options: { objectDb?: DatabaseSync; auditDb: DatabaseSync; 
 }
 
 /** The stack, its sessions on the gateway, the upstream as the VPC service, and its D1 standing in. */
-async function gatewayStack(vault: ModelsVault, auditDb: DatabaseSync) {
-	const upstream = createFakeModelUpstream();
+async function gatewayStack(vault: ModelsVault, auditDb: DatabaseSync, modelId: string = MODEL) {
+	const upstream = createFakeModelUpstream({ models: [{ id: modelId, contextWindow: 1_000_000, maxTokens: 64_000 }] });
 	const stack = await createStack({
 		config: gatewayConfig({}),
 		storage: { sql: syncSqliteDriver(auditDb) },
 		models: ({ audit, clock }) =>
-			createGatewayModels({ upstream: (request) => upstream.fetch(request), vault, audit, clock, modelId: MODEL }),
+			createGatewayModels({ upstream: (request) => upstream.fetch(request), vault, audit, clock, modelId }),
 	});
 	opened.push(stack);
 	const ask = async (text: string) => {
@@ -130,6 +130,52 @@ describe("sessions on the model gateway", () => {
 		const rows = JSON.stringify(objectDb.prepare("SELECT * FROM vault_items").all());
 		expect(rows).toContain(await cpaItemName(CPA_KEY));
 		expect(rows).not.toContain(CPA_KEY);
+	});
+
+	it("sends a bare session's turn with no prompt of Harbour's own", async () => {
+		// The deployed default model: "Hi" in a fresh session on the default profile, as the console starts one.
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const { upstream, ask } = await gatewayStack(vault, auditDb, DEFAULT_MODEL);
+
+		await ask("Hi");
+		const call = upstream.calls().at(-1)!;
+		expect(call.kind).toBe("anthropic-messages");
+		// The whole body: the user's message and the model's settings. No system prompt, and no text Harbour wrote; what
+		// the model is told is the user's to configure on their profile.
+		expect(call.body).toEqual({
+			model: DEFAULT_MODEL,
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Hi", cache_control: { type: "ephemeral" } }] },
+				{ role: "system", content: [], output_config: { effort: "high" } },
+			],
+			max_tokens: 64_000,
+			stream: true,
+			thinking: { type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } },
+			output_config: { effort: "high" },
+		});
+		expect(JSON.stringify(call.body)).not.toMatch(/harbour/i);
+	});
+
+	it("sends the prompt the user set on the profile, as the system prompt and nothing more", async () => {
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const { stack, upstream, ask } = await gatewayStack(vault, auditDb, DEFAULT_MODEL);
+		const profile = await stack.runtime.profiles.get(stack.admin, DEFAULT_AGENT_ID);
+		await stack.runtime.profiles.put(stack.admin, {
+			...profile,
+			promptLayers: [
+				{ name: "organisation", text: "You work for Lleverage." },
+				{ name: "project", text: "Answer in Dutch." },
+			],
+		});
+
+		await ask("Hi");
+		const body = upstream.calls().at(-1)!.body as { system?: unknown };
+		expect(body.system).toEqual([
+			{ type: "text", text: "You work for Lleverage.\n\nAnswer in Dutch.", cache_control: { type: "ephemeral" } },
+		]);
+		expect(JSON.stringify(body)).not.toMatch(/harbour/i);
 	});
 
 	it("reaches only CPA's host through the VPC service", async () => {
