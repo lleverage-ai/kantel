@@ -386,6 +386,9 @@ importers:
 
   packages/memory:
     dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
@@ -492,6 +495,9 @@ importers:
 
   packages/skills:
     dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts

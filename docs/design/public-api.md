@@ -49,6 +49,18 @@ Planned, not built:
 | `WS /v1/sessions/{sessionId}/stream` | `SessionRuntime.watch`, `@harbour/protocol` frames | Next |
 | Presigned upload into the session workspace | `Workspaces` | Next |
 | `POST /v1/sessions/{sessionId}/cards/{cardId}/respond` | the card's owner (vault, questions, browser grants) | Next |
+| `GET /v1/skills` | `Skills.list` (the project named and the calling person's own) | In the public API |
+| `GET /v1/skills/{skillId}` | `Skills.get` | In the public API |
+| `GET /v1/skills/{skillId}/revisions` | `Skills.listRevisions` | In the public API |
+| `GET /v1/skills/{skillId}/revisions/{revision}` | `Skills.getRevision` | In the public API |
+| `GET /v1/skills/{skillId}/revisions/{revision}/file?path=` | `Skills.readFile` | In the public API |
+| `POST /v1/skills/import` | `Skills.importRevision` (a host's skill source) | In the public API |
+| `GET /v1/memory/spaces`, `POST /v1/memory/spaces` | `Memory.listSpaces`, `Memory.createSpace` | In the public API |
+| `GET /v1/memory/spaces/{spaceId}/concepts` | `Memory.listConcepts` | In the public API |
+| `GET /v1/memory/spaces/{spaceId}/concepts/{conceptId}` | `Memory.getConcept` (the ID's slashes encoded) | In the public API |
+| `POST /v1/memory/search`, `POST /v1/memory/recall` | `Memory.search`, `Memory.recall` | In the public API |
+| `POST /v1/memory/spaces/{spaceId}/snapshot` | `Memory.importSnapshot` (a host's memory source) | In the public API |
+| Memory proposals and decisions | `Memory.propose`, `Memory.decide` (#25) | Later |
 
 ## Vault approvals in a host app
 
