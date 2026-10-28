@@ -46,6 +46,7 @@ import {
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
 import type { SqlDriver } from "@harbour/sql";
+import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
 import {
 	createMemoryWorkspaceStore,
@@ -140,6 +141,12 @@ export interface StackOptions {
 	 * credentials; tests pass a stand-in. Private repositories wait for the vault's egress `fetch`.
 	 */
 	readonly gitFetch?: typeof fetch;
+	/**
+	 * The vault the approval API calls: the VaultDO over RPC (`approvalVaultOver`), or an in-process vault in tests. It
+	 * checks only the organisation; the gateway makes the project checks with the runtime's access. Without it the
+	 * gateway serves no approval API.
+	 */
+	readonly vault?: ApprovalVault;
 	readonly storage?: StackStorage;
 	/**
 	 * The models sessions run on, given the stack's audit store for `model.call` events: the model gateway
@@ -165,6 +172,8 @@ export interface Stack {
 	readonly signIn: readonly SignInMethod[];
 	/** Host registrations that outlive the object (durable runtime only), for the session API. */
 	readonly hosts?: DurableHosts;
+	/** The vault behind the approval API, when the stack has one (`StackOptions.vault`). */
+	readonly vault?: ApprovalVault;
 	readonly organisation: Organisation;
 	readonly project: Project;
 	/** The organisation's first admin: the invited person, or a placeholder no one can sign in as. */
@@ -312,6 +321,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
+			...(options.vault === undefined ? {} : { vault: options.vault }),
 			organisation,
 			project,
 			admin,

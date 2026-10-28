@@ -5,7 +5,9 @@
 //   /projects/:projectId                      a project's sessions
 //   /projects/:projectId/sessions/:sessionId  one session
 //   /vault                                    the vault page: your active grants
-//   /vault/requests/:proposalId               one vault request to decide, beside your active grants
+//   /vault/proposals/:proposalId              one vault request to decide, beside your active grants: the link the
+//                                             vault gives each proposal (`Proposal.link`)
+//   /vault/requests/:proposalId               the same, as earlier consoles linked it
 //   /audit                                    the audit log
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
@@ -40,7 +42,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "vault") {
 		if (parts.length === 1) return { name: "vault" };
 		const proposalId = parts[2] === undefined ? undefined : segment(parts[2]);
-		if (parts[1] === "requests" && proposalId !== undefined && parts.length === 3)
+		if ((parts[1] === "proposals" || parts[1] === "requests") && proposalId !== undefined && parts.length === 3)
 			return { name: "vault-request", proposalId };
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
@@ -66,7 +68,8 @@ export const sessionPath = (projectId: string, sessionId: string): string =>
 export const sessionTurnPath = (projectId: string, sessionId: string, turn?: string): string =>
 	`${sessionPath(projectId, sessionId)}${turn === undefined || turn === "" ? "" : `#turn=${encodeURIComponent(turn)}`}`;
 export const VAULT_PATH = "/vault";
-export const vaultRequestPath = (proposalId: string): string => `/vault/requests/${encodeURIComponent(proposalId)}`;
+/** One vault request: the path the vault's own links use (`Proposal.link`, `@harbour/vault`'s `approvalLink`). */
+export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
 export const AUDIT_PATH = "/audit";
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
 export const filesPath = (projectId: string, sessionId: string, path?: string): string =>

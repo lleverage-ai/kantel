@@ -8,23 +8,30 @@
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
+ * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
  * token Cloudflare Access puts in `Cf-Access-Jwt-Assertion` (people). The console's static assets never reach here.
+ *
+ * The approval API's vault is the VaultDO, which has no project roles or sessions of its own, so the API makes the
+ * vault contract's project checks here with the runtime's `ProjectAccess` before each call reaches it.
  */
 import { createAuditQueryHandler } from "@harbour/audit/http";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
 	type AuthenticatedCaller,
+	type CallContext,
 	callContextFor,
 	ME_PATH,
 	PROJECTS_PATH,
+	type Proposal,
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler } from "@harbour/identity/http";
 import { createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
+import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
 import { MEASURE_PATH, measureIsolateReady, measurementWorkspace } from "./measure.ts";
@@ -49,6 +56,33 @@ const notFound = () =>
 
 const under = (path: string, base: string) => path === base || path.startsWith(`${base}/`);
 
+/** What `fetch` resolves, or `undefined` when it fails: a name left out rather than the call refused. */
+const maybe = <T>(read: () => Promise<T>): Promise<T | undefined> => read().catch(() => undefined);
+
+/**
+ * A proposal's requester in names, read as the caller: the organisation, project and person from identity, the session's
+ * title from the runtime's directory and the agent's name from its profile. Whatever the caller may not read is left
+ * out.
+ */
+async function requesterNames(stack: Stack, ctx: CallContext, proposal: Proposal): Promise<RequesterNames> {
+	const { requester } = proposal;
+	const [organisation, project, session, agent, person] = await Promise.all([
+		maybe(() => stack.identity.getOrganisation(ctx, proposal.organisationId)),
+		proposal.projectId === undefined ? undefined : maybe(() => stack.identity.getProject(ctx, proposal.projectId!)),
+		requester.sessionId === undefined ? undefined : maybe(() => stack.runtime.directory.get(ctx, requester.sessionId!)),
+		requester.agentId === undefined ? undefined : maybe(() => stack.runtime.profiles.get(ctx, requester.agentId!)),
+		requester.onBehalfOf === undefined ? undefined : maybe(() => stack.identity.getUser(ctx, requester.onBehalfOf!)),
+	]);
+	const agentName = agent?.name ?? requester.agentId;
+	return {
+		...(organisation === undefined ? {} : { organisation: organisation.name }),
+		...(project === undefined ? {} : { project: project.name }),
+		...(agentName === undefined ? {} : { agent: agentName }),
+		...(session?.title === undefined ? {} : { session: session.title }),
+		...(person === undefined ? {} : { person: person.name }),
+	};
+}
+
 export function createGateway(stack: Stack): Gateway {
 	const sessions: SessionApi = createSessionApi({
 		runtime: stack.runtime.runtime,
@@ -69,10 +103,10 @@ export function createGateway(stack: Stack): Gateway {
 		signIn: stack.signIn,
 	});
 
-	// The read API takes a call context, not an authenticator, and answers a refused one as 403. The gateway
-	// authenticates first, so a missing or bad credential is a 401 with a challenge, as on every other route.
+	// The read API and the approval API take a call context, not an authenticator, and answer a refused one as 403. The
+	// gateway authenticates first, so a missing or bad credential is a 401 with a challenge, as on every other route.
 	const callers = new WeakMap<Request, AuthenticatedCaller>();
-	const callContext = async (request: Request) => {
+	const callContext = async (request: Request): Promise<CallContext> => {
 		const caller = callers.get(request);
 		if (caller === undefined) throw new Error("the gateway did not authenticate this request");
 		const requestId = request.headers.get("harbour-request-id") ?? undefined;
@@ -87,6 +121,21 @@ export function createGateway(stack: Stack): Gateway {
 		authenticate: callContext,
 	});
 
+	const { vault } = stack;
+	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
+	const approvals =
+		vault === undefined
+			? undefined
+			: createVaultApprovalApi({
+					vault,
+					access: stack.access,
+					authenticate: callContext,
+					describeRequester: (ctx, proposal) => requesterNames(stack, ctx, proposal),
+					viewerName: async (ctx) =>
+						ctx.actor.kind === "human" ? (await stack.identity.getUser(ctx, ctx.actor.userId)).name : undefined,
+					basePath: APPROVAL_API_BASE,
+				});
+
 	/** The caller, or the response refusing them: 401 with a challenge for a missing or bad credential. */
 	const authenticate = async (request: Request): Promise<AuthenticatedCaller | Response> => {
 		try {
@@ -96,6 +145,14 @@ export function createGateway(stack: Stack): Gateway {
 			if (refused !== undefined) return refused;
 			return Response.json({ error: { code: "unavailable", message: "Sign-in is unavailable" } }, { status: 503 });
 		}
+	};
+
+	/** Signs the request in for an API that takes a context: a bad credential is a 401 with a challenge, as elsewhere. */
+	const signIn = async (request: Request): Promise<Response | undefined> => {
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		callers.set(request, caller);
+		return undefined;
 	};
 
 	const workspace = measurementWorkspace(stack);
@@ -158,6 +215,11 @@ export function createGateway(stack: Stack): Gateway {
 				return (await createWorkspace(request)) ?? (await workspaces(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
+			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) return refused;
+				return approvals(request);
+			}
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
 			if (path === ME_PATH || path === PROJECTS_PATH) return identity(request);
 			if (under(path, API_BASE)) return sessions.fetch(request);

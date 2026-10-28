@@ -57,7 +57,7 @@ describe("the console's vault and audit stand-in", () => {
 		const events = [];
 		for await (const page of readAll(audit.source, toQuery({ range: "all", kind: "vault" }, NOW))) events.push(...page);
 		const lines = events.map((event) => ({ event, line: describeEvent(event, audit.directory, audit.links) }));
-		const linked = lines.filter(({ line }) => line.link?.href.startsWith("/vault/requests/"));
+		const linked = lines.filter(({ line }) => line.link?.href.startsWith("/vault/proposals/"));
 		expect(linked.length).toBeGreaterThan(0);
 		// The generated history's rows (`fx:` IDs) name requests the vault never held, so they stay unlinked.
 		const history = ({ event }: (typeof lines)[number]) => event.id.startsWith("fx:");
@@ -68,7 +68,7 @@ describe("the console's vault and audit stand-in", () => {
 	it("serves a request to decide, refuses a wrong code and stops a grant", async () => {
 		const { vault, audit, proposals } = await createRecordedOversight(NOW, { historyCount: 100 });
 		expect(audit.links.proposal?.("proposal_made_up")).toBeUndefined();
-		expect(audit.links.proposal?.(proposals.pending!)).toBe(`/vault/requests/${proposals.pending}`);
+		expect(audit.links.proposal?.(proposals.pending!)).toBe(`/vault/proposals/${proposals.pending}`);
 
 		const request = await vault.request(proposals.pending!);
 		expect(request.proposal.status).toBe("pending");

@@ -13,6 +13,10 @@
  *   `unavailable` (503) rather than run with a key that would not survive a restart.
  * - `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN`: each component's shared key for the
  *   egress decision API, at least 16 characters. A component without one is refused (`forbidden`).
+ *
+ * The vault approval API (`/v1/vault/…`, `@harbour/vault/approval-api`) is not served here: `HarbourStack` serves it,
+ * since it signs people in and holds project access, and calls this object over RPC for each vault call
+ * (`answerApprovalCall` here, `approvalVaultOver` there).
  */
 
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
@@ -20,13 +24,16 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	type ErrorCode,
 	HarbourError,
+	isHarbourError,
 	PLATFORM_ORGANISATION,
 	type SystemContext,
 	systemClock,
 	systemContext,
 } from "@harbour/contracts";
 import type { SqlDriver } from "@harbour/sql";
+import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createSharedKeyAuthenticator, EGRESS_API_PATHS } from "@harbour/vault/egress-api";
 import { type SqlStorageLike, VaultDurableObjectCore } from "@harbour/vault-cloudflare";
 import { CPA_HOST, CPA_INJECTION, cpaItemName, cpaKey, type ModelsVars } from "./models.ts";
@@ -155,6 +162,79 @@ export async function seedCpaItem(
 	});
 	await seeded.put(name, item.id);
 	return item.id;
+}
+
+/** The vault calls the approval API makes, and the only ones `HarbourStack` may make over RPC. */
+export const APPROVAL_METHODS = [
+	"getProposal",
+	"listProposals",
+	"approvalView",
+	"decide",
+	"getItem",
+	"getGrant",
+	"listGrants",
+	"revokeGrant",
+] as const satisfies readonly (keyof ApprovalVault)[];
+
+export type ApprovalMethod = (typeof APPROVAL_METHODS)[number];
+
+/**
+ * One approval call's outcome as it crosses RPC. Workers RPC keeps an error's message but not its fields, so a
+ * `HarbourError`'s code travels in the result and is thrown again on the stack's side.
+ */
+export type ApprovalCallResult =
+	| { readonly ok: true; readonly value: unknown }
+	| { readonly ok: false; readonly code: ErrorCode; readonly message: string };
+
+/** The parts of a call context that cross RPC: an abort signal does not, and stays on the stack's side. */
+function portableContext(ctx: CallContext): CallContext {
+	return {
+		actor: ctx.actor,
+		organisationId: ctx.organisationId,
+		...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+		...(ctx.requestId === undefined ? {} : { requestId: ctx.requestId }),
+	};
+}
+
+/**
+ * The VaultDO's side of an approval call from `HarbourStack`. Only `APPROVAL_METHODS`; `vault` is a function so a vault
+ * that cannot start (no key) answers `unavailable` like every other call. The caller's context is trusted as given: only
+ * code in this Worker holds the binding, and the stack authenticated the person and checked project access first.
+ */
+export async function answerApprovalCall(
+	vault: () => ApprovalVault,
+	method: string,
+	ctx: CallContext,
+	args: readonly unknown[],
+): Promise<ApprovalCallResult> {
+	try {
+		if (!(APPROVAL_METHODS as readonly string[]).includes(method)) {
+			throw new HarbourError("not_supported", `The vault takes no ${method} call from the stack`);
+		}
+		const call = vault()[method as ApprovalMethod] as (ctx: CallContext, ...rest: unknown[]) => Promise<unknown>;
+		return { ok: true, value: await call(portableContext(ctx), ...args) };
+	} catch (error) {
+		if (isHarbourError(error)) return { ok: false, code: error.code, message: error.message };
+		console.error("harbour: a vault approval call failed", error instanceof Error ? error.message : "unknown error");
+		return { ok: false, code: "unavailable", message: "The vault call failed" };
+	}
+}
+
+/** `HarbourStack`'s side: an `ApprovalVault` whose every call goes to the VaultDO through `send`. */
+export function approvalVaultOver(
+	send: (method: ApprovalMethod, ctx: CallContext, args: readonly unknown[]) => Promise<ApprovalCallResult>,
+): ApprovalVault {
+	const call =
+		(method: ApprovalMethod) =>
+		async (ctx: CallContext, ...args: unknown[]): Promise<never> => {
+			ctx.signal?.throwIfAborted();
+			// Optional arguments left out stay out: `undefined` would cross RPC as a value.
+			while (args.length > 0 && args[args.length - 1] === undefined) args.pop();
+			const result = await send(method, portableContext(ctx), args);
+			if (!result.ok) throw new HarbourError(result.code, result.message);
+			return result.value as never;
+		};
+	return Object.fromEntries(APPROVAL_METHODS.map((method) => [method, call(method)])) as unknown as ApprovalVault;
 }
 
 /** The vault's answer when it cannot start: no detail beyond the code, as on the egress API. */

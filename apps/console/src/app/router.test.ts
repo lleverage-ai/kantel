@@ -37,6 +37,9 @@ describe("routes", () => {
 	it("parses the vault page, a vault request and the audit log", () => {
 		expect(parseRoute(VAULT_PATH)).toEqual({ name: "vault" });
 		expect(parseRoute(vaultRequestPath("proposal_1/x"))).toEqual({ name: "vault-request", proposalId: "proposal_1/x" });
+		// The vault's own link for a proposal opens it, and so does the path earlier consoles linked to.
+		expect(vaultRequestPath("proposal_1")).toBe("/vault/proposals/proposal_1");
+		expect(parseRoute("/vault/requests/proposal_1")).toEqual({ name: "vault-request", proposalId: "proposal_1" });
 		expect(parseRoute(AUDIT_PATH)).toEqual({ name: "audit" });
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
 	});
@@ -60,6 +63,8 @@ describe("routes", () => {
 			"/vault/requests",
 			"/vault/other/x",
 			"/vault/requests/%E0",
+			"/vault/proposals",
+			"/vault/proposals/p-1/x",
 			"/audit/x",
 			"/projects/sal/sessions/s-1/other",
 			"/projects/sal/sessions/s-1/files/a/b",
