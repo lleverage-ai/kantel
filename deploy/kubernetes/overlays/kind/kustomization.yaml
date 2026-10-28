@@ -6,8 +6,8 @@
 #   kubectl apply -k deploy/kubernetes/overlays/kind
 #
 # The gateway and Mailpit's web UI are NodePorts that kind.yaml publishes on the machine's loopback: the gateway and
-# console at http://127.0.0.1:58290, Mailpit at http://127.0.0.1:58225. Those ports differ from compose's (58090,
-# 58025), so a kind cluster and the compose stacks can run side by side.
+# console at http://127.0.0.1:58390, Mailpit at http://127.0.0.1:58325. Those ports differ from compose's (58090,
+# 58025) and the second stack's (deploy/compose/README.md), so a kind cluster and the compose stacks run side by side.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

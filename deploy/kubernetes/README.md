@@ -22,8 +22,8 @@ kubectl apply -k deploy/kubernetes/overlays/kind
 kubectl -n harbour rollout status deployment/gateway
 ```
 
-The console is then at <http://127.0.0.1:58290/> and Mailpit at <http://127.0.0.1:58225/>. Those ports differ from
-compose's, so the cluster runs beside the compose stacks. The API key:
+The console is then at <http://127.0.0.1:58390/> and Mailpit at <http://127.0.0.1:58325/>. Those ports differ from
+compose's and from the second stack's in its README, so the cluster runs beside both. The API key:
 
 ```sh
 kubectl -n harbour exec deploy/gateway -- cat /var/lib/harbour/bootstrap.json
@@ -32,7 +32,7 @@ kubectl -n harbour exec deploy/gateway -- cat /var/lib/harbour/bootstrap.json
 The gateway's end-to-end test, the one CI runs against the compose stack, runs against the cluster too:
 
 ```sh
-bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58290 --mailpit-url http://127.0.0.1:58225 \
+bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58390 --mailpit-url http://127.0.0.1:58325 \
   --exec "kubectl --namespace harbour exec deploy/gateway --"
 ```
 

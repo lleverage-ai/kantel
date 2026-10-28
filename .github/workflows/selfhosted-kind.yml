@@ -80,7 +80,7 @@ jobs:
           docker cp "$DIND_NAME:/certs/client" "$certs"
           export DOCKER_HOST="tcp://$ip:2376" DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH="$certs"
           docker info --format 'reached {{.Name}} over TLS'
-          for port in 58290 58225; do
+          for port in 58390 58325; do
             docker run --detach --network host --name "forward-$port" alpine/socat:1.8.0.3 \
               "tcp-listen:$port,fork,reuseaddr,bind=$ip" "tcp:127.0.0.1:$port"
           done
@@ -116,8 +116,8 @@ jobs:
       - name: Gateway end to end on the cluster
         run: >
           bun apps/selfhosted/test/gateway/stack.ts
-          --base-url "http://$STACK:58290"
-          --mailpit-url "http://$STACK:58225"
+          --base-url "http://$STACK:58390"
+          --mailpit-url "http://$STACK:58325"
           --exec "kubectl --namespace harbour exec deploy/gateway --"
 
       # A new pod on the same state volume and database: the same organisation, project, workspace and API key.
@@ -132,8 +132,8 @@ jobs:
             exit 1
           fi
           bun apps/selfhosted/test/gateway/stack.ts \
-            --base-url "http://$STACK:58290" \
-            --mailpit-url "http://$STACK:58225" \
+            --base-url "http://$STACK:58390" \
+            --mailpit-url "http://$STACK:58325" \
             --exec "kubectl --namespace harbour exec deploy/gateway --"
 
       - name: Cluster state on failure

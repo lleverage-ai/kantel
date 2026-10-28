@@ -7,6 +7,6 @@ nodes:
     image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
     extraPortMappings:
       # The gateway and console (Service gateway, NodePort 30090).
-      - { containerPort: 30090, hostPort: 58290, listenAddress: "127.0.0.1" }
+      - { containerPort: 30090, hostPort: 58390, listenAddress: "127.0.0.1" }
       # Mailpit's web UI and API (Service mailpit, NodePort 30025).
-      - { containerPort: 30025, hostPort: 58225, listenAddress: "127.0.0.1" }
+      - { containerPort: 30025, hostPort: 58325, listenAddress: "127.0.0.1" }

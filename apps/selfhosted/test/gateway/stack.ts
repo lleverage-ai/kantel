@@ -4,7 +4,7 @@
 //
 // or against the Kubernetes manifests (deploy/kubernetes), running commands in the gateway with kubectl:
 //
-//   bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58290 --mailpit-url http://127.0.0.1:58225 \
+//   bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58390 --mailpit-url http://127.0.0.1:58325 \
 //     --exec "kubectl --namespace harbour exec deploy/gateway --"
 //
 // It reads the gateway's bootstrap (organisation, project, workspace and API key) from the running `gateway`
