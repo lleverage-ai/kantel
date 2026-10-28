@@ -58,14 +58,16 @@ export function isolateBackendName(vars: SandboxVars): IsolateBackendName {
 
 const NO_CONTAINERS = "The container tier is not on Cloudflare yet; this command needs it";
 
-/** The container tier's stand-in: refuses every command, and has nothing to commit or end. */
+/**
+ * The container tier's stand-in: refuses every command, and has nothing to commit or end. The tiered sandboxes acquire
+ * a container lease before they run the command, so `pending` must answer (with no changes): the isolate checkpoints
+ * that lease before each command, and releasing it flushes it, and a refusal there would stall the session.
+ */
 export const noContainers: ContainerBackend = {
 	exec: async () => {
 		throw new HarbourError("unavailable", NO_CONTAINERS);
 	},
-	pending: async () => {
-		throw new HarbourError("unavailable", NO_CONTAINERS);
-	},
+	pending: async () => ({ changes: [], stamp: 0 }),
 	committed: async () => undefined,
 	ended: async () => undefined,
 };

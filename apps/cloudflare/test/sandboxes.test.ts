@@ -73,6 +73,16 @@ async function setup(options: { clock?: ReturnType<typeof manualClock>["clock"] 
 	return { stack, measure, workspace, session };
 }
 
+async function operatorKey(stack: Stack): Promise<string> {
+	const service = await stack.identity.createServiceIdentity(stack.admin, { name: "measure" });
+	const key = await stack.identity.issueApiKey(stack.admin, {
+		serviceId: service.id,
+		projectIds: [stack.project.id],
+		role: "operator",
+	});
+	return key.secret;
+}
+
 describe("the stack's sandboxes", () => {
 	it("runs the isolate tier in process and commits what a command writes", async () => {
 		const { stack, workspace, session } = await setup();
@@ -103,6 +113,17 @@ describe("the stack's sandboxes", () => {
 			request: { command: "git status" },
 		});
 		await expect(run).rejects.toSatisfy((error: unknown) => isHarbourError(error, "unavailable"));
+
+		// The refusal leaves the session working: the isolate still runs, and closing the session ends every lease.
+		const after = await stack.sandboxes.sandboxes.run(stack.admin, {
+			sessionId,
+			workspaceId,
+			tool: "bash",
+			request: { command: "true" },
+		});
+		expect(after.exitCode).toBe(0);
+		await stack.runtime.runtime.close(stack.admin, sessionId);
+		expect(await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId, live: true })).toHaveLength(0);
 	});
 
 	it("ends a session's leases when the session closes", async () => {
@@ -172,5 +193,22 @@ describe("the isolate-ready measurement", () => {
 		expect((await measure({ backend: 7 })).status).toBe(400);
 		expect((await measure(undefined, undefined, "GET")).status).toBe(405);
 		expect((await measure({}, {})).status).toBe(401);
+		expect((await measure({ backend: "in-process", pad: "x".repeat(2048) })).status).toBe(413);
+	});
+
+	it("finds the measurement workspace again after a restart, rather than making another", async () => {
+		const { stack, measure } = await setup();
+		const first = (await (await measure()).json()) as { workspaceId: string };
+		// A new gateway over the same stack forgets the workspace, as an object restart does.
+		const restarted = createGateway(stack);
+		const response = await restarted.fetch(
+			new Request(`${BASE}${MEASURE_PATH}`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${await operatorKey(stack)}` },
+			}),
+		);
+		expect(response.status).toBe(200);
+		const second = (await response.json()) as { workspaceId: string };
+		expect(second.workspaceId).toBe(first.workspaceId);
 	});
 });
