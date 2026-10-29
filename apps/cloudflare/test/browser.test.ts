@@ -8,6 +8,7 @@ import { createScriptedModel } from "@harbour/runtime/testing";
 import type { ModelRequestView } from "@harbour/testing/session";
 import { describe, expect, it } from "vitest";
 import { BROWSER_TOOL_NAMES, brwsrProviderFrom, toolName } from "../src/browser.ts";
+import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createDevBrowserModels } from "../src/dev-browser-model.ts";
 import { BROWSER_DECISIONS_PATH, createGateway } from "../src/gateway.ts";
@@ -95,7 +96,7 @@ describe("the browser on the stack", () => {
 	it("gives sessions no browser tools without a provider", async () => {
 		const { stack } = await setup({ browser: false });
 		expect(stack.browser).toBeUndefined();
-		expect((await stack.runtime.profiles.get(stack.admin, DEFAULT_AGENT_ID)).tools).toEqual([]);
+		expect((await stack.runtime.profiles.get(stack.admin, DEFAULT_AGENT_ID)).tools).toEqual([...CODING_TOOLS]);
 		await stack.close();
 	});
 
