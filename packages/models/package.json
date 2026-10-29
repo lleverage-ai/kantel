@@ -14,6 +14,7 @@
 		"./catalogue": "./src/catalogue.ts",
 		"./redact": "./src/redact.ts",
 		"./gateway": "./src/gateway.ts",
+		"./tool-names": "./src/tool-names.ts",
 		"./http": "./src/http.ts"
 	},
 	"dependencies": {

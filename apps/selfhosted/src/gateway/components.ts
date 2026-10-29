@@ -5,6 +5,7 @@
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
+import type { Sandboxes } from "@harbour/contracts";
 import {
 	type AuditStore,
 	type CallContext,
@@ -21,9 +22,11 @@ import {
 } from "@harbour/contracts";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
+import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
-import type { KeyedWorkspaces } from "@harbour/workspace";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
+import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 
 /**
  * Harbour sets itself up as this system actor: the identity contract lets only `system` create an organisation. Its
@@ -38,7 +41,15 @@ export interface GatewayComponents {
 	readonly identity: IdentityDirectory;
 	readonly audit: AuditStore;
 	readonly runtime: MemoryRuntime;
-	readonly workspaces: KeyedWorkspaces;
+	readonly workspaces: StoredWorkspaces;
+	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
+	readonly sandboxes: Sandboxes;
+	/**
+	 * Where the session API keeps host registrations so they outlive the process: the runtime's `hosts`, when its store
+	 * is durable and it serves stored registrations over their signed callbacks. Absent in memory, where a registration
+	 * lives as long as the gateway.
+	 */
+	readonly hosts?: DurableHosts;
 	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
@@ -106,27 +117,39 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 	};
 }
 
-export function createGatewayComponents(): GatewayComponents {
+/** The sessions' models: a test's scripted model, say. Default the echo model. */
+export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+
+export function createGatewayComponents(options: { readonly models?: GatewayModels } = {}): GatewayComponents {
 	const auditAccess = deferredAccess();
 	const audit = createMemoryAuditStore({ access: auditAccess.access });
 	const identity = createMemoryIdentity({ audit });
-	const runtime = createMemoryRuntime({ audit, identity, models: createEchoModels() });
+	const gatewaySandboxes = createGatewaySandboxes();
+	const runtime = createMemoryRuntime({
+		audit,
+		identity,
+		...(options.models ?? { models: createEchoModels() }),
+		...gatewaySandboxes.runtimeOptions,
+	});
 	// Given `identity`, the runtime always builds its check; the components share it.
 	const access = runtime.access;
 	if (access === undefined) throw new Error("the runtime built no project-access check");
 	auditAccess.set(access);
-	const workspaces = createMemoryWorkspaces({ audit, access });
+	const workspaces = createStoredWorkspaces({ store: createMemoryWorkspaceStore(), audit, access });
+	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	return {
 		identity,
 		audit,
 		runtime,
 		workspaces,
+		sandboxes,
 		otp: createMemoryOtpStores(),
 		bindings: {
 			identity: "memory",
 			audit: "memory",
-			runtime: "memory (echo model)",
+			runtime: options.models === undefined ? "memory (echo model)" : "memory",
 			workspaces: "memory",
+			sandboxes: SANDBOX_BINDING,
 			signIn: "memory",
 		},
 		close: () => runtime.close(),
@@ -205,9 +228,11 @@ export async function bootstrap(
 		name: "Echo",
 		model: { route: "echo" },
 		promptLayers: [],
-		tools: [],
+		// In a session on a workspace: the file tools on the workspace directly, and `bash` in an isolate leased on its
+		// first command (`sandboxes.ts`).
+		tools: [...CODING_TOOLS],
 		skills: [],
-		sandbox: { tiers: [] },
+		sandbox: { tiers: ["isolate"] },
 		memoryScopes: [],
 	});
 	const workspace = await workspaces.ensure(inProject, `bootstrap_${projectId}`, {

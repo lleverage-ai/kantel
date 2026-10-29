@@ -3,6 +3,7 @@ import {
 	AUDIT_PATH,
 	filesPath,
 	KEYS_PATH,
+	memoryPath,
 	NEW_SCHEDULE_PATH,
 	newSessionPath,
 	parseRoute,
@@ -11,11 +12,29 @@ import {
 	sessionLinkPath,
 	sessionPath,
 	sessionTurnPath,
+	skillsPath,
 	VAULT_PATH,
 	vaultRequestPath,
 } from "./router.ts";
 
 describe("routes", () => {
+	it("parses the skills and memory pages, with a skill or a concept open", () => {
+		expect(parseRoute(skillsPath())).toEqual({ name: "skills" });
+		expect(parseRoute(skillsPath("skl_1"))).toEqual({ name: "skills", skillId: "skl_1" });
+		expect(parseRoute(memoryPath())).toEqual({ name: "memory" });
+		// A concept's ID has slashes, and keeps them: Workers static assets redirect an encoded slash to a plain one.
+		expect(memoryPath("projects/harbour/placement")).toBe("/memory/projects/harbour/placement");
+		expect(parseRoute(memoryPath("projects/harbour/placement"))).toEqual({
+			name: "memory",
+			conceptId: "projects/harbour/placement",
+		});
+		expect(parseRoute("/memory/projects%2Fharbour%2Fplacement")).toEqual({
+			name: "memory",
+			conceptId: "projects/harbour/placement",
+		});
+		expect(parseRoute("/skills/a/b")).toMatchObject({ name: "not-found" });
+	});
+
 	it("parses the home page, a project and a session", () => {
 		expect(parseRoute("/")).toEqual({ name: "home" });
 		expect(parseRoute("/projects/sal")).toEqual({ name: "project", projectId: "sal" });

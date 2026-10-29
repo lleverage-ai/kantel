@@ -38,6 +38,25 @@ Migrations run on every start of the object; each is idempotent. The bootstrap s
 restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
 `MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
 
+## Files and commands
+
+Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts`), on its workspace at `/workspace`.
+
+- **The workspace.** A session started from a repository runs on the workspace seeded from it. One started without
+  one gets its own, `session_<session ID>`, which is only an ID until a tool needs it: the session's first file tool
+  or command creates it, empty, in the session's project. A session that only talks stores nothing.
+- **The isolate only for commands.** `read`, `write`, `edit` and `ls` work on the workspace in R2 directly, as the
+  session's agent, and lease nothing. `bash` leases the session's isolate on its first command; closing or aborting
+  the session releases it.
+- **Confined.** Paths outside `/workspace` and its mounts are refused, mounts are read-only, a file over 16 MiB is
+  neither read nor written, and every write is a commit audited with the agent as its actor.
+- **JavaScript runs; Python doesn't yet.** On the `in-process` isolate, `node script.js` runs the script in QuickJS,
+  compiled to WebAssembly (`@harbour/sandbox/isolate-node`): plain JavaScript (ES2023) with `console`, `process.argv`,
+  `process.env` and `process.exit`, but no `require`, `fs`, network or timers. Each run gets its own engine instance in
+  a 32 MiB WebAssembly memory (24 MiB of heap), up to 1 MiB of script and of output, and a budget of interrupt checks
+  (a few seconds of busy CPU), because the clock stands still while a Worker runs code. `python`, `npm`, `git` writes
+  and the other real binaries need the container tier, which isn't on Cloudflare yet, and are refused.
+
 ## The browser
 
 With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the default agent has the browser's tools
@@ -51,6 +70,10 @@ With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the defaul
   and no CDP URL.
 - **Screenshots.** `browser_screenshot` returns its image to the model. After `browser_open` at a URL and each
   `browser_act` but `look`, a screenshot goes to the transcript only, so the console shows the page moving.
+- **The live view.** Each browser call's tool item names its browser (`browserSessionId`, an ID only). The console
+  asks `POST /v1/browser/live` for a watch-only brwsr share link to it, minted for the person signed in (viewer on the
+  session is enough; an agent can't), and embeds it inline under the browser's newest call. The link can't take
+  control, lasts an hour at most and stops with the browser; afterwards the last screenshot takes its place.
 - **Released with the session.** Closing or aborting a session closes its browsers and ends its grants (the
   runtime's session-end hook). Grants and open browsers are in memory: a restarted object forgets them, and brwsr
   ends each browser at its timeout.
@@ -59,6 +82,33 @@ Under `wrangler dev --env dev`, put `HARBOUR_BRWSR_API_KEY` in `apps/cloudflare/
 model gateway, a message `browse <url>` makes the dev model ask for a browser, open the URL once you allow it and
 take a screenshot (`src/dev-browser-model.ts`). If the console's dev server leaves a session on Connecting, open it
 with `?transport=sse`.
+
+## Code mode
+
+Every session that has tools also has `codemode` (`src/codemode.ts`): the model writes a JavaScript script that calls
+the session's other tools (`await tools.read({ path })`, `await tools.bash({ command })`), and the script runs in the
+isolate tier, a Dynamic Worker per session loaded through `LOADER`. `HARBOUR_CODEMODE=off` takes it away.
+
+- **The tool** is Pi Durable's code mode (`createCodemodeTool`). Each tool call a script makes is a nested call of the
+  session's own tool, as its agent, with the same checks, audit, approvals and lazy leases as one the model makes. A
+  script's start and every result it got are journalled in the session's storage, so a script an eviction cut off
+  resumes without running finished calls again.
+- **Where it runs.** The isolate (`src/codemode/entry.ts`, bundled into `generated/codemode.bundle.txt`, with QuickJS's
+  WebAssembly beside it as its own module) runs the script in a QuickJS VM, through pi-codemode's
+  `RemoteCodemodeSandbox`. The stack object keeps the tools, the journal and the abort; each tool call comes back to it
+  over RPC through the `exchange` function passed with the script.
+- **Only the tool bindings cross.** The isolate has `env: {}` and `globalOutbound: null`, so no bindings, secrets or
+  network, and the VM has no `fetch`, timers, modules or I/O. A script reaches the world only through a session tool.
+- **Loaded when used.** The first script a session runs loads its isolate (one loader ID per organisation, session and
+  code digest); later scripts reuse it while it's warm. A session that never runs a script never has one.
+- **No prompt of Harbour's.** Pi Durable's code mode extension would add a system prompt section listing the tools, so
+  Harbour uses the tool alone, and its description says the script's `tools` are the tools the model is offered.
+- **It shares the object's thread.** A Dynamic Worker loaded by a Durable Object runs on that object's thread, so a
+  script that computes without calling a tool holds `HarbourStack` until it calls one or uses up its interrupt budget
+  (`CODEMODE_INTERRUPT_BUDGET`, about 5 s on Cloudflare), when it fails with a timeout. The VM's heap is capped at 32 MiB.
+
+Under `wrangler dev --env dev` with no model gateway, a message `codemode <script>` makes the dev model run the script
+with the tool (`src/dev-browser-model.ts`).
 
 ## Decisions
 
@@ -87,7 +137,8 @@ the isolate-ready measurement can run on each and the target is set with real nu
 runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate, runs the same shell in a
 Dynamic Worker per session through the `LOADER` (`worker_loaders`) binding, as the M0 spike ran it
 (`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. The container tier is not on
-Cloudflare yet: a command routed to it is refused `unavailable`.
+Cloudflare yet: a command routed to it is refused `unavailable`. Only `in-process` has `node` so far: on
+`dynamic-worker`, `node` goes to the container tier and is refused.
 
 How `dynamic-worker` works:
 
@@ -191,8 +242,14 @@ deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs 
 
 ## Deploy
 
-CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, on a push to main that touches the
-Worker, the console or a package, or a manual run from main. The account side (the token, the Access application, the
+CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, called by
+`.github/workflows/main.yml` on every push to main that changes more than Markdown (or a manual run of it from main).
+Pull requests are gated only on `CI`'s install, typecheck and lint, so they stay quick on Harbour's two self-hosted
+runners; main runs the heavy checks only on its newest head: `CI` with the tests, `self-hosted` and `Sandbox image`.
+A newer push cancels them, even while they run, and skips the older commit's deploy. The deploy runs only once all
+three have passed on that same commit, so a failing check on main means nothing deploys; a deploy already going is
+never cancelled, and a newer one waits for it. A pull request that changes the Worker can dry-run it on demand with
+`gh workflow run cloudflare-deploy.yml --ref <branch>`. The account side (the token, the Access application, the
 VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
 
 | Name | Kind | What it is |
@@ -210,8 +267,8 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
 | `HARBOUR_BRWSR_API_KEY` | optional secret | brwsr's project key (see The browser above), set on the Worker when it exists. Without it sessions have no browser |
 
-Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
---dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
+Until the secret and every variable exist, and on any run other than main.yml's on main, the workflow only runs
+`wrangler deploy --dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
 
 1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,

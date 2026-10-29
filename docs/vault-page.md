@@ -73,6 +73,14 @@ Approving needs a passkey. The page takes a `PasskeyCheck` callback, so it never
 challenge and verify endpoints. A dismissed prompt is *cancelled* (nothing sent); a failed verification is an error
 (nothing sent). Denying needs no passkey.
 
+The `PasskeyRequest` carries the narrowing the approval will send, so the host's challenge can bind it. The console
+(`apps/console/src/api/passkey.ts`) builds its check from `webAuthnPasskey` over the approval API's
+`POST /v1/vault/proposals/:id/passkey-challenge`. Its `verify` keeps the assertion, and the vault seam's `decide` sends
+it as `passkeyAssertion`, which the API verifies before deciding. The console passes the check only when the API says
+the viewer needs a passkey (`passkeyRequired`). A person who has none yet sees *Set up a passkey* above the page, and
+once they've set one up, the button reads *Approve with passkey*. A refusal from the API that names the passkey is
+shown as a passkey problem, not as a wrong code.
+
 ## Using it
 
 ```tsx

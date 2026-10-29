@@ -12,9 +12,10 @@ import {
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
-import type { ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
+import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
+import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
@@ -23,6 +24,7 @@ import {
 	filesPath,
 	interceptLinks,
 	KEYS_PATH,
+	memoryPath,
 	navigate,
 	newSessionPath,
 	parseRoute,
@@ -30,6 +32,7 @@ import {
 	type Route,
 	schedulesPath,
 	sessionPath,
+	skillsPath,
 	usePathname,
 	VAULT_PATH,
 } from "./router.ts";
@@ -132,6 +135,24 @@ function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]
 	);
 }
 
+/** The agent's skills and memory, shown when the console has a seam for them. */
+function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
+	if (!agent) return null;
+	return (
+		<nav className="shell-organisation" aria-label="Agent">
+			<h2 className="shell-heading">Agent</h2>
+			<ul className="shell-rows">
+				<li>
+					<ListRow title="Skills" href={skillsPath()} selected={route.name === "skills"} />
+				</li>
+				<li>
+					<ListRow title="Memory" href={memoryPath()} selected={route.name === "memory"} />
+				</li>
+			</ul>
+		</nav>
+	);
+}
+
 /**
  * The organisation's pages: schedules, the vault, the audit log and API keys, each shown when the console has a seam
  * for it.
@@ -188,6 +209,7 @@ export function App({
 	vault,
 	audit,
 	keys,
+	agent,
 	schedules,
 	onOpen,
 }: {
@@ -198,6 +220,8 @@ export function App({
 	audit?: ConsoleAudit;
 	/** The API keys page's seam; without it there's no API keys in the sidebar. */
 	keys?: ConsoleKeys;
+	/** The skills and memory pages' seam; without it there's no Agent section in the sidebar. */
+	agent?: ConsoleAgent;
 	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
 	schedules?: ConsoleSchedules;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
@@ -263,7 +287,8 @@ export function App({
 	const auditRoute = audit !== undefined && route.name === "audit";
 	const keysRoute = keys !== undefined && route.name === "keys";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
-	const organisationPage = vaultRoute || auditRoute || keysRoute || schedulesRoute;
+	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
+	const organisationPage = vaultRoute || auditRoute || keysRoute || schedulesRoute || agentRoute;
 	const missing =
 		route.name === "not-found" ||
 		(linkedSession !== undefined && sessionProject === undefined) ||
@@ -271,7 +296,9 @@ export function App({
 			route.name === "vault-request" ||
 			route.name === "audit" ||
 			route.name === "keys" ||
-			route.name === "schedules") &&
+			route.name === "schedules" ||
+			route.name === "skills" ||
+			route.name === "memory") &&
 			!organisationPage);
 	const unknownSession =
 		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
@@ -319,6 +346,28 @@ export function App({
 					api={keys.api}
 					roles={keys.roles}
 					projects={projects.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
+				/>
+			</div>
+		);
+	} else if (agentRoute && agent !== undefined && route.name === "skills") {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<SkillsScreen
+					agent={agent}
+					projects={projects}
+					{...(route.skillId === undefined ? {} : { skillId: route.skillId })}
+				/>
+			</div>
+		);
+	} else if (agentRoute && agent !== undefined && route.name === "memory") {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<MemoryScreen
+					agent={agent}
+					projects={projects}
+					{...(route.conceptId === undefined ? {} : { conceptId: route.conceptId })}
 				/>
 			</div>
 		);
@@ -444,6 +493,7 @@ export function App({
 					<span className="shell-wordmark">Harbour</span>
 				</div>
 				<ProjectNav projects={projects} current={projectId} />
+				<AgentNav route={route} agent={agent !== undefined} />
 				<OrganisationNav
 					route={route}
 					schedules={schedules !== undefined}

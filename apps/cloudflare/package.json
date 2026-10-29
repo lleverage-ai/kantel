@@ -18,6 +18,7 @@
 	"dependencies": {
 		"@earendil-works/chord": "1.4.0",
 		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-codemode": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
 		"@harbour/audit": "workspace:*",
 		"@harbour/browser": "workspace:*",
@@ -26,14 +27,16 @@
 		"@harbour/identity": "workspace:*",
 		"@harbour/memory": "workspace:*",
 		"@harbour/model-gateway": "workspace:*",
-		"@harbour/sandbox": "workspace:*",
 		"@harbour/runtime": "workspace:*",
 		"@harbour/runtime-cloudflare": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@harbour/sql": "workspace:*",
 		"@harbour/vault": "workspace:*",
 		"@harbour/vault-cloudflare": "workspace:*",
-		"@harbour/workspace": "workspace:*"
+		"@harbour/workspace": "workspace:*",
+		"@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+		"quickjs-wasi": "3.6.2"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "5.20261027.1",

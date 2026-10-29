@@ -14,6 +14,10 @@
 //   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
+// - A session on a repository: New session lists its branches (`GET /v1/git/branches`), then creates the workspace
+//   from the repository at the branch (`POST /v1/workspaces`, a git seed) and the session on it (`workspaceId`).
+//   Seeding writes files and never acquires a sandbox; the repository's credentials, when it needs any, are the
+//   gateway's (the vault's egress), never the console's.
 
 import {
 	type AgentProfile,
@@ -32,6 +36,7 @@ import type {
 	ConsoleClient,
 	ModelChoices,
 	ProjectSummary,
+	RepositoryBranches,
 	SendOptions,
 	SessionControl,
 	StartAccess,
@@ -293,7 +298,16 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 					const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
 					if (path !== "") query.set("path", path);
 					if (cursor !== undefined) query.set("cursor", cursor);
-					const page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					let page: Page<WorkspaceEntry>;
+					try {
+						page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					} catch (reason) {
+						// A session's own workspace exists once its first tool call makes it; until then it is empty.
+						if (path === "" && cursor === undefined && reason instanceof ApiError && reason.code === "not_found") {
+							return { entries: [], truncated: false };
+						}
+						throw reason;
+					}
 					entries.push(...page.items);
 					cursor = page.nextCursor;
 				} while (cursor !== undefined && entries.length < DIRECTORY_CAP);
@@ -485,11 +499,33 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			return { agentId: agent.id, agentName: agent.name };
 		},
 
-		async create(input) {
+		branches: (projectId, repo, signal) =>
+			getJson<RepositoryBranches>(`${base}/git/branches?${new URLSearchParams({ projectId, repo })}`, signal),
+
+		async create({ repository, ...input }) {
+			let workspaceId: string | undefined;
+			if (repository !== undefined) {
+				const seeded = await call(`${base}/workspaces`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						projectId: input.projectId,
+						seed: {
+							name: repository.repo,
+							sources: [{ kind: "git", repo: repository.repo, ref: repository.branch }],
+						},
+					}),
+				});
+				workspaceId = ((await seeded.json()) as { id: string }).id;
+			}
 			const response = await call(`${base}/sessions`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify(input),
+				body: JSON.stringify({
+					...input,
+					...(workspaceId === undefined ? {} : { workspaceId }),
+					...(repository === undefined ? {} : { labels: { repo: repository.repo, branch: repository.branch } }),
+				}),
 			});
 			const record = (await response.json()) as SessionRecord;
 			projectOfSession.set(record.id, record.projectId);
@@ -511,6 +547,31 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
 		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
+
+		async browserLive(sessionId, browserSessionId, signal) {
+			const response = await call(`${base}/browser/live`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ sessionId, browserSessionId }),
+				...(signal === undefined ? {} : { signal }),
+			});
+			const link = (await response.json()) as {
+				kind?: unknown;
+				url?: unknown;
+				endMessage?: unknown;
+				expiresAt?: unknown;
+			};
+			// A kind this console doesn't know is no live view, rather than a guess at how to play it.
+			if ((link.kind ?? "embed") !== "embed" || typeof link.url !== "string") {
+				throw new ApiError("unavailable", "Harbour sent no live view this console can show");
+			}
+			return {
+				kind: "embed",
+				url: link.url,
+				...(typeof link.endMessage === "string" ? { endMessage: link.endMessage } : {}),
+				...(typeof link.expiresAt === "number" ? { expiresAt: link.expiresAt } : {}),
+			};
+		},
 
 		async fork(sessionId, itemId) {
 			const response = await call(sessionUrl(sessionId, "/fork"), {

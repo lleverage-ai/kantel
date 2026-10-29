@@ -1,7 +1,7 @@
-import type { TranscriptItem } from "@harbour/protocol";
+import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
-import { finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
+import { browserViewSlots, finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
 
 const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
@@ -147,5 +147,55 @@ describe("finalAnswerIds", () => {
 			assistant("a2", "Bye."),
 		];
 		expect([...finalAnswerIds(groupTranscript(items))].sort()).toEqual(["a1", "a2"]);
+	});
+});
+
+describe("browserViewSlots", () => {
+	const shot = (data: string) => ({ mimeType: "image/png", data }) as const;
+	const on = (item: ToolItem, browserSessionId: string, images?: ToolItem["images"]): ToolItem => ({
+		...item,
+		browserSessionId,
+		...(images === undefined ? {} : { images }),
+	});
+
+	it("puts each browser's view under its newest call, with the last screenshot any call on it left", () => {
+		const first = shot("first");
+		const items: TranscriptItem[] = [
+			user("u1", "Look it up"),
+			tool("x1", "browser_request", "Asking for a browser"),
+			on(tool("x2", "browser_open", "Opening example.com"), "bs_1", [first]),
+			on(tool("x3", "browser_act", "Reading the page"), "bs_1"),
+			assistant("a1", "Opening another."),
+			on(tool("x4", "browser_open", "Opening example.org"), "bs_2", [shot("other")]),
+		];
+		const slots = browserViewSlots(groupTranscript(items));
+		expect([...slots.keys()]).toEqual(["x1", "x4"]);
+		expect(slots.get("x1")?.map((slot) => [slot.browserSessionId, slot.item.id, slot.screenshot])).toEqual([
+			["bs_1", "x3", first],
+		]);
+		expect(slots.get("x4")?.map((slot) => [slot.browserSessionId, slot.item.id])).toEqual([["bs_2", "x4"]]);
+	});
+
+	it("moves a browser's view down to the row of its newest call, and keeps unchanged rows' slots", () => {
+		const opened = on(tool("x1", "browser_open", "Opening example.com"), "bs_1", [shot("a")]);
+		const other = on(tool("x2", "browser_open", "Opening example.org"), "bs_2");
+		const before: TranscriptItem[] = [opened, other, assistant("a1", "Next.")];
+		const rowsBefore = groupTranscript(before);
+		const first = browserViewSlots(rowsBefore);
+		expect(first.get("x1")?.map((slot) => slot.item.id)).toEqual(["x1", "x2"]);
+
+		const stepped = on(tool("x3", "browser_act", "Clicking"), "bs_1", [shot("b")]);
+		const after = browserViewSlots(groupTranscript([...before, stepped], rowsBefore), first);
+		expect(after.get("x1")?.map((slot) => slot.item.id)).toEqual(["x2"]);
+		expect(after.get("x3")?.map((slot) => slot.item.id)).toEqual(["x3"]);
+
+		// Nothing changed: the same slot arrays come back, so their rows don't render again.
+		const again = browserViewSlots(groupTranscript([...before, stepped], rowsBefore), after);
+		expect(again.get("x1")).toBe(after.get("x1"));
+		expect(again.get("x3")).toBe(after.get("x3"));
+	});
+
+	it("has no slots for calls that name no browser", () => {
+		expect(browserViewSlots(groupTranscript(finishedTurn)).size).toBe(0);
 	});
 });

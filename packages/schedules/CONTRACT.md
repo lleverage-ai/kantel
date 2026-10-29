@@ -24,6 +24,11 @@ schedule, so a runner knows what to run without another call, and `renew` extend
 The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `@harbour/schedules`, with
 `zonedToUtc` and `utcToZoned`, compute due times with `Intl.DateTimeFormat` only.
 
+`update` takes a `ScheduleUpdate`: a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count`
+clears it, so a one-off can become a recurrence and back, and an end date or run limit can be dropped. The public API's
+`PATCH /v1/schedules/{scheduleId}` passes its body through as one, nulls included ("update keeps a field left out and
+clears at, repeat, until or count given null").
+
 ## Rules and the suite cases that enforce them
 
 - Calendar recurrence is at local time in the time zone: "runs a daily 09:00 Europe/London schedule at 08:00 UTC in
@@ -138,11 +143,13 @@ drive it with the manual clock and manual timers:
 
 `@harbour/schedules/handlers` has one handler per kind, after Sal's:
 
-- `createTaskHandler({ runtime, directory, waitForRun? })` starts a session through the public session API only:
+- `createTaskHandler({ runtime, directory, defaultAgentId?, waitForRun? })` starts a session through the public session API only:
   `runtime.create` (labelled `harbour.schedule` and `harbour.occurrence`), `runtime.prompt` with `requestId`
   `schedule:<occurrence>`, then `runtime.wait`. A retried run finds the session by its label and the prompt by its
   `requestId`. Listing and creating are not atomic, so it prompts only after `holdLease`; an attempt that lost the
-  occurrence closes the session it created unprompted ("two attempts racing past a stalled create prompt one session"). The payload is `{ agentId, message, projectId?, title?, labels? }`;
+  occurrence closes the session it created unprompted ("two attempts racing past a stalled create prompt one session"). The payload is `{ agentId?, prompt, projectId?, title?, labels? }`,
+  as the public API documents it: `prompt` is the session's first message, sent exactly as written (Harbour adds no
+  text of its own); `agentId` defaults to the host's `defaultAgentId`, and a payload with neither fails as `invalid`;
   `projectId` defaults to the owning project.
 - `createReminderHandler({ deliver, quietHours? })` hands the reminder to the host, keyed by the occurrence's ID, with
   `holdUntil` when it fell in the owner's quiet hours and is not `urgent`.

@@ -55,6 +55,8 @@ export interface VolumeSummary {
 
 export interface NetworkSummary {
 	readonly Id: string;
+	readonly Name?: string;
+	readonly Labels?: Readonly<Record<string, string>> | null;
 	readonly Containers?: Readonly<Record<string, { readonly Name: string; readonly IPv4Address: string }>>;
 }
 
@@ -286,6 +288,62 @@ export class DockerClient {
 
 	async inspectNetwork(name: string): Promise<NetworkSummary> {
 		return this.json<NetworkSummary>({ method: "GET", path: `/networks/${encodeURIComponent(name)}` });
+	}
+
+	/** Creates an internal bridge network (no route out but its members), on `subnet` when given. Returns its ID. */
+	async createInternalNetwork(
+		name: string,
+		labels: Readonly<Record<string, string>>,
+		subnet?: string,
+	): Promise<string> {
+		const created = await this.json<{ Id: string }>({
+			method: "POST",
+			path: "/networks/create",
+			json: {
+				Name: name,
+				Driver: "bridge",
+				Internal: true,
+				CheckDuplicate: true,
+				Labels: labels,
+				...(subnet === undefined ? {} : { IPAM: { Config: [{ Subnet: subnet }] } }),
+			},
+		});
+		return created.Id;
+	}
+
+	/** Connects a container to a network, reachable on it as each of `aliases`. */
+	async connectNetwork(network: string, container: string, aliases: readonly string[] = []): Promise<void> {
+		await this.request({
+			method: "POST",
+			path: `/networks/${encodeURIComponent(network)}/connect`,
+			json: { Container: container, EndpointConfig: { Aliases: aliases } },
+		});
+	}
+
+	/** Disconnects a container from a network. False when either was gone or it was not connected. */
+	async disconnectNetwork(network: string, container: string): Promise<boolean> {
+		const response = await this.request({
+			method: "POST",
+			path: `/networks/${encodeURIComponent(network)}/disconnect`,
+			json: { Container: container, Force: true },
+			allow: [404, 409],
+		});
+		return response.status < 300;
+	}
+
+	/** Removes a network. False when it was already gone. */
+	async removeNetwork(id: string): Promise<boolean> {
+		const response = await this.request({
+			method: "DELETE",
+			path: `/networks/${encodeURIComponent(id)}`,
+			allow: [404],
+		});
+		return response.status !== 404;
+	}
+
+	/** Networks carrying every one of `labels` (`key` or `key=value`). */
+	listNetworks(labels: readonly string[]): Promise<NetworkSummary[]> {
+		return this.json<NetworkSummary[]>({ method: "GET", path: `/networks?filters=${filters({ label: labels })}` });
 	}
 
 	/** Closes pooled connections. */

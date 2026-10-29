@@ -4,6 +4,7 @@ import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
 import { SessionClient } from "../state/session-client.ts";
 import { createRequestIds, type SessionActions } from "../ui/actions.ts";
+import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
 import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
@@ -41,6 +42,14 @@ export function SessionScreen({
 	const [failure, setFailure] = useState<string>();
 	const [draft, setDraft] = useState("");
 	const requestIds = useMemo(() => createRequestIds(), []);
+	// The session's browsers' live views, while the screen is open; none on a client that can't have them.
+	const browserLive = useMemo(() => {
+		const load = client.browserLive?.bind(client);
+		return load === undefined
+			? undefined
+			: createBrowserLiveStore((browserSessionId, signal) => load(sessionId, browserSessionId, signal));
+	}, [client, sessionId]);
+	useEffect(() => () => browserLive?.dispose(), [browserLive]);
 	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
 
 	useEffect(() => {
@@ -189,6 +198,7 @@ export function SessionScreen({
 					onBrowserDecision: (callId: string, allow: boolean) =>
 						void run(() => client.decideBrowser?.(sessionId, callId, allow) ?? Promise.resolve()),
 				}),
+		...(browserLive === undefined ? {} : { browserLive }),
 		pickers: pickers.composer,
 	};
 

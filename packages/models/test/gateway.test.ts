@@ -262,6 +262,82 @@ describe("createModelGateway", () => {
 		expect(deps.audit.ofType("model.call")).toHaveLength(audited);
 	});
 
+	it("sends tool names under Harbour's MCP namespace on CPA's Messages API, and takes it off the calls that come back", async () => {
+		// CPA renames any tool that isn't an MCP tool to a random-word alias (`mcp__<w>_<w>__salon_browser_request`) on a
+		// Claude subscription, and the model then calls its tools by those names in what it writes. An MCP name passes.
+		const { gateway, upstream } = await setup();
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const declare = (name: string) => ({ name, description: "A tool.", parameters: { type: "object" } });
+		const tooLong = `t${"o".repeat(50)}`;
+		const tools = [declare("browser_request"), declare("mcp__docs__search"), declare("browser.open"), declare(tooLong)];
+		const messages = [
+			{ role: "user", content: "Open a browser", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "toolu_1", name: "browser_request", arguments: { reason: "Look" } }],
+				api: "pi-messages",
+				provider: "harbour",
+				model: "default",
+				usage,
+				stopReason: "toolUse",
+				timestamp: 2,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "toolu_1",
+				toolName: "browser_request",
+				content: [{ type: "text", text: "Allowed" }],
+				isError: false,
+				timestamp: 3,
+			},
+		];
+		const call = async (name: string, model = "default") => {
+			upstream.next({ toolCall: { id: "toolu_2", name, arguments: { url: "https://example.com" } } });
+			const events = await collect(
+				await gateway.messages(scopeFor(), { model, context: { messages, tools } as never }),
+			);
+			const start = events.find((event) => event.type === "toolcall_start");
+			const end = events.find((event) => event.type === "toolcall_end");
+			return {
+				body: upstream.calls().at(-1)?.body as { [key: string]: unknown },
+				names: [start?.type === "toolcall_start" && start.toolName, end?.type === "toolcall_end" && end.toolCall.name],
+			};
+		};
+
+		const messagesCall = await call("mcp__harbour__browser_request");
+		const sent = messagesCall.body as {
+			tools: { name: string }[];
+			messages: { role: string; content: string | { type: string; name?: string }[] }[];
+		};
+		expect(sent.tools.map((tool) => tool.name)).toEqual([
+			"mcp__harbour__browser_request",
+			"mcp__docs__search",
+			"browser.open",
+			tooLong,
+		]);
+		const toolUse = sent.messages
+			.flatMap((message) => (typeof message.content === "string" ? [] : message.content))
+			.find((block) => block.type === "tool_use");
+		expect(toolUse?.name).toBe("mcp__harbour__browser_request");
+		// Streamed and final, the call carries the name the session declared.
+		expect(messagesCall.names).toEqual(["browser_request", "browser_request"]);
+		// A name the request didn't put under the namespace comes back as it is.
+		expect((await call("mcp__docs__search")).names).toEqual(["mcp__docs__search", "mcp__docs__search"]);
+		expect((await call("browser_request")).names).toEqual(["browser_request", "browser_request"]);
+		expect((await call("mcp__harbour__unknown")).names).toEqual(["mcp__harbour__unknown", "mcp__harbour__unknown"]);
+
+		// CPA renames nothing on the OpenAI APIs, so neither does the gateway.
+		const responses = (await call("browser_request", "default:gpt-5")).body as { tools: { name: string }[] };
+		expect(responses.tools.map((tool) => tool.name)).toContain("browser_request");
+	});
+
 	it("turns a refused key read into an error event and records the call", async () => {
 		const { gateway, deps, upstream } = await setup({ hosts: ["elsewhere.internal"] });
 		const scope = scopeFor();

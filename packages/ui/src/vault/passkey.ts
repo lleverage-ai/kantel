@@ -2,11 +2,15 @@
 // callback, and `webAuthnPasskey` builds one from the browser's WebAuthn API and the host's own challenge and
 // verification endpoints. The workbench passes a stand-in.
 
+import type { Narrowing } from "@harbour/contracts";
+
 /** What the approver is about to confirm. The host binds its challenge to these, so an assertion can't be replayed. */
 export interface PasskeyRequest {
 	readonly proposalId: string;
 	readonly termsHash: string;
 	readonly action: "approve" | "paste";
+	/** The narrowing the approval will carry, when the approver narrowed: the challenge binds it too. */
+	readonly narrowing?: Narrowing;
 }
 
 /**

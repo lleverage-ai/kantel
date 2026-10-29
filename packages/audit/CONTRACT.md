@@ -36,7 +36,9 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
   in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time". `types` matches
   any of 1 to 20 types and prefixes (`["vault.policy.", "capability.grant."]` is every policy change) and narrows with
   `type` and the rest; an empty list, an empty type, a type holding a comma or more than 20 types is `invalid`, in the
-  same test.
+  same test. A row two of the types match comes once, a prefix beyond ASCII is measured in characters, and the list
+  keeps to the caller's organisation and pages by cursor: "narrows by any of a list of types: each row once,
+  characters not bytes, caller's organisation, paged".
 - `itemId` and `grantId` match the vault item or grant an event is about: its subject when that is a `vault.item` or
   `vault.grant`, or else `data.itemId` or `data.grantId` when it is a string (a number, a list or a nested field is not
   an ID). They combine with every other field, page by cursor and keep to the rows the caller may see: "narrows by vault

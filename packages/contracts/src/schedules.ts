@@ -57,6 +57,19 @@ export interface ScheduleInput {
 	readonly check?: CheckSettings;
 }
 
+/**
+ * What `update` changes: `ScheduleInput`'s fields but the owner and the kind, which are fixed at create. A field left out
+ * stays as it is; `null` on `at`, `repeat`, `until` or `count` clears it, so a one-off can become a recurrence (and
+ * back) and an end date or run limit can be dropped, over JSON as well as in process.
+ */
+export interface ScheduleUpdate
+	extends Partial<Omit<ScheduleInput, "owner" | "kind" | "at" | "repeat" | "until" | "count">> {
+	readonly at?: Timestamp | null;
+	readonly repeat?: Recurrence | null;
+	readonly until?: Timestamp | null;
+	readonly count?: number | null;
+}
+
 export interface Schedule extends ScheduleInput {
 	readonly id: string;
 	readonly status: "active" | "paused" | "ended";
@@ -123,11 +136,8 @@ export interface CheckReport {
 export interface Schedules {
 	/** Agents may not create schedules (`forbidden`): they propose them to their supervisor. */
 	create(ctx: CallContext, input: ScheduleInput): Promise<Schedule>;
-	update(
-		ctx: CallContext,
-		scheduleId: string,
-		input: Partial<Omit<ScheduleInput, "owner" | "kind">>,
-	): Promise<Schedule>;
+	/** Changes the fields `input` names; `null` clears `at`, `repeat`, `until` or `count` (see `ScheduleUpdate`). */
+	update(ctx: CallContext, scheduleId: string, input: ScheduleUpdate): Promise<Schedule>;
 	pause(ctx: CallContext, scheduleId: string): Promise<Schedule>;
 	resume(ctx: CallContext, scheduleId: string): Promise<Schedule>;
 	end(ctx: CallContext, scheduleId: string): Promise<Schedule>;

@@ -60,6 +60,17 @@ export interface CardItem {
 	readonly card: Card;
 }
 
+export interface CheckSettings {
+	/** Hours before a finding still present is raised again. Default 6. */
+	readonly reraiseHours?: number;
+	/** A finding whose value grows by this factor is raised again. Default 2. */
+	readonly risingFactor?: number;
+	/** Failed runs in a row before a `check-failed` finding is raised. Default 3. */
+	readonly failuresBeforeRaise?: number;
+	/** Severities, worst first, case-insensitive, for raising a finding that got worse as `escalated`. Default `urgent`, `high`, `medium`, `low`, `warn`, `info`. */
+	readonly severityOrder?: readonly string[];
+}
+
 export interface Concept {
 	readonly spaceId: string;
 	/** A stable path, such as `projects/harbour/vault-binding-codes`. */
@@ -141,6 +152,27 @@ export interface CreateMemorySpaceBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
 	readonly name: string;
+}
+
+/** A new schedule. Needs the operator role on a project-owned schedule's project. */
+export interface CreateScheduleBody {
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** What runs. A `task` starts a session with its payload `{ "agentId"?, "prompt" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model. */
+	readonly kind: ScheduleKind;
+	readonly title: string;
+	/** An IANA time zone, such as `Europe/London`. */
+	readonly timezone: string;
+	/** A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`. */
+	readonly at?: number;
+	readonly repeat?: Recurrence;
+	/** No occurrence is due after this (epoch milliseconds). */
+	readonly until?: number;
+	/** At most this many occurrences. */
+	readonly count?: number;
+	/** Any JSON value. */
+	readonly payload: JsonValue;
+	readonly check?: CheckSettings;
 }
 
 /** Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: "run-42" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`. */
@@ -249,6 +281,15 @@ export interface ListConceptsQuery {
 	readonly cursor?: string;
 }
 
+export interface ListSchedulesQuery {
+	/** What runs. A `task` starts a session with its payload `{ "agentId"?, "prompt" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model. */
+	readonly kind?: ScheduleKind;
+	readonly status?: ScheduleStatus;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
 export interface ListSessionsQuery {
 	readonly projectId?: string;
 	readonly agentId?: string;
@@ -350,6 +391,34 @@ export interface NoticeItem {
 	readonly code?: string;
 }
 
+/** One run of a schedule. */
+export interface Occurrence {
+	/** `<scheduleId>@<dueAt>`: unique per schedule and due time. */
+	readonly id: string;
+	readonly scheduleId: string;
+	/** Epoch milliseconds, UTC. */
+	readonly dueAt: number;
+	/** How many due times this run stands for (more than 1 after missed runs). */
+	readonly coalesced: number;
+	readonly status: OccurrenceStatus;
+	readonly attempt: number;
+	readonly claimedBy?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly leaseUntil?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly finishedAt?: number;
+	/** How the run went: a task's `{ sessionId, submissionId }` (the session it started), a check's `{ exitCode, raised }`, or `{ error }` for a failed run. */
+	readonly result?: unknown;
+}
+
+export interface OccurrencePage {
+	readonly items: readonly Occurrence[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export type OccurrenceStatus = "due" | "running" | "succeeded" | "failed";
+
 /** Who owns a record: an organisation, a project, a user, or the platform. */
 export type OwnerRef =
 	| {
@@ -374,6 +443,11 @@ export interface PageQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+export interface PreviewScheduleQuery {
+	/** How many due times. Default 5. */
+	readonly n?: number;
 }
 
 export interface QuestionCard {
@@ -432,6 +506,86 @@ export interface RecallManifestEntry {
 	readonly truncated: boolean;
 	readonly snapshotRef?: string;
 }
+
+export type Recurrence =
+	| {
+			readonly every: "minutes" | "hours";
+			readonly interval: number;
+			/** Epoch milliseconds, UTC. */
+			readonly from: number;
+	  }
+	| {
+			readonly every: "day";
+			/** A local wall-clock time, `HH:MM`, in the schedule's time zone. */
+			readonly at: string;
+			readonly interval?: number;
+	  }
+	| {
+			readonly every: "weekday";
+			/** A local wall-clock time, `HH:MM`, in the schedule's time zone. */
+			readonly at: string;
+	  }
+	| {
+			readonly every: "week";
+			/** A local wall-clock time, `HH:MM`, in the schedule's time zone. */
+			readonly at: string;
+			readonly on: readonly Weekday[];
+	  }
+	| {
+			readonly every: "month";
+			/** A local wall-clock time, `HH:MM`, in the schedule's time zone. */
+			readonly at: string;
+			readonly day: number;
+	  };
+
+export interface Schedule {
+	/** The schedule's ID. */
+	readonly id: string;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** What runs. A `task` starts a session with its payload `{ "agentId"?, "prompt" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model. */
+	readonly kind: ScheduleKind;
+	readonly title: string;
+	/** An IANA time zone, such as `Europe/London`. */
+	readonly timezone: string;
+	/** A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`. */
+	readonly at?: number;
+	readonly repeat?: Recurrence;
+	/** No occurrence is due after this (epoch milliseconds). */
+	readonly until?: number;
+	/** At most this many occurrences. */
+	readonly count?: number;
+	/** Any JSON value. */
+	readonly payload: JsonValue;
+	readonly check?: CheckSettings;
+	readonly status: ScheduleStatus;
+	/** The next due time; absent when ended or paused. */
+	readonly nextDueAt?: number;
+	/** Occurrences so far; a coalesced one counts once. */
+	readonly occurrences: number;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** What runs. A `task` starts a session with its payload `{ "agentId"?, "prompt" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model. */
+export type ScheduleKind = "reminder" | "task" | "summary" | "check" | "heartbeat" | "program";
+
+export interface SchedulePage {
+	readonly items: readonly Schedule[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export interface SchedulePreview {
+	/** The next due times, soonest first. */
+	readonly dueAt: readonly number[];
+}
+
+export type ScheduleStatus = "active" | "paused" | "ended";
 
 /** One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s. */
 export type ServerFrame =
@@ -685,6 +839,24 @@ export interface ToolItem {
 
 export type TranscriptItem = UserItem | AssistantItem | ToolItem | CardItem | NoticeItem;
 
+/** The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create. */
+export interface UpdateScheduleBody {
+	readonly title?: string;
+	/** An IANA time zone, such as `Europe/London`. */
+	readonly timezone?: string;
+	/** A one-off at this instant (epoch milliseconds), or `null` to clear it, as when it becomes a recurrence. Exactly one of `at` and `repeat` is left set. */
+	readonly at?: number | null;
+	/** The recurrence, or `null` to clear it, as when it becomes a one-off. */
+	readonly repeat?: Recurrence | null;
+	/** No occurrence is due after this (epoch milliseconds), or `null` to drop the end date. */
+	readonly until?: number | null;
+	/** At most this many occurrences, or `null` to drop the run limit. */
+	readonly count?: number | null;
+	/** Any JSON value. */
+	readonly payload?: JsonValue;
+	readonly check?: CheckSettings;
+}
+
 export interface Usage {
 	readonly inputTokens: number;
 	readonly outputTokens: number;
@@ -719,6 +891,8 @@ export interface VaultApprovalCard {
 	readonly expiresAt: number;
 	readonly link: string;
 }
+
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
 // Runtime
 
@@ -1002,6 +1176,24 @@ export interface HarbourClient {
 	recallMemory(body: RecallBody, options?: CallOptions): Promise<Recall>;
 	/** Load a snapshot into a space. A host adapter's load path: the space's concepts become the snapshot's, recorded with its source and ref, so every recall names what it read. People and API keys only; a deployment may ask for more. `POST /memory/spaces/{spaceId}/snapshot` */
 	importMemorySnapshot(spaceId: string, body: MemorySnapshot, options?: CallOptions): Promise<MemorySpace>;
+	/** List schedules. The organisation's schedules the caller may see, a page at a time. A project's schedules are listed only to those with the viewer role on it. `GET /schedules` */
+	listSchedules(query?: ListSchedulesQuery, options?: CallOptions): Promise<SchedulePage>;
+	/** Create a schedule. Exactly one of `at` (a one-off) and `repeat`. A task's runs each start a session, in the schedule's project (the default project for one owned by the organisation or a user), running the payload's agent with its prompt sent exactly as written. Agents may not create schedules. Needs the operator role on a project-owned schedule's project. `POST /schedules` */
+	createSchedule(body: CreateScheduleBody, options?: CallOptions): Promise<Schedule>;
+	/** Get a schedule. `GET /schedules/{scheduleId}` */
+	getSchedule(scheduleId: string, options?: CallOptions): Promise<Schedule>;
+	/** Change a schedule. Changes the fields given and works out the next due time again. A change that leaves the schedule never due again ends it. `PATCH /schedules/{scheduleId}` */
+	updateSchedule(scheduleId: string, body?: UpdateScheduleBody, options?: CallOptions): Promise<Schedule>;
+	/** Pause a schedule. Nothing runs while it is paused. `POST /schedules/{scheduleId}/pause` */
+	pauseSchedule(scheduleId: string, options?: CallOptions): Promise<Schedule>;
+	/** Resume a paused schedule. Runs from the next due time after now; the paused time is not made up. `POST /schedules/{scheduleId}/resume` */
+	resumeSchedule(scheduleId: string, options?: CallOptions): Promise<Schedule>;
+	/** End a schedule. Ends the schedule for good: nothing more runs. It stays listed, as `ended`, with its run history and the sessions its runs started. Ending an ended schedule does nothing. `DELETE /schedules/{scheduleId}` */
+	deleteSchedule(scheduleId: string, options?: CallOptions): Promise<Schedule>;
+	/** Preview a schedule's next due times. `GET /schedules/{scheduleId}/preview` */
+	previewSchedule(scheduleId: string, query?: PreviewScheduleQuery, options?: CallOptions): Promise<SchedulePreview>;
+	/** List a schedule's runs. The run history, a page at a time: each occurrence's status and times, and its result. A task's result names the session it started (`sessionId`). `GET /schedules/{scheduleId}/runs` */
+	listScheduleRuns(scheduleId: string, query?: PageQuery, options?: CallOptions): Promise<OccurrencePage>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -1075,5 +1267,25 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 				{ method: "POST", path: `/memory/spaces/${encodeURIComponent(spaceId)}/snapshot`, body },
 				callOptions,
 			),
+		listSchedules: (query, callOptions) => send(options, { method: "GET", path: "/schedules", query }, callOptions),
+		createSchedule: (body, callOptions) => send(options, { method: "POST", path: "/schedules", body }, callOptions),
+		getSchedule: (scheduleId, callOptions) =>
+			send(options, { method: "GET", path: `/schedules/${encodeURIComponent(scheduleId)}` }, callOptions),
+		updateSchedule: (scheduleId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/schedules/${encodeURIComponent(scheduleId)}`, body }, callOptions),
+		pauseSchedule: (scheduleId, callOptions) =>
+			send(options, { method: "POST", path: `/schedules/${encodeURIComponent(scheduleId)}/pause` }, callOptions),
+		resumeSchedule: (scheduleId, callOptions) =>
+			send(options, { method: "POST", path: `/schedules/${encodeURIComponent(scheduleId)}/resume` }, callOptions),
+		deleteSchedule: (scheduleId, callOptions) =>
+			send(options, { method: "DELETE", path: `/schedules/${encodeURIComponent(scheduleId)}` }, callOptions),
+		previewSchedule: (scheduleId, query, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/schedules/${encodeURIComponent(scheduleId)}/preview`, query },
+				callOptions,
+			),
+		listScheduleRuns: (scheduleId, query, callOptions) =>
+			send(options, { method: "GET", path: `/schedules/${encodeURIComponent(scheduleId)}/runs`, query }, callOptions),
 	};
 }

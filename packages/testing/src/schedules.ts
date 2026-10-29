@@ -642,6 +642,40 @@ export function createSchedulesConformance(options: {
 			]);
 		}),
 
+		test("update keeps a field left out and clears at, repeat, until or count given null", async (schedules, deps) => {
+			const until = deps.clock.now() + DAY;
+			const schedule = await schedules.create(human, hourly(deps, { until, count: 5 }));
+			const renamed = await schedules.update(human, schedule.id, { title: "Renamed" });
+			assert.deepEqual(
+				[renamed.repeat, renamed.until, renamed.count],
+				[schedule.repeat, until, 5],
+				"a field left out stays",
+			);
+
+			const unlimited = await schedules.update(human, schedule.id, { until: null, count: null });
+			assert.ok(!("until" in unlimited) && !("count" in unlimited), "null clears until and count");
+			assert.deepEqual(unlimited.repeat, schedule.repeat);
+			assert.strictEqual(unlimited.status, "active");
+
+			const oneOff = await schedules.update(human, schedule.id, { repeat: null, at: deps.clock.now() + 2 * HOUR });
+			assert.ok(!("repeat" in oneOff), "null clears repeat");
+			assert.strictEqual(oneOff.at, deps.clock.now() + 2 * HOUR);
+			assert.strictEqual(oneOff.nextDueAt, deps.clock.now() + 2 * HOUR);
+
+			const daily = { every: "day", at: "09:00" } as const;
+			const repeating = await schedules.update(human, schedule.id, { at: null, repeat: daily });
+			assert.ok(!("at" in repeating), "null clears at");
+			assert.deepEqual(repeating.repeat, daily);
+			assert.strictEqual(repeating.status, "active");
+
+			await assert.rejectsWithCode(
+				schedules.update(human, schedule.id, { repeat: null }),
+				"invalid",
+				"clearing both at and repeat is invalid",
+			);
+			assert.deepEqual((await schedules.get(human, schedule.id)).repeat, daily, "nothing invalid was stored");
+		}),
+
 		test("rejects an invalid time zone, a bad HH:MM, or both or neither of at and repeat as invalid", async (schedules, deps) => {
 			const daily = { every: "day", at: "09:00" } as const;
 			await assert.rejectsWithCode(

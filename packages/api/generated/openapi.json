@@ -1724,6 +1724,680 @@
 					}
 				}
 			}
+		},
+		"/schedules": {
+			"get": {
+				"operationId": "listSchedules",
+				"summary": "List schedules",
+				"description": "The organisation's schedules the caller may see, a page at a time. A project's schedules are listed only to those with the viewer role on it.",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "kind",
+						"in": "query",
+						"required": false,
+						"description": "What runs. A `task` starts a session with its payload `{ \"agentId\"?, \"prompt\" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model.",
+						"schema": {
+							"$ref": "#/components/schemas/ScheduleKind"
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/ScheduleStatus"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1000
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of schedules.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SchedulePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createSchedule",
+				"summary": "Create a schedule",
+				"description": "Exactly one of `at` (a one-off) and `repeat`. A task's runs each start a session, in the schedule's project (the default project for one owned by the organisation or a user), running the payload's agent with its prompt sent exactly as written. Agents may not create schedules. Needs the operator role on a project-owned schedule's project.",
+				"tags": ["schedules"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateScheduleBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new schedule, with its first due time.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Schedule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/schedules/{scheduleId}": {
+			"get": {
+				"operationId": "getSchedule",
+				"summary": "Get a schedule",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The schedule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Schedule"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateSchedule",
+				"summary": "Change a schedule",
+				"description": "Changes the fields given and works out the next due time again. A change that leaves the schedule never due again ends it.",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateScheduleBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The schedule as changed.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Schedule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteSchedule",
+				"summary": "End a schedule",
+				"description": "Ends the schedule for good: nothing more runs. It stays listed, as `ended`, with its run history and the sessions its runs started. Ending an ended schedule does nothing.",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The ended schedule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Schedule"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/schedules/{scheduleId}/pause": {
+			"post": {
+				"operationId": "pauseSchedule",
+				"summary": "Pause a schedule",
+				"description": "Nothing runs while it is paused.",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The paused schedule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Schedule"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/schedules/{scheduleId}/resume": {
+			"post": {
+				"operationId": "resumeSchedule",
+				"summary": "Resume a paused schedule",
+				"description": "Runs from the next due time after now; the paused time is not made up.",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The resumed schedule, with its next due time.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Schedule"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/schedules/{scheduleId}/preview": {
+			"get": {
+				"operationId": "previewSchedule",
+				"summary": "Preview a schedule's next due times",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "n",
+						"in": "query",
+						"required": false,
+						"description": "How many due times. Default 5.",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 100
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The next due times, from now.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SchedulePreview"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/schedules/{scheduleId}/runs": {
+			"get": {
+				"operationId": "listScheduleRuns",
+				"summary": "List a schedule's runs",
+				"description": "The run history, a page at a time: each occurrence's status and times, and its result. A task's result names the session it started (`sessionId`).",
+				"tags": ["schedules"],
+				"parameters": [
+					{
+						"name": "scheduleId",
+						"in": "path",
+						"required": true,
+						"description": "The schedule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of runs.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/OccurrencePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -1922,6 +2596,31 @@
 					}
 				},
 				"title": "CardItem"
+			},
+			"CheckSettings": {
+				"type": "object",
+				"properties": {
+					"reraiseHours": {
+						"type": "number",
+						"description": "Hours before a finding still present is raised again. Default 6."
+					},
+					"risingFactor": {
+						"type": "number",
+						"description": "A finding whose value grows by this factor is raised again. Default 2."
+					},
+					"failuresBeforeRaise": {
+						"type": "integer",
+						"description": "Failed runs in a row before a `check-failed` finding is raised. Default 3."
+					},
+					"severityOrder": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Severities, worst first, case-insensitive, for raising a finding that got worse as `escalated`. Default `urgent`, `high`, `medium`, `low`, `warn`, `info`."
+					}
+				},
+				"title": "CheckSettings"
 			},
 			"Concept": {
 				"type": "object",
@@ -2171,6 +2870,49 @@
 					}
 				},
 				"title": "CreateMemorySpaceBody"
+			},
+			"CreateScheduleBody": {
+				"type": "object",
+				"required": ["owner", "kind", "title", "timezone", "payload"],
+				"properties": {
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"kind": {
+						"$ref": "#/components/schemas/ScheduleKind"
+					},
+					"title": {
+						"type": "string"
+					},
+					"timezone": {
+						"type": "string",
+						"description": "An IANA time zone, such as `Europe/London`."
+					},
+					"at": {
+						"type": "integer",
+						"description": "A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`."
+					},
+					"repeat": {
+						"$ref": "#/components/schemas/Recurrence"
+					},
+					"until": {
+						"type": "integer",
+						"description": "No occurrence is due after this (epoch milliseconds)."
+					},
+					"count": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "At most this many occurrences."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"check": {
+						"$ref": "#/components/schemas/CheckSettings"
+					}
+				},
+				"title": "CreateScheduleBody",
+				"description": "A new schedule. Needs the operator role on a project-owned schedule's project."
 			},
 			"CreateSessionBody": {
 				"type": "object",
@@ -2706,6 +3448,88 @@
 				},
 				"title": "NoticeItem"
 			},
+			"Occurrence": {
+				"type": "object",
+				"required": ["id", "scheduleId", "dueAt", "coalesced", "status", "attempt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "`<scheduleId>@<dueAt>`: unique per schedule and due time."
+					},
+					"scheduleId": {
+						"type": "string"
+					},
+					"dueAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"coalesced": {
+						"type": "integer",
+						"description": "How many due times this run stands for (more than 1 after missed runs)."
+					},
+					"status": {
+						"$ref": "#/components/schemas/OccurrenceStatus"
+					},
+					"attempt": {
+						"type": "integer"
+					},
+					"claimedBy": {
+						"type": "string"
+					},
+					"leaseUntil": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"finishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"result": {
+						"description": "How the run went: a task's `{ sessionId, submissionId }` (the session it started), a check's `{ exitCode, raised }`, or `{ error }` for a failed run."
+					}
+				},
+				"title": "Occurrence",
+				"description": "One run of a schedule."
+			},
+			"OccurrencePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Occurrence"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "OccurrencePage"
+			},
+			"OccurrenceStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "due"
+					},
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "succeeded"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					}
+				],
+				"title": "OccurrenceStatus"
+			},
 			"OwnerRef": {
 				"anyOf": [
 					{
@@ -2975,6 +3799,270 @@
 					}
 				},
 				"title": "RecallManifestEntry"
+			},
+			"Recurrence": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["every", "interval", "from"],
+						"properties": {
+							"every": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "minutes"
+									},
+									{
+										"type": "string",
+										"const": "hours"
+									}
+								]
+							},
+							"interval": {
+								"type": "integer",
+								"minimum": 1
+							},
+							"from": {
+								"type": "integer",
+								"description": "Epoch milliseconds, UTC."
+							}
+						},
+						"description": "Every `interval` minutes or hours counted from `from`, unaffected by daylight saving."
+					},
+					{
+						"type": "object",
+						"required": ["every", "at"],
+						"properties": {
+							"every": {
+								"type": "string",
+								"const": "day"
+							},
+							"at": {
+								"type": "string",
+								"description": "A local wall-clock time, `HH:MM`, in the schedule's time zone."
+							},
+							"interval": {
+								"type": "integer",
+								"minimum": 1
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["every", "at"],
+						"properties": {
+							"every": {
+								"type": "string",
+								"const": "weekday"
+							},
+							"at": {
+								"type": "string",
+								"description": "A local wall-clock time, `HH:MM`, in the schedule's time zone."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["every", "at", "on"],
+						"properties": {
+							"every": {
+								"type": "string",
+								"const": "week"
+							},
+							"at": {
+								"type": "string",
+								"description": "A local wall-clock time, `HH:MM`, in the schedule's time zone."
+							},
+							"on": {
+								"type": "array",
+								"items": {
+									"$ref": "#/components/schemas/Weekday"
+								}
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["every", "at", "day"],
+						"properties": {
+							"every": {
+								"type": "string",
+								"const": "month"
+							},
+							"at": {
+								"type": "string",
+								"description": "A local wall-clock time, `HH:MM`, in the schedule's time zone."
+							},
+							"day": {
+								"type": "integer",
+								"minimum": 1,
+								"maximum": 31
+							}
+						},
+						"description": "`day` 31 means the last day of the month."
+					}
+				],
+				"title": "Recurrence"
+			},
+			"Schedule": {
+				"type": "object",
+				"required": [
+					"id",
+					"owner",
+					"kind",
+					"title",
+					"timezone",
+					"payload",
+					"status",
+					"occurrences",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The schedule's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"kind": {
+						"$ref": "#/components/schemas/ScheduleKind"
+					},
+					"title": {
+						"type": "string"
+					},
+					"timezone": {
+						"type": "string",
+						"description": "An IANA time zone, such as `Europe/London`."
+					},
+					"at": {
+						"type": "integer",
+						"description": "A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`."
+					},
+					"repeat": {
+						"$ref": "#/components/schemas/Recurrence"
+					},
+					"until": {
+						"type": "integer",
+						"description": "No occurrence is due after this (epoch milliseconds)."
+					},
+					"count": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "At most this many occurrences."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"check": {
+						"$ref": "#/components/schemas/CheckSettings"
+					},
+					"status": {
+						"$ref": "#/components/schemas/ScheduleStatus"
+					},
+					"nextDueAt": {
+						"type": "integer",
+						"description": "The next due time; absent when ended or paused."
+					},
+					"occurrences": {
+						"type": "integer",
+						"description": "Occurrences so far; a coalesced one counts once."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Schedule"
+			},
+			"ScheduleKind": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "reminder"
+					},
+					{
+						"type": "string",
+						"const": "task"
+					},
+					{
+						"type": "string",
+						"const": "summary"
+					},
+					{
+						"type": "string",
+						"const": "check"
+					},
+					{
+						"type": "string",
+						"const": "heartbeat"
+					},
+					{
+						"type": "string",
+						"const": "program"
+					}
+				],
+				"title": "ScheduleKind",
+				"description": "What runs. A `task` starts a session with its payload `{ \"agentId\"?, \"prompt\" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model."
+			},
+			"SchedulePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Schedule"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SchedulePage"
+			},
+			"SchedulePreview": {
+				"type": "object",
+				"required": ["dueAt"],
+				"properties": {
+					"dueAt": {
+						"type": "array",
+						"items": {
+							"type": "integer",
+							"description": "Epoch milliseconds, UTC."
+						},
+						"description": "The next due times, soonest first."
+					}
+				},
+				"title": "SchedulePreview"
+			},
+			"ScheduleStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "active"
+					},
+					{
+						"type": "string",
+						"const": "paused"
+					},
+					{
+						"type": "string",
+						"const": "ended"
+					}
+				],
+				"title": "ScheduleStatus"
 			},
 			"ServerFrame": {
 				"anyOf": [
@@ -3679,6 +4767,71 @@
 				],
 				"title": "TranscriptItem"
 			},
+			"UpdateScheduleBody": {
+				"type": "object",
+				"properties": {
+					"title": {
+						"type": "string"
+					},
+					"timezone": {
+						"type": "string",
+						"description": "An IANA time zone, such as `Europe/London`."
+					},
+					"at": {
+						"anyOf": [
+							{
+								"type": "integer"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "A one-off at this instant (epoch milliseconds), or `null` to clear it, as when it becomes a recurrence. Exactly one of `at` and `repeat` is left set."
+					},
+					"repeat": {
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/Recurrence"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The recurrence, or `null` to clear it, as when it becomes a one-off."
+					},
+					"until": {
+						"anyOf": [
+							{
+								"type": "integer"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "No occurrence is due after this (epoch milliseconds), or `null` to drop the end date."
+					},
+					"count": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 1
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "At most this many occurrences, or `null` to drop the run limit."
+					},
+					"payload": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"check": {
+						"$ref": "#/components/schemas/CheckSettings"
+					}
+				},
+				"title": "UpdateScheduleBody",
+				"description": "The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create."
+			},
 			"Usage": {
 				"type": "object",
 				"required": ["inputTokens", "outputTokens"],
@@ -3832,6 +4985,39 @@
 				},
 				"title": "VaultApprovalCard",
 				"description": "A vault proposal waiting on a person. The secret is never part of it."
+			},
+			"Weekday": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "mon"
+					},
+					{
+						"type": "string",
+						"const": "tue"
+					},
+					{
+						"type": "string",
+						"const": "wed"
+					},
+					{
+						"type": "string",
+						"const": "thu"
+					},
+					{
+						"type": "string",
+						"const": "fri"
+					},
+					{
+						"type": "string",
+						"const": "sat"
+					},
+					{
+						"type": "string",
+						"const": "sun"
+					}
+				],
+				"title": "Weekday"
 			}
 		}
 	}

@@ -5,6 +5,7 @@
  * | --- | --- |
  * | `POST /v1/workspaces` | the workspace write API (`@harbour/workspace/write-api`): a seeded workspace, operators only |
  * | `/v1/workspaces/…` | the workspace read API (`@harbour/workspace/read-api`, PR #58) |
+ * | `GET /v1/git/branches` | a repository's branches for a new session's branch picker (`@harbour/workspace/git-refs`), operators only |
  * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
@@ -14,6 +15,7 @@
  * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin |
  * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space and loading a snapshot for the organisation's admin |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
+ * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
@@ -39,6 +41,7 @@ import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
+import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
 import {
@@ -57,6 +60,12 @@ const MEASURE_BODY_LIMIT = 1024;
 /** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
 export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
 const DECISION_BODY_LIMIT = 1024;
+/**
+ * A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` ->
+ * `{ kind: "embed", url, endMessage?, expiresAt? }`, a provider-neutral live source: a page to embed, and what it posts
+ * to its parent once its stream is over. Other kinds (frames over Harbour's own socket, replays) can join it later.
+ */
+export const BROWSER_LIVE_PATH = "/v1/browser/live";
 
 export const API_BASE = "/v1";
 
@@ -157,6 +166,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		access: stack.access,
 		authenticate: callContext,
 	});
+
+	// A new session's branch picker: the same operator check as creating the workspace, before anything is fetched.
+	const gitBranches = createGitBranchesApi({ refs: stack.gitRefs, access: stack.access, authenticate: callContext });
 
 	// Loading skills and memory (a host adapter's import, a new space) is the organisation admin's, on top of the stores'
 	// own rules, which refuse agents and check a project owner's role. Reads follow the stores' rules alone.
@@ -298,6 +310,68 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
+	/** A browser route's JSON body, at most `DECISION_BODY_LIMIT` bytes, or `undefined` when it is too big or not JSON. */
+	const browserBody = async (request: Request): Promise<{ readonly [key: string]: unknown } | undefined> => {
+		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
+		try {
+			const body = bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
+			return typeof body === "object" && body !== null && !Array.isArray(body)
+				? (body as { readonly [key: string]: unknown })
+				: undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
+	const browserLive = async (request: Request): Promise<Response> => {
+		const noStore = { "cache-control": "no-store" };
+		if (request.method !== "POST") {
+			return Response.json(
+				{ error: { code: "invalid", message: "POST only" } },
+				{ status: 405, headers: { allow: "POST", ...noStore } },
+			);
+		}
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		const browser = stack.browser;
+		if (browser === undefined) {
+			return Response.json(
+				{ error: { code: "unavailable", message: "This deployment has no browser" } },
+				{ status: 503, headers: noStore },
+			);
+		}
+		const body = await browserBody(request);
+		const sessionId = body?.sessionId;
+		const browserSessionId = body?.browserSessionId;
+		if (
+			typeof sessionId !== "string" ||
+			sessionId === "" ||
+			typeof browserSessionId !== "string" ||
+			browserSessionId === ""
+		) {
+			return Response.json(
+				{ error: { code: "invalid", message: 'The body is { "sessionId": string, "browserSessionId": string }' } },
+				{ status: 400, headers: noStore },
+			);
+		}
+		try {
+			const ctx = callContextFor(caller, { signal: request.signal });
+			const link = await browser.liveView(ctx, { sessionId, browserSessionId });
+			const embed = link.embed ?? { url: link.url };
+			return Response.json(
+				{
+					kind: "embed",
+					url: embed.url,
+					...(embed.endMessage === undefined ? {} : { endMessage: embed.endMessage }),
+					...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }),
+				},
+				{ headers: { ...noStore, "referrer-policy": "no-referrer" } },
+			);
+		} catch (error) {
+			return errorResponse(error);
+		}
+	};
+
 	const decideBrowser = async (request: Request): Promise<Response> => {
 		const noStore = { "cache-control": "no-store" };
 		if (request.method !== "POST") {
@@ -355,6 +429,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
 			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
+			if (path === BROWSER_LIVE_PATH) return browserLive(request);
 			if (under(path, WORKSPACE_READ_API_BASE)) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {
@@ -364,6 +439,11 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				}
 				callers.set(request, caller);
 				return (await createWorkspace(request)) ?? (await workspaces(request)) ?? notFound();
+			}
+			if (path === GIT_BRANCHES_PATH) {
+				const refused = await signIn(request);
+				if (refused !== undefined) return refused;
+				return (await gitBranches(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
 			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {

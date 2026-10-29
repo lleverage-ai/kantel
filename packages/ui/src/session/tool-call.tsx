@@ -163,14 +163,22 @@ function openImage(image: ToolImage): void {
 	setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export type ToolCallChipProps = { item: ToolItem; defaultOpen?: boolean };
+export type ToolCallChipProps = {
+	item: ToolItem;
+	defaultOpen?: boolean;
+	/**
+	 * Shown under the row in place of its images: the live view of the browser the call used (`BrowserLiveView`), when
+	 * this is the newest call on it. The view shows the screenshot itself whenever it isn't live.
+	 */
+	browserView?: ReactNode;
+};
 
 /**
  * One tool call as a quiet row: icon, label, chevron, and when it started on hover or focus. A button with
  * aria-expanded; the arguments and output render only while it is open. Memoised on `item`, so a transcript
  * re-renders only the call that changed, and nothing in it ticks.
  */
-export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = false }: ToolCallChipProps) {
+export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = false, browserView }: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
 	const [open, setOpen] = useState(defaultOpen);
 	const id = useId();
@@ -190,7 +198,7 @@ export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = fal
 				<ClockTime at={item.at} className="hb-tool-stamp" />
 				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
 			</button>
-			<ToolImages item={item} />
+			{browserView ?? <ToolImages item={item} />}
 			{open ? <Detail item={item} id={id} /> : null}
 		</div>
 	);
@@ -208,7 +216,15 @@ export function workSummary(items: readonly ToolItem[]): string {
 	return items.length === 0 ? "No steps" : `Worked for ${duration(end - start)}, ${steps}`;
 }
 
-export type ToolCallGroupProps = { items: readonly ToolItem[]; live?: boolean };
+export type ToolCallGroupProps = {
+	items: readonly ToolItem[];
+	live?: boolean;
+	/**
+	 * Live browser views, by the id of the call each goes under (see `ToolCallChipProps.browserView`). A folded group
+	 * keeps its newest one in view under its summary, in place of the last screenshot.
+	 */
+	browserViews?: ReadonlyMap<string, ReactNode>;
+};
 
 /**
  * Consecutive tool calls. While any call runs, or the group is live (the turn may add to it), every call shows.
@@ -216,37 +232,32 @@ export type ToolCallGroupProps = { items: readonly ToolItem[]; live?: boolean };
  * calls carry no duration of their own, so the group's summary is the one place the time is told.
  * Failed and interrupted calls stay visible under the summary while it is collapsed, so a failure is never hidden.
  */
-export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false }: ToolCallGroupProps) {
+export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false, browserViews }: ToolCallGroupProps) {
 	const [open, setOpen] = useState(false);
 	const running = items.some((item) => item.status === "running");
+	const chip = (item: ToolItem) => <ToolCallChip key={item.id} item={item} browserView={browserViews?.get(item.id)} />;
 	if (live || running || items.length === 0) {
-		return (
-			<div className="hb-tool-group">
-				{items.map((item) => (
-					<ToolCallChip key={item.id} item={item} />
-				))}
-			</div>
-		);
+		return <div className="hb-tool-group">{items.map(chip)}</div>;
 	}
 	const failed = items.filter(isFailed);
+	// A live browser view stays in view under the folded group, as the last screenshot would.
+	const viewed = [...items].reverse().find((item) => browserViews?.has(item.id) === true);
+	const view = viewed === undefined ? undefined : browserViews?.get(viewed.id);
 	// The last picture the work left (such as the page a browser ended on) stays in view under the folded group.
 	const lastWithImage = [...items].reverse().find((item) => (item.images?.length ?? 0) > 0);
 	const lastImage = lastWithImage?.images?.at(-1);
 	return (
 		<div className="hb-tool-group hb-tool-group-collapsible">
 			<Disclosure className="hb-tool-group-summary" summary={workSummary(items)} open={open} onOpenChange={setOpen}>
-				{items.map((item) => (
-					<ToolCallChip key={item.id} item={item} />
-				))}
+				{items.map(chip)}
 			</Disclosure>
-			{!open && failed.length > 0 ? (
-				<div className="hb-tool-group-failed">
-					{failed.map((item) => (
-						<ToolCallChip key={item.id} item={item} />
-					))}
-				</div>
-			) : null}
-			{!open && lastWithImage !== undefined && lastImage !== undefined && !failed.includes(lastWithImage) ? (
+			{!open && failed.length > 0 ? <div className="hb-tool-group-failed">{failed.map(chip)}</div> : null}
+			{!open && view !== undefined && viewed !== undefined && !failed.includes(viewed) ? view : null}
+			{!open &&
+			view === undefined &&
+			lastWithImage !== undefined &&
+			lastImage !== undefined &&
+			!failed.includes(lastWithImage) ? (
 				<ToolImages item={lastWithImage} images={[lastImage]} />
 			) : null}
 		</div>

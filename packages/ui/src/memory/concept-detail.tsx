@@ -53,11 +53,15 @@ export function ConceptDetail({
 }: ConceptDetailProps) {
 	const [changing, setChanging] = useState<"correct" | "forget">();
 	const { state, reload } = useLoad(async () => {
+		const { listProposals } = source;
 		const [concept, proposals] = await Promise.all([
 			source.getConcept(spaceId, conceptId),
-			readAll<MemoryProposal>((page) => source.listProposals(spaceId, undefined, page)),
+			// A read-only source has no proposals, so no history to show.
+			listProposals === undefined
+				? undefined
+				: readAll<MemoryProposal>((page) => listProposals(spaceId, undefined, page)),
 		]);
-		return { concept, history: conceptHistory(proposals, conceptId) };
+		return { concept, history: proposals === undefined ? undefined : conceptHistory(proposals, conceptId) };
 	}, [source, spaceId, conceptId]);
 	const heading = useRef<HTMLHeadingElement>(null);
 	const ready = state.status === "ready";
@@ -111,7 +115,10 @@ export function ConceptDetail({
 					<h2 id="hb-concept-title" className="hb-concept-title" ref={heading} tabIndex={-1}>
 						{concept.title}
 					</h2>
-					{source.propose === undefined || concept.status !== "active" || changing !== undefined ? null : (
+					{source.propose === undefined ||
+					source.decide === undefined ||
+					concept.status !== "active" ||
+					changing !== undefined ? null : (
 						<span className="hb-concept-actions">
 							<Button size="sm" onClick={() => setChanging("correct")}>
 								Correct
@@ -237,39 +244,41 @@ export function ConceptDetail({
 				</FieldList>
 			</Panel>
 
-			<Panel header={<h3 className="hb-memory-section">History</h3>}>
-				{history.length === 0 ? (
-					<p className="hb-memory-note">No proposals changed it here. It may have come from a snapshot import.</p>
-				) : (
-					<ol className="hb-concept-history">
-						{history.map((proposal) => (
-							<li key={proposal.id} className="hb-concept-event">
-								<span className="hb-concept-event-badge">
-									<Badge tone={PROPOSAL_STATUS[proposal.status].tone}>{WRITE_LABELS[proposal.write.op]}</Badge>
-								</span>
-								<span className="hb-concept-event-text">
-									<span>
-										{actorName(proposal.proposedBy, directory)} proposed to {writeSentence(proposal.write)}
+			{history === undefined ? null : (
+				<Panel header={<h3 className="hb-memory-section">History</h3>}>
+					{history.length === 0 ? (
+						<p className="hb-memory-note">No proposals changed it here. It may have come from a snapshot import.</p>
+					) : (
+						<ol className="hb-concept-history">
+							{history.map((proposal) => (
+								<li key={proposal.id} className="hb-concept-event">
+									<span className="hb-concept-event-badge">
+										<Badge tone={PROPOSAL_STATUS[proposal.status].tone}>{WRITE_LABELS[proposal.write.op]}</Badge>
 									</span>
-									{proposal.write.op === "forget" ? (
-										<span className="hb-concept-event-meta">Because: {proposal.write.reason}</span>
-									) : null}
-									<span className="hb-concept-event-meta">
-										{proposal.status === "applied" ? "Applied" : "Rejected"}
-										{proposal.decidedBy === undefined ? "" : ` by ${actorName(proposal.decidedBy, directory)}`}
-										{proposal.decidedAt === undefined ? null : (
-											<>
-												, <ClockTime at={proposal.decidedAt} now={now} />
-											</>
-										)}
-										{proposal.note === undefined ? "" : `: ${proposal.note}`}
+									<span className="hb-concept-event-text">
+										<span>
+											{actorName(proposal.proposedBy, directory)} proposed to {writeSentence(proposal.write)}
+										</span>
+										{proposal.write.op === "forget" ? (
+											<span className="hb-concept-event-meta">Because: {proposal.write.reason}</span>
+										) : null}
+										<span className="hb-concept-event-meta">
+											{proposal.status === "applied" ? "Applied" : "Rejected"}
+											{proposal.decidedBy === undefined ? "" : ` by ${actorName(proposal.decidedBy, directory)}`}
+											{proposal.decidedAt === undefined ? null : (
+												<>
+													, <ClockTime at={proposal.decidedAt} now={now} />
+												</>
+											)}
+											{proposal.note === undefined ? "" : `: ${proposal.note}`}
+										</span>
 									</span>
-								</span>
-							</li>
-						))}
-					</ol>
-				)}
-			</Panel>
+								</li>
+							))}
+						</ol>
+					)}
+				</Panel>
+			)}
 		</article>
 	);
 }

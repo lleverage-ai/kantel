@@ -1,7 +1,8 @@
 // One end-to-end pass over the gateway's HTTP surface, shared by the in-process test (gateway.test.ts) and the
 // compose test (gateway.stack.test.ts): every mounted API refuses a call without credentials, then a session runs a
 // prompt to its answer and streams its events, the workspace read API lists and reads the bootstrap README, the
-// audit query API returns the session's rows, and the console's page is served.
+// audit query API returns the session's rows, the identity routes say who the key is and which project it has (and
+// keep its keys from an operator who administers nothing), and the console's page is served.
 
 export interface E2eTarget {
 	readonly baseUrl: string;
@@ -76,6 +77,9 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 		`/v1/workspaces/${target.workspaceId}/files`,
 		"/v1/audit/events",
 		"/v1/deployment",
+		"/v1/me",
+		"/v1/projects",
+		"/v1/keys",
 	]) {
 		const refused = await fetch(url(path));
 		check(`${path} without credentials is 401`, refused.status === 401, { status: refused.status });
@@ -85,6 +89,37 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 
 	const deployment = await call("/v1/deployment");
 	check("deployment lists its bindings", deployment.ok, await body(deployment));
+
+	// The identity routes, as the bootstrap's key: a service with operator on one project and nothing else.
+	const me = await call("/v1/me");
+	const meBody = (await body(me)) as { actor?: { kind?: string }; roles?: { projectId?: string; role: string }[] };
+	check(
+		"GET /v1/me names the key's service and its operator role on the project",
+		me.ok &&
+			meBody.actor?.kind === "service" &&
+			JSON.stringify(meBody.roles) === JSON.stringify([{ projectId: target.projectId, role: "operator" }]),
+		meBody,
+	);
+	const projects = await call("/v1/projects");
+	const projectsBody = (await body(projects)) as { items?: { id: string }[] };
+	check(
+		"GET /v1/projects lists the key's project",
+		projects.ok && (projectsBody.items ?? []).some((project) => project.id === target.projectId),
+		projectsBody,
+	);
+	const keys = await call("/v1/keys");
+	const keysBody = (await body(keys)) as { items?: unknown[] };
+	check("GET /v1/keys lists no keys to an operator who administers nothing", keys.ok && keysBody.items?.length === 0, {
+		status: keys.status,
+		body: keysBody,
+	});
+	const issued = await call("/v1/keys", {
+		method: "POST",
+		body: JSON.stringify({ name: "e2e", projectIds: [target.projectId], role: "viewer" }),
+	});
+	check("POST /v1/keys is 403 for an operator who administers nothing", issued.status === 403, {
+		status: issued.status,
+	});
 
 	// The session API: create, prompt, wait for the answer, then watch the events.
 	const created = await call("/v1/sessions", {

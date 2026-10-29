@@ -6,14 +6,19 @@
 //   identity    SQL identity directory on Postgres (@harbour/identity/sql, #83)
 //   sign-in     email one-time PIN codes and Harbour sessions on Postgres (@harbour/identity/sql, #93)
 //   runtime     SQL session store and each session's Pi Durable tables (@harbour/runtime/sql, #69), on one Postgres
-//               connection through PostgresSqliteDatabase; unfinished runs resume on start
+//               connection through PostgresSqliteDatabase; unfinished runs resume on start. Host registrations are
+//               kept in the store with their callback and served over it (callbackHostHandlers, #158), so a host
+//               app's tools, such as Sal's worker's, still answer after a restart without it registering again
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@harbour/selfhosted-workspace, #72)
+//   sandboxes   a session's coding tools (#196, sandboxes.ts): the file tools on those workspaces directly, `bash`
+//               in an in-process isolate leased on its first command
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
 // `workspace_versions`. The model is still the echo model until the model gateway (M1-BE9) lands.
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
-import { createSessionRuntime } from "@harbour/runtime/core";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
+import { callbackHostHandlers } from "@harbour/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import {
 	createS3Objects,
@@ -26,6 +31,7 @@ import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents } from "./components.ts";
+import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 
 export interface DurableConfig {
 	readonly databaseUrl: string;
@@ -41,6 +47,8 @@ export interface DurableConfig {
 		readonly prefix: string;
 	};
 	readonly log?: (message: string) => void;
+	/** The sessions' models. Default the echo model. */
+	readonly models?: Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -88,12 +96,16 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 
 		const db = await PostgresSqliteDatabase.open({ connectionString: config.databaseUrl, schema: config.schema });
 		closers.push(() => db.close());
+		const gatewaySandboxes = createGatewaySandboxes();
 		const runtime = createSessionRuntime({
+			...gatewaySandboxes.runtimeOptions,
 			store: await createSqlSessionStore(db),
 			storage: (session) => sqlPiStorage(db, session.id),
 			audit,
 			identity,
-			models: createEchoModels(),
+			...(config.models ?? { models: createEchoModels() }),
+			// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
+			hostHandler: callbackHostHandlers(),
 			onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
 			onWakeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not wake: ${error}`),
 		});
@@ -113,6 +125,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			access,
 		});
+		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
@@ -122,12 +135,15 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			runtime,
 			workspaces,
+			sandboxes,
+			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
 			bindings: {
 				identity: "postgres",
 				audit: "postgres",
 				runtime: "postgres session store and Pi Durable tables (echo model)",
 				workspaces: "postgres + s3",
+				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",
 			},
 			close,

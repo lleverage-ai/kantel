@@ -335,6 +335,38 @@ export interface Seeders {
 	readonly labels?: { readonly [label: string]: string };
 }
 
+/*
+ * Dependency layers: the `dependencies` stage of a seed. Once files are ready, the host restores each step's layer by
+ * its key or, when none is cached, runs the step in its tier and saves the outputs as the layer. How a layer is held
+ * is the target's: an overlay lower or image layer self-hosted, a snapshot on Cloudflare, a stored archive as the
+ * generic fallback. `@harbour/sandbox/dependencies` runs the stage over any of them.
+ */
+
+/** One dependency step of one workspace's seed, with the key the seed computed for it. */
+export interface DependencyLayerRequest {
+	readonly workspaceId: WorkspaceId;
+	readonly sessionId?: SessionId;
+	readonly step: SeedDependencyStep;
+	/** The step as the seed keyed it: its name, key and tier. */
+	readonly report: SeedDependencyReport;
+}
+
+/** Where a host keeps dependency layers, by key. */
+export interface DependencyLayers {
+	/** Puts the layer cached under `report.key` in place in the workspace. False when no layer has that key. */
+	restore(ctx: CallContext, request: DependencyLayerRequest): Promise<boolean>;
+	/** Saves the step's outputs, as they are in the workspace now, as the layer `report.key`. */
+	save(ctx: CallContext, request: DependencyLayerRequest): Promise<void>;
+}
+
+/** The outcome of a seed's dependency stage, recorded on the workspace with `recordDependencies`. */
+export interface DependencyStageUpdate {
+	/** Every step with its `layer` (`restored` or `built`), or as far as the stage got before it failed. */
+	readonly deps: readonly SeedDependencyReport[];
+	/** Present when a step failed: the workspace's readiness becomes `failed`, and its files stay as they are. */
+	readonly error?: { readonly code: ErrorCode; readonly message: string };
+}
+
 export interface WorkspaceRecord {
 	readonly id: WorkspaceId;
 	readonly owner: OwnerRef;
@@ -436,6 +468,13 @@ export interface Workspaces {
 
 	/** Re-pins a mount to a newer source version (or the latest). */
 	remount(ctx: CallContext, id: WorkspaceId, mount: MountRequest): Promise<WorkspaceRecord>;
+
+	/**
+	 * Records a seed's dependency stage: readiness becomes `dependencies` (or `failed` with `error`), the report's `deps`
+	 * carry their layers, and a `seed.status` event goes to the host's sink. Needs operator. Only a workspace at `files`
+	 * moves on; any other rejects with `conflict`. Optional: a host without dependency layers leaves seeds at `files`.
+	 */
+	recordDependencies?(ctx: CallContext, id: WorkspaceId, update: DependencyStageUpdate): Promise<WorkspaceRecord>;
 
 	/**
 	 * Files under `prefixes` (such as `notes/`) at head, for handing back to the host. With `maxBytes`, an export whose

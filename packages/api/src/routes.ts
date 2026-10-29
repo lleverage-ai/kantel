@@ -13,9 +13,11 @@ import {
 	ConceptPath,
 	CreatedSession,
 	CreateMemorySpaceBody,
+	CreateScheduleBody,
 	CreateSessionBody,
 	ImportSkillBody,
 	ListConceptsQuery,
+	ListSchedulesQuery,
 	ListSessionsQuery,
 	ListSkillsQuery,
 	MemorySearchBody,
@@ -25,9 +27,15 @@ import {
 	MemorySpacePage,
 	MemorySpacePath,
 	MessageBody,
+	OccurrencePage,
 	PageQuery,
+	PreviewScheduleQuery,
 	Recall,
 	RecallBody,
+	Schedule,
+	SchedulePage,
+	SchedulePath,
+	SchedulePreview,
 	SessionPage,
 	SessionPath,
 	SessionRecord,
@@ -40,6 +48,7 @@ import {
 	SkillRevisionPage,
 	SkillRevisionPath,
 	Submission,
+	UpdateScheduleBody,
 } from "./schema.ts";
 
 /** The version's base path, before every route's own path. */
@@ -158,6 +167,7 @@ export const getSessionHistory = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "not_supported"],
 });
 
+/** The session plane's routes, served by `@harbour/runtime/http`. */
 export const sessionRoutes = {
 	createSession,
 	listSessions,
@@ -365,8 +375,139 @@ export const memoryRoutes = {
 	importMemorySnapshot,
 } as const;
 
+// Schedules (#23): the console's schedules page reads and writes these, like any other client.
+
+const scheduleErrors = ["forbidden", "not_found"] as const;
+
+export const listSchedules = defineRoute({
+	operationId: "listSchedules",
+	method: "GET",
+	path: "/schedules",
+	tag: "schedules",
+	summary: "List schedules",
+	description:
+		"The organisation's schedules the caller may see, a page at a time. A project's schedules are listed only to those with the viewer role on it.",
+	query: ListSchedulesQuery,
+	answer: { status: 200, description: "A page of schedules.", schema: SchedulePage },
+	errors: ["invalid", "forbidden"],
+});
+
+export const createSchedule = defineRoute({
+	operationId: "createSchedule",
+	method: "POST",
+	path: "/schedules",
+	tag: "schedules",
+	summary: "Create a schedule",
+	description:
+		"Exactly one of `at` (a one-off) and `repeat`. A task's runs each start a session, in the schedule's project (the default project for one owned by the organisation or a user), running the payload's agent with its prompt sent exactly as written. Agents may not create schedules. Needs the operator role on a project-owned schedule's project.",
+	body: CreateScheduleBody,
+	answer: { status: 201, description: "The new schedule, with its first due time.", schema: Schedule },
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+export const getSchedule = defineRoute({
+	operationId: "getSchedule",
+	method: "GET",
+	path: "/schedules/{scheduleId}",
+	tag: "schedules",
+	summary: "Get a schedule",
+	params: SchedulePath,
+	answer: { status: 200, description: "The schedule.", schema: Schedule },
+	errors: scheduleErrors,
+});
+
+export const updateSchedule = defineRoute({
+	operationId: "updateSchedule",
+	method: "PATCH",
+	path: "/schedules/{scheduleId}",
+	tag: "schedules",
+	summary: "Change a schedule",
+	description:
+		"Changes the fields given and works out the next due time again. A change that leaves the schedule never due again ends it.",
+	params: SchedulePath,
+	body: UpdateScheduleBody,
+	answer: { status: 200, description: "The schedule as changed.", schema: Schedule },
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+export const pauseSchedule = defineRoute({
+	operationId: "pauseSchedule",
+	method: "POST",
+	path: "/schedules/{scheduleId}/pause",
+	tag: "schedules",
+	summary: "Pause a schedule",
+	description: "Nothing runs while it is paused.",
+	params: SchedulePath,
+	answer: { status: 200, description: "The paused schedule.", schema: Schedule },
+	errors: ["forbidden", "not_found", "conflict"],
+});
+
+export const resumeSchedule = defineRoute({
+	operationId: "resumeSchedule",
+	method: "POST",
+	path: "/schedules/{scheduleId}/resume",
+	tag: "schedules",
+	summary: "Resume a paused schedule",
+	description: "Runs from the next due time after now; the paused time is not made up.",
+	params: SchedulePath,
+	answer: { status: 200, description: "The resumed schedule, with its next due time.", schema: Schedule },
+	errors: ["forbidden", "not_found", "conflict"],
+});
+
+export const deleteSchedule = defineRoute({
+	operationId: "deleteSchedule",
+	method: "DELETE",
+	path: "/schedules/{scheduleId}",
+	tag: "schedules",
+	summary: "End a schedule",
+	description:
+		"Ends the schedule for good: nothing more runs. It stays listed, as `ended`, with its run history and the sessions its runs started. Ending an ended schedule does nothing.",
+	params: SchedulePath,
+	answer: { status: 200, description: "The ended schedule.", schema: Schedule },
+	errors: scheduleErrors,
+});
+
+export const previewSchedule = defineRoute({
+	operationId: "previewSchedule",
+	method: "GET",
+	path: "/schedules/{scheduleId}/preview",
+	tag: "schedules",
+	summary: "Preview a schedule's next due times",
+	params: SchedulePath,
+	query: PreviewScheduleQuery,
+	answer: { status: 200, description: "The next due times, from now.", schema: SchedulePreview },
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+export const listScheduleRuns = defineRoute({
+	operationId: "listScheduleRuns",
+	method: "GET",
+	path: "/schedules/{scheduleId}/runs",
+	tag: "schedules",
+	summary: "List a schedule's runs",
+	description:
+		"The run history, a page at a time: each occurrence's status and times, and its result. A task's result names the session it started (`sessionId`).",
+	params: SchedulePath,
+	query: PageQuery,
+	answer: { status: 200, description: "A page of runs.", schema: OccurrencePage },
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+/** The schedules' routes (control plane), served by `@harbour/schedules/http`. */
+export const scheduleRoutes = {
+	listSchedules,
+	createSchedule,
+	getSchedule,
+	updateSchedule,
+	pauseSchedule,
+	resumeSchedule,
+	deleteSchedule,
+	previewSchedule,
+	listScheduleRuns,
+} as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
-export const routes = { ...sessionRoutes, ...skillRoutes, ...memoryRoutes } as const;
+export const routes = { ...sessionRoutes, ...skillRoutes, ...memoryRoutes, ...scheduleRoutes } as const;
 
 export type Routes = typeof routes;
 export type OperationId = keyof Routes;

@@ -1,8 +1,9 @@
 // One pass over email one-time PIN sign-in on the gateway, shared by the in-process test (codes from a memory mailer)
 // and the compose test (codes read from Mailpit): an invited admin and a stranger get the same answer to start, only
 // the admin gets a code, a wrong code is refused, the right one starts a Harbour session that every mounted API
-// accepts, the code works only once, sign-in is audited, and an ended session is refused.
-import { ORGANISATION_HEADER } from "@harbour/contracts";
+// accepts, the code works only once, sign-in is audited, the person can see who they are and issue, use and revoke an
+// API key, and an ended session is refused.
+import { normaliseEmail, ORGANISATION_HEADER } from "@harbour/contracts";
 import type { E2eCheck, E2eTarget } from "./e2e.ts";
 
 export interface SignInTarget extends E2eTarget {
@@ -36,6 +37,14 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		});
 	const stranger = `stranger-${crypto.randomUUID()}@harbour.localhost`;
 	const since = Date.now();
+
+	const anonymous = await fetch(`${target.baseUrl}/v1/me`);
+	const challenge = (await body(anonymous)) as { error?: { signIn?: string[] } };
+	check(
+		"GET /v1/me without credentials is 401 and names email sign-in",
+		anonymous.status === 401 && JSON.stringify(challenge.error?.signIn) === JSON.stringify(["email_otp"]),
+		{ status: anonymous.status, body: challenge },
+	);
 
 	const startAdmin = await post("/auth/otp/start", { email: target.adminEmail });
 	const adminBody = await body(startAdmin);
@@ -95,6 +104,59 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		audited.ok && (rows.items ?? []).some((row) => row.type === "identity.session.started"),
 		audited.ok ? { count: rows.items?.length } : rows,
 	);
+
+	const me = await get("/v1/me");
+	const meBody = (await body(me)) as {
+		actor?: { kind?: string };
+		email?: string;
+		method?: string;
+		roles?: { projectId?: string; role: string }[];
+	};
+	check(
+		"GET /v1/me names the person, signed in by session, as an organisation admin",
+		me.ok &&
+			meBody.actor?.kind === "human" &&
+			// The bootstrap stores the invited address normalised, whatever case HARBOUR_ADMIN_EMAIL was given in.
+			meBody.email === normaliseEmail(target.adminEmail) &&
+			(meBody.roles ?? []).some((held) => held.projectId === undefined && held.role === "admin"),
+		meBody,
+	);
+	const projects = await get("/v1/projects");
+	const projectsBody = (await body(projects)) as { items?: { id: string }[] };
+	check(
+		"GET /v1/projects lists the deployment's project",
+		projects.ok && (projectsBody.items ?? []).some((project) => project.id === target.projectId),
+		projectsBody,
+	);
+
+	// A host app's key, from issue to revocation: the secret is shown once, the key works, then it doesn't.
+	const issued = await post(
+		"/v1/keys",
+		{ name: `e2e ${crypto.randomUUID().slice(0, 8)}`, projectIds: [target.projectId], role: "operator" },
+		asPerson,
+	);
+	const issuedBody = (await body(issued)) as { key?: { id?: string }; secret?: string };
+	const keyId = issuedBody.key?.id ?? "";
+	const secret = issuedBody.secret ?? "";
+	check("POST /v1/keys issues a key and shows its secret", issued.status === 201 && keyId !== "" && secret !== "", {
+		status: issued.status,
+		key: issuedBody.key,
+	});
+	const listed = await get("/v1/keys");
+	const listedText = await listed.text();
+	check(
+		"GET /v1/keys lists the key, without its secret",
+		listed.ok && listedText.includes(keyId) && secret !== "" && !listedText.includes(secret),
+		{ status: listed.status },
+	);
+	const asKey = (path: string) => fetch(`${target.baseUrl}${path}`, { headers: { authorization: `Bearer ${secret}` } });
+	const sessionsPath = `/v1/sessions?projectId=${encodeURIComponent(target.projectId)}`;
+	const used = await asKey(sessionsPath);
+	check("the new key reads GET /v1/sessions", used.ok, { status: used.status });
+	const revoked = await post(`/v1/keys/${encodeURIComponent(keyId)}/revoke`, {}, asPerson);
+	check("POST /v1/keys/:id/revoke is 204", revoked.status === 204, { status: revoked.status });
+	const afterRevoke = await asKey(sessionsPath);
+	check("a revoked key is 401", afterRevoke.status === 401, { status: afterRevoke.status });
 
 	const ended = await post("/auth/session/end", {}, { authorization: `Bearer ${token}` });
 	check("POST /auth/session/end is 204", ended.status === 204, { status: ended.status });

@@ -21,6 +21,7 @@ import {
 	type Role,
 	type Schedule,
 	type ScheduleInput,
+	type ScheduleUpdate,
 	systemContext,
 	type Timestamp,
 } from "@harbour/contracts";
@@ -53,6 +54,9 @@ const INPUT_FIELDS = [
 	"payload",
 	"check",
 ] as const;
+
+/** The fields `update` clears when it is given `null` for them. */
+const CLEARABLE_FIELDS = ["at", "repeat", "until", "count"] as const;
 
 export function inputFields(input: Partial<ScheduleInput>): Partial<ScheduleInput> {
 	const picked: Record<string, unknown> = {};
@@ -148,15 +152,17 @@ export function newSchedule(ctx: CallContext, input: ScheduleInput, id: string, 
 	return schedule;
 }
 
-/** `current` with `input` applied, as `update` stores it. Rejects with `conflict` once ended, `invalid` on bad input. */
-export function updatedSchedule(
-	ctx: CallContext,
-	current: Schedule,
-	input: Partial<ScheduleInput>,
-	now: Timestamp,
-): Schedule {
+/**
+ * `current` with `input` applied, as `update` stores it: a field left out stays, and `null` clears `at`, `repeat`,
+ * `until` or `count`. Rejects with `conflict` once ended, `invalid` on bad input.
+ */
+export function updatedSchedule(ctx: CallContext, current: Schedule, input: ScheduleUpdate, now: Timestamp): Schedule {
 	if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${current.id} has ended`);
-	const merged: Schedule = { ...current, ...inputFields(input), owner: current.owner, kind: current.kind };
+	const changed: Record<string, unknown> = { ...current, ...inputFields(input as Partial<ScheduleInput>) };
+	for (const field of CLEARABLE_FIELDS) {
+		if (changed[field] === null) delete changed[field];
+	}
+	const merged = { ...changed, owner: current.owner, kind: current.kind } as Schedule;
 	assertValidInput(ctx, merged);
 	return merged.status === "paused" ? { ...withoutNextDue(merged), updatedAt: now } : rescheduled(merged, now);
 }

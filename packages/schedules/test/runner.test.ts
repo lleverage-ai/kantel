@@ -116,7 +116,7 @@ describe("the scheduler loop", () => {
 		try {
 			const schedule = await schedules.create(
 				human,
-				hourly(clock, { title: "Daily digest", payload: { agentId: "agent-1", message: "Write the digest" } }),
+				hourly(clock, { title: "Daily digest", payload: { agentId: "agent-1", prompt: "Write the digest" } }),
 			);
 			script.reply({ text: "Digest written" });
 			const runner = createScheduleRunner({
@@ -142,6 +142,38 @@ describe("the scheduler loop", () => {
 		}
 	});
 
+	it("sends a task's prompt exactly as written, to the host's default agent when the payload names none", async () => {
+		const clock = new ManualClock(START);
+		const schedules = createMemorySchedules({ clock });
+		const { memory, script } = await memoryRuntime();
+		try {
+			const prompt = "  Label the new issues.\n";
+			const schedule = await schedules.create(human, hourly(clock, { payload: { prompt } }));
+			script.reply({ text: "Labelled" });
+			const runner = createScheduleRunner({
+				schedules,
+				runnerId: "host-a",
+				clock,
+				timers: new ManualTimers(clock),
+				handlers: {
+					task: createTaskHandler({
+						runtime: memory.runtime,
+						directory: memory.directory,
+						defaultAgentId: "agent-1",
+					}),
+				},
+			});
+			clock.advance(HOUR);
+			const [record] = await runner.runOnce();
+			expect(record?.status).toBe("succeeded");
+			const sessions = (await memory.directory.list(operator, { labels: { [SCHEDULE_LABEL]: schedule.id } })).items;
+			expect(sessions[0]).toMatchObject({ agentId: "agent-1" });
+			expect(script.requests.at(-1)?.messages.at(-1)).toMatchObject({ role: "user", text: prompt });
+		} finally {
+			await memory.close();
+		}
+	});
+
 	it("a task run retried after its first runner died starts no second session or prompt", async () => {
 		const clock = new ManualClock(START);
 		const schedules = createMemorySchedules({ clock });
@@ -149,7 +181,7 @@ describe("the scheduler loop", () => {
 		try {
 			const schedule = await schedules.create(
 				human,
-				hourly(clock, { payload: { agentId: "agent-1", message: "Run the report" } }),
+				hourly(clock, { payload: { agentId: "agent-1", prompt: "Run the report" } }),
 			);
 			script.reply({ text: "Done" }, { text: "Should not be asked" });
 			const handler = createTaskHandler({ runtime: memory.runtime, directory: memory.directory });
@@ -190,7 +222,7 @@ describe("the scheduler loop", () => {
 		try {
 			const schedule = await schedules.create(
 				human,
-				hourly(clock, { payload: { agentId: "agent-1", message: "Run the report" } }),
+				hourly(clock, { payload: { agentId: "agent-1", prompt: "Run the report" } }),
 			);
 			script.reply({ text: "Done" }, { text: "Should not be asked" });
 			const gate = deferred();
@@ -284,12 +316,12 @@ describe("the scheduler loop", () => {
 		expect(ran).toEqual([]);
 	});
 
-	it("fails a task occurrence whose payload names no agent, and carries on", async () => {
+	it("fails a task occurrence whose payload names no agent on a host with no default agent, and carries on", async () => {
 		const clock = new ManualClock(START);
 		const schedules = createMemorySchedules({ clock });
 		const { memory } = await memoryRuntime();
 		try {
-			await schedules.create(human, hourly(clock, { payload: { message: "no agent" } }));
+			await schedules.create(human, hourly(clock, { payload: { prompt: "no agent" } }));
 			const runner = createScheduleRunner({
 				schedules,
 				runnerId: "host-a",
@@ -300,6 +332,34 @@ describe("the scheduler loop", () => {
 			clock.advance(HOUR);
 			const [record] = await runner.runOnce();
 			expect(record?.status).toBe("failed");
+		} finally {
+			await memory.close();
+		}
+	});
+
+	it("fails a task occurrence whose payload has a message but no prompt, and starts no session", async () => {
+		const clock = new ManualClock(START);
+		const schedules = createMemorySchedules({ clock });
+		const { memory } = await memoryRuntime();
+		try {
+			const schedule = await schedules.create(
+				human,
+				hourly(clock, { payload: { agentId: "agent-1", message: "Write the digest" } }),
+			);
+			const runner = createScheduleRunner({
+				schedules,
+				runnerId: "host-a",
+				clock,
+				timers: new ManualTimers(clock),
+				handlers: { task: createTaskHandler({ runtime: memory.runtime, directory: memory.directory }) },
+			});
+			clock.advance(HOUR);
+			const [record] = await runner.runOnce();
+			expect(record?.status).toBe("failed");
+			const [occurrence] = (await schedules.listOccurrences(human, schedule.id)).items;
+			expect(JSON.stringify(occurrence?.result)).toContain("needs a prompt");
+			const sessions = (await memory.directory.list(operator, { labels: { [SCHEDULE_LABEL]: schedule.id } })).items;
+			expect(sessions).toEqual([]);
 		} finally {
 			await memory.close();
 		}
