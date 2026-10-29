@@ -1,0 +1,111 @@
+/* A browsing run as one quiet work-log line, the same height and colours as a tool call's row (tool-call.css): the
+   globe (a spinner while a step runs), "Browsing, 12 steps", what the agent is doing now, muted, and a chevron. The
+   line's height never changes while the agent works, so the transcript under the reader stays still. */
+
+.hb-browsing {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-browsing-line {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-width: 0;
+}
+
+.hb-browsing-summary {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	min-height: var(--hb-control-xs);
+	margin-left: calc(var(--hb-space-3) * -1);
+	padding: var(--hb-space-1) var(--hb-space-3);
+	border: 0;
+	border-radius: var(--hb-radius-sm);
+	background: none;
+	color: var(--hb-text-muted);
+	font: inherit;
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+	text-align: left;
+	cursor: pointer;
+}
+
+.hb-browsing-summary:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-browsing-icon {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-icon-md);
+	height: var(--hb-icon-md);
+	color: var(--hb-text-faint);
+}
+
+/* One line: the summary, then the current step, which gives way first when the column is narrow. */
+.hb-browsing-text {
+	display: flex;
+	flex: 1;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
+	white-space: nowrap;
+}
+
+.hb-browsing-title {
+	flex: none;
+}
+
+.hb-browsing-running .hb-browsing-title {
+	color: var(--hb-text);
+}
+
+.hb-browsing-current {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--hb-text-faint);
+	text-overflow: ellipsis;
+}
+
+.hb-browsing-chevron {
+	flex: none;
+	color: var(--hb-text-faint);
+	transition: transform var(--hb-duration) var(--hb-ease);
+}
+
+.hb-browsing-open .hb-browsing-chevron {
+	transform: rotate(90deg);
+}
+
+.hb-browsing-show {
+	flex: none;
+}
+
+.hb-browsing-steps,
+.hb-browsing-failed {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	padding: 0 0 var(--hb-space-2) var(--hb-space-7);
+}
+
+/* The agent's words between two steps: its own Markdown, a size down and muted, so the steps stay the list's spine. */
+.hb-browsing-note {
+	padding: var(--hb-space-2) 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-browsing > .hb-browser-live {
+	margin-left: var(--hb-space-7);
+}
