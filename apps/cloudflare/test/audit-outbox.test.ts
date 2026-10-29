@@ -210,6 +210,34 @@ describe("the stack object's audit outbox", () => {
 		expect((await idle.query(admin, {})).items).toHaveLength(1);
 	});
 
+	it("fails a read, rather than answer without queued events, while the store refuses writes", async () => {
+		const target = await d1Store();
+		let writable = false;
+		const readOnly: AuditStore = {
+			...target,
+			append: async (ctx, events) => {
+				if (!writable) throw new Error("D1 refuses writes");
+				await target.append(ctx, events);
+			},
+		};
+		const driver = objectSql(new DatabaseSync(":memory:"));
+		await migrateObjectAuditOutbox(driver);
+		const audit = outboxedAudit({
+			store: readOnly,
+			driver,
+			background: () => undefined,
+			onError: () => undefined,
+			setTimer: () => undefined,
+		});
+		await audit.append(WORKER, [event("e1")]);
+		await expect(audit.get(admin, "e1")).rejects.toMatchObject({ code: "unavailable" });
+		await expect(audit.query(admin, {})).rejects.toMatchObject({ code: "unavailable" });
+		await expect(audit.applyRetention(WORKER)).rejects.toMatchObject({ code: "unavailable" });
+		expect(await audit.outbox.pending(WORKER)).toBe(1);
+		writable = true;
+		expect((await audit.get(admin, "e1")).id).toBe("e1");
+	});
+
 	it("queues a refused append's access.denied, and drains it", async () => {
 		const target = await d1Store();
 		const { audit, settled } = await outboxed(target);

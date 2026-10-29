@@ -7,8 +7,9 @@
  *
  * No event is lost: an event leaves the outbox only once the store took it, and the store is idempotent by organisation
  * and id, so a drain retried after a lost answer adds no row. A failed drain is retried with backoff while the object
- * lives, and again when it starts (`drainOnStart`) and on its alarm. Reads stay read-your-writes: `query` and `get`
- * drain what's queued first, which costs one local `SELECT` when nothing is.
+ * lives, and again when it starts and on its alarm. Reads stay read-your-writes: `query`, `get` and `applyRetention`
+ * drain what's queued first, which costs one local `SELECT` when nothing is. If that drain fails they fail too
+ * (`unavailable`), rather than answer from a store that is missing events appended before them.
  *
  * `seq` is still the store's, given as events reach it; each drain sends in queue order, so events from this object
  * keep their order.
@@ -20,7 +21,14 @@
  * is open.
  */
 import { auditSchema, createSqlAuditOutbox } from "@harbour/audit/sql";
-import { type AuditOutbox, type AuditStore, type Clock, type SystemContext, systemContext } from "@harbour/contracts";
+import {
+	type AuditOutbox,
+	type AuditStore,
+	type Clock,
+	HarbourError,
+	type SystemContext,
+	systemContext,
+} from "@harbour/contracts";
 import type { SqlDriver, SqlRow, SqlStatement, SqlValue } from "@harbour/sql";
 
 /** The relay drains as itself, as `@harbour/audit/sql`'s does. */
@@ -121,12 +129,14 @@ export function outboxedAudit(options: OutboxedAuditOptions): OutboxedAudit {
 		);
 	}
 
-	/** Before a read: what's queued reaches the store first. A store that refuses only leaves the read a little behind. */
+	/** Before a read: what's queued reaches the store first, or the read fails. A background retry is already set. */
 	async function caughtUp(): Promise<void> {
 		try {
 			await drain();
 		} catch (error) {
 			onError(error);
+			kick();
+			throw new HarbourError("unavailable", "The audit store is behind: queued events could not be sent to it");
 		}
 	}
 
