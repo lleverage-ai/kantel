@@ -2,7 +2,7 @@ import type { CallContext } from "@harbour/contracts";
 import { listAll } from "@harbour/workspace/stored";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudflareWorkspaces, createR2WorkspaceStore } from "../src/index.ts";
-import { counting, localR2 } from "./r2.ts";
+import { counting, localR2, memoryHeadCache } from "./r2.ts";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
 const owner = { kind: "organisation", organisationId: "org-1" } as const;
@@ -147,6 +147,88 @@ describe("Cloudflare workspaces on R2", () => {
 		expect((await fresh.get(ctx, record.id)).head).toBe(1);
 		expect(text((await fresh.read(ctx, record.id, "a.txt")).content)).toBe("v1");
 	});
+
+	it("commits in two round trips: the blob, the tree and the archive at once, then the head", async () => {
+		const prefix = `m1-be23/${crypto.randomUUID()}`;
+		const workspaces = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+		const record = await workspaces.create(ctx, {
+			owner,
+			seed: { name: "s", sources: [{ kind: "files", files: { "a.txt": "v1" } }] },
+		});
+		const events: string[] = [];
+		const kind = (key: string) =>
+			key.endsWith("/head")
+				? "head"
+				: key.includes("/versions/")
+					? "archive"
+					: key.includes("/trees/")
+						? "tree"
+						: "blob";
+		const recording = {
+			get: r2.bucket.get.bind(r2.bucket),
+			async put(key: string, value: string | ArrayBuffer | Uint8Array, options?: Parameters<typeof r2.bucket.put>[2]) {
+				events.push(`start ${kind(key)}`);
+				const result = await r2.bucket.put(key, value, options);
+				events.push(`end ${kind(key)}`);
+				return result;
+			},
+		};
+		await createCloudflareWorkspaces({ bucket: recording, prefix }).commit(ctx, record.id, {
+			baseVersion: 1,
+			changes: [{ op: "put", path: "a.txt", content: "v2" }],
+		});
+		// Versions 0 and 1 are archived; every write before the head starts before any of them ends.
+		const starts = events.slice(0, 4);
+		expect([...starts].sort()).toEqual(["start archive", "start archive", "start blob", "start tree"]);
+		expect(events.slice(-2)).toEqual(["start head", "end head"]);
+		expect(events).toHaveLength(10);
+		expect(text((await workspaces.read(ctx, record.id, "a.txt")).content)).toBe("v2");
+	});
+
+	for (const failing of ["blob", "tree", "archive"] as const) {
+		it(`leaves the head unchanged when the commit's ${failing} write fails`, async () => {
+			const prefix = `m1-be23/${crypto.randomUUID()}`;
+			const workspaces = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+			const record = await workspaces.create(ctx, {
+				owner,
+				seed: { name: "s", sources: [{ kind: "files", files: { "a.txt": "v1" } }] },
+			});
+			const marker = { blob: "/blobs/", tree: "/trees/", archive: "/versions/" }[failing];
+			const heads: string[] = [];
+			const broken = {
+				get: r2.bucket.get.bind(r2.bucket),
+				async put(
+					key: string,
+					value: string | ArrayBuffer | Uint8Array,
+					options?: Parameters<typeof r2.bucket.put>[2],
+				) {
+					if (key.includes(marker)) throw new Error(`${failing} put failed`);
+					if (key.endsWith("/head")) heads.push(key);
+					return r2.bucket.put(key, value, options);
+				},
+			};
+			const cache = memoryHeadCache();
+			const failingWorkspaces = createCloudflareWorkspaces({ bucket: broken, prefix, headCache: cache });
+			await expect(
+				failingWorkspaces.commit(ctx, record.id, {
+					baseVersion: 1,
+					changes: [{ op: "put", path: "a.txt", content: "v2" }],
+				}),
+			).rejects.toThrow(`${failing} put failed`);
+			expect(heads).toEqual([]);
+			const fresh = createCloudflareWorkspaces({ bucket: r2.bucket, prefix });
+			expect((await fresh.get(ctx, record.id)).head).toBe(1);
+			expect(text((await fresh.read(ctx, record.id, "a.txt")).content)).toBe("v1");
+			expect((await fresh.history(ctx, record.id)).items.map((item) => item.version)).toEqual([1, 0]);
+			// The store that failed still answers the old head, and commits on it once R2 is well again.
+			expect((await failingWorkspaces.get(ctx, record.id)).head).toBe(1);
+			await createCloudflareWorkspaces({ bucket: r2.bucket, prefix, headCache: cache }).commit(ctx, record.id, {
+				baseVersion: 1,
+				changes: [{ op: "put", path: "a.txt", content: "v2" }],
+			});
+			expect(text((await fresh.read(ctx, record.id, "a.txt")).content)).toBe("v2");
+		});
+	}
 
 	it("lets exactly one of two racing commits move the head", async () => {
 		const prefix = `m1-be23/${crypto.randomUUID()}`;

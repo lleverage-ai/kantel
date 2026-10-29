@@ -12,6 +12,9 @@
  *                           put is idempotent; a version is always archived before the head that drops it is written.
  *   org/<org>/blobs, trees  the immutable objects (`@harbour/workspace/stored`'s keys).
  *
+ * A commit is two round trips: its blobs, its tree and the archive records go out together (none is referenced until
+ * the head moves), then the conditional head put, only once all of them have been written.
+ *
  * R2 reads are strongly consistent, so a head read after a put sees it.
  *
  * With `headCache`, each head's document and etag are kept in front of R2, which stays the source of truth: a load
@@ -173,7 +176,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		current: LoadedHead,
 		next: StoredHead,
 		version?: StoredVersion,
-		check?: () => void,
+		options?: { readonly check?: () => void; readonly objects?: Promise<void> },
 	): Promise<boolean> {
 		const id = current.record.id;
 		if (next.record.id !== id) throw new HarbourError("invalid", "a head cannot change its ID");
@@ -186,11 +189,14 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 				throw error;
 			}
 			let recent = document.recent;
-			if (version !== undefined) {
-				// Archive first: the head written below no longer carries these.
-				await inBatches(recent, (entry) => bucket.put(versionKey(id, entry.info.version), JSON.stringify(entry)));
-				recent = [version];
-			}
+			const archived =
+				version === undefined
+					? undefined
+					: inBatches(recent, (entry) => bucket.put(versionKey(id, entry.info.version), JSON.stringify(entry)));
+			if (version !== undefined) recent = [version];
+			// Archive before the head, alongside the commit's objects: the head written below no longer carries these
+			// versions, and it refers to the objects. A failed write of any of them moves nothing.
+			await Promise.all([archived, options?.objects]);
 			const written: HeadDocument = {
 				organisationId: next.organisationId,
 				record: next.record,
@@ -199,7 +205,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 			};
 			const text = JSON.stringify(written);
 			// The last moment a commit can stop: the versions archived above are below the head, so harmless.
-			check?.();
+			options?.check?.();
 			const result = await bucket.put(headKey(id), text, { onlyIf: { etagMatches: current.token } });
 			return result === null ? undefined : { etag: result.etag, text };
 		});
@@ -228,7 +234,8 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 			});
 		},
 
-		advance: (current, next, version, options) => swap(current, next, version, options?.check),
+		writesAlongside: true,
+		advance: (current, next, version, options) => swap(current, next, version, options),
 		update: (current, next) => swap(current, next),
 
 		async treeAt(current, version) {

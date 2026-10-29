@@ -9,7 +9,9 @@
  *   digest, size, the version that last changed it and any mode bits. Listing reads only trees, never bodies.
  * - The store keeps the head (the record and the head tree's key) and each version's history entry and tree key. A
  *   commit writes its blobs and tree first, then moves the head with a compare-and-set on the head it read, so a lost
- *   race is `conflict` and leaves only unreferenced objects behind.
+ *   race is `conflict` and leaves only unreferenced objects behind. A store that writes something of its own before
+ *   the head (R2's archive records) takes the objects still in flight, and writes alongside them: nothing refers to any
+ *   of them until the head moves, so their order doesn't matter, only that all are written first.
  */
 import {
 	type AuditEventInput,
@@ -111,13 +113,22 @@ export interface WorkspaceStore {
 	 * Moves the head from `current` to `next` and records `version`; false when the head changed meanwhile. Calls
 	 * `options.check` as late as it can before the head moves (as the head write starts, or inside a transaction before
 	 * it commits); when it throws, the store moves nothing and rejects with that error.
+	 *
+	 * Given `options.objects` (only when `writesAlongside` is true): the blobs and tree `next` refers to, still being
+	 * written. The store runs its own writes before the head alongside them, and moves the head only once they have all
+	 * been written; when `objects` rejects, it moves nothing and rejects with that error.
 	 */
 	advance(
 		current: LoadedHead,
 		next: StoredHead,
 		version: StoredVersion,
-		options?: { readonly check?: () => void },
+		options?: { readonly check?: () => void; readonly objects?: Promise<void> },
 	): Promise<boolean>;
+	/**
+	 * True when `advance` takes `options.objects`, so a commit's objects and the store's own writes before the head go
+	 * out together. Otherwise a commit writes its objects before it calls `advance`.
+	 */
+	readonly writesAlongside?: boolean;
 	/** Replaces the record without a new version (a remount); false when the head changed meanwhile. */
 	update(current: LoadedHead, next: StoredHead): Promise<boolean>;
 	/** The tree key of `version` (below the head's), null for an empty tree, undefined when the store has none. */
@@ -224,21 +235,33 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		return bytes;
 	}
 
-	/** Writes the blobs `changes` put and `tree`; returns the tree's key, or null for an empty tree. */
+	/**
+	 * Starts writing the blobs `changes` put and `tree`, all at once (up to OBJECT_BATCH in flight). Returns the tree's
+	 * key (null for an empty tree), known before anything is written, and the writes.
+	 */
 	async function writeVersion(
 		organisationId: string,
 		tree: Tree,
 		changes: readonly PreparedChange[],
-	): Promise<string | null> {
-		const blobs = new Map<string, Uint8Array>();
-		for (const change of changes) if (change.op === "put") blobs.set(change.digest, change.content);
-		await inBatches([...blobs], ([digest, content]) => store.putObject(blobKey(organisationId, digest), content));
-		if (tree.size === 0) return null;
-		const bytes = toBytes(serialiseTree(tree));
-		const key = `${organisationPrefix(organisationId)}/trees/${await sha256Hex(bytes)}.json`;
-		await store.putObject(key, bytes);
-		trees.set(key, tree);
-		return key;
+	): Promise<{ readonly treeKey: string | null; readonly written: Promise<void> }> {
+		const objects = new Map<string, Uint8Array>();
+		for (const change of changes) {
+			if (change.op === "put") objects.set(blobKey(organisationId, change.digest), change.content);
+		}
+		let treeKey: string | null = null;
+		if (tree.size > 0) {
+			const bytes = toBytes(serialiseTree(tree));
+			treeKey = `${organisationPrefix(organisationId)}/trees/${await sha256Hex(bytes)}.json`;
+			objects.set(treeKey, bytes);
+		}
+		const key = treeKey;
+		const written = inBatches([...objects], ([objectKey, bytes]) => store.putObject(objectKey, bytes)).then(() => {
+			// Cached only once written: a cached tree is one a head may refer to.
+			if (key !== null) trees.set(key, tree);
+		});
+		// A store may stop before it waits for these (a head that moved); their failure is then only an unreferenced object.
+		written.catch(() => {});
+		return { treeKey, written };
 	}
 
 	async function emit(event: AuditEventInput): Promise<void> {
@@ -297,7 +320,8 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			version: 1,
 			...(change.mode === undefined ? {} : { mode: change.mode }),
 		}));
-		const treeKey = await writeVersion(ctx.organisationId, tree, prepared);
+		const { treeKey, written } = await writeVersion(ctx.organisationId, tree, prepared);
+		await written;
 		const now = clock.now();
 		const versions: StoredVersion[] = [{ info: { version: 0, at: now, actor: ctx.actor, changed: [] }, tree: null }];
 		if (treeKey !== null) {
@@ -454,8 +478,11 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 					...(mode === undefined ? {} : { mode }),
 				};
 			});
-			// Objects first: until the head moves below, nothing refers to them.
-			const treeKey = await writeVersion(head.organisationId, tree, prepared);
+			// Objects before the head: until the head moves below, nothing refers to them. A store that writes alongside
+			// takes them in flight, with its own writes before the head; any other gets them written first.
+			const { treeKey, written } = await writeVersion(head.organisationId, tree, prepared);
+			const alongside = store.writesAlongside === true;
+			if (!alongside) await written;
 			const now = clock.now();
 			const changed = prepared.map((change) => change.path).sort(compare);
 			const info: WorkspaceVersionInfo = {
@@ -478,7 +505,12 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 					request.guard?.();
 				};
 				check();
-				const advanced = await store.advance(head, next, { info, tree: treeKey }, { check });
+				const advanced = await store.advance(
+					head,
+					next,
+					{ info, tree: treeKey },
+					alongside ? { check, objects: written } : { check },
+				);
 				if (advanced) break;
 				// The head changed: a commit that won is a conflict; a remount that only moved the token is retried.
 				const reloaded = await load(ctx, id);
@@ -708,7 +740,9 @@ export function createMemoryWorkspaceStore(): MemoryWorkspaceStore {
 			rows.set(head.record.id, { head, revision: 1, versions: [...versions] });
 			return true;
 		},
+		writesAlongside: true,
 		async advance(head, next, version, options) {
+			await options?.objects;
 			options?.check?.();
 			const row = current(head);
 			if (row === undefined) return false;
