@@ -24,11 +24,13 @@ Pure functions in `session-model.ts`, after T3 Code's status priority (`apps/web
 
 **For** one session in a list: the console's sidebar, the inbox, search results. Built on `ListRow`.
 
-- Needs you and working sessions are `comfortable`, three lines after T3 Code's sidebar cards: the project and the
+- Needs you and working sessions are `comfortable`, two lines after T3 Code's sidebar cards: the project and the
   branch as separate elements (the branch in mono, separated by a gap, never a dot) with the status in words at the
-  right end of that line, the title on its own line across the row's full width, and for a working session the time
-  it has been working (`Elapsed`). Nothing sits beside the title; when space is short the project and branch
-  truncate before the status does.
+  right end of that line, then the title on its own line across the row's full width. A working session's status is
+  a spinner and "Working 12s" in the accent's blue (`--hb-accent-text`), medium weight, its time an `Elapsed` from
+  `workingSince` (when the run started; `startedAt` without it), in place of the age, after T3 Code's
+  (`SidebarThreadRow.tsx:723-728` and `1478-1494`). The time is hidden from screen readers, as T3 Code's is. Nothing
+  sits beside the title; when space is short the project and branch truncate before the status does.
 - Settled sessions are `compact`, one line. Seen ones are quiet with their time at the right (`RelativeTime`: "4m",
   "3h", never "ago"). An unseen completion shows an emerald Done; a failed one shows Failed in red, and neither is
   quiet.

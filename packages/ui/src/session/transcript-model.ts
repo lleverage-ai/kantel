@@ -113,6 +113,37 @@ export function rowOfTurn(
 	return undefined;
 }
 
+/**
+ * Where a working turn's two live rows go, after T3 Code's timeline (MessagesTimeline.logic.ts:1646-1684 and
+ * 2093-2133): the turn's "Working for 12s" header right under the person's message that started it, and a live
+ * activity row ("Thinking") at the end, unless the last row already shows what the agent is doing.
+ *
+ * - `headerAfter`: the index of the row the header follows: the last message the person sent other than a steer (a steer
+ *   joins the turn under way). -1 when that message isn't loaded (it is in an older page): the header then goes at
+ *   the end, before the activity row.
+ * - `activity`: whether the transcript ends with the activity row. Not when the last row is an answer streaming (its
+ *   words, its thought or its own "Thinking" are the activity) or a group of calls with one still running (the call
+ *   is). Between steps, with every call finished and nothing streaming, the agent is thinking.
+ */
+export function workingPlacement(rows: readonly TranscriptRow[]): { headerAfter: number; activity: boolean } {
+	let headerAfter = -1;
+	for (let index = rows.length - 1; index >= 0; index--) {
+		const row = rows[index];
+		if (row?.kind === "item" && row.item.kind === "user" && row.item.via !== "steer") {
+			headerAfter = index;
+			break;
+		}
+	}
+	return { headerAfter, activity: !showsActivity(rows.at(-1)) };
+}
+
+/** The row already says what the agent is doing: an answer streaming, or a call still running. */
+function showsActivity(row: TranscriptRow | undefined): boolean {
+	if (row === undefined) return false;
+	if (row.kind === "tools") return row.live && row.items.some((item) => item.status === "running");
+	return row.item.kind === "assistant" && row.item.streaming;
+}
+
 /** The DOM ID of a row's anchor, from its item's ID: `turn-<id>`, so a page can link to a mounted row. */
 export const turnAnchor = (itemId: string): string => `turn-${itemId}`;
 

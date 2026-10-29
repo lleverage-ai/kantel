@@ -239,6 +239,27 @@ export const RewindIcon = (props: IconProps) => (
 		<path d="M5.5 9.5 2.5 6.5l3-3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7.5" />
 	</Svg>
 );
+/**
+ * Thinking: a brain, after Lucide's brain, which T3 Code's live activity row and thinking picker use. Drawn on Lucide's
+ * 24 unit grid and scaled to this one, with the stroke scaled back up to 1.5.
+ */
+export const BrainIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<g transform="scale(0.6667)" strokeWidth={2.25}>
+			<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+			<path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+			<path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+			<path d="M12 5v13" />
+		</g>
+	</Svg>
+);
+/** Access: a padlock, for what an agent may do without asking (the composer's access picker). */
+export const LockIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="3.25" y="7.25" width="9.5" height="6.75" rx="1.5" />
+		<path d="M5.25 7.25V5.25a2.75 2.75 0 0 1 5.5 0v2" />
+	</Svg>
+);
 /** A model: a four-point spark. */
 export const SparkIcon = (props: IconProps) => (
 	<Svg {...props}>

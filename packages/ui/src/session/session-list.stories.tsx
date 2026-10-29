@@ -30,7 +30,7 @@ function Selectable({ list, grouped = true }: { list: SessionSummary[]; grouped?
 export const Default: Story = () => (
 	<Sheet
 		title="Session list"
-		intro="Grouped by what each session needs from you: Needs you, Working, Done. Sessions that need you or are working get three lines; settled ones are one quiet line with their time. An unseen completion shows an emerald Done."
+		intro="Grouped by what each session needs from you: Needs you, Working, Done. Sessions that need you or are working get two lines, a working one with its spinner and Working 3m 20s; settled ones are one quiet line with their time. An unseen completion shows an emerald Done."
 	>
 		<Section title="Grouped, one selected">
 			<Sidebar>

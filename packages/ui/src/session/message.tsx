@@ -6,7 +6,7 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
 import { Markdown } from "./markdown.tsx";
 import { MessageAction, MessageActions, MessageActionsContext, MessageEditor } from "./message-actions.tsx";
-import { WorkingIndicator } from "./working-indicator.tsx";
+import { LiveActivity } from "./working-indicator.tsx";
 import "./message.css";
 
 // The transcript's messages, after T3 Code (TimelineUserMessageRow.tsx:432-459, TimelineAssistantRows.tsx:26-72):
@@ -72,14 +72,14 @@ export const UserMessage = memo(function UserMessage({
 
 /**
  * A thought as it streams, before the answer's first word, after T3 Code's live reasoning preview
- * (TimelineWorkGroupRows.tsx:503-581): "Thinking", then the newest lines of the thought, muted and clamped to four, so
- * the reader sees the agent think without the transcript jumping as the thought grows. The whole thought is behind
- * the "Thought it through" disclosure once the answer starts.
+ * (TimelineWorkGroupRows.tsx:503-581): the live activity row, a brain and "Thinking", then the newest lines of the
+ * thought, muted and clamped to four, so the reader sees the agent think without the transcript jumping as the thought
+ * grows. The whole thought is behind the "Thought it through" disclosure once the answer starts.
  */
 function ThinkingPreview({ thinking }: { thinking: string }) {
 	return (
 		<div className="hb-assistant-message-thinking-live">
-			<span className="hb-assistant-message-thinking-label">Thinking</span>
+			<LiveActivity />
 			<div className="hb-assistant-message-thought-window">
 				<p className="hb-assistant-message-thought">{thinking}</p>
 			</div>
@@ -89,20 +89,22 @@ function ThinkingPreview({ thinking }: { thinking: string }) {
 
 /**
  * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
- * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview;
- * before any text or thought arrives, "Working for 12s" says it is working, timed from `turnStartedAt` (when the turn
- * started), or "Working" without it. With `actions`, a finished answer with text has Copy, Fork from this response
+ * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview
+ * under the live activity row (a brain and "Thinking"); before any text or thought arrives, that row alone says the
+ * agent is thinking. With `actions`, a finished answer with text has Copy, Fork from this response
  * (when the host gives `MessageActionsContext` a `fork`) and the time it was
  * generated under it, on hover or focus (`MessageActions`).
  */
 export const AssistantMessage = memo(function AssistantMessage({
 	item,
-	turnStartedAt,
 	actions = false,
 	showActions = false,
 }: {
 	item: AssistantItem;
-	/** When the turn this answer belongs to started, for the working row's timer. */
+	/**
+	 * When the turn this answer belongs to started. Kept for hosts that pass it; the turn's timer is the transcript's
+	 * working header now, so the answer doesn't show it.
+	 */
 	turnStartedAt?: number | undefined;
 	/**
 	 * Copy and the time under the answer, once it has finished. The transcript turns it on for a turn's final answer
@@ -140,11 +142,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 					</Disclosure>
 				)
 			) : null}
-			{text !== "" ? (
-				<Markdown text={text} />
-			) : streaming && !thinking ? (
-				<WorkingIndicator since={turnStartedAt} />
-			) : null}
+			{text !== "" ? <Markdown text={text} /> : streaming && !thinking ? <LiveActivity /> : null}
 			{actions && !streaming && text !== "" ? (
 				<MessageActions
 					at={item.at}

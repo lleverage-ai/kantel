@@ -42,6 +42,7 @@ describe("the open session's live row", () => {
 			status: "running",
 			startedAt: 50,
 			updatedAt: 50,
+			workingSince: 50,
 		});
 		expect(next.slice(1)).toEqual(listed);
 		expect(withLive(listed, { id: "z", status: "running" }, 50)[0]?.title).toBe("Untitled session");
@@ -51,6 +52,14 @@ describe("the open session's live row", () => {
 		});
 		const polled = [row("z", "done"), ...listed];
 		expect(withLive(polled, { id: "z", status: "running" }, 50)).toHaveLength(3);
+	});
+
+	it("counts a working row from when the stream turned it running, unless the list knows when the run began", () => {
+		const started = withLive(listed, { id: "a", status: "running" }, 70);
+		expect(started[0]?.workingSince).toBe(70);
+		const polled = [{ ...row("a", "running"), workingSince: 60 }];
+		expect(withLive(polled, { id: "a", status: "running" }, 70)).toBe(polled);
+		expect(withLive(started, { id: "a", status: "idle" }, 90)[0]).not.toHaveProperty("workingSince");
 	});
 
 	it("leaves the list alone for a settled session it doesn't have, or no session", () => {

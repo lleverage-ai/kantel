@@ -274,6 +274,7 @@ export {
 	rowOfTurn,
 	type TranscriptRow,
 	turnAnchor,
+	workingPlacement,
 } from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
@@ -283,7 +284,12 @@ export {
 	VaultApprovalCardSkeleton,
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
-export { WorkingIndicator, type WorkingIndicatorProps } from "./session/working-indicator.tsx";
+export {
+	LiveActivity,
+	type LiveActivityProps,
+	WorkingIndicator,
+	type WorkingIndicatorProps,
+} from "./session/working-indicator.tsx";
 // The skills page.
 export { SkillEditor, type SkillEditorProps, type SkillEditorTarget } from "./skills/skill-editor.tsx";
 export {

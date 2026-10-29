@@ -10,6 +10,7 @@ import {
 	rowOfTurn,
 	type TranscriptRow,
 	turnAnchor,
+	workingPlacement,
 } from "./transcript-model.ts";
 
 const shape = (rows: readonly TranscriptRow[]) =>
@@ -236,5 +237,38 @@ describe("turn links", () => {
 		expect(call?.item.id).toBe("t2");
 		expect(rowOfTurn(rows, "nope")).toBeUndefined();
 		expect(turnAnchor("u:1")).toBe("turn-u:1");
+	});
+});
+
+describe("workingPlacement", () => {
+	const place = (items: TranscriptItem[]) => workingPlacement(groupTranscript(items));
+
+	it("puts the header under the person's message and Thinking at the end, before anything arrives", () => {
+		expect(place([assistant("a0", "Earlier."), user("u1", "Go")])).toEqual({ headerAfter: 1, activity: true });
+	});
+
+	it("leaves the activity to a call that is running, and to an answer that streams", () => {
+		const running = [user("u1", "Go"), tool("t1", "bash", "Running ls", { status: "running" })];
+		expect(place(running)).toEqual({ headerAfter: 0, activity: false });
+		expect(place([user("u1", "Go"), assistant("a1", "", { streaming: true })])).toEqual({
+			headerAfter: 0,
+			activity: false,
+		});
+		expect(place(liveTurn).activity).toBe(false);
+	});
+
+	it("shows Thinking between steps: every call finished, nothing streaming", () => {
+		const between = [user("u1", "Go"), tool("t1", "bash", "Ran ls"), tool("t2", "read", "Read a.md")];
+		expect(place(between)).toEqual({ headerAfter: 0, activity: true });
+		expect(place([user("u1", "Go"), assistant("a1", "Looking."), tool("t1", "bash", "Ran ls")]).activity).toBe(true);
+	});
+
+	it("keeps the header under the message that started the turn when the person steers it", () => {
+		const steer: TranscriptItem = { ...user("u2", "Also check b"), via: "steer" };
+		expect(place([user("u1", "Go"), tool("t1", "bash", "Ran ls"), steer]).headerAfter).toBe(0);
+	});
+
+	it("has no place for the header when the turn's message is in an older page", () => {
+		expect(place([tool("t1", "bash", "Ran ls")])).toEqual({ headerAfter: -1, activity: true });
 	});
 });

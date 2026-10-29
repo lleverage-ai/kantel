@@ -31,9 +31,10 @@ import {
 	rowOfTurn,
 	type TranscriptRow,
 	turnAnchor,
+	workingPlacement,
 } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
-import { WorkingIndicator } from "./working-indicator.tsx";
+import { LiveActivity, WorkingIndicator } from "./working-indicator.tsx";
 import "./transcript.css";
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
@@ -57,9 +58,11 @@ const END = { end: true } as const;
 // The top of a paged transcript once there is nothing older. It is an entry of the list, not an overlay, so it
 // scrolls with the rows; it is put in front as an older page would be, keeping the reader's place.
 const START = { start: true } as const;
-// The turn's working row, after the last row while the session works on a turn (the `working` prop).
+// While the session works on a turn (the `working` prop), the turn's "Working for 12s" header, under the person's
+// message, and its live activity row ("Thinking") at the end, after T3 Code's (see `workingPlacement`).
 const WORKING = { working: true } as const;
-type Entry = TranscriptRow | typeof END | typeof START | typeof WORKING;
+const ACTIVITY = { activity: true } as const;
+type Entry = TranscriptRow | typeof END | typeof START | typeof WORKING | typeof ACTIVITY;
 
 const entryKey = (entry: Entry | undefined): string | undefined =>
 	entry === undefined
@@ -70,7 +73,9 @@ const entryKey = (entry: Entry | undefined): string | undefined =>
 				? "start"
 				: "working" in entry
 					? "working"
-					: entry.id;
+					: "activity" in entry
+						? "activity"
+						: entry.id;
 
 /** The session is working on a turn: what the transcript's working row says, and when the turn started. */
 export type TranscriptWorking = {
@@ -82,18 +87,6 @@ export type TranscriptWorking = {
 	/** Default "Working". */
 	readonly label?: string;
 };
-
-/** An answer that streams with nothing in it yet shows its own working row; the turn's row then waits behind it. */
-function showsOwnWorkingRow(row: TranscriptRow | undefined): boolean {
-	return (
-		row !== undefined &&
-		row.kind === "item" &&
-		row.item.kind === "assistant" &&
-		row.item.streaming &&
-		row.item.text === "" &&
-		!row.item.thinking
-	);
-}
 
 /**
  * Without a renderCard, a card shows read-only: everything it says (a vault request's terms and binding code, a
@@ -115,8 +108,6 @@ type RowProps = {
 	row: TranscriptRow;
 	first: boolean;
 	turnStart: boolean;
-	/** For an answer that is streaming: when its turn started, for the working row's timer. */
-	turnStartedAt: number | undefined;
 	/** The row is its turn's final answer, which gets Copy and its time on hover. */
 	finalAnswer: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
@@ -133,7 +124,6 @@ export type RowRenderPhase = "mount" | "update";
 
 function rowBody(
 	row: TranscriptRow,
-	turnStartedAt: number | undefined,
 	finalAnswer: boolean,
 	renderCard: RowProps["renderCard"],
 	browserSlots: RowProps["browserSlots"],
@@ -159,7 +149,7 @@ function rowBody(
 		case "user":
 			return <UserMessage item={item} />;
 		case "assistant":
-			return <AssistantMessage item={item} turnStartedAt={turnStartedAt} actions={finalAnswer} />;
+			return <AssistantMessage item={item} actions={finalAnswer} />;
 		case "notice":
 			return <NoticeRow item={item} />;
 		case "card":
@@ -173,7 +163,6 @@ const Row = memo(function Row({
 	row,
 	first,
 	turnStart,
-	turnStartedAt,
 	finalAnswer,
 	renderCard,
 	browserSlots,
@@ -195,7 +184,7 @@ const Row = memo(function Row({
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
-				{rowBody(row, turnStartedAt, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight)}
+				{rowBody(row, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight)}
 			</div>
 		</div>
 	);
@@ -257,9 +246,11 @@ export type TranscriptProps = {
 	/** An error shown above the list, in an error notice. */
 	error?: ReactNode;
 	/**
-	 * The session is working on a turn: from the moment a message is sent until the run settles, the transcript ends
-	 * with a live "Working for 12s" row (`WorkingIndicator`), after T3 Code's. `true` times it from the person's last
-	 * message; pass `{ since }` to time it from when the host knows the turn started (an optimistic send, say).
+	 * The session is working on a turn: from the moment a message is sent until the run settles, a live "Working for
+	 * 12s" header with a divider sits under the person's message (`WorkingIndicator`), and the turn ends with a live
+	 * activity row, a brain and "Thinking" (`LiveActivity`), unless a call is running or an answer is streaming, which
+	 * show the activity themselves; after T3 Code's. `true` times it from the person's last message; pass `{ since }` to
+	 * time it from when the host knows the turn started (an optimistic send, say).
 	 */
 	working?: boolean | TranscriptWorking;
 	/**
@@ -346,26 +337,24 @@ export function Transcript({
 	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
 	const paged = onLoadOlder !== undefined;
 	const atStart = paged && !hasOlder && rows.length > 0;
-	const showWorking = working !== undefined && working !== false && !showsOwnWorkingRow(rows.at(-1));
+	const showWorking = working !== undefined && working !== false;
+	const placement = useMemo(() => workingPlacement(rows), [rows]);
+	const { headerAfter, activity } = placement;
 	const entries = useMemo<Entry[]>(() => {
-		const tail: Entry[] = showWorking ? [WORKING, END] : [END];
-		return atStart ? [START, ...rows, ...tail] : [...rows, ...tail];
-	}, [rows, atStart, showWorking]);
+		const head: Entry[] = atStart ? [START] : [];
+		if (!showWorking) return [...head, ...rows, END];
+		const foot: Entry[] = activity ? [ACTIVITY, END] : [END];
+		// The header under the turn's message; with that message in an older page, at the end, before the activity.
+		if (headerAfter < 0) return [...head, ...rows, WORKING, ...foot];
+		return [...head, ...rows.slice(0, headerAfter + 1), WORKING, ...rows.slice(headerAfter + 1), ...foot];
+	}, [rows, atStart, showWorking, headerAfter, activity]);
 
-	// When each streaming answer's turn started, by row id: the time of the last message the person sent before it,
-	// other than a steer (a steer joins the turn under way). The working row times the turn from it. A number, so the
-	// streaming row's props stay equal as its text grows. An answer whose prompt is in an unloaded page has none.
-	const { turnStarts, lastTurnStart } = useMemo(() => {
-		const starts = new Map<string, number>();
-		let start: number | undefined;
-		for (const row of rows) {
-			if (row.kind !== "item") continue;
-			const { item } = row;
-			if (item.kind === "user" && item.via !== "steer") start = item.at;
-			else if (item.kind === "assistant" && item.streaming && start !== undefined) starts.set(row.id, start);
-		}
-		return { turnStarts: starts, lastTurnStart: start };
-	}, [rows]);
+	// The working header times the turn from the last message the person sent, other than a steer (a steer joins the
+	// turn under way), unless the host says when it started. With that message in an unloaded page it says "Working".
+	const lastTurnStart = useMemo(() => {
+		const row = headerAfter < 0 ? undefined : rows[headerAfter];
+		return row?.kind === "item" && row.item.kind === "user" ? row.item.at : undefined;
+	}, [rows, headerAfter]);
 	const workingSince = typeof working === "object" ? (working.since ?? lastTurnStart) : lastTurnStart;
 	const workingLabel = typeof working === "object" ? working.label : undefined;
 
@@ -397,6 +386,7 @@ export function Transcript({
 		firstKey !== first.current &&
 		firstKey !== "end" &&
 		first.current !== "working" &&
+		first.current !== "activity" &&
 		entries.length > count.current &&
 		count.current > 1;
 
@@ -408,7 +398,11 @@ export function Transcript({
 
 	useLayoutEffect(() => {
 		const initial =
-			(first.current === undefined || first.current === "end" || first.current === "working") && rows.length > 0;
+			(first.current === undefined ||
+				first.current === "end" ||
+				first.current === "working" ||
+				first.current === "activity") &&
+			rows.length > 0;
 		first.current = firstKey;
 		count.current = entries.length;
 		if (initial || (following.current && !prepended)) toBottom();
@@ -661,6 +655,12 @@ export function Transcript({
 									/>
 								</div>
 							</div>
+						) : "activity" in entry ? (
+							<div key="activity" className="hb-transcript-row hb-transcript-row-activity">
+								<div className="hb-transcript-column">
+									<LiveActivity />
+								</div>
+							</div>
 						) : "start" in entry ? (
 							<div key="start" className="hb-transcript-start">
 								<div className="hb-transcript-column hb-transcript-start-rule">Start of the session</div>
@@ -671,7 +671,6 @@ export function Transcript({
 								row={entry}
 								first={index === 0 && !hasOlder}
 								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
-								turnStartedAt={turnStarts.get(entry.id)}
 								finalAnswer={finalAnswers.has(entry.id)}
 								renderCard={renderCard}
 								browserSlots={slots.get(entry.id)}
