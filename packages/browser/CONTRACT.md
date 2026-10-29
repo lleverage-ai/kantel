@@ -24,8 +24,71 @@ confirmed agent supervisors on 27 Oct 2026 ("Yes, as built").
 ## Key operations
 
 `putContext` and `listContexts` (humans and services) → `request` (agent) → `grant` (supervisor, optionally answering a
-request) → `open` (agent) → `checkSite` → `close`. `revokeGrant` (supervisor) and `endSession` (the session-end
-teardown) end things.
+request) → `open` (agent) → `act`, `screenshot` and `checkSite` → `close`. `share` (humans and services) hands the
+browser to a person for a sign-in step. `revokeGrant` (supervisor) and `endSession` (the session-end teardown) end
+things.
+
+## Steps, screenshots and share links (issue #24)
+
+- `act(ctx, browserSessionId, action)` runs one model-free step and returns the page (URL, title, text, elements with
+  IDs). Steps: `look`, `goto`, `click`, `fill`, `select`, `check` (on an element ID from the last page), `press` (a
+  key name such as `Enter`), `scroll` (down) and `wait`. No step takes a credential.
+- The broker never returns a page off the grant's sites: a `goto` off them is `refused` before the browser moves; a
+  step that lands off them (a link, a redirect) sends the browser to `about:blank` and is `refused`. Both are audited
+  `browser.site.refused` with the step, the host only (a URL may hold a token) and `asked` or `landed`: "steps and
+  screenshots on the grant's sites, refusing a goto off them before the browser moves and blanking a page a step lands
+  on off them". `screenshot` refuses a page off them the same way. This is the broker's own view; the CDP URL still
+  reaches any site until the egress layer applies `checkSite`.
+- `act` and `screenshot` are for the browser session's own agent (another session's browser is `not_found`) and for
+  humans and services with operator on its agent session; a closed browser session is `expired`: "refuses steps,
+  screenshots and share links on a closed browser session as expired", "hides another session's browser from an agent
+  stepping, screenshotting or asking for a share link".
+- `share(ctx, browserSessionId, { minutes })` makes a live-view link with control for 15 or 60 minutes (default 15).
+  Humans and services only; an agent is `forbidden`, even for its own browser. Audited `browser.session.shared` with
+  the minutes, never the link: "gives a supervisor a share link with control for 15 or 60 minutes, audited without the
+  link".
+
+## Capabilities
+
+`@harbour/browser/capabilities` exports `browserCapabilities` and `browserCapabilityHandler({ browser })` for the
+capability registry, all `runsIn: "host"`, each call made as the invoking agent so every broker rule above applies:
+
+| Capability | Replay | Does |
+| --- | --- | --- |
+| `browser.request` | `unsafe` | asks a supervisor for a browser (reason and sites, never a context) |
+| `browser.open` | `unsafe` | opens under the session's grant (the only one, the one `grantId` names, or one whose sites allow `url`), optionally at `url`; returns the browser session ID, its CDP URL, expiry and sites |
+| `browser.act` | `unsafe` | one step (flat arguments: `action`, `element`, `value`, `key`, `url`); returns the page as text, cut at 20,000 characters and 300 elements |
+| `browser.screenshot` | `safe` | the page as a base64 image with its URL and title |
+| `browser.close` | `idempotent` | closes the browser |
+
+No input schema names a context. A broker error comes back as an `isError` result naming its code.
+
+## Session end and the runtime
+
+The runtime's session-end hook (`runtime.sessionEnd`) runs `endSession` as the `browser` teardown when a session is
+closed (`session_ended`) or aborted (`aborted`, children too). `createMemoryBrowser({ sessionEnd })` registers it;
+`browserTeardown(browser)` from `@harbour/browser` is the same teardown as a function, for wiring that builds the
+broker first (`runtime.sessionEnd.register("browser", browserTeardown(browser))`). `packages/browser/test/runtime-session-end.test.ts`
+covers both through `createMemoryRuntime`.
+
+## The brwsr provider
+
+`createBrwsrProvider({ apiKey, apiUrl?, userMetadata? })` from `@harbour/browser/brwsr` is the `BrowserProvider` over
+brwsr.dev, holding the project key:
+
+- `open`: `POST /v1/sessions` with `keepAlive: true` (the agent may reconnect; the broker owns the lease), the grant's
+  context and `persist`, and `timeout` from the grant clamped to brwsr's 60 s to 6 h. A grant longer than 6 hours
+  still ends at brwsr after 6. brwsr's `409` for a context another persisting session holds is `conflict`; `429`
+  (the project's concurrency is full) is `exhausted`.
+- `release`: `REQUEST_RELEASE`; a session already gone counts as released.
+- `act`: brwsr's Reflex verbs (`/brwsr/v1/sessions/{id}/reflex/act`, `GET …/reflex/look`), which need no model key.
+- `screenshot`: a JPEG over a short CDP connection to the session's first page that is not blank.
+- `share`: `POST /brwsr/v1/sessions/{id}/shares` with `control: true`.
+- `contextId(name)`: finds or makes the brwsr context with that name, for an operator's `putContext`.
+
+A session brwsr no longer runs is `expired`. `test/brwsr.test.ts` covers it over a fake API; `test/brwsr.live.test.ts`
+runs the broker on real brwsr only with `HARBOUR_TEST_BRWSR=1` and `BRWSR_API_KEY` (context
+`HARBOUR_TEST_BRWSR_CONTEXT`, default `harbour-test`), never in CI.
 
 ## Project access (settled 27 Oct 2026, question 7)
 
@@ -125,7 +188,9 @@ call first sweeps sessions past `expiresAt` (by the clock) and releases them. `o
 awaiting the provider and re-checks the grant afterwards, so a revoke or session end during the open releases the new
 browser. Releases run independently; failed ones wait in a retry set that every call's sweep retries. When an agent
 supervisor holds more than one active grant on the context, the first one the new grant is no wider than becomes its
-parent. The fake provider's `failReleases(times)` and `holdNextOpen()` drive the release and in-flight cases. It leaves
+parent. The fake provider's `failReleases(times)` and `holdNextOpen()` drive the release and in-flight cases; its browsers start
+on `about:blank`, `goto` moves them, and `nextClickLandsOn(url)` makes the next click land somewhere, for the site
+cases. It leaves
 out durable storage and site enforcement inside the browser itself (`checkSite` is the decision; the egress layer must
 apply it).
 
@@ -140,3 +205,9 @@ apply it).
 - Opening under a revoked or ended grant is `expired`; checking a site on a closed browser session returns
   `allow: false` rather than an error.
 - `putContext` always creates a new context; should it upsert by name?
+- `share` is for humans and services only, so an agent that meets a sign-in page asks its supervisor (through
+  `browser.request` or its host) rather than getting a link to pass on. Should an agent supervisor be able to ask for a
+  link for its child's browser?
+- The broker has no list of a session's open browser sessions, so `browser.act` needs the ID `browser.open` returned.
+- The memory broker keeps no store, so a durable target needs the same records (and the provider session IDs) in its
+  own storage; the brwsr provider is ready for it, the durable broker is not built yet.

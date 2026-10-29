@@ -510,6 +510,31 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
+		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
+
+		async fork(sessionId, itemId) {
+			const response = await call(sessionUrl(sessionId, "/fork"), {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ itemId }),
+			});
+			const record = (await response.json()) as SessionRecord;
+			projectOfSession.set(record.id, record.projectId);
+			return record.id;
+		},
+
+		edit: (sessionId, itemId, text, sendOptions) =>
+			post(
+				sessionUrl(sessionId, "/edit"),
+				{
+					itemId,
+					text,
+					...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
+					...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
+					...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+				},
+				sendOptions?.requestId,
+			),
 
 		markRead(sessionId) {
 			count(open, sessionId, 1);
