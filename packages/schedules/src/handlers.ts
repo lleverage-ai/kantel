@@ -5,6 +5,7 @@
  * does it once.
  */
 import {
+	type AgentId,
 	type CallContext,
 	type CheckReport,
 	type Finding,
@@ -66,24 +67,35 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 // Tasks
 
 /**
- * A `task` schedule's payload: the agent to start, and its first message. `projectId` defaults to the project that
- * owns the schedule; a schedule owned by an organisation or a user must name one.
+ * A `task` schedule's payload, `{ agentId?, prompt }` as the public API documents it: the agent to start (the host's
+ * default agent when there's none) and the prompt sent as the session's first message, exactly as written. `projectId`
+ * defaults to the project that owns the schedule; a schedule owned by an organisation or a user must name one.
  */
 export interface TaskPayload {
-	readonly agentId: string;
-	readonly message: string;
+	readonly agentId?: AgentId;
+	readonly prompt: string;
 	readonly projectId?: ProjectId;
 	readonly title?: string;
 	readonly labels?: { readonly [key: string]: string };
 }
 
-/** A task payload read from a schedule, or `invalid`. */
-export function taskPayload(schedule: Schedule): TaskPayload & { readonly projectId: ProjectId } {
+/**
+ * A task payload read from a schedule, or `invalid`. A payload without an `agentId` runs `defaultAgentId`, and is
+ * `invalid` when there's no default either.
+ */
+export function taskPayload(
+	schedule: Schedule,
+	defaultAgentId?: AgentId,
+): TaskPayload & { readonly agentId: AgentId; readonly projectId: ProjectId } {
 	const payload = schedule.payload;
-	if (!isRecord(payload)) invalidPayload(schedule, "must be an object with agentId and message");
-	const { agentId, message, projectId, title, labels } = payload;
-	if (typeof agentId !== "string" || agentId.length === 0) invalidPayload(schedule, "needs an agentId");
-	if (typeof message !== "string") invalidPayload(schedule, "needs a message");
+	if (!isRecord(payload)) invalidPayload(schedule, "must be an object with a prompt and, optionally, an agentId");
+	const { agentId: named, prompt, projectId, title, labels } = payload;
+	if (named !== undefined && (typeof named !== "string" || named.length === 0)) {
+		invalidPayload(schedule, "has an agentId that is not a non-empty string");
+	}
+	const agentId = named ?? defaultAgentId;
+	if (agentId === undefined) invalidPayload(schedule, "needs an agentId, as this host has no default agent");
+	if (typeof prompt !== "string") invalidPayload(schedule, "needs a prompt");
 	const owner = schedule.owner;
 	const project = typeof projectId === "string" ? projectId : owner.kind === "project" ? owner.projectId : undefined;
 	if (project === undefined) invalidPayload(schedule, "needs a projectId when no project owns the schedule");
@@ -93,7 +105,7 @@ export function taskPayload(schedule: Schedule): TaskPayload & { readonly projec
 	}
 	return {
 		agentId,
-		message,
+		prompt,
 		projectId: project,
 		...(title === undefined ? {} : { title }),
 		...(labels === undefined ? {} : { labels: labels as { readonly [key: string]: string } }),
@@ -105,17 +117,20 @@ export interface TaskHandlerOptions {
 	readonly runtime: Pick<SessionRuntime, "create" | "prompt" | "wait" | "close">;
 	/** Finds a session an earlier attempt of the same occurrence started. */
 	readonly directory: Pick<SessionDirectory, "list">;
+	/** The agent a payload without an `agentId` runs. Without one, such a payload fails as `invalid`. */
+	readonly defaultAgentId?: AgentId;
 	/**
 	 * Hold the occurrence until the session's run ends (default), so the schedule's next run never starts while this one
-	 * is working, as Sal's scheduled tasks do. `false` finishes the occurrence once the session has its message.
+	 * is working, as Sal's scheduled tasks do. `false` finishes the occurrence once the session has its prompt.
 	 */
 	readonly waitForRun?: boolean;
 }
 
 /**
  * Starts a session for each `task` occurrence through the public session API: creates it (labelled with the schedule
- * and occurrence), prompts it with the payload's message (`requestId` is the occurrence's ID) and, by default, waits
- * for its run to end. The run succeeds when the session answered and fails otherwise.
+ * and occurrence), prompts it with the payload's prompt exactly as written (`requestId` is the occurrence's ID; Harbour
+ * adds no text of its own) and, by default, waits for its run to end. The run succeeds when the session answered and
+ * fails otherwise.
  *
  * A retry prompts once. A retried run finds the session by its label and the prompt by its `requestId`. Listing and
  * creating are not atomic, so two attempts could each create a session; the prompt is fenced by `holdLease`: an
@@ -127,7 +142,7 @@ export function createTaskHandler(options: TaskHandlerOptions): OccurrenceHandle
 	const waitForRun = options.waitForRun ?? true;
 	return async (run) => {
 		const { schedule, occurrence } = run;
-		const payload = taskPayload(schedule);
+		const payload = taskPayload(schedule, options.defaultAgentId);
 		const ctx = schedulerContext(run, payload.projectId);
 		const marker = { [OCCURRENCE_LABEL]: occurrence.id };
 		const [existing] = (
@@ -152,7 +167,7 @@ export function createTaskHandler(options: TaskHandlerOptions): OccurrenceHandle
 			throw error;
 		}
 		const submission = await options.runtime.prompt(ctx, session.id, {
-			text: payload.message,
+			text: payload.prompt,
 			requestId: `schedule:${occurrence.id}`,
 		});
 		const started = { sessionId: session.id, submissionId: submission.id };
