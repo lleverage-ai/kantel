@@ -302,6 +302,20 @@ describe("the console on the session API", () => {
 		expect(await fresh.projectOf("s-nobody")).toBeUndefined();
 	});
 
+	it("says which session a subagent's session was started from, for the breadcrumbs", async () => {
+		const { client, create, memory } = await setUp();
+		const parent = await create("proj-a", "Fix the billing worker");
+		const child = await memory.runtime.create(ctx, {
+			projectId: "proj-a",
+			agentId: "worker",
+			title: "Write the refund tests",
+			parentSessionId: parent,
+		});
+		expect(await client.parentOf?.(child.id)).toEqual({ id: parent, title: "Fix the billing worker" });
+		expect(await client.parentOf?.(parent)).toBeUndefined();
+		expect(await client.parentOf?.("s-nobody")).toBeUndefined();
+	});
+
 	it("streams a session: a snapshot, then the run's answer as it happens", async () => {
 		const { client, create, open, script } = await setUp();
 		const id = await create("proj-a", "Hello");

@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { Button, IconButton } from "../primitives/button.tsx";
-import { DotsIcon } from "../primitives/icons.tsx";
-import { Elapsed } from "../primitives/time.tsx";
-import { type Status, statusLabel } from "../tokens/tokens.ts";
+import { Breadcrumbs, type Crumb } from "../primitives/breadcrumbs.tsx";
+import { IconButton } from "../primitives/button.tsx";
+import { DotsIcon, FileIcon } from "../primitives/icons.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Row, Section, Sheet } from "../workbench/specimen.tsx";
 import { DiffStat } from "./diff-stat.tsx";
@@ -11,17 +10,16 @@ import { ConnectionState, type ConnectionStateValue, SessionHeader } from "./ses
 export default { title: "Session/Header" } satisfies StoryDefault;
 
 const open: ConnectionStateValue = { state: "open" };
-const started = Date.now() - 200_000;
 
-const options = <IconButton label="Session options" icon={<DotsIcon />} variant="ghost" />;
-
-const meta = (
+const actions = (
 	<>
-		<span>harbour</span>
-		<span className="hb-mono">ui/session-components</span>
-		<DiffStat additions={128} deletions={37} />
+		<IconButton label="Files" icon={<FileIcon />} variant="ghost" />
+		<IconButton label="Session options" icon={<DotsIcon />} variant="ghost" />
 	</>
 );
+
+const project: Crumb = { label: "Default", href: "#project" };
+const parent: Crumb = { label: "Fix the billing worker's double charges", href: "#parent" };
 
 const longTitle =
 	"Summarise yesterday's customer calls and draft the follow-up emails for the three that asked for pricing, then file them as drafts in the shared inbox";
@@ -35,28 +33,33 @@ function useOffline(seconds: number): ConnectionStateValue {
 export const Default: Story = () => (
 	<Sheet
 		title="Session header"
-		intro="Status, title, the session's facts and its actions. A healthy connection shows nothing."
+		intro="Breadcrumbs only, as T3 Code's: the project, muted and a link back, then the session, emphasised. Files and the options menu as icon buttons. No status: working shows in the thread, the composer and the sidebar."
 	>
-		<SessionHeader
-			title="Fix the billing worker's double charges"
-			status="working"
-			connection={open}
-			meta={meta}
-			actions={options}
-			onBack={() => {}}
-		/>
+		<SessionHeader title="Hi" parents={[project]} connection={open} actions={actions} />
 	</Sheet>
 );
 
-const statuses: Status[] = ["working", "waiting", "approval", "done", "error", "idle"];
-
-export const Statuses: Story = () => (
-	<Sheet title="Session header, every status">
-		{statuses.map((status) => (
-			<Section key={status} title={statusLabel[status]}>
-				<SessionHeader title="Fix the billing worker's double charges" status={status} connection={open} />
-			</Section>
-		))}
+export const Subagent: Story = () => (
+	<Sheet
+		title="Session header, a subagent's session"
+		intro="One level deeper: the project and the session that started the subagent are both muted links back."
+	>
+		<Section title="A subagent">
+			<SessionHeader
+				title="Write tests for the refund path"
+				parents={[project, parent]}
+				connection={open}
+				actions={actions}
+			/>
+		</Section>
+		<Section title="A subagent's subagent">
+			<SessionHeader
+				title="Find the refund fixtures"
+				parents={[project, parent, { label: "Write tests for the refund path", href: "#child" }]}
+				connection={open}
+				actions={actions}
+			/>
+		</Section>
 	</Sheet>
 );
 
@@ -69,20 +72,20 @@ function ConnectionsDemo() {
 			intro="Connected says nothing (screen readers hear Connected). Offline counts down on the shared clock, then says Reconnecting."
 		>
 			<Section title="Open">
-				<SessionHeader title="Fix the billing worker's double charges" status="working" connection={open} />
+				<SessionHeader title="Fix the billing worker's double charges" parents={[project]} connection={open} />
 			</Section>
 			<Section title="Connecting">
 				<SessionHeader
 					title="Fix the billing worker's double charges"
-					status="working"
+					parents={[project]}
 					connection={{ state: "connecting" }}
 				/>
 			</Section>
 			<Section title="Offline, retry scheduled">
-				<SessionHeader title="Fix the billing worker's double charges" status="working" connection={counting} />
+				<SessionHeader title="Fix the billing worker's double charges" parents={[project]} connection={counting} />
 			</Section>
 			<Section title="Offline, retry due">
-				<SessionHeader title="Fix the billing worker's double charges" status="working" connection={due} />
+				<SessionHeader title="Fix the billing worker's double charges" parents={[project]} connection={due} />
 			</Section>
 			<Section title="On its own">
 				<Row>
@@ -99,17 +102,26 @@ export const Connections: Story = () => <ConnectionsDemo />;
 
 export const Loading: Story = () => (
 	<Sheet title="Session header, loading" intro="The title is a skeleton until the session's snapshot arrives.">
-		<SessionHeader status="idle" connection={{ state: "connecting" }} loading actions={options} onBack={() => {}} />
+		<SessionHeader
+			parents={[project]}
+			connection={{ state: "connecting" }}
+			loading
+			actions={actions}
+			onBack={() => {}}
+		/>
 	</Sheet>
 );
 
 export const Empty: Story = () => (
 	<Sheet title="Session header, no title yet" intro="A session with no title yet is called New session.">
 		<Section title="No title">
-			<SessionHeader status="idle" connection={open} actions={options} />
+			<SessionHeader parents={[project]} connection={open} actions={actions} />
 		</Section>
 		<Section title="A blank title">
-			<SessionHeader title="   " status="idle" connection={open} />
+			<SessionHeader title="   " parents={[project]} connection={open} />
+		</Section>
+		<Section title="No project">
+			<SessionHeader title="Fix the billing worker's double charges" connection={open} />
 		</Section>
 	</Sheet>
 );
@@ -117,25 +129,13 @@ export const Empty: Story = () => (
 export const Streaming: Story = () => (
 	<Sheet
 		title="Session header, agent working"
-		intro="Working, with how long for in the meta, ticking on the shared clock."
+		intro="Exactly as when idle: the bar never says the agent is working. The thread's working row and the composer's stop button do."
 	>
 		<SessionHeader
 			title="Fix the billing worker's double charges"
-			status="working"
+			parents={[project]}
 			connection={open}
-			meta={
-				<>
-					<span>
-						Working for <Elapsed since={started} />
-					</span>
-					<DiffStat additions={12} deletions={3} />
-				</>
-			}
-			actions={
-				<Button size="xs" variant="danger">
-					Stop
-				</Button>
-			}
+			actions={actions}
 		/>
 	</Sheet>
 );
@@ -143,14 +143,11 @@ export const Streaming: Story = () => (
 function ErrorDemo() {
 	const offline = useOffline(30);
 	return (
-		<Sheet title="Session header, failed and offline" intro="A failed session whose host link is down and retrying.">
-			<SessionHeader
-				title="Nightly bug sweep"
-				status="error"
-				connection={offline}
-				meta={<span>Failed after 4m 12s</span>}
-				actions={options}
-			/>
+		<Sheet
+			title="Session header, offline"
+			intro="The host link is down and retrying: the one thing besides the trail it says."
+		>
+			<SessionHeader title="Nightly bug sweep" parents={[project]} connection={offline} actions={actions} />
 		</Sheet>
 	);
 }
@@ -161,51 +158,49 @@ export const Error: Story = () => <ErrorDemo />;
 export const LongContent: Story = () => (
 	<Sheet
 		title="Session header, long content"
-		intro="A long title truncates with the full text on hover; long meta wraps."
+		intro="The current item truncates first, with the whole title on hover; parents keep a few letters each."
 	>
-		<SessionHeader
-			title={longTitle}
-			status="done"
-			connection={open}
-			meta={
-				<>
-					<span>lleverage</span>
-					<span className="hb-mono">feature/customer-call-follow-ups-with-pricing-drafts</span>
-					<DiffStat additions={12_480} deletions={3_207} />
-				</>
-			}
-			actions={options}
-			onBack={() => {}}
-		/>
+		<Section title="Long title">
+			<SessionHeader title={longTitle} parents={[project]} connection={open} actions={actions} onBack={() => {}} />
+		</Section>
+		<Section title="Long everything">
+			<SessionHeader
+				title={longTitle}
+				parents={[
+					{ label: "Lleverage customer success and onboarding", href: "#p" },
+					{ label: longTitle, href: "#s" },
+				]}
+				connection={open}
+				actions={actions}
+			/>
+		</Section>
 	</Sheet>
 );
 
 function MobileDemo() {
 	const offline = useOffline(20);
 	return (
-		<Sheet title="Session header at 420px" intro="Meta moves to a second line; the title keeps the first.">
-			<Section title="Working">
+		<Sheet title="Session header at 420px" intro="The trail keeps one line; the current item truncates first.">
+			<Section title="A session">
 				<SessionHeader
 					title="Fix the billing worker's double charges"
-					status="working"
+					parents={[project]}
 					connection={open}
-					meta={meta}
-					actions={options}
+					actions={actions}
 					onBack={() => {}}
 				/>
 			</Section>
-			<Section title="Long title, offline">
+			<Section title="A subagent, offline">
 				<SessionHeader
-					title={longTitle}
-					status="approval"
+					title="Write tests for the refund path"
+					parents={[project, parent]}
 					connection={offline}
-					meta={meta}
-					actions={options}
+					actions={actions}
 					onBack={() => {}}
 				/>
 			</Section>
 			<Section title="Loading">
-				<SessionHeader status="idle" connection={{ state: "connecting" }} loading onBack={() => {}} />
+				<SessionHeader parents={[project]} connection={{ state: "connecting" }} loading onBack={() => {}} />
 			</Section>
 		</Sheet>
 	);
@@ -213,6 +208,28 @@ function MobileDemo() {
 
 export const Mobile: Story = () => <MobileDemo />;
 Mobile.meta = { width: 420 };
+
+export const Trail: Story = () => (
+	<Sheet
+		title="Breadcrumbs"
+		intro="The trail on its own: muted parents, each a link or a button back to its level, the current item emphasised."
+	>
+		<Column>
+			<Row label="One level">
+				<Breadcrumbs label="Example" parents={[]} current="Default" />
+			</Row>
+			<Row label="Links">
+				<Breadcrumbs label="Example" parents={[project]} current="Hi" />
+			</Row>
+			<Row label="Buttons">
+				<Breadcrumbs label="Example" parents={[{ label: "Default", onSelect: () => {} }]} current="Hi" />
+			</Row>
+			<Row label="Three levels">
+				<Breadcrumbs label="Example" parents={[project, parent]} current="Write tests for the refund path" />
+			</Row>
+		</Column>
+	</Sheet>
+);
 
 export const DiffStats: Story = () => (
 	<Sheet

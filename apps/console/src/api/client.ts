@@ -23,6 +23,12 @@ export type ProjectSummary = {
 	readonly name: string;
 };
 
+/** The session a subagent's session was started from. */
+export type SessionParent = {
+	readonly id: string;
+	readonly title: string;
+};
+
 /** A project's sessions as the list shows them, with how fresh the list is. */
 export type SessionListState = {
 	readonly sessions: readonly SessionSummary[];
@@ -147,6 +153,12 @@ export interface ConsoleClient {
 	transport(sessionId: string): Transport;
 	/** The project a session belongs to, or undefined when there's no such session. */
 	projectOf(sessionId: string): Promise<string | undefined>;
+	/**
+	 * The session that started this one, when it is a subagent's (a child session): its id and title, for the top bar's
+	 * breadcrumbs. Undefined for a top-level session or when there's no such session. Absent on a client whose sessions
+	 * have no parents (a recorded session).
+	 */
+	parentOf?(sessionId: string, signal?: AbortSignal): Promise<SessionParent | undefined>;
 	/** Whether New session is offered in a project: the API refuses a viewer, so the console says so first. */
 	mayStart(projectId: string): StartAccess;
 	/** The agent a new session in the project runs. Rejects when no agent may run there. */

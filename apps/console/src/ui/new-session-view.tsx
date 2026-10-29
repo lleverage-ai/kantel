@@ -21,6 +21,8 @@ export type NewSessionState = {
 	/** The project it starts in. */
 	projectId: string;
 	projectName: string;
+	/** Where the project's crumb in the top bar goes: its sessions. */
+	projectHref?: string;
 	/** Every project, the ones the person can't start a session in dimmed with the reason. */
 	projects: readonly ProjectOption[];
 	/** The agent that will answer, once known. */
@@ -114,11 +116,15 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 		<div className="console">
 			<SessionHeader
 				title=""
-				status="idle"
+				parents={[
+					{
+						label: state.projectName,
+						...(state.projectHref === undefined ? {} : { href: state.projectHref }),
+					},
+				]}
 				// Nothing is connected until the session exists, and nothing has failed.
 				connection={{ state: "open" }}
 				onBack={on.onBack}
-				meta={<span className="console-project">{state.projectName}</span>}
 			/>
 			<div className="console-main">
 				<Transcript

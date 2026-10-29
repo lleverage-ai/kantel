@@ -60,6 +60,8 @@ type SessionRecord = {
 	readonly title?: string;
 	readonly status: SessionStatus;
 	readonly workspaceId?: string;
+	/** Set on a subagent's session: the session that started it. */
+	readonly parentSessionId?: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 };
@@ -175,6 +177,22 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 
 	/** The project each session we've seen is in. */
 	const projectOfSession = new Map<string, string>();
+	/** Each session's record as last read, for its parent and title: lists and reads keep it current. */
+	const records = new Map<string, SessionRecord>();
+	/** A session's record, as last read or else from the API; undefined when there's no such session. */
+	const recordOf = async (sessionId: string, signal?: AbortSignal): Promise<SessionRecord | undefined> => {
+		const known = records.get(sessionId);
+		if (known !== undefined) return known;
+		try {
+			const record = await getJson<SessionRecord>(sessionUrl(sessionId), signal);
+			records.set(record.id, record);
+			projectOfSession.set(record.id, record.projectId);
+			return record;
+		} catch (reason) {
+			if (reason instanceof ApiError && reason.code === "not_found") return undefined;
+			throw reason;
+		}
+	};
 	/**
 	 * Unread: a settled session that has changed since it was last on screen. `seen` holds each session's `updatedAt`
 	 * when it was last on screen, or when it was first listed (so nothing is unread on opening the console). A
@@ -224,17 +242,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 
 	/** Every session matching `filter`, following the API's pages. */
 	const listSessions = async (filter: Record<string, string> = {}): Promise<SessionRecord[]> => {
-		const records: SessionRecord[] = [];
+		const listed: SessionRecord[] = [];
 		let cursor: string | undefined;
 		do {
 			const query = new URLSearchParams({ ...filter, limit: String(LIST_LIMIT) });
 			if (cursor !== undefined) query.set("cursor", cursor);
 			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
-			for (const record of page.items) projectOfSession.set(record.id, record.projectId);
-			records.push(...page.items);
+			for (const record of page.items) {
+				projectOfSession.set(record.id, record.projectId);
+				records.set(record.id, record);
+			}
+			listed.push(...page.items);
 			cursor = page.nextCursor;
 		} while (cursor !== undefined);
-		return records;
+		return listed;
 	};
 
 	/** Every project the caller can see (`GET /v1/projects`), following the pages. */
@@ -479,14 +500,14 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		async projectOf(sessionId) {
 			const known = projectOfSession.get(sessionId);
 			if (known !== undefined) return known;
-			try {
-				const record = await getJson<SessionRecord>(sessionUrl(sessionId));
-				projectOfSession.set(record.id, record.projectId);
-				return record.projectId;
-			} catch (reason) {
-				if (reason instanceof ApiError && reason.code === "not_found") return undefined;
-				throw reason;
-			}
+			return (await recordOf(sessionId))?.projectId;
+		},
+
+		async parentOf(sessionId, signal) {
+			const parentId = (await recordOf(sessionId, signal))?.parentSessionId;
+			if (parentId === undefined) return undefined;
+			const parent = await recordOf(parentId, signal);
+			return parent === undefined ? undefined : { id: parent.id, title: parent.title ?? "Untitled session" };
 		},
 
 		mayStart: (projectId) => startAccess(options.roles, projectId),

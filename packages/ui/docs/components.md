@@ -71,6 +71,19 @@ is a form control.
 **Cost:** memoised on its props: a list re-renders only the rows whose props changed. Pass stable `leading`,
 `trailing` and `actions` elements (memoise them or derive them from the item) to keep that true.
 
+### Breadcrumbs
+
+**For** where you are, as a trail: `Default / Fix the billing worker / Write the refund tests`. `parents` (`Crumb[]`,
+outermost first) are muted, in medium weight, and each is a link (`href`, preferred) or a button (`onSelect`) back to
+its level, brightening on hover; `current` is the last item, in the text colour, with `aria-current="page"` and never
+a link. Slashes in the faint colour separate them and are hidden from screen readers. Everything sits on one
+baseline. The current item takes the room that's left and truncates first; a parent keeps at least a few letters.
+Modelled on T3 Code's `WorkspaceBreadcrumb` and its chat header's project / parent / thread trail.
+
+**Not for** tabs or switching between peers (use `SegmentedControl`), or a path inside a file tree.
+
+**Cost:** memoised on its props; pass a stable `parents` array.
+
 ### Panel, FieldList and Field
 
 **For** framed content: a card's body, a settings group, a grant's terms. `header` and `footer` are separated by

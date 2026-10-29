@@ -294,17 +294,21 @@ deliberate.
 
 ### SessionHeader
 
-**For** the bar at the top of a session view: an optional Back button (a mirrored chevron, labelled "Back"), the
-status in words (`StatusLabel`), the title (16px, medium, truncated with the whole title on hover; "New session" when
-empty; a skeleton while `loading`), `meta` (the project, the branch, a `DiffStat`, "Working for" an `Elapsed`),
-`ConnectionState`, then `actions`. One compact row with a hairline under it. On a phone (640px and narrower) the
-meta moves to a second line so the title keeps its room.
+**For** the bar at the top of a session view, as T3 Code's chat header: breadcrumbs only. An optional Back button
+(a mirrored chevron, labelled "Back"), then `Breadcrumbs`: the `parents` (the project, and for a subagent's session
+the sessions that started it), muted and each a link back, then the title, emphasised (truncated with the whole
+title on hover; "New session" when empty; a skeleton while `loading`). Then `ConnectionState`, which shows nothing
+while the link is healthy, and `actions`: a few icon buttons (Files, the options menu), nothing with words. One
+compact row with a hairline under it.
 
-Props: `title`, `status` (a `Status` from tokens.ts), `connection`, `meta`, `actions`, `onBack`, `loading`. The
-title is an `h1`: the session is the page.
+Props: `title`, `parents` (`Crumb[]`, outermost first), `connection`, `actions`, `onBack`, `loading`. The title is
+an `h1`: the session is the page.
+
+There is deliberately no status and no facts: whether the agent is working shows in the thread (the working row),
+the composer (its stop button) and the sidebar's row, never here. Stream facts such as the cursor belong in the
+options menu.
 
 **Not for** page headers elsewhere (the vault, the inbox), or for the session list's rows (use `SessionListItem`).
-Put separate facts in `meta` as separate elements, never a middle-dot string.
 
 **Keyboard:** Back and the actions are ordinary buttons, in reading order.
 

@@ -2,6 +2,7 @@ import {
 	ApiKeysPage,
 	Badge,
 	Button,
+	type Crumb,
 	EmptyState,
 	ListRow,
 	NewSessionRow,
@@ -18,6 +19,7 @@ import type { SessionClient } from "../state/session-client.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
+import { useLineage } from "./lineage.ts";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
@@ -243,6 +245,15 @@ export function App({
 	const [live, setLive] = useState<LiveSummary>();
 	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
+	const lineage = useLineage(client, route.name === "session" ? sessionId : undefined);
+	// The session's top bar: the project, then the sessions above a subagent's, each a link back to its level.
+	const parents = useMemo((): readonly Crumb[] | undefined => {
+		if (projectId === undefined) return undefined;
+		return [
+			{ key: "project", label: project?.name ?? projectId, href: projectPath(projectId) },
+			...lineage.map((parent) => ({ key: parent.id, label: parent.title, href: sessionPath(projectId, parent.id) })),
+		];
+	}, [projectId, project?.name, lineage]);
 
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
@@ -431,7 +442,7 @@ export function App({
 				key={sessionId}
 				client={client}
 				sessionId={sessionId}
-				project={project?.name}
+				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
 				onForked={toFork}

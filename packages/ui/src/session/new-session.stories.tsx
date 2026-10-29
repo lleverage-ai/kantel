@@ -148,7 +148,7 @@ function Page({
 	const name = projects.find((candidate) => candidate.id === project)?.label ?? "";
 	return (
 		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
-			<SessionHeader title="" status="idle" connection={{ state: "open" }} meta={<span>{name}</span>} />
+			<SessionHeader title="" parents={[{ label: name, href: "#project" }]} connection={{ state: "open" }} />
 			<Transcript
 				items={[]}
 				empty={
