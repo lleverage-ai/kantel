@@ -372,6 +372,23 @@ export function createMemoryConformance(options: {
 			assert.strictEqual((await memory.decide(human, renamed.id, { outcome: "apply" })).status, "applied");
 		}),
 
+		test("refuses to apply a proposal that repeats a concept applied after it was proposed", async (memory) => {
+			const space = await createSpace(memory);
+			const statement = "Release notes go out every Tuesday after the weekly planning call";
+			const first = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput("projects/harbour/release-notes", "Release notes", statement),
+			});
+			const second = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput("projects/harbour/release-cadence", "Release cadence", statement),
+			});
+			assert.strictEqual(second.duplicateOf, undefined, "nothing was active to repeat when it was proposed");
+			assert.strictEqual((await memory.decide(human, first.id, { outcome: "apply" })).status, "applied");
+			await assert.rejectsWithCode(memory.decide(human, second.id, { outcome: "apply" }), "conflict");
+			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/harbour/release-cadence"), "not_found");
+		}),
+
 		test("refuses a remember for a concept ID that is already active", async (memory) => {
 			const space = await createSpace(memory);
 			const input = conceptInput("projects/harbour/ci", "CI runner", "CI runs on every push.");

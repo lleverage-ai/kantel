@@ -268,13 +268,16 @@ export function commitFiles(repo: string, input: CommitFilesInput): string {
 		const entries = input.files.map((file) => {
 			if (
 				file.path.startsWith("/") ||
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: a control character is what this refuses.
+				/[\u0000-\u001f\u007f]/.test(file.path) ||
 				file.path.split("/").some((part) => part === "" || part === "." || part === "..")
 			) {
 				throw new Error(`Not a repository path: ${file.path}`);
 			}
 			return `100644 ${git(["hash-object", "-w", "--stdin"], file.text)}\t${file.path}`;
 		});
-		if (entries.length > 0) git(["update-index", "--index-info"], `${entries.join("\n")}\n`);
+		// NUL-terminated records, so no path can end one record and start another.
+		if (entries.length > 0) git(["update-index", "-z", "--index-info"], `${entries.join("\0")}\0`);
 		const tree = git(["write-tree"]);
 		if (input.parent !== undefined && git(["rev-parse", `${input.parent}^{tree}`]) === tree) return input.parent;
 		const commit = git([

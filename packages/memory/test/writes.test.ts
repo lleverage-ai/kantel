@@ -52,6 +52,8 @@ describe("memory write parsers", () => {
 		expect(await code(() => parseOwner({ kind: "project", organisationId: "org-a" }))).toBe("invalid");
 
 		expect(parseMemoryWrite({ op: "remember", concept })).toEqual({ op: "remember", concept });
+		const described = { ...concept, description: "" };
+		expect(parseMemoryWrite({ op: "remember", concept: described })).toEqual({ op: "remember", concept: described });
 		expect(parseMemoryWrite({ op: "correct", concept, expectedVersion: 2 }).op).toBe("correct");
 		expect(
 			parseMemoryWrite({ op: "supersede", conceptId: concept.id, expectedVersion: 1, replacement: concept }).op,
@@ -67,6 +69,7 @@ describe("memory write parsers", () => {
 			{ op: "remember", concept, expectedVersion: 1 },
 			{ op: "remember", concept: { ...concept, title: "" } },
 			{ op: "remember", concept: { ...concept, secret: "x" } },
+			{ op: "remember", concept: { ...concept, description: 1 } },
 			{ op: "remember", concept: { ...concept, scope: { kind: "project" } } },
 			{ op: "remember", concept: { ...concept, scope: { kind: "global", project: "x" } } },
 			{ op: "correct", concept, expectedVersion: 0 },

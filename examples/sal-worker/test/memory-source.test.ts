@@ -211,6 +211,24 @@ describe("salMemorySource", () => {
 				author: { name: "Test", email: "test@example.com" },
 			}),
 		).toThrow(/Not a repository path/);
+		expect(() =>
+			commitFiles(repo.dir, {
+				branch: "main",
+				parent: second,
+				files: [{ path: "knowledge/x.md\n0 0000000000000000000000000000000000000000\tREADME.md", text: "x\n" }],
+				message: "inject",
+				author: { name: "Test", email: "test@example.com" },
+			}),
+		).toThrow(/Not a repository path/);
+		expect(git(repo.dir, "rev-parse", "main")).toBe(second);
+	});
+
+	it("refuses to publish a concept Sal's layout has no file for, rather than leave it out", async () => {
+		const { repo } = fixture();
+		const sal = salMemorySource({ repo: repo.dir, branch: "main" });
+		await expect(sal.publish("space-1", [{ path: "projects/harbour/index.md", content: "x\n" }])).rejects.toThrow(
+			/cannot hold/,
+		);
 	});
 });
 

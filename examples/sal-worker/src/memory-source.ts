@@ -14,6 +14,9 @@
  * Publishing never deletes: concept files Harbour does not hold (ones it refused on import, Sal's call notes) and every
  * file outside the bundle stay as they are, and a concept file that already says what Harbour's concept says keeps its
  * bytes. It commits through `commitFiles`, never a checkout, and only when the branch still stands where it read it.
+ * Harbour's concepts win: a concept file Sal changed since Harbour imported it is overwritten with what Harbour holds
+ * (Harbour imports the source before it takes writes, so Sal's change is only lost if it came after that import).
+ * A concept Sal's layout has no file for fails the publish.
  * Point it at a clone of its own (bare, or with the branch not checked out); pushing that clone is the host's.
  */
 import type { Concept, MemorySnapshot, MemorySource } from "@harbour/contracts";
@@ -85,8 +88,12 @@ export function salMemorySource(input: SalMemorySourceInput): SalMemorySource {
 			const tree = bundleAt(parent);
 			const changed: string[] = [];
 			for (const file of files) {
-				// Concept files only: the indexes are written below, from the tree as it will be.
-				if (conceptIdOf(file.path) === null) continue;
+				// Concept files only: the indexes are written below, from the tree as it will be. Harbour's own export has a
+				// root index, which no concept can be (an ID has two segments at least).
+				if (file.path === "index.md") continue;
+				// A concept Sal's layout has no file for (five segments, or one named index or log) fails the publish, which
+				// is audited, rather than be left out of a publish that says it succeeded.
+				if (conceptIdOf(file.path) === null) throw new Error(`Sal's memory cannot hold ${file.path}`);
 				if (tree.get(file.path) === file.content) continue;
 				tree.set(file.path, file.content);
 				changed.push(file.path);

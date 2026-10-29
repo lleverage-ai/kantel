@@ -146,7 +146,10 @@ const CONCEPT_KEYS = [
 ] as const;
 
 function conceptFields(shape: Shape, what: string): ConceptInput {
-	const description = optionalText(shape.description, `${what}.description`);
+	// A description may be empty, as the store allows.
+	if (shape.description !== undefined && typeof shape.description !== "string")
+		fail(`${what}.description must be text`);
+	const description = shape.description as string | undefined;
 	const tags = shape.tags === undefined ? undefined : texts(shape.tags, `${what}.tags`);
 	const staleAfter = shape.staleAfter === undefined ? undefined : time(shape.staleAfter, `${what}.staleAfter`);
 	const overrides = optionalText(shape.overrides, `${what}.overrides`);

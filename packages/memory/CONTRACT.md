@@ -51,7 +51,8 @@ statement) and an `index.md` of active concepts.
 - Near-duplicates and paraphrases are flagged and cannot be applied while the original is active: "flags a
   near-duplicate remember with duplicateOf and refuses to apply it while the original is active", "flags a paraphrase
   of an active concept, not only a near-identical statement, and refuses to apply it", "flags a correction or a
-  replacement that repeats another active concept, but never the concept it changes". A `remember` of an active ID is
+  replacement that repeats another active concept, but never the concept it changes", "refuses to apply a proposal
+  that repeats a concept applied after it was proposed". A `remember` of an active ID is
   `conflict`: "refuses a remember for a concept ID that is already active".
 - Owner-set facts are safe from agents: "refuses an agent correcting, superseding or forgetting an owner-set concept,
   but lets it propose a correction to a learned one".
@@ -193,8 +194,8 @@ sources.
 - Concept IDs need at least two segments (`personal/x`). Is a single segment ever wanted?
 - A `remember` may reuse the ID of a superseded or forgotten concept; its version carries on from the old record. An
   agent may do this even when the owner set the old one. Should forgotten owner facts stay owner-only?
-- Duplicate detection runs against active concepts in the same space, and only at proposal time: a concept that
-  becomes active later, between proposal and apply, is not checked against.
+- Duplicate detection runs against active concepts in the same space. Harbour's own checks run again when a proposal
+  is applied, so a concept applied in between counts; a host's `ParaphraseCheck` runs only at proposal time.
 - Settled (question 7) for project-owned spaces, which now check the project. Reads of user-owned spaces are still
   scoped by organisation only, not by the owning user; writes need the user or an organisation-wide role (M2-BE5).
 - Publishing sends the whole bundle on every applied write. Fine for Sal's thousand concepts; a much larger space

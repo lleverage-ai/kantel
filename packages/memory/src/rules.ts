@@ -464,10 +464,21 @@ export function proposalFor(
 	};
 }
 
-/** A proposal whose duplicate is still active cannot be applied. */
+/**
+ * A proposal whose duplicate is still active cannot be applied, nor one Harbour's own checks find nearly repeats an
+ * active concept now: one applied since it was proposed (two pending corrections to the same statement, say). The
+ * host's check is not run again here, since applying is synchronous.
+ */
 function assertNoActiveDuplicate(state: SpaceState, proposal: MemoryProposal): void {
-	const duplicate = proposal.duplicateOf;
-	if (duplicate !== undefined && state.concepts.get(duplicate)?.status === "active") {
+	const target = newStatement(proposal.write);
+	const recorded = proposal.duplicateOf;
+	const duplicate =
+		recorded !== undefined && state.concepts.get(recorded)?.status === "active"
+			? recorded
+			: target === undefined
+				? undefined
+				: nearDuplicate(target.candidate, state.concepts.values(), target.exclude)?.conceptId;
+	if (duplicate !== undefined) {
 		throw new HarbourError("conflict", `The statement nearly duplicates concept ${duplicate}`, {
 			duplicateOf: duplicate,
 		});
