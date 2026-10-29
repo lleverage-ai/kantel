@@ -8,7 +8,10 @@
 //   none, as server-sent events; prompt, steer, follow-up and abort.
 // - Who is signed in and their projects: identity's `GET /v1/me` (identity.ts, before this client is made) and
 //   `GET /v1/projects`, every page, named, the most recently active first.
-// - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
+// - No list events: a project's list is polled every LIST_POLL_MS while it is shown. The API lists sessions newest
+//   first and reads every session for each page it serves, so the console shows the first page as soon as it comes,
+//   reads the rest in the largest pages the API serves, and between full listings (every LIST_FULL_EVERY polls) asks
+//   for the first page only: a new session is always on it, and the rows it has replace the ones held.
 // - History pages: the stream's snapshot is the latest page; a `history` frame the client sends is `GET
 //   /v1/sessions/:id/history?before=<its first item>`, whose newest-first page comes back as a `history` frame,
 //   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
@@ -48,7 +51,11 @@ import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
+/** Every this many polls the list is read in full; the polls between read its first page only. */
+export const LIST_FULL_EVERY = 10;
 const LIST_LIMIT = 100;
+/** The largest page the API serves (`MAX_PAGE_LIMIT` in @harbour/runtime): fewer round trips for the rest of a list. */
+const LIST_PAGE_MAX = 500;
 /** The most entries the console reads from one directory; past it the tree says some aren't shown. */
 export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
@@ -179,19 +186,36 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const projectOfSession = new Map<string, string>();
 	/** Each session's record as last read, for its parent and title: lists and reads keep it current. */
 	const records = new Map<string, SessionRecord>();
+	/** Reads of a record under way, so a screen opening a session asks for it once however many parts want it. */
+	const reading = new Map<string, Promise<SessionRecord | undefined>>();
 	/** A session's record, as last read or else from the API; undefined when there's no such session. */
 	const recordOf = async (sessionId: string, signal?: AbortSignal): Promise<SessionRecord | undefined> => {
 		const known = records.get(sessionId);
 		if (known !== undefined) return known;
-		try {
-			const record = await getJson<SessionRecord>(sessionUrl(sessionId), signal);
-			records.set(record.id, record);
-			projectOfSession.set(record.id, record.projectId);
-			return record;
-		} catch (reason) {
-			if (reason instanceof ApiError && reason.code === "not_found") return undefined;
-			throw reason;
+		let read = reading.get(sessionId);
+		if (read === undefined) {
+			read = (async () => {
+				try {
+					const record = await getJson<SessionRecord>(sessionUrl(sessionId));
+					records.set(record.id, record);
+					projectOfSession.set(record.id, record.projectId);
+					return record;
+				} catch (reason) {
+					if (reason instanceof ApiError && reason.code === "not_found") return undefined;
+					throw reason;
+				} finally {
+					reading.delete(sessionId);
+				}
+			})();
+			reading.set(sessionId, read);
 		}
+		if (signal === undefined) return read;
+		// Shared, so one caller's abort doesn't cancel the others' read: it only stops this caller waiting.
+		signal.throwIfAborted();
+		return Promise.race([
+			read,
+			new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+		]);
 	};
 	/**
 	 * Unread: a settled session that has changed since it was last on screen. `seen` holds each session's `updatedAt`
@@ -240,21 +264,31 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		});
 	};
 
-	/** Every session matching `filter`, following the API's pages. */
-	const listSessions = async (filter: Record<string, string> = {}): Promise<SessionRecord[]> => {
+	/** One page of the sessions matching `filter`, newest first. */
+	const sessionsPage = async (
+		filter: Record<string, string>,
+		cursor: string | undefined,
+		limit: number,
+	): Promise<Page<SessionRecord>> => {
+		const query = new URLSearchParams({ ...filter, limit: String(limit) });
+		if (cursor !== undefined) query.set("cursor", cursor);
+		const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
+		for (const record of page.items) {
+			projectOfSession.set(record.id, record.projectId);
+			records.set(record.id, record);
+		}
+		return page;
+	};
+
+	/** The sessions matching `filter` from `cursor` on, following the API's pages in the largest it serves. */
+	const restOfSessions = async (filter: Record<string, string>, from: string | undefined): Promise<SessionRecord[]> => {
 		const listed: SessionRecord[] = [];
-		let cursor: string | undefined;
-		do {
-			const query = new URLSearchParams({ ...filter, limit: String(LIST_LIMIT) });
-			if (cursor !== undefined) query.set("cursor", cursor);
-			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
-			for (const record of page.items) {
-				projectOfSession.set(record.id, record.projectId);
-				records.set(record.id, record);
-			}
+		let cursor = from;
+		while (cursor !== undefined) {
+			const page = await sessionsPage(filter, cursor, LIST_PAGE_MAX);
 			listed.push(...page.items);
 			cursor = page.nextCursor;
-		} while (cursor !== undefined);
+		}
 		return listed;
 	};
 
@@ -369,7 +403,12 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		actor: options.actor ?? SIGNED_IN,
 
 		async projects(): Promise<readonly ProjectSummary[]> {
-			const [projects, sessions] = await Promise.all([listProjects(), listSessions()]);
+			// The newest sessions are enough to order projects by activity: reading every session took seconds once there
+			// were a thousand, all before the console could show anything.
+			const [projects, { items: sessions }] = await Promise.all([
+				listProjects(),
+				sessionsPage({}, undefined, LIST_LIMIT),
+			]);
 			const recent = new Map<string, number>();
 			for (const record of sessions) {
 				recent.set(record.projectId, Math.max(recent.get(record.projectId) ?? 0, record.updatedAt));
@@ -389,14 +428,40 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			let stopped = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			let sessions: readonly SessionSummary[] = [];
+			/** The project's sessions as last listed, newest first. */
+			let listed: readonly SessionRecord[] = [];
+			let polls = 0;
+			/** Whether every page has been read since the list was first shown, so the first page alone keeps it current. */
+			let complete = false;
+			const filter = { projectId };
+			const show = (next: readonly SessionRecord[], firstListing: boolean) => {
+				listed = next;
+				sessions = next.map((record) => summaryOf(record, firstListing));
+				onChange({ sessions, loading: false });
+			};
 			const poll = async () => {
 				try {
-					const records = await listSessions({ projectId });
-					if (stopped) return;
+					const full = !complete || polls % LIST_FULL_EVERY === 0;
+					polls += 1;
 					const firstListing = !listedProjects.has(projectId);
+					const first = await sessionsPage(filter, undefined, LIST_LIMIT);
+					if (stopped) return;
+					if (first.nextCursor === undefined) {
+						show(first.items, firstListing);
+						complete = true;
+					} else if (full) {
+						// The first page shows while the rest is read.
+						if (listed.length === 0) show(first.items, firstListing);
+						const rest = await restOfSessions(filter, first.nextCursor);
+						if (stopped) return;
+						show([...first.items, ...rest], firstListing);
+						complete = true;
+					} else {
+						// Newest first, so a new session is on the first page; older rows stay as last read.
+						const fresh = new Set(first.items.map((record) => record.id));
+						show([...first.items, ...listed.filter((record) => !fresh.has(record.id))], firstListing);
+					}
 					listedProjects.add(projectId);
-					sessions = records.map((record) => summaryOf(record, firstListing));
-					onChange({ sessions, loading: false });
 				} catch (reason) {
 					if (stopped) return;
 					// Keep what was listed; say why it may be out of date.

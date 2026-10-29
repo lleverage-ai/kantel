@@ -282,7 +282,7 @@ describe("the console on the session API", () => {
 		await eventually(() => latest()?.unread === true, "unread once the lookup is in");
 	});
 
-	it("lists every page of sessions, and finds a linked session the list hasn't shown", async () => {
+	it("shows the first page of sessions at once, then every page, and finds a linked session the list hasn't shown", async () => {
 		const { apiFetch, client, create } = await setUp();
 		const first = await create("proj-old");
 		for (let index = 0; index < 120; index++) await create("proj-a");
@@ -290,8 +290,9 @@ describe("the console on the session API", () => {
 		expect((await client.projects()).map((project) => project.id).sort()).toEqual(["proj-a", "proj-old"]);
 		const states: { sessions: readonly unknown[] }[] = [];
 		cleanups.push(client.watchSessions("proj-a", (state) => states.push(state)));
-		await eventually(() => states.length > 0, "the list");
-		expect(states[0]?.sessions).toHaveLength(120);
+		await eventually(() => states.length > 1, "the list");
+		expect(states[0]?.sessions).toHaveLength(100);
+		expect(states[1]?.sessions).toHaveLength(120);
 
 		const fresh = createApiClient({
 			baseUrl: BASE,
@@ -300,6 +301,31 @@ describe("the console on the session API", () => {
 		});
 		expect(await fresh.projectOf(first)).toBe("proj-old");
 		expect(await fresh.projectOf("s-nobody")).toBeUndefined();
+	});
+
+	it("polls only the first page between full listings, and a new session still shows", async () => {
+		const { apiFetch, create } = await setUp();
+		for (let index = 0; index < 120; index++) await create("proj-a");
+		const asked: string[] = [];
+		const counting = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: (input, init) => {
+				const request = new Request(input, init);
+				const url = new URL(request.url);
+				if (url.href.startsWith(`${BASE}/sessions?`)) asked.push(url.searchParams.get("cursor") ?? "first");
+				return apiFetch(request);
+			},
+			listPollMs: 20,
+		});
+		const states: { sessions: readonly { id: string }[] }[] = [];
+		cleanups.push(counting.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.at(-1)?.sessions.length === 120, "every page");
+		const newest = await create("proj-a");
+		await eventually(() => states.at(-1)?.sessions[0]?.id === newest, "the new session");
+		expect(states.at(-1)?.sessions).toHaveLength(121);
+		// The first listing read the rest once; the polls since asked for the first page only.
+		expect(asked.filter((cursor) => cursor !== "first")).toHaveLength(1);
 	});
 
 	it("says which session a subagent's session was started from, for the breadcrumbs", async () => {
