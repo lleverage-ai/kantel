@@ -247,6 +247,12 @@ importers:
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../../packages/vault
+      "@harbour/vault-selfhosted":
+        specifier: workspace:*
+        version: link:../../targets/selfhosted/vault
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace

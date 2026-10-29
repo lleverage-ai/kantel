@@ -25,6 +25,8 @@ import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@ha
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import type { HarbourVault } from "@harbour/vault/engine";
+import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 
@@ -52,6 +54,11 @@ export interface GatewayComponents {
 	readonly hosts?: DurableHosts;
 	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
+	/**
+	 * The vault, behind the egress proxy's decisions and the vault page's approval API. Absent on durable stores without a
+	 * cipher key (HARBOUR_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
+	 */
+	readonly vault?: HarbourVault;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -144,6 +151,7 @@ export function createGatewayComponents(options: { readonly models?: GatewayMode
 		workspaces,
 		sandboxes,
 		otp: createMemoryOtpStores(),
+		vault: createMemoryVault({ audit, access }),
 		bindings: {
 			identity: "memory",
 			audit: "memory",
@@ -151,6 +159,7 @@ export function createGatewayComponents(options: { readonly models?: GatewayMode
 			workspaces: "memory",
 			sandboxes: SANDBOX_BINDING,
 			signIn: "memory",
+			vault: "memory",
 		},
 		close: () => runtime.close(),
 	};
@@ -167,6 +176,11 @@ export interface Bootstrap {
 	 * admin who has since changed or removed that person's role keeps the change.
 	 */
 	readonly invitedAdmin?: string;
+	/**
+	 * The fingerprint of the egress grants the first start imported into this deployment's vault (egress.ts). Later starts
+	 * import nothing, so a policy an admin revoked or changed on the vault page stays as they left it.
+	 */
+	readonly egressGrants?: string;
 }
 
 /**

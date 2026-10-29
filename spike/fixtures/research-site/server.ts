@@ -15,17 +15,22 @@ const page = `<!doctype html>
 </body></html>
 `;
 
-Bun.serve({
-	port: Number(process.env.PORT ?? 80),
-	fetch(request) {
-		const url = new URL(request.url);
-		if (url.pathname === "/_stats") return Response.json({ served, refused });
-		if (request.headers.get("authorization") !== `Bearer ${secret}`) {
-			refused++;
-			return new Response("missing or wrong credential\n", { status: 401 });
-		}
-		served++;
-		return new Response(page, { headers: { "content-type": "text/html; charset=utf-8" } });
-	},
-});
-console.log("research fixture listening");
+function fetch(request: Request): Response {
+	const url = new URL(request.url);
+	if (url.pathname === "/_stats") return Response.json({ served, refused });
+	if (request.headers.get("authorization") !== `Bearer ${secret}`) {
+		refused++;
+		return new Response("missing or wrong credential\n", { status: 401 });
+	}
+	served++;
+	return new Response(page, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+Bun.serve({ port: Number(process.env.PORT ?? 80), fetch });
+// Over https too, when given a certificate (deploy/compose/egress-vault.yaml): the M1 vault injects only over https.
+const cert = process.env.TLS_CERT;
+const key = process.env.TLS_KEY;
+if (cert && key) {
+	Bun.serve({ port: Number(process.env.TLS_PORT ?? 443), fetch, tls: { cert: Bun.file(cert), key: Bun.file(key) } });
+}
+console.log(`research fixture listening${cert && key ? ", over https too" : ""}`);

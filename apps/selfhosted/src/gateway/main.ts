@@ -21,6 +21,12 @@
 //   HARBOUR_MAIL_FROM           their From address; required with HARBOUR_SMTP_URL
 //   HARBOUR_ADMIN_EMAIL         invited as an organisation admin at start, unless someone can already sign in with it,
 //                               so a person can sign in by email one-time PIN (Harbour is invite-only)
+//   HARBOUR_VAULT_CIPHER_KEY    the vault's 256-bit key, base64, sealing item values in Postgres; without it a gateway on
+//                               Postgres has no vault (in memory, the vault has a random key of its own)
+//   HARBOUR_EGRESS_KEY          the egress proxy's shared key (16 characters or more): mounts /v1/egress/decisions and
+//                               /v1/egress/scope for it (egress.ts). Needs a vault
+//   HARBOUR_EGRESS_GRANTS_FILE  the proxy's policy file, whose credentialed routes are imported into the vault for the
+//                               bootstrap project at start; the secrets they name are read from this environment
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -29,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
+import { importPolicyFile } from "./egress.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
 import { listen } from "./node-http.ts";
@@ -37,6 +44,10 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const origins = parseCallbackOrigins(env.HARBOUR_CALLBACK_ORIGINS);
 	const adminEmail = env.HARBOUR_ADMIN_EMAIL?.trim() ?? "";
 	if (adminEmail !== "" && !plausibleAddress(adminEmail)) throw new Error("HARBOUR_ADMIN_EMAIL must be one address");
+	const egressKey = env.HARBOUR_EGRESS_KEY?.trim() ?? "";
+	if (egressKey !== "" && egressKey.length < 16) throw new Error("HARBOUR_EGRESS_KEY must be 16 characters or more");
+	const grantsFile = env.HARBOUR_EGRESS_GRANTS_FILE?.trim() ?? "";
+	if (grantsFile !== "" && egressKey === "") throw new Error("HARBOUR_EGRESS_GRANTS_FILE needs HARBOUR_EGRESS_KEY");
 	return {
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
@@ -48,6 +59,9 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		callbackOrigins: origins,
 		mail: mailConfig(env),
 		durable: durableConfig(env),
+		...(egressKey === ""
+			? {}
+			: { egress: { key: egressKey, ...(grantsFile === "" ? {} : { grantsFile: resolve(grantsFile) }) } }),
 	};
 }
 
@@ -79,7 +93,9 @@ export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConf
 		return value;
 	};
 	const region = env.S3_REGION?.trim();
+	const vaultCipherKey = env.HARBOUR_VAULT_CIPHER_KEY?.trim() ?? "";
 	return {
+		...(vaultCipherKey === "" ? {} : { vaultCipherKey }),
 		databaseUrl,
 		schema: env.HARBOUR_GATEWAY_SCHEMA?.trim() || "harbour_m1",
 		s3: {
@@ -107,15 +123,37 @@ async function readBootstrap(path: string): Promise<Bootstrap | undefined> {
 export async function serveGateway(cfg = gatewayConfig()) {
 	const components =
 		cfg.durable === undefined ? createGatewayComponents() : await createDurableGatewayComponents(cfg.durable);
-	const seeded = await bootstrap(
+	const previous = await readBootstrap(cfg.bootstrapFile);
+	let seeded = await bootstrap(
 		components,
 		{
 			organisation: cfg.organisation,
 			project: cfg.project,
 			...(cfg.adminEmail === undefined ? {} : { adminEmail: cfg.adminEmail }),
 		},
-		await readBootstrap(cfg.bootstrapFile),
+		previous,
 	);
+	const scope = { organisationId: seeded.organisationId, projectId: seeded.projectId };
+	if (cfg.egress !== undefined && components.vault === undefined) {
+		throw new Error("HARBOUR_EGRESS_KEY needs a vault: set HARBOUR_VAULT_CIPHER_KEY");
+	}
+	// What this deployment imported before; a new one (a fresh database) starts with an empty vault.
+	const before = previous?.organisationId === seeded.organisationId ? previous.egressGrants : undefined;
+	if (before !== undefined) seeded = { ...seeded, egressGrants: before };
+	if (cfg.egress?.grantsFile !== undefined && components.vault !== undefined) {
+		const imported = await importPolicyFile(components.vault, scope, cfg.egress.grantsFile, process.env, before);
+		seeded = { ...seeded, egressGrants: imported.digest };
+		console.log(
+			imported.result === undefined
+				? `[gateway] egress grants from ${cfg.egress.grantsFile} already imported on this deployment's first start` +
+						(imported.changed
+							? "; the file has changed since, and is not imported again: change grants on the vault page"
+							: "")
+				: `[gateway] imported egress grants from ${cfg.egress.grantsFile}: ` +
+						imported.result.imported.map((grant) => `${grant.name} (${grant.item})`).join(", ") +
+						`; left to the proxy: ${imported.leftToProxy.join(", ") || "none"}`,
+		);
+	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
 	const gateway = createGateway({
@@ -123,6 +161,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		consoleDir: cfg.consoleDir,
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
+		...(cfg.egress === undefined ? {} : { egress: { key: cfg.egress.key, scope } }),
 	});
 	const server = await listen(gateway.fetch, cfg.port, { host: cfg.host });
 	console.log(

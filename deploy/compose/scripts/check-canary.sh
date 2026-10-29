@@ -8,7 +8,9 @@
 # Postgres and MinIO checks, because the research page's title is in the
 # transcript and the workspace (the logs never carry tool output).
 set -uo pipefail
-compose="docker compose -f deploy/compose/compose.yaml"
+# COMPOSE_FILE as the stack was brought up with (deploy/compose/egress-vault.yaml on top, say); compose.yaml alone by default.
+export COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yaml}"
+compose="docker compose"
 canary="${HARBOUR_CANARY_SECRET:-harbour-canary-0000}"
 work="$(mktemp -d)"
 found=0
