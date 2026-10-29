@@ -47,6 +47,7 @@ import {
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
+	type RecallRenderer,
 	type Schedule,
 	type Schedules,
 	type SessionRecord,
@@ -237,6 +238,11 @@ export interface StackOptions {
 	readonly codemode?: SessionCodemodeOptions;
 	/** Runs check schedules' commands. Default the isolate tier (`src/schedule-checks.ts`). */
 	readonly checks?: CheckExecutor;
+	/**
+	 * How the memory store renders recall, and so what fits its byte budgets (`src/recall-renderer.ts`). Default
+	 * `defaultRecallRenderer`; a Sal deployment passes `salRecallRenderer()`.
+	 */
+	readonly recallRenderer?: RecallRenderer;
 }
 
 export interface Stack {
@@ -387,7 +393,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// Skills and memory check project-owned records with the runtime's access (asked for per call, as the audit store
 	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Harbour
 	// adds no prompt of its own, so the listing is Pi's block of the skills a profile names, and recall is the memory
-	// store's default rendering, both placed by the runtime before a session's first prompt.
+	// store's rendering (the stack's recall renderer, Harbour's default one unless it is given another), both placed by
+	// the runtime before a session's first prompt.
 	const skillObjects = storage.skillObjects;
 	const skills =
 		driver === undefined || skillObjects === undefined
@@ -400,10 +407,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					access: auditAccess,
 					mountRoot: SKILLS_MOUNT_ROOT,
 				});
+	const renderer = options.recallRenderer ?? defaultRecallRenderer;
 	const memory =
 		driver === undefined
-			? createMemoryMemory({ clock, audit, access: auditAccess, renderer: defaultRecallRenderer })
-			: createSqlMemory({ driver, clock, audit, access: auditAccess, renderer: defaultRecallRenderer });
+			? createMemoryMemory({ clock, audit, access: auditAccess, renderer })
+			: createSqlMemory({ driver, clock, audit, access: auditAccess, renderer });
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;

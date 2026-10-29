@@ -41,6 +41,12 @@ Migrations run on every start of the object; each is idempotent. The bootstrap s
 restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
 `MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
 
+Recall is rendered by the stack's recall renderer, which `HARBOUR_RECALL_RENDERER` picks (`src/recall-renderer.ts`):
+`default`, Harbour's own, or `sal`, a Sal worker's rendering from `@harbour/memory`. The budgets count rendered bytes,
+so a deployment serving Sal's memory sets `sal` to recall the concepts a local Sal worker recalls. Code that builds the
+stack passes `recallRenderer` instead. Neither adds prompt text: the runtime places the recall block where it always
+does.
+
 ## Files and commands
 
 Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts`), on its workspace at `/workspace`.

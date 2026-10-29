@@ -37,8 +37,10 @@ given what a local Sal worker is given for the same task (issue #12).
   A directory's digest covers which paths are one file, since that decides what loads. Tests check discovery against
   Pi's own `loadSkills`, for one root and for several sharing files. Binary files are left out (a `SkillFile` is text)
   and recorded in the revision's `sal.binaryLeftOut`.
-- `src/recall-renderer.ts`: a `RecallRenderer` that renders `<memory_recall>` exactly as a Sal worker receives it.
-  Budgets count rendered bytes, so the same renderer gives the same selection.
+- Sal's recall rendering is `salRecallRenderer` in `@harbour/memory` (`packages/memory/src/sal-recall.ts`), so a
+  deployment can use it too: a `RecallRenderer` that renders `<memory_recall>` exactly as a Sal worker receives it.
+  Budgets count rendered bytes, so the same renderer gives the same selection. Here it is given Node's `existsSync`,
+  so a concept's local sources are checked on this host as Sal checks them.
 - `src/worker.ts`: `prepareSalWorker` imports the bundle and publishes the skills, each at its pinned ref, with Sal's
   worker exclusions. `startSalWorkerSession` pins a session's skills and returns its listing, Pi's prompt block and
   its recall. Concepts the brief names, and their exceptions for the task, are left out of recall as Sal's selection
@@ -117,11 +119,16 @@ exclusion was flagged on every task.
 
 ## Known differences and gaps
 
-- A Cloudflare session recalls with the store's default renderer, not Sal's (`src/recall-renderer.ts`): Harbour adds
-  no prompt of its own. Budgets count rendered bytes, so its profile and matches can differ from a local Sal worker's
-  at the budget's edge. On 29 October 2026, with sal-memory `9a3cdfd7` and five worker briefs on `wrangler dev`, the
-  skills and prompt entries matched; recall kept 38 of Sal's 41 profile concepts, and the matches differed by one or
-  two each. The same five recalls run in Node with the default renderer gave the same concepts as Cloudflare.
+- A Cloudflare session recalls with Sal's renderer only when the deployment sets `HARBOUR_RECALL_RENDERER=sal`
+  (`apps/cloudflare/src/recall-renderer.ts`); the default is Harbour's own. Budgets count rendered bytes, so with the
+  default its profile and matches differ from a local Sal worker's at the budget's edge: on 29 October 2026, with
+  sal-memory `9a3cdfd7` and five worker briefs, it kept 38 of Sal's 41 profile concepts and one or two matches
+  differed. With `sal`, on `wrangler dev` the same five briefs gave the same recall as a local Sal worker: the same
+  concepts, text, profile omissions and skipped concepts, with the skills and prompt entries matching too.
+- A Worker has no file system, so on Cloudflare Sal's renderer counts every local source (an absolute path or
+  `file:` URL) as missing, as Sal's host does for a path it no longer has. At sal-memory `9a3cdfd7` that is what
+  Sal's host reports too: 5 active concepts name 6 local paths, and none exists there. A concept naming a path that
+  does exist on Sal's host would render `missing_sources` on Cloudflare and not locally.
 
 - Pi lists skills in its prompt in the order the file system returns directory entries. A pinned tree has no such
   order, so Harbour's order differs, though the entries are the same.

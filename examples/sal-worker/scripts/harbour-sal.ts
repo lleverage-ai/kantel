@@ -18,14 +18,14 @@
  * gives the same output.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
+import { salRecallRenderer } from "@harbour/memory";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { salRecallRenderer } from "../src/recall-renderer.ts";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource, type SalSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker, type SalRecallLimits, startSalWorkerSession } from "../src/worker.ts";
 
@@ -86,7 +86,7 @@ async function durableStores(dir: string) {
 	await migrateSkills(driver);
 	const clock = { now: () => now };
 	return {
-		memory: createSqlMemory({ driver, clock, renderer: salRecallRenderer() }),
+		memory: createSqlMemory({ driver, clock, renderer: salRecallRenderer({ exists: existsSync }) }),
 		skills: createSqlSkills({ driver, clock, objects: directoryBucket(join(dir, "objects")) }),
 	};
 }
