@@ -1,7 +1,9 @@
-// A restart mid model call: a runtime that stops while its model call is in flight, and a later one over the same
-// schema that resumes the run on its own at start, as `packages/runtime/test/restart.test.ts` does on SQLite.
+// A restart mid model call and mid host tool call: a runtime that stops while its call is in flight, and a later one
+// over the same schema that resumes the run on its own at start, as `packages/runtime/test/restart.test.ts` does on
+// SQLite. The host tool is a durable registration, called back signed by whichever process runs the session.
 import { PGlite } from "@electric-sql/pglite";
-import type { AgentProfile } from "@harbour/contracts";
+import type { AgentProfile, HostToolCall, HostToolResult, ReplayPolicy } from "@harbour/contracts";
+import { createHostToolEndpoint } from "@harbour/runtime/http";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import pg from "pg";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
@@ -49,11 +51,20 @@ type Script = ReturnType<typeof createScriptedModel>["script"];
  * One "process": its own connection (where the target has more than one), runtime and model. `beforeStart` scripts
  * the model before the runtime starts, since starting resumes whatever is due.
  */
-async function processOn(target: PostgresTarget, schema: string, beforeStart?: (script: Script) => void) {
+async function processOn(
+	target: PostgresTarget,
+	schema: string,
+	beforeStart?: (script: Script) => void,
+	hostFetch?: typeof fetch,
+) {
 	const database = await target.open(schema);
 	const { models, script } = createScriptedModel();
 	beforeStart?.(script);
-	const service = await createSelfhostedSessionRuntime({ database, models });
+	const service = await createSelfhostedSessionRuntime({
+		database,
+		models,
+		...(hostFetch === undefined ? {} : { hostCallbacks: { fetch: hostFetch } }),
+	});
 	return {
 		service,
 		script,
@@ -128,6 +139,111 @@ for (const { name, target } of targets) {
 			});
 			expect(second.script.requests[0]?.messages.at(-1)).toMatchObject({ role: "user", text: "Hello" });
 			expect((await second.service.directory.get(ctx, session.id)).status).toBe("idle");
+		});
+	});
+
+	describe.skipIf(target === undefined)(`a restart mid host tool call (${name})`, () => {
+		const SECRET = "a-callback-secret-of-at-least-32-characters";
+		const lookup = (replay: ReplayPolicy) => ({
+			name: "lookup",
+			description: "Looks up",
+			inputSchema: { type: "object" },
+			replay,
+		});
+		const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "sal" };
+
+		/** The host's side of the callback, checking Harbour's signature, as each process reaches it. */
+		const hostAt =
+			(handler: (call: HostToolCall) => Promise<HostToolResult>): typeof fetch =>
+			async (input, init) =>
+				createHostToolEndpoint(handler, { secret: SECRET })(new Request(input, init));
+
+		/**
+		 * The first process: registers the host durably, prompts, and its call to the host never comes back. Its process
+		 * "dies" there: the call fails only at cleanup, once the second process has stopped.
+		 */
+		async function cutOffMidToolCall(on: PostgresTarget, schema: string, replay: ReplayPolicy) {
+			const reached: string[] = [];
+			let fail: (error: Error) => void = () => {};
+			const hung = new Promise<never>((_resolve, reject) => {
+				fail = reject;
+			});
+			hung.catch(() => undefined);
+			const first = await processOn(
+				on,
+				schema,
+				undefined,
+				hostAt(async (call) => {
+					reached.push(`first:${call.callId}`);
+					return hung;
+				}),
+			);
+			cleanups.unshift(async () => {
+				fail(new Error("the process is gone"));
+				await first.stop();
+			});
+			await first.service.profiles.put(ctx, withTool);
+			await first.service.hosts.register(
+				ctx,
+				"sal",
+				[lookup(replay)],
+				{ url: "https://sal.test/hosts/sal", secret: SECRET },
+				"owner",
+			);
+			const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+			first.script.reply({ toolCalls: [{ name: "lookup", args: { key: "plan" } }] });
+			const prompt = await first.service.runtime.prompt(ctx, session.id, { text: "Find the plan" });
+			await until(() => reached.length === 1, "the first host call");
+			return { session, prompt, reached };
+		}
+
+		it("reruns a replay-safe host tool with the same call ID from the next process, which nobody re-registered", async () => {
+			const on = target!;
+			const schema = caseSchema();
+			cleanups.push(() => on.drop(schema));
+			const { session, prompt, reached } = await cutOffMidToolCall(on, schema, "safe");
+
+			const second = await processOn(
+				on,
+				schema,
+				(script) => script.reply({ text: "Found it" }),
+				hostAt(async (call) => {
+					reached.push(`second:${call.callId}`);
+					return { output: "the plan" };
+				}),
+			);
+			cleanups.unshift(() => second.stop());
+			expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({
+				status: "answered",
+				answer: "Found it",
+			});
+			const [firstCall, secondCall] = reached.map((entry) => entry.split(":")[1]);
+			expect(reached.map((entry) => entry.split(":")[0])).toEqual(["first", "second"]);
+			expect(secondCall).toBe(firstCall);
+			expect(second.script.requests[0]?.messages.at(-1)).toMatchObject({ role: "tool", text: "the plan" });
+			expect((await second.service.directory.get(ctx, session.id)).status).toBe("idle");
+		});
+
+		it("does not rerun a host tool that is not replay-safe; the model hears it was interrupted", async () => {
+			const on = target!;
+			const schema = caseSchema();
+			cleanups.push(() => on.drop(schema));
+			const { session, prompt, reached } = await cutOffMidToolCall(on, schema, "unsafe");
+
+			const second = await processOn(
+				on,
+				schema,
+				(script) => script.reply({ text: "It was interrupted; I will not retry" }),
+				hostAt(async (call) => {
+					reached.push(`second:${call.callId}`);
+					return { output: "charged again" };
+				}),
+			);
+			cleanups.unshift(() => second.stop());
+			expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ status: "answered" });
+			expect(reached).toHaveLength(1);
+			const toolResult = second.script.requests[0]?.messages.find((message) => message.role === "tool");
+			expect(toolResult?.text).toMatch(/interrupt/i);
 		});
 	});
 }

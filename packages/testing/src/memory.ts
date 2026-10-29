@@ -1648,6 +1648,42 @@ export function createMemoryConformance(options: {
 				{ paraphrase },
 			);
 		})(),
+
+		test("project access: lists the spaces a caller may read, oldest first, and never another user's", async (memory, deps) => {
+			const team = await createSpace(memory);
+			deps.clock.advance(1000);
+			const project = await createProjectSpace(memory);
+			deps.clock.advance(1000);
+			const mine = await memory.createSpace(human, {
+				owner: { kind: "user", organisationId: ORG, userId: "owner-1" },
+				name: "My memory",
+			});
+			deps.clock.advance(1000);
+			const theirs = await memory.createSpace(service, {
+				owner: { kind: "user", organisationId: ORG, userId: "viewer-1" },
+				name: "Their memory",
+			});
+			const ids = async (ctx: CallContext) => (await memory.listSpaces(ctx)).items.map((space) => space.id);
+			assert.deepEqual(await ids(human), [team.id, project.id, mine.id], "the owner's own space, never another user's");
+			assert.deepEqual(await ids(service), [team.id, project.id, mine.id, theirs.id], "a service sees every space");
+			assert.deepEqual(await ids(viewer), [team.id, project.id, theirs.id], "a viewer sees the project's");
+			assert.deepEqual(await ids(stranger), [team.id], "not a project the caller has no role on");
+			assert.deepEqual(await ids(agent), [team.id, project.id], "an agent sees its session's project, no user's");
+			assert.deepEqual(await ids(otherProjectAgent), [team.id]);
+			assert.deepEqual(await ids(outsider), [], "never another organisation's");
+			const first = await memory.listSpaces(service, { limit: 2 });
+			assert.deepEqual(
+				first.items.map((space) => space.id),
+				[team.id, project.id],
+			);
+			assert.ok(first.nextCursor !== undefined, "a page says more follow");
+			const rest = await memory.listSpaces(service, { limit: 2, cursor: first.nextCursor! });
+			assert.deepEqual(
+				rest.items.map((space) => space.id),
+				[mine.id, theirs.id],
+			);
+			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "a list filters, it never refuses");
+		}),
 	];
 }
 

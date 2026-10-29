@@ -27,6 +27,7 @@ if (env !== undefined && pool !== undefined) {
 			{
 				projectAccess: true,
 				keyed: true,
+				seeding: true,
 			},
 		);
 	}

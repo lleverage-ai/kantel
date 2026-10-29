@@ -15,6 +15,10 @@
 		"./tokens": "./src/tokens/tokens.ts",
 		"./vault/fixtures": "./src/vault/fixtures.ts",
 		"./audit/fixtures": "./src/audit/fixtures.ts",
+		"./schedules/fixtures": "./src/schedules/fixtures.ts",
+		"./schedules/form/fixtures": "./src/schedules/form/fixtures.ts",
+		"./skills/fixtures": "./src/skills/fixtures.ts",
+		"./memory/fixtures": "./src/memory/fixtures.ts",
 		"./workspace/image-fixture": "./src/workspace/image-fixture.ts",
 		"./token-lint": "./scripts/token-lint.ts"
 	},
@@ -37,6 +41,8 @@
 	"devDependencies": {
 		"@harbour/audit": "workspace:*",
 		"@harbour/identity": "workspace:*",
+		"@harbour/memory": "workspace:*",
+		"@harbour/skills": "workspace:*",
 		"@ladle/react": "5.1.1",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",
@@ -53,6 +59,7 @@
 	"dependencies": {
 		"@harbour/contracts": "workspace:*",
 		"@harbour/protocol": "workspace:*",
+		"@harbour/schedules": "workspace:*",
 		"@harbour/vault": "workspace:*",
 		"react-markdown": "10.1.0",
 		"remark-gfm": "4.0.1",

@@ -1,0 +1,197 @@
+{
+	"brwsrSession": "b14ac3c3-6c09-462a-bcab-28ff8c115229",
+	"startedAt": "2026-10-29T07:59:54.497Z",
+	"endedAt": "2026-10-29T08:00:59.100Z",
+	"from": "https://harbour.myslop.app/healthz",
+	"a": [
+		{
+			"status": 201,
+			"create": 1930,
+			"close": 157,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2131,
+			"close": 203,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1979,
+			"close": 188,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2233,
+			"close": 177,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1748,
+			"close": 147,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1890,
+			"close": 161,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1744,
+			"close": 163,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1786,
+			"close": 142,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2121,
+			"close": 206,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1860,
+			"close": 146,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2067,
+			"close": 143,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2154,
+			"close": 283,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2031,
+			"close": 240,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2217,
+			"close": 183,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1910,
+			"close": 153,
+			"closeStatus": 204
+		}
+	],
+	"b": [
+		{
+			"status": 201,
+			"create": 1627,
+			"close": 137,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2043,
+			"close": 179,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2085,
+			"close": 152,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1683,
+			"close": 159,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1738,
+			"close": 161,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1901,
+			"close": 138,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2163,
+			"close": 167,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2154,
+			"close": 152,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1676,
+			"close": 140,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2017,
+			"close": 144,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2078,
+			"close": 171,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2137,
+			"close": 186,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 1997,
+			"close": 140,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2139,
+			"close": 153,
+			"closeStatus": 204
+		},
+		{
+			"status": 201,
+			"create": 2049,
+			"close": 175,
+			"closeStatus": 204
+		}
+	],
+	"summary": {
+		"noWorkspaceCreate": "1979 / 2233",
+		"noWorkspaceClose": "163 / 283",
+		"workspaceCreate": "2043 / 2163",
+		"workspaceClose": "153 / 186",
+		"statuses": ["201/204"]
+	}
+}

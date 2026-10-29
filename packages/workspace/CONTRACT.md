@@ -147,6 +147,49 @@ the commits API (skipped for a pinned commit) and reads the commit's tarball fro
 `maxBytes` (512 MiB uncompressed) or `maxFiles` (100,000) is `exhausted`. History, dependency steps, mirrors, snapshots
 and `objects` sources stay with M2-BE1.
 
+## Seeding v1 (M2-BE1)
+
+Seed spec v1 (`version: 1`; a v0 spec without `version` means the same) is a declarative file per host app or
+project. `@harbour/workspace/seed-spec`'s `parseSeedSpec` checks its shape, and the write API parses through it, so a
+spec means the same wherever it is read. v1 adds:
+
+- `archive` sources: an `https:` URL (no credentials in it), an optional sha256 `digest` that pins the bytes (a
+  mismatch fails the create as `unavailable`), `strip` leading segments and `into`. Fetched by the host's
+  `seeders.archive` (`createHttpArchiveFetcher({ fetch?, maxBytes? })` in `@harbour/workspace/archive`); tar or gzip'd
+  tar by magic bytes, budgets as for git tarballs.
+- `objects` sources read through `seeders.objects` (`ObjectsSeeder`), reported with the version that was read.
+- Dependency steps with a `name` and a `tier` (default `container`). Each step is keyed when files are ready: sha256
+  over its command, outputs, tier and key entries, where a path entry carries the seeded file's sha256 (absent hashes
+  as null), a `word:` entry is a label hashed as written, and a bare word the host defines in `seeders.labels` (such as
+  `image`) is its value. `SeedReport.deps` lists each step's key and, once the sandbox tier has acted, its `layer`
+  (`restored` or `built`); `depsKey` is over the steps' keys and goes into `cacheKey` with the host's `image` label.
+  Equal step keys share a layer, so a changed lockfile changes only its own step's key.
+- Methods: the report's method is the git fetcher's (`GitFetcher.method`, `clone` by default; `mirror` off a warm
+  mirror), else `archive`. A spec whose `methods` excludes it is `not_supported`, before anything is fetched.
+- Seed status events: with `onSeedStatus` (a `SeedStatusSink`) on `createMemoryWorkspaces` or
+  `createStoredWorkspaces`, each seed emits `seed.status` events naming the workspace, organisation and session:
+  `metadata` once every git ref is pinned (before the tree is read, when the fetcher has `resolve`), then `files`
+  with the depsKey and step keys, or `failed` with the error's code and message. A sink that throws never fails the
+  seed. The session runtime forwards them into the session; the contract carries them, not `packages/runtime`.
+
+`GitFetcher`, `ArchiveFetcher`, `ObjectsSeeder`, `Seeders`, `SeedFile` and `GitTree` are contract types now
+(`@harbour/contracts`), so targets and the mirror service implement them without depending on this package.
+
+The seeding cases of the conformance suite (`{ seeding: true }`) run on memory, stored, Cloudflare R2 and self-hosted
+Postgres workspaces: the provider wires `deps.seeders` and `deps.onSeedStatus`.
+
+| Rule | Case |
+| --- | --- |
+| A git source is pinned to its commit, cut to its cone under `into`, as version 1 | seeding: a git source is pinned to its commit, cut to its cone under into, and seeded as version 1 |
+| Stages arrive in order, the commit pinned at `metadata` | seeding: emits metadata then files for the workspace, the commit pinned at metadata |
+| Equal seeds share a cache key; a moved ref changes it | seeding: equal seeds share a cache key, and a moved ref changes it |
+| A changed lockfile changes only its step's key | seeding: a changed lockfile changes only its dependency step's key, and the steps run in the container tier |
+| The host's image label keys layers and the cache | seeding: the host's image label keys the dependency layer and the cache |
+| An archive is unpacked and pinned by digest; a mismatch is `unavailable` | seeding: an archive source is unpacked under into and pinned by its digest; seeding: an archive that does not match its digest fails the create as unavailable and emits failed |
+| A refused caller fetches nothing | seeding: a caller refused the create fetches nothing; an unknown ref fails it as not_found |
+| A spec's `methods` bind the host | seeding: a spec that allows only methods the host lacks is not_supported, and nothing is fetched |
+| A source without a seeder waits at `metadata` | seeding: a source the host has no seeder for waits at metadata |
+
 ## Export to the host (M1-BE3)
 
 `Workspaces.export(ctx, id, prefixes)` returns the files under the prefixes at head. `@harbour/workspace/export` has
@@ -220,5 +263,6 @@ across organisations and, with project access, the race loser checked against th
 - How a mount source checks that the caller's organisation owns the ref; the memory source does not. (Whether the
   caller may read the ref is settled: the workspace requires viewer on it as `workspace.mount`.)
 - Whether deleting a missing path should be idempotent rather than `not_found`.
-- `objects` fetching, git history and dependency steps (M2-BE1). The seed shape, readiness stages and methods are
-  settled by M0-BE2's measurements (#5); v0 fetches git trees only, as `clone` without `.git`.
+- Git history in the workspace, running dependency steps and restoring their layers, and the mirror cache (M2-BE1's
+  later parts). The seed shape, readiness stages and methods are settled by M0-BE2's measurements (#5); seeding still
+  imports trees without `.git`.

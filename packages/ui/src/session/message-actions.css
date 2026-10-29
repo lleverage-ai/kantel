@@ -45,6 +45,85 @@
 	text-box: trim-both cap alphabetic;
 }
 
+/* Why an action failed, such as a fork the server refused: on the line, in the error colour, always shown. */
+.hb-message-actions-error {
+	min-width: 0;
+	color: var(--hb-status-error);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-message-actions:has(.hb-message-actions-error) {
+	opacity: 1;
+}
+
+/* Edit from here: the bubble becomes a field the column's width, on the same surface and radius, with what sending
+   does and Cancel and Send under the words. */
+.hb-message-editor {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	box-sizing: border-box;
+	width: 100%;
+	padding: var(--hb-space-5) var(--hb-space-6) var(--hb-space-4);
+	border: var(--hb-hairline) solid var(--hb-border-input);
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-user-message);
+}
+
+.hb-message-editor:has(.hb-message-editor-input:focus-visible) {
+	outline: var(--hb-hairline) solid var(--hb-focus);
+	outline-offset: calc(var(--hb-hairline) * -1);
+}
+
+.hb-message-editor-input {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	min-height: calc(var(--hb-text-md) * var(--hb-leading) * 2);
+	max-height: 50vh;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: var(--hb-text);
+	font: inherit;
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading);
+	resize: none;
+	field-sizing: content;
+	overflow-wrap: anywhere;
+}
+
+.hb-message-editor-input:focus {
+	outline: none;
+}
+
+.hb-message-editor-footer {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-3);
+}
+
+.hb-message-editor-hint {
+	flex: 1 1 auto;
+	min-width: 0;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-message-editor-error {
+	color: var(--hb-status-error);
+}
+
+.hb-message-editor-buttons {
+	display: flex;
+	gap: var(--hb-space-2);
+	margin-left: auto;
+}
+
 /* No hover on a touch screen: the line is always there, as in T3 Code (pointer-coarse:opacity-100). */
 @media (pointer: coarse) {
 	.hb-message-actions {

@@ -53,7 +53,9 @@ export function providers(
 				schema,
 				clock: deps.clock,
 				access: deps.access,
-				...(sources === undefined ? {} : { sources, audit: deps.audit }),
+				...(sources === undefined
+					? {}
+					: { sources, audit: deps.audit, seeders: deps.seeders, onSeedStatus: deps.onSeedStatus }),
 			});
 	}
 	return {

@@ -32,32 +32,32 @@
  * }
  * ```
  *
- * `sessionId`, `seed` and `mounts` are optional. Sources apply in order, later ones winning on a path. `objects` sources
- * and dependency steps (`deps`) are M2-BE1's and are refused here as `not_supported` rather than recorded and ignored.
+ * `sessionId`, `seed` and `mounts` are optional. The seed is seed spec v1, parsed by `parseSeedSpec` (`archive` sources
+ * are fetched by the host's `seeders: { archive }`). Sources apply in order, later ones winning on a path. `objects`
+ * sources and dependency steps (`deps`) are refused here as `not_supported` rather than recorded and ignored, until the
+ * route can seed them (M2-BE1).
  * Errors are the read API's: `{ "error": { "code", "message" } }` with `errorStatus`'s status, and 413 for a body over
  * the limit.
  */
 import {
 	type CallContext,
 	type ErrorCode,
-	type GitSeedSource,
 	HarbourError,
 	isHarbourError,
 	type MountRequest,
 	type ProjectAccess,
-	type SeedSource,
 	type SeedSpec,
 	type SessionId,
 	type WorkspaceRecord,
 	type Workspaces,
 } from "@harbour/contracts";
 import { errorStatus, WORKSPACE_READ_API_BASE } from "./read-api.ts";
+import { parseMountRequests, parseSeedSpec } from "./seed-spec.ts";
+
+export { MAX_SEED_SOURCES } from "./seed-spec.ts";
 
 /** The largest body the route reads: a seed's static files travel in it. */
 export const DEFAULT_MAX_SEED_BODY_BYTES = 16 * 1024 * 1024;
-
-/** The most sources one seed may name. */
-export const MAX_SEED_SOURCES = 64;
 
 /** What a host sends to create a workspace. */
 export interface CreateWorkspaceBody {
@@ -153,14 +153,6 @@ function optionalString(value: unknown, name: string): string | undefined {
 	return nonEmpty(value, name);
 }
 
-function stringList(value: unknown, name: string): readonly string[] | undefined {
-	if (value === undefined) return undefined;
-	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item === "")) {
-		throw invalid(`${name} must be a list of non-empty strings`);
-	}
-	return value as string[];
-}
-
 function parseJson(text: string): Record<string, unknown> {
 	let value: unknown;
 	try {
@@ -182,78 +174,27 @@ function parseTarget(value: Record<string, unknown>): Pick<ParsedBody, "projectI
 /** The seed and mounts' shape. Paths and trees are `create`'s to check, so its rules hold whoever calls it. */
 function parseSeedAndMounts(value: Record<string, unknown>): Pick<ParsedBody, "seed" | "mounts"> {
 	const seed = value.seed === undefined ? undefined : parseSeed(value.seed);
-	const mounts = value.mounts === undefined ? undefined : parseMounts(value.mounts, "mounts");
+	const mounts = value.mounts === undefined ? undefined : parseMountRequests(value.mounts, "mounts");
 	return {
 		...(seed === undefined ? {} : { seed }),
 		...(mounts === undefined ? {} : { mounts }),
 	};
 }
 
+/** Seed spec v1 through `parseSeedSpec`, less what this route does not seed yet. */
 function parseSeed(value: unknown): SeedSpec {
-	if (!isRecord(value)) throw invalid("seed must be an object");
-	const name = nonEmpty(value.name, "seed.name");
-	if (value.deps !== undefined) {
+	if (isRecord(value) && value.deps !== undefined) {
 		throw new HarbourError("not_supported", "dependency steps (seed.deps) are not seeded yet; leave them out");
 	}
-	if (!Array.isArray(value.sources)) throw invalid("seed.sources must be a list");
-	if (value.sources.length > MAX_SEED_SOURCES) throw invalid(`a seed has at most ${MAX_SEED_SOURCES} sources`);
-	const sources = value.sources.map((source, index) => parseSource(source, `seed.sources[${index}]`));
-	const mounts = value.mounts === undefined ? undefined : parseMounts(value.mounts, "seed.mounts");
-	return { name, sources, ...(mounts === undefined ? {} : { mounts }) };
-}
-
-function parseSource(value: unknown, name: string): SeedSource {
-	if (!isRecord(value)) throw invalid(`${name} must be an object`);
-	switch (value.kind) {
-		case "files": {
-			if (!isRecord(value.files)) throw invalid(`${name}.files must be an object of path to text`);
-			for (const [path, content] of Object.entries(value.files)) {
-				if (typeof content !== "string") throw invalid(`${name}.files[${JSON.stringify(path)}] must be text`);
-			}
-			return { kind: "files", files: value.files as Record<string, string> };
-		}
-		case "git": {
-			const source: { -readonly [key in keyof GitSeedSource]: GitSeedSource[key] } = {
-				kind: "git",
-				repo: nonEmpty(value.repo, `${name}.repo`),
-				ref: nonEmpty(value.ref, `${name}.ref`),
-			};
-			const commit = optionalString(value.commit, `${name}.commit`);
-			if (commit !== undefined) source.commit = commit;
-			const sparse = stringList(value.sparse, `${name}.sparse`);
-			if (sparse !== undefined) source.sparse = sparse;
-			if (value.into !== undefined) {
-				if (typeof value.into !== "string") throw invalid(`${name}.into must be a string`);
-				source.into = value.into;
-			}
-			if (value.history !== undefined) {
-				if (!Number.isInteger(value.history) || (value.history as number) < 0) {
-					throw invalid(`${name}.history must be a non-negative integer`);
-				}
-				source.history = value.history as number;
-			}
-			return source;
-		}
-		case "objects":
-			throw new HarbourError("not_supported", `${name}: objects sources are not seeded yet; use files or git`);
-		default:
-			throw invalid(`${name}.kind must be files or git`);
+	const seed = parseSeedSpec(value);
+	const objects = seed.sources.findIndex((source) => source.kind === "objects");
+	if (objects >= 0) {
+		throw new HarbourError(
+			"not_supported",
+			`seed.sources[${objects}]: objects sources are not seeded yet; use files, git or archive`,
+		);
 	}
-}
-
-function parseMounts(value: unknown, name: string): readonly MountRequest[] {
-	if (!Array.isArray(value)) throw invalid(`${name} must be a list`);
-	return value.map((mount, index) => {
-		const at = `${name}[${index}]`;
-		if (!isRecord(mount)) throw invalid(`${at} must be an object`);
-		const version = optionalString(mount.version, `${at}.version`);
-		return {
-			path: nonEmpty(mount.path, `${at}.path`),
-			source: nonEmpty(mount.source, `${at}.source`),
-			ref: nonEmpty(mount.ref, `${at}.ref`),
-			...(version === undefined ? {} : { version }),
-		};
-	});
+	return seed;
 }
 
 /** The body as text, or `undefined` once it passes `limit` bytes. Counts what arrives, not what Content-Length claims. */

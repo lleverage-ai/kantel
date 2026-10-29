@@ -5,8 +5,7 @@
  *
  * The tarball holds the tree without history or `.git`. Symlinks and submodules are left out (`skipped` counts them).
  */
-import { type GitSeedSource, HarbourError } from "@harbour/contracts";
-import type { GitFetcher, GitTree, SeedFile } from "./seed.ts";
+import { type GitFetcher, type GitSeedSource, type GitTree, HarbourError, type SeedFile } from "@harbour/contracts";
 
 export interface GitHubTarballFetcherOptions {
 	/** The egress `fetch`; the global one when absent. */
@@ -71,6 +70,11 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 
 	return {
 		skipped,
+		method: "clone",
+		async resolve(_ctx, source) {
+			const [owner, name] = gitHubRepo(source.repo);
+			return resolve(owner, name, source);
+		},
 		async fetch(_ctx, source): Promise<GitTree> {
 			const [owner, name] = gitHubRepo(source.repo);
 			const commit = await resolve(owner, name, source);
