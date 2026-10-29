@@ -235,9 +235,10 @@ services:
       # Invited as an organisation admin, so someone can sign in: Harbour is
       # invite-only. Its codes land in Mailpit.
       HARBOUR_ADMIN_EMAIL: ${HARBOUR_ADMIN_EMAIL:-admin@harbour.localhost}
-      # The real components (#18 step 3): runtime, audit, identity and
-      # workspaces on this Postgres, in their own schema apart from M0's
-      # `harbour`, with workspace trees in MinIO under their own prefix.
+      # The real components (#18 step 3): runtime, audit, identity,
+      # workspaces, skills and memory (#12) on this Postgres, in their own
+      # schema apart from M0's `harbour`, with workspace trees and skill files
+      # in MinIO under prefixes of their own.
       HARBOUR_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
       HARBOUR_GATEWAY_SCHEMA: harbour_m1
       S3_ENDPOINT: http://minio:9000
@@ -245,6 +246,10 @@ services:
       S3_ACCESS_KEY: harbour
       S3_SECRET_KEY: harbour-dev-secret
       HARBOUR_GATEWAY_S3_PREFIX: m1/workspaces/
+      HARBOUR_SKILLS_S3_PREFIX: m1/skills/
+      # More projects beside the first, by name (comma-separated), all on
+      # the bootstrap's operator key; next-to-sal.yaml names Sal's.
+      HARBOUR_PROJECTS: ${HARBOUR_PROJECTS:-}
     ports: ["127.0.0.1:${HARBOUR_GATEWAY_PORT:-58090}:8080"]
     networks: [control]
     volumes: [gatewaystate:/var/lib/harbour]

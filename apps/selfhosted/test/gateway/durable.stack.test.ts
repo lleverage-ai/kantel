@@ -1,5 +1,7 @@
 // The gateway on its real components (durable.ts), against the compose stack's Postgres and MinIO: the end-to-end pass,
-// then a restart on the same schema that must keep the deployment, its sessions, workspace and audit trail.
+// then a restart on the same schema that must keep the deployment, its sessions, workspace and audit trail; and a
+// session shaped like Sal's worker that lists its skills, reads one at `/skills`, is given memory and calls its host's
+// tool after a restart.
 //
 // Runs when HARBOUR_TEST_POSTGRES_URL and HARBOUR_TEST_S3_ENDPOINT are set (bindings.ts sets them in CI). Each run gets
 // fresh schemas and its own object prefix, all removed afterwards.
@@ -32,6 +34,7 @@ const config: DurableConfig = {
 		accessKeyId: process.env.HARBOUR_TEST_S3_ACCESS_KEY ?? "harbour",
 		secretAccessKey: process.env.HARBOUR_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
 		prefix,
+		skillsPrefix: `${prefix}/skills`,
 	},
 	log: () => {},
 };
@@ -294,6 +297,236 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		} finally {
 			await host.close();
 		}
+	});
+
+	test("a Sal-shaped session lists its skills, reads /skills, is given memory and calls its host after a restart", {
+		timeout: 90_000,
+	}, async () => {
+		const schema = `${config.schema}_sal`;
+		const salNames = { ...names, projects: ["sal", "dev"] };
+		const calls: HostToolCall[] = [];
+		const endpoints = new Map<string, (request: Request) => Promise<Response>>();
+		const host = await listen(
+			async (request) => {
+				const match = /^\/hosts\/([^/]+)$/.exec(new URL(request.url).pathname);
+				const endpoint = match === null ? undefined : endpoints.get(decodeURIComponent(match[1] as string));
+				return endpoint === undefined ? new Response("not found", { status: 404 }) : endpoint(request);
+			},
+			0,
+			{ host: "127.0.0.1" },
+		);
+		const loopback = callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*"));
+		const serve = async <T>(components: GatewayComponents, work: (baseUrl: string) => Promise<T>) => {
+			const gateway = createGateway({ components, allowCallbackUrl: loopback });
+			const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
+			try {
+				return await work(`${server.url}/v1`);
+			} finally {
+				await gateway.close();
+				await server.close();
+			}
+		};
+		const skillMd =
+			"---\nname: pr-review\ndescription: Review a pull request\n---\n\n# PR review\n\nRead the diff first.\n";
+		const statement = "Harbour's self-hosted gateway listens on 127.0.0.1:58090 next to Sal.";
+		const prompt = "You are Sal's worker.";
+		// The task the session is given: memory is recalled by it, so it names what the concept is about.
+		const task = "Review the PR that moves the gateway port";
+		try {
+			let seeded: Bootstrap | undefined;
+			const inDev = (deployment: Bootstrap): CallContext => ({
+				actor: { kind: "service", serviceId: "sal" },
+				organisationId: deployment.organisationId,
+				projectId: deployment.projects?.dev ?? "",
+			});
+			const client = (baseUrl: string, deployment: Bootstrap) =>
+				createSessionApiClient({
+					baseUrl,
+					credentials: bearer(deployment.apiKey),
+					hostCallbacks: {
+						url: (hostId) => `${host.url}/hosts/${encodeURIComponent(hostId)}`,
+						serve: (hostId, endpoint) => {
+							if (endpoint === undefined) endpoints.delete(hostId);
+							else endpoints.set(hostId, endpoint);
+						},
+					},
+				});
+
+			// The first process: the bootstrap makes Sal's projects; the organisation's skill and memory are loaded as a host
+			// adapter would; Sal's worker puts its profile and registers its host tool, and the gateway stops.
+			await withComponents(schema, async (first) => {
+				const deployment = await bootstrap(first, salNames);
+				seeded = deployment;
+				const dev = deployment.projects?.dev;
+				expect(Object.keys(deployment.projects ?? {}).sort()).toEqual(["dev", "sal"]);
+				expect(dev).toMatch(/^prj_/);
+				const system: CallContext = {
+					actor: { kind: "system", component: "durable-test" },
+					organisationId: deployment.organisationId,
+				};
+				const owner = { kind: "organisation", organisationId: deployment.organisationId } as const;
+				await first.skills.importRevision(system, {
+					owner,
+					name: "pr-review",
+					description: "Review a pull request",
+					files: [{ path: "SKILL.md", content: skillMd }],
+					source: { sourceId: "sal-skills", ref: "r1" },
+				});
+				const space = await first.memory.createSpace(system, { owner, name: "Sal memory" });
+				await first.memory.importSnapshot(system, space.id, {
+					sourceId: "sal-memory",
+					ref: "m1",
+					concepts: [
+						{
+							id: "projects/harbour/gateway-port",
+							title: "Harbour gateway port",
+							description: "Where the self-hosted gateway listens",
+							statement,
+							scope: { kind: "global" },
+							sources: ["https://github.com/tvdavies/harbour/issues/232"],
+							setBy: "owner",
+							status: "active",
+							updatedAt: 1,
+						},
+					],
+				});
+				await serve(first, async (baseUrl) => {
+					const sal = client(baseUrl, deployment);
+					await sal.profiles.put(inDev(deployment), {
+						id: "sal-worker",
+						organisationId: deployment.organisationId,
+						projectId: dev,
+						name: "Sal worker",
+						model: { route: "default" },
+						promptLayers: [{ name: "sal_preamble", text: prompt }],
+						tools: ["read", "ls", "bash", "ping"],
+						skills: ["pr-review"],
+						sandbox: { tiers: ["isolate"] },
+						memoryScopes: [space.id],
+						hostId: "sal",
+					});
+					await sal.hostTools.register(
+						inDev(deployment),
+						"sal",
+						[{ name: "ping", description: "Answers pong", inputSchema: { type: "object" }, replay: "safe" }],
+						async (call) => {
+							calls.push(call);
+							return { output: "pong" };
+						},
+					);
+					// The skill and the space read back through the gateway's routes, with the operator key.
+					const headers = { authorization: `Bearer ${deployment.apiKey}` };
+					const listed = await fetch(`${baseUrl}/skills?projectId=${encodeURIComponent(dev ?? "")}`, { headers });
+					expect(((await listed.json()) as { items: { name: string }[] }).items.map((item) => item.name)).toEqual([
+						"pr-review",
+					]);
+					const recalled = await fetch(`${baseUrl}/memory/recall`, {
+						method: "POST",
+						headers: { ...headers, "content-type": "application/json" },
+						body: JSON.stringify({ spaceIds: [space.id], query: "gateway port" }),
+					});
+					expect(((await recalled.json()) as { text: string }).text).toContain(statement);
+				});
+			});
+			if (seeded === undefined) throw new Error("no deployment");
+			const deployment = seeded;
+
+			// The next process on the same schema: the bootstrap finds the same projects and key, and a session in `dev` lists
+			// its skill, reads it at /skills, is given the memory, sees no credential in its sandbox and calls the host.
+			const { models, script } = createScriptedModel();
+			script.reply(
+				{ toolCalls: [{ name: "read", args: { path: "/skills/pr-review/SKILL.md" } }] },
+				{ toolCalls: [{ name: "bash", args: { command: "env; ls -la /" } }] },
+				{ toolCalls: [{ name: "ping", args: {} }] },
+				{ text: "Reviewed" },
+			);
+			await withComponents(
+				schema,
+				async (second) => {
+					expect(second.bindings).toMatchObject({ skills: "postgres + s3", memory: "postgres" });
+					expect(await bootstrap(second, salNames, deployment)).toEqual(deployment);
+					await serve(second, async (baseUrl) => {
+						const api = client(baseUrl, deployment).runtime;
+						const session = await api.create(inDev(deployment), {
+							projectId: deployment.projects?.dev ?? "",
+							agentId: "sal-worker",
+						});
+						expect(session.workspaceId).toMatch(/^session_/);
+						const submitted = await api.prompt(inDev(deployment), session.id, { text: task });
+						expect(await api.wait(inDev(deployment), session.id, submitted.id)).toMatchObject({
+							status: "answered",
+							answer: "Reviewed",
+						});
+						// The workspace's /skills mount is read-only.
+						const agent: CallContext = {
+							actor: { kind: "agent", agentId: "sal-worker", sessionId: session.id },
+							organisationId: deployment.organisationId,
+							projectId: session.projectId,
+						};
+						const workspace = await second.workspaces.get(agent, session.workspaceId ?? "");
+						await expect(
+							second.workspaces.commit(agent, workspace.id, {
+								baseVersion: workspace.head,
+								changes: [{ op: "put", path: "/skills/pr-review/SKILL.md", content: "changed" }],
+								message: "try",
+							}),
+						).rejects.toThrow();
+					});
+				},
+				{ models },
+			);
+
+			const [first, afterRead, afterBash, afterPing] = script.requests;
+			// Harbour adds nothing to the system prompt: it is the profile's layer, whole.
+			expect(first?.system).toBe(prompt);
+			// The skills listing and the recall come once, as a user message before the prompt.
+			const given = first?.messages[0]?.text ?? "";
+			expect(first?.messages.map((message) => message.role)).toEqual(["user", "user"]);
+			expect(given).toContain("<available_skills>");
+			expect(given).toContain("<name>pr-review</name>");
+			expect(given).toContain("/skills/pr-review/SKILL.md");
+			expect(given).toContain(statement);
+			expect(first?.messages[1]?.text).toBe(task);
+			expect(afterRead?.messages.at(-1)).toMatchObject({
+				role: "tool",
+				text: expect.stringContaining("Read the diff"),
+			});
+			// No credential in the sandbox: its environment is the shell's own, with neither the operator key, the S3 secret
+			// nor the database's URL, and the skills are there at /skills.
+			const sandbox = afterBash?.messages.at(-1)?.text ?? "";
+			expect(afterBash?.messages.at(-1)?.role).toBe("tool");
+			for (const secret of [deployment.apiKey, config.s3.secretAccessKey, databaseUrl]) {
+				expect(sandbox).not.toContain(secret);
+			}
+			expect(sandbox).not.toMatch(/HARBOUR_|AWS_|S3_|PGPASSWORD|DATABASE_URL|API_KEY|SECRET|TOKEN/);
+			expect(sandbox).toMatch(/ skills\n/);
+			expect(afterPing?.messages.at(-1)).toMatchObject({ role: "tool", text: "pong" });
+			expect(calls.map((call) => call.tool)).toEqual(["ping"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	test("the bootstrap makes its named projects once, and a new name brings a new key over them all", {
+		timeout: 60_000,
+	}, async () => {
+		await withComponents(`${config.schema}_projects`, async (components) => {
+			const first = await bootstrap(components, { ...names, projects: ["sal", "durable"] });
+			// A name that is the first project's is that project.
+			expect(first.projects?.durable).toBe(first.projectId);
+			const again = await bootstrap(components, { ...names, projects: ["sal", "durable"] }, first);
+			expect(again).toEqual(first);
+			const more = await bootstrap(components, { ...names, projects: ["sal", "durable", "dev"] }, first);
+			expect(more.projects?.sal).toBe(first.projects?.sal);
+			expect(more.projects?.dev).toMatch(/^prj_/);
+			expect(more.apiKey).not.toBe(first.apiKey);
+			const system = { ...systemContext("durable-test"), organisationId: first.organisationId };
+			await expect(components.identity.authenticateApiKey(system, first.apiKey)).rejects.toThrow();
+			const key = await components.identity.authenticateApiKey(system, more.apiKey);
+			expect([...(key.projectIds ?? [])].sort()).toEqual(
+				[first.projectId, more.projects?.sal, more.projects?.dev].sort(),
+			);
+		});
 	});
 
 	test("a session's file tools work on the S3 workspace directly; bash leases an isolate on its first command", {
