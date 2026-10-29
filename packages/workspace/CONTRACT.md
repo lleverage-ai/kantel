@@ -172,6 +172,17 @@ spec means the same wherever it is read. v1 adds:
   with the depsKey and step keys, or `failed` with the error's code and message. A sink that throws never fails the
   seed. The session runtime forwards them into the session; the contract carries them, not `packages/runtime`.
 
+The dependency stage. Once files are ready, `prepareDependencies` (`@harbour/sandbox/dependencies`) takes each step in
+order. If a layer is cached under the step's key, `DependencyLayers.restore` puts it back. Otherwise the step runs on a
+lease of its tier and `DependencyLayers.save` keeps its outputs (the step's `outputs`, else every `node_modules`). The
+stage is then recorded with `Workspaces.recordDependencies`, which moves readiness from `files` to `dependencies`, or
+to `failed` with the error. The report's steps then carry `layer`, `timings.dependencies` is set and a `seed.status`
+event is sent. It records once: a workspace at any other stage is `conflict`, and steps that are not the seed's, in
+order and with its keys, are `invalid`. `createArchiveDependencyLayers` (`@harbour/workspace/dependency-layers`) keeps
+layers as tarballs in an object store and restores one as a single version. It is the generic fallback. Targets hold
+large layers as overlay lowers or snapshots, because M0-BE2 found that extracting a large `node_modules` takes too
+long.
+
 `GitFetcher`, `ArchiveFetcher`, `ObjectsSeeder`, `Seeders`, `SeedFile` and `GitTree` are contract types now
 (`@harbour/contracts`), so targets and the mirror service implement them without depending on this package.
 
@@ -188,6 +199,7 @@ Postgres workspaces: the provider wires `deps.seeders` and `deps.onSeedStatus`.
 | An archive is unpacked and pinned by digest; a mismatch is `unavailable` | seeding: an archive source is unpacked under into and pinned by its digest; seeding: an archive that does not match its digest fails the create as unavailable and emits failed |
 | A refused caller fetches nothing | seeding: a caller refused the create fetches nothing; an unknown ref fails it as not_found |
 | A spec's `methods` bind the host | seeding: a spec that allows only methods the host lacks is not_supported, and nothing is fetched |
+| The dependency stage records once, with layers; a failed stage is `failed` | seeding: the dependency stage moves files to dependencies with each step's layer, once, and a failed stage is failed |
 | A source without a seeder waits at `metadata` | seeding: a source the host has no seeder for waits at metadata |
 
 ## Export to the host (M1-BE3)
@@ -263,6 +275,5 @@ across organisations and, with project access, the race loser checked against th
 - How a mount source checks that the caller's organisation owns the ref; the memory source does not. (Whether the
   caller may read the ref is settled: the workspace requires viewer on it as `workspace.mount`.)
 - Whether deleting a missing path should be idempotent rather than `not_found`.
-- Git history in the workspace, running dependency steps and restoring their layers, and the mirror cache (M2-BE1's
-  later parts). The seed shape, readiness stages and methods are settled by M0-BE2's measurements (#5); seeding still
+- Git history in the workspace, and overlay or snapshot dependency layers in the targets (M2-CF1, M2-SH1). The seed shape, readiness stages and methods are settled by M0-BE2's measurements (#5); seeding still
   imports trees without `.git`.

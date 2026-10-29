@@ -14,6 +14,7 @@
 import {
 	type CallContext,
 	type Clock,
+	type DependencyStageUpdate,
 	type GitSeedSource,
 	HarbourError,
 	isHarbourError,
@@ -33,6 +34,7 @@ import {
 	type SeedStatusSink,
 	type SessionId,
 	type WorkspaceId,
+	type WorkspaceRecord,
 } from "@harbour/contracts";
 import { unpackArchive } from "./archive.ts";
 import { normalizeWorkspacePath, sha256Hex, toBytes } from "./index.ts";
@@ -329,13 +331,77 @@ function statusEmitter(progress: SeedProgress | undefined, clock: Clock, started
 			elapsedMs: at - started,
 			...fields,
 		};
-		// A sink never fails the seed, whether it throws or rejects.
-		try {
-			void Promise.resolve(sink(event)).catch(() => undefined);
-		} catch {
-			// Ignored, as above.
-		}
+		sendSeedStatus(sink, event);
 	};
+}
+
+/**
+ * A workspace record moved on by its seed's dependency stage, for `Workspaces.recordDependencies`. Checks that the
+ * workspace is at `files` and that the update names the seed's steps, with their keys, in order. The status event
+ * goes to `onStatus` once the caller has stored the record.
+ */
+export function dependencyStage(
+	record: WorkspaceRecord,
+	organisationId: OrganisationId,
+	update: DependencyStageUpdate,
+	now: number,
+): { readonly record: WorkspaceRecord; readonly event: SeedStatusEvent } {
+	const report = record.seedReport;
+	if (record.seedReadiness !== "files" || report?.deps === undefined) {
+		throw new HarbourError(
+			"conflict",
+			`workspace ${record.id} is ${record.seedReadiness}, not waiting for its dependency stage`,
+			{ readiness: record.seedReadiness },
+		);
+	}
+	const deps = update.deps;
+	if (
+		!Array.isArray(deps) ||
+		deps.length > report.deps.length ||
+		(update.error === undefined && deps.length !== report.deps.length) ||
+		deps.some((step, index) => step.key !== report.deps?.[index]?.key || step.name !== report.deps?.[index]?.name)
+	) {
+		throw new HarbourError("invalid", "the dependency stage must name the seed's steps, with their keys, in order");
+	}
+	const readiness: SeedReadiness = update.error === undefined ? "dependencies" : "failed";
+	const merged = report.deps.map((step, index) => {
+		const layer = deps[index]?.layer;
+		return layer === "restored" || layer === "built" ? { ...step, layer } : step;
+	});
+	const elapsedMs = Math.max(0, now - record.createdAt);
+	const seedReport: SeedReport = {
+		...report,
+		deps: merged,
+		timings: readiness === "dependencies" ? { ...report.timings, dependencies: elapsedMs } : report.timings,
+	};
+	const next: WorkspaceRecord = { ...record, seedReadiness: readiness, seedReport, updatedAt: now };
+	const event: SeedStatusEvent = {
+		type: "seed.status",
+		workspaceId: record.id,
+		organisationId,
+		...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+		readiness,
+		at: now,
+		elapsedMs,
+		method: report.method,
+		sources: report.sources,
+		...(report.depsKey === undefined ? {} : { depsKey: report.depsKey }),
+		deps: merged,
+		...(update.error === undefined
+			? {}
+			: { error: { code: update.error.code, message: String(update.error.message).slice(0, 500) } }),
+	};
+	return { record: next, event };
+}
+
+/** Sends one event to a sink, which never fails the caller, whether it throws or rejects. */
+export function sendSeedStatus(sink: SeedStatusSink | undefined, event: SeedStatusEvent): void {
+	if (sink === undefined) return;
+	try {
+		void Promise.resolve(sink(event)).catch(() => undefined);
+	} catch {
+		// Ignored, as above.
+	}
 }
 
 /** sha256 over the sorted (path, contents) pairs, as `ResolvedSeedSource` documents. */

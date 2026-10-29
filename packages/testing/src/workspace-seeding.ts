@@ -9,6 +9,7 @@ import type {
 	GitFetcher,
 	GitSeedSource,
 	OwnerRef,
+	SeedDependencyReport,
 	Seeders,
 	SeedFile,
 	SeedSpec,
@@ -377,6 +378,57 @@ export function seedingCases(options: SeedingCaseOptions): ConformanceCase[] {
 					"not_supported",
 				);
 				a.deepEqual(fixture.calls, []);
+			}),
+		},
+		{
+			name: "seeding: the dependency stage moves files to dependencies with each step's layer, once, and a failed stage is failed",
+			run: options.withSeeding(async (workspaces, fixture) => {
+				const record = await workspaces.create(ctx, { owner, seed: fullSeed("main") });
+				const record2 = await workspaces.create(ctx, { owner, seed: fullSeed("main") });
+				if (workspaces.recordDependencies === undefined) throw new Error("recordDependencies is required with seeding");
+				const keyed = record.seedReport?.deps ?? [];
+				// Steps out of order, or with other keys, are not this seed's.
+				await a.rejectsWithCode(
+					workspaces.recordDependencies(ctx, record.id, { deps: [...keyed].reverse() }),
+					"invalid",
+				);
+				await a.rejectsWithCode(
+					workspaces.recordDependencies(options.otherCtx, record.id, { deps: keyed }),
+					"not_found",
+				);
+				const [pnpm, toolchain] = keyed;
+				const recorded = await workspaces.recordDependencies(ctx, record.id, {
+					deps: [
+						{ ...(pnpm as SeedDependencyReport), layer: "built" },
+						{ ...(toolchain as SeedDependencyReport), layer: "restored" },
+					],
+				});
+				a.strictEqual(recorded.seedReadiness, "dependencies");
+				a.partialDeepEqual(recorded.seedReport?.deps, [{ name: "pnpm", layer: "built" }, { layer: "restored" }]);
+				a.ok(recorded.seedReport?.timings.dependencies !== undefined, "the stage is timed");
+				a.strictEqual(recorded.head, record.head);
+				a.deepEqual(await workspaces.get(ctx, record.id), recorded);
+				a.partialDeepEqual(fixture.events.at(-1), {
+					workspaceId: record.id,
+					readiness: "dependencies",
+					depsKey: record.seedReport?.depsKey,
+					deps: [{ layer: "built" }, { layer: "restored" }],
+				});
+				// Once only.
+				await a.rejectsWithCode(workspaces.recordDependencies(ctx, record.id, { deps: keyed }), "conflict");
+
+				const failed = await workspaces.recordDependencies(ctx, record2.id, {
+					deps: [{ ...(pnpm as SeedDependencyReport), layer: "built" }],
+					error: { code: "unavailable", message: "step toolchain exited with 1" },
+				});
+				a.strictEqual(failed.seedReadiness, "failed");
+				a.partialDeepEqual(failed.seedReport?.deps, [{ layer: "built" }, { name: "toolchain" }]);
+				a.strictEqual(failed.seedReport?.deps?.[1]?.layer, undefined);
+				a.partialDeepEqual(fixture.events.at(-1), {
+					workspaceId: record2.id,
+					readiness: "failed",
+					error: { code: "unavailable", message: "step toolchain exited with 1" },
+				});
 			}),
 		},
 		{

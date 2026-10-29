@@ -12,6 +12,7 @@
 		"./isolate": "./src/isolate.ts",
 		"./sweeper": "./src/sweeper.ts",
 		"./pi-env": "./src/pi-env.ts",
+		"./dependencies": "./src/dependencies.ts",
 		"./isolate-git": "./src/isolate-git.ts"
 	},
 	"dependencies": {
