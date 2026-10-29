@@ -20,7 +20,10 @@ export interface AuditSource {
 	query(query: AuditViewQuery, page?: PageRequest): Promise<Page<AuditEvent>>;
 }
 
-/** The kinds of event the view filters by. Each is one type, or one type prefix, which is all `AuditQuery` takes. */
+/**
+ * The kinds of event the view filters by. Each is a list of types and type prefixes: one goes to the store as
+ * `AuditQuery.type`, several as `types`, any of which matches.
+ */
 export type AuditKind =
 	| "all"
 	| "credential-use"
@@ -34,18 +37,19 @@ export type AuditKind =
 	| "identity"
 	| "capability";
 
-export const KINDS: readonly { value: AuditKind; label: string; type?: string }[] = [
+export const KINDS: readonly { value: AuditKind; label: string; types?: readonly string[] }[] = [
 	{ value: "all", label: "Everything" },
-	{ value: "credential-use", label: "Credential uses", type: "vault.use." },
-	{ value: "approval", label: "Approvals and denials", type: "vault.decision." },
-	{ value: "vault", label: "All vault events", type: "vault." },
-	{ value: "policy", label: "Policy changes", type: "vault.policy." },
-	{ value: "sandbox", label: "Sandbox", type: "sandbox." },
-	{ value: "session", label: "Session lifecycle", type: "session." },
-	{ value: "access", label: "Refused access", type: "access.denied" },
-	{ value: "browser", label: "Browser", type: "browser." },
-	{ value: "identity", label: "Keys and roles", type: "identity." },
-	{ value: "capability", label: "Capabilities", type: "capability." },
+	{ value: "credential-use", label: "Credential uses", types: ["vault.use."] },
+	{ value: "approval", label: "Approvals and denials", types: ["vault.decision."] },
+	{ value: "vault", label: "All vault events", types: ["vault."] },
+	// Standing vault policies, and the capability grants that say what an agent may call.
+	{ value: "policy", label: "Policy changes", types: ["vault.policy.", "capability.grant."] },
+	{ value: "sandbox", label: "Sandbox", types: ["sandbox."] },
+	{ value: "session", label: "Session lifecycle", types: ["session."] },
+	{ value: "access", label: "Refused access", types: ["access.denied"] },
+	{ value: "browser", label: "Browser", types: ["browser."] },
+	{ value: "identity", label: "Keys and roles", types: ["identity."] },
+	{ value: "capability", label: "Capabilities", types: ["capability."] },
 ];
 
 export type AuditRange = "hour" | "day" | "today" | "yesterday" | "week" | "month" | "all";
@@ -142,13 +146,14 @@ const set = (value: string | undefined): value is string => value !== undefined 
 
 /** The filters as the store's query, newest first. */
 export function toQuery(filters: AuditFilters, now: number): AuditViewQuery {
-	const type = KINDS.find((kind) => kind.value === filters.kind)?.type;
+	const types = KINDS.find((kind) => kind.value === filters.kind)?.types ?? [];
+	const [type] = types;
 	const actor = set(filters.actor) ? actorFromKey(filters.actor) : undefined;
 	const { from, to } = rangeBounds(filters.range, now);
 	return {
 		newestFirst: true,
 		...(set(filters.organisationId) ? { organisationId: filters.organisationId } : {}),
-		...(type === undefined ? {} : { type }),
+		...(types.length > 1 ? { types } : type === undefined ? {} : { type }),
 		...(actor === undefined ? {} : { actor }),
 		...(set(filters.projectId) ? { projectId: filters.projectId } : {}),
 		...(set(filters.agentId) ? { agentId: filters.agentId } : {}),

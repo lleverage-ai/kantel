@@ -95,11 +95,10 @@ show by ID, and there is no organisation picker, until identity has an API.
 
 ## Gaps in the contract
 
-1. **One type per query.** A kind such as "policy changes" can't cover both `vault.policy.*` and
-   `capability.grant.*`. A list of types would let *What* group them.
-
-The credential and grant filters this section used to list are now `AuditQuery.itemId` and `grantId`, matched by
-every store on an index (see `packages/audit/CONTRACT.md`).
+None open. The credential and grant filters this section used to list are now `AuditQuery.itemId` and `grantId`,
+matched by every store on an index, and a kind can now cover several types: `AuditQuery.types` matches any of a list of
+types and prefixes, so *Policy changes* reads `vault.policy.*` and `capability.grant.*` in one query (see
+`packages/audit/CONTRACT.md`).
 
 ## Stories and checks
 

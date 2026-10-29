@@ -163,17 +163,27 @@ that chip. Collapsed chips are not rendered.
 
 **For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
 `--hb-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
-sent while the agent was working (`via` is `steer` or `followUp`). `UserMessage({ item })`.
+sent while the agent was working (`via` is `steer` or `followUp`). Under the bubble, on hover or focus, a
+`MessageActions` line: when it was sent, Edit from here (when the host gives `MessageActionsContext` an `edit`) and
+Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}` leaves the line out (a preview),
+`showActions` shows it without a hover (stories). Edit from here turns the bubble into a `MessageEditor`; while the
+host sets `editBlocked` (a run is going) the button is off and its label says why.
 
 **Not for** the agent's words, or quoted text inside an answer.
 
-**Cost:** memoised on `item`.
+**Cost:** memoised on `item`. The line is always rendered (transparent until hovered), so it never moves the
+transcript; it holds no timer.
 
 ### AssistantMessage
 
 **For** the agent's answer, unboxed on the canvas, its text as `Markdown`.
-`AssistantMessage({ item, turnStartedAt? })`; `turnStartedAt` is when the answer's turn started, which `Transcript`
-passes.
+`AssistantMessage({ item, turnStartedAt?, actions?, showActions? })`; `turnStartedAt` is when the answer's turn
+started, which `Transcript` passes. With `actions`, a finished answer with text has a `MessageActions` line under it on
+hover or focus: Copy, Fork from this response (when the host gives `MessageActionsContext` a `fork`; a spinner while
+it runs, and why on the line when it fails) and the time it was generated. `Transcript` turns `actions` on for each
+turn's final answer only
+(`finalAnswerIds`), as T3 Code shows its message meta only on a turn's terminal answer, so the words an agent says
+between tool calls have none, and neither does an answer still streaming.
 
 **States:** while streaming with no text yet, a thought (`item.thinking`) streams live under "Thinking", its newest
 four lines in a window that doesn't grow, after T3 Code's live reasoning preview (`TimelineWorkGroupRows.tsx:503-581`);
@@ -208,6 +218,50 @@ spinner).
 
 **Cost:** memoised on its props. The dot's pulse and the sweep are CSS only and stop under reduced motion; the timer
 is an `Elapsed` on the shared one-second clock, so only that leaf renders each second.
+
+### MessageActions
+
+**For** the quiet line under a message, after T3 Code's message meta rows (pingdotgg/t3code at `9826dbb9`,
+`apps/web/src/components/chat/TimelineUserMessageRow.tsx` lines 196 to 229 and `TimelineAssistantRows.tsx` lines
+144 to 196): the message's time (`ClockTime`: "16:38", "Yesterday at 16:38", the full date and time as its title)
+and small ghost icon buttons, Copy on the aligned edge. `MessageActions({ at, text, align, children?, after?, visible?, now? })`.
+`align="end"` sits under a person's bubble, the time first; `align="start"` sits under an answer, the actions first,
+the first icon pulled left onto the answer's text edge (optical alignment: the icon lines up, not its button's box).
+`children` are more actions, beside Copy (before it under a bubble, after it under an answer, so the line reads time,
+Edit from here, Copy and Copy, Fork, time as T3 Code's do): `MessageAction({ label, icon, onClick, disabled?, busy? })`,
+a 24px ghost `IconButton` whose label is its accessible name and tooltip. `after` follows the time, such as why an
+action failed (`.hb-message-actions-error`, which keeps the line shown).
+
+`Transcript({ messageActions })` gives every message the host's `MessageActionHandlers` through
+`MessageActionsContext`: `fork(itemId)`, `edit(itemId, text)` and `editBlocked`, the reason Edit from here is off.
+Each is optional; an action the host leaves out is not shown. Messages render again only when one changes, so keep
+the functions stable.
+
+### MessageEditor
+
+**For** Edit from here: the person's message in place, as a field the column's width on the bubble's surface and
+radius, "Sending reruns from here. What came after this message leaves the session." under it, then Cancel and Send.
+`MessageEditor({ text, onSend, onCancel, autoFocus? })`. It takes focus with the cursor at the end.
+
+**States:** editing; sending (the field read-only, Send busy, Cancel off); refused (the rejection's message, in the
+error colour, in place of the hint, and the words kept to try again).
+
+**Keyboard:** Enter sends and Shift+Enter starts a new line, as in the composer; Escape cancels. The surface shows
+the focus ring for the field (`data-focus-surface`).
+
+The time is trimmed to its capitals (`text-box: trim-both cap alphabetic`), as a button's label is, so its figures
+sit on the icons' centre line; the alignment gate checks icons against it.
+
+**States:** hidden (transparent, still in the flow, so nothing moves when it shows); shown while its message is
+hovered or anything in the line holds focus; always shown under a coarse pointer, where there is no hover (as T3's
+`pointer-coarse:opacity-100`); Copy turns to a check and "Copied" for 1.5s. Under a coarse pointer the buttons take
+the touch size.
+
+**Not for** a message's primary action, or actions that need the person to read first (use a card).
+
+**Keyboard:** each button is reached by Tab; focusing one shows the line.
+
+**Cost:** no timer and no state but Copy's; the time is formatted once per render.
 
 ### NoticeRow
 

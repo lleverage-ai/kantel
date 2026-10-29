@@ -1,7 +1,9 @@
 /**
  * The session API's wire format, shared by the server (`createSessionApi`) and the client (`createSessionApiClient`).
- * It depends only on `@harbour/contracts` and `@harbour/protocol`, so a host app can import it without Pi.
+ * It depends only on `@harbour/contracts`, `@harbour/protocol` and `@harbour/api`, so a host app can import it
+ * without Pi.
  */
+import { STATUS_BY_CODE } from "@harbour/api";
 import {
 	type AgentProfile,
 	type CreateSessionInput,
@@ -37,19 +39,6 @@ export interface ApiErrorBody {
 		readonly details?: { readonly [key: string]: JsonValue };
 	};
 }
-
-const STATUS_BY_CODE: { readonly [code in ErrorCode]: number } = {
-	invalid: 400,
-	forbidden: 403,
-	not_found: 404,
-	conflict: 409,
-	expired: 410,
-	refused: 422,
-	exhausted: 429,
-	aborted: 409,
-	not_supported: 501,
-	unavailable: 503,
-};
 
 export function statusForCode(code: ErrorCode): number {
 	return STATUS_BY_CODE[code];

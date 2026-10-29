@@ -120,7 +120,9 @@ The same four batches again, warm then cold, both backends, back to back from `/
 hint and the data copied over; CI binds them through `HARBOUR_D1_DATABASE_NAME`, `HARBOUR_D1_DATABASE_ID` and
 `HARBOUR_R2_BUCKET` (#140). The deployed `main` was `9495b62` (#145, a console change only), whose deploy log reads
 `env.DB (harbour-weur)` and `env.WORKSPACES (harbour-workspaces-weur)`. The old `harbour` database and
-`harbour-workspaces` bucket are untouched.
+`harbour-workspaces` bucket were deleted at 23:22 UTC, after a full export and a backfill of the 12 audit events
+written to the old database between the copy and the switch; `wrangler.jsonc` now names the weur pair as its defaults.
+Worker versions from before 22:24 UTC bind the deleted database, so they're no longer rollback targets.
 
 | Batch | Kind | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 (min–max) | Sign-in p50 / p95 | Before the move, server p50 / p95 |
 | --- | --- | --- | --- | --- | --- |

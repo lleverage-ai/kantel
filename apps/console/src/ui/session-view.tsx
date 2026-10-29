@@ -14,7 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
-import { composerState, offersFollowUp, type SessionActions, transcriptWorking } from "./actions.ts";
+import { composerState, editBlocked, offersFollowUp, type SessionActions, transcriptWorking } from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -107,10 +107,21 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control } = actions;
+	const { control, onFork, onEdit } = actions;
 	const working = useMemo(
 		() => transcriptWorking(state.status, actions.promptedAt),
 		[state.status, actions.promptedAt],
+	);
+	// A prompt on its way to a run counts as running: the edit would race it.
+	const blocked = editBlocked(control, actions.promptedAt === undefined ? state.status : "running", actions.sending);
+	const messageActions = useMemo(
+		() => ({
+			// A recorded session can't be forked or edited: neither is offered.
+			...(onFork === undefined || !control.live ? {} : { fork: onFork }),
+			...(onEdit === undefined || !control.live ? {} : { edit: onEdit }),
+			...(blocked === undefined ? {} : { editBlocked: blocked }),
+		}),
+		[onFork, onEdit, control.live, blocked],
 	);
 
 	return (
@@ -186,6 +197,7 @@ export function SessionView({
 						error={state.error}
 						working={working}
 						onRowRender={recordRow}
+						messageActions={messageActions}
 						dock={
 							<Composer
 								state={composerState(control, state.status, actions.sending)}

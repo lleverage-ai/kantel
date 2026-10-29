@@ -218,6 +218,45 @@ export interface SessionModels {
 	startModels(ctx: CallContext, start: SessionModelsStart): Promise<SessionModelState>;
 }
 
+/** Where to fork a session: the answer the new session's history ends with. */
+export interface ForkSessionInput {
+	/** The transcript item ID of an assistant answer, as the session's stream gives it. */
+	readonly itemId: string;
+	/** The new session's title. Default the source's title with " (fork)" after it. */
+	readonly title?: string;
+}
+
+/**
+ * What to edit: a message the person sent, and the words to send in its place, with the model and thinking level to
+ * rerun on as a prompt takes them (absent keeps the session's as they were before the message).
+ */
+export interface EditSessionInput extends Pick<PromptInput, "text" | "requestId" | "model" | "thinking"> {
+	/** The transcript item ID of a user message, as the session's stream gives it. */
+	readonly itemId: string;
+}
+
+/**
+ * Proposed (28 Oct 2026, the session view's message actions, issue #6): branching a session's history. A separate
+ * interface, as `SessionHistory` is, so that no existing `SessionRuntime` has to change to adopt it.
+ */
+export interface SessionBranching {
+	/**
+	 * Creates a session in the same project, with the same agent and workspace, whose history is this session's up to and
+	 * including the answer `itemId` names. It starts idle: nothing runs until the person prompts it. The caller needs
+	 * operator on the project; an item that is not an answer in the session's current transcript is `not_found`. The
+	 * source session is unchanged.
+	 */
+	fork(ctx: CallContext, sessionId: SessionId, input: ForkSessionInput): Promise<SessionRecord>;
+	/**
+	 * Rewinds the session to just before the message `itemId` names and sends `text` in its place: the message and
+	 * everything after it leave the transcript, and a run starts from the edited message. The earlier history stays in
+	 * the session's storage but is no longer shown or sent to the model. The session must be idle (`conflict` while a run
+	 * is going or once it is closed); an item that is not a user message in its current transcript is `not_found`.
+	 * Watchers get a fresh snapshot.
+	 */
+	edit(ctx: CallContext, sessionId: SessionId, input: EditSessionInput): Promise<Submission>;
+}
+
 /** The most items one history page holds; a larger `limit` is cut to it. */
 export const SESSION_HISTORY_MAX_LIMIT = 200;
 /** Items in a history page when the request gives no `limit`. */

@@ -36,6 +36,7 @@ import { type BootstrapRecord, createStack, type Stack, type StackOptions, type 
 import { startOnce } from "./start.ts";
 import { approvalVaultOver, type VaultVars } from "./vault.ts";
 import type { HarbourVault } from "./vault-object.ts";
+import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
 
@@ -259,7 +260,12 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				setAlarm: (at) => storage.setAlarm(at),
 				getAlarm: () => storage.getAlarm(),
 			},
-			workspaces: createR2WorkspaceStore({ bucket: this.env.WORKSPACES, prefix: WORKSPACE_PREFIX }),
+			// Heads kept in this object's storage, in front of R2 (src/workspace-heads.ts): every write goes through here.
+			workspaces: createR2WorkspaceStore({
+				bucket: this.env.WORKSPACES,
+				prefix: WORKSPACE_PREFIX,
+				headCache: durableHeadCache(storage.kv),
+			}),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
