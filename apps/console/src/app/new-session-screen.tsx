@@ -1,8 +1,9 @@
 import type { ProjectOption } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleClient, ProjectSummary, StartOptions } from "../api/client.ts";
-import { createRequestIds, titleFrom } from "../ui/actions.ts";
+import { titleFrom } from "../ui/actions.ts";
 import { type NewSessionState, NewSessionView } from "../ui/new-session-view.tsx";
+import { handOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 import { navigate, newSessionPath, sessionPath } from "./router.ts";
 
@@ -42,8 +43,9 @@ type Branches = { readonly repo: string } & NonNullable<NonNullable<NewSessionSt
 
 /**
  * New session, as T3 Code's new thread: the composer, with the project, before the session exists. Sending
- * creates the session, sends the draft as its first message and opens it, where it streams. If the session was
- * created but the message didn't go, sending again sends it to that session rather than creating another.
+ * creates the session and opens it at once, handing it the draft as its first message (`first-message.ts`): the session
+ * screen sends it, and says the turn is working from the moment it opens. A message that then fails to send stays in
+ * that session's composer, to send again there.
  *
  * Changing the project keeps the draft: the screen stays mounted and only the path changes.
  */
@@ -62,14 +64,11 @@ export function NewSessionScreen({
 	const [sending, setSending] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const [loaded, setLoaded] = useState<Options>({ projectId, state: "loading" });
-	const requestIds = useMemo(() => createRequestIds(), []);
 	// The repository the workspace starts from ("" for none) and its branches, when this client can seed one.
 	const seeds = client.branches !== undefined;
 	const [repo, setRepo] = useState("");
 	const [recent, setRecent] = useState<readonly string[]>(() => (seeds ? readRecentRepos() : []));
 	const [branches, setBranches] = useState<Branches>();
-	/** A session this screen created whose first message hasn't gone yet, so a retry doesn't make a second. */
-	const created = useRef<{ projectId: string; sessionId: string }>(undefined);
 
 	const access = client.mayStart(projectId);
 	const project = projects.find((candidate) => candidate.id === projectId);
@@ -158,7 +157,7 @@ export function NewSessionScreen({
 				setSending(true);
 				return;
 			}
-			if (repoNotReady !== undefined && created.current?.projectId !== projectId) {
+			if (repoNotReady !== undefined) {
 				setPending(undefined);
 				setFailure(repoNotReady);
 				setSending(false);
@@ -168,32 +167,22 @@ export function NewSessionScreen({
 			setSending(true);
 			setFailure(undefined);
 			try {
-				let sessionId = created.current?.projectId === projectId ? created.current.sessionId : undefined;
-				if (sessionId === undefined) {
-					const title = titleFrom(text);
-					sessionId = await client.create({
-						projectId,
-						agentId: options.agentId,
-						...(title === undefined ? {} : { title }),
-						...(repository === undefined ? {} : { repository }),
-					});
-					created.current = { projectId, sessionId };
-					if (repository !== undefined) setRecent(rememberRepo(repository.repo));
-				}
-				await client.prompt(sessionId, text, { requestId: requestIds.for("prompt", text), ...choice });
-				requestIds.sent();
-				created.current = undefined;
+				const title = titleFrom(text);
+				const sessionId = await client.create({
+					projectId,
+					agentId: options.agentId,
+					...(title === undefined ? {} : { title }),
+					...(repository === undefined ? {} : { repository }),
+				});
+				if (repository !== undefined) setRecent(rememberRepo(repository.repo));
+				handOver(sessionId, { text, choice });
 				navigate(sessionPath(projectId, sessionId));
 			} catch (reason) {
-				setFailure(
-					created.current === undefined
-						? `The session couldn't be created. ${messageOf(reason)}`
-						: `The session was created, but your message didn't send. ${messageOf(reason)} Send it again.`,
-				);
+				setFailure(`The session couldn't be created. ${messageOf(reason)}`);
 				setSending(false);
 			}
 		},
-		[client, options, sending, pending, projectId, requestIds, choice, repository, repoNotReady],
+		[client, options, sending, pending, projectId, choice, repository, repoNotReady],
 	);
 
 	// Once the agent is known, a message that was waiting for it goes; if it can't be known, the message stays a draft.

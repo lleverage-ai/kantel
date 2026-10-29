@@ -49,7 +49,8 @@ import {
 import { createAuthenticator } from "@harbour/identity/authenticator";
 import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity/jwt";
 import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createSqlIdentity, migrateIdentity } from "@harbour/identity/sql";
+import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
+import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
@@ -232,6 +233,11 @@ export interface Stack {
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
+	/**
+	 * People's passkeys (#132), in D1 with identity: the vault page asks for one before an approval once the person has
+	 * registered one.
+	 */
+	readonly passkeys: Passkeys;
 	/** Host registrations that outlive the object (durable runtime only), for the session API. */
 	readonly hosts?: DurableHosts;
 	/** The vault behind the approval API, when the stack has one (`StackOptions.vault`). */
@@ -301,6 +307,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		);
 	}
 	const authenticator = createAuthenticator({ identity, providers });
+	const passkeyStores = driver === undefined ? createMemoryPasskeyStores() : createSqlPasskeyStores(driver);
+	const passkeys = createPasskeys({ ...passkeyStores, identity, clock, audit });
 
 	const models: StackModels = options.models?.({ audit, clock }) ?? { models: createEchoModels() };
 	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
@@ -451,6 +459,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			memory,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
+			passkeys,
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
 			...(options.vault === undefined ? {} : { vault: options.vault }),
 			organisation,
