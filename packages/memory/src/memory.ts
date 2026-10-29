@@ -21,9 +21,11 @@ import {
 	assertSnapshot,
 	bundleOf,
 	byId,
+	bySpaceAge,
 	checkCreateSpace,
 	decided,
 	forbidAgent,
+	listsSpace,
 	memoryAudit,
 	paginate,
 	proposalFor,
@@ -142,6 +144,15 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			});
 			await audits.spaceCreated(ctx, space);
 			return space;
+		},
+
+		async listSpaces(ctx, page) {
+			const shown: MemorySpace[] = [];
+			for (const stored of spaces.values()) {
+				if (stored.organisationId !== ctx.organisationId) continue;
+				if (await listsSpace(access, ctx, stored.space)) shown.push(stored.space);
+			}
+			return paginate(shown.sort(bySpaceAge), page);
 		},
 
 		async getConcept(ctx, spaceId, conceptId) {

@@ -89,6 +89,51 @@ export interface BrowserSession {
 	readonly endReason?: "closed" | "timeout" | "session_ended" | "aborted" | "revoked";
 }
 
+/**
+ * One step in an open browser, as `browser.act` takes it: model-free, on element IDs from the last page read
+ * (`look`). `scroll` scrolls down by most of a screen; `wait` lets the page settle. A step never takes a credential:
+ * signing in is a human's step, through a share link.
+ */
+export type BrowserAction =
+	| { readonly kind: "look" }
+	| { readonly kind: "goto"; readonly url: string }
+	| { readonly kind: "click"; readonly element: string }
+	| { readonly kind: "fill"; readonly element: string; readonly value: string }
+	| { readonly kind: "select"; readonly element: string; readonly value: string }
+	| { readonly kind: "check"; readonly element: string }
+	| { readonly kind: "press"; readonly key: string }
+	| { readonly kind: "scroll" }
+	| { readonly kind: "wait" };
+
+export type BrowserActionKind = BrowserAction["kind"];
+
+/** The page a browser is on after a step: its readable text and the elements a next step can name. */
+export interface BrowserPage {
+	readonly url: string;
+	readonly title: string;
+	readonly text: string;
+	/** Interactive elements: an ID for `click`, `fill`, `select` and `check`, and what the element is. */
+	readonly elements: readonly { readonly id: string; readonly describe: string }[];
+	/** Whether the step did what it was asked (always `true` for `look`). */
+	readonly succeeded: boolean;
+	/** What the step did, in the provider's words, such as `click link "Learn more"`. */
+	readonly did?: string;
+}
+
+export interface BrowserScreenshot {
+	readonly url: string;
+	readonly title: string;
+	readonly mimeType: "image/png" | "image/jpeg";
+	/** Base64. */
+	readonly data: string;
+}
+
+/** A link that opens the browser's live view, with control, without signing in to the provider. */
+export interface BrowserShareLink {
+	readonly url: string;
+	readonly expiresAt?: Timestamp;
+}
+
 /** The provider behind the broker, such as brwsr. Implementations hold the provider key; nothing else sees it. */
 export interface BrowserProvider {
 	open(input: {
@@ -96,7 +141,14 @@ export interface BrowserProvider {
 		readonly persist: boolean;
 		readonly timeoutMs: number;
 	}): Promise<{ readonly providerSessionId: string; readonly cdpUrl: string }>;
+	/** Ends the browser; a persisting one saves its context. A session already gone is not an error. */
 	release(providerSessionId: string): Promise<void>;
+	/** One step in the browser, then the page it is on. A browser that has ended is `expired`. */
+	act(providerSessionId: string, action: BrowserAction, signal?: AbortSignal): Promise<BrowserPage>;
+	/** The page as it is now. A browser that has ended is `expired`. */
+	screenshot(providerSessionId: string, signal?: AbortSignal): Promise<BrowserScreenshot>;
+	/** A live-view link with control that lasts `minutes`. A browser that has ended is `expired`. */
+	share(providerSessionId: string, minutes: number, signal?: AbortSignal): Promise<BrowserShareLink>;
 }
 
 export interface GrantBrowserInput {
@@ -142,6 +194,22 @@ export interface Browser {
 	/** Whether the browser session may visit `url` under its grant. */
 	checkSite(ctx: CallContext, browserSessionId: string, url: string): Promise<{ readonly allow: boolean }>;
 	close(ctx: CallContext, browserSessionId: string): Promise<BrowserSession>;
+	/**
+	 * One step in an open browser session, then the page it is on. The session's own agent, or a supervisor with
+	 * operator on its agent session. A `goto` off the grant's sites is `refused` before the browser moves; a step that
+	 * lands off them sends the browser to `about:blank` and is `refused`, so the page is never returned. Both are audited
+	 * as `browser.site.refused`. A closed session is `expired`.
+	 */
+	act(ctx: CallContext, browserSessionId: string, action: BrowserAction): Promise<BrowserPage>;
+	/** The page as it is now, for the same callers as `act`. A page off the grant's sites is `refused`. */
+	screenshot(ctx: CallContext, browserSessionId: string): Promise<BrowserScreenshot>;
+	/**
+	 * A live-view link with control, for a human's step such as signing in or a CAPTCHA. Humans and services only (an
+	 * agent is `forbidden`), with operator on the agent session. `minutes` is 15 or 60 (default 15); anything else is `invalid`. The link never
+	 * outlives the browser session. Audited as
+	 * `browser.session.shared`, never with the link.
+	 */
+	share(ctx: CallContext, browserSessionId: string, input?: { readonly minutes?: number }): Promise<BrowserShareLink>;
 	/**
 	 * The session-end teardown: closes every open browser session of an agent session (with `reason` as its end reason)
 	 * and ends its grants and the grants passed on from them. `session_ended` also declines its pending requests; after

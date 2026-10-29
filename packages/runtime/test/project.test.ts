@@ -71,6 +71,64 @@ describe("ConversationProjector", () => {
 		]);
 	});
 
+	it("times a message from its stored message, so a session projected again keeps its times", () => {
+		const prompt: Entry = { ...user(1, "Hi", "prompt"), model: [{ role: "user", content: "Hi", timestamp: 1_000 }] };
+		const answer: Entry = {
+			id: 2,
+			kind: "pi.assistant",
+			model: [{ role: "assistant", content: [{ type: "text", text: "Hello" }], stopReason: "stop", timestamp: 2_000 }],
+		};
+		const timed: Entry = {
+			id: 3,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Again" }],
+					stopReason: "stop",
+					timestamp: 3_000,
+					durationMs: 1_500,
+				},
+			],
+		};
+		// Projected long after: the clock says 9,999, but the items keep when they were sent and generated.
+		const items = replay(new ConversationProjector({ now: () => 9_999 }), [view([prompt, answer, timed])]).items;
+		expect(items.map((item) => [item.id, item.at])).toEqual([
+			["u1", 1_000],
+			["a2", 2_000],
+			["a3", 4_500],
+		]);
+	});
+
+	it("times a streamed answer by when it finished, not when it started streaming", () => {
+		let now = 5;
+		const projector = new ConversationProjector({ now: () => now });
+		const prompt = user(1, "Hi", "prompt");
+		const partial = {
+			...running,
+			generation: { attempt: 1, message: { role: "assistant", content: [{ type: "text", text: "Hel" }] } },
+		};
+		projector.project(view([prompt], partial));
+		now = 50;
+		const answer: Entry = {
+			id: 3,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Hello" }],
+					stopReason: "stop",
+					timestamp: 10,
+					durationMs: 30,
+				},
+			],
+		};
+		expect(projector.project(view([prompt, answer], {}))[0]).toEqual({
+			op: "replace",
+			item: { kind: "assistant", id: "p1", at: 40, text: "Hello", streaming: false },
+		});
+	});
+
 	it("replaces a tool item when its result lands, marking errors and interruptions", () => {
 		const projector = new ConversationProjector({ now: () => 1 });
 		const calls = assistant(
@@ -125,5 +183,20 @@ describe("ConversationProjector", () => {
 		expect(projector.close()).toEqual([{ op: "status", status: "done", attention: "done" }]);
 		expect(projector.project(view([], running))).toEqual([]);
 		expect(projector.status).toBe("done");
+	});
+});
+
+describe("toolLabel", () => {
+	it("says in plain words what a browser tool is doing, and names any other tool", () => {
+		expect(toolLabel("browser_open", { url: "https://en.wikipedia.org/wiki/Harbour" })).toBe(
+			"Opening en.wikipedia.org",
+		);
+		expect(toolLabel("browser_open", {})).toBe("Opening a browser");
+		expect(toolLabel("browser_act", { action: "goto", url: "https://example.com/a" })).toBe("Going to example.com");
+		expect(toolLabel("browser_act", { action: "look" })).toBe("Reading the page");
+		expect(toolLabel("browser_act", { action: "press", key: "Enter" })).toBe("Pressing Enter");
+		expect(toolLabel("browser_act", { action: "goto", url: "not a url" })).toBe("Going to a page");
+		expect(toolLabel("browser_screenshot", {})).toBe("Taking a screenshot");
+		expect(toolLabel("lookup", { url: "https://example.com" })).toBe("Calling lookup");
 	});
 });

@@ -1,0 +1,5 @@
+/* Story-only frame for the memory page. */
+
+.memory-story {
+	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11));
+}

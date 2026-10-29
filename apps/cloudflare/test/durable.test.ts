@@ -9,9 +9,11 @@ import { createMockAccess } from "@harbour/identity/testing";
 import { createSessionRuntime } from "@harbour/runtime/core";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import type { SqlValue } from "@harbour/runtime-cloudflare";
+import { createMemoryObjectBucket } from "@harbour/skills/sql";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
+import { objectSqlDriver } from "../src/audit-outbox.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createEchoModels } from "../src/echo-model.ts";
 import { createGateway } from "../src/gateway.ts";
@@ -84,11 +86,32 @@ function objectStorage(db: DatabaseSync): SessionObjectStorage & { readonly alar
 }
 
 async function durableStorage(bootstrap: BootstrapStore = createMemoryBootstrapStore()): Promise<StackStorage> {
+	const objectDb = new DatabaseSync(":memory:");
+	const sessions = objectStorage(objectDb);
+	// `ctx.storage.transactionSync`: nested in an open transaction it runs as a savepoint, as the object's does.
+	const transactionSync = <T>(work: () => T): T => {
+		const nested = objectDb.isTransaction;
+		objectDb.exec(nested ? "SAVEPOINT sync" : "BEGIN");
+		try {
+			const result = work();
+			objectDb.exec(nested ? "RELEASE sync" : "COMMIT");
+			return result;
+		} catch (error) {
+			objectDb.exec(nested ? "ROLLBACK TO sync" : "ROLLBACK");
+			throw error;
+		}
+	};
 	return {
 		sql: syncSqliteDriver(new DatabaseSync(":memory:")),
-		sessions: objectStorage(new DatabaseSync(":memory:")),
+		sessions,
 		workspaces: createMemoryWorkspaceStore(),
+		skillObjects: createMemoryObjectBucket(),
 		bootstrap,
+		// Audit events queue in the object's SQLite, beside the sessions, as on Cloudflare.
+		auditOutbox: {
+			driver: objectSqlDriver(sessions.sql, transactionSync),
+			background: (work) => void work.catch(() => undefined),
+		},
 	};
 }
 
@@ -162,6 +185,47 @@ describe("the stack over durable storage", () => {
 		expect(await counts(storage)).toEqual({ organisations: 1, users: 1, projects: 1 });
 		const audit = await second.call("/v1/audit/events?type=identity.project.created");
 		expect(((await audit.json()) as { items: unknown[] }).items).toHaveLength(1);
+	});
+
+	it("keeps imported skills and memory across a restart", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const { admin } = first.stack;
+		const organisation = { kind: "organisation", organisationId: first.stack.organisation.id } as const;
+		const revision = await first.stack.skills.importRevision(admin, {
+			owner: organisation,
+			name: "kept",
+			description: "Kept across restarts.",
+			files: [{ path: "SKILL.md", content: "---\nname: kept\ndescription: Kept across restarts.\n---\n\nKept.\n" }],
+			source: { sourceId: "test", ref: "r1" },
+		});
+		const space = await first.stack.memory.createSpace(admin, { owner: organisation, name: "Team" });
+		await first.stack.memory.importSnapshot(admin, space.id, {
+			sourceId: "test",
+			ref: "r1",
+			concepts: [
+				{
+					id: "projects/harbour/kept",
+					title: "Kept",
+					statement: "Memory survives a restart.",
+					scope: { kind: "global" },
+					sources: ["tvdavies/harbour#12"],
+					setBy: "owner",
+					status: "active",
+					updatedAt: 1,
+				},
+			],
+		});
+		await first.stack.close();
+
+		const second = await start(storage);
+		expect(await second.stack.skills.readFile(admin, revision.skillId, 1, "SKILL.md")).toContain("Kept.");
+		expect((await second.stack.skills.list(admin, {})).items.map((item) => item.name)).toEqual(["kept"]);
+		expect((await second.stack.memory.listSpaces(admin)).items.map((item) => item.id)).toEqual([space.id]);
+		const concepts = await second.stack.memory.listConcepts(admin, space.id);
+		expect(concepts.items.map((item) => item.id)).toEqual(["projects/harbour/kept"]);
+		// The file's body is in the object store, under the skills prefix, not in SQL.
+		expect((storage.skillObjects as unknown as { keys(): string[] }).keys()[0]).toMatch(/^skills\/org\//);
 	});
 
 	it("keeps the prompt the user set on the default profile across restarts, and adds none of its own", async () => {

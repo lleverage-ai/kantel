@@ -41,9 +41,11 @@ import {
 	assertSnapshot,
 	bundleOf,
 	byId,
+	bySpaceAge,
 	checkCreateSpace,
 	decided,
 	forbidAgent,
+	listsSpace,
 	memoryAudit,
 	paginate,
 	proposalFor,
@@ -80,6 +82,8 @@ export function memorySchema(dialect: SqlDialect): readonly string[] {
 			imports INTEGER NOT NULL DEFAULT 0,
 			generation INTEGER NOT NULL DEFAULT 0
 		)`,
+		// `listSpaces` reads an organisation's spaces through this one.
+		"CREATE INDEX IF NOT EXISTS memory_spaces_by_organisation ON memory_spaces (organisation_id, created_at)",
 		`CREATE TABLE IF NOT EXISTS memory_space_writes (
 			space_id TEXT NOT NULL,
 			generation INTEGER NOT NULL,
@@ -390,6 +394,19 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			);
 			await audits.spaceCreated(ctx, space);
 			return space;
+		},
+
+		async listSpaces(ctx, page) {
+			const rows = await driver.query<SpaceRow>(
+				`SELECT ${SPACE_COLUMNS} FROM memory_spaces WHERE organisation_id = ? ORDER BY created_at, id`,
+				[ctx.organisationId],
+			);
+			const shown: MemorySpace[] = [];
+			for (const row of rows) {
+				const { space } = spaceFrom(row);
+				if (await listsSpace(access, ctx, space)) shown.push(space);
+			}
+			return paginate(shown.sort(bySpaceAge), page);
 		},
 
 		async getConcept(ctx, spaceId, conceptId) {

@@ -31,6 +31,16 @@ import {
 
 export interface SchedulesSubject {
 	readonly schedules: Schedules;
+	/**
+	 * Another store over the same storage, as a second host would open it, for the cases where two schedulers race.
+	 * Absent: the cases race `schedules` against itself.
+	 */
+	readonly peer?: Schedules;
+	/**
+	 * Opens the store again over the same storage, as a host does after a restart; the old one is not used again. Absent
+	 * (a store that keeps nothing across a restart): the restart cases carry on with `schedules`.
+	 */
+	readonly reopen?: () => Promise<Schedules>;
 }
 
 export type SchedulesConformanceProvider = (
@@ -98,14 +108,16 @@ export function createSchedulesConformance(options: {
 	const assert = options.assertions;
 	const test = (
 		name: string,
-		body: (schedules: Schedules, deps: ConformanceDeps) => Promise<void>,
+		body: (schedules: Schedules, deps: ConformanceDeps, subject: SchedulesSubject) => Promise<void>,
 	): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
 			seedTenancy(deps);
-			await options.provider(deps, (subject) => body(subject.schedules, deps));
+			await options.provider(deps, (subject) => body(subject.schedules, deps, subject));
 		},
+		// The check cases run a dozen hourly occurrences; D1 in Miniflare takes about 15 ms a statement.
+		timeoutMs: 60_000,
 	});
 
 	/** Ticks, claims and finishes one occurrence as RUNNER. */
@@ -433,22 +445,70 @@ export function createSchedulesConformance(options: {
 			assert.deepEqual(await runCheck(schedules, deps, errors(10)), [], "compared with the value last raised");
 		}),
 
-		test("raises one check-failed finding after three failed runs in a row, and again only after a success", async (schedules, deps) => {
+		test("raises check-failed (low) after three failed runs in a row, deduplicated like any finding", async (schedules, deps) => {
 			const check = await createCheck(schedules, deps);
 			const failed: CheckReport = { exitCode: 1 };
 			assert.deepEqual(await runCheck(schedules, deps, failed), []);
 			assert.deepEqual(await runCheck(schedules, deps, { exitCode: 2 }), []);
 			const raised = await runCheck(schedules, deps, failed);
-			assert.partialDeepEqual(raised, [{ key: `check-failed:${check.id}`, reason: "failures", scheduleId: check.id }]);
+			assert.partialDeepEqual(raised, [
+				{ key: `check-failed:${check.id}`, severity: "low", reason: "failures", scheduleId: check.id },
+			]);
 			assert.strictEqual(raised.length, 1);
-			assert.deepEqual(await runCheck(schedules, deps, failed), [], "nothing more while it keeps failing");
 			const runs = (await schedules.listOccurrences(human, check.id)).items;
 			assert.strictEqual(runs.at(-1)?.status, "failed", "a non-zero, non-3 exit is a failed run");
+			for (let hour = 1; hour < 6; hour += 1) {
+				assert.deepEqual(await runCheck(schedules, deps, failed), [], `quiet ${hour} h on while it keeps failing`);
+			}
+			assert.partialDeepEqual(
+				await runCheck(schedules, deps, failed),
+				[{ key: `check-failed:${check.id}`, reason: "reraise" }],
+				"raised again after reraiseHours",
+			);
 			assert.deepEqual(await runCheck(schedules, deps, { exitCode: 0 }), []);
-			assert.deepEqual(await runCheck(schedules, deps, failed), []);
-			assert.deepEqual(await runCheck(schedules, deps, failed), []);
-			assert.strictEqual((await runCheck(schedules, deps, failed)).length, 1, "a success resets the count");
+			for (let run = 0; run < 3; run += 1) {
+				assert.deepEqual(
+					await runCheck(schedules, deps, failed),
+					[],
+					"a success resets the count, but a new streak within reraiseHours is still deduplicated",
+				);
+			}
 			assert.strictEqual(deps.audit.ofType("schedules.finding.raised").length, 2);
+		}),
+
+		test("raises a finding whose severity worsens as escalated, and one unseen for reraiseHours as new again", async (schedules, deps) => {
+			await createCheck(schedules, deps);
+			const disk = (severity: string, status?: string): CheckReport => ({
+				exitCode: 3,
+				findings: [
+					{ key: "disk:/var", severity, summary: "Disk filling", ...(status === undefined ? {} : { status }) },
+				],
+			});
+			assert.partialDeepEqual(await runCheck(schedules, deps, disk("low")), [{ reason: "new" }]);
+			assert.partialDeepEqual(await runCheck(schedules, deps, disk("High")), [
+				{ reason: "escalated", severity: "High" },
+			]);
+			assert.deepEqual(await runCheck(schedules, deps, disk("medium")), [], "less severe is quiet");
+			assert.deepEqual(await runCheck(schedules, deps, disk("sev2")), [], "sev2 reads as high");
+			assert.partialDeepEqual(
+				await runCheck(schedules, deps, disk("SEV1")),
+				[{ reason: "escalated" }],
+				"sev1 is urgent",
+			);
+			assert.deepEqual(await runCheck(schedules, deps, disk("weird")), [], "an unranked severity ranks below all");
+			assert.partialDeepEqual(
+				await runCheck(schedules, deps, disk("weird", "escalated")),
+				[{ reason: "escalated", severity: "weird" }],
+				"the command's own escalated, with a severity other than the one last raised",
+			);
+			for (let hour = 0; hour < 6; hour += 1) {
+				assert.deepEqual(await runCheck(schedules, deps, { exitCode: 0 }), []);
+			}
+			assert.partialDeepEqual(
+				await runCheck(schedules, deps, disk("low")),
+				[{ reason: "new" }],
+				"unseen for reraiseHours: new again",
+			);
 		}),
 
 		test("lets only the claimant report a check", async (schedules, deps) => {
@@ -570,6 +630,91 @@ export function createSchedulesConformance(options: {
 			await assert.rejectsWithCode(schedules.update(human, schedule.id, { timezone: "Mars/Olympus" }), "invalid");
 			await assert.rejectsWithCode(schedules.update(human, schedule.id, { at: deps.clock.now() + HOUR }), "invalid");
 			assert.strictEqual((await schedules.list(human)).items.length, 1, "nothing invalid was stored");
+		}),
+
+		test("two schedulers ticking at once materialise each due time once, and racing runners never share a claim", async (schedules, deps, subject) => {
+			const peer = subject.peer ?? schedules;
+			const created = [];
+			for (let index = 0; index < 4; index += 1) {
+				created.push(await schedules.create(human, hourly(deps, { title: `Job ${index}` })));
+			}
+			deps.clock.advance(3 * HOUR);
+			const ticks = await Promise.all([schedules.tick(WORKER), peer.tick(WORKER), peer.tick(WORKER)]);
+			const materialised = ticks.flat();
+			assert.strictEqual(materialised.length, 4, "one occurrence per schedule across every tick");
+			assert.strictEqual(new Set(materialised.map((occurrence) => occurrence.id)).size, 4);
+			for (const schedule of created) {
+				const listed = (await schedules.listOccurrences(human, schedule.id)).items;
+				assert.strictEqual(listed.length, 1, `${schedule.title} has one occurrence`);
+				assert.partialDeepEqual(listed[0], { coalesced: 3, dueAt: schedule.createdAt + 3 * HOUR });
+				assert.strictEqual((await peer.get(human, schedule.id)).occurrences, 1, "counted once");
+			}
+			const claims = await Promise.all(
+				Array.from({ length: 6 }, (_, index) =>
+					(index % 2 === 0 ? schedules : peer).claim(WORKER, `runner-${index}`, 10 * MINUTE),
+				),
+			);
+			const held = claims.filter((claim) => claim !== undefined);
+			assert.strictEqual(held.length, 4, "each occurrence is claimed once");
+			assert.strictEqual(new Set(held.map((claim) => claim!.id)).size, 4, "no two runners hold one occurrence");
+			for (const claim of held) {
+				assert.strictEqual(claim!.attempt, 1);
+				const runner = claim!.claimedBy!;
+				const finished = await Promise.allSettled([
+					schedules.complete(WORKER, claim!.id, runner, { status: "succeeded" }),
+					peer.complete(WORKER, claim!.id, runner, { status: "succeeded" }),
+				]);
+				assert.strictEqual(
+					finished.filter((result) => result.status === "fulfilled").length,
+					1,
+					"a retried complete finishes the occurrence once",
+				);
+			}
+		}),
+
+		test("a restart neither drops nor duplicates an occurrence, and keeps what a check raised", async (schedules, deps, subject) => {
+			const reopen = subject.reopen ?? (async () => schedules);
+			const start = deps.clock.now();
+			const job = await schedules.create(human, hourly(deps));
+			const check = await createCheck(schedules, deps);
+			deps.clock.advance(HOUR);
+			assert.strictEqual((await schedules.tick(WORKER)).length, 2);
+			const running = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
+			assert.strictEqual(running?.scheduleId, job.id, "the job's occurrence was materialised first");
+			const checkRun = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
+			const findings = [{ key: "disk:/var", severity: "warning", summary: "Disk 91% full", value: 91 }];
+			assert.strictEqual(
+				(await schedules.reportCheck(WORKER, checkRun!.id, RUNNER, { exitCode: 3, findings })).length,
+				1,
+			);
+
+			// The host restarts with the job's occurrence still running.
+			const after = await reopen();
+			assert.strictEqual((await after.tick(WORKER)).length, 0, "ticking again at the same time creates nothing");
+			assert.strictEqual(await after.claim(WORKER, "runner-2", 10 * MINUTE), undefined, "the live claim is kept");
+			deps.clock.advance(10 * MINUTE);
+			const resumed = await after.claim(WORKER, "runner-2", 10 * MINUTE);
+			assert.partialDeepEqual(resumed, { id: running!.id, attempt: 2, claimedBy: "runner-2" });
+			await after.complete(WORKER, resumed!.id, "runner-2", { status: "succeeded" });
+			const jobRuns = (await after.listOccurrences(human, job.id)).items;
+			assert.deepEqual(
+				jobRuns.map((occurrence) => [occurrence.id, occurrence.status]),
+				[[running!.id, "succeeded"]],
+				"the occurrence was resumed, not dropped or doubled",
+			);
+			assert.partialDeepEqual(await after.get(human, job.id), { occurrences: 1, nextDueAt: start + 2 * HOUR });
+
+			deps.clock.set(start + 2 * HOUR);
+			assert.strictEqual((await after.tick(WORKER)).length, 2, "the next due time is materialised once");
+			const first = await after.claim(WORKER, RUNNER, 10 * MINUTE);
+			const second = await after.claim(WORKER, RUNNER, 10 * MINUTE);
+			const nextCheck = [first, second].find((claim) => claim?.scheduleId === check.id)!;
+			assert.deepEqual(
+				await after.reportCheck(WORKER, nextCheck.id, RUNNER, { exitCode: 3, findings }),
+				[],
+				"a finding raised before the restart is not raised again",
+			);
+			assert.strictEqual(deps.audit.ofType("schedules.finding.raised").length, 1);
 		}),
 
 		test("hides another organisation's schedules as not found", async (schedules, deps) => {
