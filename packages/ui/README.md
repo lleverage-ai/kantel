@@ -62,6 +62,7 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `Disclosure` | A summary that shows detail on demand | Navigation |
 | `CopyButton` | Copying a link, code or command | |
 | `TextField` | A labelled single-line input | The composer |
+| `TextAreaField` | A labelled multi-line input, such as a scheduled task's prompt | The composer |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `WorkingIndicator` | The agent working on a turn, live: "Working for 12s" with the working dot | A session's status in a header or list (use `StatusLabel`) |

@@ -54,6 +54,58 @@ export const SessionRecord = Type.Object(
 	{ title: "SessionRecord" },
 );
 
+export const ThinkingLevel = Type.Union(
+	[
+		Type.Literal("off"),
+		Type.Literal("minimal"),
+		Type.Literal("low"),
+		Type.Literal("medium"),
+		Type.Literal("high"),
+		Type.Literal("xhigh"),
+		Type.Literal("max"),
+	],
+	{ title: "ThinkingLevel" },
+);
+
+export const MessageVia = Type.Union([Type.Literal("prompt"), Type.Literal("steer"), Type.Literal("followUp")], {
+	title: "MessageVia",
+	description:
+		"How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in " +
+		"progress at its next model call, and `followUp` runs after the current run ends.",
+});
+
+const messageFields = {
+	text: Type.String({ minLength: 1, description: "The message's words." }),
+	model: Type.Optional(
+		Type.String({
+			minLength: 1,
+			description:
+				"A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model.",
+		}),
+	),
+	thinking: Type.Optional(ThinkingLevel),
+};
+
+export const FirstMessage = Type.Object(messageFields, {
+	title: "FirstMessage",
+	description: "The session's first prompt, sent as soon as it exists.",
+});
+
+export const MessageBody = Type.Object(
+	{ via: Type.Optional(MessageVia), ...messageFields },
+	{ title: "MessageBody", description: "A message to the session's agent. `via` defaults to `prompt`." },
+);
+
+export const Submission = Type.Object(
+	{
+		id: Type.String({ description: "The submission's ID, which names the run the message started or joined." }),
+		sessionId: Type.String(),
+		via: MessageVia,
+		requestId: Type.Optional(Type.String({ description: "The `Idempotency-Key` it was sent with." })),
+	},
+	{ title: "Submission", description: "A message the session accepted." },
+);
+
 export const CreateSessionBody = Type.Object(
 	{
 		projectId: id("The project the session runs in."),
@@ -64,8 +116,22 @@ export const CreateSessionBody = Type.Object(
 		parentSessionId: Type.Optional(
 			Type.String({ description: "Creates a child session owned by this parent; aborting the parent aborts it." }),
 		),
+		message: Type.Optional(FirstMessage),
 	},
-	{ title: "CreateSessionBody" },
+	{
+		title: "CreateSessionBody",
+		description:
+			'Put the host\'s own reference for the session in `labels`, such as `{ lleverageRunId: "run-42" }`, and find it ' +
+			"again with `GET /sessions?label.lleverageRunId=run-42`.",
+	},
+);
+
+export const CreatedSession = Type.Object(
+	{
+		...SessionRecord.properties,
+		submission: Type.Optional(Submission),
+	},
+	{ title: "CreatedSession", description: "A new session, with its first message's submission when it was sent one." },
 );
 
 export const SessionPage = Type.Object(

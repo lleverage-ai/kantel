@@ -345,6 +345,22 @@ export function checkExportSize(sizes: Iterable<number>, maxBytes: number | unde
 	}
 }
 
+/**
+ * Rejects with `refused` a file read of more than `maxBytes` (`Workspaces.read`'s option), from the size the tree or the
+ * read already holds. Absent `maxBytes` allows any size.
+ */
+export function checkReadSize(path: string, bytes: number, maxBytes: number | undefined): void {
+	if (maxBytes === undefined) return;
+	if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new HarbourError("invalid", "maxBytes must be a size in bytes");
+	if (bytes > maxBytes) {
+		throw new HarbourError("refused", `${path} is ${bytes} bytes, over the ${maxBytes} allowed`, {
+			path,
+			maxBytes,
+			bytes,
+		});
+	}
+}
+
 /** Rejects with `aborted` when the caller's signal fired: a commit checks it just before it moves the head. */
 export function requireNotAborted(ctx: CallContext): void {
 	if (ctx.signal?.aborted === true) {

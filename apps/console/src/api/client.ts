@@ -155,6 +155,11 @@ export interface ConsoleClient {
 	 */
 	readonly edit?: (sessionId: string, itemId: string, text: string, options?: SendOptions) => Promise<void>;
 	/**
+	 * Allows or declines the agent's waiting `browser_request` call (its tool item's `callId`): allowing grants the sites
+	 * it asked for, as the signed-in person. Absent on a client that can't (a recorded session).
+	 */
+	decideBrowser?(sessionId: string, callId: string, allow: boolean): Promise<void>;
+	/**
 	 * The session is on screen: it is no longer unread, and doesn't become unread while it stays shown. Call the
 	 * returned function when it leaves the screen.
 	 */

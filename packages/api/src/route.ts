@@ -32,6 +32,17 @@ export interface RouteDefinition {
 	/** A JSON object body. A route with a body still takes an empty one when every property is optional. */
 	readonly body?: TObject;
 	readonly answer: RouteAnswer;
+	/**
+	 * Takes an `Idempotency-Key` header: a retry with the same key gets the first call's answer and does nothing again.
+	 * The handler is given the key (`input.idempotencyKey`) and keeps the promise.
+	 */
+	readonly idempotent?: true;
+	/**
+	 * Answers a stream of frames instead of one JSON body: over a WebSocket (101) when the request upgrades, each message
+	 * a JSON array of frames, and as server-sent events otherwise, one frame per event. The handler returns the
+	 * `Response` itself, and the SDK's method opens the WebSocket.
+	 */
+	readonly stream?: { readonly frame: TSchema };
 	/** The error codes the route documents, besides `unauthenticated` (401), which every route can answer. */
 	readonly errors: readonly ErrorCode[];
 }
@@ -58,7 +69,15 @@ export interface RouteInput<R extends RouteDefinition> {
 	readonly params: RouteParams<R>;
 	readonly query: RouteQuery<R>;
 	readonly body: RouteBody<R>;
+	/** The `Idempotency-Key` header, on an idempotent route that was sent one. */
+	readonly idempotencyKey?: string;
 }
+
+/** The header an idempotent route reads. */
+export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
+/** The longest idempotency key a route takes. */
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
 /** The status each HarbourError code answers with; `unauthenticated` is 401. */
 export const STATUS_BY_CODE: { readonly [code in ErrorCode]: number } = {

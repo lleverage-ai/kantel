@@ -130,9 +130,10 @@ describe("the VaultDO's core", () => {
 				HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "",
 			}),
 		).toEqual({ "model-gateway": "model-token-0123456789" });
-		// The deploy writes exactly the secrets the vault reads: its key, the components' keys and CPA's key.
+		// The deploy writes exactly the secrets the stack reads: the vault's key, the components' keys, CPA's key and
+		// brwsr's key.
 		expect([...VAULT_SECRETS].sort()).toEqual(
-			["HARBOUR_VAULT_KEY", "HARBOUR_CPA_API_KEY", ...Object.values(COMPONENT_TOKENS)].sort(),
+			["HARBOUR_VAULT_KEY", "HARBOUR_CPA_API_KEY", "HARBOUR_BRWSR_API_KEY", ...Object.values(COMPONENT_TOKENS)].sort(),
 		);
 	});
 });

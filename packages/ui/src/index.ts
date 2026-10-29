@@ -89,6 +89,7 @@ export {
 	type SegmentOption,
 	SelectField,
 	type SelectOption,
+	TextAreaField,
 	TextField,
 } from "./primitives/controls.tsx";
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
@@ -106,6 +107,33 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
+// Schedules: the create and edit form, and the calls it writes with.
+export { ScheduleForm, type ScheduleFormProps } from "./schedules/form/schedule-form.tsx";
+export {
+	createScheduleFormFlow,
+	type DraftErrors,
+	draftFromSchedule,
+	emptyDraft,
+	previewDraft,
+	readDraft,
+	type ScheduleAgent,
+	type ScheduleDraft,
+	type ScheduleFormFlow,
+	type ScheduleFormProblem,
+	type ScheduleFormState,
+} from "./schedules/form/schedule-form-model.ts";
+export {
+	bindScheduleWrites,
+	type CheckPayload,
+	type FormKind,
+	isFormKind,
+	readCheckPayload,
+	readTaskPayload,
+	type ScheduleUpdate,
+	type ScheduleWrites,
+	type TaskPayload,
+	taskPayload,
+} from "./schedules/form/schedule-writes.ts";
 // The schedules page.
 export {
 	bindSchedules,
@@ -206,7 +234,10 @@ export {
 	type ToolCallChipProps,
 	ToolCallGroup,
 	type ToolCallGroupProps,
+	ToolImages,
+	type ToolImagesProps,
 	toolIcon,
+	toolImageSrc,
 } from "./session/tool-call.tsx";
 export {
 	type RowRenderPhase,

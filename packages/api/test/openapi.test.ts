@@ -52,6 +52,16 @@ describe("OpenAPI document", () => {
 		expect(Object.keys(abort.responses as Json).sort()).toEqual(["204", "400", "401", "403", "404", "409"]);
 	});
 
+	it("documents the Idempotency-Key header on idempotent routes only", () => {
+		const paths = doc.paths as { [path: string]: { [method: string]: Json } };
+		for (const route of Object.values(routes)) {
+			const op = paths[route.path]?.[route.method.toLowerCase()] as Json;
+			const headers = ((op.parameters as Json[] | undefined) ?? []).filter((param) => param.in === "header");
+			expect(headers.map((param) => param.name)).toEqual("idempotent" in route ? ["Idempotency-Key"] : []);
+		}
+		expect("idempotent" in routes.sendMessage).toBe(true);
+	});
+
 	it("resolves every reference to a component", () => {
 		const schemas = (doc.components as { schemas: Json }).schemas;
 		const refs = references(doc);

@@ -282,41 +282,44 @@ async function captureScreenshot(
 		failAll(new HarbourError("aborted", "The screenshot was cancelled"));
 		socket.close();
 	};
+	const onClose = () => failAll(new HarbourError("unavailable", "The browser's CDP connection closed"));
+	// Listeners rather than `on*` properties: Cloudflare's WebSocket has only `addEventListener`.
+	const onMessage = (event: { readonly data: unknown }) => {
+		let message: { id?: unknown; result?: unknown; error?: { message?: unknown } };
+		try {
+			message = JSON.parse(String(event.data));
+		} catch {
+			return;
+		}
+		if (typeof message.id !== "number") return;
+		const waiting = pending.get(message.id);
+		if (waiting === undefined) return;
+		pending.delete(message.id);
+		if (message.error !== undefined) {
+			waiting.reject(new HarbourError("unavailable", `CDP: ${str(message.error.message) || "error"}`));
+		} else {
+			waiting.resolve(message.result ?? {});
+		}
+	};
 	try {
 		await new Promise<void>((resolve, reject) => {
 			const timer = setTimeout(
 				() => reject(new HarbourError("unavailable", "The browser's CDP connection did not open in time")),
 				timeoutMs,
 			);
-			socket.onopen = () => {
+			socket.addEventListener("open", () => {
 				clearTimeout(timer);
 				resolve();
-			};
-			socket.onerror = () => {
+			});
+			socket.addEventListener("error", () => {
 				clearTimeout(timer);
 				reject(new HarbourError("unavailable", "Could not connect to the browser over CDP"));
-			};
+			});
 			if (signal?.aborted === true) reject(new HarbourError("aborted", "The screenshot was cancelled"));
 		});
 		signal?.addEventListener("abort", onAbort, { once: true });
-		socket.onmessage = (event) => {
-			let message: { id?: unknown; result?: unknown; error?: { message?: unknown } };
-			try {
-				message = JSON.parse(String(event.data));
-			} catch {
-				return;
-			}
-			if (typeof message.id !== "number") return;
-			const waiting = pending.get(message.id);
-			if (waiting === undefined) return;
-			pending.delete(message.id);
-			if (message.error !== undefined) {
-				waiting.reject(new HarbourError("unavailable", `CDP: ${str(message.error.message) || "error"}`));
-			} else {
-				waiting.resolve(message.result ?? {});
-			}
-		};
-		socket.onclose = () => failAll(new HarbourError("unavailable", "The browser's CDP connection closed"));
+		socket.addEventListener("message", onMessage);
+		socket.addEventListener("close", onClose);
 		const send = (method: string, params: object, sessionId?: string): Promise<{ readonly [key: string]: unknown }> => {
 			next += 1;
 			const id = next;
@@ -353,7 +356,8 @@ async function captureScreenshot(
 		return { url: str(target.url), title: str(target.title), mimeType: "image/jpeg", data };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
-		socket.onclose = null;
+		socket.removeEventListener("close", onClose);
+		socket.removeEventListener("message", onMessage);
 		failAll(new HarbourError("aborted", "The CDP connection was closed"));
 		try {
 			socket.close();

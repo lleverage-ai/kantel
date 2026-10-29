@@ -7,7 +7,15 @@
 import { HarbourError } from "@harbour/contracts";
 import type { TObject, TSchema } from "typebox";
 import Value from "typebox/value";
-import { pathParameters, pathPattern, type RouteDefinition, type RouteInput, type RouteOutput } from "./route.ts";
+import {
+	IDEMPOTENCY_KEY_HEADER,
+	MAX_IDEMPOTENCY_KEY_LENGTH,
+	pathParameters,
+	pathPattern,
+	type RouteDefinition,
+	type RouteInput,
+	type RouteOutput,
+} from "./route.ts";
 
 /** The longest a request body may be. */
 export const MAX_BODY_BYTES = 1024 * 1024;
@@ -132,6 +140,19 @@ function queryOf(schema: TObject, params: URLSearchParams): unknown {
 	return Value.Convert(schema, raw);
 }
 
+/** The request's idempotency key: 1 to 255 visible ASCII characters, or undefined when it sent none. */
+function idempotencyKeyOf(request: Request): string | undefined {
+	const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
+	if (key === null) return undefined;
+	if (key.length === 0 || key.length > MAX_IDEMPOTENCY_KEY_LENGTH || !/^[\x21-\x7e]+$/.test(key)) {
+		throw new HarbourError(
+			"invalid",
+			`${IDEMPOTENCY_KEY_HEADER} must be 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters`,
+		);
+	}
+	return key;
+}
+
 const answer = (status: number, body: unknown): Response =>
 	status === 204 || body === undefined
 		? new Response(null, { status: status === 204 ? 204 : status, headers: { "cache-control": "no-store" } })
@@ -168,7 +189,13 @@ export function createRouter<const Rs extends { readonly [id: string]: RouteDefi
 				route.query === undefined ? {} : checked(route.query, queryOf(route.query, url.searchParams), "query");
 			const body =
 				route.body === undefined ? undefined : checked(route.body, await readBody(request, maxBodyBytes), "body");
-			const input = { params, query, body } as RouteInput<RouteDefinition>;
+			const idempotencyKey = route.idempotent === true ? idempotencyKeyOf(request) : undefined;
+			const input = {
+				params,
+				query,
+				body,
+				...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+			} as RouteInput<RouteDefinition>;
 			const output = await handler(ctx, input, request);
 			if (output instanceof Response) return output;
 			return answer(route.answer.status, output);
