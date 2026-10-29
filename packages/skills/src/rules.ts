@@ -7,6 +7,7 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	DEFAULT_SKILLS_AUTHORITY,
 	HarbourError,
 	type JsonValue,
 	type OwnerRef,
@@ -18,6 +19,7 @@ import {
 	type SessionSkillPin,
 	type SkillFile,
 	type SkillRevision,
+	type SkillsAuthority,
 	type SkillVisibility,
 	systemContext,
 } from "@harbour/contracts";
@@ -130,7 +132,50 @@ export function paginate<T>(items: readonly T[], page: PageRequest | undefined):
 		: { items: items.slice(start, end) };
 }
 
-/** Checks project access on a project-owned skill; other owners keep their own rules. */
+/** A store's authority, checked: each change a role. Without one, `DEFAULT_SKILLS_AUTHORITY`. */
+export function authorityOf(authority: SkillsAuthority | undefined): SkillsAuthority {
+	if (authority === undefined) return DEFAULT_SKILLS_AUTHORITY;
+	const roles = new Set<unknown>(["viewer", "operator", "admin"]);
+	for (const change of Object.keys(DEFAULT_SKILLS_AUTHORITY) as (keyof SkillsAuthority)[]) {
+		if (!roles.has(authority[change])) {
+			throw new HarbourError("invalid", `The skills authority needs a role for ${change}`);
+		}
+	}
+	return Object.freeze({
+		create: authority.create,
+		saveDraft: authority.saveDraft,
+		publish: authority.publish,
+		importRevision: authority.importRevision,
+	});
+}
+
+/**
+ * Checks the role a change needs on a skill of `owner` (`SkillsAuthority`): on the project for a project's skill;
+ * otherwise across the organisation, except that a human user always may change their own skills. An agent acts
+ * through its own open session, as an operator. Platform skills are `assertMayOwn`'s. Without `access` the store
+ * checks only the organisation.
+ */
+export async function requireWrite(
+	access: ProjectAccess | undefined,
+	ctx: CallContext,
+	owner: OwnerRef,
+	needed: Role,
+	operation: string,
+	skillId?: string,
+): Promise<void> {
+	if (access === undefined || owner.kind === "platform") return;
+	const actor = ctx.actor;
+	if (owner.kind === "user" && actor.kind === "human" && actor.userId === owner.userId) return;
+	await access.require(ctx, {
+		...(owner.kind === "project" ? { projectId: owner.projectId } : {}),
+		...(actor.kind === "agent" ? { sessionId: actor.sessionId } : {}),
+		needed,
+		operation,
+		...(skillId === undefined ? {} : { subject: { kind: "skills.skill", id: skillId } }),
+	});
+}
+
+/** Checks project access on a project-owned skill for a read; other owners' skills are open to their organisation. */
 export async function requireOwner(
 	access: ProjectAccess | undefined,
 	ctx: CallContext,
@@ -201,13 +246,14 @@ export async function checkPin(
 /** The checks `importRevision` makes before it reads anything. */
 export async function checkImport(
 	access: ProjectAccess | undefined,
+	authority: SkillsAuthority,
 	ctx: CallContext,
 	input: { readonly owner: OwnerRef; readonly name: string; readonly description: string; readonly source: Source },
 	validateName: (name: string) => void,
 ): Promise<void> {
 	forbidAgent(ctx, "import skills");
 	assertMayOwn(ctx, input.owner);
-	await requireOwner(access, ctx, input.owner, "operator", "skills.importRevision");
+	await requireWrite(access, ctx, input.owner, authority.importRevision, "skills.importRevision");
 	validateName(input.name);
 	assertDescription(input.description);
 	if (input.source.sourceId === "" || input.source.ref === "") {

@@ -11,6 +11,7 @@ import {
 	type SkillPackage,
 	type SkillRevision,
 	type Skills,
+	type SkillsAuthority,
 	type SkillVisibility,
 	systemClock,
 } from "@harbour/contracts";
@@ -18,6 +19,7 @@ import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, valid
 import {
 	assertDescription,
 	assertMayOwn,
+	authorityOf,
 	checkImport,
 	checkList,
 	checkPin,
@@ -31,6 +33,7 @@ import {
 	paginate,
 	prepareFiles,
 	requireOwner,
+	requireWrite,
 	type Source,
 	skillsAudit,
 	utf8Size,
@@ -41,12 +44,19 @@ export interface MemorySkillsOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
 	/**
-	 * Project access (settled question 7): project-owned skills need `viewer` to read and `operator` to change, a
-	 * `list` naming a project needs `viewer` on it, `pinForSession` needs `operator` on the session's project, and a
-	 * visibility may name only the calling human's own user. Without it the store checks only the organisation;
-	 * every target and every conformance run passes one.
+	 * Project access (settled question 7): project-owned skills need `viewer` to read and the `authority`'s role to
+	 * change, organisation- and user-owned skills that role across the organisation, a `list` naming a project needs
+	 * `viewer` on it, `pinForSession` needs `operator` on the session's project, and a visibility may name only the
+	 * calling human's own user. Without it the store checks only the organisation; every target and every conformance
+	 * run passes one.
 	 */
 	readonly access?: ProjectAccess;
+	/**
+	 * The role each change needs (`SkillsAuthority`), checked through `access` for every owner but the platform: on the
+	 * project for a project's skill, across the organisation otherwise, and none for a human changing their own user's
+	 * skill. Default `DEFAULT_SKILLS_AUTHORITY` (`operator` for all); one missing a role is `invalid`.
+	 */
+	readonly authority?: SkillsAuthority;
 	/** Where skills are mounted in the sandbox; a listing's path is `<mountRoot>/<name>/SKILL.md`. Default `/skills`. */
 	readonly mountRoot?: string;
 }
@@ -75,6 +85,7 @@ interface StoredSkill {
 export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 	const clock = options.clock ?? systemClock;
 	const access = options.access;
+	const authority = authorityOf(options.authority);
 	const audits = skillsAudit(options.audit, clock);
 	const mountRoot = (options.mountRoot ?? "/skills").replace(/\/+$/, "");
 
@@ -184,7 +195,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		async create(ctx, input) {
 			forbidAgent(ctx, "create skills");
 			assertMayOwn(ctx, input.owner);
-			await requireOwner(access, ctx, input.owner, "operator", "skills.create");
+			await requireWrite(access, ctx, input.owner, authority.create, "skills.create");
 			validateSkillName(input.name);
 			assertDescription(input.description);
 			const pkg = { ...createPackage(input.owner, input.name, input.description).pkg };
@@ -201,7 +212,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		async saveDraft(ctx, skillId, input) {
 			const before = skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.pkg.owner);
-			await requireOwner(access, ctx, before.pkg.owner, "operator", "skills.saveDraft", skillId);
+			await requireWrite(access, ctx, before.pkg.owner, authority.saveDraft, "skills.saveDraft", skillId);
 			if (input.description !== undefined) assertDescription(input.description);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
@@ -228,7 +239,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			forbidAgent(ctx, "publish skills");
 			const before = skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.pkg.owner);
-			await requireOwner(access, ctx, before.pkg.owner, "operator", "skills.publish", skillId);
+			await requireWrite(access, ctx, before.pkg.owner, authority.publish, "skills.publish", skillId);
 			// Re-read after the await; everything below changes the package without another await until the audit.
 			const stored = skillFor(ctx, skillId);
 			const latest = latestOf(stored);
@@ -304,7 +315,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		},
 
 		async importRevision(ctx, input) {
-			await checkImport(access, ctx, input, validateSkillName);
+			await checkImport(access, authority, ctx, input, validateSkillName);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
 			// Everything below is synchronous, so a concurrent import of the same ref finds this one's revision.
