@@ -11,7 +11,14 @@ import {
 } from "@harbour/contracts";
 import { readAll, toQuery } from "@harbour/ui";
 import { describe, expect, it } from "vitest";
-import { apiAudit, auditApiSource, readAuditScope, rememberRequests, sessionLink } from "./audit-http.ts";
+import {
+	apiAudit,
+	auditApiSource,
+	readAuditPeople,
+	readAuditScope,
+	rememberRequests,
+	sessionLink,
+} from "./audit-http.ts";
 
 const NOW = Date.UTC(2026, 9, 27, 12);
 
@@ -118,8 +125,9 @@ describe("the audit log over the audit query API", () => {
 			fetch: fetcher,
 			headers: () => ({ authorization: "Bearer tom" }),
 		});
-		// No identity API yet: no organisations or people to choose from.
+		// The people and organisations are read when the log opens (`people`), not listed up front.
 		expect(audit.choices).toEqual({});
+		expect(audit.people).toBeDefined();
 		expect(audit.scope).toBeDefined();
 		expect(await audit.credentials?.()).toEqual([
 			{ value: "itm_github", label: "GitHub token" },
@@ -162,6 +170,73 @@ describe("the audit log over the audit query API", () => {
 		expect(link("ses_1", "ses_1/5", "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
 		expect(link("ses_1", "call_7", "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1#turn=call_7");
 		expect(link("ses_1", "ses_1/4")).toBeUndefined();
+	});
+
+	it("reads the people of every organisation the viewer may read, by name, and the organisations to choose from", async () => {
+		const asked: string[] = [];
+		const people: Record<string, { userId: string; name: string }[]> = {
+			org_a: [
+				{ userId: "usr_tom", name: "Tom Davies" },
+				{ userId: "usr_ada", name: "Ada Lovelace" },
+			],
+			org_b: [
+				{ userId: "usr_tom", name: "Tom Davies" },
+				{ userId: "usr_grace", name: "Grace Hopper" },
+			],
+		};
+		const fetcher = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+			const request = new Request(input, init);
+			const organisation = request.headers.get(ORGANISATION_HEADER) ?? undefined;
+			const path = new URL(request.url).pathname;
+			asked.push(`${path} ${organisation ?? "-"} ${request.headers.get("authorization")}`);
+			if (path === "/v1/organisations") {
+				return Response.json({
+					items: [
+						{ id: "org_a", name: "Acme" },
+						{ id: "org_b", name: "Bluebird" },
+					],
+					current: "org_a",
+				});
+			}
+			// Bluebird's people can't be read: Acme's still are.
+			if (organisation === "org_b")
+				return Response.json({ error: { code: "forbidden", message: "No" } }, { status: 403 });
+			return Response.json({ items: people[organisation ?? "org_a"] });
+		};
+		const found = await readAuditPeople({
+			baseUrl: "https://harbour.test",
+			fetch: fetcher,
+			headers: () => ({ authorization: "Bearer tom" }),
+		});
+		expect(found).toEqual({
+			actors: [
+				{ value: "human:usr_ada", label: "Ada Lovelace" },
+				{ value: "human:usr_tom", label: "Tom Davies" },
+			],
+			organisations: [
+				{ value: "org_a", label: "Acme" },
+				{ value: "org_b", label: "Bluebird" },
+			],
+		});
+		expect(asked.sort()).toEqual([
+			"/v1/members org_a Bearer tom",
+			"/v1/members org_b Bearer tom",
+			"/v1/organisations - Bearer tom",
+		]);
+	});
+
+	it("reads the caller's own organisation's people when the organisations can't be read", async () => {
+		const fetcher = async (input: Parameters<typeof fetch>[0]) => {
+			const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+			if (path === "/v1/organisations") return new Response("", { status: 404 });
+			return Response.json({ items: [{ userId: "usr_tom", name: "Tom Davies" }] });
+		};
+		const baseUrl = "https://harbour.test";
+		expect(await readAuditPeople({ baseUrl, fetch: fetcher })).toEqual({
+			actors: [{ value: "human:usr_tom", label: "Tom Davies" }],
+		});
+		const failing = async () => Response.json({ error: { code: "forbidden", message: "No" } }, { status: 403 });
+		await expect(readAuditPeople({ baseUrl, fetch: failing })).rejects.toThrow();
 	});
 
 	it("links rows about a vault request to its page when the console has the vault page", () => {

@@ -62,6 +62,14 @@ export interface AuditScope {
 	readonly sessions: readonly Choice[];
 }
 
+/** Who the audit log's filters and rows name: the people, by `actorKey`, and the organisations the viewer may read. */
+export interface AuditPeople {
+	/** The people, a `human:<userId>` key each, by name. */
+	readonly actors: readonly Choice[];
+	/** The organisations, the current one first; absent when they couldn't be read. */
+	readonly organisations?: readonly Choice[];
+}
+
 /**
  * The agent's skills and memory as the signed-in person may read them: the skills page's and memory page's sources.
  * On `source=api` they run over the public API's skills and memory routes (`agent-http.ts`), read-only; on
@@ -116,6 +124,12 @@ export interface ConsoleAudit {
 	 * as they were.
 	 */
 	readonly scope?: () => Promise<AuditScope>;
+	/**
+	 * Reads the people and organisations to filter by, each time the audit log opens, for a host with no list of them up
+	 * front. They become the *Who* and *Organisation* choices, and rows name people by them. A failed read leaves both as
+	 * they were.
+	 */
+	readonly people?: () => Promise<AuditPeople>;
 	/** Check for newer events this often (ms). */
 	readonly pollMs?: number;
 }

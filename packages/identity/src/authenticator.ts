@@ -25,6 +25,7 @@ import { decodeJwt } from "jose";
 import { API_KEY_SECRET_PREFIX } from "./index.ts";
 import type { SignInProvider } from "./jwt.ts";
 import { SESSION_TOKEN_PREFIX } from "./otp.ts";
+import { registerSignedIn, type SignedIn } from "./signed-in.ts";
 
 /** The authenticator resolves keys and sign-ins as itself: `authenticateApiKey` and `signIn` are worker calls. */
 const AUTHENTICATOR_CONTEXT = systemContext("authenticator");
@@ -90,11 +91,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 	const oidcProviders = providers.filter((provider) => provider.method === "oidc");
 	const sessionProviders = providers.filter((provider) => provider.method === "harbour_session");
 
-	async function human(
-		request: AuthenticatorRequest,
-		candidates: readonly SignInProvider[],
-		token: string,
-	): Promise<AuthenticatedCaller> {
+	async function human(candidates: readonly SignInProvider[], token: string): Promise<SignedIn> {
 		const provider = providerFor(candidates, token);
 		const external = await provider.verify(token);
 		if (signIn === undefined) throw authenticationError("invalid", INVALID_MESSAGE);
@@ -108,25 +105,41 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 		return {
 			method: provider.method,
 			actor: { kind: "human", userId: signedIn.user.id },
-			organisationId: organisationFor(request, signedIn.organisationIds),
+			organisationIds: signedIn.organisationIds,
 		};
 	}
 
-	return {
+	/**
+	 * The person a request's credentials name, with every organisation they may act in; undefined for an API key (the
+	 * bearer `apiKey` is then the key). Missing or invalid credentials throw as `authenticate` does.
+	 */
+	async function person(request: AuthenticatorRequest): Promise<{ person?: SignedIn; apiKey?: string }> {
+		// An API key comes first: a host app behind Cloudflare Access may also carry an Access service token.
+		const token = bearerToken(request);
+		// A Harbour session is a bearer of its own shape, so it never reaches a JWT provider.
+		if (token?.startsWith(SESSION_TOKEN_PREFIX)) {
+			if (sessionProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
+			return { person: await human(sessionProviders, token) };
+		}
+		if (token === undefined || !token.startsWith(API_KEY_SECRET_PREFIX)) {
+			const accessToken = accessProviders[0]?.token(request);
+			if (accessToken !== undefined) return { person: await human(accessProviders, accessToken) };
+			if (token === undefined) throw authenticationError("missing", "This call needs credentials");
+			if (oidcProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
+			return { person: await human(oidcProviders, token) };
+		}
+		return { apiKey: token };
+	}
+
+	const authenticator: Authenticator = {
 		async authenticate(request) {
-			// An API key comes first: a host app behind Cloudflare Access may also carry an Access service token.
-			const token = bearerToken(request);
-			// A Harbour session is a bearer of its own shape, so it never reaches a JWT provider.
-			if (token?.startsWith(SESSION_TOKEN_PREFIX)) {
-				if (sessionProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
-				return human(request, sessionProviders, token);
-			}
-			if (token === undefined || !token.startsWith(API_KEY_SECRET_PREFIX)) {
-				const accessToken = accessProviders[0]?.token(request);
-				if (accessToken !== undefined) return human(request, accessProviders, accessToken);
-				if (token === undefined) throw authenticationError("missing", "This call needs credentials");
-				if (oidcProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
-				return human(request, oidcProviders, token);
+			const { person: signedIn, apiKey: token = "" } = await person(request);
+			if (signedIn !== undefined) {
+				return {
+					method: signedIn.method,
+					actor: signedIn.actor,
+					organisationId: organisationFor(request, signedIn.organisationIds),
+				};
 			}
 			try {
 				const authentication = await identity.authenticateApiKey(AUTHENTICATOR_CONTEXT, token);
@@ -137,6 +150,8 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 			}
 		},
 	};
+	registerSignedIn(authenticator, async (request) => (await person(request)).person);
+	return authenticator;
 }
 
 const STATUS: Record<AuthenticationFailure, number> = { missing: 401, invalid: 401, organisation: 403 };

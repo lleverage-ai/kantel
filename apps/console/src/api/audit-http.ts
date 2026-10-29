@@ -10,9 +10,10 @@ import {
 	type Project,
 	type SessionRecord,
 } from "@harbour/contracts";
+import { createIdentityClient, type OrganisationSummary } from "@harbour/identity/http";
 import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
 import { sessionTurnPath, vaultRequestPath } from "../app/router.ts";
-import type { AuditScope, ConsoleAudit } from "./oversight.ts";
+import type { AuditPeople, AuditScope, ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
 	readonly baseUrl: string;
@@ -138,12 +139,74 @@ export async function readAuditScope(options: Partial<AuditApiSourceOptions> = {
 	};
 }
 
+/** A person's key as the audit view's actor filter takes it (`actorKey` in @harbour/ui's audit model). */
+export const personKey = (userId: string): string => `human:${userId}`;
+
+/** The most organisations whose people `readAuditPeople` reads. */
+export const PEOPLE_ORGANISATIONS_CAP = 20;
+
+/** People's names by user ID, and the organisations they were read from when those could be read. */
+export interface People {
+	readonly names: ReadonlyMap<string, string>;
+	readonly organisations?: readonly OrganisationSummary[];
+}
+
+/**
+ * People's names from the identity API on the same origin: `GET /v1/organisations`, then `GET /v1/members` in each of
+ * them (naming it with `Harbour-Organisation`), so a record from any organisation the viewer may read names its
+ * person. Without the organisations, the people of the caller's own. An organisation whose people can't be read adds
+ * none; rejects only when no one could be read at all.
+ */
+export async function readPeople(options: Partial<AuditApiSourceOptions> = {}): Promise<People> {
+	const clientFor = (organisationId?: string) =>
+		createIdentityClient({
+			baseUrl: options.baseUrl ?? "",
+			...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+			headers: async () => {
+				const headers = new Headers((await options.headers?.()) ?? {});
+				if (organisationId !== undefined) headers.set(ORGANISATION_HEADER, organisationId);
+				return Object.fromEntries(headers);
+			},
+		});
+	const organisations = await clientFor()
+		.organisations()
+		.catch(() => undefined);
+	const ids = organisations?.items.slice(0, PEOPLE_ORGANISATIONS_CAP).map((organisation) => organisation.id);
+	const reads =
+		ids === undefined || ids.length <= 1
+			? [clientFor().members()]
+			: ids.map((organisationId) => clientFor(organisationId).members());
+	const read = await Promise.allSettled(reads);
+	const found = read.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+	if (found.length === 0) {
+		throw (read[0] as PromiseRejectedResult | undefined)?.reason ?? new Error("No people could be read");
+	}
+	const names = new Map<string, string>();
+	for (const member of found.flat()) if (!names.has(member.userId)) names.set(member.userId, member.name);
+	return { names, ...(organisations === undefined ? {} : { organisations: organisations.items }) };
+}
+
+/**
+ * The people and organisations to filter the log by (`readPeople`): the Who filter's choices, a `human:<userId>` key
+ * each, and the Organisation filter's, the current one first.
+ */
+export async function readAuditPeople(options: Partial<AuditApiSourceOptions> = {}): Promise<AuditPeople> {
+	const { names, organisations } = await readPeople(options);
+	return {
+		actors: [...names].map(([userId, name]) => ({ value: personKey(userId), label: name })).sort(byLabel),
+		...(organisations === undefined
+			? {}
+			: { organisations: organisations.map((organisation) => ({ value: organisation.id, label: organisation.name })) }),
+	};
+}
+
 /**
  * The audit log on the gateway this console is served by (`source=api`). Same-origin, like the session API: behind
- * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. With no identity API yet, there
- * is no list of organisations or people: the log is the caller's own organisation's and rows name people by ID. The
- * credentials to filter by, and their names, come from the log's own `vault.item.created` events; the projects, agents
- * and sessions from the session API (`readAuditScope`). Rows link to the session they came from, at the turn when the
+ * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. The people and organisations to
+ * filter by, and the names rows give people, come from the identity API (`readAuditPeople`); the log starts on the
+ * caller's own organisation, and rows name a person it can't name by ID. The credentials to filter by, and their
+ * names, come from the log's own `vault.item.created` events; the projects, agents and sessions from the session API
+ * (`readAuditScope`). Rows link to the session they came from, at the turn when the
  * event names one, and rows about a vault request (asked, approved, denied, withdrawn) to its page on the vault, when
  * the console has one (`vaultRequests`).
  */
@@ -163,6 +226,7 @@ export function apiAudit(
 		choices: {},
 		credentials: () => credentialChoices(source),
 		scope: () => readAuditScope(sourceOptions),
+		people: () => readAuditPeople(sourceOptions),
 		pollMs: 10_000,
 	};
 }
