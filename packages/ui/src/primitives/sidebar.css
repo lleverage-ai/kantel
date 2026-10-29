@@ -1,0 +1,366 @@
+/* The sidebar: a head, a body that scrolls on its own, and a foot that stays. Every row in it shares one inset
+   (--hb-space-3 from the edge, --hb-space-5 inside the row), so icons, names and headings line up down the column. */
+
+.hb-sidebar {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	height: 100%;
+	min-height: 0;
+	border-right: var(--hb-hairline) solid var(--hb-border);
+	background: var(--hb-panel);
+	color: var(--hb-text);
+}
+
+.hb-sidebar-head {
+	display: flex;
+	flex: none;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-lg);
+	padding: var(--hb-space-4) var(--hb-space-3) var(--hb-space-4) calc(var(--hb-space-3) + var(--hb-space-5));
+}
+
+.hb-sidebar-brand {
+	min-width: 0;
+	overflow: hidden;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-sidebar-toggle {
+	color: var(--hb-text-muted);
+}
+
+.hb-sidebar-body {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-height: 0;
+	padding: var(--hb-space-2) var(--hb-space-3) var(--hb-space-7);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+}
+
+.hb-sidebar-foot {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	padding: var(--hb-space-5) var(--hb-space-3) var(--hb-space-4);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+/* Small and muted, like the session list's group headings: a shelf label, not a banner. */
+.hb-sidebar-heading {
+	margin: 0 0 var(--hb-space-2);
+	padding: 0 var(--hb-space-5);
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-sidebar-items {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-sidebar-item-slot {
+	min-width: 0;
+}
+
+/* A page link: muted until it is the page shown, which is filled and in full-strength text. */
+.hb-sidebar-item {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	min-height: var(--hb-control-md);
+	padding: 0 var(--hb-space-5);
+	border-radius: var(--hb-radius-control);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+	text-decoration: none;
+}
+
+.hb-sidebar-item:focus-visible {
+	outline-offset: calc(var(--hb-ring) * -1);
+}
+
+/*
+ * An icon beside a label sits on the middle of the label's capitals, as ListRow's leading slot does (components.md,
+ * "Centring on text"): the slot is one line of the label's type with an invisible character for a baseline, the icon
+ * rests on that baseline taking no room above it, then moves up by --hb-on-cap.
+ */
+.hb-sidebar-item-icon,
+.hb-sidebar-project-icon {
+	display: inline-flex;
+	flex: none;
+	align-items: baseline;
+	justify-content: center;
+	min-width: var(--hb-icon-md);
+	height: calc(1em * var(--hb-leading-tight));
+	color: var(--hb-text-faint);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-sidebar-item-icon::before,
+.hb-sidebar-project-icon::before {
+	content: "\200b";
+}
+
+.hb-sidebar-item-icon > .hb-icon-md,
+.hb-sidebar-project-icon > .hb-icon-md {
+	margin-top: calc(-1 * var(--hb-icon-md));
+	translate: 0 var(--hb-on-cap);
+}
+
+.hb-sidebar-item-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-sidebar-item-trailing {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-sidebar-item:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-sidebar-item:hover .hb-sidebar-item-icon {
+	color: var(--hb-text-muted);
+}
+
+.hb-sidebar-item-selected,
+.hb-sidebar-item-selected:hover {
+	background: var(--hb-selected);
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-sidebar-item.hb-sidebar-item-selected .hb-sidebar-item-icon {
+	color: var(--hb-text);
+}
+
+/* A project: chevron, folder and name on one row, its sessions nested under it on a guide line. */
+.hb-sidebar-project {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-sidebar-project-row {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	min-height: var(--hb-control-lg);
+	border-radius: var(--hb-radius-control);
+}
+
+.hb-sidebar-project-row:hover {
+	background: var(--hb-hover);
+}
+
+.hb-sidebar-project-selected .hb-sidebar-project-row,
+.hb-sidebar-project-selected .hb-sidebar-project-row:hover {
+	background: var(--hb-selected);
+}
+
+.hb-sidebar-project-toggle {
+	display: inline-grid;
+	flex: none;
+	width: var(--hb-control-xs);
+	height: var(--hb-control-xs);
+	margin-left: var(--hb-space-2);
+	padding: 0;
+	place-items: center;
+	border: 0;
+	border-radius: var(--hb-radius-sm);
+	background: none;
+	color: var(--hb-text-faint);
+}
+
+button.hb-sidebar-project-toggle {
+	cursor: pointer;
+}
+
+button.hb-sidebar-project-toggle:hover {
+	background: var(--hb-active);
+	color: var(--hb-text);
+}
+
+.hb-sidebar-project-main {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: var(--hb-space-4);
+	align-self: stretch;
+	min-width: 0;
+	padding: 0 var(--hb-space-5) 0 var(--hb-space-2);
+	border-radius: inherit;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-md);
+	line-height: var(--hb-leading-tight);
+	text-decoration: none;
+}
+
+.hb-sidebar-project-main:focus-visible {
+	outline-offset: calc(var(--hb-ring) * -1);
+}
+
+/* The project you're in reads as the heading of the sessions under it. */
+.hb-sidebar-project-current .hb-sidebar-project-main {
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-sidebar-project-row:hover .hb-sidebar-project-main {
+	color: var(--hb-text);
+}
+
+.hb-sidebar-project-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-sidebar-project-current .hb-sidebar-project-icon {
+	color: var(--hb-text-muted);
+}
+
+/* Its first letter, on the rail only. */
+.hb-sidebar-project-mark {
+	display: none;
+}
+
+/* The action shows with the pointer or focus on the row, and always on the current project. */
+.hb-sidebar-project-action {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	padding-right: var(--hb-space-2);
+	visibility: hidden;
+}
+
+.hb-sidebar-project-current .hb-sidebar-project-action {
+	visibility: visible;
+}
+
+.hb-sidebar-project-row:hover .hb-sidebar-project-action,
+.hb-sidebar-project-row:focus-within .hb-sidebar-project-action {
+	visibility: visible;
+}
+
+@media (pointer: coarse) {
+	.hb-sidebar-project-action {
+		visibility: visible;
+	}
+}
+
+/* The guide line runs down from the chevron's centre, so it's plain which project the sessions belong to. */
+.hb-sidebar-project-children {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-space-2) + var(--hb-control-xs) / 2);
+	padding-left: var(--hb-space-3);
+	border-left: var(--hb-hairline) solid var(--hb-border-strong);
+}
+
+/* The rail: icons and project marks in one centred column, names kept for screen readers and tooltips. */
+.hb-sidebar[data-collapsed] .hb-sidebar-head {
+	justify-content: center;
+	padding-right: 0;
+	padding-left: 0;
+}
+
+.hb-sidebar[data-collapsed] .hb-sidebar-brand,
+.hb-sidebar[data-collapsed] .hb-sidebar-item-trailing,
+.hb-sidebar[data-collapsed] .hb-sidebar-project-toggle,
+.hb-sidebar[data-collapsed] .hb-sidebar-project-icon,
+.hb-sidebar[data-collapsed] .hb-sidebar-project-action {
+	display: none;
+}
+
+.hb-sidebar[data-collapsed] .hb-sidebar-heading,
+.hb-sidebar[data-collapsed] .hb-sidebar-item-label,
+.hb-sidebar[data-collapsed] .hb-sidebar-project-name {
+	position: absolute;
+	width: var(--hb-hairline);
+	height: var(--hb-hairline);
+	margin: calc(var(--hb-hairline) * -1);
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.hb-sidebar[data-collapsed] .hb-sidebar-body {
+	gap: var(--hb-space-5);
+}
+
+.hb-sidebar[data-collapsed] .hb-sidebar-item,
+.hb-sidebar[data-collapsed] .hb-sidebar-project-main {
+	justify-content: center;
+	padding: 0;
+}
+
+.hb-sidebar[data-collapsed] .hb-sidebar-project-mark {
+	display: inline-grid;
+	width: var(--hb-control-xs);
+	height: var(--hb-control-xs);
+	place-items: center;
+	border: var(--hb-hairline) solid var(--hb-border-strong);
+	border-radius: var(--hb-radius-sm);
+	background: var(--hb-raised);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-strong);
+	line-height: 1;
+}
+
+.hb-sidebar[data-collapsed] .hb-sidebar-project-current .hb-sidebar-project-mark {
+	border-color: var(--hb-text-faint);
+	color: var(--hb-text);
+}
+
+/* Who is signed in, on the rail: the avatar alone; expand the sidebar to sign out. */
+.hb-sidebar[data-collapsed] .hb-signed-in-as {
+	justify-content: center;
+}
+
+.hb-sidebar[data-collapsed] .hb-signed-in-as > :not(.hb-signed-in-as-avatar, .hb-signed-in-as-text) {
+	display: none;
+}
+
+.hb-sidebar[data-collapsed] .hb-signed-in-as-text {
+	position: absolute;
+	width: var(--hb-hairline);
+	height: var(--hb-hairline);
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}

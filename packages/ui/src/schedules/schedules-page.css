@@ -6,7 +6,6 @@
 	flex-direction: column;
 	gap: var(--hb-space-8);
 	width: 100%;
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11));
 	min-width: 0;
 	color: var(--hb-text);
 	font-size: var(--hb-text-sm);

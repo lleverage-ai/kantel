@@ -112,6 +112,7 @@
 	--hb-content-width: 46rem; /* the transcript and composer column, as T3 Code's chat-content-max-width */
 	--hb-card-width: 560px;
 	--hb-sidebar-width: 300px;
+	--hb-rail-width: 52px; /* the sidebar collapsed to a rail of icons */
 
 	/* Radius. 10px panels, 8px controls. */
 	--hb-radius: 10px;

@@ -22,69 +22,38 @@ body {
 	color: var(--hb-text-muted);
 }
 
-/* The shell: a sidebar with the projects and the current project's sessions, and the open session beside it. The
-   dynamic viewport height, so a phone's browser bars and keyboard never cover the composer. */
+/* The shell: the sidebar (@harbour/ui's Sidebar), and the open session or page beside it, as wide as the window.
+   Collapsed, the sidebar is a rail. The dynamic viewport height, so a phone's browser bars and keyboard never cover
+   the composer. */
 .shell {
 	display: grid;
 	grid-template-columns: var(--hb-sidebar-width) minmax(0, 1fr);
 	height: 100dvh;
 }
 
+.shell[data-sidebar="collapsed"] {
+	grid-template-columns: var(--hb-rail-width) minmax(0, 1fr);
+}
+
 .shell-sidebar {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-7);
 	min-height: 0;
-	padding: var(--hb-space-5) var(--hb-space-3) 0;
-	border-right: var(--hb-hairline) solid var(--hb-border);
-	background: var(--hb-panel);
-	overflow-y: auto;
 }
 
-.shell-brand {
-	padding: 0 var(--hb-space-5);
-}
-
-.shell-wordmark {
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-/* Small and muted, like the session list's group headings. */
-.shell-heading {
-	margin: 0 0 var(--hb-space-2);
-	padding: 0 var(--hb-space-5);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	font-weight: var(--hb-weight-medium);
-	line-height: var(--hb-leading-tight);
-}
-
-.shell-rows {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-1);
-	margin: 0;
-	padding: 0;
-	list-style: none;
-}
-
-.shell-sessions {
-	flex: 1;
-}
-
-/* Who the console acts as, at the foot of the sidebar. */
+/* Who the console acts as, at the foot of the sidebar, under the pages. */
 .shell-actor {
-	position: sticky;
-	bottom: 0;
 	display: flex;
 	align-items: center;
 	gap: var(--hb-space-3);
-	padding: var(--hb-space-4) var(--hb-space-5);
+	padding: var(--hb-space-4) var(--hb-space-5) 0;
 	border-top: var(--hb-hairline) solid var(--hb-border);
-	background: var(--hb-panel);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-xs);
+}
+
+.shell[data-sidebar="collapsed"] .shell-actor {
+	justify-content: center;
+	padding-right: 0;
+	padding-left: 0;
 }
 
 .shell-actor-name {
@@ -100,12 +69,12 @@ body {
 	min-height: 0;
 }
 
-/* The organisation's pages, the vault and the audit log: one scrolling column, as wide as the page reads well. */
+/* The pages outside projects (skills, memory, schedules, the vault, the audit log, API keys): one scrolling column
+   across the whole main area. Each page keeps its own reading measure where it has prose or a form. */
 .shell-page {
 	box-sizing: border-box;
 	height: 100%;
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11) * 2);
-	padding: var(--hb-space-9);
+	padding: var(--hb-space-9) var(--hb-space-10);
 	overflow-y: auto;
 }
 
@@ -128,10 +97,6 @@ body {
 
 	.shell-sidebar {
 		border-right: 0;
-		background: var(--hb-canvas);
-	}
-
-	.shell-actor {
 		background: var(--hb-canvas);
 	}
 

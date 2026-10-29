@@ -120,6 +120,13 @@ a.hb-list-row-main {
 	color: var(--hb-text-muted);
 }
 
+/* The row you're on is never quiet: a settled session that's open reads in full-strength text, not just a fill. */
+.hb-list-row-selected .hb-list-row-title,
+.hb-list-row-selected.hb-list-row-quiet .hb-list-row-title {
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-medium);
+}
+
 .hb-list-row-side {
 	position: relative;
 	display: flex;

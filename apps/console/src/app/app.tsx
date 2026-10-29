@@ -1,15 +1,29 @@
 import {
 	ApiKeysPage,
 	Badge,
+	BookIcon,
 	Button,
+	ClockIcon,
 	type Crumb,
 	EmptyState,
+	IconButton,
+	KeyIcon,
+	LayersIcon,
+	ListIcon,
 	ListRow,
 	NewSessionRow,
 	Notice,
+	PlusIcon,
 	SessionList,
+	Sidebar,
+	SidebarBrand,
+	SidebarItem,
+	SidebarProject,
+	SidebarSection,
+	SidebarToggle,
 	SignedInAs,
 	Spinner,
+	VaultIcon,
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
@@ -41,11 +55,13 @@ import {
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
+import { sidebarShortcut, useSidebarCollapse } from "./use-sidebar.ts";
 import { VaultScreen } from "./vault-screen.tsx";
 
-// The console's shell: projects and the current project's sessions in a sidebar, the open session beside it. On a
-// phone it is one pane at a time: the list, or the session with Back. Every piece is from @harbour/ui; this file
-// only decides what goes where.
+// The console's shell: a sidebar with the projects, the current project's sessions nested under it, and the pages
+// that belong to no project at its foot; the open session or page beside it, as wide as the window. The sidebar
+// collapses to a rail of icons. On a phone it is one pane at a time: the list, or the session with Back. Every piece
+// is from @harbour/ui; this file only decides what goes where.
 
 const loadingList: SessionListState = { sessions: [], loading: true };
 const noList: SessionListState = { sessions: [], loading: false };
@@ -122,18 +138,63 @@ function Actor({ actor }: { actor: ConsoleActor }) {
 	);
 }
 
-function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]; current: string | undefined }) {
+/**
+ * The projects, each a folder; the one you're in has its sessions nested under it, with New session first. Its
+ * chevron hides and shows them; another project's row opens that project.
+ */
+function ProjectNav({
+	projects,
+	current,
+	selected,
+	open,
+	onToggle,
+	newSession,
+	children,
+}: {
+	projects: readonly ProjectSummary[];
+	/** The project whose sessions are listed: the route's, or the last one visited on a page outside projects. */
+	current: string | undefined;
+	/** The project's own page is the one shown. */
+	selected: boolean;
+	open: boolean;
+	onToggle: () => void;
+	/** The current project's New session link, when you may start one there. */
+	newSession?: string;
+	children: ReactNode;
+}) {
 	return (
-		<nav className="shell-projects" aria-label="Projects">
-			<h2 className="shell-heading">Projects</h2>
-			<ul className="shell-rows">
-				{projects.map((project) => (
-					<li key={project.id}>
-						<ListRow title={project.name} href={projectPath(project.id)} selected={project.id === current} />
-					</li>
-				))}
-			</ul>
-		</nav>
+		<SidebarSection label="Projects">
+			{projects.map((project) => {
+				const isCurrent = project.id === current;
+				return (
+					<SidebarProject
+						key={project.id}
+						name={project.name}
+						href={projectPath(project.id)}
+						current={isCurrent}
+						selected={isCurrent && selected}
+						open={isCurrent && open}
+						{...(isCurrent ? { onToggle } : {})}
+						{...(isCurrent && newSession !== undefined
+							? {
+									action: (
+										<IconButton
+											variant="ghost"
+											size="xs"
+											label={`New session in ${project.name}`}
+											title="New session"
+											icon={<PlusIcon size="sm" />}
+											onClick={() => navigate(newSession)}
+										/>
+									),
+								}
+							: {})}
+					>
+						{isCurrent ? children : undefined}
+					</SidebarProject>
+				);
+			})}
+		</SidebarSection>
 	);
 }
 
@@ -141,17 +202,10 @@ function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]
 function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
 	if (!agent) return null;
 	return (
-		<nav className="shell-organisation" aria-label="Agent">
-			<h2 className="shell-heading">Agent</h2>
-			<ul className="shell-rows">
-				<li>
-					<ListRow title="Skills" href={skillsPath()} selected={route.name === "skills"} />
-				</li>
-				<li>
-					<ListRow title="Memory" href={memoryPath()} selected={route.name === "memory"} />
-				</li>
-			</ul>
-		</nav>
+		<SidebarSection label="Agent">
+			<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
+			<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
+		</SidebarSection>
 	);
 }
 
@@ -174,35 +228,30 @@ function OrganisationNav({
 }) {
 	if (!schedules && !vault && !audit && !keys) return null;
 	return (
-		<nav className="shell-organisation" aria-label="Organisation">
-			<h2 className="shell-heading">Organisation</h2>
-			<ul className="shell-rows">
-				{schedules ? (
-					<li>
-						<ListRow title="Schedules" href={schedulesPath()} selected={route.name === "schedules"} />
-					</li>
-				) : null}
-				{vault ? (
-					<li>
-						<ListRow
-							title="Vault"
-							href={VAULT_PATH}
-							selected={route.name === "vault" || route.name === "vault-request"}
-						/>
-					</li>
-				) : null}
-				{audit ? (
-					<li>
-						<ListRow title="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
-					</li>
-				) : null}
-				{keys ? (
-					<li>
-						<ListRow title="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
-					</li>
-				) : null}
-			</ul>
-		</nav>
+		<SidebarSection label="Organisation">
+			{schedules ? (
+				<SidebarItem
+					icon={<ClockIcon />}
+					label="Schedules"
+					href={schedulesPath()}
+					selected={route.name === "schedules"}
+				/>
+			) : null}
+			{vault ? (
+				<SidebarItem
+					icon={<VaultIcon />}
+					label="Vault"
+					href={VAULT_PATH}
+					selected={route.name === "vault" || route.name === "vault-request"}
+				/>
+			) : null}
+			{audit ? (
+				<SidebarItem icon={<ListIcon />} label="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
+			) : null}
+			{keys ? (
+				<SidebarItem icon={<KeyIcon />} label="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
+			) : null}
+		</SidebarSection>
 	);
 }
 
@@ -213,17 +262,21 @@ function OrganisationNav({
 export function ShellPlaceholder() {
 	const route = parseRoute(location.pathname);
 	const pane = route.name === "home" || route.name === "project" ? "list" : "main";
+	// The rail, if that's how it was left, so the frame doesn't jump wide then narrow when the console arrives.
+	const sidebar = useSidebarCollapse(!useMedia(NARROW_QUERY));
 	return (
-		<div className="shell hb-app" data-pane={pane}>
-			<aside className="shell-sidebar" aria-label="Projects and sessions">
-				<div className="shell-brand">
-					<span className="shell-wordmark">Harbour</span>
-				</div>
-				<div className="shell-sessions">
-					<h2 className="shell-heading">Sessions</h2>
-					<SessionList sessions={[]} loading />
-				</div>
-			</aside>
+		<div className="shell hb-app" data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
+			<Sidebar
+				className="shell-sidebar"
+				collapsed={sidebar.collapsed}
+				role="complementary"
+				aria-label="Projects and sessions"
+				head={<SidebarBrand>Harbour</SidebarBrand>}
+			>
+				<SidebarSection label="Projects">
+					{sidebar.collapsed ? null : <SessionList sessions={[]} loading />}
+				</SidebarSection>
+			</Sidebar>
 			<main className="shell-main" aria-busy="true" />
 		</div>
 	);
@@ -270,8 +323,25 @@ export function App({
 	// A link to a session by its ID alone (a schedule's run): its project is read, then the link becomes its path.
 	const linkedSession = route.name === "session-link" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
+	// The project the sidebar keeps open: the route's, or on a page outside projects (skills, the vault) the last one
+	// visited, or else the first, so a project's sessions are always a click away.
+	const [lastProjectId, setLastProjectId] = useState<string>();
+	useEffect(() => {
+		if (project !== undefined) setLastProjectId(project.id);
+	}, [project]);
+	const treeProject =
+		project ??
+		(projectId === undefined
+			? (projects?.find((candidate) => candidate.id === lastProjectId) ?? projects?.[0])
+			: undefined);
 	// The list starts with the page, beside the projects, rather than after them; an unknown project stops it.
-	const list = useSessionList(client, projects === undefined || project !== undefined ? projectId : undefined);
+	const list = useSessionList(
+		client,
+		projectId === undefined ? treeProject?.id : projects === undefined || project !== undefined ? projectId : undefined,
+	);
+	const [sessionsHidden, setSessionsHidden] = useState(false);
+	const toggleSessions = useCallback(() => setSessionsHidden((hidden) => !hidden), []);
+	const sidebar = useSidebarCollapse(!narrow);
 	const [live, setLive] = useState<LiveSummary>();
 	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
@@ -300,7 +370,8 @@ export function App({
 		navigate(sessionPath(sessionProject, linkedSession), { replace: true });
 	}, [linkedSession, sessionProject]);
 
-	const hrefFor = useCallback((id: string) => sessionPath(projectId ?? "", id), [projectId]);
+	const treeProjectId = treeProject?.id;
+	const hrefFor = useCallback((id: string) => sessionPath(treeProjectId ?? "", id), [treeProjectId]);
 	const back = useCallback(() => navigate(projectPath(projectId ?? "")), [projectId]);
 	const toFiles = useCallback(
 		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
@@ -527,37 +598,74 @@ export function App({
 						? `${project?.name ?? "Harbour"} sessions`
 						: undefined;
 	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
-	const start = project === undefined ? undefined : client.mayStart(project.id);
+	const start = treeProject === undefined ? undefined : client.mayStart(treeProject.id);
 	const startBlocked = start === undefined || start.allowed ? {} : { disabledReason: start.reason };
+	const newSessionHref =
+		treeProject !== undefined && start?.allowed === true ? newSessionPath(treeProject.id) : undefined;
 
 	return (
-		<div className="shell hb-app" data-pane={pane}>
-			<div className="shell-sidebar" {...sidebarRole}>
-				{listIsPage ? heading : null}
-				<div className="shell-brand">
-					<span className="shell-wordmark">Harbour</span>
-				</div>
-				<ProjectNav projects={projectList} current={projectId} />
-				<AgentNav route={route} agent={agent !== undefined} />
-				<OrganisationNav
-					route={route}
-					schedules={schedules !== undefined}
-					vault={vault !== undefined}
-					audit={audit !== undefined}
-					keys={keys !== undefined}
-				/>
-				{/* An organisation page belongs to no project, so there's no project's sessions to list beside it. */}
-				<div className="shell-sessions">
-					{organisationPage || organisationWaiting ? null : (
+		<div className="shell hb-app" data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
+			<Sidebar
+				id="shell-sidebar"
+				className="shell-sidebar"
+				collapsed={sidebar.collapsed}
+				{...sidebarRole}
+				head={
+					<>
+						{listIsPage ? heading : null}
+						<SidebarBrand>Harbour</SidebarBrand>
+						{narrow ? null : (
+							<SidebarToggle
+								collapsed={sidebar.collapsed}
+								onToggle={sidebar.toggle}
+								controls="shell-sidebar"
+								shortcut={sidebarShortcut()}
+							/>
+						)}
+					</>
+				}
+				foot={
+					<>
+						<AgentNav route={route} agent={agent !== undefined} />
+						<OrganisationNav
+							route={route}
+							schedules={schedules !== undefined}
+							vault={vault !== undefined}
+							audit={audit !== undefined}
+							keys={keys !== undefined}
+						/>
+						<div className="shell-actor">
+							<Actor actor={client.actor} />
+						</div>
+					</>
+				}
+			>
+				{/* On the rail the sessions are hidden, so New session gets an icon of its own. */}
+				{sidebar.collapsed && newSessionHref !== undefined ? (
+					<SidebarSection label="Start" heading={false}>
+						<SidebarItem
+							icon={<PlusIcon />}
+							label="New session"
+							href={newSessionHref}
+							selected={route.name === "new-session"}
+						/>
+					</SidebarSection>
+				) : null}
+				<ProjectNav
+					projects={projectList}
+					current={treeProject?.id ?? projectId}
+					selected={route.name === "project"}
+					open={!sessionsHidden}
+					onToggle={toggleSessions}
+					{...(newSessionHref === undefined ? {} : { newSession: newSessionHref })}
+				>
+					{treeProject === undefined ? null : (
 						<>
-							<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
-							{project === undefined ? null : (
-								<NewSessionRow
-									href={newSessionPath(project.id)}
-									selected={route.name === "new-session"}
-									{...startBlocked}
-								/>
-							)}
+							<NewSessionRow
+								href={newSessionPath(treeProject.id)}
+								selected={route.name === "new-session"}
+								{...startBlocked}
+							/>
 							<SessionList
 								sessions={sessions}
 								selectedId={sessionId}
@@ -572,11 +680,8 @@ export function App({
 							/>
 						</>
 					)}
-				</div>
-				<div className="shell-actor">
-					<Actor actor={client.actor} />
-				</div>
-			</div>
+				</ProjectNav>
+			</Sidebar>
 			{listIsPage ? null : (
 				<main className="shell-main">
 					{heading}

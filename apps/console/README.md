@@ -30,8 +30,12 @@ serves the console itself, and Cloudflare Access signs the calls in.
 | `/projects/:projectId/sessions/:sessionId/files` | The session's workspace files: the tree, and the open file beside it |
 | `/projects/:projectId/sessions/:sessionId/files/:path` | One file open, its whole path as one encoded segment (`notes%2Fplan.md`) |
 
-Schedules, the vault page and the audit log are the organisation's, so the sidebar lists them under Organisation and
-shows no project's sessions beside them. On a phone each fills the screen with *Back to sessions*.
+The sidebar is `@harbour/ui`'s `Sidebar`: the projects, with the current one's sessions nested under it, then at its
+foot the pages outside projects (Skills and Memory under Agent; Schedules, the vault page, the audit log and API keys
+under Organisation), each with an icon, and who is signed in. On one of those pages the last project you were in (or
+the first) keeps its sessions open. Its button or Ctrl+B (⌘B) collapses it to a rail of icons, remembered in this
+browser. The main area takes the rest of the width; only reading text (the transcript, notes, forms) keeps a
+measure. On a phone each page fills the screen with *Back to sessions*, and there is no rail.
 
 `?source=recorded` or `?source=api` picks the source for the tab (the default is `api`, or `VITE_HARBOUR_SOURCE`).
 `?profile=1` adds the render profiler, `?speed=2` plays recordings faster and `?delay=1500` waits longer before an
