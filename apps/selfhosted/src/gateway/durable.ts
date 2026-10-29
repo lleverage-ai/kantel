@@ -12,6 +12,8 @@
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@harbour/selfhosted-workspace, #72)
 //   sandboxes   a session's coding tools (#196, sandboxes.ts): the file tools on those workspaces directly, `bash`
 //               in an in-process isolate leased on its first command
+//   vault       the vault engine over the Postgres vault store (@harbour/vault-selfhosted, #75), in its own schema
+//               (`<schema>_vault`), values sealed with HARBOUR_VAULT_CIPHER_KEY; no vault without that key
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
 // `workspace_versions`. The model is still the echo model until the model gateway (M1-BE9) lands.
@@ -27,6 +29,9 @@ import {
 	pgDatabase,
 } from "@harbour/selfhosted-workspace";
 import { postgresPoolDriver } from "@harbour/sql/postgres";
+import { createAesGcmCipher } from "@harbour/vault/cipher";
+import { createVault, type HarbourVault } from "@harbour/vault/engine";
+import { createPostgresVaultStore } from "@harbour/vault-selfhosted";
 import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
@@ -46,6 +51,8 @@ export interface DurableConfig {
 		/** Key prefix for workspace objects in the bucket, so the gateway can share M0's. */
 		readonly prefix: string;
 	};
+	/** The vault's 256-bit cipher key, base64. Without it the gateway has no vault. */
+	readonly vaultCipherKey?: string;
 	readonly log?: (message: string) => void;
 	/** The sessions' models. Default the echo model. */
 	readonly models?: Pick<SessionRuntimeOptions, "models" | "resolveModel">;
@@ -127,6 +134,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		});
 		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 
+		let vault: HarbourVault | undefined;
+		if (config.vaultCipherKey !== undefined) {
+			const store = createPostgresVaultStore({ db: pool, schema: `${config.schema}_vault` });
+			await store.migrate();
+			vault = createVault({ store, cipher: createAesGcmCipher({ key: config.vaultCipherKey }), audit, access });
+		}
+
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
 
@@ -138,7 +152,9 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
+			...(vault === undefined ? {} : { vault }),
 			bindings: {
+				vault: vault === undefined ? "off (no HARBOUR_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",
 				runtime: "postgres session store and Pi Durable tables (echo model)",

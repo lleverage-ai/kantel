@@ -23,6 +23,12 @@ jobs:
     env:
       HARBOUR_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
       HARBOUR_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
+      # Experimental (#18): the egress proxy takes its decisions from the M1 vault (HARBOUR_EGRESS_SOURCE=vault), set
+      # up by deploy/compose/egress-vault.yaml on top of compose.yaml; every compose command and script below reads
+      # COMPOSE_FILE. The vault injects only over https, so the scripted task fetches the research fixture over https.
+      COMPOSE_FILE: deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml
+      HARBOUR_EGRESS_KEY: ci-egress-${{ github.run_id }}-${{ github.run_attempt }}
+      HARBOUR_RESEARCH_URL: https://research-site/
       # The stack runs in a Docker daemon of its own (see "Start this run's Docker daemon"), not the host's.
       DIND_NAME: harbour-ci-dind-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -110,7 +116,13 @@ jobs:
           driver: docker
 
       - name: Bring up the stack
-        run: docker compose -f deploy/compose/compose.yaml up -d --build --wait
+        run: docker compose up -d --build --wait
+
+      # The proxy decides with the vault, and says so; the gateway imported the policy file's credentialed routes.
+      - name: Egress decisions come from the vault
+        run: |
+          docker compose exec -T vault-proxy node -e "fetch('http://127.0.0.1:3128/healthz').then(async (r) => { const h = await r.json(); console.log(h); process.exit(h.source === 'vault' && h.ok ? 0 : 1); })"
+          docker compose logs --no-color gateway | grep -F 'imported egress grants'
 
       # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)
@@ -142,7 +154,7 @@ jobs:
       # deployment (the bootstrap key still works), sessions and workspace.
       - name: M1 gateway after a restart
         run: |
-          compose="docker compose -f deploy/compose/compose.yaml"
+          compose="docker compose"
           before=$($compose exec -T gateway cat /var/lib/harbour/bootstrap.json)
           $compose restart gateway
           $compose up -d --wait --no-deps gateway
@@ -159,14 +171,14 @@ jobs:
       - name: Kill the session owner mid tool call
         run: >
           bun spike/scenario/run.ts --crash
-          --kill-cmd "docker compose -f deploy/compose/compose.yaml kill host-a"
+          --kill-cmd "docker compose kill host-a"
           --base "http://$STACK:58081"
           --fallback "http://$STACK:58082"
 
       # --no-deps: bring back host-a only. Without it compose on the runner
       # also recreated the isolate host, vault proxy and migrations.
       - name: Bring the killed host back
-        run: docker compose -f deploy/compose/compose.yaml up -d --wait --no-deps host-a
+        run: docker compose up -d --wait --no-deps host-a
 
       # The scenario script shared with the Cloudflare target (M0-CF1, #3).
       # It needs the public internet: example.com, postman-echo.com, api.github.com.
@@ -197,7 +209,7 @@ jobs:
       # Only once this run's daemon is up: before that, compose would read the host's default `harbour` stack.
       - name: Logs on failure
         if: failure() && env.STACK != ''
-        run: docker compose -f deploy/compose/compose.yaml logs --no-color --timestamps --tail 300
+        run: docker compose logs --no-color --timestamps --tail 300
 
       # On the host's daemon: removing the daemon's container and its anonymous volume removes the whole stack,
       # its images and its sandboxes with it.

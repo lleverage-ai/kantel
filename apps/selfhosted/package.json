@@ -21,6 +21,8 @@
 		"@harbour/sandbox": "workspace:*",
 		"@harbour/selfhosted-workspace": "workspace:*",
 		"@harbour/sql": "workspace:*",
+		"@harbour/vault": "workspace:*",
+		"@harbour/vault-selfhosted": "workspace:*",
 		"@harbour/workspace": "workspace:*",
 		"aws4fetch": "1.0.20",
 		"pg": "8.16.3",

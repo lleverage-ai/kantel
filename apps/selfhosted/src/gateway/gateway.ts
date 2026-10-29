@@ -9,6 +9,8 @@
 //   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
+//   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault
+//   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
 //   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
 //   anything else               the console (apps/console's build), with index.html for its client-side routes
 import { createAuditQueryHandler } from "@harbour/audit/http";
@@ -25,9 +27,11 @@ import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
 import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
+import { APPROVAL_API_BASE, createVaultApprovalApi } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
 import type { GatewayComponents } from "./components.ts";
+import { createEgressHandler, type EgressScope } from "./egress.ts";
 import type { MailDescription } from "./mail.ts";
 import { createStaticHandler } from "./static.ts";
 
@@ -51,6 +55,11 @@ export interface GatewayOptions {
 	readonly consoleDir?: string;
 	/** Which host-tool callback URLs the session API may call. Default: `https:` only. */
 	readonly allowCallbackUrl?: (url: URL) => boolean;
+	/**
+	 * The egress proxy's shared key and the organisation and project it decides for. Without it, or without a vault in
+	 * the components, `/v1/egress/...` is not mounted.
+	 */
+	readonly egress?: { readonly key: string; readonly scope: EgressScope };
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -139,6 +148,29 @@ export function createGateway(options: GatewayOptions): Gateway {
 		return (await readWorkspaces(request)) ?? json({ error: { code: "not_found", message: "No such route" } }, 404);
 	});
 
+	const vault = components.vault;
+	const approval =
+		vault === undefined
+			? undefined
+			: (() => {
+					const api = createVaultApprovalApi({
+						vault,
+						authenticate: async (request) => {
+							const ctx = callers.get(request);
+							if (ctx === undefined) throw new Error("vault approval API reached without authentication");
+							return ctx;
+						},
+					});
+					return withAuthentication(authenticator, async (request, caller) => {
+						callers.set(request, callContextFor(caller));
+						return await api(request);
+					});
+				})();
+	const egress =
+		vault === undefined || options.egress === undefined
+			? undefined
+			: createEgressHandler({ vault, key: options.egress.key, scope: options.egress.scope });
+
 	const deployment = withAuthentication(authenticator, async () =>
 		json({ target: "selfhosted", bindings: components.bindings, mail: options.mail ?? null }),
 	);
@@ -170,6 +202,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await workspaces(request);
 				}
 				if (path.startsWith(AUDIT_PREFIX)) return await audit(request);
+				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
+					return await approval(request);
+				}
+				if (egress?.matches(path)) return await egress.fetch(request);
 				if (isIdentityPath(path)) return await identity(request);
 				if (path === "/v1" || path.startsWith("/v1/")) return await sessions.fetch(request);
 				if (consoleAssets !== undefined) return await consoleAssets(request);

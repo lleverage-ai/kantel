@@ -180,6 +180,41 @@ Ports are bound to 127.0.0.1 and can be moved with `HARBOUR_PG_PORT`,
 `HARBOUR_HOST_B_PORT`, `HARBOUR_GATEWAY_PORT`, `HARBOUR_MAILPIT_PORT` and
 `HARBOUR_SMTP_PORT`.
 
+## Egress decisions from the M1 vault (experimental)
+
+The vault proxy decides from `vault-policy.json` by default (`HARBOUR_EGRESS_SOURCE=static`). With
+`deploy/compose/egress-vault.yaml` on top of `compose.yaml` it asks the M1 vault instead
+(`HARBOUR_EGRESS_SOURCE=vault`), once per request, for that request's session:
+
+```sh
+export COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml
+export HARBOUR_RESEARCH_URL=https://research-site/   # for spike/scenario/run.ts
+docker compose up -d --build --wait
+```
+
+Set `COMPOSE_FILE` for every later compose command too; `scripts/check-canary.sh` and `scripts/takeover.sh` read
+it. CI's `selfhosted` job runs this way.
+
+- The gateway keeps a vault on its Postgres (schema `harbour_m1_vault`, values sealed with
+  `HARBOUR_VAULT_CIPHER_KEY`, a base64 256-bit key) and serves `POST /v1/egress/decisions` and
+  `GET /v1/egress/scope` behind `HARBOUR_EGRESS_KEY`, which the proxy also holds. The vault page's API is at
+  `/v1/vault`.
+- On its first start the gateway imports `vault-policy.json`'s routes that inject a credential (`research-site`,
+  `echo`) as vault items and policies for its bootstrap organisation and project, reading the secrets they name from
+  its own environment. It records the import in its bootstrap file and imports again only when those routes change,
+  so a policy revoked on the vault page stays revoked. The M0 session hosts' sessions belong to no M1 organisation:
+  the proxy decides for the bootstrap organisation and project and passes the session along, and the vault records
+  each use against it.
+- Routes without a credential (`example`) stay the proxy's own and are allowed without asking: the vault has no
+  policy that allows a request without injecting one.
+- The vault injects only over https, so it decides only https requests on port 443. The research fixture answers
+  over https too, with a self-signed certificate (made by the `fixture-tls` service) that only the proxy trusts.
+- A denial carries the vault's reason and how to fix it, such as `No active grant or policy allows GET
+  api.github.com/zen. Ask for a secret for api.github.com: no vault item is bound to it yet.`
+- It fails closed: without `HARBOUR_EGRESS_KEY` (or with one under 16 characters) the proxy reports unhealthy and
+  refuses everything but the open routes, saying why; when the gateway can't be reached it refuses with `the vault
+  could not be asked: ...`. It never falls back to the policy file's credentials.
+
 ## For M0-BE2 (seeding measurements)
 
 The stack gives you Postgres (`postgres://harbour:harbour@127.0.0.1:55432/harbour`),

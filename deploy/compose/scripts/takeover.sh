@@ -13,7 +13,9 @@
 set -euo pipefail
 mode="${1:-kill}"
 runs="${2:-10}"
-compose="docker compose -f deploy/compose/compose.yaml"
+# COMPOSE_FILE as the stack was brought up with (deploy/compose/egress-vault.yaml on top, say); compose.yaml alone by default.
+export COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yaml}"
+compose="docker compose"
 out="$(mktemp -d)"
 
 for i in $(seq 1 "$runs"); do

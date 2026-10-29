@@ -10,9 +10,22 @@
 //   its own CA (the sandbox trusts only that CA; it has no other route out),
 //   then applies the same policy to each request inside, so it can inject
 //   into HTTPS and answer a refusal as an ordinary 403.
-// - Decision: a route policy (host, port, methods, path prefix). Allowed
-//   requests get the route's header injected from a secret only this process
-//   holds. Everything else is refused with 403. Every decision is audited.
+// - Decision, from one of two sources (HARBOUR_EGRESS_SOURCE):
+//   - `static` (the default): a route policy (host, port, methods, path
+//     prefix) from VAULT_POLICY. Allowed requests get the route's header
+//     injected from a secret only this process holds.
+//   - `vault`: the M1 vault decides, through the gateway's egress decision
+//     API (HARBOUR_EGRESS_URL, with the shared key HARBOUR_EGRESS_KEY), once
+//     per request, for the session and the deployment's organisation and
+//     project (GET /v1/egress/scope). The vault injects only over https, so it
+//     decides requests to port 443; a denial carries the vault's reason and its
+//     fix. The policy file's routes with no credential stay this proxy's own
+//     "open" routes, matched first without asking the vault, since the vault
+//     has no way to allow a request without one; its credentialed routes are
+//     the vault's (the gateway imports them). Without the key, or when the
+//     vault can't be reached, every request but an open route's is refused,
+//     saying why: never the static file's credentials instead.
+//   Everything else is refused with 403. Every decision is audited.
 // - Responses: any secret the upstream echoes back is replaced with
 //   `[vault:redacted]` in headers and body, and counted in the audit.
 // - A route with `tunnel: true` is passed through as raw TLS instead (no
@@ -46,20 +59,61 @@ const env = (name: string, fallback?: string) => {
 	return value;
 };
 
+const source = env("HARBOUR_EGRESS_SOURCE", "static");
+if (source !== "static" && source !== "vault") throw new Error("HARBOUR_EGRESS_SOURCE must be static or vault");
 const policyPath = env("VAULT_POLICY", "/etc/harbour/vault-policy.json");
 const policy = JSON.parse(readFileSync(policyPath, "utf8")) as Policy;
+// With the vault deciding, the file's credentialed routes are the vault's; only those without a credential stay here.
+const routes = source === "vault" ? policy.routes.filter((route) => !route.inject) : policy.routes;
 const isolateKey = env("VAULT_ISOLATE_KEY");
 const pool = new pg.Pool({ connectionString: env("HARBOUR_DATABASE_URL"), max: 5 });
 const port = Number(env("PORT", "3128"));
 
+const egressUrl = env("HARBOUR_EGRESS_URL", "http://gateway:8080").replace(/\/+$/, "");
+const egressKey = process.env.HARBOUR_EGRESS_KEY ?? "";
+/** Why the vault can't be asked at all, when it can't: every request it would decide is refused with this. */
+const unconfigured =
+	source === "vault" && egressKey.length < 16
+		? "egress decisions are not set up: HARBOUR_EGRESS_KEY is missing or shorter than 16 characters"
+		: undefined;
+
 const secrets = new Map<string, string>();
-for (const route of policy.routes) {
+for (const route of routes) {
 	if (!route.inject) continue;
 	const secret = env(route.inject.secretEnv);
 	assertRedactable(route.inject.secretEnv, secret);
 	secrets.set(route.id, secret);
 }
-const redactor = new Redactor([...new Set(secrets.values())]);
+const redacted = new Set(secrets.values());
+let redactor = new Redactor([...redacted]);
+
+/** Authorization schemes a vault template may put before its key: the only words of a credential left unredacted. */
+const SCHEMES = new Set(["basic", "bearer", "token", "digest", "apikey", "key"]);
+
+function redactable(word: string): boolean {
+	try {
+		assertRedactable("credential", word);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Redact a credential the vault hands over from every response from now on: each of its words but an authorization
+ * scheme (`Bearer <key>` redacts the key). The proxy can't tell the vault's template from its key, so every other word
+ * must be one redaction can match; false when one isn't, or none is, and the request must not go out with it.
+ */
+function redactFromNowOn(value: string): boolean {
+	const words = value.split(/\s+/).filter((word) => word !== "" && !SCHEMES.has(word.toLowerCase()));
+	if (words.length === 0 || !words.every(redactable)) return false;
+	const fresh = words.filter((word) => !redacted.has(word));
+	if (fresh.length > 0) {
+		for (const word of fresh) redacted.add(word);
+		redactor = new Redactor([...redacted]);
+	}
+	return true;
+}
 
 // A bug in one request must not take the vault down for every session.
 process.on("unhandledRejection", (error) =>
@@ -162,7 +216,7 @@ async function callerOf(headers: http.IncomingHttpHeaders): Promise<Caller | und
 }
 
 function match(host: string, portNumber: number, method: string, path: string): Route | undefined {
-	return policy.routes.find(
+	return routes.find(
 		(route) =>
 			route.tunnel !== true &&
 			route.host === host.toLowerCase() &&
@@ -173,7 +227,7 @@ function match(host: string, portNumber: number, method: string, path: string): 
 }
 
 function tunnelRoute(host: string, portNumber: number): Route | undefined {
-	return policy.routes.find(
+	return routes.find(
 		(route) =>
 			route.tunnel === true &&
 			route.host === host.toLowerCase() &&
@@ -221,6 +275,126 @@ function deny(res: http.ServerResponse, reason: string) {
 	res.end(`harbour vault: denied: ${reason}\n`);
 }
 
+// ------------------------------------------------------------------ decisions
+
+type Verdict =
+	| {
+			allow: true;
+			/** The static route's ID, or the vault's policy or grant. */
+			route: string;
+			inject?: { header: string; value: string };
+			useId?: string;
+	  }
+	| { allow: false; reason: string; message: string };
+
+/** The methods the vault's decision API knows (@harbour/vault's HTTP_METHODS). */
+const VAULT_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+const VAULT_TIMEOUT_MS = 5_000;
+
+interface VaultScope {
+	organisationId: string;
+	projectId: string;
+}
+let vaultScope: VaultScope | undefined;
+
+async function askVault(path: string, init: RequestInit = {}): Promise<unknown> {
+	const response = await fetch(`${egressUrl}${path}`, {
+		...init,
+		headers: { authorization: `Bearer ${egressKey}`, "content-type": "application/json" },
+		signal: AbortSignal.timeout(VAULT_TIMEOUT_MS),
+	});
+	const body = (await response.json().catch(() => undefined)) as { error?: { message?: string } } | undefined;
+	if (!response.ok) {
+		throw new Error(`the vault answered ${response.status}${body?.error?.message ? `: ${body.error.message}` : ""}`);
+	}
+	return body;
+}
+
+/** The organisation and project every decision is for, asked once and kept. */
+async function scopeOfVault(): Promise<VaultScope> {
+	if (vaultScope !== undefined) return vaultScope;
+	const scope = (await askVault("/v1/egress/scope")) as Partial<VaultScope> | undefined;
+	if (typeof scope?.organisationId !== "string" || typeof scope.projectId !== "string") {
+		throw new Error("the vault's scope has no organisation and project");
+	}
+	vaultScope = { organisationId: scope.organisationId, projectId: scope.projectId };
+	return vaultScope;
+}
+
+function staticVerdict(method: string, target: URL, portNumber: number): Verdict {
+	const route = match(target.hostname, portNumber, method, target.pathname);
+	if (route === undefined) {
+		return { allow: false, reason: "no policy", message: `no policy for ${method} ${target.host}${target.pathname}` };
+	}
+	return {
+		allow: true,
+		route: route.id,
+		...(route.inject
+			? {
+					inject: {
+						header: route.inject.header,
+						value: route.inject.template.replace("{secret}", secrets.get(route.id)!),
+					},
+				}
+			: {}),
+	};
+}
+
+/** An open route's (no credential, no question), else the vault's decision; refused when the vault can't be asked. */
+async function vaultVerdict(caller: Caller, method: string, target: URL, portNumber: number): Promise<Verdict> {
+	const open = staticVerdict(method, target, portNumber);
+	if (open.allow) return open;
+	if (unconfigured !== undefined) return { allow: false, reason: unconfigured, message: unconfigured };
+	// The vault injects only over https, and its routes name no port: it decides https on 443 only.
+	if (target.protocol !== "https:" || portNumber !== 443 || !VAULT_METHODS.has(method)) {
+		const reason = `only https on port 443 with a standard method goes to the vault, and no open route allows ${method} ${target.host}${target.pathname}`;
+		return { allow: false, reason, message: reason };
+	}
+	let decision: {
+		allow?: boolean;
+		reason?: string;
+		useId?: string;
+		policyId?: string;
+		grantId?: string;
+		inject?: { header?: unknown; value?: unknown };
+		fix?: { message?: string };
+	};
+	try {
+		const scope = await scopeOfVault();
+		decision = (await askVault("/v1/egress/decisions", {
+			method: "POST",
+			body: JSON.stringify({
+				organisationId: scope.organisationId,
+				projectId: scope.projectId,
+				sessionId: caller.sessionId,
+				method,
+				url: target.href,
+			}),
+		})) as typeof decision;
+	} catch (error) {
+		const reason = `the vault could not be asked: ${error instanceof Error ? error.message : String(error)}`;
+		return { allow: false, reason, message: reason };
+	}
+	if (decision?.allow === true) {
+		const route = decision.policyId ?? decision.grantId ?? "vault";
+		const inject = decision.inject;
+		if (inject === undefined) return { allow: true, route, ...(decision.useId ? { useId: decision.useId } : {}) };
+		if (typeof inject.header !== "string" || typeof inject.value !== "string" || !redactFromNowOn(inject.value)) {
+			const reason = "the vault's credential for this route could not be redacted from responses";
+			return { allow: false, reason, message: reason };
+		}
+		return {
+			allow: true,
+			route,
+			inject: { header: inject.header, value: inject.value },
+			...(decision.useId ? { useId: decision.useId } : {}),
+		};
+	}
+	const reason = decision?.reason ?? "the vault denied it";
+	const fix = decision?.fix?.message;
+	return { allow: false, reason, message: fix ? `${reason}. ${fix}` : reason };
+}
+
 /** Apply the policy to one request, forward it if allowed, and audit the decision. */
 async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target: URL, caller: Caller | undefined) {
 	const started = performance.now();
@@ -231,17 +405,21 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		await audit(undefined, "vault.deny", { ...where, reason: "unknown caller" });
 		return deny(res, "unknown caller");
 	}
-	const route = match(target.hostname, portNumber, method, target.pathname);
-	if (route === undefined) {
-		await audit(caller, "vault.deny", { ...where, reason: "no policy" });
-		return deny(res, `no policy for ${method} ${target.host}${target.pathname}`);
+	const verdict =
+		source === "vault"
+			? await vaultVerdict(caller, method, target, portNumber)
+			: staticVerdict(method, target, portNumber);
+	if (!verdict.allow) {
+		await audit(caller, "vault.deny", { ...where, reason: verdict.reason, source });
+		return deny(res, verdict.message);
 	}
+	const route = { id: verdict.route, inject: verdict.inject };
 	const headers = new Headers();
 	for (const [name, value] of Object.entries(req.headers)) {
 		if (HOP.has(name) || value === undefined) continue;
 		for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
 	}
-	if (route.inject) headers.set(route.inject.header, route.inject.template.replace("{secret}", secrets.get(route.id)!));
+	if (verdict.inject) headers.set(verdict.inject.header, verdict.inject.value);
 	try {
 		let body: Buffer | undefined;
 		if (method !== "GET" && method !== "HEAD") {
@@ -270,6 +448,8 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 			...where,
 			route: route.id,
 			injected: route.inject ? route.inject.header : null,
+			source,
+			...(verdict.useId === undefined ? {} : { useId: verdict.useId }),
 			redactions,
 			status: upstream.status,
 			ms: Math.round(performance.now() - started),
@@ -290,8 +470,16 @@ const server = http.createServer({ requireHostHeader: false }, (req, res) => voi
 
 async function serve(req: http.IncomingMessage, res: http.ServerResponse) {
 	if (req.url === "/healthz") {
-		res.writeHead(200, { "content-type": "application/json" });
-		res.end(JSON.stringify({ ok: true, routes: policy.routes.length }));
+		// Misconfigured, it still refuses every request saying why, but reports unhealthy so the stack doesn't come up.
+		res.writeHead(unconfigured === undefined ? 200 : 503, { "content-type": "application/json" });
+		res.end(
+			JSON.stringify({
+				ok: unconfigured === undefined,
+				source,
+				routes: routes.length,
+				...(unconfigured === undefined ? {} : { reason: unconfigured }),
+			}),
+		);
 		return;
 	}
 	// The CA certificate is public: session hosts put it in each sandbox.
@@ -384,4 +572,10 @@ async function connect(req: http.IncomingMessage, socket: net.Socket, head: Buff
 	intercepted.emit("connection", secure);
 }
 
-server.listen(port, () => console.log(`vault proxy on ${port}: ${policy.routes.map((r) => r.id).join(", ")}`));
+server.listen(port, () =>
+	console.log(
+		source === "vault"
+			? `vault proxy on ${port}: decisions from the vault at ${egressUrl}${unconfigured ? ` (refusing all but open routes: ${unconfigured})` : ""}; open routes: ${routes.map((r) => r.id).join(", ") || "none"}`
+			: `vault proxy on ${port}: ${routes.map((r) => r.id).join(", ")}`,
+	),
+);
