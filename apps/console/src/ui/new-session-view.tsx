@@ -12,6 +12,7 @@ import {
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
+import { COMPOSER_ACCESS } from "./composer-access.ts";
 
 // A new session before it exists, after T3 Code's new thread: the session header with nothing in it yet, an empty
 // transcript saying where it starts, and the composer with the project picker in its footer. As with
@@ -146,6 +147,7 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 							value={state.draft}
 							onChange={on.onDraft}
 							{...state.pickers}
+							{...COMPOSER_ACCESS}
 							onSend={(text) => on.onSend(text)}
 							footer={
 								<>

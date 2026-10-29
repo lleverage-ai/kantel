@@ -1,6 +1,6 @@
 /*
- * The composer's thinking picker, after T3 Code's traits picker: the level reads on from the model's name ("Sonnet 5.5
- * High") as a quieter word, and opens a short menu upward.
+ * The composer's thinking picker, after T3 Code's traits picker: a control of its own beside the model's, shaped as
+ * the model picker's button is (a brain, the level, a chevron), that opens a short menu upward.
  */
 
 .hb-thinking-picker {
@@ -10,20 +10,17 @@
 	min-width: 0;
 }
 
-/*
- * The model picker's button ends in its own padding and the toolbar's gap follows it; pulling this one back by the gap,
- * with no padding before its word, leaves the two words one model-button padding apart, as T3 Code's are.
- */
+/* The model picker's button, muted, with its brain and chevron (model-picker.css's .hb-model-trigger). */
 .hb-thinking-trigger {
 	display: inline-flex;
 	align-items: center;
+	gap: var(--hb-space-3);
 	height: var(--hb-control-sm);
-	margin-left: calc(var(--hb-space-2) * -1);
-	padding: 0 var(--hb-space-4) 0 var(--hb-space-1);
+	padding: 0 var(--hb-space-4);
 	border: var(--hb-hairline) solid transparent;
 	border-radius: var(--hb-radius-control);
 	background: transparent;
-	color: var(--hb-text-faint);
+	color: var(--hb-text-muted);
 	font: inherit;
 	font-size: var(--hb-text-md);
 	font-weight: var(--hb-weight-medium);
@@ -52,10 +49,18 @@
 	text-box: trim-both cap alphabetic;
 }
 
+.hb-thinking-trigger > .hb-icon {
+	flex: none;
+}
+
+.hb-thinking-trigger-chevron {
+	color: var(--hb-text-faint);
+}
+
 .hb-thinking-picker-xs .hb-thinking-trigger {
+	gap: var(--hb-space-2);
 	height: var(--hb-control-xs);
-	margin-left: calc(var(--hb-space-2) * -1);
-	padding: 0 var(--hb-space-3) 0 var(--hb-space-1);
+	padding: 0 var(--hb-space-3);
 	border-radius: var(--hb-radius-sm);
 	font-size: var(--hb-text-xs);
 }

@@ -4,6 +4,7 @@ import { Button } from "../primitives/button.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Row, Section, Sheet } from "../workbench/specimen.tsx";
+import type { ComposerAccessOption } from "./access-picker.tsx";
 import { Composer, type ComposerProps, type ComposerState } from "./composer.tsx";
 import { type ComposerAttachment, type UploadContext, useComposerAttachments } from "./composer-attachments.tsx";
 import { chartImage, errorImage, uiImage } from "./composer-images.ts";
@@ -64,6 +65,17 @@ const models: ComposerModelOption[] = [
 		label: "Gemini 2.5 Pro",
 		provider: "Google",
 		disabledReason: "Not enabled for this project",
+	},
+];
+
+/** Access levels as Harbour has them today: full access, with supervised listed for when the runtime can ask. */
+const accessOptions: ComposerAccessOption[] = [
+	{ id: "full-access", label: "Full access", description: "Runs commands and edits files without asking." },
+	{
+		id: "supervised",
+		label: "Supervised",
+		description: "Asks before commands and file changes.",
+		disabledReason: "Not available yet: asks before commands and file changes.",
 	},
 ];
 
@@ -157,6 +169,7 @@ function Live({
 				thinking={thinking}
 				defaultThinking="medium"
 				onThinkingChange={setThinking}
+				accessOptions={accessOptions}
 				attachments={uploads.attachments}
 				onAttach={uploads.attach}
 				onRemoveAttachment={uploads.remove}
@@ -177,6 +190,7 @@ const still = {
 	onModelChange: () => {},
 	defaultThinking: "medium",
 	onThinkingChange: () => {},
+	accessOptions,
 	onAttach: () => {},
 	onRemoveAttachment: () => {},
 	onRetryAttachment: () => {},
@@ -186,7 +200,7 @@ const still = {
 export const Default: Story = () => (
 	<Sheet
 		title="Composer"
-		intro="Idle and empty, as T3 Code's: a glass surface, the model on the left of the toolbar, the paperclip and Send on the right. Send is disabled until there is something to send. Type and press Enter; Up in the empty field recalls what you sent before; drop, paste or pick files to attach them (a file named with 'fail' fails to upload)."
+		intro="Idle and empty, as T3 Code's: a glass surface, the model (its provider's mark, name and chevron), the thinking level (a brain) and the access level (a lock) on the left of the toolbar, the paperclip and Send on the right. Send is disabled until there is something to send. Type and press Enter; Up in the empty field recalls what you sent before; drop, paste or pick files to attach them (a file named with 'fail' fails to upload)."
 	>
 		<Live />
 	</Sheet>
@@ -396,6 +410,28 @@ export const ThinkingPickerOpen: Story = () => (
 	</Sheet>
 );
 ThinkingPickerOpen.storyName = "Thinking picker open";
+
+export const AccessPickerOpen: Story = () => (
+	<Sheet
+		title="Composer, access picker open"
+		intro="What the agent may do without asking, after T3 Code's permissions chip: the levels the host has, with what each means, the chosen one ticked. A level the host can't honour yet shows dimmed with its reason. Without onAttach, attachUnavailable shows the paperclip disabled, its title saying why."
+	>
+		<OpenPicker trigger=".hb-access-trigger">
+			<Live />
+		</OpenPicker>
+		<Section title="Attaching not available yet">
+			<Column>
+				<Composer
+					state="idle"
+					{...still}
+					onAttach={undefined}
+					attachUnavailable="Attaching files isn't available yet"
+				/>
+			</Column>
+		</Section>
+	</Sheet>
+);
+AccessPickerOpen.storyName = "Access picker open";
 
 export const WithAttachments: Story = () => (
 	<Sheet

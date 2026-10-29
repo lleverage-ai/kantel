@@ -182,6 +182,12 @@ export {
 	SchedulesPage,
 	type SchedulesPageProps,
 } from "./schedules/schedules-page.tsx";
+export {
+	AccessPicker,
+	type AccessPickerProps,
+	type ComposerAccessOption,
+	chosenAccess,
+} from "./session/access-picker.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export {
@@ -247,6 +253,7 @@ export {
 	selectedModel,
 } from "./session/model-picker.tsx";
 export { NewSessionRow, type NewSessionRowProps } from "./session/new-session.tsx";
+export { ProviderIcon, providerMark } from "./session/provider-icon.tsx";
 export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
 export {
 	ConnectionState,
