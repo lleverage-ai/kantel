@@ -19,7 +19,14 @@
  *   (`frame-ancestors`), since an outside app frames it through the embed API.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
-import { BROWSER_VIEW_API, createBrowserViewSigner, viewClaims } from "@harbour/browser/runtime";
+import {
+	BROWSER_VIEW_API,
+	createBrowserViewSigner,
+	VIEW_FORWARD_HEADERS,
+	VIEWER_PAGE,
+	viewClaims,
+	viewerPageHeaders,
+} from "@harbour/browser/runtime";
 import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
@@ -152,44 +159,12 @@ export interface RouteEnv<StackId = unknown, VaultId = unknown> extends Placemen
 	readonly HARBOUR_EMBED_ORIGINS?: string;
 }
 
-/** The viewer page's path: `/browser/<browser>`, its token after `#`. */
-export const VIEWER_PAGE = /^\/browser\/[A-Za-z0-9-]{1,64}\/?$/;
-
-/**
- * The origins in `HARBOUR_EMBED_ORIGINS` that may frame the viewer: each an `https://` origin (or `http://localhost`
- * and `127.0.0.1` with any port, for development). Anything else, a path or a wildcard included, is dropped.
- */
-export function embedOrigins(value: string | undefined): readonly string[] {
-	const origins: string[] = [];
-	for (const each of (value ?? "").split(/[\s,]+/)) {
-		if (each === "") continue;
-		let url: URL;
-		try {
-			url = new URL(each);
-		} catch {
-			continue;
-		}
-		const local = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-		if ((url.protocol !== "https:" && !local) || url.origin !== each.replace(/\/$/, "")) continue;
-		// A plain host name only: no wildcard, which `URL` lets through.
-		if (!/^[a-z0-9.-]+$/.test(url.hostname)) continue;
-		if (!origins.includes(url.origin)) origins.push(url.origin);
-	}
-	return origins;
-}
+export { embedOrigins, VIEWER_PAGE } from "@harbour/browser/runtime";
 
 /** The viewer page as the assets answer it, never cached or leaking a referrer, framed only where allowed. */
 async function viewerPage(request: Request, env: RouteEnv): Promise<Response> {
 	const answer = await env.ASSETS.fetch(request);
-	const headers = new Headers(answer.headers);
-	headers.set("cache-control", "no-store");
-	headers.set("referrer-policy", "no-referrer");
-	headers.set(
-		"content-security-policy",
-		`frame-ancestors ${["'self'", ...embedOrigins(env.HARBOUR_EMBED_ORIGINS)].join(" ")}`,
-	);
-	headers.delete("x-frame-options");
-	headers.delete("etag");
+	const headers = viewerPageHeaders(answer.headers, env.HARBOUR_EMBED_ORIGINS);
 	return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers });
 }
 
@@ -212,14 +187,7 @@ async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Pro
 		// The self-hosted host checks the token too (it holds the same key). The path, query and token go; no cookie does.
 		const url = new URL(request.url);
 		const headers = new Headers();
-		for (const name of [
-			"authorization",
-			"upgrade",
-			"connection",
-			"sec-websocket-key",
-			"sec-websocket-version",
-			"sec-websocket-protocol",
-		]) {
+		for (const name of VIEW_FORWARD_HEADERS) {
 			const value = request.headers.get(name);
 			if (value !== null) headers.set(name, value);
 		}
