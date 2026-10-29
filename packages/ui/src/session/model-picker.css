@@ -139,10 +139,120 @@
 }
 
 .hb-model-group-label {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
 	padding: var(--hb-space-3) var(--hb-space-4) var(--hb-space-2);
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
 	font-weight: var(--hb-weight-medium);
+}
+
+/*
+ * Provider first, after T3 Code's ModelPickerSidebar: the providers' marks down the popover's left side, the chosen
+ * provider's models beside them. The popover is the plain one's width plus the rail, and keeps one height (the longest
+ * provider's list, up to --hb-popover-height) so the rail doesn't move under the pointer as the provider changes.
+ */
+.hb-model-popover-rail {
+	flex-direction: row;
+	width: min(
+		calc(var(--hb-popover-width) + var(--hb-control-lg) + var(--hb-space-4)),
+		calc(100vw - var(--hb-space-10))
+	);
+}
+
+.hb-model-main {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-model-popover-rail .hb-model-search {
+	border-radius: 0 var(--hb-radius) 0 0;
+}
+
+.hb-model-popover-rail .hb-model-list {
+	flex: none;
+	height: min(
+		var(--hb-popover-height),
+		calc(var(--hb-model-rows) * var(--hb-control-md) + var(--hb-space-10) + var(--hb-space-4))
+	);
+	max-height: none;
+}
+
+.hb-model-rail {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	padding: var(--hb-space-2);
+	border-right: var(--hb-hairline) solid var(--hb-border);
+	overflow-y: auto;
+	scrollbar-width: none;
+}
+
+.hb-model-rail-button {
+	position: relative;
+	display: grid;
+	flex: none;
+	place-items: center;
+	width: var(--hb-control-lg);
+	height: var(--hb-control-lg);
+	padding: 0;
+	border: 0;
+	border-radius: var(--hb-radius-sm);
+	background: transparent;
+	color: var(--hb-text-muted);
+	cursor: pointer;
+	transition:
+		background-color var(--hb-duration-fast) var(--hb-ease),
+		color var(--hb-duration-fast) var(--hb-ease),
+		opacity var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-model-rail-button:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-model-rail-button[aria-pressed="true"] {
+	background: var(--hb-selected);
+	color: var(--hb-text);
+}
+
+/* The chosen provider's marker: a short accent bar on the rail's inner edge, as T3 Code's selection indicator. */
+.hb-model-rail-button[aria-pressed="true"]::after {
+	position: absolute;
+	top: 50%;
+	right: calc(var(--hb-space-2) * -1);
+	width: var(--hb-space-1);
+	height: var(--hb-icon-md);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-accent-text);
+	content: "";
+	translate: 0 -50%;
+}
+
+/* While searching, a provider without a match fades; clicking it still shows its models. */
+.hb-model-rail-button[data-unmatched] {
+	opacity: 0.4;
+}
+
+.hb-model-rail-mark {
+	width: calc(var(--hb-icon-md) + var(--hb-space-1));
+	height: calc(var(--hb-icon-md) + var(--hb-space-1));
+}
+
+/* A provider without a mark: its initial, in a mark-sized tile. */
+.hb-provider-initial {
+	display: inline-grid;
+	place-items: center;
+	border-radius: var(--hb-radius-xs);
+	background: var(--hb-selected);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-strong);
+	line-height: 1;
 }
 
 /*
@@ -204,6 +314,11 @@
 	flex: none;
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
+}
+
+/* On the active row's tint the faint grey falls just short of 4.5:1; muted keeps "Default" readable there. */
+.hb-model-option[data-active] .hb-model-option-default {
+	color: var(--hb-text-muted);
 }
 
 .hb-model-option-detail {
