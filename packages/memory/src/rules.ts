@@ -204,6 +204,35 @@ export async function requireSpace(
 	});
 }
 
+/**
+ * Whether `listSpaces` shows `space` to the caller: the organisation's spaces, a project's the caller may view, and a
+ * user's to that user. Services and Harbour see every one; an agent sees no user's.
+ */
+export async function listsSpace(
+	access: ProjectAccess | undefined,
+	ctx: CallContext,
+	space: MemorySpace,
+): Promise<boolean> {
+	const owner = space.owner;
+	if (owner.kind === "user") {
+		const actor = ctx.actor;
+		return (
+			actor.kind === "service" || actor.kind === "system" || (actor.kind === "human" && actor.userId === owner.userId)
+		);
+	}
+	if (access === undefined || owner.kind !== "project") return true;
+	return access.allows(ctx, {
+		projectId: owner.projectId,
+		...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId } : {}),
+		needed: "viewer",
+	});
+}
+
+/** Spaces oldest first, then by ID, as `listSpaces` returns them. */
+export function bySpaceAge(left: MemorySpace, right: MemorySpace): number {
+	return left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+}
+
 export function assertOutcome(outcome: unknown): void {
 	if (outcome !== "apply" && outcome !== "reject") throw new HarbourError("invalid", "The outcome is apply or reject");
 }

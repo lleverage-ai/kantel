@@ -14,7 +14,14 @@ import {
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
-import { composerState, offersFollowUp, type SessionActions, transcriptWorking } from "./actions.ts";
+import {
+	browserRequestOf,
+	composerState,
+	editBlocked,
+	offersFollowUp,
+	type SessionActions,
+	transcriptWorking,
+} from "./actions.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -107,10 +114,23 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control } = actions;
+	const { control, onFork, onEdit } = actions;
+	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
+	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
 		() => transcriptWorking(state.status, actions.promptedAt),
 		[state.status, actions.promptedAt],
+	);
+	// A prompt on its way to a run counts as running: the edit would race it.
+	const blocked = editBlocked(control, actions.promptedAt === undefined ? state.status : "running", actions.sending);
+	const messageActions = useMemo(
+		() => ({
+			// A recorded session can't be forked or edited: neither is offered.
+			...(onFork === undefined || !control.live ? {} : { fork: onFork }),
+			...(onEdit === undefined || !control.live ? {} : { edit: onEdit }),
+			...(blocked === undefined ? {} : { editBlocked: blocked }),
+		}),
+		[onFork, onEdit, control.live, blocked],
 	);
 
 	return (
@@ -186,12 +206,49 @@ export function SessionView({
 						error={state.error}
 						working={working}
 						onRowRender={recordRow}
+						messageActions={messageActions}
 						dock={
 							<Composer
 								state={composerState(control, state.status, actions.sending)}
 								disabledReason={control.live ? undefined : control.reason}
 								label="Message"
-								banner={actions.failure === undefined ? undefined : <Notice level="error">{actions.failure}</Notice>}
+								banner={
+									actions.failure === undefined && browserRequest === undefined ? undefined : (
+										<>
+											{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
+											{browserRequest === undefined ? null : (
+												<Notice
+													level="warning"
+													action={
+														onBrowserDecision === undefined || !control.live ? undefined : (
+															<span className="console-browser-actions">
+																<Button
+																	size="sm"
+																	disabled={actions.sending}
+																	onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																>
+																	Allow
+																</Button>
+																<Button
+																	variant="ghost"
+																	size="sm"
+																	disabled={actions.sending}
+																	onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																>
+																	Decline
+																</Button>
+															</span>
+														)
+													}
+												>
+													The agent asks for a browser
+													{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+													{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+												</Notice>
+											)}
+										</>
+									)
+								}
 								value={actions.draft}
 								onChange={actions.onDraft}
 								{...actions.pickers}

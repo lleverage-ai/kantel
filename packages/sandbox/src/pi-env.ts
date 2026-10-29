@@ -93,6 +93,7 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type FileEntry,
+	HarbourError,
 	isHarbourError,
 	type Mount,
 	type Sandboxes,
@@ -142,6 +143,12 @@ export interface SandboxExecutionEnvOptions {
 	readonly root?: string;
 	/** Called after every command the sandbox ran, before its output is delivered. */
 	readonly onExec?: (record: SandboxExecRecord) => void | Promise<void>;
+	/**
+	 * The largest file, in bytes, the environment reads or writes. A read of a larger file is refused before its body is
+	 * fetched (`Workspaces.read`'s `maxBytes`), and a write, append or truncate that would leave a larger file commits
+	 * nothing; both fail with `invalid`. Absent: no limit of its own. Commands in the sandbox are bounded by the sandbox.
+	 */
+	readonly maxFileBytes?: number;
 }
 
 /** The Pi Durable `ExecutionEnv` of one session over its sandboxes and workspace. */
@@ -176,6 +183,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	readonly #workspaces: Workspaces;
 	readonly #root: string;
 	readonly #onExec: ((record: SandboxExecRecord) => void | Promise<void>) | undefined;
+	readonly #maxFileBytes: number | undefined;
 	#mounts: Promise<readonly Mount[]> | undefined;
 	/** Directories made here, which may hold no file: workspace paths, each with its ancestors. */
 	readonly #directories = new Set<string>();
@@ -192,6 +200,11 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		this.#sandboxes = options.sandboxes;
 		this.#workspaces = options.workspaces;
 		this.#onExec = options.onExec;
+		const max = options.maxFileBytes;
+		if (max !== undefined && (!Number.isSafeInteger(max) || max < 0)) {
+			throw new Error(`maxFileBytes must be a size in bytes, not ${max}`);
+		}
+		this.#maxFileBytes = max;
 		this.id = `harbour:${options.workspaceId}`;
 		this.cwd = this.#root;
 	}
@@ -350,8 +363,22 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	// ---- reads -------------------------------------------------------------------------------------------------------
 
 	async #read(call: CallContext, location: Location, version?: WorkspaceVersion): Promise<Uint8Array> {
-		const options = location.kind === "workspace" && version !== undefined ? { version } : undefined;
-		return (await this.#workspaces.read(call, this.#workspaceId, location.path, options)).content;
+		const max = this.#maxFileBytes;
+		const options = {
+			...(location.kind === "workspace" && version !== undefined ? { version } : {}),
+			...(max === undefined ? {} : { maxBytes: max }),
+		};
+		const { content } = await this.#workspaces.read(call, this.#workspaceId, location.path, options);
+		// An implementation that does not know `maxBytes` still never hands a larger file on.
+		if (max !== undefined && content.byteLength > max) throw tooLarge(location.path, content.byteLength, max);
+		return content;
+	}
+
+	/** Refuses (`invalid`) content of `bytes` at `path` when it is over `maxFileBytes`; otherwise nothing. */
+	#checkSize(path: string, bytes: number): FileError | undefined {
+		const max = this.#maxFileBytes;
+		if (max === undefined || bytes <= max) return undefined;
+		return toFileError(tooLarge(path, bytes, max), path);
 	}
 
 	async #stat(call: CallContext, location: Location, version?: WorkspaceVersion): Promise<FileEntry> {
@@ -598,6 +625,9 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		if (!start.ok) return start;
 		const { location, call } = start.value;
 		if (isRoot(location)) return err(new FileError("is_directory", "cannot write the workspace root", path));
+		const bytes = typeof content === "string" ? new TextEncoder().encode(content).byteLength : content.byteLength;
+		const over = this.#checkSize(path, bytes);
+		if (over !== undefined) return err(over);
 		try {
 			const inTheWay = await this.#directoryInTheWay(call, location, path);
 			if (inTheWay !== undefined) return err(inTheWay);
@@ -615,6 +645,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		const { location, call } = start.value;
 		if (isRoot(location)) return err(new FileError("is_directory", "cannot write the workspace root", path));
 		const add = typeof content === "string" ? new TextEncoder().encode(content) : content;
+		const over = this.#checkSize(path, add.byteLength);
+		if (over !== undefined) return err(over);
 		try {
 			const inTheWay = await this.#directoryInTheWay(call, location, path);
 			if (inTheWay !== undefined) return err(inTheWay);
@@ -628,6 +660,9 @@ class SandboxExecutionEnv implements ExecutionEnv {
 					} catch (error) {
 						if (!isHarbourError(error, "not_found")) throw error;
 					}
+					const max = this.#maxFileBytes;
+					const size = before.byteLength + add.byteLength;
+					if (max !== undefined && size > max) throw tooLarge(location.path, size, max);
 					return [{ op: "put", path: location.path, content: concat(before, add) }];
 				},
 				`append ${location.path}`,
@@ -646,6 +681,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			return err(new FileError("invalid", "File size must be a non-negative safe integer", path));
 		}
 		if (isRoot(location)) return err(new FileError("is_directory", "cannot truncate the workspace root", path));
+		const over = this.#checkSize(path, size);
+		if (over !== undefined) return err(over);
 		try {
 			await this.#commit(
 				call,
@@ -956,6 +993,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	 * or missing path.
 	 */
 	async #fileError(error: unknown, location: Location, path: string, call: CallContext): Promise<FileError> {
+		if (isTooLarge(error)) return toFileError(error, path);
 		const missing = isHarbourError(error, "not_found");
 		if (missing || isHarbourError(error, "invalid")) {
 			let shape: Shape | undefined;
@@ -1261,7 +1299,22 @@ function executionError(error: unknown): ExecutionError {
 	return new ExecutionError("unknown", errorMessage(error), asError(error));
 }
 
+/** A file over `maxFileBytes`, as `Workspaces.read` refuses one over its `maxBytes`. */
+function tooLarge(path: string, bytes: number, maxBytes: number): HarbourError {
+	return new HarbourError("refused", `${path} is ${bytes} bytes, over the ${maxBytes} allowed`, {
+		path,
+		maxBytes,
+		bytes,
+	});
+}
+
+/** A refusal for size (ours or `Workspaces.read`'s), which is `invalid` rather than `permission_denied`. */
+function isTooLarge(error: unknown): boolean {
+	return isHarbourError(error, "refused") && typeof error.details?.maxBytes === "number";
+}
+
 function fileErrorCode(error: unknown): FileErrorCode {
+	if (isTooLarge(error)) return "invalid";
 	if (!isHarbourError(error)) return "unknown";
 	switch (error.code) {
 		case "not_found":

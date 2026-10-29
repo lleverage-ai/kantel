@@ -26,15 +26,19 @@ later statements reject, and closing releases the client as broken. The process 
 database. A connection the caller owns is the caller's to watch.
 
 `createSelfhostedSessionRuntime` builds `createSessionRuntime` over that database and resumes, before it returns,
-every session a previous process left mid-run or whose sleep has fallen due.
+every session a previous process left mid-run or whose sleep has fallen due. Durable host registrations
+(`service.hosts`, which the session API keeps `PUT /hosts/:id` in when given it as `hosts`) are called back over
+their signed callbacks unless `hostHandler` says otherwise, as the Cloudflare target's object does; `hostCallbacks`
+gives that call's `fetch` and timeout. So a host tool call cut off by a restart is rerun with the same call ID by the
+next process (`replay: "safe"`), or the model hears it was interrupted, without the host registering again.
 
 Pi's table and index names carry each session's prefix (`pi_<uuid>_`); one index name passes Postgres's 63-byte limit
 and is truncated, deterministically and without colliding.
 
 ## Tests
 
-`pnpm test` runs the runtime conformance suite (with project access), a restart mid model call and the facade's own
-cases on PGlite, so CI needs no services. The conformance suite and the restart test run on a real Postgres too when
+`pnpm test` runs the runtime conformance suite (with project access), a restart mid model call and mid host tool
+call (replay-safe and not) and the facade's own cases on PGlite, so CI needs no services. The conformance suite and the restart test run on a real Postgres too when
 `HARBOUR_TEST_DATABASE_URL` is set:
 
 ```sh

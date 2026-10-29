@@ -32,7 +32,7 @@ import {
 	systemContext,
 } from "@harbour/contracts";
 import { type SqlDialect, type SqlDriver, type SqlStatement, type SqlValue, sqlNumber } from "@harbour/sql";
-import { assertValidAuditEvent } from "./index.ts";
+import { assertValidAuditEvent, assertValidAuditQuery } from "./index.ts";
 import { OUTBOX_BATCH_SIZE } from "./memory.ts";
 
 const RELAY_CONTEXT: SystemContext = systemContext("audit.relay");
@@ -243,15 +243,15 @@ function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: 
 		if (scope !== null) equal("actor_scope", scope);
 	}
 	if (query.source !== undefined) equal("source", query.source);
-	if (query.type !== undefined) {
-		if (query.type.endsWith(".")) {
-			// SQL counts characters, not UTF-16 units as JavaScript's `length` does, so the database measures the prefix.
-			conditions.push("substr(type, 1, length(CAST(? AS TEXT))) = ?");
-			params.push(query.type, query.type);
-		} else {
-			equal("type", query.type);
-		}
-	}
+	// An exact type, or a prefix ending in `.`. SQL counts characters, not UTF-16 units as JavaScript's `length` does, so
+	// the database measures the prefix.
+	const typeCondition = (wanted: string): string => {
+		params.push(...(wanted.endsWith(".") ? [wanted, wanted] : [wanted]));
+		return wanted.endsWith(".") ? "substr(type, 1, length(CAST(? AS TEXT))) = ?" : "type = ?";
+	};
+	if (query.type !== undefined) conditions.push(typeCondition(query.type));
+	// At most MAX_AUDIT_QUERY_TYPES types, two parameters each, so the statement stays under D1's 100-parameter cap.
+	if (query.types !== undefined) conditions.push(`(${query.types.map(typeCondition).join(" OR ")})`);
 	if (query.subject !== undefined) equal("subject", subjectColumn(query.subject));
 	if (query.itemId !== undefined) equal(itemExpression(dialect), query.itemId);
 	if (query.grantId !== undefined) equal(grantExpression(dialect), query.grantId);
@@ -317,6 +317,7 @@ export function createSqlAuditStore(options: SqlAuditStoreOptions): AuditStore {
 
 		async query(ctx: CallContext, query: AuditQuery, page?: PageRequest): Promise<Page<AuditEvent>> {
 			forbidAgent(ctx, "read the audit log");
+			assertValidAuditQuery(query);
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
 			const scoped = query.projectId !== undefined || query.sessionId !== undefined;

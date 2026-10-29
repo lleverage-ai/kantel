@@ -65,8 +65,10 @@ import {
 } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
 import { otpSchema } from "./otp-sql.ts";
+import { passkeySchema } from "./passkey-sql.ts";
 
 export { createSqlOtpStores, otpSchema } from "./otp-sql.ts";
+export { createSqlPasskeyStores, passkeySchema } from "./passkey-sql.ts";
 
 /** Identity appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("identity");
@@ -164,6 +166,7 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			last_used_at ${time}
 		)`,
 		...otpSchema(dialect),
+		...passkeySchema(dialect),
 	];
 }
 

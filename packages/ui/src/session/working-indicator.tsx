@@ -6,7 +6,7 @@ import "./working-indicator.css";
 // The turn's working state, after T3 Code's working row (TimelineWorkGroupRows.tsx:274-308): while the agent works on
 // a turn, the transcript ends with "Working for 12s", from the moment the message is sent until the run settles, not
 // only before the first word. The dot is the working status's pulsing dot, centred on the capitals of the words beside
-// it; the words shimmer softly, so the row reads as live even when nothing else on screen has moved for a while.
+// it; the words breathe softly, so the row reads as live even when nothing else on screen has moved for a while.
 
 export type WorkingIndicatorProps = {
 	/** When the turn started (epoch ms): the timer counts from it. Without it the row says the label alone. */
