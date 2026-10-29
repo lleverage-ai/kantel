@@ -1,0 +1,466 @@
+import {
+	type AuthenticatedCaller,
+	type Authenticator,
+	authenticationError,
+	type CallContext,
+	type HarbourError,
+	isHarbourError,
+	PASSKEY_REGISTRATION_PATH,
+	PASSKEYS_PATH,
+	type PasskeyBinding,
+	type PasskeyRegistrationOptions,
+	type PasskeysResponse,
+	passkeyRemovePath,
+	type RelyingParty,
+} from "@harbour/contracts";
+import {
+	createMemoryPasskeyStores,
+	createPasskeys,
+	PASSKEY_CHALLENGE_TTL_MILLISECONDS,
+	type PasskeyChallengeStore,
+	type PasskeyCredentialStore,
+	type Passkeys,
+	type PasskeysOptions,
+} from "@harbour/identity/passkey";
+import { createPasskeyClient, createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
+import { createSoftwareAuthenticator, type SoftwareAlgorithm } from "@harbour/identity/passkey/testing";
+import { createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
+import { decodeCbor, derToRawSignature, fromBase64url, toBase64url } from "@harbour/identity/webauthn";
+import { testDatabaseKinds } from "@harbour/sql/testing";
+import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+import { describe, expect, it } from "vitest";
+
+const ORG = "org-a";
+const RP: RelyingParty = { id: "harbour.test", name: "Harbour", origin: "https://harbour.test" };
+const ada: CallContext = { actor: { kind: "human", userId: "user-ada" }, organisationId: ORG };
+const lin: CallContext = { actor: { kind: "human", userId: "user-lin" }, organisationId: ORG };
+const hostApp: CallContext = { actor: { kind: "service", serviceId: "svc-sal", keyId: "key-1" }, organisationId: ORG };
+
+const binding: PasskeyBinding = {
+	proposalId: "proposal-1",
+	termsHash: "terms-1",
+	action: "approve",
+	narrowing: { methods: ["GET"], ttlMs: 600_000 },
+};
+
+interface Stores {
+	readonly credentials: PasskeyCredentialStore;
+	readonly challenges: PasskeyChallengeStore;
+}
+
+interface Backend {
+	readonly name: string;
+	/** Opens the stores; `again` opens a second set over the same database, as another process would. */
+	open(): Promise<{ readonly stores: Stores; again(): Stores; close(): Promise<void> }>;
+}
+
+const backends: Backend[] = [
+	{
+		name: "memory",
+		async open() {
+			const stores = createMemoryPasskeyStores();
+			return { stores, again: () => stores, close: async () => {} };
+		},
+	},
+	...testDatabaseKinds().map(
+		(kind): Backend => ({
+			name: kind.name,
+			async open() {
+				const database = await kind.open();
+				await migrateIdentity(database.driver);
+				return {
+					stores: createSqlPasskeyStores(database.driver),
+					again: () => createSqlPasskeyStores(database.driver),
+					close: () => database.close(),
+				};
+			},
+		}),
+	),
+];
+
+async function refusal(promise: Promise<unknown>): Promise<HarbourError> {
+	try {
+		await promise;
+	} catch (error) {
+		if (isHarbourError(error)) return error;
+		throw error;
+	}
+	throw new Error("expected a refusal");
+}
+
+const reasonOf = async (promise: Promise<unknown>) => {
+	const error = await refusal(promise);
+	expect(error.code).toBe("refused");
+	return error.details?.passkey;
+};
+
+describe.each(backends)("passkeys on $name", (backend) => {
+	async function world(options: Partial<PasskeysOptions> & { algorithm?: SoftwareAlgorithm; counting?: boolean } = {}) {
+		const clock = new ManualClock();
+		const audit = new RecordingAuditSink();
+		const opened = await backend.open();
+		const passkeys = createPasskeys({ ...opened.stores, clock, audit, ...options });
+		const device = createSoftwareAuthenticator({
+			origin: RP.origin,
+			...(options.algorithm === undefined ? {} : { algorithm: options.algorithm }),
+			...(options.counting === undefined ? {} : { counting: options.counting }),
+		});
+		const register = async (ctx: CallContext = ada) => {
+			const creation = await passkeys.registrationOptions(ctx, RP);
+			return passkeys.register(ctx, await device.create(creation), "Laptop");
+		};
+		return { clock, audit, passkeys, device, register, opened };
+	}
+
+	it.each(["ES256", "EdDSA", "RS256"] as const)(
+		"registers a %s passkey and approves with it once, audited as identity.passkey.registered",
+		async (algorithm) => {
+			const { passkeys, device, register, audit, opened } = await world({ algorithm });
+			const registered = await register();
+			expect(registered).toMatchObject({ userId: "user-ada", name: "Laptop", rpId: RP.id, transports: ["internal"] });
+			expect(registered).not.toHaveProperty("publicKey");
+			expect(await passkeys.list(ada)).toEqual([registered]);
+			expect(audit.ofType("identity.passkey.registered")).toMatchObject([
+				{ actor: ada.actor, organisationId: ORG, subject: { kind: "identity.passkey", id: registered.id } },
+			]);
+
+			const challenge = await passkeys.approvalChallenge(ada, RP, binding);
+			expect(challenge.allowCredentials).toEqual([
+				{ type: "public-key", id: registered.credentialId, transports: ["internal"] },
+			]);
+			const assertion = await device.get(challenge);
+			const used = await passkeys.verifyApproval(ada, binding, assertion);
+			expect(used.id).toBe(registered.id);
+			expect(used.lastUsedAt).toBeDefined();
+			await opened.close();
+		},
+	);
+
+	it("issues registration options for the person, excluding the passkeys they have", async () => {
+		const { passkeys, register, opened } = await world();
+		const first = await passkeys.registrationOptions(ada, RP);
+		expect(first).toMatchObject({
+			rp: { id: RP.id, name: "Harbour" },
+			user: { id: toBase64url(new TextEncoder().encode("user-ada")) },
+			attestation: "none",
+			authenticatorSelection: { userVerification: "required" },
+			excludeCredentials: [],
+		});
+		expect(first.pubKeyCredParams.map((param) => param.alg)).toEqual([-8, -7, -257]);
+		const registered = await register();
+		const second = await passkeys.registrationOptions(ada, RP);
+		expect(second.excludeCredentials.map((descriptor) => descriptor.id)).toEqual([registered.credentialId]);
+		expect(second.challenge).not.toBe(first.challenge);
+		await opened.close();
+	});
+
+	it("uses a registration challenge once, and refuses another person's, an expired one and a stranger's", async () => {
+		const { passkeys, device, clock, opened } = await world();
+		const creation = await passkeys.registrationOptions(ada, RP);
+		const response = await device.create(creation);
+		expect(await reasonOf(passkeys.register(lin, response))).toBe("challenge");
+		// Lin's attempt used it up: Ada's own is refused now.
+		expect(await reasonOf(passkeys.register(ada, response))).toBe("challenge");
+
+		const late = await device.create(await passkeys.registrationOptions(ada, RP));
+		clock.advance(PASSKEY_CHALLENGE_TTL_MILLISECONDS);
+		expect(await reasonOf(passkeys.register(ada, late))).toBe("challenge");
+
+		const forged = await device.create(await passkeys.registrationOptions(ada, RP), { challenge: "AAAA" });
+		expect(await reasonOf(passkeys.register(ada, forged))).toBe("challenge");
+		expect(await passkeys.list(ada)).toEqual([]);
+		await opened.close();
+	});
+
+	it("refuses a registration from another origin or relying party, or without user verification", async () => {
+		const { passkeys, device, opened } = await world();
+		const make = async (overrides: Parameters<typeof device.create>[1]) =>
+			passkeys.register(ada, await device.create(await passkeys.registrationOptions(ada, RP), overrides));
+		expect(await reasonOf(make({ origin: "https://evil.test" }))).toBe("origin");
+		expect(await reasonOf(make({ rpId: "evil.test" }))).toBe("origin");
+		expect(await reasonOf(make({ crossOrigin: true }))).toBe("origin");
+		expect(await reasonOf(make({ userVerified: false }))).toBe("user_verification");
+		expect(await reasonOf(make({ type: "webauthn.get" }))).toBe("malformed");
+		expect(await passkeys.list(ada)).toEqual([]);
+		await opened.close();
+	});
+
+	it("refuses to register one passkey twice, to the same person or another", async () => {
+		const { passkeys, device, opened } = await world();
+		const first = await device.create(await passkeys.registrationOptions(ada, RP));
+		await passkeys.register(ada, first);
+		// The same authenticator data under a new challenge: with no attestation, nothing else ties it to a session.
+		const replayed = async (ctx: CallContext) => {
+			const { challenge } = await passkeys.registrationOptions(ctx, RP);
+			const client = JSON.parse(new TextDecoder().decode(fromBase64url(first.response.clientDataJSON)));
+			const clientDataJSON = toBase64url(new TextEncoder().encode(JSON.stringify({ ...client, challenge })));
+			return { ...first, response: { ...first.response, clientDataJSON } };
+		};
+		expect((await refusal(passkeys.register(ada, await replayed(ada)))).code).toBe("conflict");
+		expect((await refusal(passkeys.register(lin, await replayed(lin)))).code).toBe("conflict");
+		expect(await passkeys.list(lin)).toEqual([]);
+		await opened.close();
+	});
+
+	it("removes a passkey for its owner only, audited as identity.passkey.removed", async () => {
+		const { passkeys, register, audit, opened } = await world();
+		const registered = await register();
+		expect((await refusal(passkeys.remove(lin, registered.id))).code).toBe("not_found");
+		await passkeys.remove(ada, registered.id);
+		expect(await passkeys.list(ada)).toEqual([]);
+		expect(audit.ofType("identity.passkey.removed")).toHaveLength(1);
+		expect((await refusal(passkeys.remove(ada, registered.id))).code).toBe("not_found");
+		await opened.close();
+	});
+
+	it("has no passkeys for anyone but a person", async () => {
+		const { passkeys, opened } = await world();
+		expect((await refusal(passkeys.list(hostApp))).code).toBe("forbidden");
+		expect((await refusal(passkeys.registrationOptions(hostApp, RP))).code).toBe("forbidden");
+		expect((await refusal(passkeys.approvalChallenge(hostApp, RP, binding))).code).toBe("forbidden");
+		await opened.close();
+	});
+
+	it("uses an approval challenge once: a replayed assertion is refused", async () => {
+		const { passkeys, device, register, opened } = await world();
+		await register();
+		const assertion = await device.get(await passkeys.approvalChallenge(ada, RP, binding));
+		await passkeys.verifyApproval(ada, binding, assertion);
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, assertion))).toBe("challenge");
+		await opened.close();
+	});
+
+	it("lets one of two concurrent uses of an assertion through, on any process", async () => {
+		const { passkeys, device, register, opened, clock } = await world();
+		await register();
+		const other = createPasskeys({ ...opened.again(), clock });
+		const assertion = await device.get(await passkeys.approvalChallenge(ada, RP, binding));
+		const results = await Promise.allSettled([
+			passkeys.verifyApproval(ada, binding, assertion),
+			other.verifyApproval(ada, binding, assertion),
+		]);
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		await opened.close();
+	});
+
+	it.each([
+		["another proposal", { proposalId: "proposal-2" }],
+		["other terms", { termsHash: "terms-2" }],
+		["another action", { action: "paste" }],
+		["a wider narrowing", { narrowing: { methods: ["GET", "POST"], ttlMs: 600_000 } }],
+		["no narrowing", { narrowing: undefined }],
+	] as const)("refuses an assertion for %s than the decision cites", async (_, change) => {
+		const { passkeys, device, register, opened } = await world();
+		await register();
+		const assertion = await device.get(await passkeys.approvalChallenge(ada, RP, binding));
+		const cited: PasskeyBinding = { ...binding, ...change };
+		expect(await reasonOf(passkeys.verifyApproval(ada, cited, assertion))).toBe("binding");
+		await opened.close();
+	});
+
+	it("binds the narrowing whatever order its methods were listed in", async () => {
+		const { passkeys, device, register, opened } = await world();
+		await register();
+		const shown: PasskeyBinding = { ...binding, narrowing: { methods: ["POST", "GET"] } };
+		const assertion = await device.get(await passkeys.approvalChallenge(ada, RP, shown));
+		await passkeys.verifyApproval(ada, { ...binding, narrowing: { methods: ["GET", "POST"] } }, assertion);
+		await opened.close();
+	});
+
+	it("refuses a bad signature, another person's passkey, a challenge issued to another person and an expired one", async () => {
+		const { passkeys, device, register, clock, opened } = await world();
+		await register();
+		const signed = async (overrides: Parameters<typeof device.get>[1] = {}, ctx = ada) =>
+			device.get(await passkeys.approvalChallenge(ctx, RP, binding), overrides);
+
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, await signed({ corruptSignature: true })))).toBe(
+			"signature",
+		);
+
+		// Lin signs Ada's challenge with Lin's own passkey.
+		const linDevice = createSoftwareAuthenticator({ origin: RP.origin });
+		await passkeys.register(lin, await linDevice.create(await passkeys.registrationOptions(lin, RP)));
+		const adaChallenge = await passkeys.approvalChallenge(ada, RP, binding);
+		const linSigned = await linDevice.get({ ...adaChallenge, allowCredentials: [] });
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, linSigned))).toBe("credential");
+
+		// Ada's passkey on a challenge Lin was issued: Lin may not borrow it, and Ada may not use Lin's challenge.
+		const forLin = await passkeys.approvalChallenge(lin, RP, binding);
+		const adaOnLins = await device.get({ ...forLin, allowCredentials: [] });
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, adaOnLins))).toBe("challenge");
+
+		const late = await signed();
+		clock.advance(PASSKEY_CHALLENGE_TTL_MILLISECONDS);
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, late))).toBe("challenge");
+		await opened.close();
+	});
+
+	it("refuses an assertion without user verification, from another origin or for another relying party", async () => {
+		const { passkeys, device, register, opened } = await world();
+		await register();
+		const signed = async (overrides: Parameters<typeof device.get>[1]) =>
+			device.get(await passkeys.approvalChallenge(ada, RP, binding), overrides);
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, await signed({ userVerified: false })))).toBe(
+			"user_verification",
+		);
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, await signed({ origin: "https://evil.test" })))).toBe(
+			"origin",
+		);
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, await signed({ rpId: "evil.test" })))).toBe("origin");
+		await opened.close();
+	});
+
+	it("refuses an assertion whose counter went backwards: a cloned passkey", async () => {
+		const { passkeys, device, register, opened } = await world({ counting: true });
+		await register();
+		await passkeys.verifyApproval(ada, binding, await device.get(await passkeys.approvalChallenge(ada, RP, binding)));
+		await passkeys.verifyApproval(ada, binding, await device.get(await passkeys.approvalChallenge(ada, RP, binding)));
+		const cloned = await device.get(await passkeys.approvalChallenge(ada, RP, binding), { signCount: 1 });
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, cloned))).toBe("counter");
+		await opened.close();
+	});
+
+	it("refuses a malformed assertion as malformed or an unknown challenge, never as an error", async () => {
+		const { passkeys, register, opened } = await world();
+		await register();
+		const bad = { id: "x", rawId: "x", type: "public-key", response: { clientDataJSON: "!!" } } as never;
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, bad))).toBe("malformed");
+		expect(await reasonOf(passkeys.verifyApproval(ada, binding, {} as never))).toBe("malformed");
+		await opened.close();
+	});
+
+	it("requires a passkey to approve once the person has one, or always", async () => {
+		const { passkeys, register, opened, clock } = await world();
+		expect(passkeys.approvals).toBe("registered");
+		expect(await passkeys.required(ada)).toBe(false);
+		await register();
+		expect(await passkeys.required(ada)).toBe(true);
+		expect(await passkeys.required(lin)).toBe(false);
+		const always = createPasskeys({ ...opened.again(), clock, approvals: "always" });
+		expect(await always.required(lin)).toBe(true);
+		await opened.close();
+	});
+});
+
+describe("webauthn encoding", () => {
+	it("reads base64url, padded or not, and refuses anything else", () => {
+		expect([...fromBase64url("AQID")]).toEqual([1, 2, 3]);
+		expect([...fromBase64url("AQ==")]).toEqual([1]);
+		expect(() => fromBase64url("A+/=")).toThrow();
+		expect(() => fromBase64url(3)).toThrow();
+	});
+
+	it("decodes the CBOR authenticators write and refuses indefinite lengths and truncation", () => {
+		const map = decodeCbor(new Uint8Array([0xa2, 0x01, 0x02, 0x63, 0x66, 0x6d, 0x74, 0x40])).value as Map<
+			unknown,
+			unknown
+		>;
+		expect(map.get(1)).toBe(2);
+		expect(map.get("fmt")).toEqual(new Uint8Array());
+		expect(() => decodeCbor(new Uint8Array([0x9f, 0xff]))).toThrow(/Indefinite/);
+		expect(() => decodeCbor(new Uint8Array([0x62, 0x61]))).toThrow(/ends early/);
+		expect(() => decodeCbor(new Uint8Array([0xa2, 0x01, 0x02, 0x01, 0x03]))).toThrow(/repeats/);
+	});
+
+	it("turns a DER ECDSA signature into WebCrypto's raw form", () => {
+		const r = new Uint8Array(32).fill(0x81);
+		const s = new Uint8Array(32).fill(0x01);
+		const der = new Uint8Array([0x30, 0x45, 0x02, 0x21, 0x00, ...r, 0x02, 0x20, ...s]);
+		expect([...derToRawSignature(der)]).toEqual([...r, ...s]);
+		expect(() => derToRawSignature(new Uint8Array([0x31, 0x00]))).toThrow();
+	});
+});
+
+describe("passkey routes", () => {
+	/** Stands in for a sign-in: `x-user` signs in a person, `x-key` a host app's key. */
+	const authenticator: Authenticator = {
+		async authenticate(request): Promise<AuthenticatedCaller> {
+			const user = request.headers.get("x-user");
+			if (user !== null)
+				return { method: "cloudflare_access", actor: { kind: "human", userId: user }, organisationId: ORG };
+			if (request.headers.get("x-key") !== null) return { method: "api_key", ...hostApp };
+			throw authenticationError("missing", "No credentials");
+		},
+	};
+
+	function routes(passkeys: Passkeys) {
+		const handler = createPasskeyHandler({ passkeys, authenticator, signIn: ["cloudflare_access"] });
+		const serve = (input: Parameters<typeof fetch>[0], init?: RequestInit) => handler(new Request(input, init));
+		const client = (headers: Record<string, string>) =>
+			createPasskeyClient({ baseUrl: RP.origin, fetch: serve, headers: () => headers });
+		return { handler, serve, client };
+	}
+
+	it("registers, lists and removes the signed-in person's passkeys", async () => {
+		const passkeys = createPasskeys({ ...createMemoryPasskeyStores(), clock: new ManualClock() });
+		const { client } = routes(passkeys);
+		const device = createSoftwareAuthenticator({ origin: RP.origin });
+		const asAda = client({ "x-user": "user-ada" });
+		const options: PasskeyRegistrationOptions = await asAda.registrationOptions();
+		// The relying party is the origin the request was made to.
+		expect(options.rp).toEqual({ id: RP.id, name: "Harbour" });
+		const registered = await asAda.register({ response: await device.create(options), name: "  Phone " });
+		expect(registered.name).toBe("Phone");
+		const listed: PasskeysResponse = await asAda.list();
+		expect(listed).toEqual({ items: [registered], approvals: "registered" });
+		expect((await client({ "x-user": "user-lin" }).list()).items).toEqual([]);
+		await asAda.remove(registered.id);
+		expect((await asAda.list()).items).toEqual([]);
+	});
+
+	it("answers a refused registration with its reason", async () => {
+		const passkeys = createPasskeys({ ...createMemoryPasskeyStores(), clock: new ManualClock() });
+		const { client } = routes(passkeys);
+		const device = createSoftwareAuthenticator({ origin: "https://evil.test" });
+		const asAda = client({ "x-user": "user-ada" });
+		const error = await refusal(asAda.register({ response: await device.create(await asAda.registrationOptions()) }));
+		expect(error.code).toBe("refused");
+		expect(error.details).toEqual({ passkey: "origin" });
+	});
+
+	it("refuses strangers, host apps, other methods, other content types and stray fields", async () => {
+		const passkeys = createPasskeys({ ...createMemoryPasskeyStores(), clock: new ManualClock() });
+		const { serve } = routes(passkeys);
+		const url = (path: string) => `${RP.origin}${path}`;
+		const anonymous = await serve(url(PASSKEYS_PATH));
+		expect(anonymous.status).toBe(401);
+		expect(await anonymous.json()).toMatchObject({ error: { code: "unauthenticated", signIn: ["cloudflare_access"] } });
+		expect((await serve(url(PASSKEYS_PATH), { headers: { "x-key": "1" } })).status).toBe(403);
+		expect((await serve(url(PASSKEY_REGISTRATION_PATH), { headers: { "x-user": "user-ada" } })).status).toBe(405);
+		const notJson = await serve(url(PASSKEY_REGISTRATION_PATH), {
+			method: "POST",
+			headers: { "x-user": "user-ada", "content-type": "text/plain" },
+			body: "{}",
+		});
+		expect(notJson.status).toBe(415);
+		const stray = await serve(url(PASSKEYS_PATH), {
+			method: "POST",
+			headers: { "x-user": "user-ada", "content-type": "application/json" },
+			body: JSON.stringify({ response: {}, extra: 1 }),
+		});
+		expect(stray.status).toBe(400);
+		const missing = await serve(url(passkeyRemovePath("pk_nope")), {
+			method: "POST",
+			headers: { "x-user": "user-ada", "content-type": "application/json" },
+			body: "{}",
+		});
+		expect(missing.status).toBe(404);
+		expect((await serve(url(`${PASSKEYS_PATH}/a/b/remove`))).status).toBe(404);
+	});
+
+	it("names its own paths for a router", () => {
+		expect(isPasskeyPath(PASSKEYS_PATH)).toBe(true);
+		expect(isPasskeyPath(PASSKEY_REGISTRATION_PATH)).toBe(true);
+		expect(isPasskeyPath(passkeyRemovePath("pk_1"))).toBe(true);
+		expect(isPasskeyPath("/v1/me")).toBe(false);
+		expect(isPasskeyPath(`${PASSKEYS_PATH}/pk_1`)).toBe(false);
+	});
+
+	it("turns a 404 for the routes into not_supported, so a console knows the deployment has no passkeys", async () => {
+		const client = createPasskeyClient({
+			baseUrl: RP.origin,
+			fetch: async () => Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 }),
+		});
+		expect((await refusal(client.list())).code).toBe("not_supported");
+	});
+});

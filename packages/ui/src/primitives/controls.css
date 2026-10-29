@@ -78,6 +78,15 @@
 	border-color: var(--hb-status-error-line);
 }
 
+/* A multi-line input in the same frame: its height follows its rows, and the person can drag it taller. */
+.hb-textarea {
+	height: auto;
+	min-height: var(--hb-control-md);
+	padding: var(--hb-space-4) var(--hb-space-5);
+	line-height: var(--hb-leading);
+	resize: vertical;
+}
+
 /* The browser's own select, in the input's frame; its menu follows the page's dark colour scheme. */
 .hb-select {
 	min-width: 0;
@@ -101,6 +110,10 @@
 		/* 16px stops iOS zooming into the field. */
 		font-size: var(--hb-text-lg);
 		height: var(--hb-control-lg);
+	}
+
+	.hb-textarea {
+		height: auto;
 	}
 }
 

@@ -5,8 +5,10 @@ import {
 	type AuditEventInput,
 	type AuditSink,
 	type Browser,
+	type BrowserAction,
 	type BrowserContext,
 	type BrowserGrant,
+	type BrowserPage,
 	type BrowserProvider,
 	type BrowserRequest,
 	type BrowserSession,
@@ -31,7 +33,17 @@ import {
 /** The broker appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("browser");
 
-import { assertValidSite, isSupervisor, type ParentOf, siteAllowed, siteCovered } from "./index.ts";
+import {
+	assertValidAction,
+	assertValidSite,
+	browserTeardown,
+	isSupervisor,
+	type ParentOf,
+	pageAllowed,
+	SHARE_MINUTES,
+	siteAllowed,
+	siteCovered,
+} from "./index.ts";
 
 export interface MemoryBrowserOptions {
 	readonly clock?: Clock;
@@ -66,14 +78,39 @@ export interface FakeBrowserProvider {
 	failReleases(times: number): void;
 	/** Makes the next `open` wait until the returned function is called. */
 	holdNextOpen(): () => void;
+	/** Makes the next `click` in any browser land on `url`, as a link would. */
+	nextClickLandsOn(url: string): void;
+	/** The URL each live browser is on, by provider session ID. */
+	urls(): { readonly [providerSessionId: string]: string };
+	/** How many share links the provider made. */
+	shares(): number;
 }
 
-/** A provider that opens nothing real. Its CDP URLs are `wss://browser.invalid/<providerSessionId>`. */
+/**
+ * A provider that opens nothing real. Its CDP URLs are `wss://browser.invalid/<providerSessionId>`; each browser starts
+ * on `about:blank`, `goto` moves it, a `click` lands where `nextClickLandsOn` said (or stays), and every page has one
+ * element, `1`.
+ */
 export function createFakeBrowserProvider(): FakeBrowserProvider {
 	const opened: FakeProviderSession[] = [];
-	const live = new Set<string>();
+	const live = new Map<string, { url: string }>();
 	let releasesToFail = 0;
 	let hold: Promise<void> | undefined;
+	let landing: string | undefined;
+	let shares = 0;
+	const liveSession = (providerSessionId: string) => {
+		const browser = live.get(providerSessionId);
+		if (browser === undefined) throw new HarbourError("expired", `The fake browser ${providerSessionId} has ended`);
+		return browser;
+	};
+	const pageAt = (url: string, action: BrowserAction): BrowserPage => ({
+		url,
+		title: `Fake page at ${url}`,
+		text: `The fake page at ${url}.`,
+		elements: [{ id: "1", describe: "link" }],
+		succeeded: true,
+		did: action.kind,
+	});
 	return {
 		provider: {
 			async open(input) {
@@ -82,7 +119,7 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 				if (held !== undefined) await held;
 				const providerSessionId = `fake_${crypto.randomUUID()}`;
 				opened.push({ providerSessionId, providerContextId: input.providerContextId, persist: input.persist });
-				live.add(providerSessionId);
+				live.set(providerSessionId, { url: "about:blank" });
 				return { providerSessionId, cdpUrl: `wss://browser.invalid/${providerSessionId}` };
 			},
 			async release(providerSessionId) {
@@ -92,9 +129,37 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 				}
 				live.delete(providerSessionId);
 			},
+			async act(providerSessionId, action) {
+				const browser = liveSession(providerSessionId);
+				if (action.kind === "goto") browser.url = action.url;
+				if (action.kind === "click" && landing !== undefined) {
+					browser.url = landing;
+					landing = undefined;
+				}
+				return pageAt(browser.url, action);
+			},
+			async screenshot(providerSessionId) {
+				const browser = liveSession(providerSessionId);
+				return {
+					url: browser.url,
+					title: `Fake page at ${browser.url}`,
+					mimeType: "image/png",
+					data: btoa(`fake screenshot of ${browser.url}`),
+				};
+			},
+			async share(providerSessionId, minutes) {
+				liveSession(providerSessionId);
+				shares += 1;
+				return { url: `https://browser.invalid/share/${providerSessionId}?minutes=${minutes}` };
+			},
 		},
 		opened: () => [...opened],
-		live: () => [...live],
+		live: () => [...live.keys()],
+		urls: () => Object.fromEntries([...live].map(([id, browser]) => [id, browser.url])),
+		shares: () => shares,
+		nextClickLandsOn(url) {
+			landing = url;
+		},
 		failReleases(times) {
 			releasesToFail = times;
 		},
@@ -368,6 +433,51 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			throw new HarbourError("not_found", `No browser grant ${grantId}`);
 		}
 		return stored;
+	}
+
+	/** An open browser session and its grant, or `expired` when the session is closed. */
+	function openGrant(stored: StoredSession): BrowserGrant {
+		if (stored.session.status !== "open") {
+			throw new HarbourError("expired", `Browser session ${stored.session.id} is closed`);
+		}
+		return grants.get(stored.session.grantId)!.grant;
+	}
+
+	/**
+	 * Audits a page off the grant's sites as `browser.site.refused`, naming only the host (a URL may hold a token), and
+	 * returns the `refused` error to throw.
+	 */
+	async function refuseSite(
+		ctx: CallContext,
+		stored: StoredSession,
+		step: string,
+		url: string,
+		why: "asked" | "landed",
+	): Promise<HarbourError> {
+		let host = "";
+		try {
+			host = new URL(url).hostname;
+		} catch {
+			host = "";
+		}
+		const session = stored.session;
+		await emit({
+			id: refusalId(ctx, "site", session.sessionId, `session:${session.id}:${step}`),
+			type: "browser.site.refused",
+			actor: ctx.actor,
+			organisationId: session.organisationId,
+			projectId: stored.projectId,
+			sessionId: session.sessionId,
+			agentId: stored.agentId,
+			subject: { kind: "browser.session", id: session.id },
+			data: { step, host, why },
+		});
+		return new HarbourError(
+			"refused",
+			why === "asked"
+				? `${host || url} is not one of this browser's sites`
+				: `The page went to ${host || "a page"}, which is not one of this browser's sites, so the browser was sent back to a blank page`,
+		);
 	}
 
 	/** A browser session the caller may see: any in its organisation for humans and services, its own for an agent. */
@@ -766,6 +876,64 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			return closed;
 		},
 
+		async act(ctx, browserSessionId, action) {
+			await sweep();
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "operator", operation: "browser.act" });
+			const grant = openGrant(stored);
+			assertValidAction(action);
+			if (action.kind === "goto" && !siteAllowed(grant.allowedSites, action.url)) {
+				throw await refuseSite(ctx, stored, action.kind, action.url, "asked");
+			}
+			const page = await provider.act(stored.providerSessionId, action, ctx.signal);
+			if (!pageAllowed(grant.allowedSites, page.url)) {
+				// Never hand back a page off the grant: blank the browser first. A blank that fails still refuses.
+				await provider
+					.act(stored.providerSessionId, { kind: "goto", url: "about:blank" }, ctx.signal)
+					.catch(() => undefined);
+				throw await refuseSite(ctx, stored, action.kind, page.url, "landed");
+			}
+			return page;
+		},
+
+		async screenshot(ctx, browserSessionId) {
+			await sweep();
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "operator", operation: "browser.screenshot" });
+			const grant = openGrant(stored);
+			const shot = await provider.screenshot(stored.providerSessionId, ctx.signal);
+			if (!pageAllowed(grant.allowedSites, shot.url)) {
+				throw await refuseSite(ctx, stored, "screenshot", shot.url, "landed");
+			}
+			return shot;
+		},
+
+		async share(ctx, browserSessionId, input) {
+			await sweep();
+			forbidAgent(ctx, "make a browser share link");
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "operator", operation: "browser.share" });
+			const minutes = input?.minutes ?? SHARE_MINUTES[0];
+			if (!(SHARE_MINUTES as readonly number[]).includes(minutes)) {
+				throw new HarbourError("invalid", `A share link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
+			}
+			openGrant(stored);
+			const link = await provider.share(stored.providerSessionId, minutes, ctx.signal);
+			const session = stored.session;
+			await emit({
+				id: `browser:session:${session.id}:shared:${ctx.requestId ?? crypto.randomUUID()}`,
+				type: "browser.session.shared",
+				actor: ctx.actor,
+				organisationId: session.organisationId,
+				projectId: stored.projectId,
+				sessionId: session.sessionId,
+				agentId: stored.agentId,
+				subject: { kind: "browser.session", id: session.id },
+				data: { minutes },
+			});
+			return link;
+		},
+
 		async endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason) {
 			await requireSystem(ctx, "browser.endSession", { ...(audit === undefined ? {} : { audit }), clock });
 			// A failing sweep (its audit, say) must not keep this session's browsers and grants alive: end them first,
@@ -808,7 +976,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	};
 	if (options.sessionEnd !== undefined) {
 		// The hook's context is a system one, which `endSession` requires.
-		options.sessionEnd.register("browser", (ctx, end) => browser.endSession(ctx, end.sessionId, end.reason));
+		options.sessionEnd.register("browser", browserTeardown(browser));
 	}
 	return browser;
 }

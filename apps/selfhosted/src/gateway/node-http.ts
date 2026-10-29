@@ -3,7 +3,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-export type FetchHandler = (request: Request) => Promise<Response>;
+/** The handler also gets the client's socket address: what a per-client limit counts, as no header can forge it. */
+export type FetchHandler = (request: Request, client: { readonly address?: string }) => Promise<Response>;
 
 export interface Listening {
 	readonly port: number;
@@ -138,7 +139,11 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 			const body = chunks.length === 0 ? undefined : Buffer.concat(chunks);
 			let response: Response;
 			try {
-				response = await handler(toRequest(incoming, body, controller.signal));
+				const address = incoming.socket.remoteAddress;
+				response = await handler(
+					toRequest(incoming, body, controller.signal),
+					address === undefined ? {} : { address },
+				);
 			} catch (error) {
 				console.error("[gateway]", error);
 				response = new Response(JSON.stringify({ error: { code: "unavailable", message: "Internal error" } }), {

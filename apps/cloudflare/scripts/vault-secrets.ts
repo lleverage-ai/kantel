@@ -16,14 +16,15 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 /**
- * Kept in step with `VaultVars` in src/vault.ts and CPA's key in src/models.ts (which the vault object keeps as an
- * item); test/vault.test.ts checks they agree.
+ * Kept in step with `VaultVars` in src/vault.ts, CPA's key in src/models.ts (which the vault object keeps as an
+ * item) and brwsr's key in src/browser.ts (which only the browser provider holds); test/vault.test.ts checks they agree.
  */
 export const VAULT_SECRETS = [
 	"HARBOUR_VAULT_KEY",
 	"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN",
 	"HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN",
 	"HARBOUR_CPA_API_KEY",
+	"HARBOUR_BRWSR_API_KEY",
 ] as const;
 
 export type VaultSecret = (typeof VAULT_SECRETS)[number];

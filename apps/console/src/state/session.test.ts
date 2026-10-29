@@ -208,7 +208,7 @@ describe("projector", () => {
 });
 
 describe("streaming", () => {
-	it("coalesces token deltas to about one render per 200 ms", async () => {
+	it("coalesces token deltas to about one render per 100 ms", async () => {
 		const host = new FixtureHost(long, { latencyMs: 5 });
 		const client = new SessionClient(host, host.sessionId);
 		client.start();
@@ -219,7 +219,8 @@ describe("streaming", () => {
 		// The live run is about 35 s of recorded time and some 650 commits.
 		expect(host.published).toBeGreaterThan(600);
 		expect(client.getState().cursor).toBe(host.head);
-		expect(renders).toBeLessThan(host.published / 3);
+		// The recording commits about every 54 ms, faster than a live host's 100 ms: about two commits per render.
+		expect(renders).toBeLessThan(host.published / 1.5);
 		expect(renders).toBeLessThan((35_000 / COALESCE_MS) * 1.5);
 	});
 
