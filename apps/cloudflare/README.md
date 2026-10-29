@@ -291,3 +291,20 @@ values refused, the dev environment dropped) and the Access sign-in check. `test
 core over SQLite, restarts it, and reads a connector's key over the egress decision API with the model gateway's
 shared key, with no value in its rows or the audit store; refuses callers without a key; won't start without a vault
 key; routes only the two vault paths to the vault object; and checks the vault's secrets in the deploy.
+
+`test/remote/deployed.test.ts` checks the deployed hostname from outside, through the contracts' own HTTP clients
+(session, workspace read, audit and identity). It checks that an anonymous request goes to Access sign-in, that a bad
+API key is refused even with an Access cookie, and that the key's projects, profiles, sessions, a workspace's files and
+the audit log can all be read. With `HARBOUR_REMOTE_SESSION=1` it also runs one labelled session to a real model
+answer, finds its audit events and closes it. Host apps aren't let through Access yet, so each call carries a
+signed-in browser's `CF_Authorization` cookie as well as a project API key. Without all three variables it is skipped,
+as it is in CI:
+
+```sh
+HARBOUR_URL=https://harbour.myslop.app HARBOUR_API_KEY=hbr_… HARBOUR_ACCESS_COOKIE='CF_Authorization=…' \
+  pnpm --filter @harbour/cloudflare exec vitest run test/remote/deployed.test.ts
+```
+
+The shared conformance suites in `@harbour/testing` take in-process implementations with fakes (a scripted model, a
+manual clock, failure injection), so they run on the Cloudflare implementations in `targets/cloudflare` (runtime,
+vault and workspace), not against the hostname.
