@@ -23,11 +23,15 @@ serves the console itself, and Cloudflare Access signs the calls in.
 | `/vault` | The vault page: your active grants, each with Stop |
 | `/vault/requests/:proposalId` | One vault request to narrow, check the binding code, approve with a passkey or deny, beside your grants |
 | `/audit` | The audit log: filter, follow a row to its vault request, export JSONL |
+| `/schedules` | The organisation's schedules: a status filter, New schedule, and the open schedule beside the list |
+| `/schedules/new` | The schedules page with the form for a new task or check open |
+| `/schedules/:scheduleId` | One schedule: when it runs, what it runs, Edit, Pause or Resume, and its run history |
+| `/sessions/:sessionId` | A session linked by its ID alone (a schedule's run): replaced by its project's path once that is read |
 | `/projects/:projectId/sessions/:sessionId/files` | The session's workspace files: the tree, and the open file beside it |
 | `/projects/:projectId/sessions/:sessionId/files/:path` | One file open, its whole path as one encoded segment (`notes%2Fplan.md`) |
 
-The vault page and the audit log are the organisation's, so the sidebar lists them under Organisation and shows no
-project's sessions beside them. On a phone each fills the screen with *Back to sessions*.
+Schedules, the vault page and the audit log are the organisation's, so the sidebar lists them under Organisation and
+shows no project's sessions beside them. On a phone each fills the screen with *Back to sessions*.
 
 `?source=recorded` or `?source=api` picks the source for the tab (the default is `api`, or `VITE_HARBOUR_SOURCE`).
 `?profile=1` adds the render profiler, `?speed=2` plays recordings faster and `?delay=1500` waits longer before an
@@ -69,13 +73,21 @@ The vault page and the audit log have seams of their own beside it, `ConsoleVaul
   holds a month of generated history. Requests the vault holds link from the log; the history's don't. Each page
   load builds a fresh vault, so a request link only opens from within the page that showed it.
 
+The schedules page has `ConsoleSchedules` (`src/api/oversight.ts`): a `SchedulesSource` from `@harbour/ui`, one call
+per schedule route in the public API (`GET`/`POST /v1/schedules`, `GET`/`PATCH`/`DELETE /v1/schedules/{id}`,
+`/pause`, `/resume`, `/preview`, `/runs`), with the agents and owner the form needs. On `recorded`,
+`createRecordedSchedules` (`src/recorded/schedules.ts`) serves `@harbour/ui`'s schedule fixtures in the page, each
+task run naming one of the recorded Harbour sessions so its *Open session* opens it. On `api` the page isn't listed
+until the console has a client for the schedule routes; that client is the only piece to add.
+
 ## Checks
 
 `pnpm --filter @harbour/console test` runs the console's tests, including the token and copy lint over its CSS and
 TSX. `src/api/http.test.ts` runs the API client against the real session API handler over the in-memory runtime, with
 a scripted model holding runs open: listing, unread, streaming, steer, follow-up, cancel, refusals and resuming after
 a dropped stream. `node scripts/evidence.ts` gathers the long-session render and resume evidence against a running build.
-`node scripts/oversight-check.ts <out-dir>`, after a build, runs axe over the vault and audit routes at 1280 px and
+`node scripts/oversight-check.ts <out-dir>`, after a build, runs axe over the vault, audit and schedules routes (a new schedule, a task's runs and a check
+open) at 1280 px and
 420 px (on `source=recorded`), checks each has one `h1` and one main landmark with no page errors, and saves screenshots.
 
 ## Files
