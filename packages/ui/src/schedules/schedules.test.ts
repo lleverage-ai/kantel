@@ -144,6 +144,14 @@ describe("payloads and runs", () => {
 			text: "checks/disk.sh --min-free 15%",
 		});
 		expect(payloadView({ kind: "task", payload: { brief: "x" } }).kind).toBe("json");
+		// A task's payload is `{ agentId?, prompt }`; `message` is not its field.
+		expect(payloadView({ kind: "task", payload: { message: "x" } }).kind).toBe("json");
+		expect(payloadView({ kind: "task", payload: { prompt: "Label them" } })).toEqual({
+			kind: "text",
+			label: "Prompt",
+			text: "Label them",
+		});
+		expect(payloadView({ kind: "task", payload: { agentId: "agt_1", prompt: "x", projectId: "p" } }).kind).toBe("json");
 	});
 
 	it("reads a check's result as healthy, findings or a failure", () => {

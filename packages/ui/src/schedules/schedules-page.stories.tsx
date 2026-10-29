@@ -94,7 +94,7 @@ export const CheckWithFindings: Story = () => <ScenarioPage open="disk" />;
 /** A weekday summary: next runs in Europe/London, across the end of summer time. */
 export const WeekdaySummary: Story = () => <ScenarioPage open="brief" />;
 
-/** A monthly task with no runs yet, its payload as JSON. */
+/** A monthly task with no runs yet, naming no agent, so the default one is asked. */
 export const NoRunsYet: Story = () => <ScenarioPage open="invoices" />;
 
 /** A one-off reminder, due in two days. */

@@ -138,10 +138,9 @@ const SCHEDULES: readonly { name: FixtureName; by: CallContext; input: ScheduleI
 			title: "Reconcile last month's invoices",
 			timezone: "Europe/London",
 			repeat: { every: "month", at: "07:00", day: 1 },
+			// No agent named: the runner asks the default one.
 			payload: {
-				brief: "Match every Stripe invoice from last month to its customer record and list the mismatches.",
-				project: "prj_billing",
-				model: "default",
+				prompt: "Match every Stripe invoice from last month to its customer record and list the mismatches.",
 			},
 		},
 	},
@@ -191,7 +190,10 @@ const SCHEDULES: readonly { name: FixtureName; by: CallContext; input: ScheduleI
 			timezone: "Europe/London",
 			repeat: { every: "day", at: "18:00" },
 			count: 2,
-			payload: "Export last quarter's audit log as JSONL and put it in the shared review folder.",
+			payload: {
+				agentId: "agt_writer",
+				prompt: "Export last quarter's audit log as JSONL and put it in the shared review folder.",
+			},
 		},
 	},
 	{

@@ -176,5 +176,6 @@ beside it and opens the form for New schedule and Edit; see [schedules-skills-me
 - **`ScheduleWrites`**: the calls the form makes, `create`, `update` and `end`: the writes of the page's
   `SchedulesSource` (`bindSchedules`), so the page's source is the form's. The fixtures are the page's
   (`@harbour/ui/schedules/fixtures`).
-- **Payloads**: a task's is `{ agentId, prompt }`, a check's is its argument list (`taskPayload`,
-  `readTaskPayload`, `readCheckPayload`). A schedule whose payload is another shape keeps it when edited.
+- **Payloads**: a task's is `{ agentId?, prompt }`, as the public API has it (the form always names an agent; without
+  one the runner asks the default), a check's is its argument list (`taskPayload`, `readTaskPayload`,
+  `readCheckPayload`). A schedule whose payload is another shape, extra fields included, has no Edit, so the form never overwrites it.

@@ -120,7 +120,10 @@ describe("the form flow on the fixtures", () => {
 		});
 		const saved = await flow.save();
 		expect(saved).toMatchObject({ kind: "task", status: "active", owner: FIXTURE_OWNER, nextDueAt: FIXTURE_NOW });
+		expect(saved?.payload).toEqual({ agentId: "agt_triage", prompt: "  Label the new issues.\n" });
 		expect(readTaskPayload(saved?.payload ?? null)?.prompt).toBe("  Label the new issues.\n");
+		expect(readTaskPayload({ prompt: "x" })).toEqual({ prompt: "x" });
+		expect(readTaskPayload({ agentId: "agt_triage", message: "x" })).toBeUndefined();
 		const listed = await source.list();
 		expect(listed.items.map((schedule) => schedule.id)).toEqual([saved?.id]);
 	});

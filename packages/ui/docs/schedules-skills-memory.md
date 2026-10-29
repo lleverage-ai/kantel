@@ -26,7 +26,7 @@ the list, with a Back button, and focus moves to the record's heading when it op
 
 **For** the organisation's schedules: what runs on its own, when it runs next and how its runs went. A status
 filter (Active, Paused, Ended, All) with counts; the open schedule shows its timing in its own time zone, the next
-runs from `preview`, what it runs (a reminder's message, a task's brief, a check's command), its limits, and its run
+runs from `preview`, what it runs (a reminder's message, a task's prompt and the agent it asks, a check's command), its limits, and its run
 history with a Problems filter for failed, missed and timed-out runs. Pause and Resume act on the store and read the
 schedule again.
 

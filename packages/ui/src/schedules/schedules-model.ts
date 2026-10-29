@@ -281,7 +281,10 @@ export function countByStatus(schedules: readonly Schedule[]): Readonly<Record<S
 	return counts;
 }
 
-/** What runs, as the page shows it: a message or brief as text, a command in mono, anything else as JSON. */
+/**
+ * What runs, as the page shows it: a task's `{ agentId?, prompt }` as its prompt and agent, a message or brief as text,
+ * a command in mono, anything else as JSON.
+ */
 export type PayloadView =
 	| { readonly kind: "text"; readonly label: string; readonly text: string; readonly agentId?: string }
 	| { readonly kind: "command"; readonly label: string; readonly text: string }
@@ -289,7 +292,7 @@ export type PayloadView =
 
 const PAYLOAD_LABELS: Readonly<Record<ScheduleKind, string>> = {
 	reminder: "Message",
-	task: "Brief",
+	task: "Prompt",
 	summary: "Brief",
 	check: "Command",
 	heartbeat: "Payload",
@@ -304,7 +307,14 @@ export function payloadView(schedule: Pick<Schedule, "kind" | "payload">): Paylo
 	const label = PAYLOAD_LABELS[schedule.kind];
 	const { payload } = schedule;
 	const task = schedule.kind === "task" ? readTaskPayload(payload) : undefined;
-	if (task !== undefined) return { kind: "text", label: "Prompt", text: task.prompt, agentId: task.agentId };
+	if (task !== undefined) {
+		return {
+			kind: "text",
+			label: "Prompt",
+			text: task.prompt,
+			...(task.agentId === undefined ? {} : { agentId: task.agentId }),
+		};
+	}
 	if (typeof payload === "string") {
 		return schedule.kind === "check" || schedule.kind === "program"
 			? { kind: "command", label, text: payload }

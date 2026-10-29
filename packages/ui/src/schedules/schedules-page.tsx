@@ -468,6 +468,10 @@ export function ScheduleDetail({
 						</strong>
 						, in a new session each run, with this prompt as written:
 					</p>
+				) : schedule.kind === "task" && payload.kind === "text" ? (
+					<p className="hb-schedule-payload-agent">
+						Asks the default agent, in a new session each run, with this prompt as written:
+					</p>
 				) : null}
 				{payload.kind === "text" ? (
 					<p className="hb-schedule-payload-text hb-selectable">{payload.text}</p>

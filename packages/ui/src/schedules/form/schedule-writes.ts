@@ -17,24 +17,35 @@ export type FormKind = Extract<ScheduleKind, "task" | "check">;
 export const isFormKind = (kind: ScheduleKind): kind is FormKind => kind === "task" || kind === "check";
 
 /**
- * A task's payload: at each due time the runner starts a session with this agent, in the schedule's project, and sends
- * `prompt` as the first message exactly as the person wrote it. Harbour adds nothing to it.
+ * A task's payload, `{ agentId?, prompt }` as the public API documents it: at each due time the runner starts a
+ * session with this agent (or the default one when there's none), in the schedule's project, and sends `prompt` as the
+ * first message exactly as the person wrote it. Harbour adds nothing to it. The form always names an agent.
  */
 export interface TaskPayload {
-	readonly agentId: AgentId;
+	readonly agentId?: AgentId;
 	readonly prompt: string;
 }
 
 /** A check's payload: the command and its arguments, run with no model. Exit 0 is healthy, 3 is findings. */
 export type CheckPayload = readonly string[];
 
-export const taskPayload = (payload: TaskPayload): JsonValue => ({ agentId: payload.agentId, prompt: payload.prompt });
+export const taskPayload = (payload: TaskPayload): JsonValue => ({
+	...(payload.agentId === undefined ? {} : { agentId: payload.agentId }),
+	prompt: payload.prompt,
+});
 
-/** A task payload the form can edit, or undefined for any other shape (which the form then won't overwrite). */
+/**
+ * A task payload, `{ agentId?, prompt }`, or undefined for any other shape. A payload with other fields too is not
+ * one, so the form, which writes only these two, never drops what another writer put there.
+ */
 export function readTaskPayload(payload: JsonValue): TaskPayload | undefined {
 	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-	const { agentId, prompt } = payload as { readonly [key: string]: JsonValue };
-	return typeof agentId === "string" && typeof prompt === "string" ? { agentId, prompt } : undefined;
+	const fields = payload as { readonly [key: string]: JsonValue };
+	if (Object.keys(fields).some((key) => key !== "agentId" && key !== "prompt")) return undefined;
+	const { agentId, prompt } = fields;
+	if (typeof prompt !== "string") return undefined;
+	if (agentId === undefined) return { prompt };
+	return typeof agentId === "string" ? { agentId, prompt } : undefined;
 }
 
 /** A check's command as the form shows it: an argument list, or a single command string. */
