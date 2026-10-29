@@ -26,7 +26,7 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | --- | --- | --- |
 | Identity directory | D1 `DB` | `@harbour/identity/sql` |
 | Audit store | D1 `DB` | `@harbour/audit/sql` |
-| Workspaces | R2 `WORKSPACES`, under `workspaces/` | `@harbour/cloudflare-workspace` |
+| Workspaces | R2 `WORKSPACES`, under `workspaces/`; each head also kept in `HarbourStack`'s storage, in front of R2 | `@harbour/cloudflare-workspace` (`src/workspace-heads.ts`) |
 | Session directory, profiles, host registrations, each session's Pi storage; the alarm that resumes a run an eviction cut off | `HarbourStack`'s own SQLite and alarm | `SessionRuntimeDurableObjectCore` (`@harbour/runtime-cloudflare`) |
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
@@ -50,6 +50,14 @@ restart finds the same organisation rather than making another. Sessions run on 
   bound how many sessions run at once.
 - What replaces it: per-session objects taken from a pool of pre-created, idle objects (so a new session never pays
   creation), with a session directory in D1 so the gateway routes each session to its object. Not built yet.
+
+**Workspace heads are kept in the object, in front of R2** (29 Oct 2026). Every workspace call starts by reading the
+workspace's head, and a sandbox run makes two: about 55 ms each from the object to R2, most of a warm isolate-ready
+run's server time ([m1-cf1 measurements](../../docs/measurements/m1-cf1/README.md)). `HarbourStack` keeps each head's
+document and etag in its own storage (`ctx.storage.kv`, `src/workspace-heads.ts`), and the R2 store reads it from there.
+R2 stays the source of truth: a write drops the cached head before it starts and puts back only what it wrote, and a
+load that overlapped a write caches nothing. It relies on the decision above: every write to the workspaces goes
+through the one object. A write made anywhere else is seen once a write here fails its conditional put on it.
 
 **The isolate backend is a switch** (28 Oct 2026). `HARBOUR_ISOLATE_BACKEND` picks where the isolate tier runs, so
 the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
@@ -173,8 +181,8 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
 | `HARBOUR_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
-| `HARBOUR_D1_DATABASE_NAME` with `HARBOUR_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour`, by name |
-| `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
+| `HARBOUR_D1_DATABASE_NAME` with `HARBOUR_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour-weur`, by name |
+| `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces-weur`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
 | `HARBOUR_LOCATION_HINT` | optional variable | The location hint the stack and vault objects are created with (`src/route.ts`). Unset: `weur`, from `wrangler.jsonc` |
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
 
@@ -184,8 +192,8 @@ Until the secret and every variable exist, and on every pull request, the workfl
 1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,
    and a base config that could serve on workers.dev or a preview URL);
-2. runs the dry run, then `wrangler deploy`, with `--secrets-file` for the vault secrets that are set. On the first deploy wrangler creates the D1 database `harbour` and the
-   R2 bucket `harbour-workspaces` (its automatic provisioning, by name); later deploys find them by name;
+2. runs the dry run, then `wrangler deploy`, with `--secrets-file` for the vault secrets that are set. Deploys find the D1 database `harbour-weur` and the R2 bucket
+   `harbour-workspaces-weur` by name; wrangler's automatic provisioning would create either if it were missing;
 3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
 
@@ -214,8 +222,8 @@ dashboard), not something the deploy does.
 | Scope | Permission | Why |
 | --- | --- | --- |
 | Account | Workers Scripts: Edit | Deploy the Worker, its Durable Objects and its static assets |
-| Account | D1: Edit | Create the `harbour` database on the first deploy and look it up by name after |
-| Account | Workers R2 Storage: Edit | Create the `harbour-workspaces` bucket on the first deploy and look it up by name after |
+| Account | D1: Edit | Look up the `harbour-weur` database by name (and create it if it were missing) |
+| Account | Workers R2 Storage: Edit | Look up the `harbour-workspaces-weur` bucket by name (and create it if it were missing) |
 | Account | Connectivity Directory: Bind | Bind the existing Workers VPC service (`MODELS`) |
 | Zone (myslop.app) | Workers Routes: Edit | Add the zone route `HARBOUR_HOSTNAME/*` |
 
