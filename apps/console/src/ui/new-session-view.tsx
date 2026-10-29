@@ -1,4 +1,6 @@
 import {
+	type BranchOption,
+	BranchPicker,
 	Composer,
 	type ComposerProps,
 	type ComposerState,
@@ -6,6 +8,7 @@ import {
 	Notice,
 	type ProjectOption,
 	ProjectPicker,
+	RepoPicker,
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
@@ -29,6 +32,20 @@ export type NewSessionState = {
 	blocked?: string;
 	/** Why the last attempt failed, until the next. */
 	failure?: string;
+	/**
+	 * The repository the session's workspace starts from, when this host can seed one. Absent: no repository picker.
+	 */
+	repository?: {
+		/** `owner/name`, or `""` for none. */
+		repo: string;
+		/** Repositories to offer before anything is typed. */
+		recent: readonly string[];
+		/** The chosen repository's branches, once a repository is chosen. */
+		branches?:
+			| { state: "loading" }
+			| { state: "ready"; branches: readonly BranchOption[]; branch: string }
+			| { state: "failed"; reason: string };
+	};
 	/** The model and thinking pickers, once the agent's models are known. */
 	pickers?: Pick<
 		ComposerProps,
@@ -39,6 +56,8 @@ export type NewSessionState = {
 export type NewSessionHandlers = {
 	onDraft: (text: string) => void;
 	onProject: (id: string) => void;
+	onRepository?: (repo: string) => void;
+	onBranch?: (branch: string) => void;
 	onSend: (text: string) => void;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
@@ -49,8 +68,48 @@ export function composerStateFor(state: Pick<NewSessionState, "blocked" | "sendi
 	return state.sending ? "sending" : "idle";
 }
 
+/** What the composer's banner says: the last failure, else the repository's, else what sending is doing. */
+function bannerFor(state: NewSessionState) {
+	if (state.failure !== undefined) return <Notice level="error">{state.failure}</Notice>;
+	const repository = state.repository;
+	if (repository === undefined || repository.repo === "") return undefined;
+	if (repository.branches?.state === "failed") return <Notice level="error">{repository.branches.reason}</Notice>;
+	if (state.sending && repository.branches?.state === "ready") {
+		return (
+			<Notice>{`Copying ${repository.repo} at ${repository.branches.branch} into the session's workspace.`}</Notice>
+		);
+	}
+	return undefined;
+}
+
+function RepositoryPickers({ state, on }: { state: NewSessionState; on: NewSessionHandlers }) {
+	const repository = state.repository;
+	if (repository === undefined || on.onRepository === undefined) return null;
+	const branches = repository.branches;
+	return (
+		<>
+			<RepoPicker
+				value={repository.repo}
+				recent={repository.recent}
+				onChange={on.onRepository}
+				disabled={state.sending}
+			/>
+			{repository.repo === "" || branches === undefined || branches.state === "failed" ? null : (
+				<BranchPicker
+					branches={branches.state === "ready" ? branches.branches : []}
+					loading={branches.state === "loading"}
+					{...(branches.state === "ready" ? { value: branches.branch } : {})}
+					onChange={(branch) => on.onBranch?.(branch)}
+					disabled={state.sending}
+				/>
+			)}
+		</>
+	);
+}
+
 export function NewSessionView({ state, on }: { state: NewSessionState; on: NewSessionHandlers }) {
 	const who = state.agentName ?? "The agent";
+	const repo = state.repository?.repo ?? "";
 	return (
 		<div className="console">
 			<SessionHeader
@@ -66,7 +125,9 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 					items={[]}
 					empty={
 						<EmptyState title={`Start a session in ${state.projectName}`}>
-							{`Write the first message. ${who} answers it.`}
+							{repo === ""
+								? `Write the first message. ${who} answers it.`
+								: `Write the first message. ${who} answers it, with ${repo} in its workspace.`}
 						</EmptyState>
 					}
 					dock={
@@ -75,18 +136,21 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 							{...(state.blocked === undefined ? {} : { disabledReason: state.blocked })}
 							label="First message"
 							placeholder="What should this session do?"
-							banner={state.failure === undefined ? undefined : <Notice level="error">{state.failure}</Notice>}
+							banner={bannerFor(state)}
 							value={state.draft}
 							onChange={on.onDraft}
 							{...state.pickers}
 							onSend={(text) => on.onSend(text)}
 							footer={
-								<ProjectPicker
-									projects={state.projects}
-									value={state.projectId}
-									onChange={on.onProject}
-									disabled={state.sending}
-								/>
+								<>
+									<ProjectPicker
+										projects={state.projects}
+										value={state.projectId}
+										onChange={on.onProject}
+										disabled={state.sending}
+									/>
+									<RepositoryPickers state={state} on={on} />
+								</>
 							}
 							autoFocus
 							captureTyping
