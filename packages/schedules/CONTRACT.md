@@ -24,6 +24,11 @@ schedule, so a runner knows what to run without another call, and `renew` extend
 The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `@harbour/schedules`, with
 `zonedToUtc` and `utcToZoned`, compute due times with `Intl.DateTimeFormat` only.
 
+`update` takes a `ScheduleUpdate`: a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count`
+clears it, so a one-off can become a recurrence and back, and an end date or run limit can be dropped. The public API's
+`PATCH /v1/schedules/{scheduleId}` passes its body through as one, nulls included ("update keeps a field left out and
+clears at, repeat, until or count given null").
+
 ## Rules and the suite cases that enforce them
 
 - Calendar recurrence is at local time in the time zone: "runs a daily 09:00 Europe/London schedule at 08:00 UTC in

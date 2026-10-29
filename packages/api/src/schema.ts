@@ -3,7 +3,7 @@
  * `title` is a named type: a component in the OpenAPI document and a named type in the SDK. `test/types.test.ts`
  * checks at compile time that each schema's static type and its contract type match, so the two can't drift.
  */
-import Type from "typebox";
+import Type, { type TSchema } from "typebox";
 
 const id = (description: string) => Type.String({ minLength: 1, description });
 
@@ -167,6 +167,229 @@ export const AbortSessionBody = Type.Object(
 
 export const SessionPath = Type.Object({ sessionId: id("The session's ID.") });
 
+/**
+ * Any JSON value: a schedule's payload, an occurrence's result and a host's namespaced `extensions` are opaque to
+ * Harbour. Its static type is `unknown` rather than the contracts' recursive `JsonValue`, which the router's read-only
+ * mapping can't unfold; a body is JSON already, having been parsed from it.
+ */
+export const JsonValue = Type.Unknown({ title: "JsonValue", description: "Any JSON value." });
+
+export const ScheduleKind = Type.Union(
+	[
+		Type.Literal("reminder"),
+		Type.Literal("task"),
+		Type.Literal("summary"),
+		Type.Literal("check"),
+		Type.Literal("heartbeat"),
+		Type.Literal("program"),
+	],
+	{
+		title: "ScheduleKind",
+		description:
+			'What runs. A `task` starts a session with its payload `{ "agentId"?, "prompt" }` and sends the prompt exactly as written; a `check` runs its payload (a command line or an argument list) with no model.',
+	},
+);
+
+export const ScheduleStatus = Type.Union([Type.Literal("active"), Type.Literal("paused"), Type.Literal("ended")], {
+	title: "ScheduleStatus",
+});
+
+export const Weekday = Type.Union(
+	[
+		Type.Literal("mon"),
+		Type.Literal("tue"),
+		Type.Literal("wed"),
+		Type.Literal("thu"),
+		Type.Literal("fri"),
+		Type.Literal("sat"),
+		Type.Literal("sun"),
+	],
+	{ title: "Weekday" },
+);
+
+const localTime = Type.String({ description: "A local wall-clock time, `HH:MM`, in the schedule's time zone." });
+
+export const Recurrence = Type.Union(
+	[
+		Type.Object(
+			{
+				every: Type.Union([Type.Literal("minutes"), Type.Literal("hours")]),
+				interval: Type.Integer({ minimum: 1 }),
+				from: Timestamp,
+			},
+			{ description: "Every `interval` minutes or hours counted from `from`, unaffected by daylight saving." },
+		),
+		Type.Object({ every: Type.Literal("day"), at: localTime, interval: Type.Optional(Type.Integer({ minimum: 1 })) }),
+		Type.Object({ every: Type.Literal("weekday"), at: localTime }),
+		Type.Object({ every: Type.Literal("week"), at: localTime, on: Type.Array(Weekday) }),
+		Type.Object(
+			{ every: Type.Literal("month"), at: localTime, day: Type.Integer({ minimum: 1, maximum: 31 }) },
+			{ description: "`day` 31 means the last day of the month." },
+		),
+	],
+	{ title: "Recurrence" },
+);
+
+export const CheckSettings = Type.Object(
+	{
+		reraiseHours: Type.Optional(
+			Type.Number({ description: "Hours before a finding still present is raised again. Default 6." }),
+		),
+		risingFactor: Type.Optional(
+			Type.Number({ description: "A finding whose value grows by this factor is raised again. Default 2." }),
+		),
+		failuresBeforeRaise: Type.Optional(
+			Type.Integer({ description: "Failed runs in a row before a `check-failed` finding is raised. Default 3." }),
+		),
+		severityOrder: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Severities, worst first, case-insensitive, for raising a finding that got worse as `escalated`. Default `urgent`, `high`, `medium`, `low`, `warn`, `info`.",
+			}),
+		),
+	},
+	{ title: "CheckSettings" },
+);
+
+export const OwnerRef = Type.Union(
+	[
+		Type.Object({ kind: Type.Literal("platform") }),
+		Type.Object({ kind: Type.Literal("organisation"), organisationId: Type.String() }),
+		Type.Object({ kind: Type.Literal("project"), organisationId: Type.String(), projectId: Type.String() }),
+		Type.Object({ kind: Type.Literal("user"), organisationId: Type.String(), userId: Type.String() }),
+	],
+	{ title: "OwnerRef", description: "Who owns a record: an organisation, a project, a user, or the platform." },
+);
+
+const scheduleFields = {
+	title: Type.String(),
+	timezone: Type.String({ description: "An IANA time zone, such as `Europe/London`." }),
+	at: Type.Optional(
+		Type.Integer({ description: "A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`." }),
+	),
+	repeat: Type.Optional(Recurrence),
+	until: Type.Optional(Type.Integer({ description: "No occurrence is due after this (epoch milliseconds)." })),
+	count: Type.Optional(Type.Integer({ minimum: 1, description: "At most this many occurrences." })),
+	payload: JsonValue,
+	check: Type.Optional(CheckSettings),
+};
+
+export const CreateScheduleBody = Type.Object(
+	{ owner: OwnerRef, kind: ScheduleKind, ...scheduleFields },
+	{
+		title: "CreateScheduleBody",
+		description: "A new schedule. Needs the operator role on a project-owned schedule's project.",
+	},
+);
+
+/** `null`, or one of these: on a schedule change, `null` clears the field. */
+const clearable = <T extends TSchema>(schema: T, description: string) =>
+	Type.Optional(Type.Union([schema, Type.Null()], { description }));
+
+export const UpdateScheduleBody = Type.Object(
+	{
+		title: Type.Optional(scheduleFields.title),
+		timezone: Type.Optional(scheduleFields.timezone),
+		at: clearable(
+			Type.Integer(),
+			"A one-off at this instant (epoch milliseconds), or `null` to clear it, as when it becomes a recurrence. Exactly one of `at` and `repeat` is left set.",
+		),
+		repeat: clearable(Recurrence, "The recurrence, or `null` to clear it, as when it becomes a one-off."),
+		until: clearable(
+			Type.Integer(),
+			"No occurrence is due after this (epoch milliseconds), or `null` to drop the end date.",
+		),
+		count: clearable(Type.Integer({ minimum: 1 }), "At most this many occurrences, or `null` to drop the run limit."),
+		payload: Type.Optional(JsonValue),
+		check: scheduleFields.check,
+	},
+	{
+		title: "UpdateScheduleBody",
+		description:
+			"The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create.",
+	},
+);
+
+export const Schedule = Type.Object(
+	{
+		id: id("The schedule's ID."),
+		owner: OwnerRef,
+		kind: ScheduleKind,
+		...scheduleFields,
+		status: ScheduleStatus,
+		nextDueAt: Type.Optional(Type.Integer({ description: "The next due time; absent when ended or paused." })),
+		occurrences: Type.Integer({ description: "Occurrences so far; a coalesced one counts once." }),
+		createdBy: Actor,
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{ title: "Schedule" },
+);
+
+export const SchedulePage = Type.Object(
+	{
+		items: Type.Array(Schedule),
+		nextCursor: Type.Optional(Type.String({ description: "Present when more items follow." })),
+	},
+	{ title: "SchedulePage" },
+);
+
+export const ListSchedulesQuery = Type.Object(
+	{
+		kind: Type.Optional(ScheduleKind),
+		status: Type.Optional(ScheduleStatus),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
+		cursor: Type.Optional(Type.String({ description: "A previous page's `nextCursor`." })),
+	},
+	{ title: "ListSchedulesQuery" },
+);
+
+export const SchedulePath = Type.Object({ scheduleId: id("The schedule's ID.") });
+
+export const PreviewScheduleQuery = Type.Object(
+	{ n: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "How many due times. Default 5." })) },
+	{ title: "PreviewScheduleQuery" },
+);
+
+export const SchedulePreview = Type.Object(
+	{ dueAt: Type.Array(Timestamp, { description: "The next due times, soonest first." }) },
+	{ title: "SchedulePreview" },
+);
+
+export const OccurrenceStatus = Type.Union(
+	[Type.Literal("due"), Type.Literal("running"), Type.Literal("succeeded"), Type.Literal("failed")],
+	{ title: "OccurrenceStatus" },
+);
+
+export const Occurrence = Type.Object(
+	{
+		id: id("`<scheduleId>@<dueAt>`: unique per schedule and due time."),
+		scheduleId: Type.String(),
+		dueAt: Timestamp,
+		coalesced: Type.Integer({ description: "How many due times this run stands for (more than 1 after missed runs)." }),
+		status: OccurrenceStatus,
+		attempt: Type.Integer(),
+		claimedBy: Type.Optional(Type.String()),
+		leaseUntil: Type.Optional(Timestamp),
+		finishedAt: Type.Optional(Timestamp),
+		result: Type.Optional(
+			Type.Unknown({
+				description:
+					"How the run went: a task's `{ sessionId, submissionId }` (the session it started), a check's `{ exitCode, raised }`, or `{ error }` for a failed run.",
+			}),
+		),
+	},
+	{ title: "Occurrence", description: "One run of a schedule." },
+);
+
+export const OccurrencePage = Type.Object(
+	{
+		items: Type.Array(Occurrence),
+		nextCursor: Type.Optional(Type.String({ description: "Present when more items follow." })),
+	},
+	{ title: "OccurrencePage" },
+);
+
 export const ErrorCode = Type.Union(
 	[
 		Type.Literal("invalid"),
@@ -195,25 +418,9 @@ export const ErrorBody = Type.Object(
 	{ title: "ErrorBody", description: "Every error: the HarbourError's code and message." },
 );
 
-/**
- * Any JSON value: a host's namespaced `extensions`, which Harbour keeps and doesn't read. Its static type is `unknown`
- * rather than the contracts' recursive `JsonValue`, which the router's read-only mapping can't unfold.
- */
-export const JsonValue = Type.Unknown({ title: "JsonValue", description: "Any JSON value." });
-
 const Extensions = Type.Record(Type.String(), JsonValue, {
 	description: "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`.",
 });
-
-export const OwnerRef = Type.Union(
-	[
-		Type.Object({ kind: Type.Literal("platform") }),
-		Type.Object({ kind: Type.Literal("organisation"), organisationId: Type.String() }),
-		Type.Object({ kind: Type.Literal("project"), organisationId: Type.String(), projectId: Type.String() }),
-		Type.Object({ kind: Type.Literal("user"), organisationId: Type.String(), userId: Type.String() }),
-	],
-	{ title: "OwnerRef", description: "Who owns a record: an organisation, a project, a user, or the platform." },
-);
 
 const limit = Type.Optional(Type.Integer({ minimum: 1, maximum: 500 }));
 const cursor = Type.Optional(Type.String({ description: "A previous page's `nextCursor`." }));

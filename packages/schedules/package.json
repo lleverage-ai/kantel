@@ -8,11 +8,13 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
+		"./http": "./src/http.ts",
 		"./sql": "./src/sql.ts",
 		"./runner": "./src/runner.ts",
 		"./handlers": "./src/handlers.ts"
 	},
 	"dependencies": {
+		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/sql": "workspace:*"
 	},
