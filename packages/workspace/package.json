@@ -17,6 +17,7 @@
 		"./seed-spec": "./src/seed-spec.ts",
 		"./archive": "./src/archive.ts",
 		"./git-tarball": "./src/git-tarball.ts",
+		"./git-refs": "./src/git-refs.ts",
 		"./export": "./src/export.ts"
 	},
 	"dependencies": {

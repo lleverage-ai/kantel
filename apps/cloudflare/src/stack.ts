@@ -64,6 +64,7 @@ import { createMemorySkills } from "@harbour/skills/memory";
 import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
+import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
 import {
 	createMemoryWorkspaceStore,
@@ -212,6 +213,8 @@ export interface Stack {
 	readonly identity: IdentityDirectory;
 	readonly runtime: SessionRuntimeService;
 	readonly workspaces: StoredWorkspaces;
+	/** Lists a repository's branches for a new session's branch picker, over the same `fetch` seeds use. */
+	readonly gitRefs: GitRefLister;
 	/** The runtime's project access: who may do what in which project. */
 	readonly access: ProjectAccess;
 	readonly sandboxes: StackSandboxes;
@@ -381,9 +384,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		runtimeAccess = access;
 		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
-		const seeders = {
-			git: createGitHubTarballFetcher({ fetch: options.gitFetch ?? ((input, init) => fetch(input, init)) }),
-		};
+		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
+		const seeders = { git: createGitHubTarballFetcher({ fetch: gitFetch }) };
+		const gitRefs = createGitRefLister({ fetch: gitFetch });
 		const workspaces = createStoredWorkspaces({
 			store: storage.workspaces ?? createMemoryWorkspaceStore(),
 			clock,
@@ -446,6 +449,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			identity,
 			runtime,
 			workspaces,
+			gitRefs,
 			access,
 			sandboxes,
 			environment,
