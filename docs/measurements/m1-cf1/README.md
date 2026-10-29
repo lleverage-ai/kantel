@@ -15,8 +15,8 @@ cloud browser (the round-trip probes below reached Cloudflare in LHR, AMS and CD
 then 50 runs on it ([Warm session](#warm-session-28-oct-2026-2031-utc), below). The batches before that section are
 **cold**: 50 runs, a new session each, as in M0.
 
-**Latest: with the workspace head cached in the object and the audit append queued off the path, a warm run does no
-I/O, and its server time is 0 ms on both backends (below the Worker timers' resolution, in all 50 runs). The target is
+**Latest: with the workspace head cached in the object and the audit append queued off the path, a warm run's server
+time is 0 ms on both backends in all 50 runs: the Worker timers didn't advance at all. On that measure the target is
 met. The client sees 104 / 142 ms p50 / p95 for the whole request, which also covers the trip from the browser, sign-in
 and the session lookup** ([After the head cache and audit outbox](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)).
 The cold runs' timing anomaly is the Workers clock itself, not a slow step: see that section. Everything above
@@ -186,21 +186,26 @@ still gets a 302 to Access sign-in. All eight placement probes said object `LHR`
 In every batch, all 50 runs answered 200 with exit code 0. Both warm batches stayed on the warm-up's session and closed
 it with 204. Target: ≤100 / ≤300 ms, warm.
 
-**Verdict: the warm target is met. A warm run on an open session waits on no I/O, so its server time is 0 ms in all 100
-warm runs; the Date.now marks agree (`started` to `ran` 0 ms in all 100).** Even the client's whole request is
-104 ms p50, with the browser's round trip, Access, sign-in and the session lookup in it.
+**Verdict: the warm target is met on the measure it's defined on, the server's `total`. That is 0 ms in all 100 warm
+runs, and the Date.now marks agree (`started` to `ran` 0 ms in all 100).** With the head cached and the audit append
+queued, the warm run no longer waits on an R2 head read or a D1 audit write (#188, #198), and none of its remaining
+steps moved the clock. Even the client's whole request is 104 ms
+p50, and that includes the browser's round trip, Access, sign-in and the session lookup.
 
-- **0 ms means no I/O, not no time.** Worker timers only move on I/O, so the run's CPU time (the listing and the bash
-  command) isn't in these numbers. The bound on it is what the client sees. In process, a warm request's server marks
+- **0 ms means the clock didn't advance, not that no time passed or no I/O happened.** Worker timers only move on
+  some I/O. The run's CPU time (the listing and the bash command) isn't in these numbers, and neither is anything
+  that doesn't refresh the clock: on Dynamic Workers, the warm run still awaits an RPC into the loaded isolate
+  (`isolate.call`, also 0 ms). The bound on it is what the client sees. In process, a warm request's server marks
   run as follows, p50 / p95: `entered` to `signedIn` 42 / 61 ms, the lookup (`looking` to `started`) 28 / 37 ms, and the
   run (`started` to `ran`) 0 / 0 ms. With the trip from brwsr's browser (about 15–25 ms to the edge, in the
   [round trips](#where-the-time-goes)), that accounts for nearly all of the 104 ms wall time.
 - **The two backends take the same time warm.** On Dynamic Workers, `isolate.cold` was 0 and `isolate.call` 0 ms in
   all 50.
 - **The cold runs got slower in the client's wall time, and not in the measured steps.** In process, the wall time
-  went from 897 to 1,098 ms p50, while the server's span from `entered` to `ran` is 96 ms p50. So about 1 s now goes
-  after `ran`, in the session close the request awaits (lease release, the session's end), or outside the Worker.
-  17 commits from several lanes landed between the two measurements (runtime changes included), so the cause isn't
+  went from 897 to 1,098 ms p50, while the server's span from `entered` to `ran` is 96 ms p50. So about 1 s isn't
+  accounted for by the recorded server spans. The session close, which the request awaits after `ran` (lease
+  release, the session's end), and time outside the Worker are the candidates. These marks don't place it, though:
+  there's no mark after the close, and a stale clock hides time before `ran` too. 17 commits from several lanes landed between the two measurements (runtime changes included), so the cause isn't
   attributed here. Cold runs aren't #17's target, but this is the next thing to look at for them.
 
 ### The cold timing anomaly: the Workers clock, not a slow step
@@ -267,7 +272,7 @@ What would get near the target, roughly in order of payoff:
    call. That's the identity lane's authenticator.
 3. **Audit off the critical path.** Done in `apps/cloudflare/src/audit-outbox.ts` (#198): appends queue in the
    object's SQLite and drain to D1 in the background. Measured on 29 Oct 2026, with item 4's head cache: a warm run now
-   waits on no I/O ([above](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)).
+   shows 0 ms on the server ([above](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)).
 4. **Then the M0 levers:** the workspace head in Durable Object storage instead of R2 (done, #188). A pool of
    pre-created SessionDOs measured 79 / 170 ms ready in option (a)
    ([m1-cf1-ready-preload](../m1-cf1-ready-preload/README.md)), but only once storage round trips are out of the
