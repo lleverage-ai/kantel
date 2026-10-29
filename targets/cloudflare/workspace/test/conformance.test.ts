@@ -3,7 +3,7 @@ import { createMemoryProjectFiles } from "@harbour/workspace/memory";
 import { createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudflareWorkspaces, type R2BucketLike } from "../src/index.ts";
-import { localR2 } from "./r2.ts";
+import { localR2, memoryHeadCache } from "./r2.ts";
 
 // The conformance suite on R2 as `wrangler dev` runs it (Miniflare), each case under its own prefix.
 let r2: Awaited<ReturnType<typeof localR2>>;
@@ -24,6 +24,26 @@ registerWorkspaceConformance(
 		const workspaces = createCloudflareWorkspaces({
 			bucket,
 			prefix: `m1-be23/${crypto.randomUUID()}`,
+			clock: deps.clock,
+			audit: deps.audit,
+			access: deps.access,
+			sources: [projectFiles],
+		});
+		await use({ workspaces, projectFiles });
+	},
+	{ projectAccess: true, keyed: true },
+);
+
+// The same with heads kept in front of R2, as the stack object keeps them (apps/cloudflare/src/workspace-heads.ts).
+registerWorkspaceConformance(
+	{ describe, expect, it },
+	"Cloudflare workspaces on R2 with a head cache, memory project files",
+	async (deps, use) => {
+		const projectFiles = createMemoryProjectFiles({ access: deps.access });
+		const workspaces = createCloudflareWorkspaces({
+			bucket,
+			prefix: `m1-cf1/${crypto.randomUUID()}`,
+			headCache: memoryHeadCache(),
 			clock: deps.clock,
 			audit: deps.audit,
 			access: deps.access,
