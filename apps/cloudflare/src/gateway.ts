@@ -184,9 +184,11 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			);
 		}
 		const signingIn = performance.now();
+		const enteredAt = Date.now();
 		const caller = await authenticate(request);
 		if (caller instanceof Response) return caller;
 		const signedIn = Math.round((performance.now() - signingIn) * 10) / 10;
+		const signedInAt = Date.now();
 		let input: MeasureInput = {};
 		let placement = false;
 		const bytes = await readLimited(request, MEASURE_BODY_LIMIT).catch(() => undefined);
@@ -246,6 +248,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					...result,
 					// Sign-in comes before the run and is not in `total`.
 					timings: { signIn: signedIn, ...result.timings },
+					clock: { entered: enteredAt, signedIn: signedInAt, ...result.clock },
 					...(where === undefined ? {} : { placement: where }),
 				},
 				{ headers: { "cache-control": "no-store" } },
