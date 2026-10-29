@@ -6,14 +6,17 @@
 //   identity    SQL identity directory on Postgres (@harbour/identity/sql, #83)
 //   sign-in     email one-time PIN codes and Harbour sessions on Postgres (@harbour/identity/sql, #93)
 //   runtime     SQL session store and each session's Pi Durable tables (@harbour/runtime/sql, #69), on one Postgres
-//               connection through PostgresSqliteDatabase; unfinished runs resume on start
+//               connection through PostgresSqliteDatabase; unfinished runs resume on start. Host registrations are
+//               kept in the store with their callback and served over it (callbackHostHandlers, #158), so a host
+//               app's tools, such as Sal's worker's, still answer after a restart without it registering again
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@harbour/selfhosted-workspace, #72)
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
 // `workspace_versions`. The model is still the echo model until the model gateway (M1-BE9) lands.
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
-import { createSessionRuntime } from "@harbour/runtime/core";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
+import { callbackHostHandlers } from "@harbour/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import {
 	createS3Objects,
@@ -41,6 +44,8 @@ export interface DurableConfig {
 		readonly prefix: string;
 	};
 	readonly log?: (message: string) => void;
+	/** The sessions' models. Default the echo model. */
+	readonly models?: Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -93,7 +98,9 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			storage: (session) => sqlPiStorage(db, session.id),
 			audit,
 			identity,
-			models: createEchoModels(),
+			...(config.models ?? { models: createEchoModels() }),
+			// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
+			hostHandler: callbackHostHandlers(),
 			onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
 			onWakeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not wake: ${error}`),
 		});
@@ -122,6 +129,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			runtime,
 			workspaces,
+			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
 			bindings: {
 				identity: "postgres",
