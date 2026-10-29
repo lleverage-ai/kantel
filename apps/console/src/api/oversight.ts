@@ -35,6 +35,11 @@ export interface ConsoleVault {
 	 * host with no passkeys yet; the page then approves on the sign-in alone and says so.
 	 */
 	readonly passkey?: PasskeyCheck;
+	/**
+	 * Sets up a passkey for a person who has none yet, on a host that takes them. Resolves the passkey check approving
+	 * then needs, or `undefined` when the person dismissed the prompt.
+	 */
+	readonly registerPasskey?: () => Promise<PasskeyCheck | undefined>;
 }
 
 /**
