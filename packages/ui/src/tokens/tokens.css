@@ -134,6 +134,12 @@
 	/* What every duration becomes under reduced motion. */
 	--hb-duration-instant: 0.01ms;
 	--hb-ease: cubic-bezier(0.2, 0, 0, 1);
+	/* The breathing of something that is working (the working row, a working dot, the streaming caret), in eight
+	   steps each way rather than a smooth curve. A browser that can't hand the animation to the GPU redraws the page
+	   on the main thread for every change of value: a smooth curve is a redraw every frame, which stuttered a
+	   streaming answer, while steps are a redraw only when the value moves, a few times a second. At these small changes of
+	   opacity the steps don't show. */
+	--hb-ease-breathe: steps(8, jump-none);
 
 	/* Layers. */
 	--hb-z-float: 20;

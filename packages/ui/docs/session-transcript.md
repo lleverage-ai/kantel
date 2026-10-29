@@ -221,7 +221,7 @@ is the only animation, CSS only, and stops under reduced motion (it stays, still
 
 **For** saying the agent is working on a turn, live: the working status's pulsing dot, then "Working for 12s" in
 muted `--hb-text-sm` with tabular numbers, the words breathing as a skeleton does (`hb-shimmer`,
-`--hb-duration-shimmer`), after T3 Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
+`--hb-duration-shimmer`) in `--hb-ease-breathe`'s steps, after T3 Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
 say, for another kind of work).
 
 **States:** with `since`, it counts from it and is a `role="timer"` named after the label, whose implicit `aria-live`
