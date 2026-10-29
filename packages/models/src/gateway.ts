@@ -12,7 +12,8 @@
  * - **The upstream call.** One attempt: `maxRetries: 0`, and a fetch that sends one request per call
  *   (`singleRequestFetch`). Through the wire API's `streamSimple` with the key in the preset's header (never pi's
  *   `apiKey`), the abort signal, the session ID, the thinking level (`options.reasoning`, else the route's), the
- *   preset's headers and `onPayload`, and `fetch`. The client's headers are never forwarded.
+ *   preset's headers and `onPayload`, and `fetch`. The client's headers are never forwarded. Where the preset names a
+ *   tool namespace (CLIProxyAPI on Messages), tool names go up under it and come back without it (tool-names.ts).
  * - **Events.** pi's events become `ModelStreamEvent`s, with every known secret redacted (see redact.ts) and
  *   `usage.cost` filled from the upstream's report or pi's `calculateCost`.
  * - **Accounting.** Each call that resolved a route records one `ModelCallRecord` and appends one `model.call` audit
@@ -67,6 +68,7 @@ import { pageOf } from "./page.ts";
 import { keyHeaders, presetSpec } from "./presets.ts";
 import { Redactor, StreamRedactor } from "./redact.ts";
 import { connectorServes, overrideId, parseModelRequestId, policyAllows } from "./resolution.ts";
+import { namespaceToolNames } from "./tool-names.ts";
 
 /** The component name the gateway acts as. */
 export const MODEL_GATEWAY_COMPONENT = "model-gateway";
@@ -750,7 +752,11 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			const fetchOnce = singleRequestFetch(upstreamFetch, (response) => {
 				if (response.status === 401) keys.drop(call.connector);
 			});
-			const context = normalizeContext(request.context as unknown as Context);
+			const namespace = spec.toolNamespace?.(api);
+			const { context, restore: toolName } =
+				namespace === undefined
+					? { context: normalizeContext(request.context as unknown as Context), restore: (name: string) => name }
+					: namespaceToolNames(normalizeContext(request.context as unknown as Context), namespace);
 			const streamOptions: SimpleStreamOptions = {
 				// The key goes in the preset's header, set here and last, never as pi's `apiKey`: from the key's form pi
 				// would otherwise pick an auth scheme (an Anthropic `sk-ant-oat` key becomes OAuth with Claude Code's
@@ -814,7 +820,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 							type: "toolcall_start",
 							contentIndex: event.contentIndex,
 							id: block?.id ?? "",
-							toolName: block?.name ?? "",
+							toolName: toolName(block?.name ?? ""),
 						});
 						break;
 					}
@@ -852,7 +858,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 							toolCall: {
 								type: "toolCall",
 								id: tool.id,
-								name: tool.name,
+								name: toolName(tool.name),
 								arguments: tool.arguments as { readonly [key: string]: JsonValue },
 								...(tool.argumentsError === undefined ? {} : { argumentsError: tool.argumentsError }),
 								...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),

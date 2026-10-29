@@ -9,6 +9,7 @@
  *   `anthropic-messages`);
  * - the attribution and session-affinity headers built from the call's scope, and any body changes (`onPayload`);
  * - where cost comes from: the upstream's report, pi's `calculateCost` from catalogue rates, or none (tokens only);
+ * - any namespace tool names travel under, for an upstream that would otherwise rename them (tool-names.ts);
  * - how its catalogue refreshes.
  *
  * A connector's `baseUrl` is the upstream's OpenAI-style API root, such as `http://cliproxyapi.internal:8317/v1`. The
@@ -18,6 +19,7 @@
  */
 import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 import type { ConnectorPreset, ModelCallScope, ModelConnector, ModelWireApi } from "@harbour/contracts";
+import { HARBOUR_TOOL_NAMESPACE } from "./tool-names.ts";
 
 /** Where reported cost comes from: the upstream (`usage.cost`), pi's `calculateCost`, or nowhere (tokens only). */
 export type PresetCostSource = "reported" | "computed" | "none";
@@ -43,6 +45,11 @@ export interface ConnectorPresetSpec {
 	headers(scope: ModelCallScope, api: ModelWireApi): { readonly [name: string]: string };
 	/** Rewrites the upstream request body for attribution or routing; returns undefined to leave it unchanged. */
 	onPayload?(payload: unknown, scope: ModelCallScope, api: ModelWireApi, connector: ModelConnector): unknown;
+	/**
+	 * The namespace the gateway puts tool names under on `api`, and takes off the calls that come back, if any
+	 * (`namespaceToolNames`).
+	 */
+	toolNamespace?(api: ModelWireApi): string | undefined;
 	readonly cost: PresetCostSource;
 	/** The catalogue path under the connector's root (its base URL without a trailing `/v1`). */
 	readonly cataloguePath: "/v1/models" | "/model/info";
@@ -206,6 +213,9 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		// CPA keeps a session on one upstream credential when `routing.session-affinity` is on.
 		affinityHeader: "x-session-affinity",
 		headers: (scope) => ({ "x-session-affinity": scope.sessionId }),
+		// On a Claude subscription credential CPA renames every tool that isn't an MCP tool to a random-word alias, which
+		// is all the model ever sees of it; an MCP name it leaves alone.
+		toolNamespace: (api) => (api === "anthropic-messages" ? HARBOUR_TOOL_NAMESPACE : undefined),
 		cost: "none",
 		cataloguePath: "/v1/models",
 	},
