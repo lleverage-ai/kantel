@@ -4,7 +4,7 @@
  * and takes the caller from an injected `Authenticator`. Routes are listed in `packages/runtime/HTTP.md`.
  */
 
-import { createRouter, routes as publicRoutes } from "@harbour/api";
+import { createRouter, sessionRoutes as publicRoutes } from "@harbour/api";
 import {
 	type AgentProfile,
 	type AgentProfiles,
@@ -598,7 +598,18 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	const publicApi = createRouter(
 		publicRoutes,
 		{
-			createSession: (ctx: CallContext, { body }) => runtime.create(ctx, body),
+			createSession: async (ctx: CallContext, { body }) => {
+				const { message, ...input } = body;
+				const session = await runtime.create(ctx, input);
+				if (message === undefined) return session;
+				try {
+					return { ...session, submission: await runtime.prompt(ctx, session.id, message) };
+				} catch (error) {
+					// A session whose first message was refused would sit idle with nothing to do: close it, then refuse.
+					await runtime.close(ctx, session.id).catch(() => undefined);
+					throw error;
+				}
+			},
 			listSessions: (ctx: CallContext, { query }) => {
 				const { limit, cursor, label, ...filter } = query;
 				return directory.list(
@@ -615,6 +626,33 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			abortSession: async (ctx: CallContext, { params, body }) => {
 				await runtime.abort(ctx, params.sessionId, body.reason);
 				return undefined;
+			},
+			sendMessage: async (ctx: CallContext, { params, body, idempotencyKey }) => {
+				const { via = "prompt", ...message } = body;
+				const input: PromptInput = {
+					...message,
+					...(idempotencyKey === undefined ? {} : { requestId: idempotencyKey }),
+				};
+				const submitted =
+					via === "steer"
+						? await runtime.steer(ctx, params.sessionId, input)
+						: via === "followUp"
+							? await runtime.followUp(ctx, params.sessionId, input)
+							: await runtime.prompt(ctx, params.sessionId, input);
+				// The runtime answers a key it has seen with that submission and submits nothing; a key reused for
+				// another kind of message is the caller's mistake, not a retry.
+				if (submitted.via !== via) {
+					throw new HarbourError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
+				}
+				return submitted;
+			},
+			streamSession: (ctx: CallContext, { params }, request) =>
+				events(ctx, request, new URL(request.url), params.sessionId),
+			getSessionHistory: async (ctx: CallContext, { params, query }) => {
+				if (options.history === undefined) {
+					throw new HarbourError("not_supported", "This server doesn't page through history");
+				}
+				return options.history.history(ctx, params.sessionId, query);
 			},
 		},
 		{ basePath },

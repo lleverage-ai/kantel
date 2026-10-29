@@ -13,7 +13,8 @@
  * | `GET /proposals/:id` | `getProposal` | `Proposal` |
  * | `GET /proposals/:id/approval` | `approvalView` | `ApprovalView` |
  * | `GET /proposals/:id/requester` | `getProposal`, then the host's names | `RequesterNames` |
- * | `POST /proposals/:id/decision` | `decide` | `Decision` |
+ * | `POST /proposals/:id/passkey-challenge` | `approvalView`, then the passkeys' `approvalChallenge` | `PasskeyChallenge` |
+ * | `POST /proposals/:id/decision` | the passkeys' `verifyApproval`, then `decide` | `Decision` |
  * | `GET /items/:id` | `getItem` | `VaultItem` (never a value: the vault holds none in it) |
  * | `GET /grants?status=&sessionId=&limit=&cursor=` | `listGrants` | `Page<Grant>` |
  * | `GET /grants/:id` | `getGrant` | `Grant` |
@@ -25,10 +26,19 @@
  * the vault as `vault.binding_code.mismatch`, and a narrowing that widens the terms is `invalid`. Errors are
  * `{ "error": { "code", "message" } }` with one status per `ErrorCode`, never carry a value, and every response is
  * `cache-control: no-store`.
+ *
+ * Passkeys (#132), when the host gives the API `passkeys`: the approver asks for a challenge bound to the proposal, the
+ * terms hash they saw and the narrowing they chose, signs it with their passkey and sends the assertion with the
+ * decision as `passkeyAssertion`. The API verifies it before `decide` reaches the vault. An approval without one, when
+ * the person must use a passkey (`passkeys.required`), or with one that fails, is refused (`refused`, with the
+ * `PasskeyRefusal` in `error.passkey`) and audited as `vault.passkey.refused`, as a wrong binding-code pick is. A denial
+ * needs no passkey. Without `passkeys` the challenge route is `not_supported` and an assertion is refused unread.
  */
 import {
 	type ApprovalView,
+	type AuditSink,
 	type CallContext,
+	type Clock,
 	type Decision,
 	type DecisionInput,
 	type ErrorCode,
@@ -39,9 +49,17 @@ import {
 	type Narrowing,
 	type Page,
 	type PageRequest,
+	type PasskeyAssertion,
+	type PasskeyBinding,
+	type PasskeyChallenge,
+	type PasskeyRefusal,
 	type ProjectAccess,
 	type Proposal,
 	type ProposalStatus,
+	type RelyingParty,
+	relyingPartyFor,
+	systemClock,
+	systemContext,
 	type Vault,
 	type VaultItem,
 } from "@harbour/contracts";
@@ -61,6 +79,30 @@ export interface ApprovalViewer {
 	readonly actor: CallContext["actor"];
 	readonly organisationId: string;
 	readonly name?: string;
+	/**
+	 * Whether approving needs the viewer's passkey: absent on a host without passkeys, where approving rests on the
+	 * sign-in and the binding code.
+	 */
+	readonly passkeyRequired?: boolean;
+}
+
+/**
+ * The passkey checks the approval API makes: `@harbour/identity/passkey`'s `Passkeys` fits. The vault never sees an
+ * assertion; the API checks it in front of `decide`.
+ */
+export interface ApprovalPasskeys {
+	/** Whether the caller must confirm an approval with a passkey. */
+	required(ctx: CallContext): Promise<boolean>;
+	/** A single-use challenge for approving exactly `binding`. */
+	approvalChallenge(ctx: CallContext, rp: RelyingParty, binding: PasskeyBinding): Promise<PasskeyChallenge>;
+	/** Uses the assertion's challenge up and verifies it; rejects `refused` with `details.passkey`. */
+	verifyApproval(ctx: CallContext, binding: PasskeyBinding, assertion: PasskeyAssertion): Promise<unknown>;
+}
+
+/** What `POST /proposals/:id/passkey-challenge` takes: the terms hash shown and the narrowing chosen. */
+export interface PasskeyChallengeBody {
+	readonly termsHash: string;
+	readonly narrowing?: Narrowing;
 }
 
 /** A proposal's requester in names a person reads, from the host's identity and session directories. */
@@ -227,6 +269,16 @@ export interface VaultApprovalApiOptions {
 	readonly viewerName?: (ctx: CallContext) => Promise<string | undefined>;
 	/** Route prefix, without a trailing slash. Default `APPROVAL_API_BASE`. */
 	readonly basePath?: string;
+	/** Passkeys for approvals. Without them approving rests on the sign-in and the binding code. */
+	readonly passkeys?: ApprovalPasskeys;
+	/**
+	 * The relying party passkeys are asked for on. Default the origin the request was made to
+	 * (`relyingPartyFor(request.url)`); a host behind a proxy that rewrites the host names its public origin here.
+	 */
+	readonly relyingParty?: RelyingParty | ((request: Request) => RelyingParty);
+	/** Where `vault.passkey.refused` goes. Without it a refusal is still refused, unaudited. */
+	readonly audit?: AuditSink;
+	readonly clock?: Clock;
 }
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -236,8 +288,34 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 	});
 }
 
-function errorResponse(status: number, code: string, message: string, headers?: Record<string, string>): Response {
-	return json(status, { error: { code, message } }, headers);
+function errorResponse(
+	status: number,
+	code: string,
+	message: string,
+	headers?: Record<string, string>,
+	extra: Record<string, unknown> = {},
+): Response {
+	return json(status, { error: { code, message, ...extra } }, headers);
+}
+
+const PASSKEY_REFUSALS: readonly PasskeyRefusal[] = [
+	"missing",
+	"malformed",
+	"challenge",
+	"binding",
+	"origin",
+	"credential",
+	"user_verification",
+	"signature",
+	"counter",
+	"algorithm",
+];
+
+/** The `PasskeyRefusal` an error carries, if it is a passkey's refusal. */
+export function passkeyRefusalOf(error: unknown): PasskeyRefusal | undefined {
+	if (!isHarbourError(error, "refused")) return undefined;
+	const reason = error.details?.passkey;
+	return PASSKEY_REFUSALS.includes(reason as PasskeyRefusal) ? (reason as PasskeyRefusal) : undefined;
 }
 
 /** The HTTP status for a Harbour error code. */
@@ -248,7 +326,10 @@ export function approvalErrorStatus(code: ErrorCode): number {
 type Route =
 	| { readonly name: "viewer" }
 	| { readonly name: "proposals" }
-	| { readonly name: "proposal" | "approval" | "requester" | "decision"; readonly id: string }
+	| {
+			readonly name: "proposal" | "approval" | "requester" | "decision" | "passkeyChallenge";
+			readonly id: string;
+	  }
 	| { readonly name: "item"; readonly id: string }
 	| { readonly name: "grants" }
 	| { readonly name: "grant" | "revoke"; readonly id: string };
@@ -260,6 +341,7 @@ const METHOD: { readonly [name in Route["name"]]: "GET" | "POST" } = {
 	approval: "GET",
 	requester: "GET",
 	decision: "POST",
+	passkeyChallenge: "POST",
 	item: "GET",
 	grants: "GET",
 	grant: "GET",
@@ -290,6 +372,7 @@ function routeOf(path: string, base: string): Route | undefined {
 			if (parts[2] === "approval") return { name: "approval", id };
 			if (parts[2] === "requester") return { name: "requester", id };
 			if (parts[2] === "decision") return { name: "decision", id };
+			if (parts[2] === "passkey-challenge") return { name: "passkeyChallenge", id };
 			return undefined;
 		case "items":
 			return id !== undefined && parts.length === 2 ? { name: "item", id } : undefined;
@@ -341,6 +424,43 @@ function filterOf<S extends string>(
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
 const optionalCount = (value: unknown) => value === undefined || (typeof value === "number" && Number.isFinite(value));
 
+/** Rejects with `invalid` unless `narrowing` is absent or has the shape of a `Narrowing`. */
+function narrowingOf(narrowing: unknown): Narrowing | undefined {
+	if (narrowing === undefined) return undefined;
+	if (!isRecord(narrowing)) throw new HarbourError("invalid", "A narrowing must be a JSON object");
+	const methods = narrowing.methods;
+	if (methods !== undefined && (!Array.isArray(methods) || !methods.every((method) => HTTP_METHODS.includes(method)))) {
+		throw new HarbourError("invalid", "A narrowing's methods must be known HTTP methods");
+	}
+	if (!optionalString(narrowing.pathPrefix) || !optionalCount(narrowing.ttlMs) || !optionalCount(narrowing.maxUses)) {
+		throw new HarbourError("invalid", "A narrowing has a path prefix, a ttlMs and a maxUses at most");
+	}
+	return narrowing as Narrowing;
+}
+
+/**
+ * Rejects with `invalid` unless `value` is absent or has the shape of a `PasskeyAssertion`: the browser's JSON, its
+ * binary fields base64url. Whether it verifies is the passkeys' to say.
+ */
+function assertionOf(value: unknown): PasskeyAssertion | undefined {
+	if (value === undefined) return undefined;
+	const response = isRecord(value) ? value.response : undefined;
+	if (
+		!isRecord(value) ||
+		typeof value.id !== "string" ||
+		typeof value.rawId !== "string" ||
+		value.type !== "public-key" ||
+		!isRecord(response) ||
+		typeof response.clientDataJSON !== "string" ||
+		typeof response.authenticatorData !== "string" ||
+		typeof response.signature !== "string" ||
+		!optionalString(response.userHandle)
+	) {
+		throw new HarbourError("invalid", "A passkey assertion is the browser's JSON for a public-key credential");
+	}
+	return value as unknown as PasskeyAssertion;
+}
+
 /** Rejects with `invalid` unless `body` has the shape of a `DecisionBody` for `proposalId`. */
 function decisionOf(body: unknown, proposalId: string): DecisionInput {
 	if (!isRecord(body)) throw new HarbourError("invalid", "A decision must be a JSON object");
@@ -353,30 +473,98 @@ function decisionOf(body: unknown, proposalId: string): DecisionInput {
 	for (const field of ["termsHash", "pickedCode", "secretValue", "note"] as const) {
 		if (!optionalString(body[field])) throw new HarbourError("invalid", `${field} must be a string`);
 	}
-	const narrowing = body.narrowing;
-	if (narrowing !== undefined) {
-		if (!isRecord(narrowing)) throw new HarbourError("invalid", "A narrowing must be a JSON object");
-		const methods = narrowing.methods;
-		if (
-			methods !== undefined &&
-			(!Array.isArray(methods) || !methods.every((method) => HTTP_METHODS.includes(method)))
-		) {
-			throw new HarbourError("invalid", "A narrowing's methods must be known HTTP methods");
-		}
-		if (!optionalString(narrowing.pathPrefix) || !optionalCount(narrowing.ttlMs) || !optionalCount(narrowing.maxUses)) {
-			throw new HarbourError("invalid", "A narrowing has a path prefix, a ttlMs and a maxUses at most");
-		}
-	}
+	const narrowing = narrowingOf(body.narrowing);
+	const passkeyAssertion = assertionOf(body.passkeyAssertion);
 	const input: DecisionInput = {
 		proposalId,
 		outcome: body.outcome,
 		...(body.termsHash === undefined ? {} : { termsHash: body.termsHash as string }),
 		...(body.pickedCode === undefined ? {} : { pickedCode: body.pickedCode as string }),
-		...(narrowing === undefined ? {} : { narrowing: narrowing as Narrowing }),
+		...(narrowing === undefined ? {} : { narrowing }),
 		...(body.secretValue === undefined ? {} : { secretValue: body.secretValue as string }),
 		...(body.note === undefined ? {} : { note: body.note as string }),
+		...(passkeyAssertion === undefined ? {} : { passkeyAssertion }),
 	};
 	return input;
+}
+
+/** Rejects with `invalid` unless `body` is a `PasskeyChallengeBody`. */
+function challengeBodyOf(body: unknown): PasskeyChallengeBody {
+	if (!isRecord(body) || typeof body.termsHash !== "string" || body.termsHash === "") {
+		throw new HarbourError("invalid", "A passkey challenge's body is { termsHash, narrowing? }");
+	}
+	for (const name of Object.keys(body)) {
+		if (name !== "termsHash" && name !== "narrowing") throw new HarbourError("invalid", `Unknown field ${name}`);
+	}
+	const narrowing = narrowingOf(body.narrowing);
+	return { termsHash: body.termsHash, ...(narrowing === undefined ? {} : { narrowing }) };
+}
+
+/** What a passkey approves for a proposal: approving it, or pasting the secret it asks for. */
+const actionOf = (proposal: Pick<Proposal, "kind">): PasskeyBinding["action"] =>
+	proposal.kind === "secret" ? "paste" : "approve";
+
+const PASSKEY_AUDIT_CONTEXT = systemContext("vault");
+
+/**
+ * The passkey check in front of `decide`: an approval carries an assertion over exactly what it decides, or needs none.
+ * A missing or failed one is audited as `vault.passkey.refused` and rejected `refused` with `details.passkey`. Returns
+ * the input without the assertion, which the vault never reads.
+ */
+function passkeyGate(options: {
+	readonly vault: ApprovalVault;
+	readonly passkeys: ApprovalPasskeys | undefined;
+	readonly audit: AuditSink | undefined;
+	readonly clock: Clock;
+}): (ctx: CallContext, input: DecisionInput) => Promise<DecisionInput> {
+	const { vault, passkeys, audit, clock } = options;
+	const refuse = async (ctx: CallContext, proposal: Proposal, reason: PasskeyRefusal, error: HarbourError) => {
+		await audit?.append(PASSKEY_AUDIT_CONTEXT, [
+			{
+				id: `vault:passkey:${crypto.randomUUID()}`,
+				at: clock.now(),
+				source: "vault",
+				type: "vault.passkey.refused",
+				actor: ctx.actor,
+				organisationId: ctx.organisationId,
+				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+				...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
+				...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
+				subject: { kind: "vault.proposal", id: proposal.id },
+				data: { kind: proposal.kind, reason },
+			},
+		]);
+		throw error;
+	};
+	return async (ctx, input) => {
+		const { passkeyAssertion, ...decision } = input;
+		if (input.outcome !== "approve") return decision;
+		if (passkeys === undefined) {
+			if (passkeyAssertion === undefined) return decision;
+			throw new HarbourError("not_supported", "This vault takes no passkeys");
+		}
+		if (passkeyAssertion === undefined && !(await passkeys.required(ctx))) return decision;
+		// Read as the caller, so a proposal they may not see is `not_found` before anything is audited about it.
+		const proposal = await vault.getProposal(ctx, input.proposalId);
+		if (passkeyAssertion === undefined) {
+			const message = "Approving needs your passkey";
+			return refuse(ctx, proposal, "missing", new HarbourError("refused", message, { passkey: "missing" }));
+		}
+		const binding: PasskeyBinding = {
+			proposalId: proposal.id,
+			termsHash: input.termsHash ?? "",
+			action: actionOf(proposal),
+			...(input.narrowing === undefined ? {} : { narrowing: input.narrowing }),
+		};
+		try {
+			await passkeys.verifyApproval(ctx, binding, passkeyAssertion);
+		} catch (error) {
+			const reason = passkeyRefusalOf(error);
+			if (reason === undefined) throw error;
+			return refuse(ctx, proposal, reason, error as HarbourError);
+		}
+		return decision;
+	};
 }
 
 /** The body as JSON, refused past `APPROVAL_BODY_LIMIT` bytes. */
@@ -402,6 +590,13 @@ async function readJson(request: Request): Promise<unknown> {
 export function createVaultApprovalApi(options: VaultApprovalApiOptions): (request: Request) => Promise<Response> {
 	const base = (options.basePath ?? APPROVAL_API_BASE).replace(/\/+$/, "");
 	const vault = options.access === undefined ? options.vault : withProjectAccess(options.vault, options.access);
+	const { passkeys } = options;
+	const gate = passkeyGate({ vault, passkeys, audit: options.audit, clock: options.clock ?? systemClock });
+	const relyingParty = (request: Request): RelyingParty => {
+		const configured = options.relyingParty;
+		if (configured === undefined) return relyingPartyFor(request.url);
+		return typeof configured === "function" ? configured(request) : configured;
+	};
 
 	return async (request) => {
 		const url = new URL(request.url);
@@ -415,10 +610,12 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 			switch (route.name) {
 				case "viewer": {
 					const name = await options.viewerName?.(ctx).catch(() => undefined);
+					const passkeyRequired = await passkeys?.required(ctx);
 					const viewer: ApprovalViewer = {
 						actor: ctx.actor,
 						organisationId: ctx.organisationId,
 						...(name === undefined ? {} : { name }),
+						...(passkeyRequired === undefined ? {} : { passkeyRequired }),
 					};
 					return json(200, viewer);
 				}
@@ -435,8 +632,23 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 					const names = (await options.describeRequester?.(ctx, proposal).catch(() => undefined)) ?? {};
 					return json(200, names);
 				}
-				case "decision":
-					return json(200, await vault.decide(ctx, decisionOf(await readJson(request), route.id)));
+				case "passkeyChallenge": {
+					if (passkeys === undefined) throw new HarbourError("not_supported", "This vault takes no passkeys");
+					const body = challengeBodyOf(await readJson(request));
+					// Only someone who may decide the proposal gets a challenge for it: the approval view's checks.
+					const { proposal } = await vault.approvalView(ctx, route.id);
+					const binding: PasskeyBinding = {
+						proposalId: proposal.id,
+						termsHash: body.termsHash,
+						action: actionOf(proposal),
+						...(body.narrowing === undefined ? {} : { narrowing: body.narrowing }),
+					};
+					return json(200, await passkeys.approvalChallenge(ctx, relyingParty(request), binding));
+				}
+				case "decision": {
+					const input = decisionOf(await readJson(request), route.id);
+					return json(200, await vault.decide(ctx, await gate(ctx, input)));
+				}
 				case "item":
 					return json(200, await vault.getItem(ctx, route.id));
 				case "grants": {
@@ -455,7 +667,14 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 			}
 		} catch (error) {
 			if (isHarbourError(error) && isErrorCode(error.code)) {
-				return errorResponse(approvalErrorStatus(error.code), error.code, error.message);
+				const passkey = passkeyRefusalOf(error);
+				return errorResponse(
+					approvalErrorStatus(error.code),
+					error.code,
+					error.message,
+					undefined,
+					passkey === undefined ? {} : { passkey },
+				);
 			}
 			return errorResponse(500, "unavailable", "The vault approval API failed");
 		}
@@ -481,6 +700,8 @@ export interface VaultApprovalClient {
 	): Promise<Page<Proposal>>;
 	approvalView(proposalId: string, signal?: AbortSignal): Promise<ApprovalView>;
 	requester(proposalId: string, signal?: AbortSignal): Promise<RequesterNames>;
+	/** A single-use passkey challenge for approving the proposal with these terms and this narrowing. */
+	passkeyChallenge(proposalId: string, body: PasskeyChallengeBody, signal?: AbortSignal): Promise<PasskeyChallenge>;
 	decide(input: DecisionInput, signal?: AbortSignal): Promise<Decision>;
 	getItem(itemId: string, signal?: AbortSignal): Promise<VaultItem>;
 	getGrant(grantId: string, signal?: AbortSignal): Promise<Grant>;
@@ -494,7 +715,8 @@ export interface VaultApprovalClient {
 
 /**
  * A client for the vault approval API. Failures reject with a `HarbourError` carrying the server's code; a 401 is
- * `forbidden` with `details.authentication: "invalid"`, and a network failure `unavailable`.
+ * `forbidden` with `details.authentication: "invalid"`, a passkey's refusal carries `details.passkey`, and a network
+ * failure is `unavailable`.
  */
 export function createVaultApprovalClient(options: VaultApprovalClientOptions = {}): VaultApprovalClient {
 	const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
@@ -521,7 +743,12 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 		const error = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : undefined;
 		const message = typeof error?.message === "string" ? error.message : `The vault answered ${response.status}`;
 		if (response.status === 401) throw new HarbourError("forbidden", message, { authentication: "invalid" });
-		throw new HarbourError(isErrorCode(error?.code) ? error.code : "unavailable", message);
+		const code = isErrorCode(error?.code) ? error.code : "unavailable";
+		const passkey = error?.passkey;
+		if (code === "refused" && PASSKEY_REFUSALS.includes(passkey as PasskeyRefusal)) {
+			throw new HarbourError(code, message, { passkey: passkey as PasskeyRefusal });
+		}
+		throw new HarbourError(code, message);
 	}
 	const query = (filter: { readonly status?: string; readonly sessionId?: string } = {}, page: PageRequest = {}) => {
 		const params = new URLSearchParams();
@@ -539,6 +766,8 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 		listProposals: (filter, page, signal) => call(`/proposals${query(filter, page)}`, { signal }),
 		approvalView: (proposalId, signal) => call(`/proposals/${id(proposalId)}/approval`, { signal }),
 		requester: (proposalId, signal) => call(`/proposals/${id(proposalId)}/requester`, { signal }),
+		passkeyChallenge: (proposalId, body, signal) =>
+			call(`/proposals/${id(proposalId)}/passkey-challenge`, { body, signal }),
 		decide: ({ proposalId, ...body }, signal) => call(`/proposals/${id(proposalId)}/decision`, { body, signal }),
 		getItem: (itemId, signal) => call(`/items/${id(itemId)}`, { signal }),
 		getGrant: (grantId, signal) => call(`/grants/${id(grantId)}`, { signal }),

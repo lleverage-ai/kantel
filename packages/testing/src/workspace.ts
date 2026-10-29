@@ -23,6 +23,9 @@ import {
 	createExpectAssertions,
 	registerCases,
 } from "./harness.ts";
+import { createSeedingFixture, type SeedingFixture, seedingCases } from "./workspace-seeding.ts";
+
+export { createSeedingFixture, SEED_FIXTURE, type SeedingFixture } from "./workspace-seeding.ts";
 
 export interface WorkspaceSubject {
 	readonly workspaces: Workspaces;
@@ -43,12 +46,29 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	 * `@harbour/workspace`'s implementations do both and older ones (apps/selfhosted, the Cloudflare spike) neither.
 	 */
 	readonly cancellation?: boolean;
+	/**
+	 * Runs the seeding cases (seed spec v1, M2-BE1): the provider must wire `deps.seeders` as its workspaces' `seeders`
+	 * and `deps.onSeedStatus` as their `onSeedStatus`.
+	 */
+	readonly seeding?: boolean;
+}
+
+/** The suite's dependencies, with the seeding fixture's seeders and status sink for the provider to wire. */
+export interface WorkspaceConformanceDeps extends ConformanceDeps {
+	readonly seeders: SeedingFixture["seeders"];
+	readonly onSeedStatus: SeedingFixture["onSeedStatus"];
 }
 
 export type WorkspaceConformanceProvider = (
-	deps: ConformanceDeps,
+	deps: WorkspaceConformanceDeps,
 	use: (subject: WorkspaceSubject) => Promise<void>,
 ) => Promise<void>;
+
+/** Fresh dependencies for one case, with a fresh seeding fixture. */
+function workspaceDeps(): { deps: WorkspaceConformanceDeps; fixture: SeedingFixture } {
+	const fixture = createSeedingFixture();
+	return { deps: { ...createDeps(), seeders: fixture.seeders, onSeedStatus: fixture.onSeedStatus }, fixture };
+}
 
 export const WORKSPACE_FIXTURE = {
 	organisationId: "org-harbour",
@@ -143,9 +163,23 @@ export function createWorkspaceConformance(options: {
 	projectAccess?: boolean;
 	keyed?: boolean;
 	cancellation?: boolean;
+	seeding?: boolean;
 }): readonly ConformanceCase[] {
 	return [
 		...baseCases(options),
+		...(options.seeding === true
+			? seedingCases({
+					assertions: options.assertions,
+					ctx,
+					otherCtx,
+					owner,
+					withSeeding: (run) => async () => {
+						const { deps, fixture } = workspaceDeps();
+						seedTenancy(deps);
+						await options.provider(deps, ({ workspaces }) => run(workspaces, fixture, deps));
+					},
+				})
+			: []),
 		...(options.keyed === true ? keyedCases(options) : []),
 		...((options.cancellation ?? options.keyed) === true ? cancellationCases(options) : []),
 	];
@@ -161,7 +195,7 @@ function cancellationCases(options: {
 		{
 			name: "cancellation: a commit whose signal fired rejects with aborted and commits nothing",
 			run: async () => {
-				const deps = createDeps();
+				const { deps } = workspaceDeps();
 				seedTenancy(deps);
 				await options.provider(deps, async ({ workspaces }) => {
 					const record = await workspaces.create(ctx, { owner });
@@ -190,7 +224,7 @@ function keyedCases(options: {
 }): ConformanceCase[] {
 	const a = options.assertions;
 	const withKeyed = (run: (workspaces: KeyedWorkspacesLike, deps: ConformanceDeps) => Promise<void>) => async () => {
-		const deps = createDeps();
+		const { deps } = workspaceDeps();
 		seedTenancy(deps);
 		await options.provider(deps, async ({ workspaces }) => {
 			const keyed = workspaces as Partial<KeyedWorkspacesLike>;
@@ -282,7 +316,7 @@ function baseCases(options: {
 }): ConformanceCase[] {
 	const a = options.assertions;
 	const withSubject = (run: (subject: WorkspaceSubject, deps: ConformanceDeps) => Promise<void>) => async () => {
-		const deps = createDeps();
+		const { deps } = workspaceDeps();
 		seedTenancy(deps);
 		await options.provider(deps, (subject) => run(subject, deps));
 	};
@@ -1010,6 +1044,7 @@ export function registerWorkspaceConformance(
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
 			...(options?.keyed === undefined ? {} : { keyed: options.keyed }),
 			...(options?.cancellation === undefined ? {} : { cancellation: options.cancellation }),
+			...(options?.seeding === undefined ? {} : { seeding: options.seeding }),
 		}),
 	);
 }

@@ -31,6 +31,12 @@ export interface CheckSettings {
 	readonly risingFactor?: number;
 	/** Failed runs in a row before a `check-failed` finding is raised. Default 3. */
 	readonly failuresBeforeRaise?: number;
+	/**
+	 * Severities, worst first, case-insensitive, for raising a finding that got worse as `escalated`. Default `urgent`,
+	 * `high`, `medium`, `low`, `warn`, `info`; `sev1`, `sev2` and `sev3` read as `urgent`, `high` and `low`. A severity
+	 * the list doesn't name ranks below all of them.
+	 */
+	readonly severityOrder?: readonly string[];
 }
 
 export interface ScheduleInput {
@@ -81,6 +87,14 @@ export interface Occurrence {
 	readonly result?: JsonValue;
 }
 
+/**
+ * Proposed (issue #23): an occurrence as `claim` hands it to a runner, with its schedule as it was when claimed, so the
+ * runner knows what to run (kind, payload, check settings) and for which organisation without another call.
+ */
+export interface ClaimedOccurrence extends Occurrence {
+	readonly schedule: Schedule;
+}
+
 export interface Finding {
 	/** Stable across runs, such as `disk:/var` or `pr:4811:stale`. */
 	readonly key: string;
@@ -88,12 +102,17 @@ export interface Finding {
 	readonly summary: string;
 	/** A number to compare with `risingFactor`, such as an error count. */
 	readonly value?: number;
+	/**
+	 * The command's own view, such as `new`, `escalated` or `unchanged`: advisory, as the store decides from its record,
+	 * except that `escalated` with a severity other than the one last raised raises it (one `severityOrder` can't rank).
+	 */
+	readonly status?: string;
 }
 
 export interface RaisedFinding extends Finding {
 	readonly scheduleId: string;
 	readonly occurrenceId: string;
-	readonly reason: "new" | "reraise" | "rising" | "failures";
+	readonly reason: "new" | "escalated" | "reraise" | "rising" | "failures";
 }
 
 export interface CheckReport {
@@ -125,12 +144,17 @@ export interface Schedules {
 	 * new one: its missed due times are coalesced into the next. Several missed due times become one occurrence at
 	 * the latest of them. Idempotent: ticking twice at the same time creates nothing new.
 	 *
-	 * `tick`, `claim`, `complete` and `reportCheck` are the scheduler's worker calls (settled question 13): each takes a
+	 * `tick`, `claim`, `renew`, `complete` and `reportCheck` are the scheduler's worker calls (settled question 13): each takes a
 	 * `SystemContext`, and any actor but `system` is `forbidden`, audited, and changes nothing.
 	 */
 	tick(ctx: SystemContext): Promise<readonly Occurrence[]>;
 	/** Atomically claims the oldest claimable occurrence for `runner`, or returns undefined. */
-	claim(ctx: SystemContext, runner: string, leaseMs: number): Promise<Occurrence | undefined>;
+	claim(ctx: SystemContext, runner: string, leaseMs: number): Promise<ClaimedOccurrence | undefined>;
+	/**
+	 * Proposed (issue #23): extends a held claim's lease to `leaseMs` from now, so a long run keeps it. The runner must
+	 * hold it with a live lease (`conflict` otherwise: a lapsed lease is not revived, since another runner may have it).
+	 */
+	renew(ctx: SystemContext, occurrenceId: string, runner: string, leaseMs: number): Promise<Occurrence>;
 	/** Finishes a claim. The runner must hold it (`conflict` otherwise, including after its lease was taken over). */
 	complete(
 		ctx: SystemContext,

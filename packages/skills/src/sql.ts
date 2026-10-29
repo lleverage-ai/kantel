@@ -331,7 +331,8 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 	const mountRoot = (options.mountRoot ?? "/skills").replace(/\/+$/, "");
 	const prefix = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
 	const encoder = new TextEncoder();
-	const decoder = new TextDecoder("utf-8", { fatal: true });
+	// `ignoreBOM` spelled out: Workers' types require it.
+	const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 	function bodyKey(owner: OwnerRef, sha256: string): string {
 		const scope = owner.kind === "platform" ? "platform" : `org/${encodeURIComponent(owner.organisationId)}`;

@@ -9,7 +9,11 @@
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
  * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
+ * | `/v1/me/passkeys…` | the signed-in person's passkeys (`@harbour/identity/passkey/http`), which the approval API asks for |
  * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
+ * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin |
+ * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space and loading a snapshot for the organisation's admin |
+ * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
@@ -30,7 +34,10 @@ import {
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
+import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
+import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
+import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
@@ -44,8 +51,12 @@ import {
 import { readLimited } from "./route.ts";
 import type { Stack } from "./stack.ts";
 
-/** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"? }`: a few bytes. */
+/** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"?, "tools"? }`: a few bytes. */
 const MEASURE_BODY_LIMIT = 1024;
+
+/** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
+export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
+const DECISION_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
 
@@ -122,6 +133,12 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		authenticator: stack.authenticator,
 		signIn: stack.signIn,
 	});
+	// The relying party is the hostname the request came to: the Worker forwards the request with its URL unchanged.
+	const passkeys = createPasskeyHandler({
+		passkeys: stack.passkeys,
+		authenticator: stack.authenticator,
+		signIn: stack.signIn,
+	});
 
 	// The read API and the approval API take a call context, not an authenticator, and answer a refused one as 403. The
 	// gateway authenticates first, so a missing or bad credential is a 401 with a challenge, as on every other route.
@@ -141,6 +158,24 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		authenticate: callContext,
 	});
 
+	// Loading skills and memory (a host adapter's import, a new space) is the organisation admin's, on top of the stores'
+	// own rules, which refuse agents and check a project owner's role. Reads follow the stores' rules alone.
+	const organisationAdmin = (ctx: CallContext) => stack.identity.authorize(ctx, "admin");
+	const skills = createSkillsApi({
+		skills: stack.skills,
+		authenticate: callContext,
+		authorizeImport: organisationAdmin,
+		basePath: API_BASE,
+	});
+	const memory = createMemoryApi({
+		memory: stack.memory,
+		authenticate: callContext,
+		authorizeWrite: organisationAdmin,
+		basePath: API_BASE,
+	});
+	const SKILLS_BASE = `${API_BASE}/skills`;
+	const MEMORY_BASE = `${API_BASE}/memory`;
+
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
 	const approvals =
@@ -154,6 +189,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					viewerName: async (ctx) =>
 						ctx.actor.kind === "human" ? (await stack.identity.getUser(ctx, ctx.actor.userId)).name : undefined,
 					basePath: APPROVAL_API_BASE,
+					// An approval needs the person's passkey once they have one; a refusal is audited with the vault's events.
+					passkeys: stack.passkeys,
+					audit: stack.audit,
 				});
 
 	/** The caller, or the response refusing them: 401 with a challenge for a missing or bad credential. */
@@ -208,7 +246,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				}
 			})();
 			const body = parsed as
-				| { backend?: unknown; placement?: unknown; keep?: unknown; sessionId?: unknown }
+				| { backend?: unknown; placement?: unknown; keep?: unknown; sessionId?: unknown; tools?: unknown }
 				| undefined;
 			if (
 				typeof parsed !== "object" ||
@@ -216,6 +254,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				(body?.backend !== undefined && typeof body.backend !== "string") ||
 				(body?.placement !== undefined && typeof body.placement !== "boolean") ||
 				(body?.keep !== undefined && typeof body.keep !== "boolean") ||
+				(body?.tools !== undefined && typeof body.tools !== "boolean") ||
 				(body?.sessionId !== undefined && (typeof body.sessionId !== "string" || body.sessionId === "")) ||
 				// A warm run's session is open already: `keep` is for the cold run that opens it.
 				(body?.keep === true && body.sessionId !== undefined)
@@ -225,7 +264,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 						error: {
 							code: "invalid",
 							message:
-								'The body is { "backend"?: string, "placement"?: boolean, "keep"?: boolean } or { "sessionId": string, "backend"?: string, "placement"?: boolean }',
+								'The body is { "backend"?: string, "placement"?: boolean, "keep"?: boolean, "tools"?: boolean } or { "sessionId": string, "backend"?: string, "placement"?: boolean, "tools"?: boolean }',
 						},
 					},
 					{ status: 400, headers: { "cache-control": "no-store" } },
@@ -234,6 +273,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			input = {
 				...(typeof body?.backend === "string" ? { backend: body.backend } : {}),
 				...(body?.keep === true ? { keep: true } : {}),
+				...(body?.tools === true ? { tools: true } : {}),
 				...(typeof body?.sessionId === "string" ? { sessionId: body.sessionId } : {}),
 			};
 			placement = body?.placement === true;
@@ -258,9 +298,63 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
+	const decideBrowser = async (request: Request): Promise<Response> => {
+		const noStore = { "cache-control": "no-store" };
+		if (request.method !== "POST") {
+			return Response.json(
+				{ error: { code: "invalid", message: "POST only" } },
+				{ status: 405, headers: { allow: "POST", ...noStore } },
+			);
+		}
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		const browser = stack.browser;
+		if (browser === undefined) {
+			return Response.json(
+				{ error: { code: "unavailable", message: "This deployment has no browser" } },
+				{ status: 503, headers: noStore },
+			);
+		}
+		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
+		const body = (() => {
+			try {
+				return bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
+			} catch {
+				return undefined;
+			}
+		})() as { sessionId?: unknown; callId?: unknown; allow?: unknown } | undefined;
+		if (
+			typeof body !== "object" ||
+			body === null ||
+			typeof body.sessionId !== "string" ||
+			body.sessionId === "" ||
+			typeof body.callId !== "string" ||
+			body.callId === "" ||
+			typeof body.allow !== "boolean"
+		) {
+			return Response.json(
+				{
+					error: {
+						code: "invalid",
+						message: 'The body is { "sessionId": string, "callId": string, "allow": boolean }',
+					},
+				},
+				{ status: 400, headers: noStore },
+			);
+		}
+		try {
+			const ctx = callContextFor(caller, { signal: request.signal });
+			const result = await browser.decide(ctx, { sessionId: body.sessionId, callId: body.callId, allow: body.allow });
+			return Response.json(result, { headers: noStore });
+		} catch (error) {
+			return errorResponse(error);
+		}
+	};
+
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
+			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
 			if (under(path, WORKSPACE_READ_API_BASE)) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {
@@ -278,7 +372,18 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				return approvals(request);
 			}
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
+			if (isPasskeyPath(path)) return passkeys(request);
 			if (isIdentityPath(path)) return identity(request);
+			if (under(path, SKILLS_BASE) || under(path, MEMORY_BASE)) {
+				const caller = await authenticate(request);
+				if (caller instanceof Response) {
+					await request.body?.cancel().catch(() => undefined);
+					return caller;
+				}
+				callers.set(request, caller);
+				const api = under(path, SKILLS_BASE) ? skills : memory;
+				return (await api.fetch(request)) ?? notFound();
+			}
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();
 		},

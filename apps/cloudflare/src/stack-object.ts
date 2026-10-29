@@ -1,8 +1,8 @@
 /**
  * `HarbourStack`: the Durable Object that hosts the stack and its gateway. Its state is durable (#17, step 2):
  *
- * - the identity directory and the audit store in D1 (`DB`);
- * - workspaces in R2 (`WORKSPACES`);
+ * - the identity directory, the audit store, skills and memory in D1 (`DB`);
+ * - workspaces in R2 (`WORKSPACES`), and skill files' bodies beside them under `skills/`;
  * - the session runtime (`SessionRuntimeDurableObjectCore` from `@harbour/runtime-cloudflare`): its directory,
  *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
@@ -11,7 +11,9 @@
  * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `HARBOUR_ISOLATE_BACKEND` names: `in-process`
  *   in this object, or `dynamic-worker` (`src/dynamic-worker.ts`) through the `LOADER` binding, whose isolates read
  *   the workspace through a port this object passes them as an RPC target;
- * - the vault approval API's vault: the VaultDO (`HarbourVault`), over RPC.
+ * - the vault approval API's vault: the VaultDO (`HarbourVault`), over RPC;
+ * - the browser (`src/browser.ts`): the broker over brwsr, with the `HARBOUR_BRWSR_API_KEY` Worker secret, when the
+ *   Worker has it; sessions have no browser tools otherwise.
  *
  * One object serves every session in M1: see the README's "Decisions".
  */
@@ -20,8 +22,11 @@ import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
 import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } from "@harbour/contracts";
 import type { AcceptWebSocket } from "@harbour/runtime/http";
+import { r2ObjectBucket } from "@harbour/skills/sql";
 import { d1Driver } from "@harbour/sql/sqlite";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
+import { objectSqlDriver } from "./audit-outbox.ts";
+import { type BrowserVars, brwsrProviderFrom } from "./browser.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
@@ -39,7 +44,7 @@ import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars {
+export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars, BrowserVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
@@ -148,7 +153,10 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		// The approval API's vault: each call goes to the one VaultDO over RPC, as the person the gateway signed in.
 		const env = this.env;
 		const loader = this.env.LOADER;
+		const browserProvider = brwsrProviderFrom(env);
+		if (browserProvider === undefined) console.warn("harbour: no HARBOUR_BRWSR_API_KEY; sessions have no browser");
 		return {
+			...(browserProvider === undefined ? {} : { browserProvider }),
 			vault: approvalVaultOver((method, ctx, args) =>
 				namedObject(env.VAULTS, VAULT_NAME, env).approvalCall(method, ctx, args),
 			),
@@ -265,9 +273,16 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				prefix: WORKSPACE_PREFIX,
 				headCache: durableHeadCache(storage.kv),
 			}),
+			// The skills store keys every body `skills/…`, so it shares the workspaces' bucket (and its placement) apart.
+			skillObjects: r2ObjectBucket(this.env.WORKSPACES),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
+			},
+			// Audit events queue in this object's SQLite and drain to D1 after the answer (src/audit-outbox.ts).
+			auditOutbox: {
+				driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
+				background: (work) => this.ctx.waitUntil(work),
 			},
 		};
 	}

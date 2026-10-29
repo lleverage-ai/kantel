@@ -41,6 +41,17 @@ const routes = {
 		answer: { status: 204, description: "Dropped." },
 		errors: ["not_found"],
 	}),
+	sendThing: defineRoute({
+		operationId: "sendThing",
+		method: "POST",
+		path: "/things/{thingId}/send",
+		tag: "things",
+		summary: "Send a thing",
+		params: Type.Object({ thingId: Type.String() }),
+		idempotent: true,
+		answer: { status: 202, description: "Sent.", schema: Type.Object({ key: Type.Optional(Type.String()) }) },
+		errors: ["invalid"],
+	}),
 	streamThing: defineRoute({
 		operationId: "streamThing",
 		method: "GET",
@@ -69,10 +80,17 @@ function setUp() {
 			if (input.params.thingId === "missing") throw new HarbourError("not_found", "No such thing");
 			return undefined;
 		},
+		sendThing: async (ctx: string, input) => {
+			calls.push({ route: "sendThing", ctx, input });
+			return input.idempotencyKey === undefined ? {} : { key: input.idempotencyKey };
+		},
 		streamThing: async () => new Response("streaming", { status: 200, headers: { "content-type": "text/plain" } }),
 	});
-	const send = (method: string, path: string, body?: string) =>
-		router("caller", new Request(`https://harbour.test${path}`, { method, ...(body === undefined ? {} : { body }) }));
+	const send = (method: string, path: string, body?: string, headers: Record<string, string> = {}) =>
+		router(
+			"caller",
+			new Request(`https://harbour.test${path}`, { method, headers, ...(body === undefined ? {} : { body }) }),
+		);
 	return { calls, send };
 }
 
@@ -148,6 +166,20 @@ describe("router", () => {
 		expect((await refusal(send("POST", "/v1/things/%E0%A4%A/drop"))).message).toBe("The path is not valid");
 	});
 
+	it("gives an idempotent route's handler the Idempotency-Key, and checks it", async () => {
+		const { send, calls } = setUp();
+		const keyed = await send("POST", "/v1/things/t1/send", undefined, { "idempotency-key": "k-1" });
+		expect(await keyed?.json()).toEqual({ key: "k-1" });
+		expect(await (await send("POST", "/v1/things/t1/send"))?.json()).toEqual({});
+		for (const key of ["two words", "x".repeat(256)]) {
+			const error = await refusal(send("POST", "/v1/things/t1/send", undefined, { "idempotency-key": key }));
+			expect(error.message).toContain("Idempotency-Key");
+		}
+		// A route that isn't idempotent never sees one.
+		await send("POST", "/v1/things", JSON.stringify({ size: 1 }), { "idempotency-key": "k-2" });
+		expect(calls.at(-1)?.input).toEqual({ params: {}, query: {}, body: { size: 1 } });
+	});
+
 	it("passes a handler's error through for the server to answer", async () => {
 		const { send } = setUp();
 		expect((await refusal(send("POST", "/v1/things/missing/drop"))).code).toBe("not_found");
@@ -165,6 +197,7 @@ function setUpHandlers() {
 		makeThing: async () => ({ id: "t", size: 1 }),
 		findThings: async () => ({ seen: null }),
 		dropThing: async () => undefined,
+		sendThing: async () => ({}),
 		streamThing: async () => new Response(null),
 	};
 }

@@ -12,8 +12,10 @@ registerWorkspaceConformance(
 			audit: deps.audit,
 			sources: [projectFiles],
 			access: deps.access,
+			seeders: deps.seeders,
+			onSeedStatus: deps.onSeedStatus,
 		});
 		await use({ workspaces, projectFiles });
 	},
-	{ projectAccess: true, keyed: true },
+	{ projectAccess: true, keyed: true, seeding: true },
 );
