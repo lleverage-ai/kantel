@@ -1,0 +1,31 @@
+/* Story-only frame for the schedule form: the content column, as the console mounts it, with what was saved above. */
+
+.hb-story-schedule-form {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+.hb-story-schedule-form > * {
+	width: 100%;
+	max-width: var(--hb-content-width);
+}
+
+.hb-story-schedule-json {
+	margin: var(--hb-space-4) 0 0;
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.hb-story-schedule-again {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--hb-accent-text);
+	font: inherit;
+	cursor: pointer;
+}

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Row, Section, Sheet } from "../workbench/specimen.tsx";
 import { Button, IconButton } from "./button.tsx";
-import { CopyButton, Disclosure, SegmentedControl, TextField } from "./controls.tsx";
+import { CopyButton, Disclosure, SegmentedControl, TextAreaField, TextField } from "./controls.tsx";
 import { DotsIcon, PlusIcon, ShieldIcon, StopIcon } from "./icons.tsx";
 import { ListRow } from "./list-row.tsx";
 import { Kbd, Skeleton, Spinner } from "./spinner.tsx";
@@ -188,6 +188,20 @@ function ControlsDemo() {
 					</div>
 					<div style={{ width: "20em" }}>
 						<TextField label="Uses" defaultValue="0" error="At least one use." />
+					</div>
+				</Row>
+			</Section>
+			<Section title="Text area">
+				<Row>
+					<div style={{ width: "20em" }}>
+						<TextAreaField
+							label="Prompt"
+							defaultValue="Label the issues opened since your last run."
+							hint="Sent exactly as written."
+						/>
+					</div>
+					<div style={{ width: "20em" }}>
+						<TextAreaField label="Prompt" rows={2} defaultValue="" error="Write what to ask the agent." />
 					</div>
 				</Row>
 			</Section>

@@ -574,6 +574,9 @@ importers:
       "@harbour/protocol":
         specifier: workspace:*
         version: link:../protocol
+      "@harbour/schedules":
+        specifier: workspace:*
+        version: link:../schedules
       "@harbour/vault":
         specifier: workspace:*
         version: link:../vault
@@ -596,9 +599,6 @@ importers:
       "@harbour/memory":
         specifier: workspace:*
         version: link:../memory
-      "@harbour/schedules":
-        specifier: workspace:*
-        version: link:../schedules
       "@harbour/skills":
         specifier: workspace:*
         version: link:../skills
