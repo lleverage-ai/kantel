@@ -266,3 +266,31 @@ export const SparkIcon = (props: IconProps) => (
 		<path d="M8 1.75c.4 3.3 2.95 5.85 6.25 6.25-3.3.4-5.85 2.95-6.25 6.25C7.6 10.95 5.05 8.4 1.75 8 5.05 7.6 7.6 5.05 8 1.75z" />
 	</Svg>
 );
+/** The sidebar: a window with its left pane drawn, for the button that collapses and expands it. */
+export const SidebarIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75" />
+		<path d="M6 2.75v10.5" />
+	</Svg>
+);
+/** Skills: an open book, the instructions an agent can read. */
+export const BookIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M8 4.25C6.75 3.25 4.75 2.75 1.75 2.75v9.5c3 0 5 .5 6.25 1.5 1.25-1 3.25-1.5 6.25-1.5v-9.5c-3 0-5 .5-6.25 1.5z" />
+		<path d="M8 4.25v9.5" />
+	</Svg>
+);
+/** Memory: stacked layers, what an agent has learnt and keeps. */
+export const LayersIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M8 1.75l6.25 3.25L8 8.25 1.75 5z" />
+		<path d="M1.75 8L8 11.25 14.25 8M1.75 11L8 14.25 14.25 11" />
+	</Svg>
+);
+/** A log: lines of entries, each with a mark, for the audit log. */
+export const ListIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M6 4h7.5M6 8h7.5M6 12h7.5" />
+		<path d="M2.75 4h.01M2.75 8h.01M2.75 12h.01" strokeWidth={2} />
+	</Svg>
+);

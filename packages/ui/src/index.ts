@@ -96,6 +96,20 @@ export {
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
 export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
+export {
+	Sidebar,
+	SidebarBrand,
+	SidebarItem,
+	type SidebarItemProps,
+	SidebarProject,
+	type SidebarProjectProps,
+	type SidebarProps,
+	SidebarSection,
+	type SidebarSectionProps,
+	SidebarToggle,
+	type SidebarToggleProps,
+	useSidebarCollapsed,
+} from "./primitives/sidebar.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
 export { Badge, type BadgeTone, StatusDot, StatusLabel } from "./primitives/status.tsx";
 export {

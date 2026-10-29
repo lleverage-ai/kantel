@@ -71,6 +71,31 @@ is a form control.
 **Cost:** memoised on its props: a list re-renders only the rows whose props changed. Pass stable `leading`,
 `trailing` and `actions` elements (memoise them or derive them from the item) to keep that true.
 
+A selected row's title is in full-strength text and medium weight, even on a `quiet` row, so the row you're on reads
+as more than a fill.
+
+### Sidebar
+
+**For** an app's main navigation, after T3 Code's sidebar: `Sidebar` frames a head (`SidebarBrand` and
+`SidebarToggle`), a body that scrolls on its own and a foot that stays put. In the body, `SidebarSection` "Projects"
+holds `SidebarProject` rows (chevron, folder, name, an optional action such as New session); the current project's
+sessions (`NewSessionRow`, `SessionList`) are its children, nested on a guide line under its chevron. In the foot,
+`SidebarItem`s link to the pages outside projects, each with a 16px icon, then `SignedInAs`. Every name truncates on
+one line.
+
+Active state: the page shown (`selected`) is filled, in full-strength text and medium weight, with
+`aria-current="page"`; the project you're in (`current`) is in full-strength text without a fill, so only one row in
+the sidebar is ever filled. `collapsed` makes it a rail `--hb-rail-width` wide: icons, a project's first letter in a
+small square, and the avatar, each keeping its name for screen readers and as a tooltip; sessions and headings are
+hidden. The host owns the state, the width (`--hb-sidebar-width` or `--hb-rail-width`) and the landmark role; the
+console remembers it in localStorage and toggles it with Ctrl+B (⌘B on a Mac). `useSidebarCollapsed()` tells a
+component inside whether it is on the rail.
+
+**Not for** navigation inside a page (use `SegmentedControl` or a list), or a file tree (`FileTree`).
+
+**Cost:** no timers or animation; the rail is a CSS state of the same elements, so collapsing mounts nothing new
+but the rail's New session link.
+
 ### Breadcrumbs
 
 **For** where you are, as a trail: `Default / Fix the billing worker / Write the refund tests`. `parents` (`Crumb[]`,
