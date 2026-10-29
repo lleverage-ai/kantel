@@ -210,6 +210,21 @@ describe("POST /v1/workspaces", () => {
 		expect(fixture.fetched).toEqual([]);
 	});
 
+	it("takes a v1 spec with an archive source, which waits at metadata when the host has no archive seeder", async () => {
+		const response = await post({
+			projectId: PROJECT,
+			seed: { version: 1, name: "tools", sources: [{ kind: "archive", url: "https://example.test/tools.tgz" }] },
+		});
+		expect(response!.status).toBe(201);
+		const record = (await response!.json()) as WorkspaceRecord;
+		expect(record.seed).toEqual({
+			version: 1,
+			name: "tools",
+			sources: [{ kind: "archive", url: "https://example.test/tools.tgz" }],
+		});
+		expect(record.seedReadiness).toBe("metadata");
+	});
+
 	it("refuses a body over the limit as 413", async () => {
 		const big = "x".repeat(DEFAULT_MAX_SEED_BODY_BYTES + 1);
 		const response = await post({

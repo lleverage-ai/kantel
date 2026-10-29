@@ -28,10 +28,12 @@ registerWorkspaceConformance(
 			audit: deps.audit,
 			access: deps.access,
 			sources: [projectFiles],
+			seeders: deps.seeders,
+			onSeedStatus: deps.onSeedStatus,
 		});
 		await use({ workspaces, projectFiles });
 	},
-	{ projectAccess: true, keyed: true },
+	{ projectAccess: true, keyed: true, seeding: true },
 );
 
 // The same with heads kept in front of R2, as the stack object keeps them (apps/cloudflare/src/workspace-heads.ts).
