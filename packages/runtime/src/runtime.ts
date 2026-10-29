@@ -130,6 +130,13 @@ export interface SessionRuntimeOptions {
 	 * and secret. Without it only handlers registered in this process serve tools.
 	 */
 	readonly hostHandler?: (host: StoredHost) => HostToolHandler | undefined;
+	/**
+	 * Tools this deployment serves in its own process, beside host tools: Harbour's components as Pi tools, such as the
+	 * browser's (`@harbour/browser`). Asked for each session as its tools install, bound to that session; the session
+	 * gets those its profile names in `tools`, before its host's. Their results may carry images, which the transcript
+	 * shows on the tool's item.
+	 */
+	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[];
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
 	/** Told of each session `resume()` could not open. Default: ignored. */
@@ -496,14 +503,16 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	const toolsFor = async (session: Pick<OpenSession, "profile" | "record">): Promise<ToolRegistration[]> => {
 		const { profile, record } = session;
+		const own = (options.tools?.(record) ?? []).filter((tool) => profile.tools.includes(tool.name));
 		const hostId = profile.hostId;
-		if (hostId === undefined) return [];
+		if (hostId === undefined) return own;
 		// A registration whose handler is gone (served by a process that has since stopped) offers nothing.
 		const host = await store.host(record.organisationId, hostId);
 		const served = host === undefined || handlerOf(host) === undefined ? [] : host.tools;
 		const agentActor = { kind: "agent", agentId: record.agentId, sessionId: record.id } as const;
-		return served
-			.filter((definition) => profile.tools.includes(definition.name))
+		const ownNames = new Set(own.map((tool) => tool.name));
+		const hosted = served
+			.filter((definition) => profile.tools.includes(definition.name) && !ownNames.has(definition.name))
 			.map((definition) =>
 				hostToolAsPiTool(definition, {
 					call: {
@@ -551,6 +560,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 						]),
 				}),
 			);
+		return [...own, ...hosted];
 	};
 
 	const extensionFor = (session: Pick<OpenSession, "profile">, tools: ToolRegistration[]): Extension => {
