@@ -19,7 +19,8 @@
 //     per request, for the session and the deployment's organisation and
 //     project (GET /v1/egress/scope). The vault injects only over https, so it
 //     decides requests to port 443; a denial carries the vault's reason and its
-//     fix. The policy file's routes with no credential stay this proxy's own
+//     fix. An allowed credential goes out only with the item values the gateway
+//     names in `redact`, which are redacted from every response from then on. The policy file's routes with no credential stay this proxy's own
 //     "open" routes, matched first without asking the vault, since the vault
 //     has no way to allow a request without one; its credentialed routes are
 //     the vault's (the gateway imports them). Without the key, or when the
@@ -87,12 +88,9 @@ for (const route of routes) {
 const redacted = new Set(secrets.values());
 let redactor = new Redactor([...redacted]);
 
-/** Authorization schemes a vault template may put before its key: the only words of a credential left unredacted. */
-const SCHEMES = new Set(["basic", "bearer", "token", "digest", "apikey", "key"]);
-
-function redactable(word: string): boolean {
+function redactable(secret: string): boolean {
 	try {
-		assertRedactable("credential", word);
+		assertRedactable("credential", secret);
 		return true;
 	} catch {
 		return false;
@@ -100,14 +98,15 @@ function redactable(word: string): boolean {
 }
 
 /**
- * Redact a credential the vault hands over from every response from now on: each of its words but an authorization
- * scheme (`Bearer <key>` redacts the key). The proxy can't tell the vault's template from its key, so every other word
- * must be one redaction can match; false when one isn't, or none is, and the request must not go out with it.
+ * Redact the item values in a credential the vault hands over from every response from now on. The gateway names them
+ * (`redact`, cut out of the header by the item's template), since the proxy can't tell a template from its key: each
+ * must be part of the header and one redaction can match. False when they aren't, or there are none, and the request
+ * must not go out with the credential.
  */
-function redactFromNowOn(value: string): boolean {
-	const words = value.split(/\s+/).filter((word) => word !== "" && !SCHEMES.has(word.toLowerCase()));
-	if (words.length === 0 || !words.every(redactable)) return false;
-	const fresh = words.filter((word) => !redacted.has(word));
+function redactFromNowOn(value: string, keys: unknown): boolean {
+	if (!Array.isArray(keys) || keys.length === 0) return false;
+	if (!keys.every((key) => typeof key === "string" && value.includes(key) && redactable(key))) return false;
+	const fresh = (keys as string[]).filter((key) => !redacted.has(key));
 	if (fresh.length > 0) {
 		for (const word of fresh) redacted.add(word);
 		redactor = new Redactor([...redacted]);
@@ -357,6 +356,7 @@ async function vaultVerdict(caller: Caller, method: string, target: URL, portNum
 		policyId?: string;
 		grantId?: string;
 		inject?: { header?: unknown; value?: unknown };
+		redact?: unknown;
 		fix?: { message?: string };
 	};
 	try {
@@ -379,7 +379,11 @@ async function vaultVerdict(caller: Caller, method: string, target: URL, portNum
 		const route = decision.policyId ?? decision.grantId ?? "vault";
 		const inject = decision.inject;
 		if (inject === undefined) return { allow: true, route, ...(decision.useId ? { useId: decision.useId } : {}) };
-		if (typeof inject.header !== "string" || typeof inject.value !== "string" || !redactFromNowOn(inject.value)) {
+		if (
+			typeof inject.header !== "string" ||
+			typeof inject.value !== "string" ||
+			!redactFromNowOn(inject.value, decision.redact)
+		) {
 			const reason = "the vault's credential for this route could not be redacted from responses";
 			return { allow: false, reason, message: reason };
 		}

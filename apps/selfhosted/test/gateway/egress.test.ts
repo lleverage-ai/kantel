@@ -4,10 +4,10 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EgressDecision } from "@harbour/contracts";
+import { importHostGrants } from "@harbour/vault/import";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
-import { EGRESS_SCOPE_PATH, importPolicyFile, policyGrants } from "../../src/gateway/egress.ts";
+import { EGRESS_SCOPE_PATH, importPolicyFile, policyGrants, type RedactingDecision } from "../../src/gateway/egress.ts";
 import { createGateway, type Gateway } from "../../src/gateway/gateway.ts";
 
 const KEY = "egress-test-key-0123456789";
@@ -91,7 +91,7 @@ describe("the gateway's egress decisions", () => {
 				headers: { "content-type": "application/json", authorization: `Bearer ${init.key ?? KEY}` },
 			}),
 		);
-	const decisionOf = async (response: Response) => (await response.json()) as EgressDecision;
+	const decisionOf = async (response: Response) => (await response.json()) as RedactingDecision;
 	const decide = (url: string, method = "GET", sessionId = "ses_m0_1") =>
 		ask("/v1/egress/decisions", {
 			method: "POST",
@@ -117,6 +117,14 @@ describe("the gateway's egress decisions", () => {
 		// A changed secret alone changes nothing: the grants are the same routes.
 		const rotated = await importPolicyFile(vault, scope, file, { HARBOUR_CANARY_SECRET: "another-secret-1234" });
 		expect(rotated.digest).toBe(first.digest);
+		// A changed route does.
+		const changedFile = join(scratch, "changed-policy.json");
+		const changed = structuredClone(POLICY);
+		changed.routes[2]!.pathPrefix = "/headers/";
+		await writeFile(changedFile, JSON.stringify(changed));
+		const moved = await importPolicyFile(vault, scope, changedFile, ENV, first.digest);
+		expect(moved.digest).not.toBe(first.digest);
+		expect(moved.result?.imported.map((grant) => grant.name)).toEqual(["research-site", "echo"]);
 	});
 
 	test("the proxy reads its organisation and project with its key", async () => {
@@ -131,14 +139,52 @@ describe("the gateway's egress decisions", () => {
 		const decision = await decisionOf(response);
 		expect(decision).toMatchObject({ allow: true, inject: { header: "authorization", value: `Bearer ${CANARY}` } });
 		expect(typeof decision.useId).toBe("string");
+		// The item's value, not the header it renders, is what the proxy must redact.
+		expect(decision.redact).toEqual([CANARY]);
 		const echo = await decisionOf(await decide("https://postman-echo.com/headers"));
-		expect(echo).toMatchObject({ allow: true, inject: { header: "x-harbour-vault", value: CANARY } });
+		expect(echo).toMatchObject({ allow: true, inject: { header: "x-harbour-vault", value: CANARY }, redact: [CANARY] });
+		const vault = components.vault;
+		if (vault === undefined) throw new Error("the in-memory components have no vault");
+		const uses = await vault.listUses(
+			{ actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId },
+			{ sessionId: "ses_m0_1" as never },
+		);
+		expect(uses.items.some((use) => use.id === decision.useId && use.outcome === "injected")).toBe(true);
+	});
+
+	test("a template around the key still names the bare key to redact", async () => {
+		const vault = components.vault;
+		if (vault === undefined) throw new Error("the in-memory components have no vault");
+		const value = "wrapped-secret-0123";
+		const imported = await importHostGrants(
+			vault,
+			{
+				actor: { kind: "system", component: "test" },
+				organisationId: seeded.organisationId,
+				projectId: seeded.projectId,
+			},
+			[
+				{
+					name: "wrapped",
+					hosts: ["wrapped.example"],
+					injection: { header: "x-api", template: "tok-{key}-v1" },
+					value,
+					routes: [{ host: "wrapped.example", methods: ["GET"], pathPrefix: "/" }],
+					selector: { organisationId: seeded.organisationId, projectId: seeded.projectId },
+				},
+			],
+		);
+		expect(imported.refused).toEqual([]);
+		const decision = await decisionOf(await decide("https://wrapped.example/data"));
+		expect(decision).toMatchObject({ allow: true, inject: { header: "x-api", value: `tok-${value}-v1` } });
+		expect(decision.redact).toEqual([value]);
 	});
 
 	test("a request no grant covers is denied with a fix", async () => {
 		const denied = await decisionOf(await decide("https://api.github.com/zen"));
 		expect(denied.allow).toBe(false);
 		expect(denied.inject).toBeUndefined();
+		expect(denied.redact).toBeUndefined();
 		expect(typeof denied.reason).toBe("string");
 		expect(typeof denied.fix?.message).toBe("string");
 		const wrongMethod = await decisionOf(await decide("https://research-site/", "POST"));

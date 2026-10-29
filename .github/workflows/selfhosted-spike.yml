@@ -122,7 +122,20 @@ jobs:
       - name: Egress decisions come from the vault
         run: |
           docker compose exec -T vault-proxy node -e "fetch('http://127.0.0.1:3128/healthz').then(async (r) => { const h = await r.json(); console.log(h); process.exit(h.source === 'vault' && h.ok ? 0 : 1); })"
-          docker compose logs --no-color gateway | grep -F 'imported egress grants'
+          docker compose logs --no-color gateway | grep -F 'egress grants from /etc/harbour/vault-policy.json'
+
+      # With the gateway down, the vault's routes are refused, saying why, and never fall back to the policy file's
+      # credentials; then the gateway comes back and they work again.
+      - name: The proxy fails closed without the vault
+        run: |
+          docker compose cp apps/vault-proxy/test/connect-probe.mjs vault-proxy:/tmp/connect-probe.mjs
+          probe() { docker compose exec -T vault-proxy node /tmp/connect-probe.mjs "$@" | tee "$RUNNER_TEMP/probe.txt"; }
+          probe research-site / ci-probe && grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
+          probe api.github.com /zen ci-probe && grep -q '^403 .*No active grant or policy allows GET api.github.com/zen' "$RUNNER_TEMP/probe.txt"
+          docker compose stop gateway
+          probe research-site / ci-probe && grep -q '^403 .*the vault could not be asked' "$RUNNER_TEMP/probe.txt"
+          docker compose up -d --wait --no-deps gateway
+          probe research-site / ci-probe && grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
 
       # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)
