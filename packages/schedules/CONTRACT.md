@@ -47,9 +47,14 @@ The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `
   storage; a store with no storage of its own carries on with the same object).
 - `count` and `until` end a schedule; a one-off ends after it runs: "ends a schedule when its count or until is
   reached".
-- Checks: "raises nothing for a check that exits 0", "raises a check's new findings once and audits each raise",
-  "raises a finding still present again after reraiseHours", "raises a finding whose value doubles as rising", "raises
-  one check-failed finding after three failed runs in a row, and again only after a success".
+- Checks follow Sal's: a key is raised when it is new (no record, or unseen for `reraiseHours`), escalated (worse by
+  `severityOrder`, default `urgent` > `high` > `medium` > `low` > `warn` > `info` with `sev1`-`sev3` read as
+  `urgent`, `high` and `low`, or marked `escalated` by the command with another severity), rising, or still present
+  `reraiseHours` after it was last raised; `check-failed:<schedule>` is `low` and deduplicated like any key. Cases:
+  "raises nothing for a check that exits 0", "raises a check's new findings once and audits each raise", "raises a
+  finding still present again after reraiseHours", "raises a finding whose value doubles as rising", "raises
+  check-failed (low) after three failed runs in a row, deduplicated like any finding", "raises a finding whose
+  severity worsens as escalated, and one unseen for reraiseHours as new again".
 - Agents may not create or change schedules: "refuses an agent creating, updating, pausing, resuming or ending a
   schedule" (which also checks `schedules.schedule.created` is audited).
 - Paused schedules create nothing, and resuming does not backfill: "creates no occurrences for a paused schedule and
@@ -118,5 +123,6 @@ Neither store runs a scheduler loop; that is the next part of issue #23.
   `update` ends such a schedule instead. `day` with an interval counts days from the creation date.
 - Agents are also refused `update`, which the contract does not say. `reportCheck` on a schedule that is not a check is
   `invalid`; `complete` on a check finishes it without touching the failure count.
-- Exit 3 counts as a success and resets the failure count. A finding key is `new` only the first time ever; after it
-  clears and returns it is raised again only by `reraise` or `rising`.
+- Exit 3 counts as a success and resets the failure count.
+- Not yet Sal's: `dedupeGroup` (checks sharing a group raise a key once between them; here each schedule keeps its
+  own), `sources` and `source-unavailable:<name>` after `unavailableMinutes`, and forgetting keys unseen for a week.

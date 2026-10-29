@@ -30,6 +30,10 @@ export const HOUR_MS = 3_600_000;
 export const DEFAULT_RERAISE_HOURS = 6;
 export const DEFAULT_RISING_FACTOR = 2;
 export const DEFAULT_FAILURES_BEFORE_RAISE = 3;
+/** Sal's default severity order, worst first: Linear's priority names, then `warn` and `info`. */
+export const DEFAULT_SEVERITY_ORDER: readonly string[] = ["urgent", "high", "medium", "low", "warn", "info"];
+/** Older severity names, read as these (prod-health's before it used Linear's names). */
+const SEVERITY_ALIASES: { readonly [name: string]: string } = { sev1: "urgent", sev2: "high", sev3: "low" };
 /** The most missed due times one tick walks through for a schedule. */
 export const MAX_COALESCED = 10_000;
 export const SCHEDULER: Actor = { kind: "system", component: "schedules" };
@@ -105,6 +109,13 @@ export function assertValidInput(ctx: CallContext, input: ScheduleInput): void {
 		const failures = check.failuresBeforeRaise;
 		if (failures !== undefined && (!Number.isInteger(failures) || failures < 1)) {
 			throw new HarbourError("invalid", "failuresBeforeRaise must be a positive integer");
+		}
+		const order = check.severityOrder;
+		if (
+			order !== undefined &&
+			(!Array.isArray(order) || order.length === 0 || order.some((name) => typeof name !== "string" || name === ""))
+		) {
+			throw new HarbourError("invalid", "severityOrder must be a list of severity names");
 		}
 	}
 }
@@ -250,10 +261,12 @@ export function heldBy(
 	return occurrence;
 }
 
-/** When a finding key was last raised, and its value then. */
+/** What a schedule recorded for a finding key: when it was last raised, its value and severity then, when last seen. */
 export interface RaisedRecord {
 	readonly at: Timestamp;
 	readonly value?: number;
+	readonly severity?: string;
+	readonly seenAt: Timestamp;
 }
 
 /** What a check run does: how the occurrence finishes, the failure count after it, what to raise and record. */
@@ -262,15 +275,16 @@ export interface CheckSettlement {
 	readonly result: JsonValue;
 	readonly failuresInRow: number;
 	readonly raised: readonly RaisedFinding[];
-	/** The raised records to store, by finding key (a check-failed raise records none). */
+	/** The records to store, by finding key: every key this run saw, `check-failed` included, raised or not. */
 	readonly records: ReadonlyMap<string, RaisedRecord>;
 }
 
 /**
- * Settles a check run from its exit code: 0 is healthy, 3 is findings, anything else a failed run. A finding is raised
- * when it is new, still present `reraiseHours` after it was last raised, or `risingFactor` times its value then;
- * `failuresBeforeRaise` failed runs in a row raise one `check-failed:<schedule>`. `lastRaised` reads what the schedule
- * recorded for a key.
+ * Settles a check run from its exit code: 0 is healthy, 3 is findings, anything else a failed run. As Sal's checks do,
+ * a finding is raised when it is new (no record, or unseen for `reraiseHours`), escalated (worse by `severityOrder`, or
+ * marked `escalated` by the command with another severity), rising (`risingFactor` times its value when last raised),
+ * or still present `reraiseHours` after it was last raised. `failuresBeforeRaise` failed runs in a row raise
+ * `check-failed:<schedule>` (`low`), deduplicated like any other key. `lastRaised` reads what the schedule recorded.
  */
 export function settleCheck(
 	schedule: Schedule,
@@ -299,25 +313,30 @@ export function settleCheck(
 	}
 	const failures = failuresInRow + 1;
 	const threshold = settings.failuresBeforeRaise ?? DEFAULT_FAILURES_BEFORE_RAISE;
-	const raised: RaisedFinding[] =
-		failures === threshold
-			? [
-					{
-						key: `check-failed:${schedule.id}`,
-						severity: "error",
-						summary: `${schedule.title} failed ${threshold} runs in a row (last exit code ${report.exitCode})`,
-						scheduleId: schedule.id,
-						occurrenceId,
-						reason: "failures",
-					},
-				]
+	const records = new Map<string, RaisedRecord>();
+	const raised =
+		failures >= threshold
+			? findingsToRaise(
+					schedule,
+					occurrenceId,
+					lastRaised,
+					records,
+					[
+						{
+							key: `check-failed:${schedule.id}`,
+							severity: "low",
+							summary: `${schedule.title} failed ${failures} runs in a row (last exit code ${report.exitCode})`,
+						},
+					],
+					now,
+				).map((finding) => (finding.reason === "new" ? { ...finding, reason: "failures" as const } : finding))
 			: [];
 	return {
 		status: "failed",
 		result: { exitCode: report.exitCode, raised: raised.length },
 		failuresInRow: failures,
 		raised,
-		records: new Map(),
+		records,
 	};
 }
 
@@ -332,6 +351,7 @@ function findingsToRaise(
 	const settings = schedule.check ?? {};
 	const reraiseMs = (settings.reraiseHours ?? DEFAULT_RERAISE_HOURS) * HOUR_MS;
 	const risingFactor = settings.risingFactor ?? DEFAULT_RISING_FACTOR;
+	const rank = severityRank(settings.severityOrder ?? DEFAULT_SEVERITY_ORDER);
 	const raised: RaisedFinding[] = [];
 	const seen = new Set<string>();
 	for (const finding of findings) {
@@ -339,17 +359,50 @@ function findingsToRaise(
 		seen.add(finding.key);
 		const last = lastRaised(finding.key);
 		let reason: RaisedFinding["reason"] | undefined;
-		if (last === undefined) reason = "new";
-		else if (now - last.at >= reraiseMs) reason = "reraise";
-		else if (finding.value !== undefined && last.value !== undefined) {
-			const rising = last.value > 0 ? finding.value >= risingFactor * last.value : finding.value > 0;
-			if (rising) reason = "rising";
+		if (last === undefined || now - last.seenAt >= reraiseMs) reason = "new";
+		else if (last.severity !== undefined && rank(finding.severity) < rank(last.severity)) reason = "escalated";
+		else if (
+			finding.status?.toLowerCase() === "escalated" &&
+			normalSeverity(finding.severity) !== normalSeverity(last.severity ?? "")
+		) {
+			reason = "escalated";
+		} else if (
+			finding.value !== undefined &&
+			last.value !== undefined &&
+			(last.value > 0 ? finding.value >= risingFactor * last.value : finding.value > 0)
+		) {
+			reason = "rising";
+		} else if (now - last.at >= reraiseMs) reason = "reraise";
+		if (reason === undefined) {
+			// Seen, not raised: only when it was last seen changes, so it isn't new again while it stays.
+			records.set(finding.key, { ...last!, seenAt: now });
+			continue;
 		}
-		if (reason === undefined) continue;
-		records.set(finding.key, { at: now, ...(finding.value === undefined ? {} : { value: finding.value }) });
+		records.set(finding.key, {
+			at: now,
+			severity: finding.severity,
+			seenAt: now,
+			...(finding.value === undefined ? {} : { value: finding.value }),
+		});
 		raised.push({ ...finding, scheduleId: schedule.id, occurrenceId, reason });
 	}
 	return raised;
+}
+
+/** A severity name as ranked: lower case, with `sev1`-`sev3` read as their current names. */
+function normalSeverity(severity: string): string {
+	const lower = severity.toLowerCase();
+	return SEVERITY_ALIASES[lower] ?? lower;
+}
+
+/** Ranks severities by `order`, worst first (0); one it doesn't name ranks below all of them. */
+export function severityRank(order: readonly string[]): (severity: string) => number {
+	const ranks = new Map<string, number>();
+	order.forEach((name, index) => {
+		const normal = normalSeverity(name);
+		if (!ranks.has(normal)) ranks.set(normal, index);
+	});
+	return (severity) => ranks.get(normalSeverity(severity)) ?? order.length;
 }
 
 function projectOf(schedule: Schedule): { readonly projectId?: ProjectId } {

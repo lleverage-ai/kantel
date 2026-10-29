@@ -122,6 +122,8 @@ export function schedulesSchema(dialect: SqlDialect): readonly string[] {
 			key TEXT NOT NULL,
 			raised_at ${time} NOT NULL,
 			value ${time},
+			severity TEXT,
+			seen_at ${time} NOT NULL,
 			PRIMARY KEY (schedule_id, key)
 		)`,
 	];
@@ -557,11 +559,19 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 			const occurrence = heldBy(row === undefined ? undefined : occurrenceFrom(row), occurrenceId, runner, now);
 			const stored = await scheduleRow(occurrence.scheduleId);
 			if (stored === undefined) throw new HarbourError("not_found", `No schedule ${occurrence.scheduleId}`);
-			const keys = [...new Set((report.findings ?? []).map((finding) => finding.key))];
+			const keys = [
+				...new Set([...(report.findings ?? []).map((finding) => finding.key), `check-failed:${stored.schedule.id}`]),
+			];
 			const records = new Map<string, RaisedRecord>();
-			if (keys.length > 0) {
-				const found = await driver.query<{ key: unknown; raised_at: unknown; value: unknown }>(
-					`SELECT key, raised_at, value FROM schedule_findings WHERE schedule_id = ? AND key IN ${
+			{
+				const found = await driver.query<{
+					key: unknown;
+					raised_at: unknown;
+					value: unknown;
+					severity: unknown;
+					seen_at: unknown;
+				}>(
+					`SELECT key, raised_at, value, severity, seen_at FROM schedule_findings WHERE schedule_id = ? AND key IN ${
 						dialect === "postgres"
 							? "(SELECT jsonb_array_elements_text(CAST(? AS jsonb)))"
 							: "(SELECT value FROM json_each(?))"
@@ -570,9 +580,12 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 				);
 				for (const record of found) {
 					const value = record.value === null || record.value === undefined ? undefined : sqlNumber(record.value);
+					const severity = sqlOptionalString(record.severity);
 					records.set(String(record.key), {
 						at: sqlNumber(record.raised_at),
+						seenAt: sqlNumber(record.seen_at),
 						...(value === undefined ? {} : { value }),
+						...(severity === undefined ? {} : { severity }),
 					});
 				}
 			}
@@ -594,13 +607,17 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 				),
 				...[...settled.records].map(([key, record]) =>
 					sql(
-						`INSERT INTO schedule_findings (schedule_id, key, raised_at, value)
-						SELECT ${typed(dialect, "text")}, ${typed(dialect, "text")}, ${time}, ${time} WHERE ${mine.sql}
-						ON CONFLICT (schedule_id, key) DO UPDATE SET raised_at = excluded.raised_at, value = excluded.value`,
+						`INSERT INTO schedule_findings (schedule_id, key, raised_at, value, severity, seen_at)
+						SELECT ${typed(dialect, "text")}, ${typed(dialect, "text")}, ${time}, ${time}, ${typed(dialect, "text")}, ${time}
+						WHERE ${mine.sql}
+						ON CONFLICT (schedule_id, key) DO UPDATE SET raised_at = excluded.raised_at, value = excluded.value,
+							severity = excluded.severity, seen_at = excluded.seen_at`,
 						stored.schedule.id,
 						key,
 						record.at,
 						record.value ?? null,
+						record.severity ?? null,
+						record.seenAt,
 						...(mine.params ?? []),
 					),
 				),
