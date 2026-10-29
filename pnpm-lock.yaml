@@ -64,6 +64,9 @@ importers:
       "@harbour/sandbox":
         specifier: workspace:*
         version: link:../../packages/sandbox
+      "@harbour/schedules":
+        specifier: workspace:*
+        version: link:../../packages/schedules
       "@harbour/skills":
         specifier: workspace:*
         version: link:../../packages/skills

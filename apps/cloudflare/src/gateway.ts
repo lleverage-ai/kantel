@@ -17,6 +17,7 @@
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
+ * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -39,6 +40,7 @@ import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
+import { createSchedulesApi } from "@harbour/schedules/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
@@ -187,6 +189,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	});
 	const SKILLS_BASE = `${API_BASE}/skills`;
 	const MEMORY_BASE = `${API_BASE}/memory`;
+	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
+	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
+	const SCHEDULES_BASE = `${API_BASE}/schedules`;
 
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
@@ -463,6 +468,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				callers.set(request, caller);
 				const api = under(path, SKILLS_BASE) ? skills : memory;
 				return (await api.fetch(request)) ?? notFound();
+			}
+			if (under(path, SCHEDULES_BASE)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await schedules.fetch(request)) ?? notFound();
 			}
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();

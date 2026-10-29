@@ -16,6 +16,9 @@
  * - memory (#12): spaces, concepts and proposals in `sql`;
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
+ * - the schedules (#23): their store on `sql` beside identity and audit, and `@harbour/schedules`' runner
+ *   (`src/schedules.ts`) on the same alarm as the sessions: each alarm resumes the sessions that are due, then runs the
+ *   schedules that are, then arms the alarm for whichever comes first.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
  * `HarbourStack` hosts it in one Durable Object over the real bindings.
@@ -40,6 +43,8 @@ import {
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
+	type Schedule,
+	type Schedules,
 	type SessionRecord,
 	type SignInMethod,
 	type Skills,
@@ -60,6 +65,9 @@ import {
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
+import type { CheckExecutor } from "@harbour/schedules/handlers";
+import { createMemorySchedules } from "@harbour/schedules/memory";
+import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
 import { createMemorySkills } from "@harbour/skills/memory";
 import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
@@ -89,6 +97,8 @@ import {
 	type NodeEngine,
 	type StackSandboxes,
 } from "./sandboxes.ts";
+import { isolateCheckExecutor } from "./schedule-checks.ts";
+import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -216,6 +226,8 @@ export interface StackOptions {
 	 * has the `codemode` tool, offered to every session that has other tools; without it sessions have none.
 	 */
 	readonly codemode?: SessionCodemodeOptions;
+	/** Runs check schedules' commands. Default the isolate tier (`src/schedule-checks.ts`). */
+	readonly checks?: CheckExecutor;
 }
 
 export interface Stack {
@@ -251,11 +263,21 @@ export interface Stack {
 	readonly hosts?: DurableHosts;
 	/** The vault behind the approval API, when the stack has one (`StackOptions.vault`). */
 	readonly vault?: ApprovalVault;
+	/**
+	 * The schedules store. A change that moves a schedule's next due time (create, update, resume) arms the alarm for it
+	 * when that is sooner than the alarm already set.
+	 */
+	readonly schedules: Schedules;
+	/** Runs due schedules; the alarm wakes it. */
+	readonly scheduler: CloudflareScheduler;
 	readonly organisation: Organisation;
 	readonly project: Project;
 	/** The organisation's first admin: the invited person, or a placeholder no one can sign in as. */
 	readonly admin: CallContext;
-	/** The object's alarm handler: resumes every session whose wake is due and arms the next. No-op in memory. */
+	/**
+	 * The object's alarm handler: resumes every session whose wake is due, runs every schedule that is, and arms the
+	 * alarm for the next of either. In memory there is no alarm: it runs what is due and arms nothing.
+	 */
 	alarm(): Promise<void>;
 	/** Closes every session's Harness (and the runtime's storage); their work stays stored. For tests and shutdown. */
 	close(): Promise<void>;
@@ -274,6 +296,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateAudit(driver);
 		await migrateSkills(driver);
 		await migrateMemory(driver);
+		await migrateSchedules(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -469,6 +492,69 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		};
 		await runtime.profiles.put(admin, profile);
 
+		const store: Schedules =
+			driver === undefined
+				? createMemorySchedules({ clock, audit, access })
+				: createSqlSchedules({ driver, clock, audit, access });
+		const scheduler = createCloudflareScheduler({
+			schedules: store,
+			runtime: runtime.runtime,
+			directory: runtime.directory,
+			clock,
+			organisationId: organisation.id,
+			defaultProjectId: project.id,
+			defaultAgentId: DEFAULT_AGENT_ID,
+			checks:
+				options.checks ??
+				isolateCheckExecutor({
+					defaultProjectId: project.id,
+					agentId: DEFAULT_AGENT_ID,
+					runtime: runtime.runtime,
+					workspaces,
+					sandboxes: () => sandboxes.sandboxes,
+				}),
+			onError: (error) => console.warn("harbour: the scheduler carried on past an error", error),
+		});
+		/** Arms the alarm for `at` unless one is set sooner (and not already spent). Without an alarm, does nothing. */
+		const armAt = async (at: number): Promise<void> => {
+			if (sessions === undefined) return;
+			const armed = await sessions.getAlarm();
+			if (armed !== null && armed > clock.now() && armed <= at) return;
+			await sessions.setAlarm(at);
+		};
+		const armFor = async (schedule: Schedule): Promise<Schedule> => {
+			if (schedule.status === "active" && schedule.nextDueAt !== undefined) {
+				await armAt(schedule.nextDueAt).catch((error: unknown) =>
+					console.error("harbour: arming the alarm for a schedule failed", error),
+				);
+			}
+			return schedule;
+		};
+		const schedules: Schedules = {
+			pause: (ctx, id) => store.pause(ctx, id),
+			end: (ctx, id) => store.end(ctx, id),
+			get: (ctx, id) => store.get(ctx, id),
+			list: (ctx, filter, page) => store.list(ctx, filter, page),
+			preview: (ctx, id, n) => store.preview(ctx, id, n),
+			tick: (ctx) => store.tick(ctx),
+			claim: (ctx, runner, leaseMs) => store.claim(ctx, runner, leaseMs),
+			renew: (ctx, id, runner, leaseMs) => store.renew(ctx, id, runner, leaseMs),
+			complete: (ctx, id, runner, outcome) => store.complete(ctx, id, runner, outcome),
+			reportCheck: (ctx, id, runner, report) => store.reportCheck(ctx, id, runner, report),
+			listOccurrences: (ctx, id, page) => store.listOccurrences(ctx, id, page),
+			create: async (ctx, input) => armFor(await store.create(ctx, input)),
+			update: async (ctx, id, input) => armFor(await store.update(ctx, id, input)),
+			resume: async (ctx, id) => armFor(await store.resume(ctx, id)),
+		};
+		const armScheduler = async (next: number | undefined): Promise<void> => {
+			if (next !== undefined) await armAt(next);
+		};
+		// A deploy or an eviction keeps the alarm, but a schedule made while it was lost would otherwise wait for one.
+		await scheduler
+			.nextWakeAt()
+			.then(armScheduler)
+			.catch((error: unknown) => console.error("harbour: arming the scheduler at start failed", error));
+
 		return {
 			identity,
 			runtime,
@@ -486,12 +572,28 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			passkeys,
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
 			...(options.vault === undefined ? {} : { vault: options.vault }),
+			schedules,
+			scheduler,
 			organisation,
 			project,
 			admin,
 			alarm: async () => {
 				outboxed?.kick();
-				await core?.alarm();
+				// The sessions first: their core re-arms the alarm for its next wake, and the scheduler then brings it forward
+				// if a schedule is due sooner. A failure in one doesn't keep the other from running.
+				let failure: unknown;
+				await core?.alarm().catch((error: unknown) => {
+					failure = error;
+				});
+				try {
+					const { nextWakeAt } = await scheduler.wake();
+					await armScheduler(nextWakeAt);
+				} catch (error) {
+					console.error("harbour: the scheduler's wake failed", error);
+					// Try again soon rather than never: a store that was briefly unreachable shouldn't stop every schedule.
+					await armAt(clock.now() + 60_000).catch(() => undefined);
+				}
+				if (failure !== undefined) throw failure;
 			},
 			close: async () => {
 				await (core === undefined ? runtime.close() : core.close());
