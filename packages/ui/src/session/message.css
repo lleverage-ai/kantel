@@ -83,7 +83,7 @@
 	border-radius: var(--hb-radius-xs);
 	background: var(--hb-accent-text);
 	opacity: 0.6;
-	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
+	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

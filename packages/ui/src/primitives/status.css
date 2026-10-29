@@ -38,7 +38,7 @@
 }
 
 .hb-status-dot.hb-status-working {
-	animation: hb-pulse var(--hb-duration-pulse) ease-in-out infinite;
+	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
 }
 
 /* The dot sits on the words' baseline, then moves up onto the middle of their capitals (see --hb-on-cap). */
