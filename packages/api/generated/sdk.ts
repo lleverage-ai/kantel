@@ -60,6 +60,59 @@ export interface CardItem {
 	readonly card: Card;
 }
 
+export interface Concept {
+	readonly spaceId: string;
+	/** A stable path, such as `projects/harbour/vault-binding-codes`. */
+	readonly id: string;
+	readonly title: string;
+	readonly description?: string;
+	/** The fact itself, short. */
+	readonly statement: string;
+	/** Where a concept applies. A `job` concept is an exception for one job. */
+	readonly scope: ConceptScope;
+	/** What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs. */
+	readonly sources: readonly string[];
+	/** After this, recall marks it stale (epoch milliseconds). */
+	readonly staleAfter?: number;
+	/** A job exception's general concept. */
+	readonly overrides?: string;
+	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	readonly extensions?: {
+		readonly [key: string]: JsonValue;
+	};
+	readonly tags: readonly string[];
+	/** `owner`: set by the space's owner. `learned`: from an approved agent proposal. */
+	readonly setBy: "owner" | "learned";
+	/** Increases with every change. */
+	readonly version: number;
+	readonly status: ConceptStatus;
+	readonly supersededBy?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+export interface ConceptPage {
+	readonly items: readonly Concept[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+/** Where a concept applies. A `job` concept is an exception for one job. */
+export type ConceptScope =
+	| {
+			readonly kind: "global";
+	  }
+	| {
+			readonly kind: "project";
+			readonly project: string;
+	  }
+	| {
+			readonly kind: "job";
+			readonly job: string;
+	  };
+
+export type ConceptStatus = "active" | "superseded" | "forgotten";
+
 /** A new session, with its first message's submission when it was sent one. */
 export interface CreatedSession {
 	/** The session's ID. */
@@ -82,6 +135,12 @@ export interface CreatedSession {
 	readonly updatedAt: number;
 	/** A message the session accepted. */
 	readonly submission?: Submission;
+}
+
+export interface CreateMemorySpaceBody {
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name: string;
 }
 
 /** Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: "run-42" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`. */
@@ -160,9 +219,34 @@ export interface HistoryQuery {
 	readonly limit?: number;
 }
 
+export interface ImportSkillBody {
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name: string;
+	readonly description: string;
+	/** Every file of the package, `SKILL.md` among them. */
+	readonly files: readonly SkillFile[];
+	/** Where a host's adapter imported something from. */
+	readonly source: SourceRef;
+	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	readonly extensions?: {
+		readonly [key: string]: JsonValue;
+	};
+}
+
+/** Any JSON value. */
+export type JsonValue = unknown;
+
 /** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 export interface Labels {
 	readonly [key: string]: string;
+}
+
+export interface ListConceptsQuery {
+	readonly status?: ConceptStatus;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
 }
 
 export interface ListSessionsQuery {
@@ -177,6 +261,69 @@ export interface ListSessionsQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+export interface ListSkillsQuery {
+	/** Also list this project's skills. Needs the viewer role on it. */
+	readonly projectId?: string;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
+export interface MemorySearchBody {
+	/** The spaces to read. */
+	readonly spaceIds: readonly string[];
+	readonly query: string;
+	/** Default 5. */
+	readonly limit?: number;
+	/** Also list superseded and forgotten concepts, scoring a quarter. */
+	readonly includeInactive?: boolean;
+}
+
+export interface MemorySearchHit {
+	readonly concept: Concept;
+	readonly score: number;
+	readonly stale: boolean;
+	/** The first statement line holding a term, cut to 160 characters. */
+	readonly snippet: string;
+}
+
+export interface MemorySearchResult {
+	readonly hits: readonly MemorySearchHit[];
+}
+
+/** A whole space's concepts at one ref of a source. */
+export interface MemorySnapshot {
+	readonly sourceId: string;
+	readonly ref: string;
+	readonly concepts: readonly SnapshotConcept[];
+}
+
+/** Where a space's snapshot came from, and when it was imported. */
+export interface MemorySnapshotRef {
+	readonly sourceId: string;
+	readonly ref: string;
+	/** Epoch milliseconds, UTC. */
+	readonly importedAt: number;
+}
+
+export interface MemorySpace {
+	/** The space's ID. */
+	readonly id: string;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name: string;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Where a space's snapshot came from, and when it was imported. */
+	readonly snapshot?: MemorySnapshotRef;
+}
+
+export interface MemorySpacePage {
+	readonly items: readonly MemorySpace[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
 }
 
 /** A message to the session's agent. `via` defaults to `prompt`. */
@@ -203,6 +350,32 @@ export interface NoticeItem {
 	readonly code?: string;
 }
 
+/** Who owns a record: an organisation, a project, a user, or the platform. */
+export type OwnerRef =
+	| {
+			readonly kind: "platform";
+	  }
+	| {
+			readonly kind: "organisation";
+			readonly organisationId: string;
+	  }
+	| {
+			readonly kind: "project";
+			readonly organisationId: string;
+			readonly projectId: string;
+	  }
+	| {
+			readonly kind: "user";
+			readonly organisationId: string;
+			readonly userId: string;
+	  };
+
+export interface PageQuery {
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
 export interface QuestionCard {
 	readonly type: "question";
 	readonly questionId: string;
@@ -210,6 +383,54 @@ export interface QuestionCard {
 	readonly options?: readonly string[];
 	readonly status: "open" | "answered" | "withdrawn";
 	readonly answer?: string;
+}
+
+export interface Recall {
+	readonly concepts: readonly Concept[];
+	/** What was recalled and why, in the same order. */
+	readonly manifest: readonly RecallManifestEntry[];
+	/** The recall as a prompt shows it. */
+	readonly text: string;
+	readonly skipped: readonly {
+		readonly conceptId: string;
+		readonly reason: string;
+	}[];
+	readonly profileOmitted: readonly string[];
+	readonly truncated: boolean;
+}
+
+export interface RecallBody {
+	/** The spaces to read. */
+	readonly spaceIds: readonly string[];
+	/** The task or message text to search by. */
+	readonly query: string;
+	readonly scopes?: {
+		readonly projects?: readonly string[];
+		readonly jobs?: readonly string[];
+	};
+	/** Concept IDs recalled whatever the query, within their own limits. */
+	readonly profile?: readonly string[];
+	/** Concept IDs never recalled. */
+	readonly exclude?: readonly string[];
+	/** Default 5 search matches. */
+	readonly maxConcepts?: number;
+	/** Default 4096. */
+	readonly maxBytes?: number;
+	readonly maxProfileConcepts?: number;
+	/** Default 24576. */
+	readonly maxProfileBytes?: number;
+}
+
+export interface RecallManifestEntry {
+	readonly spaceId: string;
+	readonly conceptId: string;
+	readonly version: number;
+	readonly reason: "profile" | "search" | "exception";
+	readonly score?: number;
+	readonly matched?: readonly string[];
+	readonly stale: boolean;
+	readonly truncated: boolean;
+	readonly snapshotRef?: string;
 }
 
 /** One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s. */
@@ -304,6 +525,128 @@ export interface SessionSnapshot {
 }
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
+
+export interface SkillFile {
+	/** A relative path inside the package, such as `SKILL.md` or `scripts/run.sh`. */
+	readonly path: string;
+	readonly content: string;
+}
+
+/** One file of a revision, as UTF-8 text. */
+export interface SkillFileContent {
+	readonly path: string;
+	readonly content: string;
+}
+
+export interface SkillFileQuery {
+	/** The file's path in the package, such as `SKILL.md`. */
+	readonly path: string;
+}
+
+/** What a session is shown of a skill: enough to decide whether to read it. */
+export interface SkillListing {
+	readonly skillId: string;
+	readonly name: string;
+	readonly description: string;
+	/** The latest published revision. */
+	readonly revision: number;
+	/** Where a session finds it, such as `/skills/pr-review/SKILL.md`. */
+	readonly path: string;
+}
+
+export interface SkillListingPage {
+	readonly items: readonly SkillListing[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export interface SkillPackage {
+	/** The skill's ID. */
+	readonly id: string;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** Unique per owner: lowercase letters, digits and dashes. */
+	readonly name: string;
+	readonly description: string;
+	/** The newest published revision. */
+	readonly latestRevision?: number;
+	/** Present while a draft is open. */
+	readonly draftDigest?: string;
+	/** Where a host's adapter imported something from. */
+	readonly source?: SourceRef;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+export interface SkillRevision {
+	readonly skillId: string;
+	/** 1, 2, 3… per skill. A published revision never changes. */
+	readonly revision: number;
+	/** Hex SHA-256 over the sorted paths and contents. */
+	readonly digest: string;
+	readonly name: string;
+	readonly description: string;
+	readonly files: readonly {
+		readonly path: string;
+		/** Bytes, UTF-8. */
+		readonly size: number;
+	}[];
+	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	readonly extensions?: {
+		readonly [key: string]: JsonValue;
+	};
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly publishedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly publishedAt: number;
+	/** Where a host's adapter imported something from. */
+	readonly source?: SourceRef;
+}
+
+export interface SkillRevisionPage {
+	readonly items: readonly SkillRevision[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+/** One concept as a host's source holds it. */
+export interface SnapshotConcept {
+	/** A stable path, such as `projects/harbour/vault-binding-codes`. */
+	readonly id: string;
+	readonly title: string;
+	readonly description?: string;
+	/** The fact itself, short. */
+	readonly statement: string;
+	/** Where a concept applies. A `job` concept is an exception for one job. */
+	readonly scope: ConceptScope;
+	/** What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs. */
+	readonly sources: readonly string[];
+	/** After this, recall marks it stale (epoch milliseconds). */
+	readonly staleAfter?: number;
+	/** A job exception's general concept. */
+	readonly overrides?: string;
+	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	readonly extensions?: {
+		readonly [key: string]: JsonValue;
+	};
+	readonly tags?: readonly string[];
+	/** `owner`: set by the space's owner. `learned`: from an approved agent proposal. */
+	readonly setBy: "owner" | "learned";
+	readonly status: ConceptStatus;
+	readonly supersededBy?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** Where a host's adapter imported something from. */
+export interface SourceRef {
+	/** The host's skill or memory source, such as `sal-skills`. */
+	readonly sourceId: string;
+	/** Its ref: a commit or a version. */
+	readonly ref: string;
+}
 
 export interface StreamQuery {
 	/** Resume after this cursor (a snapshot's or a delta's): the stream sends the deltas after it, or a snapshot when it no longer holds them. */
@@ -628,6 +971,37 @@ export interface HarbourClient {
 	): StreamHandle;
 	/** Page back through a session. The session's transcript in pages, newest first, for scrolling back past a snapshot's items: start with `before` set to the snapshot's `items[0].id`, then follow `nextCursor`. `GET /sessions/{sessionId}/history` */
 	getSessionHistory(sessionId: string, query?: HistoryQuery, options?: CallOptions): Promise<SessionHistoryPage>;
+	/** List skills. The published skills the caller sees, by name: the platform's, the organisation's, the project's named by `projectId` and, for a person, their own. Never another project's or another person's. `GET /skills` */
+	listSkills(query?: ListSkillsQuery, options?: CallOptions): Promise<SkillListingPage>;
+	/** Get a skill. `GET /skills/{skillId}` */
+	getSkill(skillId: string, options?: CallOptions): Promise<SkillPackage>;
+	/** List a skill's revisions. `GET /skills/{skillId}/revisions` */
+	listSkillRevisions(skillId: string, query?: PageQuery, options?: CallOptions): Promise<SkillRevisionPage>;
+	/** Get a revision. A published revision: its digest, its files' paths and sizes, who published it and where it came from. `GET /skills/{skillId}/revisions/{revision}` */
+	getSkillRevision(skillId: string, revision: string, options?: CallOptions): Promise<SkillRevision>;
+	/** Read a file of a revision. One file of a published revision, such as its `SKILL.md`, by its path in the package. `GET /skills/{skillId}/revisions/{revision}/file` */
+	readSkillFile(
+		skillId: string,
+		revision: string,
+		query: SkillFileQuery,
+		options?: CallOptions,
+	): Promise<SkillFileContent>;
+	/** Import a skill from a host's source. A host adapter's publish path: creates the skill if needed and publishes the files as its next revision, once per `source` (`sourceId` and `ref`); files identical to the latest revision publish nothing. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role. `POST /skills/import` */
+	importSkill(body: ImportSkillBody, options?: CallOptions): Promise<SkillRevision>;
+	/** List memory spaces. The spaces the caller may read, oldest first: the organisation's, a project's to those who may view it, and a person's own. A person never sees another person's space. `GET /memory/spaces` */
+	listMemorySpaces(query?: PageQuery, options?: CallOptions): Promise<MemorySpacePage>;
+	/** Create a memory space. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role. `POST /memory/spaces` */
+	createMemorySpace(body: CreateMemorySpaceBody, options?: CallOptions): Promise<MemorySpace>;
+	/** List a space's concepts. By ID, every status unless `status` names one. `GET /memory/spaces/{spaceId}/concepts` */
+	listConcepts(spaceId: string, query?: ListConceptsQuery, options?: CallOptions): Promise<ConceptPage>;
+	/** Get a concept. `GET /memory/spaces/{spaceId}/concepts/{conceptId}` */
+	getConcept(spaceId: string, conceptId: string, options?: CallOptions): Promise<Concept>;
+	/** Search memory. Keyword search over the named spaces' concepts, best first, as a person browsing them would. `POST /memory/search` */
+	searchMemory(body: MemorySearchBody, options?: CallOptions): Promise<MemorySearchResult>;
+	/** Recall memory for a task. What a session would be given for this query: the profile, the best matches (BM25) and their exceptions, rendered, with a manifest of what was recalled and why. `POST /memory/recall` */
+	recallMemory(body: RecallBody, options?: CallOptions): Promise<Recall>;
+	/** Load a snapshot into a space. A host adapter's load path: the space's concepts become the snapshot's, recorded with its source and ref, so every recall names what it read. People and API keys only; a deployment may ask for more. `POST /memory/spaces/{spaceId}/snapshot` */
+	importMemorySnapshot(spaceId: string, body: MemorySnapshot, options?: CallOptions): Promise<MemorySpace>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -652,5 +1026,54 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			),
 		getSessionHistory: (sessionId, query, callOptions) =>
 			send(options, { method: "GET", path: `/sessions/${encodeURIComponent(sessionId)}/history`, query }, callOptions),
+		listSkills: (query, callOptions) => send(options, { method: "GET", path: "/skills", query }, callOptions),
+		getSkill: (skillId, callOptions) =>
+			send(options, { method: "GET", path: `/skills/${encodeURIComponent(skillId)}` }, callOptions),
+		listSkillRevisions: (skillId, query, callOptions) =>
+			send(options, { method: "GET", path: `/skills/${encodeURIComponent(skillId)}/revisions`, query }, callOptions),
+		getSkillRevision: (skillId, revision, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revision)}` },
+				callOptions,
+			),
+		readSkillFile: (skillId, revision, query, callOptions) =>
+			send(
+				options,
+				{
+					method: "GET",
+					path: `/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revision)}/file`,
+					query,
+				},
+				callOptions,
+			),
+		importSkill: (body, callOptions) => send(options, { method: "POST", path: "/skills/import", body }, callOptions),
+		listMemorySpaces: (query, callOptions) =>
+			send(options, { method: "GET", path: "/memory/spaces", query }, callOptions),
+		createMemorySpace: (body, callOptions) =>
+			send(options, { method: "POST", path: "/memory/spaces", body }, callOptions),
+		listConcepts: (spaceId, query, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/memory/spaces/${encodeURIComponent(spaceId)}/concepts`, query },
+				callOptions,
+			),
+		getConcept: (spaceId, conceptId, callOptions) =>
+			send(
+				options,
+				{
+					method: "GET",
+					path: `/memory/spaces/${encodeURIComponent(spaceId)}/concepts/${encodeURIComponent(conceptId)}`,
+				},
+				callOptions,
+			),
+		searchMemory: (body, callOptions) => send(options, { method: "POST", path: "/memory/search", body }, callOptions),
+		recallMemory: (body, callOptions) => send(options, { method: "POST", path: "/memory/recall", body }, callOptions),
+		importMemorySnapshot: (spaceId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/memory/spaces/${encodeURIComponent(spaceId)}/snapshot`, body },
+				callOptions,
+			),
 	};
 }

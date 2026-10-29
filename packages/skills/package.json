@@ -11,9 +11,11 @@
 		"./publish": "./src/publish.ts",
 		"./sources": "./src/sources.ts",
 		"./sql": "./src/sql.ts",
-		"./writes": "./src/writes.ts"
+		"./writes": "./src/writes.ts",
+		"./http": "./src/http.ts"
 	},
 	"dependencies": {
+		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/sql": "workspace:*"
 	},
