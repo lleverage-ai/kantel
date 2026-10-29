@@ -172,6 +172,36 @@ describe("a session's skills and memory", () => {
 		expect(mounted[1]?.pins.map((pin) => pin.revision).sort()).toEqual([1, 2]);
 	});
 
+	it("keeps the context, once, when the first message is edited", async () => {
+		const skills = createMemorySkills();
+		await publish(skills, "pr-review", "Review a PR", "a1");
+		const mounted: string[] = [];
+		const { runtime, script } = inMemory({
+			skills: {
+				store: skills,
+				render: (listings) => renderSkillListings(listings),
+				mount: async (session) => void mounted.push(session.id),
+			},
+		});
+		await runtime.profiles.put(ctx, profile);
+		const session = await runtime.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		script.reply({ text: "One" });
+		await ask(runtime, session.id, "Review my PR");
+		const items = (await runtime.runtime.snapshot(ctx, session.id)).items;
+		const first = items.find((item) => item.kind === "user");
+		if (first === undefined) throw new Error("No user item");
+
+		// The edit forks from the context entry, so the rerun sees the listing once and nothing is pinned or mounted again.
+		script.reply({ text: "Two" });
+		const submission = await runtime.branching.edit(ctx, session.id, { itemId: first.id, text: "Review it carefully" });
+		await runtime.runtime.wait(ctx, session.id, submission.id);
+		const rerun = script.requests.at(-1);
+		expect(rerun?.messages.map((message) => message.role)).toEqual(["user", "user"]);
+		expect(rerun?.messages[0]?.text).toContain("<name>pr-review</name>");
+		expect(rerun?.messages[1]?.text).toBe("Review it carefully");
+		expect(mounted).toEqual([session.id]);
+	});
+
 	it("pins and mounts without listing when the host gives no renderer", async () => {
 		const skills = createMemorySkills();
 		await publish(skills, "pr-review", "Review a PR", "a1");
