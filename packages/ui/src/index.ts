@@ -177,7 +177,10 @@ export {
 	type ToolCallChipProps,
 	ToolCallGroup,
 	type ToolCallGroupProps,
+	ToolImages,
+	type ToolImagesProps,
 	toolIcon,
+	toolImageSrc,
 } from "./session/tool-call.tsx";
 export {
 	type RowRenderPhase,
