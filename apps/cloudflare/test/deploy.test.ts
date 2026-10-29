@@ -105,10 +105,10 @@ describe("deploy config", () => {
 		expect(JSON.stringify(config)).not.toContain("custom_domain");
 	});
 
-	it("leaves D1 and R2 to be provisioned by name on the first real deploy", () => {
+	it("binds the weur D1 and R2 by name by default, never the deleted first ones", () => {
 		const config = deployConfig(rawConfig, deployValues(configured, "deploy"));
-		expect(config.d1_databases).toEqual([{ binding: "DB", database_name: "harbour" }]);
-		expect(config.r2_buckets).toEqual([{ binding: "WORKSPACES", bucket_name: "harbour-workspaces" }]);
+		expect(config.d1_databases).toEqual([{ binding: "DB", database_name: "harbour-weur" }]);
+		expect(config.r2_buckets).toEqual([{ binding: "WORKSPACES", bucket_name: "harbour-workspaces-weur" }]);
 	});
 
 	it("binds exactly today's D1, R2 and hint when the optional variables are unset", () => {
