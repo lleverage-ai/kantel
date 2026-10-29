@@ -76,8 +76,9 @@ describe.skipIf(!enabled)("the deployed stack", () => {
 	it("answers the audit query API, newest first", async () => {
 		const page = await audit.query({ newestFirst: true }, { limit: 5 });
 		expect(page.items.length).toBeGreaterThan(0);
-		const times = page.items.map((event) => event.at);
-		expect(times).toEqual([...times].sort().reverse());
+		// Newest first is by `seq`, the store's order, not by `at`.
+		const seqs = page.items.map((event) => event.seq);
+		expect(seqs).toEqual([...seqs].sort((a, b) => b - a));
 		expect((await audit.get(page.items[0]!.id)).id).toBe(page.items[0]!.id);
 	});
 
@@ -92,11 +93,13 @@ describe.skipIf(!enabled)("the deployed stack", () => {
 				title: "Deployed-stack check",
 				labels: { check: "deployed-stack" },
 			});
+			// The model calls give up well before the test's own timeout, so the close below always runs.
+			const run = { ...ctx, signal: AbortSignal.timeout(90_000) } as CallContext;
 			try {
-				const submission = await sessions.runtime.prompt(ctx, session.id, {
+				const submission = await sessions.runtime.prompt(run, session.id, {
 					text: "Reply with one short sentence that contains the word harbour.",
 				});
-				const result = await sessions.runtime.wait(ctx, session.id, submission.id);
+				const result = await sessions.runtime.wait(run, session.id, submission.id);
 				expect(result.status).toBe("answered");
 				expect(result.answer?.toLowerCase()).toContain("harbour");
 				const snapshot = await sessions.runtime.snapshot(ctx, session.id);
@@ -104,7 +107,7 @@ describe.skipIf(!enabled)("the deployed stack", () => {
 				const events = await audit.query({ sessionId: session.id }, { limit: 50 });
 				expect(events.items.length).toBeGreaterThan(0);
 			} finally {
-				await sessions.runtime.close(ctx, session.id);
+				await sessions.runtime.close({ ...ctx, signal: AbortSignal.timeout(20_000) } as CallContext, session.id);
 			}
 			expect((await sessions.directory.get(ctx, session.id)).status).toBe("done");
 		},
