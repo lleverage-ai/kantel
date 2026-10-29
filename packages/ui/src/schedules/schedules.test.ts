@@ -255,4 +255,33 @@ describe("the fixture over the in-memory store", () => {
 		expect((await source.end(made.id)).status).toBe("ended");
 		expect((await source.list({ status: "ended" })).items.map((schedule) => schedule.title)).toEqual(["Disk free"]);
 	});
+
+	it("clears at, repeat, until or count given null, as the public API does, and keeps a field left out", async () => {
+		const { source } = await createSchedulesScenario({ empty: true });
+		const hourly = { every: "hours", interval: 1, from: FIXTURE_NOW } as const;
+		const made = await source.create({
+			owner: FIXTURE_OWNER,
+			kind: "check",
+			title: "Disk",
+			timezone: "Europe/London",
+			repeat: hourly,
+			until: FIXTURE_NOW + DAY,
+			count: 3,
+			payload: ["checks/disk.sh"],
+		});
+		expect(await source.update(made.id, { title: "Disk free" })).toMatchObject({
+			repeat: hourly,
+			until: FIXTURE_NOW + DAY,
+			count: 3,
+		});
+		const unlimited = await source.update(made.id, { until: null, count: null });
+		expect(unlimited).not.toHaveProperty("until");
+		expect(unlimited).not.toHaveProperty("count");
+		const oneOff = await source.update(made.id, { repeat: null, at: FIXTURE_NOW + HOUR });
+		expect(oneOff).not.toHaveProperty("repeat");
+		expect(oneOff).toMatchObject({ at: FIXTURE_NOW + HOUR, nextDueAt: FIXTURE_NOW + HOUR });
+		const repeating = await source.update(made.id, { at: null, repeat: hourly });
+		expect(repeating).not.toHaveProperty("at");
+		expect(repeating.repeat).toEqual(hourly);
+	});
 });

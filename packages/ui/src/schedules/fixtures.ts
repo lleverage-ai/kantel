@@ -4,7 +4,8 @@
 // screenshots: the build-host disk check raised findings overnight and failed three runs in a row on Monday.
 //
 // The scenario's `source` is the one `SchedulesSource` the page and the schedule form both use: reads and writes over
-// the same store, so a schedule saved in the form shows in the list, runs on the store's own rules and ends there.
+// the same store, so a schedule saved in the form shows in the list, runs on the store's own rules and ends there. An
+// update's `null` on `at`, `repeat`, `until` or `count` clears it there, as the public API's PATCH does.
 
 import {
 	type CallContext,
