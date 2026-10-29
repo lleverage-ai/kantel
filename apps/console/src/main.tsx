@@ -1,5 +1,5 @@
 import { Button, Notice, SignInScreen, Spinner } from "@harbour/ui";
-import { StrictMode, Suspense, use, useCallback, useMemo, useState } from "react";
+import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
@@ -13,7 +13,7 @@ import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, Console
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
 import { apiVault } from "./api/vault-http.ts";
-import { App } from "./app/app.tsx";
+import { App, ShellPlaceholder } from "./app/app.tsx";
 import { createRecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
@@ -138,11 +138,21 @@ function OversightConsole({ client, oversight }: { client: ConsoleClient; oversi
 	return <Console client={client} oversight={use(oversight)} />;
 }
 
-function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
+function Console({
+	client,
+	oversight,
+	pending = false,
+}: {
+	client: ConsoleClient;
+	oversight: Oversight;
+	/** True while more of the organisation's pages may still come. */
+	pending?: boolean;
+}) {
 	const { vault, audit, keys, schedules, agent } = oversight;
 	return (
 		<App
 			client={client}
+			oversightPending={pending}
 			{...(vault === undefined ? {} : { vault })}
 			{...(audit === undefined ? {} : { audit })}
 			{...(keys === undefined ? {} : { keys })}
@@ -239,6 +249,11 @@ function SignedInConsole({
 				...(sockets ? {} : { openSocket: false }),
 				onTransport: (sessionId, how) => transports.set(sessionId, how),
 			}),
+			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
+			ready: {
+				agent,
+				...(keys === undefined ? {} : { keys }),
+			} satisfies Oversight,
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: Promise.all([
 				apiVault({ headers: state.headers }).then(
@@ -260,27 +275,37 @@ function SignedInConsole({
 			),
 		};
 	}, [state, onSignedOut]);
-	// A boundary of its own, so this component commits and keeps its promise while the vault answers.
-	return (
-		<Suspense
-			fallback={
-				<div className="boot hb-app">
-					<Spinner label="Opening the console" />
-				</div>
-			}
-		>
-			<OversightConsole client={made.client} oversight={made.oversight} />
-		</Suspense>
-	);
+	// The console opens at once; the vault page, audit log and schedules join the sidebar when they have answered.
+	const [oversight, setOversight] = useState<{ for: typeof made; value: Oversight }>();
+	useEffect(() => {
+		let live = true;
+		made.oversight.then(
+			(value) => live && setOversight({ for: made, value }),
+			(reason: unknown) => {
+				console.info("harbour: no organisation pages:", reason instanceof Error ? reason.message : reason);
+				if (live) setOversight({ for: made, value: made.ready });
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [made]);
+	const answered = oversight?.for === made ? oversight.value : undefined;
+	return <Console client={made.client} oversight={answered ?? made.ready} pending={answered === undefined} />;
 }
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<Suspense
 			fallback={
-				<div className="boot hb-app">
-					<Spinner label="Opening the console" />
-				</div>
+				viewing === undefined ? (
+					// The shell's frame while the console learns who is signed in: no page-wide spinner on a reload.
+					<ShellPlaceholder />
+				) : (
+					<div className="boot hb-app">
+						<Spinner label="Opening the console" />
+					</div>
+				)
 			}
 		>
 			{viewing !== undefined ? (

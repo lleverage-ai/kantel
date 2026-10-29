@@ -206,6 +206,29 @@ function OrganisationNav({
 	);
 }
 
+/**
+ * The shell's frame with nothing in it yet, shown while the console learns who is signed in, so a page load never
+ * starts on a page-wide spinner. The pane follows the address, so a phone opening a session doesn't show the list first.
+ */
+export function ShellPlaceholder() {
+	const route = parseRoute(location.pathname);
+	const pane = route.name === "home" || route.name === "project" ? "list" : "main";
+	return (
+		<div className="shell hb-app" data-pane={pane}>
+			<aside className="shell-sidebar" aria-label="Projects and sessions">
+				<div className="shell-brand">
+					<span className="shell-wordmark">Harbour</span>
+				</div>
+				<div className="shell-sessions">
+					<h2 className="shell-heading">Sessions</h2>
+					<SessionList sessions={[]} loading />
+				</div>
+			</aside>
+			<main className="shell-main" aria-busy="true" />
+		</div>
+	);
+}
+
 export function App({
 	client,
 	vault,
@@ -213,9 +236,15 @@ export function App({
 	keys,
 	agent,
 	schedules,
+	oversightPending = false,
 	onOpen,
 }: {
 	client: ConsoleClient;
+	/**
+	 * True while the organisation's pages (vault, audit log, schedules) are still being asked about: their paths wait
+	 * rather than say there's nothing there, and the rest of the console doesn't wait for them.
+	 */
+	oversightPending?: boolean;
 	/** The vault page's seam; without it there's no Vault in the sidebar. */
 	vault?: ConsoleVault;
 	/** The audit view's seam; without it there's no Audit log in the sidebar. */
@@ -241,7 +270,8 @@ export function App({
 	// A link to a session by its ID alone (a schedule's run): its project is read, then the link becomes its path.
 	const linkedSession = route.name === "session-link" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
-	const list = useSessionList(client, project?.id);
+	// The list starts with the page, beside the projects, rather than after them; an unknown project stops it.
+	const list = useSessionList(client, projects === undefined || project !== undefined ? projectId : undefined);
 	const [live, setLive] = useState<LiveSummary>();
 	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
@@ -250,7 +280,7 @@ export function App({
 	const parents = useMemo((): readonly Crumb[] | undefined => {
 		if (projectId === undefined) return undefined;
 		return [
-			{ key: "project", label: project?.name ?? projectId, href: projectPath(projectId) },
+			{ key: "project", label: project?.name ?? "Project", href: projectPath(projectId) },
 			...lineage.map((parent) => ({ key: parent.id, label: parent.title, href: sessionPath(projectId, parent.id) })),
 		];
 	}, [projectId, project?.name, lineage]);
@@ -285,14 +315,10 @@ export function App({
 				<Notice level="error">{projectsError}</Notice>
 			</div>
 		);
-	if (projects === undefined)
-		return (
-			<div className="boot hb-app">
-				<Spinner label="Opening the console" />
-			</div>
-		);
-
-	const unknownProject = projectId !== undefined && project === undefined;
+	// Until the projects come the shell is shown as it will be, with what doesn't need them (an open session) in place.
+	const projectsKnown = projects !== undefined;
+	const projectList = projects ?? [];
+	const unknownProject = projectsKnown && projectId !== undefined && project === undefined;
 	// The organisation's pages, when the console has their seams; without one the path is not found.
 	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
@@ -300,22 +326,25 @@ export function App({
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const organisationPage = vaultRoute || auditRoute || keysRoute || schedulesRoute || agentRoute;
+	const organisationRoute =
+		route.name === "vault" ||
+		route.name === "vault-request" ||
+		route.name === "audit" ||
+		route.name === "keys" ||
+		route.name === "schedules" ||
+		route.name === "skills" ||
+		route.name === "memory";
+	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
+	const organisationWaiting = organisationRoute && !organisationPage && oversightPending;
 	const missing =
 		route.name === "not-found" ||
 		(linkedSession !== undefined && sessionProject === undefined) ||
-		((route.name === "vault" ||
-			route.name === "vault-request" ||
-			route.name === "audit" ||
-			route.name === "keys" ||
-			route.name === "schedules" ||
-			route.name === "skills" ||
-			route.name === "memory") &&
-			!organisationPage);
+		(organisationRoute && !organisationPage && !oversightPending);
 	const unknownSession =
 		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
 
 	// A way back for an error, which on a phone fills the screen: the project's list, or the first project's.
-	const way = project ?? projects[0];
+	const way = project ?? projectList[0];
 	const wayBack =
 		way === undefined ? undefined : (
 			<ListRow title={`Go to ${way.name}`} href={projectPath(way.id)} density="compact" />
@@ -356,7 +385,7 @@ export function App({
 				<ApiKeysPage
 					api={keys.api}
 					roles={keys.roles}
-					projects={projects.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
+					projects={projectList.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
 				/>
 			</div>
 		);
@@ -366,7 +395,7 @@ export function App({
 				{pageBar}
 				<SkillsScreen
 					agent={agent}
-					projects={projects}
+					projects={projectList}
 					{...(route.skillId === undefined ? {} : { skillId: route.skillId })}
 				/>
 			</div>
@@ -377,7 +406,7 @@ export function App({
 				{pageBar}
 				<MemoryScreen
 					agent={agent}
-					projects={projects}
+					projects={projectList}
 					{...(route.conceptId === undefined ? {} : { conceptId: route.conceptId })}
 				/>
 			</div>
@@ -393,6 +422,9 @@ export function App({
 				/>
 			</div>
 		);
+	} else if (organisationWaiting || (!projectsKnown && (route.name === "home" || route.name === "new-session"))) {
+		// Moments from now: the page's seam, or the projects the home page and New session need. Nothing to show yet.
+		main = <div className="shell-empty" aria-busy="true" />;
 	} else if (linkedSession !== undefined && sessionProject !== undefined) {
 		main = (
 			<div className="shell-empty">
@@ -420,7 +452,7 @@ export function App({
 			<NewSessionScreen
 				client={client}
 				projectId={route.projectId}
-				projects={projects}
+				projects={projectList}
 				{...(narrow ? { onBack: back } : {})}
 			/>
 		);
@@ -474,7 +506,8 @@ export function App({
 		newSession ||
 		missing ||
 		unknownProject ||
-		organisationPage
+		organisationPage ||
+		organisationWaiting
 			? "main"
 			: "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
@@ -483,15 +516,16 @@ export function App({
 	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
 	// The vault page, the audit log and API keys bring their own headings.
-	const title = organisationPage
-		? undefined
-		: missing || unknownProject
-			? "Page not found"
-			: unknownSession
-				? "Session not found"
-				: sessionId === undefined && !newSession
-					? `${project?.name ?? "Harbour"} sessions`
-					: undefined;
+	const title =
+		organisationPage || organisationWaiting
+			? undefined
+			: missing || unknownProject
+				? "Page not found"
+				: unknownSession
+					? "Session not found"
+					: sessionId === undefined && !newSession
+						? `${project?.name ?? "Harbour"} sessions`
+						: undefined;
 	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
 	const start = project === undefined ? undefined : client.mayStart(project.id);
 	const startBlocked = start === undefined || start.allowed ? {} : { disabledReason: start.reason };
@@ -503,7 +537,7 @@ export function App({
 				<div className="shell-brand">
 					<span className="shell-wordmark">Harbour</span>
 				</div>
-				<ProjectNav projects={projects} current={projectId} />
+				<ProjectNav projects={projectList} current={projectId} />
 				<AgentNav route={route} agent={agent !== undefined} />
 				<OrganisationNav
 					route={route}
@@ -514,7 +548,7 @@ export function App({
 				/>
 				{/* An organisation page belongs to no project, so there's no project's sessions to list beside it. */}
 				<div className="shell-sessions">
-					{organisationPage ? null : (
+					{organisationPage || organisationWaiting ? null : (
 						<>
 							<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
 							{project === undefined ? null : (
