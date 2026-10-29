@@ -3,7 +3,9 @@
  *
  * - Skills: on the session's first prompt the runtime pins the skills the session may see (`pinForSession`, so later
  *   revisions reach only new sessions), asks the host to mount them (`/skills`, the `skills` mount source of
- *   `@harbour/workspace/mounts`) and lists the profile's skills through the host's renderer.
+ *   `@harbour/workspace/mounts`) and lists the profile's skills through the host's renderer. A session forked from
+ *   another (`branching.fork`) keeps its source's listing, in the copied `harbour.context` entry, so on its first
+ *   prompt it pins nothing: it has the host mount the revisions its source pinned, once (#210).
  * - Memory: on the same first prompt it recalls over the profile's memory scopes (each a memory space ID) with the
  *   prompt's text as the query, rendered by the memory implementation's `RecallRenderer`; and every session with
  *   memory scopes gets the `memory_search` and `memory_read` tools (`memoryCapabilities`).
@@ -67,7 +69,9 @@ export interface SessionSkillsOptions {
 	readonly visibility?: (session: SessionRecord) => SkillVisibility | Promise<SkillVisibility>;
 	/**
 	 * Mounts the pinned skills where the listings point, such as `workspaces.remount` of the session's workspace at
-	 * `/skills` with `{ source: "skills", ref: session.id }`. Called once, on the first prompt, after pinning.
+	 * `/skills` with `{ source: "skills", ref: session.id, version: skillsMountVersion(pins) }`. Called once, on the
+	 * first prompt, after pinning. For a forked session `pins` are the revisions its source pinned, under the fork's
+	 * session ID, so mount exactly those (by `version`): the fork's listing names them.
 	 */
 	readonly mount?: (session: SessionRecord, pins: readonly SessionSkillPin[]) => Promise<void>;
 	/** Where the listings say skills are mounted. Default `/skills`. */
@@ -164,6 +168,18 @@ export function memoryToolHandler(
 /** The session's `harbour.context` entry in a view, if it has one. */
 export function contextEntryOf(entries: readonly EntryRecord[]): EntryRecord | undefined {
 	return entries.find((entry) => entry.kind === HARBOUR_CONTEXT_ENTRY);
+}
+
+/** The skill revisions a `harbour.context` entry records as pinned, if it records any. */
+export function contextSkillsOf(
+	entry: EntryRecord | undefined,
+): readonly { readonly skillId: string; readonly revision: number }[] | undefined {
+	const skills = (entry?.data as Partial<HarbourContextEntryData> | undefined)?.skills;
+	if (!Array.isArray(skills)) return undefined;
+	return skills.filter(
+		(pin): pin is { skillId: string; revision: number } =>
+			typeof pin?.skillId === "string" && typeof pin.revision === "number",
+	);
 }
 
 /**

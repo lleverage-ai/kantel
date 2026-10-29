@@ -66,9 +66,10 @@ import {
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
-import { ACTIVE_CONVERSATION, copyEntries, entryBefore } from "./branching.ts";
+import { ACTIVE_CONVERSATION, copyEntries, entryBefore, FORK_SKILLS } from "./branching.ts";
 import {
 	contextEntryOf,
+	contextSkillsOf,
 	MEMORY_TOOL_NAMES,
 	memorySpacesOf,
 	memoryToolDefinitions,
@@ -116,6 +117,22 @@ export interface SessionRuntimeOptions {
 	 * Harness owns what it is given and closes it when the session closes in this runtime.
 	 */
 	readonly storage: (session: SessionRecord) => Storage | Promise<Storage>;
+	/**
+	 * Archives a closed session's Pi storage, such as `archiveSqlPiStorage` from `@harbour/runtime/sql`, which keeps its
+	 * records and drops its tables so a shared database's schema doesn't grow with every session it has held (#216).
+	 * Called once the session has closed durably and its Harness has closed here: on `runtime.close`, and on the runtime's
+	 * own close for a closed session it opened again. `storage` must open an archived session again, for reading. A
+	 * failure goes to `onArchiveError` and leaves the session as it was. Without it nothing is archived.
+	 */
+	readonly archive?: (session: SessionRecord) => Promise<unknown>;
+	/** Told when archiving a closed session failed. Default: ignored. */
+	readonly onArchiveError?: (sessionId: SessionId, error: unknown) => void;
+	/**
+	 * The sessions whose Pi storage may still need archiving, such as those with tables in a shared database: closed
+	 * sessions from before `archive` was set, or whose archive failed. `sweepArchive` archives the closed ones among them.
+	 * Without it, or without `archive`, `sweepArchive` does nothing.
+	 */
+	readonly unarchived?: () => Promise<readonly SessionId[]>;
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
 	/**
@@ -232,6 +249,13 @@ export interface SessionRuntimeService {
 	 * open, every `leaseSweepMs`; a failure goes to `onSweepError`.
 	 */
 	sweepLeases(): Promise<number>;
+	/**
+	 * Archives up to `limit` closed sessions that `unarchived` names and that aren't open in this runtime, one after
+	 * another, through `archive`; says how many it archived. Open sessions, sessions the store doesn't know and archives
+	 * that fail (reported to `onArchiveError`) are skipped. Run it in bounded batches, such as one per alarm, until it
+	 * archives fewer than `limit`: then nothing closed is left. Without `archive` or `unarchived` it does nothing.
+	 */
+	sweepArchive(limit: number): Promise<number>;
 	/** Closes every open session's Harness. Their work stays in storage for a runtime that opens them again. */
 	close(): Promise<void>;
 }
@@ -371,6 +395,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const clock = options.clock ?? systemClock;
 	const open = new Map<SessionId, OpenSession>();
 	const opening = new Map<SessionId, Promise<OpenSession>>();
+	/** Closed sessions being archived (`options.archive`): opening one waits for it. */
+	const archiving = new Map<SessionId, Promise<unknown>>();
 	/** Handlers registered in this process, by registration. */
 	const localHandlers = new Map<string, HostToolHandler>();
 	let closed = false;
@@ -693,6 +719,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const current = open.get(id);
 		if (current !== undefined) return Promise.resolve(current);
 		if (closed) return Promise.reject(new HarbourError("unavailable", "The session runtime is closed"));
+		const archived = archiving.get(id);
+		if (archived !== undefined) return archived.then(() => ensureOpen(stored, seed));
 		const started = openSession(stored, seed).finally(() => opening.delete(id));
 		opening.set(id, started);
 		return started;
@@ -811,6 +839,70 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	const requireOpen = async (ctx: CallContext, sessionId: SessionId) => ensureOpen(await requireStored(ctx, sessionId));
 
+	/** Closes the session's Harness in this runtime, once what it queued is written. It stays in storage. */
+	const shutDown = async (session: OpenSession): Promise<void> => {
+		if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
+		session.stopWatching();
+		await session.waking.catch(() => undefined);
+		await session.publishing.catch(() => undefined);
+		await session.harness.close(BACKGROUND_CONTEXT);
+		await session.env?.cleanup(BACKGROUND_CONTEXT).catch(() => undefined);
+	};
+
+	/**
+	 * Takes a durably closed session out of this runtime and archives its Pi storage (`options.archive`). Opening it again
+	 * meanwhile waits for the archive, then opens it from there. Never rejects: a failure goes to `onArchiveError`.
+	 */
+	const archiveClosed = (session: OpenSession, archive: NonNullable<SessionRuntimeOptions["archive"]>) => {
+		const id = session.record.id;
+		if (open.get(id) === session) open.delete(id);
+		return runArchive(id, async () => {
+			await shutDown(session);
+			return archive(session.record);
+		});
+	};
+
+	/**
+	 * Runs `work`, the archive of session `id`, as the session's entry in `archiving`, so opening it meanwhile waits for
+	 * it. Answers what `work` answers, or `false` when it failed: a failure goes to `onArchiveError`.
+	 */
+	const runArchive = (id: SessionId, work: () => Promise<unknown>): Promise<unknown> => {
+		const running = (async () => {
+			try {
+				return await work();
+			} catch (error) {
+				try {
+					options.onArchiveError?.(id, error);
+				} catch {
+					// A reporter that throws must not fail the close.
+				}
+				return false;
+			}
+		})().finally(() => {
+			if (archiving.get(id) === running) archiving.delete(id);
+		});
+		archiving.set(id, running);
+		return running;
+	};
+
+	const sweepArchive = async (limit: number): Promise<number> => {
+		const { archive, unarchived } = options;
+		if (archive === undefined || unarchived === undefined || closed || !(limit > 0)) return 0;
+		const busy = (id: SessionId) => open.has(id) || opening.has(id) || archiving.has(id);
+		const notClosed = new Set((await store.openSessions()).map((session) => session.record.id));
+		let archived = 0;
+		for (const id of await unarchived()) {
+			if (archived >= limit || closed) break;
+			if (notClosed.has(id) || busy(id)) continue;
+			const stored = await store.session(id);
+			// Still open, or not this store's: left alone. An opening that began meanwhile is left to finish.
+			if (stored === undefined || !stored.closed || busy(id) || closed) continue;
+			// `false` is an archive that failed or found nothing to archive.
+			if ((await runArchive(id, () => archive(stored.record))) !== false) archived += 1;
+		}
+		return archived;
+	};
+
 	const endOf = (session: OpenSession, reason: SessionEnd["reason"], endedBy: Actor): SessionEnd => {
 		const { record } = session;
 		return {
@@ -883,6 +975,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const giveContext = async (ctx: CallContext, session: OpenSession, query: string): Promise<void> => {
 		if (options.skills === undefined && options.memory === undefined) return;
 		session.givingContext ??= (async () => {
+			// A fork's transcript already holds its source's context; it mounts the source's revisions, once (#210).
+			if (await mountForkSkills(ctx, session)) return;
 			const first = await session.conversation.entries({ order: "ascending" }, CONTEXT_SCAN, undefined, piContext(ctx));
 			const started = first.next !== undefined || contextEntryOf(first.items) !== undefined;
 			if (started || first.items.some((entry) => entry.kind === "pi.user" || entry.kind === HARBOUR_USER_ENTRY)) {
@@ -910,6 +1004,25 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			if (session.givingContext === giving) session.givingContext = undefined;
 			throw error;
 		}
+	};
+
+	/**
+	 * Mounts a forked session's skills, the revisions its source pinned (`FORK_SKILLS`), unless it has done so already.
+	 * Says whether the session is a fork, whose context needs nothing more: its transcript holds its source's.
+	 */
+	const mountForkSkills = async (ctx: CallContext, session: OpenSession): Promise<boolean> => {
+		const fork = await session.harness.snapshot(FORK_SKILLS, piContext(ctx));
+		if (fork?.skills === undefined) return false;
+		if (fork.mounted === true || options.skills?.mount === undefined) return true;
+		const pinnedAt = clock.now();
+		await options.skills.mount(
+			session.record,
+			fork.skills.map((pin) => ({ sessionId: session.record.id, ...pin, pinnedAt })),
+		);
+		await session.harness.commit(async (tx) => {
+			(await tx.doc(FORK_SKILLS)).mounted = true;
+		}, piContext(ctx));
+		return true;
 	};
 
 	const submit = async (
@@ -1179,6 +1292,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				await session.publishing;
 				await store.updateSession(sessionId, { record: session.record, closed: true });
 				session.durablyClosed = true;
+				if (options.archive !== undefined) await archiveClosed(session, options.archive);
 			})();
 			session.closing = closing;
 			try {
@@ -1284,8 +1398,21 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				createdAt: now,
 				updatedAt: now,
 			};
+			// The revisions the source pinned (its `harbour.context` entry), which the fork mounts on its first prompt.
+			const sourceStart = await source.conversation.entries(
+				{ order: "ascending" },
+				CONTEXT_SCAN,
+				undefined,
+				piContext(ctx),
+			);
+			const skills = contextSkillsOf(contextEntryOf(history.entries) ?? contextEntryOf(sourceStart.items));
 			const created = await store.createSession({ record, profile, aborts: 0, closed: false });
-			await ensureOpen(created, history.entries);
+			const forked = await ensureOpen(created, history.entries);
+			if (skills !== undefined && skills.length > 0) {
+				await forked.harness.commit(async (tx) => {
+					(await tx.doc(FORK_SKILLS)).skills = skills.map((pin) => ({ ...pin }));
+				}, piContext(ctx));
+			}
 			await audit([
 				{
 					id: `session:${record.id}:created`,
@@ -1677,20 +1804,22 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		...(access === undefined ? {} : { access }),
 		resume,
 		sweepLeases,
+		sweepArchive,
 		async close() {
 			closed = true;
 			if (resumeTimer !== undefined) clearTimeout(resumeTimer);
 			if (sweepTimer !== undefined) clearTimeout(sweepTimer);
-			await Promise.allSettled([...opening.values()]);
+			await Promise.allSettled([...opening.values(), ...archiving.values()]);
 			for (const session of [...open.values()]) {
+				// A closed session opened again (to read it) goes back to its archive.
+				if (session.durablyClosed && session.closing === undefined && options.archive !== undefined) {
+					await archiveClosed(session, options.archive);
+					continue;
+				}
 				open.delete(session.record.id);
-				if (session.sleepTimer !== undefined) clearTimeout(session.sleepTimer);
-				session.stopWatching();
-				await session.waking.catch(() => undefined);
-				await session.publishing.catch(() => undefined);
-				await session.harness.close(BACKGROUND_CONTEXT);
-				await session.env?.cleanup(BACKGROUND_CONTEXT).catch(() => undefined);
+				await shutDown(session);
 			}
+			await Promise.allSettled([...archiving.values()]);
 		},
 	};
 }

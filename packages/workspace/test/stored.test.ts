@@ -355,4 +355,80 @@ describe("createStoredWorkspaces", () => {
 		expect(text((await workspaces.read(ctx, record.id, "f0", { version: 1 })).content)).toBe("x");
 		expect(await codeOf(workspaces.read(ctx, record.id, "f4", { version: 1 }))).toBe("not_found");
 	});
+
+	it("writes a commit's blobs and tree at once, and moves the head only after both are written", async () => {
+		const store = createMemoryWorkspaceStore();
+		const workspaces = createStoredWorkspaces({ store });
+		const record = await workspaces.create(ctx, { owner });
+		const started: string[] = [];
+		let release: () => void = () => {};
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let bothStarted: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => {
+			bothStarted = resolve;
+		});
+		const held: WorkspaceStore = {
+			...store,
+			async putObject(key, bytes) {
+				started.push(key.includes("/trees/") ? "tree" : "blob");
+				if (started.length === 2) bothStarted();
+				await released;
+				return store.putObject(key, bytes);
+			},
+		};
+		const commit = createStoredWorkspaces({ store: held }).commit(ctx, record.id, {
+			baseVersion: 0,
+			changes: [{ op: "put", path: "a.txt", content: "alpha" }],
+		});
+		// Both writes are in flight before either finishes, and the head has not moved.
+		await waiting;
+		expect(started.sort()).toEqual(["blob", "tree"]);
+		expect((await workspaces.get(ctx, record.id)).head).toBe(0);
+		release();
+		expect((await commit).version).toBe(1);
+		expect(text((await workspaces.read(ctx, record.id, "a.txt")).content)).toBe("alpha");
+	});
+
+	for (const [kind, alongside] of [
+		["a store that writes alongside", true],
+		["a store that takes the objects first", false],
+	] as const) {
+		for (const failing of ["blob", "tree"] as const) {
+			it(`leaves the head unchanged when a commit's ${failing} write fails (${kind})`, async () => {
+				const store = createMemoryWorkspaceStore();
+				const workspaces = createStoredWorkspaces({ store });
+				const record = await workspaces.create(ctx, {
+					owner,
+					seed: { name: "s", sources: [{ kind: "files", files: { "a.txt": "v1" } }] },
+				});
+				let advanced = 0;
+				const broken: WorkspaceStore = {
+					...store,
+					writesAlongside: alongside,
+					async putObject(key, bytes) {
+						if (key.includes(failing === "blob" ? "/blobs/" : "/trees/")) throw new Error(`${failing} write failed`);
+						return store.putObject(key, bytes);
+					},
+					async advance(current, next, version, options) {
+						advanced++;
+						return store.advance(current, next, version, options);
+					},
+				};
+				await expect(
+					createStoredWorkspaces({ store: broken }).commit(ctx, record.id, {
+						baseVersion: 1,
+						changes: [{ op: "put", path: "a.txt", content: "v2" }],
+					}),
+				).rejects.toThrow(`${failing} write failed`);
+				// Only a store that writes alongside is reached, and it moves nothing.
+				expect(advanced).toBe(alongside ? 1 : 0);
+				const fresh = createStoredWorkspaces({ store });
+				expect((await fresh.get(ctx, record.id)).head).toBe(1);
+				expect(text((await fresh.read(ctx, record.id, "a.txt")).content)).toBe("v1");
+				expect((await fresh.history(ctx, record.id)).items.map((item) => item.version)).toEqual([1, 0]);
+			});
+		}
+	}
 });

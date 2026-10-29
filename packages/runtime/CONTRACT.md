@@ -117,7 +117,23 @@ from `@harbour/runtime/core` is the runtime every target runs. A target gives it
   keeps them in any database behind chord's `SqliteDatabase` facade: Node's SQLite, a Durable Object's SQLite, or
   Postgres through the self-hosted target's translation of the SQLite dialect.
 - `storage(record)`, which opens a session's Pi Durable storage. `sqlPiStorage(db, sessionId)` puts it in the same
-  database under the session's own table prefix (`pi_<uuid without dashes>_`).
+  database under the session's own table prefix (`pi_<uuid without dashes>_`). A new session's tables are created at
+  Pi Durable's current schema version (`createPiSchema`), with the version recorded, so its migrations have nothing to
+  replay (#216).
+
+Optionally, `archive(record)` archives a closed session's Pi storage once it has closed durably and its Harness has
+closed here. `archiveSqlPiStorage(db, sessionId)` moves every record of the session's tables into one shared table
+(`harbour_pi_archive`) and drops the tables, in one transaction, so a database's schema grows with its open sessions,
+not with every session it has held: SQLite's DDL costs more the larger the schema, and every create adds some (#216).
+`sqlPiStorage` restores an archived session's tables when it is opened again (to read, watch or fork it), and the
+runtime archives it again when it closes. Both targets wire it; a failure goes to `onArchiveError` and leaves the tables.
+
+Sessions that closed before `archive` was set (or whose archive failed) keep their tables until something archives
+them. With `unarchived()`, the sessions that may still have tables, `sweepArchive(limit)` archives up to `limit` of
+the closed ones that aren't open in this runtime, one after another, and says how many; fewer than `limit` means none
+is left. The Durable Object core lists them from the object's schema and runs one batch per alarm (`archiveSweep`,
+default 5 every 2 s), arming the alarm again while a batch comes back full. Starting the object archives nothing; it
+only arms the first alarm when a closed session still has tables.
 
 Sessions open on first use. A runtime opened on a store that already holds sessions reopens each one when it is next
 used: its profile, transcript, submissions and host tools carry on.
@@ -176,6 +192,12 @@ blank line, placed once as a `harbour.context` entry before the first prompt, a 
 pinned revisions, listed skill IDs and recall manifest as its data. It stays in the transcript, so later turns, a
 retried prompt and a restarted runtime see what the session saw; it is not a protocol item. A pin, mount or recall
 that fails fails the prompt, and the next prompt tries again.
+
+A forked session (`branching.fork`) copies its source's history, `harbour.context` entry included, so it keeps the
+source's listing and recall and pins nothing of its own. On its first prompt the runtime calls `mount(fork, pins)` once,
+with the revisions the source's entry records under the fork's session ID, so its `/skills` shows what its listing
+names (#210); the host mounts them by version (`skillsMountVersion(pins)` of `@harbour/workspace/mounts`). Which
+revisions, and whether they are mounted, is a session document of the fork's (`harbour.fork-skills`).
 
 ## The in-memory implementation
 
