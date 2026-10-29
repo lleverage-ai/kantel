@@ -19,6 +19,64 @@ function scripted() {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const embed = (url: string): BrowserLiveLink => ({ kind: "embed", url, endMessage: "gone" });
 const playing = (url: string) => ({ status: "live", source: { kind: "embed", mode: "live", url, endMessage: "gone" } });
+const replaying = (url: string) => ({ status: "live", source: { kind: "embed", mode: "replay", url } });
+
+describe("the session screen's replays", () => {
+	it("shows an ended browser's replay when the client can ask for one", async () => {
+		const { load, answers } = scripted();
+		const replay = scripted();
+		const store = createBrowserLiveStore(load, replay.load);
+		store.get("bs_1");
+		answers[0]?.reject(failure("expired"));
+		await settle();
+		expect(replay.load).toHaveBeenCalledTimes(1);
+		replay.answers[0]?.resolve({ kind: "embed", url: "/browser/b1#token" });
+		await settle();
+		expect(store.get("bs_1")).toEqual(replaying("/browser/b1#token"));
+		// A replay has no stream to lose: it isn't asked for again.
+		store.disconnected("bs_1");
+		expect(load).toHaveBeenCalledTimes(1);
+		expect(store.get("bs_1")).toEqual(replaying("/browser/b1#token"));
+	});
+
+	it("shows a live browser that has gone as its replay too", async () => {
+		const { load, answers } = scripted();
+		const replay = scripted();
+		const store = createBrowserLiveStore(load, replay.load);
+		store.get("bs_1");
+		answers[0]?.resolve(embed("/browser/b1#live"));
+		await settle();
+		store.disconnected("bs_1");
+		answers[1]?.resolve(embed("/browser/b1#live"));
+		await settle();
+		replay.answers[0]?.resolve({ kind: "embed", url: "/browser/b1#replay" });
+		await settle();
+		expect(store.get("bs_1")).toEqual(replaying("/browser/b1#replay"));
+	});
+
+	it("settles on ended when there is no replay (brwsr, or nothing recorded)", async () => {
+		const { load, answers } = scripted();
+		const replay = scripted();
+		const store = createBrowserLiveStore(load, replay.load);
+		store.get("bs_1");
+		answers[0]?.reject(failure("not_found"));
+		await settle();
+		replay.answers[0]?.reject(failure("unavailable"));
+		await settle();
+		expect(store.get("bs_1").status).toBe("ended");
+	});
+
+	it("doesn't ask for a replay of a browser it may not watch", async () => {
+		const { load, answers } = scripted();
+		const replay = scripted();
+		const store = createBrowserLiveStore(load, replay.load);
+		store.get("bs_1");
+		answers[0]?.reject(failure("forbidden"));
+		await settle();
+		expect(replay.load).not.toHaveBeenCalled();
+		expect(store.get("bs_1").status).toBe("unavailable");
+	});
+});
 
 describe("the session screen's live-view links", () => {
 	it("asks once per browser, and goes live with the link", async () => {

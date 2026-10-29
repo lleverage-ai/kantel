@@ -1,5 +1,6 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "../primitives/button.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { ToolImages, toolImageSrc } from "./tool-call.tsx";
@@ -64,10 +65,15 @@ export type BrowserLiveViewProps = {
 /** Only a web page (or a story's inline page) goes in the iframe: never a `javascript:` URL. */
 export function embeddable(url: string): boolean {
 	try {
-		return ["https:", "http:", "data:"].includes(new URL(url).protocol);
+		return ["https:", "http:", "data:"].includes(resolved(url).protocol);
 	} catch {
 		return false;
 	}
+}
+
+/** The link as an absolute URL: a relative one (Harbour's own view links, `/browser/<id>#<token>`) is this page's. */
+function resolved(url: string): URL {
+	return new URL(url, globalThis.location?.href ?? "http://localhost/");
 }
 
 function playable(source: BrowserLiveSource | undefined): source is BrowserLiveSource {
@@ -91,7 +97,7 @@ function EmbedFrame({
 	ended.current = onEnded;
 	useEffect(() => {
 		if (endMessage === undefined) return;
-		const origin = new URL(url).origin;
+		const origin = resolved(url).origin;
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== frame.current?.contentWindow || event.origin !== origin) return;
 			if (event.data === endMessage) ended.current();
@@ -109,6 +115,37 @@ function EmbedFrame({
 			referrerPolicy="no-referrer"
 			loading="lazy"
 		/>
+	);
+}
+
+/**
+ * A replay's page, behind *Play* over the last screenshot: nothing loads (no recording is read) until a person asks
+ * for it.
+ */
+function ReplayFrame({
+	url,
+	endMessage,
+	title,
+	screenshot,
+	onEnded,
+}: {
+	url: string;
+	endMessage: string | undefined;
+	title: string;
+	screenshot: ToolImage | undefined;
+	onEnded: () => void;
+}) {
+	const [playing, setPlaying] = useState(false);
+	if (playing) return <EmbedFrame url={url} endMessage={endMessage} title={title} onEnded={onEnded} />;
+	return (
+		<>
+			{screenshot === undefined ? null : (
+				<img src={toolImageSrc(screenshot)} alt="The last page the browser showed" decoding="async" />
+			)}
+			<Button variant="primary" size="md" className="hb-browser-live-play" onClick={() => setPlaying(true)}>
+				Play
+			</Button>
+		</>
 	);
 }
 
@@ -166,7 +203,10 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded }: B
 	const replay = source?.mode === "replay";
 	const title = `${replay ? "Replay" : "Live view"} of the browser: ${item.label}`;
 	return (
-		<figure className={`hb-browser-live hb-browser-live-${status}`} aria-busy={live ? undefined : true}>
+		<figure
+			className={`hb-browser-live hb-browser-live-${live && replay ? "replay" : status}`}
+			aria-busy={live ? undefined : true}
+		>
 			<figcaption className="hb-browser-live-caption">
 				{live ? (
 					<>
@@ -194,11 +234,21 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded }: B
 					</span>
 				)}
 			</figcaption>
-			<div className="hb-browser-live-frame">
+			<div
+				className={`hb-browser-live-frame${live && replay && source.kind === "embed" ? " hb-browser-live-frame-replay" : ""}`}
+			>
 				{!live ? (
 					screenshot === undefined ? null : (
 						<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
 					)
+				) : source.kind === "embed" && replay ? (
+					<ReplayFrame
+						url={source.url}
+						endMessage={source.endMessage}
+						title={title}
+						screenshot={screenshot}
+						onEnded={ended}
+					/>
 				) : source.kind === "embed" ? (
 					<EmbedFrame url={source.url} endMessage={source.endMessage} title={title} onEnded={ended} />
 				) : (
