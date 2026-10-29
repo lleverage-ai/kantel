@@ -7,7 +7,7 @@ import { createHostToolEndpoint, staticTokenAuthenticator } from "@harbour/runti
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { ManualClock } from "@harbour/testing/harness";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SessionRuntimeDurableObjectCore } from "../src/index.ts";
+import { type SessionRuntimeDurableObjectCore, sessionsWithPiTables } from "../src/index.ts";
 import { coreOn, fakeAlarm } from "./support.ts";
 
 const ORG = "org-object";
@@ -173,6 +173,67 @@ describe("SessionRuntimeDurableObjectCore", () => {
 		const { models } = createScriptedModel();
 		for (const watchdogMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
 			expect(() => coreOn(db, models, fakeAlarm(), { watchdogMs })).toThrow(RangeError);
+		}
+	});
+
+	it("archives closed sessions' tables from the alarm, a batch at a time, and stops when none is left", async () => {
+		const db = database();
+		const clock = new ManualClock();
+		const { models } = createScriptedModel();
+		// Before #216 shipped: closing a session left its tables.
+		const before = coreOn(db, models, fakeAlarm(), { clock, archive: async () => false, archiveSweep: false });
+		const service = await before.ready;
+		await service.profiles.put(ctx, profile);
+		const closed: string[] = [];
+		for (let index = 0; index < 5; index++) {
+			const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+			await service.runtime.close(ctx, session.id);
+			closed.push(session.id);
+		}
+		const open = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		await before.close();
+
+		// The next instance archives nothing while it starts; it arms the alarm for the first batch.
+		const alarm = fakeAlarm();
+		const core = track(coreOn(db, models, alarm, { clock, archiveSweep: { batch: 2, intervalMs: 1_000 } }));
+		const after = await core.ready;
+		const withTables = async () => (await sessionsWithPiTables(core.database)).length;
+		expect(await withTables()).toBe(6);
+		expect(alarm.armed).toBe(clock.now() + 1_000);
+
+		clock.advance(1_000);
+		await alarm.fire(core);
+		expect(await withTables()).toBe(4);
+		expect(alarm.armed).toBe(clock.now() + 1_000);
+		clock.advance(1_000);
+		await alarm.fire(core);
+		expect(await withTables()).toBe(2);
+		clock.advance(1_000);
+		await alarm.fire(core);
+		// A short batch: nothing closed is left, and the alarm isn't armed again for the backfill.
+		expect(await sessionsWithPiTables(core.database)).toEqual([open.id]);
+		expect(alarm.armed).toBeNull();
+
+		for (const id of closed) expect((await after.runtime.snapshot(ctx, id)).status).toBe("done");
+		expect((await after.runtime.snapshot(ctx, open.id)).status).toBe("idle");
+
+		// Starting again with only open sessions' tables arms nothing.
+		await core.close();
+		const quiet = fakeAlarm();
+		const again = track(coreOn(db, models, quiet, { clock }));
+		await again.ready;
+		expect(await sessionsWithPiTables(again.database)).toEqual([open.id]);
+		expect(quiet.set).toEqual([]);
+	});
+
+	it("refuses an archive backfill batch or interval that isn't positive", () => {
+		const db = database();
+		const { models } = createScriptedModel();
+		for (const batch of [0, -1, 1.5, Number.NaN]) {
+			expect(() => coreOn(db, models, fakeAlarm(), { archiveSweep: { batch } })).toThrow(RangeError);
+		}
+		for (const intervalMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() => coreOn(db, models, fakeAlarm(), { archiveSweep: { intervalMs } })).toThrow(RangeError);
 		}
 	});
 

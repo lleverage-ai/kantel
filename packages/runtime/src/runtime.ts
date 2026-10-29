@@ -127,6 +127,12 @@ export interface SessionRuntimeOptions {
 	readonly archive?: (session: SessionRecord) => Promise<unknown>;
 	/** Told when archiving a closed session failed. Default: ignored. */
 	readonly onArchiveError?: (sessionId: SessionId, error: unknown) => void;
+	/**
+	 * The sessions whose Pi storage may still need archiving, such as those with tables in a shared database: closed
+	 * sessions from before `archive` was set, or whose archive failed. `sweepArchive` archives the closed ones among them.
+	 * Without it, or without `archive`, `sweepArchive` does nothing.
+	 */
+	readonly unarchived?: () => Promise<readonly SessionId[]>;
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
 	/**
@@ -243,6 +249,13 @@ export interface SessionRuntimeService {
 	 * open, every `leaseSweepMs`; a failure goes to `onSweepError`.
 	 */
 	sweepLeases(): Promise<number>;
+	/**
+	 * Archives up to `limit` closed sessions that `unarchived` names and that aren't open in this runtime, one after
+	 * another, through `archive`; says how many it archived. Open sessions, sessions the store doesn't know and archives
+	 * that fail (reported to `onArchiveError`) are skipped. Run it in bounded batches, such as one per alarm, until it
+	 * archives fewer than `limit`: then nothing closed is left. Without `archive` or `unarchived` it does nothing.
+	 */
+	sweepArchive(limit: number): Promise<number>;
 	/** Closes every open session's Harness. Their work stays in storage for a runtime that opens them again. */
 	close(): Promise<void>;
 }
@@ -383,7 +396,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const open = new Map<SessionId, OpenSession>();
 	const opening = new Map<SessionId, Promise<OpenSession>>();
 	/** Closed sessions being archived (`options.archive`): opening one waits for it. */
-	const archiving = new Map<SessionId, Promise<void>>();
+	const archiving = new Map<SessionId, Promise<unknown>>();
 	/** Handlers registered in this process, by registration. */
 	const localHandlers = new Map<string, HostToolHandler>();
 	let closed = false;
@@ -842,23 +855,52 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	 */
 	const archiveClosed = (session: OpenSession, archive: NonNullable<SessionRuntimeOptions["archive"]>) => {
 		const id = session.record.id;
+		if (open.get(id) === session) open.delete(id);
+		return runArchive(id, async () => {
+			await shutDown(session);
+			return archive(session.record);
+		});
+	};
+
+	/**
+	 * Runs `work`, the archive of session `id`, as the session's entry in `archiving`, so opening it meanwhile waits for
+	 * it. Answers what `work` answers, or `false` when it failed: a failure goes to `onArchiveError`.
+	 */
+	const runArchive = (id: SessionId, work: () => Promise<unknown>): Promise<unknown> => {
 		const running = (async () => {
-			if (open.get(id) === session) open.delete(id);
 			try {
-				await shutDown(session);
-				await archive(session.record);
+				return await work();
 			} catch (error) {
 				try {
 					options.onArchiveError?.(id, error);
 				} catch {
 					// A reporter that throws must not fail the close.
 				}
+				return false;
 			}
 		})().finally(() => {
 			if (archiving.get(id) === running) archiving.delete(id);
 		});
 		archiving.set(id, running);
 		return running;
+	};
+
+	const sweepArchive = async (limit: number): Promise<number> => {
+		const { archive, unarchived } = options;
+		if (archive === undefined || unarchived === undefined || closed || !(limit > 0)) return 0;
+		const busy = (id: SessionId) => open.has(id) || opening.has(id) || archiving.has(id);
+		const notClosed = new Set((await store.openSessions()).map((session) => session.record.id));
+		let archived = 0;
+		for (const id of await unarchived()) {
+			if (archived >= limit || closed) break;
+			if (notClosed.has(id) || busy(id)) continue;
+			const stored = await store.session(id);
+			// Still open, or not this store's: left alone. An opening that began meanwhile is left to finish.
+			if (stored === undefined || !stored.closed || busy(id) || closed) continue;
+			// `false` is an archive that failed or found nothing to archive.
+			if ((await runArchive(id, () => archive(stored.record))) !== false) archived += 1;
+		}
+		return archived;
 	};
 
 	const endOf = (session: OpenSession, reason: SessionEnd["reason"], endedBy: Actor): SessionEnd => {
@@ -1762,6 +1804,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		...(access === undefined ? {} : { access }),
 		resume,
 		sweepLeases,
+		sweepArchive,
 		async close() {
 			closed = true;
 			if (resumeTimer !== undefined) clearTimeout(resumeTimer);

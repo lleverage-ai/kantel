@@ -128,6 +128,13 @@ not with every session it has held: SQLite's DDL costs more the larger the schem
 `sqlPiStorage` restores an archived session's tables when it is opened again (to read, watch or fork it), and the
 runtime archives it again when it closes. Both targets wire it; a failure goes to `onArchiveError` and leaves the tables.
 
+Sessions that closed before `archive` was set (or whose archive failed) keep their tables until something archives
+them. With `unarchived()`, the sessions that may still have tables, `sweepArchive(limit)` archives up to `limit` of
+the closed ones that aren't open in this runtime, one after another, and says how many; fewer than `limit` means none
+is left. The Durable Object core lists them from the object's schema and runs one batch per alarm (`archiveSweep`,
+default 5 every 2 s), arming the alarm again while a batch comes back full. Starting the object archives nothing; it
+only arms the first alarm when a closed session still has tables.
+
 Sessions open on first use. A runtime opened on a store that already holds sessions reopens each one when it is next
 used: its profile, transcript, submissions and host tools carry on.
 
