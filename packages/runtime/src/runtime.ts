@@ -66,10 +66,21 @@ import {
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
 import { ACTIVE_CONVERSATION, copyEntries, entryBefore } from "./branching.ts";
+import {
+	contextEntryOf,
+	MEMORY_TOOL_NAMES,
+	memorySpacesOf,
+	memoryToolDefinitions,
+	memoryToolHandler,
+	type SessionMemoryOptions,
+	type SessionSkillsOptions,
+	sessionContextEntry,
+} from "./context.ts";
 import { historyAnchor, historyLimit, readHistory } from "./history.ts";
 import {
 	ConversationProjector,
 	createSessionEndHook,
+	HARBOUR_USER_ENTRY,
 	harbourUserEntry,
 	hostToolAsPiTool,
 	joinPromptLayers,
@@ -88,6 +99,13 @@ import {
 	shownThinking,
 } from "./session-models.ts";
 import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
+
+export {
+	HARBOUR_CONTEXT_ENTRY,
+	type HarbourContextEntryData,
+	type SessionMemoryOptions,
+	type SessionSkillsOptions,
+} from "./context.ts";
 
 export interface SessionRuntimeOptions {
 	/** Directory, profiles, submissions and host registrations. */
@@ -159,6 +177,16 @@ export interface SessionRuntimeOptions {
 	 * the runtime's own timers do this.
 	 */
 	readonly onWakeAt?: (at: number) => void;
+	/**
+	 * The skills sessions see (`./context.ts`): pinned on a session's first prompt, mounted by the host and listed through
+	 * the host's renderer. Without it sessions get no skills.
+	 */
+	readonly skills?: SessionSkillsOptions;
+	/**
+	 * The memory sessions read (`./context.ts`): recalled over the profile's memory scopes on the first prompt, and the
+	 * `memory_search` and `memory_read` tools. Without it sessions get no memory.
+	 */
+	readonly memory?: SessionMemoryOptions;
 }
 
 export interface SessionRuntimeService {
@@ -279,7 +307,14 @@ interface OpenSession {
 	/** The store records the session as closed. */
 	durablyClosed: boolean;
 	stopWatching(): void;
+	/** Placing the session's skills and recall before its first prompt; later inputs wait for it. */
+	givingContext?: Promise<void>;
 }
+
+/** How many of a transcript's first entries are read to tell whether the session has started. */
+const CONTEXT_SCAN = 16;
+/** The request ID of a session's context write, so it is admitted once. */
+const CONTEXT_REQUEST = "harbour.context";
 
 /** One `watch`: its connection to the session's current stream, which an edit replaces. */
 interface Watcher {
@@ -513,66 +548,91 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const handlerOf = (host: StoredHost): HostToolHandler | undefined =>
 		localHandlers.get(host.registration) ?? (host.callback === undefined ? undefined : options.hostHandler?.(host));
 
+	/** The memory tools' host in tool calls and their audit events. */
+	const MEMORY_HOST = "harbour.memory";
+
 	const toolsFor = async (session: Pick<OpenSession, "profile" | "record">): Promise<ToolRegistration[]> => {
 		const { profile, record } = session;
+		// The runtime's own tools come first; a memory or host tool of the same name doesn't replace one.
 		const own = (options.tools?.(record) ?? []).filter((tool) => profile.tools.includes(tool.name));
+		const tools: ToolRegistration[] = [...own];
+		const taken = new Set(own.map((tool) => tool.name));
+		// Every session with memory scopes gets the memory tools, served from the runtime's memory as its agent.
+		const spaceIds = memorySpacesOf(options.memory, profile, record);
+		const memory = options.memory;
+		if (memory !== undefined && spaceIds.length > 0) {
+			const handler = memoryToolHandler(memory, spaceIds, () => clock.now());
+			for (const definition of memoryToolDefinitions)
+				if (!taken.has(definition.name)) tools.push(asPiTool(record, MEMORY_HOST, definition, () => handler));
+			for (const name of Object.values(MEMORY_TOOL_NAMES)) taken.add(name);
+		}
 		const hostId = profile.hostId;
-		if (hostId === undefined) return own;
+		if (hostId === undefined) return tools;
 		// A registration whose handler is gone (served by a process that has since stopped) offers nothing.
 		const host = await store.host(record.organisationId, hostId);
 		const served = host === undefined || handlerOf(host) === undefined ? [] : host.tools;
-		const agentActor = { kind: "agent", agentId: record.agentId, sessionId: record.id } as const;
-		const ownNames = new Set(own.map((tool) => tool.name));
-		const hosted = served
-			.filter((definition) => profile.tools.includes(definition.name) && !ownNames.has(definition.name))
-			.map((definition) =>
-				hostToolAsPiTool(definition, {
-					call: {
-						hostId,
-						sessionId: record.id,
-						organisationId: record.organisationId,
-						projectId: record.projectId,
-						agentId: record.agentId,
-					},
-					handler: async () => {
-						const host = await store.host(record.organisationId, hostId);
-						return host?.tools.some((tool) => tool.name === definition.name) ? handlerOf(host) : undefined;
-					},
-					onStarted: (call) =>
-						audit([
-							{
-								id: `session:${record.id}:tool:${call.callId}:started`,
-								at: clock.now(),
-								source: "session",
-								type: "session.tool.started",
-								actor: agentActor,
-								organisationId: record.organisationId,
-								projectId: record.projectId,
-								sessionId: record.id,
-								agentId: record.agentId,
-								subject: { kind: "session.tool", id: call.callId },
-								data: { hostId, tool: call.tool },
-							},
-						]),
-					onFinished: (call, outcome) =>
-						audit([
-							{
-								id: `session:${record.id}:tool:${call.callId}:finished`,
-								at: clock.now(),
-								source: "session",
-								type: "session.tool.finished",
-								actor: agentActor,
-								organisationId: record.organisationId,
-								projectId: record.projectId,
-								sessionId: record.id,
-								agentId: record.agentId,
-								subject: { kind: "session.tool", id: call.callId },
-								data: { hostId, tool: call.tool, outcome },
-							},
-						]),
+		for (const definition of served) {
+			if (!profile.tools.includes(definition.name) || taken.has(definition.name)) continue;
+			tools.push(
+				asPiTool(record, hostId, definition, async () => {
+					const host = await store.host(record.organisationId, hostId);
+					return host?.tools.some((tool) => tool.name === definition.name) ? handlerOf(host) : undefined;
 				}),
 			);
-		return [...own, ...hosted];
+		}
+		return tools;
+	};
+
+	/** A tool as a Pi tool of the session, audited as it starts and finishes. */
+	const asPiTool = (
+		record: SessionRecord,
+		hostId: string,
+		definition: HostToolDefinition,
+		handler: () => HostToolHandler | undefined | Promise<HostToolHandler | undefined>,
+	): ToolRegistration => {
+		const agentActor = { kind: "agent", agentId: record.agentId, sessionId: record.id } as const;
+		return hostToolAsPiTool(definition, {
+			call: {
+				hostId,
+				sessionId: record.id,
+				organisationId: record.organisationId,
+				projectId: record.projectId,
+				agentId: record.agentId,
+			},
+			handler,
+			onStarted: (call) =>
+				audit([
+					{
+						id: `session:${record.id}:tool:${call.callId}:started`,
+						at: clock.now(),
+						source: "session",
+						type: "session.tool.started",
+						actor: agentActor,
+						organisationId: record.organisationId,
+						projectId: record.projectId,
+						sessionId: record.id,
+						agentId: record.agentId,
+						subject: { kind: "session.tool", id: call.callId },
+						data: { hostId, tool: call.tool },
+					},
+				]),
+			onFinished: (call, outcome) =>
+				audit([
+					{
+						id: `session:${record.id}:tool:${call.callId}:finished`,
+						at: clock.now(),
+						source: "session",
+						type: "session.tool.finished",
+						actor: agentActor,
+						organisationId: record.organisationId,
+						projectId: record.projectId,
+						sessionId: record.id,
+						agentId: record.agentId,
+						subject: { kind: "session.tool", id: call.callId },
+						data: { hostId, tool: call.tool, outcome },
+					},
+				]),
+		});
 	};
 
 	const extensionFor = (session: Pick<OpenSession, "profile">, tools: ToolRegistration[]): Extension => {
@@ -808,6 +868,43 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		]);
 	};
 
+	/**
+	 * Places the session's skills and recall (`./context.ts`) before its first prompt, once: a session whose transcript
+	 * already holds input or a context entry has been given it. The write's request ID makes a retry after a crash
+	 * between the write and the prompt land nothing twice.
+	 */
+	const giveContext = async (ctx: CallContext, session: OpenSession, query: string): Promise<void> => {
+		if (options.skills === undefined && options.memory === undefined) return;
+		session.givingContext ??= (async () => {
+			const first = await session.conversation.entries({ order: "ascending" }, CONTEXT_SCAN, undefined, piContext(ctx));
+			const started = first.next !== undefined || contextEntryOf(first.items) !== undefined;
+			if (started || first.items.some((entry) => entry.kind === "pi.user" || entry.kind === HARBOUR_USER_ENTRY)) {
+				return;
+			}
+			const entry = await sessionContextEntry({
+				record: session.record,
+				profile: session.profile,
+				query,
+				skills: options.skills,
+				memory: options.memory,
+				now: clock.now(),
+			});
+			if (entry === undefined) return;
+			const written = await admitting(session, () =>
+				session.conversation.submit({ type: "write", entry, requestId: CONTEXT_REQUEST }, piContext(ctx)),
+			);
+			await written.wait(piContext(ctx));
+		})();
+		const giving = session.givingContext;
+		try {
+			await giving;
+		} catch (error) {
+			// Recall or pinning failed: this prompt fails, and the next one tries again.
+			if (session.givingContext === giving) session.givingContext = undefined;
+			throw error;
+		}
+	};
+
 	const submit = async (
 		ctx: CallContext,
 		sessionId: SessionId,
@@ -823,6 +920,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
 		const chose = await applyChoice(ctx, session, input);
+		await giveContext(ctx, session, input.text);
 		const pi = await admitting(session, () =>
 			session.conversation.submit(
 				{

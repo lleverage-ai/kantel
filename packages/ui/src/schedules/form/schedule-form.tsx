@@ -25,7 +25,7 @@ import type { FormKind, ScheduleWrites } from "./schedule-writes.ts";
 import "./schedule-form.css";
 
 export interface ScheduleFormProps {
-	/** `POST /v1/schedules`, `PATCH /v1/schedules/{id}` and `POST /v1/schedules/{id}/end`, or the fixtures. */
+	/** The schedules page's source, or any with its writes: `create`, `update` and `end`. */
 	readonly writes: ScheduleWrites;
 	/** The agents a task can ask, by name. */
 	readonly agents: readonly ScheduleAgent[];

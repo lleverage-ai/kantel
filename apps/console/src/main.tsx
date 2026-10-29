@@ -9,13 +9,14 @@ import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleVault } from "./api/oversight.ts";
+import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App } from "./app/app.tsx";
 import { createRecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
+import { createRecordedSchedules } from "./recorded/schedules.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { profileStore } from "./ui/profile.tsx";
 import "./ui/styles.css";
@@ -43,6 +44,9 @@ import "./ui/styles.css";
 //
 // The skills and memory pages follow the source too: on `api` the public API's skills and memory routes (`/v1/skills`,
 // `/v1/memory`), read-only; on `recorded` @harbour/ui's fixture stores in the page, with authoring and proposals.
+//
+// The schedules page runs on @harbour/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
+// sessions. On `api` it is not listed yet: the console gets it with a client for the public API's schedule routes.
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -65,8 +69,9 @@ let current: { sessionId: string; session: SessionClient } | undefined;
 let proposals: Readonly<Record<string, string>> | undefined;
 let recorded: RecordedClient | undefined;
 let client: ConsoleClient | undefined;
-if (source === "recorded") {
-	recorded = createRecordedClient(createCatalogue(Date.now(), { long: longUrl, small: smallUrl }), {
+const catalogue = source === "recorded" ? createCatalogue(Date.now(), { long: longUrl, small: smallUrl }) : undefined;
+if (catalogue !== undefined) {
+	recorded = createRecordedClient(catalogue, {
 		speed: Number(params.get("speed") ?? "1") || 1,
 		openDelayMs: Number(params.get("delay") ?? "600"),
 		// With ?profile=1 the Profiler counts start here, with the rows already shown as the baseline.
@@ -104,16 +109,22 @@ type Oversight = {
 	readonly vault?: ConsoleVault;
 	readonly audit?: ConsoleAudit;
 	readonly keys?: ConsoleKeys;
+	readonly schedules?: ConsoleSchedules;
 	readonly agent?: ConsoleAgent;
 };
 const recordedOversight: Promise<Oversight> | undefined =
-	source === "recorded"
-		? Promise.all([createRecordedOversight(), createRecordedAgent()]).then(
-				([made, agent]: [RecordedOversight, ConsoleAgent]): Oversight => {
-					proposals = made.proposals;
-					return { vault: made.vault, audit: made.audit, agent };
-				},
-			)
+	catalogue !== undefined
+		? Promise.all([
+				createRecordedOversight(),
+				// A schedule's task runs name the recorded Harbour project's sessions, so their links open.
+				createRecordedSchedules(
+					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
+				),
+				createRecordedAgent(),
+			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, ConsoleAgent]): Oversight => {
+				proposals = made.proposals;
+				return { vault: made.vault, audit: made.audit, schedules, agent };
+			})
 		: undefined;
 
 /** The console once its vault page and audit log are known: recorded ones, or the API's. */
@@ -122,13 +133,14 @@ function OversightConsole({ client, oversight }: { client: ConsoleClient; oversi
 }
 
 function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
-	const { vault, audit, keys, agent } = oversight;
+	const { vault, audit, keys, schedules, agent } = oversight;
 	return (
 		<App
 			client={client}
 			{...(vault === undefined ? {} : { vault })}
 			{...(audit === undefined ? {} : { audit })}
 			{...(keys === undefined ? {} : { keys })}
+			{...(schedules === undefined ? {} : { schedules })}
 			{...(agent === undefined ? {} : { agent })}
 			onOpen={onOpen}
 		/>

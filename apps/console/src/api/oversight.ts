@@ -15,6 +15,8 @@ import type {
 	MemoryPageSource,
 	OwnerChoice,
 	PasskeyCheck,
+	ScheduleFormSettings,
+	SchedulesSource,
 	SkillsAuthor,
 	SkillsSource,
 	VaultRequest,
@@ -75,6 +77,21 @@ export interface ConsoleAgent {
 	readonly projects?: readonly { readonly id: string; readonly name: string }[];
 	/** Concept IDs recalled whatever the query, where the host names a profile. */
 	readonly profile?: readonly string[];
+}
+
+/**
+ * The organisation's schedules as the signed-in person may see and change them. `source` is one call per schedule
+ * route in the public API (`/v1/schedules`, see `SchedulesSource`), so the API's client fits as it is; on
+ * `source=recorded` it is @harbour/ui's fixtures, in the page (`recorded/schedules.ts`).
+ */
+export interface ConsoleSchedules {
+	readonly source: SchedulesSource;
+	/** Names for the people, agents and projects schedules name. */
+	readonly directory: AuditDirectory;
+	/** New schedule and Edit, for a person who may make them; absent, the page reads, pauses and resumes only. */
+	readonly form?: ScheduleFormSettings;
+	/** The time the page measures from, for a fixture host whose store keeps its own clock. Default now. */
+	readonly now?: number;
 }
 
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */

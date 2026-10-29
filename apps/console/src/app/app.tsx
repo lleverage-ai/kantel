@@ -12,7 +12,7 @@ import {
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleVault } from "../api/oversight.ts";
+import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
@@ -30,11 +30,13 @@ import {
 	parseRoute,
 	projectPath,
 	type Route,
+	schedulesPath,
 	sessionPath,
 	skillsPath,
 	usePathname,
 	VAULT_PATH,
 } from "./router.ts";
+import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
 import { VaultScreen } from "./vault-screen.tsx";
@@ -151,23 +153,33 @@ function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
 	);
 }
 
-/** The organisation's pages: the vault, the audit log and API keys, each shown when the console has a seam for it. */
+/**
+ * The organisation's pages: schedules, the vault, the audit log and API keys, each shown when the console has a seam
+ * for it.
+ */
 function OrganisationNav({
 	route,
+	schedules,
 	vault,
 	audit,
 	keys,
 }: {
 	route: Route;
+	schedules: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
 }) {
-	if (!vault && !audit && !keys) return null;
+	if (!schedules && !vault && !audit && !keys) return null;
 	return (
 		<nav className="shell-organisation" aria-label="Organisation">
 			<h2 className="shell-heading">Organisation</h2>
 			<ul className="shell-rows">
+				{schedules ? (
+					<li>
+						<ListRow title="Schedules" href={schedulesPath()} selected={route.name === "schedules"} />
+					</li>
+				) : null}
 				{vault ? (
 					<li>
 						<ListRow
@@ -198,6 +210,7 @@ export function App({
 	audit,
 	keys,
 	agent,
+	schedules,
 	onOpen,
 }: {
 	client: ConsoleClient;
@@ -209,6 +222,8 @@ export function App({
 	keys?: ConsoleKeys;
 	/** The skills and memory pages' seam; without it there's no Agent section in the sidebar. */
 	agent?: ConsoleAgent;
+	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
+	schedules?: ConsoleSchedules;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -221,11 +236,13 @@ export function App({
 			? route.projectId
 			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
+	// A link to a session by its ID alone (a schedule's run): its project is read, then the link becomes its path.
+	const linkedSession = route.name === "session-link" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
 	const list = useSessionList(client, project?.id);
 	const [live, setLive] = useState<LiveSummary>();
 	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
-	const sessionProject = useSessionProject(client, sessionId);
+	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
 
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
@@ -235,6 +252,12 @@ export function App({
 		const first = projects?.[0];
 		if (route.name === "home" && first !== undefined) navigate(projectPath(first.id), { replace: true });
 	}, [route.name, projects]);
+
+	// A session linked by its ID alone goes to its path once its project is known.
+	useEffect(() => {
+		if (linkedSession === undefined || sessionProject === "pending" || sessionProject === undefined) return;
+		navigate(sessionPath(sessionProject, linkedSession), { replace: true });
+	}, [linkedSession, sessionProject]);
 
 	const hrefFor = useCallback((id: string) => sessionPath(projectId ?? "", id), [projectId]);
 	const back = useCallback(() => navigate(projectPath(projectId ?? "")), [projectId]);
@@ -263,14 +286,17 @@ export function App({
 	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
 	const keysRoute = keys !== undefined && route.name === "keys";
+	const schedulesRoute = schedules !== undefined && route.name === "schedules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
-	const organisationPage = vaultRoute || auditRoute || keysRoute || agentRoute;
+	const organisationPage = vaultRoute || auditRoute || keysRoute || schedulesRoute || agentRoute;
 	const missing =
 		route.name === "not-found" ||
+		(linkedSession !== undefined && sessionProject === undefined) ||
 		((route.name === "vault" ||
 			route.name === "vault-request" ||
 			route.name === "audit" ||
 			route.name === "keys" ||
+			route.name === "schedules" ||
 			route.name === "skills" ||
 			route.name === "memory") &&
 			!organisationPage);
@@ -345,6 +371,23 @@ export function App({
 				/>
 			</div>
 		);
+	} else if (schedulesRoute && schedules !== undefined && route.name === "schedules") {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<SchedulesScreen
+					schedules={schedules}
+					{...(route.scheduleId === undefined ? {} : { scheduleId: route.scheduleId })}
+					creating={route.creating === true}
+				/>
+			</div>
+		);
+	} else if (linkedSession !== undefined && sessionProject !== undefined) {
+		main = (
+			<div className="shell-empty">
+				<Spinner label="Opening the session" />
+			</div>
+		);
 	} else if (missing || unknownProject) {
 		main = (
 			<div className="shell-empty">
@@ -414,7 +457,15 @@ export function App({
 	}
 
 	const newSession = route.name === "new-session" && project !== undefined;
-	const pane = sessionId !== undefined || newSession || missing || unknownProject || organisationPage ? "main" : "list";
+	const pane =
+		sessionId !== undefined ||
+		linkedSession !== undefined ||
+		newSession ||
+		missing ||
+		unknownProject ||
+		organisationPage
+			? "main"
+			: "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
 	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
@@ -445,6 +496,7 @@ export function App({
 				<AgentNav route={route} agent={agent !== undefined} />
 				<OrganisationNav
 					route={route}
+					schedules={schedules !== undefined}
 					vault={vault !== undefined}
 					audit={audit !== undefined}
 					keys={keys !== undefined}
