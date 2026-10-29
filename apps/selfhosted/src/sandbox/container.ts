@@ -17,6 +17,15 @@
 //   a volume through to the host.
 // - TLS: the vault intercepts HTTPS, so the vault's CA goes in with the
 //   workspace and every TLS client is pointed at it.
+// - Labels: every container and network carries its stack (`harbour.stack`)
+//   and the host incarnation that made it (`harbour.sandbox-owner`). Several
+//   stacks share one Docker daemon (a second compose stack, CI on the same
+//   machine), and each one's janitor removes only its own stack's leftovers:
+//   another stack's owners are not in this stack's database, so they would
+//   all look dead. The owner label was `harbour.owner` before; hosts still
+//   running that code reap every container with it, so new ones do not carry
+//   it. What such a host left behind is this stack's when this stack's vault
+//   is on its network, and is reaped on that evidence alone.
 
 import type pg from "pg";
 import type {
@@ -37,6 +46,11 @@ export interface ContainerRunnerOptions {
 	network: string;
 	/** The vault proxy's container, connected to each sandbox network. */
 	vaultContainer: string;
+	/**
+	 * The stack this host belongs to, which its containers and networks are labelled with and its janitor is limited
+	 * to. Default: `vaultContainer`, whose name Docker keeps unique on the daemon, and which is per stack already.
+	 */
+	stack?: string;
 	proxyUrl: string;
 	memoryBytes: number;
 	nanoCpus: number;
@@ -44,6 +58,12 @@ export interface ContainerRunnerOptions {
 
 const decoder = new TextDecoder();
 const CA_PATH = "/etc/harbour/ca.crt";
+
+export const STACK_LABEL = "harbour.stack";
+export const OWNER_LABEL = "harbour.sandbox-owner";
+export const SESSION_LABEL = "harbour.session";
+/** The owner label before `harbour.stack`, on what hosts on that code made. */
+export const LEGACY_OWNER_LABEL = "harbour.owner";
 
 /** Docker's multiplexed log stream: 8-byte frame headers, stream 1 stdout, 2 stderr. */
 function demux(bytes: Uint8Array): { stdout: string; stderr: string } {
@@ -92,7 +112,8 @@ export class ContainerRunner implements SandboxTierRunner {
 	 * killed host left between `create` and its own cleanup.
 	 */
 	async reapDeadOwners(isAlive: (owner: string) => Promise<boolean>): Promise<number> {
-		const filters = encodeURIComponent(JSON.stringify({ label: ["harbour.owner"] }));
+		const mine = { label: [`${STACK_LABEL}=${this.stack}`, OWNER_LABEL] };
+		const filters = encodeURIComponent(JSON.stringify(mine));
 		const list = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as {
 			Id: string;
 			Labels: Record<string, string>;
@@ -105,24 +126,78 @@ export class ContainerRunner implements SandboxTierRunner {
 			return alive.get(owner) === false;
 		};
 		for (const container of list) {
-			if (!(await dead(container.Labels["harbour.owner"]))) continue;
+			// Docker applied the filter; check again, so a daemon that ignored it cannot make this reap another stack.
+			if (container.Labels[STACK_LABEL] !== this.stack) continue;
+			if (!(await dead(container.Labels[OWNER_LABEL]))) continue;
 			await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" }).catch(() => undefined);
 			removed++;
 		}
-		for (const network of await this.#networks({ label: ["harbour.owner"] })) {
-			if (await dead(network.Labels["harbour.owner"])) await this.#removeNetwork(network.Id);
+		for (const network of await this.#networks(mine)) {
+			if (network.Labels[STACK_LABEL] !== this.stack) continue;
+			if (await dead(network.Labels[OWNER_LABEL])) await this.#removeNetwork(network.Id);
+		}
+		return removed + (await this.#reapLegacy(dead));
+	}
+
+	/**
+	 * Leftovers of dead hosts on the code before the stack label: `harbour.owner` and no stack. Each sandbox network had
+	 * its stack's vault on it, and Docker keeps the vault's name unique on the daemon, so a network with this stack's
+	 * vault on it is this stack's, and so is every container on it. One whose vault has been recreated since (and lost
+	 * its networks) can't be told apart, and is left alone.
+	 */
+	async #reapLegacy(dead: (owner: string | undefined) => Promise<boolean>): Promise<number> {
+		const legacy = { label: [LEGACY_OWNER_LABEL] };
+		const networks = (await this.#networks(legacy)).filter((network) => network.Labels[STACK_LABEL] === undefined);
+		if (networks.length === 0) return 0;
+		const filters = encodeURIComponent(JSON.stringify(legacy));
+		const containers = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as {
+			Id: string;
+			Labels: Record<string, string>;
+			HostConfig?: { NetworkMode?: string };
+		}[];
+		let removed = 0;
+		for (const network of networks) {
+			if (!(await dead(network.Labels[LEGACY_OWNER_LABEL]))) continue;
+			const inspected = (await (await this.docker(`/networks/${network.Id}`)).json()) as {
+				Containers?: Record<string, { Name: string }>;
+			};
+			const members = Object.values(inspected.Containers ?? {});
+			if (!members.some((member) => member.Name === this.options.vaultContainer)) continue;
+			for (const container of containers) {
+				if (container.Labels[STACK_LABEL] !== undefined || container.HostConfig?.NetworkMode !== network.Id) continue;
+				await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" }).catch(() => undefined);
+				removed++;
+			}
+			await this.#removeNetwork(network.Id);
 		}
 		return removed;
 	}
 
 	/** Remove containers (and their networks) a dead owner left behind for this session. */
 	async reap(sessionId: string): Promise<number> {
-		const filters = encodeURIComponent(JSON.stringify({ label: [`harbour.session=${sessionId}`] }));
-		const list = (await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as { Id: string }[];
+		const ours = { label: [`${SESSION_LABEL}=${sessionId}`, `${STACK_LABEL}=${this.stack}`] };
+		const filters = encodeURIComponent(JSON.stringify(ours));
+		const isOurs = (labels: Record<string, string>) =>
+			labels[SESSION_LABEL] === sessionId && labels[STACK_LABEL] === this.stack;
+		const list = (
+			(await (await this.docker(`/containers/json?all=1&filters=${filters}`)).json()) as {
+				Id: string;
+				Labels: Record<string, string>;
+			}[]
+		).filter((container) => isOurs(container.Labels));
 		for (const container of list) await this.docker(`/containers/${container.Id}?force=1&v=1`, { method: "DELETE" });
-		for (const network of await this.#networks({ label: [`harbour.session=${sessionId}`] }))
-			await this.#removeNetwork(network.Id);
+		for (const network of await this.#networks(ours)) {
+			if (isOurs(network.Labels)) await this.#removeNetwork(network.Id);
+		}
 		return list.length;
+	}
+
+	get stack(): string {
+		return this.options.stack ?? this.options.vaultContainer;
+	}
+
+	#labels(sessionId: string): Record<string, string> {
+		return { [SESSION_LABEL]: sessionId, [STACK_LABEL]: this.stack, [OWNER_LABEL]: this.owner };
 	}
 
 	async #networks(filter: Record<string, string[]>): Promise<{ Id: string; Labels: Record<string, string> }[]> {
@@ -145,7 +220,7 @@ export class ContainerRunner implements SandboxTierRunner {
 					Name: `${this.options.network}-${token.slice(0, 12)}`,
 					Driver: "bridge",
 					Internal: true,
-					Labels: { "harbour.session": sessionId, "harbour.owner": this.owner },
+					Labels: this.#labels(sessionId),
 				},
 			})
 		).json()) as { Id: string };
@@ -262,7 +337,7 @@ export class ContainerRunner implements SandboxTierRunner {
 							),
 							...Object.entries(request.env ?? {}).map(([k, v]) => `${k}=${v}`),
 						],
-						Labels: { "harbour.session": request.sessionId, "harbour.owner": this.owner, "harbour.tier": "container" },
+						Labels: { ...this.#labels(request.sessionId), "harbour.tier": "container" },
 						HostConfig: {
 							NetworkMode: network.id,
 							ExtraHosts: [`${vaultHost}:${network.vaultIp}`],

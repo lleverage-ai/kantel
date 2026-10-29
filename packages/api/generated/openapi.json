@@ -728,6 +728,1002 @@
 					}
 				}
 			}
+		},
+		"/skills": {
+			"get": {
+				"operationId": "listSkills",
+				"summary": "List skills",
+				"description": "The published skills the caller sees, by name: the platform's, the organisation's, the project's named by `projectId` and, for a person, their own. Never another project's or another person's.",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"description": "Also list this project's skills. Needs the viewer role on it.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of skills.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillListingPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}": {
+			"get": {
+				"operationId": "getSkill",
+				"summary": "Get a skill",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The skill's package: its owner, latest revision and source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillPackage"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}/revisions": {
+			"get": {
+				"operationId": "listSkillRevisions",
+				"summary": "List a skill's revisions",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of revisions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillRevisionPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}/revisions/{revision}": {
+			"get": {
+				"operationId": "getSkillRevision",
+				"summary": "Get a revision",
+				"description": "A published revision: its digest, its files' paths and sizes, who published it and where it came from.",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "revision",
+						"in": "path",
+						"required": true,
+						"description": "The revision number.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[1-9][0-9]{0,8}$"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The revision.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillRevision"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}/revisions/{revision}/file": {
+			"get": {
+				"operationId": "readSkillFile",
+				"summary": "Read a file of a revision",
+				"description": "One file of a published revision, such as its `SKILL.md`, by its path in the package.",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "revision",
+						"in": "path",
+						"required": true,
+						"description": "The revision number.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[1-9][0-9]{0,8}$"
+						}
+					},
+					{
+						"name": "path",
+						"in": "query",
+						"required": true,
+						"description": "The file's path in the package, such as `SKILL.md`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The file.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillFileContent"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/import": {
+			"post": {
+				"operationId": "importSkill",
+				"summary": "Import a skill from a host's source",
+				"description": "A host adapter's publish path: creates the skill if needed and publishes the files as its next revision, once per `source` (`sourceId` and `ref`); files identical to the latest revision publish nothing. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role.",
+				"tags": ["skills"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ImportSkillBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The revision the files are now.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillRevision"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces": {
+			"get": {
+				"operationId": "listMemorySpaces",
+				"summary": "List memory spaces",
+				"description": "The spaces the caller may read, oldest first: the organisation's, a project's to those who may view it, and a person's own. A person never sees another person's space.",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of spaces.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySpacePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createMemorySpace",
+				"summary": "Create a memory space",
+				"description": "People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role.",
+				"tags": ["memory"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateMemorySpaceBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new space.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySpace"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces/{spaceId}/concepts": {
+			"get": {
+				"operationId": "listConcepts",
+				"summary": "List a space's concepts",
+				"description": "By ID, every status unless `status` names one.",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "spaceId",
+						"in": "path",
+						"required": true,
+						"description": "The space's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/ConceptStatus"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of concepts.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConceptPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces/{spaceId}/concepts/{conceptId}": {
+			"get": {
+				"operationId": "getConcept",
+				"summary": "Get a concept",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "spaceId",
+						"in": "path",
+						"required": true,
+						"description": "The space's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "conceptId",
+						"in": "path",
+						"required": true,
+						"description": "The concept's ID, its slashes encoded (`projects%2Fharbour%2Fregion`).",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The concept.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Concept"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/search": {
+			"post": {
+				"operationId": "searchMemory",
+				"summary": "Search memory",
+				"description": "Keyword search over the named spaces' concepts, best first, as a person browsing them would.",
+				"tags": ["memory"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MemorySearchBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The matches.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySearchResult"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/recall": {
+			"post": {
+				"operationId": "recallMemory",
+				"summary": "Recall memory for a task",
+				"description": "What a session would be given for this query: the profile, the best matches (BM25) and their exceptions, rendered, with a manifest of what was recalled and why.",
+				"tags": ["memory"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RecallBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The recall.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Recall"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces/{spaceId}/snapshot": {
+			"post": {
+				"operationId": "importMemorySnapshot",
+				"summary": "Load a snapshot into a space",
+				"description": "A host adapter's load path: the space's concepts become the snapshot's, recorded with its source and ref, so every recall names what it read. People and API keys only; a deployment may ask for more.",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "spaceId",
+						"in": "path",
+						"required": true,
+						"description": "The space's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MemorySnapshot"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The space, with its snapshot.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySpace"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -927,6 +1923,179 @@
 				},
 				"title": "CardItem"
 			},
+			"Concept": {
+				"type": "object",
+				"required": [
+					"spaceId",
+					"id",
+					"title",
+					"statement",
+					"scope",
+					"sources",
+					"tags",
+					"setBy",
+					"version",
+					"status",
+					"updatedAt"
+				],
+				"properties": {
+					"spaceId": {
+						"type": "string"
+					},
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A stable path, such as `projects/harbour/vault-binding-codes`."
+					},
+					"title": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"statement": {
+						"type": "string",
+						"description": "The fact itself, short."
+					},
+					"scope": {
+						"$ref": "#/components/schemas/ConceptScope"
+					},
+					"sources": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs."
+					},
+					"staleAfter": {
+						"type": "integer",
+						"description": "After this, recall marks it stale (epoch milliseconds)."
+					},
+					"overrides": {
+						"type": "string",
+						"description": "A job exception's general concept."
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					},
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"setBy": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "owner"
+							},
+							{
+								"type": "string",
+								"const": "learned"
+							}
+						],
+						"description": "`owner`: set by the space's owner. `learned`: from an approved agent proposal."
+					},
+					"version": {
+						"type": "integer",
+						"description": "Increases with every change."
+					},
+					"status": {
+						"$ref": "#/components/schemas/ConceptStatus"
+					},
+					"supersededBy": {
+						"type": "string"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Concept"
+			},
+			"ConceptPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Concept"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ConceptPage"
+			},
+			"ConceptScope": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "global"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "project"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"project": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "job"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "job"
+							},
+							"job": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "ConceptScope",
+				"description": "Where a concept applies. A `job` concept is an exception for one job."
+			},
+			"ConceptStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "active"
+					},
+					{
+						"type": "string",
+						"const": "superseded"
+					},
+					{
+						"type": "string",
+						"const": "forgotten"
+					}
+				],
+				"title": "ConceptStatus"
+			},
 			"CreatedSession": {
 				"type": "object",
 				"required": [
@@ -988,6 +2157,20 @@
 				},
 				"title": "CreatedSession",
 				"description": "A new session, with its first message's submission when it was sent one."
+			},
+			"CreateMemorySpaceBody": {
+				"type": "object",
+				"required": ["owner", "name"],
+				"properties": {
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"title": "CreateMemorySpaceBody"
 			},
 			"CreateSessionBody": {
 				"type": "object",
@@ -1247,6 +2430,47 @@
 				},
 				"title": "HistoryPage"
 			},
+			"ImportSkillBody": {
+				"type": "object",
+				"required": ["owner", "name", "description", "files", "source"],
+				"properties": {
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1
+					},
+					"description": {
+						"type": "string",
+						"minLength": 1
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SkillFile"
+						},
+						"description": "Every file of the package, `SKILL.md` among them."
+					},
+					"source": {
+						"$ref": "#/components/schemas/SourceRef"
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					}
+				},
+				"title": "ImportSkillBody"
+			},
+			"JsonValue": {
+				"title": "JsonValue",
+				"description": "Any JSON value."
+			},
 			"Labels": {
 				"type": "object",
 				"patternProperties": {
@@ -1256,6 +2480,149 @@
 				},
 				"title": "Labels",
 				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+			},
+			"MemorySearchBody": {
+				"type": "object",
+				"required": ["spaceIds", "query"],
+				"properties": {
+					"spaceIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"description": "The spaces to read."
+					},
+					"query": {
+						"type": "string"
+					},
+					"limit": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 10,
+						"description": "Default 5."
+					},
+					"includeInactive": {
+						"type": "boolean",
+						"description": "Also list superseded and forgotten concepts, scoring a quarter."
+					}
+				},
+				"title": "MemorySearchBody"
+			},
+			"MemorySearchHit": {
+				"type": "object",
+				"required": ["concept", "score", "stale", "snippet"],
+				"properties": {
+					"concept": {
+						"$ref": "#/components/schemas/Concept"
+					},
+					"score": {
+						"type": "number"
+					},
+					"stale": {
+						"type": "boolean"
+					},
+					"snippet": {
+						"type": "string",
+						"description": "The first statement line holding a term, cut to 160 characters."
+					}
+				},
+				"title": "MemorySearchHit"
+			},
+			"MemorySearchResult": {
+				"type": "object",
+				"required": ["hits"],
+				"properties": {
+					"hits": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/MemorySearchHit"
+						}
+					}
+				},
+				"title": "MemorySearchResult"
+			},
+			"MemorySnapshot": {
+				"type": "object",
+				"required": ["sourceId", "ref", "concepts"],
+				"properties": {
+					"sourceId": {
+						"type": "string",
+						"minLength": 1
+					},
+					"ref": {
+						"type": "string",
+						"minLength": 1
+					},
+					"concepts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SnapshotConcept"
+						}
+					}
+				},
+				"title": "MemorySnapshot",
+				"description": "A whole space's concepts at one ref of a source."
+			},
+			"MemorySnapshotRef": {
+				"type": "object",
+				"required": ["sourceId", "ref", "importedAt"],
+				"properties": {
+					"sourceId": {
+						"type": "string"
+					},
+					"ref": {
+						"type": "string"
+					},
+					"importedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "MemorySnapshotRef",
+				"description": "Where a space's snapshot came from, and when it was imported."
+			},
+			"MemorySpace": {
+				"type": "object",
+				"required": ["id", "owner", "name", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The space's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"snapshot": {
+						"$ref": "#/components/schemas/MemorySnapshotRef"
+					}
+				},
+				"title": "MemorySpace"
+			},
+			"MemorySpacePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/MemorySpace"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "MemorySpacePage"
 			},
 			"MessageBody": {
 				"type": "object",
@@ -1339,6 +2706,67 @@
 				},
 				"title": "NoticeItem"
 			},
+			"OwnerRef": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "platform"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "organisation"
+							},
+							"organisationId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId", "projectId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"organisationId": {
+								"type": "string"
+							},
+							"projectId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "user"
+							},
+							"organisationId": {
+								"type": "string"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "OwnerRef",
+				"description": "Who owns a record: an organisation, a project, a user, or the platform."
+			},
 			"QuestionCard": {
 				"type": "object",
 				"required": ["type", "questionId", "text", "status"],
@@ -1380,6 +2808,173 @@
 					}
 				},
 				"title": "QuestionCard"
+			},
+			"Recall": {
+				"type": "object",
+				"required": ["concepts", "manifest", "text", "skipped", "profileOmitted", "truncated"],
+				"properties": {
+					"concepts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Concept"
+						}
+					},
+					"manifest": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/RecallManifestEntry"
+						},
+						"description": "What was recalled and why, in the same order."
+					},
+					"text": {
+						"type": "string",
+						"description": "The recall as a prompt shows it."
+					},
+					"skipped": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["conceptId", "reason"],
+							"properties": {
+								"conceptId": {
+									"type": "string"
+								},
+								"reason": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"profileOmitted": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"truncated": {
+						"type": "boolean"
+					}
+				},
+				"title": "Recall"
+			},
+			"RecallBody": {
+				"type": "object",
+				"required": ["spaceIds", "query"],
+				"properties": {
+					"spaceIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"description": "The spaces to read."
+					},
+					"query": {
+						"type": "string",
+						"description": "The task or message text to search by."
+					},
+					"scopes": {
+						"type": "object",
+						"properties": {
+							"projects": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							},
+							"jobs": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"profile": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Concept IDs recalled whatever the query, within their own limits."
+					},
+					"exclude": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Concept IDs never recalled."
+					},
+					"maxConcepts": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Default 5 search matches."
+					},
+					"maxBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Default 4096."
+					},
+					"maxProfileConcepts": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"maxProfileBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Default 24576."
+					}
+				},
+				"title": "RecallBody"
+			},
+			"RecallManifestEntry": {
+				"type": "object",
+				"required": ["spaceId", "conceptId", "version", "reason", "stale", "truncated"],
+				"properties": {
+					"spaceId": {
+						"type": "string"
+					},
+					"conceptId": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer"
+					},
+					"reason": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "profile"
+							},
+							{
+								"type": "string",
+								"const": "search"
+							},
+							{
+								"type": "string",
+								"const": "exception"
+							}
+						]
+					},
+					"score": {
+						"type": "number"
+					},
+					"matched": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"stale": {
+						"type": "boolean"
+					},
+					"truncated": {
+						"type": "boolean"
+					},
+					"snapshotRef": {
+						"type": "string"
+					}
+				},
+				"title": "RecallManifestEntry"
 			},
 			"ServerFrame": {
 				"anyOf": [
@@ -1657,6 +3252,289 @@
 					}
 				],
 				"title": "SessionStatus"
+			},
+			"SkillFile": {
+				"type": "object",
+				"required": ["path", "content"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "A relative path inside the package, such as `SKILL.md` or `scripts/run.sh`."
+					},
+					"content": {
+						"type": "string"
+					}
+				},
+				"title": "SkillFile"
+			},
+			"SkillFileContent": {
+				"type": "object",
+				"required": ["path", "content"],
+				"properties": {
+					"path": {
+						"type": "string"
+					},
+					"content": {
+						"type": "string"
+					}
+				},
+				"title": "SkillFileContent",
+				"description": "One file of a revision, as UTF-8 text."
+			},
+			"SkillListing": {
+				"type": "object",
+				"required": ["skillId", "name", "description", "revision", "path"],
+				"properties": {
+					"skillId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"revision": {
+						"type": "integer",
+						"description": "The latest published revision."
+					},
+					"path": {
+						"type": "string",
+						"description": "Where a session finds it, such as `/skills/pr-review/SKILL.md`."
+					}
+				},
+				"title": "SkillListing",
+				"description": "What a session is shown of a skill: enough to decide whether to read it."
+			},
+			"SkillListingPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SkillListing"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SkillListingPage"
+			},
+			"SkillPackage": {
+				"type": "object",
+				"required": ["id", "owner", "name", "description", "createdAt", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The skill's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"description": "Unique per owner: lowercase letters, digits and dashes."
+					},
+					"description": {
+						"type": "string"
+					},
+					"latestRevision": {
+						"type": "integer",
+						"description": "The newest published revision."
+					},
+					"draftDigest": {
+						"type": "string",
+						"description": "Present while a draft is open."
+					},
+					"source": {
+						"$ref": "#/components/schemas/SourceRef"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SkillPackage"
+			},
+			"SkillRevision": {
+				"type": "object",
+				"required": ["skillId", "revision", "digest", "name", "description", "files", "publishedBy", "publishedAt"],
+				"properties": {
+					"skillId": {
+						"type": "string"
+					},
+					"revision": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "1, 2, 3… per skill. A published revision never changes."
+					},
+					"digest": {
+						"type": "string",
+						"description": "Hex SHA-256 over the sorted paths and contents."
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["path", "size"],
+							"properties": {
+								"path": {
+									"type": "string"
+								},
+								"size": {
+									"type": "integer",
+									"description": "Bytes, UTF-8."
+								}
+							}
+						}
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					},
+					"publishedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"publishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"source": {
+						"$ref": "#/components/schemas/SourceRef"
+					}
+				},
+				"title": "SkillRevision"
+			},
+			"SkillRevisionPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SkillRevision"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SkillRevisionPage"
+			},
+			"SnapshotConcept": {
+				"type": "object",
+				"required": ["id", "title", "statement", "scope", "sources", "setBy", "status", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A stable path, such as `projects/harbour/vault-binding-codes`."
+					},
+					"title": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"statement": {
+						"type": "string",
+						"description": "The fact itself, short."
+					},
+					"scope": {
+						"$ref": "#/components/schemas/ConceptScope"
+					},
+					"sources": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs."
+					},
+					"staleAfter": {
+						"type": "integer",
+						"description": "After this, recall marks it stale (epoch milliseconds)."
+					},
+					"overrides": {
+						"type": "string",
+						"description": "A job exception's general concept."
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					},
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"setBy": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "owner"
+							},
+							{
+								"type": "string",
+								"const": "learned"
+							}
+						],
+						"description": "`owner`: set by the space's owner. `learned`: from an approved agent proposal."
+					},
+					"status": {
+						"$ref": "#/components/schemas/ConceptStatus"
+					},
+					"supersededBy": {
+						"type": "string"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SnapshotConcept",
+				"description": "One concept as a host's source holds it."
+			},
+			"SourceRef": {
+				"type": "object",
+				"required": ["sourceId", "ref"],
+				"properties": {
+					"sourceId": {
+						"type": "string",
+						"description": "The host's skill or memory source, such as `sal-skills`."
+					},
+					"ref": {
+						"type": "string",
+						"description": "Its ref: a commit or a version."
+					}
+				},
+				"title": "SourceRef",
+				"description": "Where a host's adapter imported something from."
 			},
 			"Submission": {
 				"type": "object",

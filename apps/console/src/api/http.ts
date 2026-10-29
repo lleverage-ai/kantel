@@ -14,6 +14,10 @@
 //   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
+// - A session on a repository: New session lists its branches (`GET /v1/git/branches`), then creates the workspace
+//   from the repository at the branch (`POST /v1/workspaces`, a git seed) and the session on it (`workspaceId`).
+//   Seeding writes files and never acquires a sandbox; the repository's credentials, when it needs any, are the
+//   gateway's (the vault's egress), never the console's.
 
 import {
 	type AgentProfile,
@@ -32,6 +36,7 @@ import type {
 	ConsoleClient,
 	ModelChoices,
 	ProjectSummary,
+	RepositoryBranches,
 	SendOptions,
 	SessionControl,
 	StartAccess,
@@ -485,11 +490,33 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			return { agentId: agent.id, agentName: agent.name };
 		},
 
-		async create(input) {
+		branches: (projectId, repo, signal) =>
+			getJson<RepositoryBranches>(`${base}/git/branches?${new URLSearchParams({ projectId, repo })}`, signal),
+
+		async create({ repository, ...input }) {
+			let workspaceId: string | undefined;
+			if (repository !== undefined) {
+				const seeded = await call(`${base}/workspaces`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						projectId: input.projectId,
+						seed: {
+							name: repository.repo,
+							sources: [{ kind: "git", repo: repository.repo, ref: repository.branch }],
+						},
+					}),
+				});
+				workspaceId = ((await seeded.json()) as { id: string }).id;
+			}
 			const response = await call(`${base}/sessions`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify(input),
+				body: JSON.stringify({
+					...input,
+					...(workspaceId === undefined ? {} : { workspaceId }),
+					...(repository === undefined ? {} : { labels: { repo: repository.repo, branch: repository.branch } }),
+				}),
 			});
 			const record = (await response.json()) as SessionRecord;
 			projectOfSession.set(record.id, record.projectId);
