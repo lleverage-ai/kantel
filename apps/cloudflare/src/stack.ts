@@ -12,6 +12,8 @@
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
  * - `workspaces`: workspace heads, versions and blobs (R2). A seed's git source is fetched as a GitHub tarball
  *   (`createGitHubTarballFetcher`, #81) over `StackOptions.gitFetch`;
+ * - skills (#12): packages, revisions and pins in `sql`, each file's body in `skillObjects` (R2);
+ * - memory (#12): spaces, concepts and proposals in `sql`;
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  *
@@ -32,12 +34,14 @@ import {
 	type IdentityDirectory,
 	isHarbourError,
 	type LeaseEndReason,
+	type Memory,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
 	type SessionRecord,
 	type SignInMethod,
+	type Skills,
 	type SystemContext,
 	systemClock,
 } from "@harbour/contracts";
@@ -45,6 +49,8 @@ import { createAuthenticator } from "@harbour/identity/authenticator";
 import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity/jwt";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createSqlIdentity, migrateIdentity } from "@harbour/identity/sql";
+import { createMemoryMemory } from "@harbour/memory/memory";
+import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import {
@@ -52,6 +58,8 @@ import {
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
+import { createMemorySkills } from "@harbour/skills/memory";
+import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
@@ -146,8 +154,13 @@ export interface SessionObjectStorage {
 
 /** Durable storage for the stack's parts. Each one left out is in memory, and gone when the stack is. */
 export interface StackStorage {
-	/** The identity directory and the audit store. Their migrations run on every start; each is idempotent. */
+	/**
+	 * The identity directory, the audit store, skills and memory. Their migrations run on every start; each is
+	 * idempotent.
+	 */
 	readonly sql?: SqlDriver;
+	/** Skill files' bodies, by their SHA-256 (`skills/org/<organisation>/<sha256>`). Needs `sql`. */
+	readonly skillObjects?: ObjectBucket;
 	/** The session runtime's store, each session's Pi storage and the alarm that resumes them. */
 	readonly sessions?: SessionObjectStorage;
 	readonly workspaces?: WorkspaceStore;
@@ -200,6 +213,10 @@ export interface Stack {
 	 */
 	readonly environment: (session: SessionRecord) => ExecutionEnv | undefined;
 	readonly audit: AuditStore;
+	/** Agent Skills packages and their revisions (#12). */
+	readonly skills: Skills;
+	/** Memory spaces and their concepts (#12). */
+	readonly memory: Memory;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -228,6 +245,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	if (driver !== undefined) {
 		await migrateIdentity(driver);
 		await migrateAudit(driver);
+		await migrateSkills(driver);
+		await migrateMemory(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -344,6 +363,17 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
 		});
 		const sandboxes = built;
+		// Skills and memory check project-owned records with the runtime's access, and audit into the one store. Memory
+		// renders recall with its default renderer: Harbour adds no prompt of its own.
+		const skillObjects = storage.skillObjects;
+		const skills =
+			driver === undefined || skillObjects === undefined
+				? createMemorySkills({ clock, audit, access })
+				: createSqlSkills({ driver, objects: skillObjects, clock, audit, access });
+		const memory =
+			driver === undefined
+				? createMemoryMemory({ clock, audit, access })
+				: createSqlMemory({ driver, clock, audit, access });
 
 		const { organisation, project, admin } = await bootstrap({
 			identity,
@@ -380,6 +410,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			sandboxes,
 			environment,
 			audit,
+			skills,
+			memory,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
