@@ -12,8 +12,12 @@
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
  * - `workspaces`: workspace heads, versions and blobs (R2). A seed's git source is fetched as a GitHub tarball
  *   (`createGitHubTarballFetcher`, #81) over `StackOptions.gitFetch`;
- * - skills (#12): packages, revisions and pins in `sql`, each file's body in `skillObjects` (R2);
- * - memory (#12): spaces, concepts and proposals in `sql`;
+ * - skills (#12): packages, revisions and pins in `sql`, each file's body in `skillObjects` (R2). A session pins what
+ *   it may see on its first prompt, lists the skills its profile names (Pi's `<available_skills>` block,
+ *   `renderSkillListings`) and reads them read-only at `/skills` on its workspace (`src/skills-mount.ts`);
+ * - memory (#12): spaces, concepts and proposals in `sql`. A session whose profile names memory spaces gets their recall
+ *   on its first prompt, in the store's default rendering, and the `memory_search` and `memory_read` tools
+ *   (`src/session-memory.ts`);
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  * - the schedules (#23): their store on `sql` beside identity and audit, and `@harbour/schedules`' runner
@@ -56,6 +60,7 @@ import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
+import { defaultRecallRenderer } from "@harbour/memory";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
@@ -69,11 +74,13 @@ import type { CheckExecutor } from "@harbour/schedules/handlers";
 import { createMemorySchedules } from "@harbour/schedules/memory";
 import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
 import { createMemorySkills } from "@harbour/skills/memory";
+import { renderSkillListings } from "@harbour/skills/sources";
 import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
+import { createSkillsMountSource, sessionSkillVisibility } from "@harbour/workspace/mounts";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
@@ -99,6 +106,8 @@ import {
 } from "./sandboxes.ts";
 import { isolateCheckExecutor } from "./schedule-checks.ts";
 import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules.ts";
+import { sessionMemory } from "./session-memory.ts";
+import { SKILLS_MOUNT_ROOT, sessionSkillsMount } from "./skills-mount.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -375,6 +384,37 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 						return bootstrapAdmin;
 					},
 				});
+	// Skills and memory check project-owned records with the runtime's access (asked for per call, as the audit store
+	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Harbour
+	// adds no prompt of its own, so the listing is Pi's block of the skills a profile names, and recall is the memory
+	// store's default rendering, both placed by the runtime before a session's first prompt.
+	const skillObjects = storage.skillObjects;
+	const skills =
+		driver === undefined || skillObjects === undefined
+			? createMemorySkills({ clock, audit, access: auditAccess, mountRoot: SKILLS_MOUNT_ROOT })
+			: createSqlSkills({
+					driver,
+					objects: skillObjects,
+					clock,
+					audit,
+					access: auditAccess,
+					mountRoot: SKILLS_MOUNT_ROOT,
+				});
+	const memory =
+		driver === undefined
+			? createMemoryMemory({ clock, audit, access: auditAccess, renderer: defaultRecallRenderer })
+			: createSqlMemory({ driver, clock, audit, access: auditAccess, renderer: defaultRecallRenderer });
+	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
+	// for without a version pins the session's skills as its own project sees them, as the runtime does.
+	let builtDirectory: SessionRuntimeService["directory"] | undefined;
+	const skillsSource = createSkillsMountSource({
+		skills,
+		visibility: (ctx, sessionId) => {
+			if (builtDirectory === undefined) throw new Error("the session directory is not ready");
+			return sessionSkillVisibility(builtDirectory)(ctx, sessionId);
+		},
+	});
+	const workspaceStore = storage.workspaces ?? createMemoryWorkspaceStore();
 	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,
@@ -404,6 +444,22 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// A session started without a workspace (no repository) gets its own, which its first file tool or command
 		// creates; until then it is only an ID, so a session that only talks costs no storage.
 		defaultWorkspaceId: sessionWorkspaceId,
+		// On its first prompt a session pins the skills it may see, mounts them at `/skills` on its workspace and lists those
+		// its profile names. Without skills in the profile nothing is pinned, mounted or listed.
+		skills: {
+			store: skills,
+			render: (listings: Parameters<typeof renderSkillListings>[0]) => renderSkillListings(listings),
+			mount: sessionSkillsMount({
+				workspaces: () => lateWorkspaces(),
+				store: workspaceStore,
+				source: skillsSource,
+				access: lateAccess,
+				now: () => clock.now(),
+			}),
+			mountRoot: SKILLS_MOUNT_ROOT,
+		},
+		// A session whose profile names memory spaces is given their recall on its first prompt, and the memory tools.
+		memory: sessionMemory(memory),
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -423,17 +479,19 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
+		builtDirectory = runtime.directory;
 		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
 		const seeders = { git: createGitHubTarballFetcher({ fetch: gitFetch }) };
 		const gitRefs = createGitRefLister({ fetch: gitFetch });
 		const workspaces = createStoredWorkspaces({
-			store: storage.workspaces ?? createMemoryWorkspaceStore(),
+			store: workspaceStore,
 			clock,
 			audit,
 			access,
 			seeders,
+			sources: [skillsSource],
 		});
 		builtWorkspaces = workspaces;
 		built = createStackSandboxes({
@@ -446,17 +504,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(options.nodeEngine === undefined ? {} : { nodeEngine: options.nodeEngine }),
 		});
 		const sandboxes = built;
-		// Skills and memory check project-owned records with the runtime's access, and audit into the one store. Memory
-		// renders recall with its default renderer: Harbour adds no prompt of its own.
-		const skillObjects = storage.skillObjects;
-		const skills =
-			driver === undefined || skillObjects === undefined
-				? createMemorySkills({ clock, audit, access })
-				: createSqlSkills({ driver, objects: skillObjects, clock, audit, access });
-		const memory =
-			driver === undefined
-				? createMemoryMemory({ clock, audit, access })
-				: createSqlMemory({ driver, clock, audit, access });
 
 		const { organisation, project, admin } = await bootstrap({
 			identity,
@@ -486,9 +533,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
 				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
 			],
-			skills: [],
+			// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
+			// until they set some.
+			skills: stored?.skills ?? [],
 			sandbox: { tiers: ["isolate"] },
-			memoryScopes: [],
+			memoryScopes: stored?.memoryScopes ?? [],
 		};
 		await runtime.profiles.put(admin, profile);
 
