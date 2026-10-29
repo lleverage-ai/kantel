@@ -1,0 +1,127 @@
+/* Office files in the presented-file viewer: Word pages and PowerPoint slides on the sunken ground, as PDF pages are;
+   a spreadsheet as a grid with row numbers and column letters, its sheets as tabs above it. */
+
+.hb-office-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+}
+
+/* docx-preview's own wrapper is grey with padding; the viewer's ground stands in for it. */
+.hb-office-docx .hb-docx-wrapper {
+	padding: 0;
+	background: transparent;
+}
+
+.hb-office-docx .hb-docx-wrapper > section.hb-docx {
+	margin-bottom: var(--hb-space-5);
+	box-shadow: var(--hb-shadow-float);
+}
+
+.hb-office-pptx {
+	min-width: 0;
+}
+
+.hb-office-book {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+}
+
+.hb-office-tabs {
+	display: flex;
+	flex: none;
+	gap: var(--hb-space-1);
+	padding: var(--hb-space-2) var(--hb-space-4) 0;
+	overflow-x: auto;
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-office-tab {
+	flex: none;
+	padding: var(--hb-space-2) var(--hb-space-4);
+	border: 0;
+	border-bottom: var(--hb-ring) solid transparent;
+	background: transparent;
+	color: var(--hb-text-muted);
+	font: inherit;
+	font-size: var(--hb-text-sm);
+	cursor: pointer;
+}
+
+.hb-office-tab:hover {
+	color: var(--hb-text);
+}
+
+.hb-office-tab-on {
+	border-bottom-color: var(--hb-accent);
+	color: var(--hb-text);
+}
+
+.hb-office-note {
+	flex: none;
+	padding: var(--hb-space-3) var(--hb-space-4) 0;
+}
+
+/* The grid sits on the canvas, edge to edge, not on the sunken ground with padding. */
+.hb-office-grid-scroll.hb-file-panel-sunken {
+	padding: 0;
+	background: var(--hb-canvas);
+}
+
+.hb-office-empty {
+	margin: 0;
+	padding: var(--hb-space-6);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-office-grid {
+	border-collapse: separate;
+	border-spacing: 0;
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-office-grid th,
+.hb-office-grid td {
+	max-width: calc(var(--hb-card-width) / 2);
+	padding: var(--hb-space-2) var(--hb-space-3);
+	overflow: hidden;
+	border-right: var(--hb-hairline) solid var(--hb-border);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+	text-align: left;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-office-grid td {
+	color: var(--hb-text);
+}
+
+.hb-office-grid thead th {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--hb-raised);
+	color: var(--hb-text-muted);
+	font-weight: var(--hb-weight-medium);
+	text-align: center;
+}
+
+.hb-office-grid tbody th {
+	position: sticky;
+	left: 0;
+	background: var(--hb-raised);
+	color: var(--hb-text-faint);
+	font-weight: var(--hb-weight-regular);
+	text-align: right;
+}
+
+.hb-office-grid .hb-office-corner {
+	left: 0;
+	z-index: 2;
+}

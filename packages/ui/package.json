@@ -56,13 +56,16 @@
 		"vitest": "5.0.5"
 	},
 	"dependencies": {
+		"@aiden0z/pptx-renderer": "1.4.0",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/protocol": "workspace:*",
 		"@harbour/schedules": "workspace:*",
 		"@harbour/vault": "workspace:*",
+		"docx-preview": "0.4.1",
 		"pdfjs-dist": "6.4.299",
 		"react-markdown": "10.1.0",
 		"remark-gfm": "4.0.1",
-		"virtua": "0.53.6"
+		"virtua": "0.53.6",
+		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
 	}
 }

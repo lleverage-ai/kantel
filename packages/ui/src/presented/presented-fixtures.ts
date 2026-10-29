@@ -81,12 +81,32 @@ export const presentedPdf = presentedFile("out/board-pack.pdf", "application/pdf
 export const presentedSheet = presentedFile(
 	"out/pipeline.xlsx",
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-	48_213,
+	18_473,
 );
 export const presentedDoc = presentedFile(
-	"out/contract-redline.docx",
+	"out/churn-review.docx",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	1_204_877,
+	9_887,
+);
+
+export const presentedDeck = presentedFile(
+	"out/board-pack.pptx",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	79_894,
+);
+export const presentedZip = presentedFile("out/site.zip", "application/zip", 2_400_112);
+
+export const pipelineCsv = `Account,Stage,Value,Close date
+Acme EU,Proposal,48000,2026-11-14
+Northwind,Negotiation,120500,2026-11-28
+Globex,Discovery,18000,2026-12-05
+"Initech, Inc.",Closed won,64250,2026-10-02
+`;
+export const presentedCsv = presentedFile(
+	"out/pipeline.csv",
+	"text/csv",
+	encoder.encode(pipelineCsv).length,
+	pipelineCsv.split("\n").slice(0, 3).join("\n"),
 );
 
 export const bytesOf = (text: string): Uint8Array => encoder.encode(text);

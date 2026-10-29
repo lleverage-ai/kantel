@@ -8,6 +8,7 @@ import { NoteMarkdown } from "../workspace/note-markdown.tsx";
 import { ViewerHeader, ViewerScroll } from "../workspace/viewer-header.tsx";
 import { fileViewerLineCap, formatBytes, textLines } from "../workspace/workspace-model.ts";
 import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
+import { DocxView, PptxView, SheetView } from "./office-view.tsx";
 import { PdfView } from "./pdf-view.tsx";
 import { type PresentedKind, presentedKind, presentedKindLabel } from "./presented-file-model.ts";
 import "./file-panel.css";
@@ -82,7 +83,7 @@ function ReadyBody({
 }) {
 	const kind = presentedKind(file);
 	const text = useMemo(
-		() => (kind === "markdown" || kind === "html" || kind === "text" || kind === "csv" ? decoder.decode(content) : ""),
+		() => (kind === "markdown" || kind === "html" || kind === "text" ? decoder.decode(content) : ""),
 		[kind, content],
 	);
 	const own = renderers?.[kind];
@@ -115,8 +116,15 @@ function ReadyBody({
 		case "image":
 			return <ImageBody content={content} file={file} />;
 		case "text":
-		case "csv":
 			return <TextBody text={text} label={`Contents of ${file.name}`} />;
+		case "csv":
+			return <SheetView content={content} name={file.name} text />;
+		case "xlsx":
+			return <SheetView content={content} name={file.name} />;
+		case "docx":
+			return <DocxView content={content} name={file.name} />;
+		case "pptx":
+			return <PptxView content={content} name={file.name} />;
 		default:
 			return (
 				<EmptyState title="This file can't be shown here yet">Download it to open it on your computer.</EmptyState>
