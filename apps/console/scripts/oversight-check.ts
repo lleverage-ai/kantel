@@ -1,4 +1,4 @@
-// Checks the console's vault page and audit log in a headless Chromium against a production build: for each route at
+// Checks the console's vault page, audit log and schedules page in a headless Chromium against a production build: for each route at
 // 1280 px and 420 px, axe's violations, the page's headings and main landmarks, any page errors, and a screenshot.
 //   pnpm --filter @harbour/console build && node scripts/oversight-check.ts <out-dir> [--chromium /usr/bin/chromium]
 // Serves the build with `vite preview` on a random port and stops it after. Runs on `?source=recorded`.
@@ -25,12 +25,17 @@ const server = spawn("npx", ["vite", "preview", "--port", String(port), "--stric
 const base = `http://127.0.0.1:${port}`;
 
 // Each load builds a fresh in-memory vault with new IDs, so a request is opened from within the page that made it.
-const routes: [name: string, path: (proposals: Record<string, string>) => string][] = [
+// Schedules get fresh IDs too, so one is opened by clicking its row.
+const routes: [name: string, path: (proposals: Record<string, string>) => string, open?: string][] = [
 	["vault", () => "/vault"],
 	["vault-pending", (p) => `/vault/proposals/${p.pending}`],
 	["vault-narrowed", (p) => `/vault/proposals/${p.narrowed}`],
 	["vault-missing", () => "/vault/proposals/proposal_missing"],
 	["audit", () => "/audit"],
+	["schedules", () => "/schedules"],
+	["schedules-new", () => "/schedules/new"],
+	["schedules-task-runs", () => "/schedules", "Triage new issues"],
+	["schedules-check", () => "/schedules", "Disk space on the build hosts"],
 ];
 
 let failed = false;
@@ -45,7 +50,7 @@ try {
 			await new Promise((resolve) => setTimeout(resolve, 200));
 		}
 	}
-	for (const [name, path] of routes)
+	for (const [name, path, open] of routes)
 		for (const [width, height, scale] of [
 			[1280, 900, 1],
 			[420, 860, 2],
@@ -69,6 +74,10 @@ try {
 				dispatchEvent(new PopStateEvent("popstate"));
 			}, path(proposals));
 			await page.waitForTimeout(1500);
+			if (open !== undefined) {
+				await page.getByText(open, { exact: true }).first().click();
+				await page.waitForTimeout(1000);
+			}
 			await page.addScriptTag({ content: axe });
 			const violations = await page.evaluate(async () =>
 				(await (window as unknown as Axe).axe.run(document)).violations.map((v) => `${v.id} (${v.nodes.length})`),

@@ -8,12 +8,13 @@ import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
-import type { ConsoleAudit, ConsoleKeys, ConsoleVault } from "./api/oversight.ts";
+import type { ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App } from "./app/app.tsx";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
+import { createRecordedSchedules } from "./recorded/schedules.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { profileStore } from "./ui/profile.tsx";
 import "./ui/styles.css";
@@ -33,10 +34,14 @@ import "./ui/styles.css";
 //
 // The vault page and audit log follow the source. On `api` the vault page runs on the vault approval API and the audit
 // log on the audit query API (M1-BE8), both served by the gateway on this origin; the vault page is listed once the
-// approval API has said who is signed in, and not at all on a gateway without one. On `recorded` both run on the
+// approval API has said who is signed in, and not at all on a gateway without one. The audit log's vault rows link to
+// the vault page only when it is there, and its project, agent and session filters come from the session API. On `recorded` both run on the
 // in-memory vault and audit store in the page (recorded/oversight.ts).
 //
 // On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
+//
+// The schedules page runs on @harbour/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
+// sessions. On `api` it is not listed yet: the console gets it with a client for the public API's schedule routes.
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -59,8 +64,9 @@ let current: { sessionId: string; session: SessionClient } | undefined;
 let proposals: Readonly<Record<string, string>> | undefined;
 let recorded: RecordedClient | undefined;
 let client: ConsoleClient | undefined;
-if (source === "recorded") {
-	recorded = createRecordedClient(createCatalogue(Date.now(), { long: longUrl, small: smallUrl }), {
+const catalogue = source === "recorded" ? createCatalogue(Date.now(), { long: longUrl, small: smallUrl }) : undefined;
+if (catalogue !== undefined) {
+	recorded = createRecordedClient(catalogue, {
 		speed: Number(params.get("speed") ?? "1") || 1,
 		openDelayMs: Number(params.get("delay") ?? "600"),
 		// With ?profile=1 the Profiler counts start here, with the rows already shown as the baseline.
@@ -94,12 +100,23 @@ const onOpen = (sessionId: string, session: SessionClient) => {
 	current = { sessionId, session };
 };
 
-type Oversight = { readonly vault?: ConsoleVault; readonly audit?: ConsoleAudit; readonly keys?: ConsoleKeys };
+type Oversight = {
+	readonly vault?: ConsoleVault;
+	readonly audit?: ConsoleAudit;
+	readonly keys?: ConsoleKeys;
+	readonly schedules?: ConsoleSchedules;
+};
 const recordedOversight: Promise<Oversight> | undefined =
-	source === "recorded"
-		? createRecordedOversight().then((made: RecordedOversight) => {
+	catalogue !== undefined
+		? Promise.all([
+				createRecordedOversight(),
+				// A schedule's task runs name the recorded Harbour project's sessions, so their links open.
+				createRecordedSchedules(
+					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
+				),
+			]).then(([made, schedules]: [RecordedOversight, ConsoleSchedules]): Oversight => {
 				proposals = made.proposals;
-				return made;
+				return { vault: made.vault, audit: made.audit, schedules };
 			})
 		: undefined;
 
@@ -109,13 +126,14 @@ function OversightConsole({ client, oversight }: { client: ConsoleClient; oversi
 }
 
 function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
-	const { vault, audit, keys } = oversight;
+	const { vault, audit, keys, schedules } = oversight;
 	return (
 		<App
 			client={client}
 			{...(vault === undefined ? {} : { vault })}
 			{...(audit === undefined ? {} : { audit })}
 			{...(keys === undefined ? {} : { keys })}
+			{...(schedules === undefined ? {} : { schedules })}
 			onOpen={onOpen}
 		/>
 	);
@@ -188,7 +206,8 @@ function SignedInConsole({
 			identity.forget();
 			onSignedOut();
 		};
-		const audit = apiAudit({ headers: state.headers });
+		// Rows about a vault request link to its page, when the console has the vault page to open it on.
+		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
 		return {
 			client: createApiClient({
@@ -201,10 +220,10 @@ function SignedInConsole({
 			}),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
-				(vault): Oversight => ({ vault, audit, ...(keys === undefined ? {} : { keys }) }),
+				(vault): Oversight => ({ vault, audit: audit(true), ...(keys === undefined ? {} : { keys }) }),
 				(error: unknown): Oversight => {
 					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
-					return { audit, ...(keys === undefined ? {} : { keys }) };
+					return { audit: audit(false), ...(keys === undefined ? {} : { keys }) };
 				},
 			),
 		};
