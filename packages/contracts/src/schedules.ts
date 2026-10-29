@@ -87,6 +87,14 @@ export interface Occurrence {
 	readonly result?: JsonValue;
 }
 
+/**
+ * Proposed (issue #23): an occurrence as `claim` hands it to a runner, with its schedule as it was when claimed, so the
+ * runner knows what to run (kind, payload, check settings) and for which organisation without another call.
+ */
+export interface ClaimedOccurrence extends Occurrence {
+	readonly schedule: Schedule;
+}
+
 export interface Finding {
 	/** Stable across runs, such as `disk:/var` or `pr:4811:stale`. */
 	readonly key: string;
@@ -136,12 +144,17 @@ export interface Schedules {
 	 * new one: its missed due times are coalesced into the next. Several missed due times become one occurrence at
 	 * the latest of them. Idempotent: ticking twice at the same time creates nothing new.
 	 *
-	 * `tick`, `claim`, `complete` and `reportCheck` are the scheduler's worker calls (settled question 13): each takes a
+	 * `tick`, `claim`, `renew`, `complete` and `reportCheck` are the scheduler's worker calls (settled question 13): each takes a
 	 * `SystemContext`, and any actor but `system` is `forbidden`, audited, and changes nothing.
 	 */
 	tick(ctx: SystemContext): Promise<readonly Occurrence[]>;
 	/** Atomically claims the oldest claimable occurrence for `runner`, or returns undefined. */
-	claim(ctx: SystemContext, runner: string, leaseMs: number): Promise<Occurrence | undefined>;
+	claim(ctx: SystemContext, runner: string, leaseMs: number): Promise<ClaimedOccurrence | undefined>;
+	/**
+	 * Proposed (issue #23): extends a held claim's lease to `leaseMs` from now, so a long run keeps it. The runner must
+	 * hold it with a live lease (`conflict` otherwise: a lapsed lease is not revived, since another runner may have it).
+	 */
+	renew(ctx: SystemContext, occurrenceId: string, runner: string, leaseMs: number): Promise<Occurrence>;
 	/** Finishes a claim. The runner must hold it (`conflict` otherwise, including after its lease was taken over). */
 	complete(
 		ctx: SystemContext,

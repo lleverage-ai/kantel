@@ -299,6 +299,11 @@ export function createSchedulesConformance(options: {
 			assert.strictEqual((await schedules.tick(WORKER)).length, 2);
 			const first = await schedules.claim(WORKER, RUNNER, MINUTE);
 			assert.strictEqual(first?.scheduleId, early.id);
+			assert.partialDeepEqual(
+				first?.schedule,
+				{ id: early.id, kind: early.kind, payload: early.payload, owner: early.owner },
+				"a claim carries its schedule, so the runner knows what to run",
+			);
 			const second = await schedules.claim(WORKER, "runner-2", MINUTE);
 			assert.ok(second && second.scheduleId !== early.id, "the second claim takes the other occurrence");
 			assert.strictEqual(await schedules.claim(WORKER, "runner-3", MINUTE), undefined, "nothing is left to claim");
@@ -340,6 +345,39 @@ export function createSchedulesConformance(options: {
 				schedules.complete(WORKER, first!.id, "runner-2", { status: "succeeded" }),
 				"conflict",
 				"a finished occurrence cannot complete again",
+			);
+		}),
+
+		test("renews a held claim's lease, and refuses to renew one that lapsed or another runner holds", async (schedules, deps) => {
+			await schedules.create(human, hourly(deps));
+			deps.clock.advance(HOUR);
+			await schedules.tick(WORKER);
+			const first = await schedules.claim(WORKER, RUNNER, MINUTE);
+			deps.clock.advance(MINUTE / 2);
+			const renewed = await schedules.renew(WORKER, first!.id, RUNNER, 2 * MINUTE);
+			assert.partialDeepEqual(renewed, { id: first!.id, claimedBy: RUNNER, attempt: 1, status: "running" });
+			assert.strictEqual(renewed.leaseUntil, deps.clock.now() + 2 * MINUTE);
+			await assert.rejectsWithCode(
+				schedules.renew(WORKER, first!.id, "runner-2", MINUTE),
+				"conflict",
+				"only the claimant renews",
+			);
+			deps.clock.advance(MINUTE);
+			assert.strictEqual(await schedules.claim(WORKER, "runner-2", MINUTE), undefined, "the renewed lease still holds");
+			deps.clock.advance(MINUTE);
+			await assert.rejectsWithCode(
+				schedules.renew(WORKER, first!.id, RUNNER, MINUTE),
+				"conflict",
+				"a lapsed lease is not revived",
+			);
+			const second = await schedules.claim(WORKER, "runner-2", MINUTE);
+			assert.partialDeepEqual(second, { id: first!.id, claimedBy: "runner-2", attempt: 2 });
+			await assert.rejectsWithCode(schedules.renew(WORKER, "nothing@1", RUNNER, MINUTE), "not_found");
+			await schedules.complete(WORKER, first!.id, "runner-2", { status: "succeeded" });
+			await assert.rejectsWithCode(
+				schedules.renew(WORKER, first!.id, "runner-2", MINUTE),
+				"conflict",
+				"a finished occurrence cannot be renewed",
 			);
 		}),
 
@@ -845,7 +883,7 @@ export function createSchedulesConformance(options: {
 			});
 			assert.strictEqual((await schedules.end(human, schedule.id)).status, "ended");
 		}),
-		test("worker calls: tick, claim, complete and reportCheck refuse every caller but system, and change nothing", async (schedules, deps) => {
+		test("worker calls: tick, claim, renew, complete and reportCheck refuse every caller but system, and change nothing", async (schedules, deps) => {
 			const inProject = { agentId: "agent-1", sessionId: "session-1" };
 			const refused = (operation: string, call: Parameters<typeof assertWorkerCallRefused>[3]) =>
 				assertWorkerCallRefused(assert, deps, operation, call, ORG, inProject);
@@ -867,6 +905,13 @@ export function createSchedulesConformance(options: {
 			assert.deepEqual(await occurrencesOf(check.id), beforeClaim, "no refused claim touched the occurrence");
 			const claimed = await schedules.claim(WORKER, RUNNER, 10 * MINUTE);
 			assert.strictEqual(claimed?.attempt, 1, "no refused claim took the occurrence");
+			const leased = (await schedules.listOccurrences(service, check.id)).items[0]?.leaseUntil;
+			await refused("schedules.renew", (caller) => schedules.renew(caller, claimed!.id, RUNNER, DAY));
+			assert.strictEqual(
+				(await schedules.listOccurrences(service, check.id)).items[0]?.leaseUntil,
+				leased,
+				"no refused renew moved the lease",
+			);
 			const running = await occurrencesOf(check.id);
 			await refused("schedules.complete", (caller) =>
 				schedules.complete(caller, claimed!.id, RUNNER, { status: "failed" }),

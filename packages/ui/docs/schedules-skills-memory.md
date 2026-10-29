@@ -12,7 +12,7 @@ Each page takes a source: the package's contract calls with the viewer's `CallCo
 
 | Page | Bind with | Reads | Writes |
 | --- | --- | --- | --- |
-| `SchedulesPage` | `bindSchedules(schedules, ctx, findings?)` | `list`, `get`, `preview`, `listOccurrences` | `pause`, `resume` |
+| `SchedulesPage` | `bindSchedules(schedules, ctx, findings?)` | `list`, `get`, `preview`, `listOccurrences` | `create`, `update`, `pause`, `resume`, `end` |
 | `SkillsPage` | `bindSkills(skills, ctx)`, and `bindSkillsAuthor(skills, ctx)` to write | `list`, `get`, `listRevisions`, `getRevision`, `readFile` | `create`, `saveDraft`, `readDraft`, `publish` |
 | `MemoryPage` | `bindMemory(memory, ctx)` | `listConcepts`, `getConcept`, `search`, `recall`, `listProposals` | `propose`, `decide` |
 
@@ -26,14 +26,39 @@ the list, with a Back button, and focus moves to the record's heading when it op
 
 **For** the organisation's schedules: what runs on its own, when it runs next and how its runs went. A status
 filter (Active, Paused, Ended, All) with counts; the open schedule shows its timing in its own time zone, the next
-runs from `preview`, what it runs (a reminder's message, a task's brief, a check's command), its limits, and its run
+runs from `preview`, what it runs (a reminder's message, a task's prompt and the agent it asks, a check's command), its limits, and its run
 history with a Problems filter for failed, missed and timed-out runs. Pause and Resume act on the store and read the
 schedule again.
 
 Findings: `Schedules` has no call that lists a check's findings, so the host passes them through `bindSchedules`'s
 optional `findings` reader; without one the Findings panel is left out.
 
-**Not for** creating or editing schedules: Harbour's agents propose those, and a person approves them elsewhere.
+Creating and editing: with `form` (the agents a task can ask, and the owner of a new schedule, usually the person's
+current project) the page has New schedule, and Edit on a task or check whose payload the form reads. Both open
+`ScheduleForm` in the detail pane, saving through the same source; a save or an End opens the schedule as it now is.
+Without `form` the page reads, pauses and resumes only. Agents can't create schedules (`Schedules.create` refuses
+them): they propose them, and a person makes them here.
+
+Runs and sessions: a task's run result names the session it started (`{ sessionId }`, `runSession`); with
+`links.session` each such run links to it, as "Open session".
+
+**The source is the public API's shape.** `SchedulesSource` has one call per schedule route in `@harbour/api`, so
+the console's API client fits as it is:
+
+| Call | Route (under `/v1`) |
+| --- | --- |
+| `list(filter?, page?)` | `GET /schedules` |
+| `get(id)` | `GET /schedules/{scheduleId}` |
+| `create(input)` | `POST /schedules`, body `{ owner, kind, title, timezone, at \| repeat, until?, count?, payload, check? }` |
+| `update(id, input)` | `PATCH /schedules/{scheduleId}`, the fields to change |
+| `pause(id)`, `resume(id)` | `POST /schedules/{scheduleId}/pause`, `/resume` |
+| `end(id)` | `DELETE /schedules/{scheduleId}`: ends it; it stays listed as `ended`, with its runs |
+| `preview(id, n)` | `GET /schedules/{scheduleId}/preview` |
+| `listOccurrences(id, page?)` | `GET /schedules/{scheduleId}/runs` |
+
+The fixtures (`@harbour/ui/schedules/fixtures`, `createSchedulesScenario`) are the one implementation for stories,
+tests and the console's recorded source: `bindSchedules` over the in-memory store, with three days of runs played
+into it. `sessions` makes task runs name a host's own sessions, so their links open.
 
 ## SkillsPage
 

@@ -107,7 +107,7 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
-// Schedules: the create and edit form, and the calls it writes with.
+// The schedule create and edit form, used by the page and on its own.
 export { ScheduleForm, type ScheduleFormProps } from "./schedules/form/schedule-form.tsx";
 export {
 	createScheduleFormFlow,
@@ -123,28 +123,30 @@ export {
 	type ScheduleFormState,
 } from "./schedules/form/schedule-form-model.ts";
 export {
-	bindScheduleWrites,
 	type CheckPayload,
 	type FormKind,
 	isFormKind,
 	readCheckPayload,
 	readTaskPayload,
-	type ScheduleUpdate,
 	type ScheduleWrites,
 	type TaskPayload,
 	taskPayload,
 } from "./schedules/form/schedule-writes.ts";
-// The schedules page.
+// The schedules page, and the one client it reads and writes through.
 export {
 	bindSchedules,
 	recurrenceText,
+	runSession,
 	type SchedulesApi,
 	type SchedulesSource,
+	type ScheduleUpdate,
 	timingText,
 } from "./schedules/schedules-model.ts";
 export {
 	ScheduleDetail,
 	type ScheduleDetailProps,
+	type ScheduleFormSettings,
+	type ScheduleLinks,
 	SchedulesPage,
 	type SchedulesPageProps,
 } from "./schedules/schedules-page.tsx";
