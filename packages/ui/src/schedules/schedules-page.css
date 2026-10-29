@@ -35,6 +35,14 @@
 	color: var(--hb-text-muted);
 }
 
+.hb-schedules-head-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+}
+
 .hb-schedules-body {
 	display: grid;
 	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-space-10)) minmax(0, 1fr);
@@ -124,6 +132,22 @@
 	display: flex;
 	flex-wrap: wrap;
 	gap: var(--hb-space-3);
+}
+
+.hb-schedule-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-3);
+}
+
+.hb-schedule-payload-agent {
+	margin: 0 0 var(--hb-space-3);
+	color: var(--hb-text-muted);
+}
+
+.hb-schedule-payload-agent strong {
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-medium);
 }
 
 .hb-schedule-section {
@@ -262,6 +286,22 @@
 	overflow-wrap: anywhere;
 }
 
+.hb-schedule-run[data-linked] {
+	grid-template-columns: 11em 9em minmax(0, 1fr) auto;
+}
+
+.hb-schedule-run-link {
+	color: var(--hb-accent-text);
+	font-size: var(--hb-text-xs);
+	text-decoration: none;
+	white-space: nowrap;
+	border-radius: var(--hb-radius-xs);
+}
+
+.hb-schedule-run-link:hover {
+	text-decoration: underline;
+}
+
 @media (max-width: 900px) {
 	.hb-schedules-body {
 		grid-template-columns: minmax(0, 1fr);
@@ -272,7 +312,21 @@
 		display: none;
 	}
 
+	/* The page keeps its one h1 for screen readers while the open schedule fills the screen. */
 	.hb-schedules[data-view="detail"] .hb-schedules-head {
+		position: absolute;
+		width: var(--hb-hairline);
+		height: var(--hb-hairline);
+		margin: calc(var(--hb-hairline) * -1);
+		padding: 0;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.hb-schedules[data-view="detail"] .hb-schedules-head button,
+	.hb-schedules[data-view="detail"] .hb-schedules-lede {
 		display: none;
 	}
 
@@ -283,11 +337,13 @@
 }
 
 @media (max-width: 520px) {
-	.hb-schedule-run {
+	.hb-schedule-run,
+	.hb-schedule-run[data-linked] {
 		grid-template-columns: minmax(0, 1fr) auto;
 	}
 
-	.hb-schedule-run-detail:not(:empty) {
+	.hb-schedule-run-detail:not(:empty),
+	.hb-schedule-run-link {
 		grid-column: 1 / -1;
 	}
 }

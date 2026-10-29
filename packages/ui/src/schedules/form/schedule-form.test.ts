@@ -1,6 +1,6 @@
 import { HarbourError } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
-import { createFixtureScheduleWrites, FIXTURE_AGENTS, FIXTURE_NOW, FIXTURE_OWNER } from "./fixtures.ts";
+import { createSchedulesScenario, FIXTURE_AGENTS, FIXTURE_NOW, FIXTURE_OWNER } from "../fixtures.ts";
 import {
 	createScheduleFormFlow,
 	draftFromSchedule,
@@ -105,24 +105,37 @@ describe("previewing a draft", () => {
 
 	it("runs a 09:00 London daily at 09:00 UTC in winter", () => {
 		const [first] = previewDraft(draft({ ...triage, every: "day", interval: "1", at: "09:00" }), FIXTURE_NOW, 1) ?? [];
-		expect(first).toBe(Date.UTC(2026, 9, 29, 9, 0));
+		expect(first).toBe(Date.UTC(2026, 9, 28, 9, 0));
 	});
 });
 
 describe("the form flow on the fixtures", () => {
-	it("creates a task the store accepts, owned by the project", async () => {
-		const { writes } = await createFixtureScheduleWrites({ inputs: [] });
-		const flow = createScheduleFormFlow({ writes, owner: FIXTURE_OWNER, draft: triage, now: () => FIXTURE_NOW });
+	it("creates a task the store accepts, owned by the project, and the page's list reads it", async () => {
+		const { source } = await createSchedulesScenario({ empty: true });
+		const flow = createScheduleFormFlow({
+			writes: source,
+			owner: FIXTURE_OWNER,
+			draft: triage,
+			now: () => FIXTURE_NOW,
+		});
 		const saved = await flow.save();
 		expect(saved).toMatchObject({ kind: "task", status: "active", owner: FIXTURE_OWNER, nextDueAt: FIXTURE_NOW });
+		expect(saved?.payload).toEqual({ agentId: "agt_triage", prompt: "  Label the new issues.\n" });
 		expect(readTaskPayload(saved?.payload ?? null)?.prompt).toBe("  Label the new issues.\n");
-		const listed = await writes.store.list(writes.ctx);
-		expect(listed.items).toHaveLength(1);
+		expect(readTaskPayload({ prompt: "x" })).toEqual({ prompt: "x" });
+		expect(readTaskPayload({ agentId: "agt_triage", message: "x" })).toBeUndefined();
+		const listed = await source.list();
+		expect(listed.items.map((schedule) => schedule.id)).toEqual([saved?.id]);
 	});
 
 	it("holds back a save with errors, then clears each as it's fixed", async () => {
-		const { writes } = await createFixtureScheduleWrites({ inputs: [] });
-		const flow = createScheduleFormFlow({ writes, owner: FIXTURE_OWNER, draft: draft(), now: () => FIXTURE_NOW });
+		const { source } = await createSchedulesScenario({ empty: true });
+		const flow = createScheduleFormFlow({
+			writes: source,
+			owner: FIXTURE_OWNER,
+			draft: draft(),
+			now: () => FIXTURE_NOW,
+		});
 		expect(await flow.save()).toBeUndefined();
 		expect(Object.keys(flow.getState().errors).sort()).toEqual(["prompt", "title"]);
 		flow.edit({ title: "Triage" });
@@ -130,13 +143,12 @@ describe("the form flow on the fixtures", () => {
 	});
 
 	it("edits a schedule without moving an interval's start, and switches it to a one-off", async () => {
-		const { writes, schedules } = await createFixtureScheduleWrites();
-		const task = schedules[0];
-		if (task === undefined) throw new Error("no fixture");
+		const { source, ids } = await createSchedulesScenario();
+		const task = await source.get(ids.triage);
 		const editing = draftFromSchedule(task, FIXTURE_NOW);
 		expect(editing).toMatchObject({ title: task.title, agentId: "agt_triage", every: "minutes", interval: "10" });
 		const flow = createScheduleFormFlow({
-			writes,
+			writes: source,
 			owner: FIXTURE_OWNER,
 			draft: { ...editing, title: "Triage every issue" },
 			schedule: task,
@@ -147,7 +159,7 @@ describe("the form flow on the fixtures", () => {
 		expect(saved?.repeat).toEqual(task.repeat);
 
 		const again = createScheduleFormFlow({
-			writes,
+			writes: source,
 			owner: FIXTURE_OWNER,
 			draft: { ...editing, when: "once", once: "2026-10-30T09:15" },
 			schedule: saved ?? task,
@@ -158,12 +170,11 @@ describe("the form flow on the fixtures", () => {
 		expect(once?.at).toBe(Date.UTC(2026, 9, 30, 9, 15));
 	});
 
-	it("ends a schedule only after the confirmation", async () => {
-		const { writes, schedules } = await createFixtureScheduleWrites();
-		const task = schedules[0];
-		if (task === undefined) throw new Error("no fixture");
+	it("ends a schedule only after the confirmation, and it stays listed as ended", async () => {
+		const { source, ids } = await createSchedulesScenario();
+		const task = await source.get(ids.triage);
 		const flow = createScheduleFormFlow({
-			writes,
+			writes: source,
 			owner: FIXTURE_OWNER,
 			draft: draftFromSchedule(task, FIXTURE_NOW),
 			schedule: task,
@@ -172,12 +183,14 @@ describe("the form flow on the fixtures", () => {
 		expect(await flow.end()).toBeUndefined();
 		flow.askEnd();
 		expect((await flow.end())?.status).toBe("ended");
+		const ended = await source.list({ status: "ended" });
+		expect(ended.items.map((schedule) => schedule.id)).toContain(ids.triage);
 	});
 
 	it("says why the server refused a save", async () => {
-		const { writes } = await createFixtureScheduleWrites({ inputs: [] });
+		const { source } = await createSchedulesScenario({ empty: true });
 		const flow = createScheduleFormFlow({
-			writes: { ...writes, create: () => Promise.reject(new HarbourError("forbidden", "operator needed")) },
+			writes: { ...source, create: () => Promise.reject(new HarbourError("forbidden", "operator needed")) },
 			owner: FIXTURE_OWNER,
 			draft: triage,
 			now: () => FIXTURE_NOW,

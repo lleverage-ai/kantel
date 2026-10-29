@@ -3,9 +3,12 @@ import {
 	AUDIT_PATH,
 	filesPath,
 	KEYS_PATH,
+	NEW_SCHEDULE_PATH,
 	newSessionPath,
 	parseRoute,
 	projectPath,
+	schedulesPath,
+	sessionLinkPath,
 	sessionPath,
 	sessionTurnPath,
 	VAULT_PATH,
@@ -52,6 +55,19 @@ describe("routes", () => {
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
 		expect(parseRoute(KEYS_PATH)).toEqual({ name: "keys" });
 		expect(parseRoute("/keys/key_1")).toEqual({ name: "not-found", path: "/keys/key_1" });
+	});
+
+	it("parses the schedules page, a new schedule and one schedule", () => {
+		expect(parseRoute(schedulesPath())).toEqual({ name: "schedules" });
+		expect(parseRoute(NEW_SCHEDULE_PATH)).toEqual({ name: "schedules", creating: true });
+		expect(schedulesPath("sch_1/x")).toBe("/schedules/sch_1%2Fx");
+		expect(parseRoute(schedulesPath("sch_1/x"))).toEqual({ name: "schedules", scheduleId: "sch_1/x" });
+		expect(parseRoute("/schedules/sch_1/runs")).toMatchObject({ name: "not-found" });
+	});
+
+	it("parses a session link that doesn't know its project", () => {
+		expect(parseRoute(sessionLinkPath("s 1"))).toEqual({ name: "session-link", sessionId: "s 1" });
+		expect(parseRoute("/sessions")).toMatchObject({ name: "not-found" });
 	});
 
 	it("parses a session's files and one file in them, mounts included", () => {
