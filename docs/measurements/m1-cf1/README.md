@@ -199,7 +199,8 @@ What would get near the target, roughly in order of payoff:
 2. **Sign-in once per token, not once per request.** A short cache keyed on the Access JWT would save about 0.3 s a
    call. That's the identity lane's authenticator.
 3. **Audit off the critical path.** Append after the answer (`ctx.waitUntil`), not before it, both in the measured
-   steps and in the close.
+   steps and in the close. Done in `apps/cloudflare/src/audit-outbox.ts`: appends queue in the object's SQLite and
+   drain to D1 in the background; not yet measured on the deployed stack.
 4. **Then the M0 levers:** the workspace head and manifest in Durable Object storage instead of R2. A pool of
    pre-created SessionDOs measured 79 / 170 ms ready in option (a)
    ([m1-cf1-ready-preload](../m1-cf1-ready-preload/README.md)), but only once storage round trips are out of the

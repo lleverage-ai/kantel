@@ -29,6 +29,7 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | Workspaces | R2 `WORKSPACES`, under `workspaces/`; each head also kept in `HarbourStack`'s storage, in front of R2 | `@harbour/cloudflare-workspace` (`src/workspace-heads.ts`) |
 | Session directory, profiles, host registrations, each session's Pi storage; the alarm that resumes a run an eviction cut off | `HarbourStack`'s own SQLite and alarm | `SessionRuntimeDurableObjectCore` (`@harbour/runtime-cloudflare`) |
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
+| Audit outbox: the stack's events queue here and drain to D1 after the answer (`ctx.waitUntil`, retried, and again on start and alarm); reads drain it first | `HarbourStack`'s own SQLite | `src/audit-outbox.ts` |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
 | Sandboxes: #94's tiers, leases, the TTL sweep and session-end release; the isolate on `HARBOUR_ISOLATE_BACKEND` | `HarbourStack`, leases in memory | `@harbour/sandbox` (`src/sandboxes.ts`) |
