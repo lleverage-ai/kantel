@@ -415,6 +415,30 @@ export function createAuditConformance(options: {
 			assert.deepEqual(await queryIds(store, { type: "vault" }), [], "without a dot the type is exact");
 			assert.deepEqual(await queryIds(store, { type: "session.tool.started" }), ["e2"], "exact type");
 			assert.deepEqual(await queryIds(store, { type: "session.tool" }), [], "an exact type is not a prefix");
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.decision.", "identity.key.issued", "schedules."] }),
+				["e4", "e5", "e7"],
+				"types: any of a list of exact types and prefixes",
+			);
+			assert.deepEqual(await queryIds(store, { types: ["vault", "session.tool"] }), [], "types, exact without a dot");
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.", "identity."], type: "vault.decision.", newestFirst: true }),
+				["e4"],
+				"types narrows with type and the other fields",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["identity."], projectId: "proj-2" }),
+				["e5"],
+				"types with a project",
+			);
+			for (const types of [[], [""], ["vault.,identity."], Array.from({ length: 21 }, (_, index) => `t${index}.`)]) {
+				await assert.rejectsWithCode(store.query(admin, { types }), "invalid", `types ${JSON.stringify(types)}`);
+			}
+			assert.deepEqual(
+				await queryIds(store, { types: Array.from({ length: 19 }, (_, index) => `none.t${index}.`).concat("vault.") }),
+				["e3", "e4"],
+				"up to 20 types",
+			);
 			assert.deepEqual(await queryIds(store, { subject: proposal }), ["e3", "e4"], "subject");
 			assert.deepEqual(
 				await queryIds(store, { subject: { kind: "vault.grant", id: "proposal-1" } }),
