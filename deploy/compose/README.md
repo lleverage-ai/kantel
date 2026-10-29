@@ -193,7 +193,7 @@ docker compose up -d --build --wait
 ```
 
 Set `COMPOSE_FILE` for every later compose command too; `scripts/check-canary.sh` and `scripts/takeover.sh` read
-it. CI's `selfhosted` job runs this way.
+it. CI's `selfhosted` job runs this way when dispatched with `-f egress_source=vault`; on `main` it stays on `static`.
 
 - The gateway keeps a vault on its Postgres (schema `harbour_m1_vault`, values sealed with
   `HARBOUR_VAULT_CIPHER_KEY`, a base64 256-bit key) and serves `POST /v1/egress/decisions` and

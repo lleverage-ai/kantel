@@ -3,9 +3,23 @@ name: self-hosted (M0-SH1, M1-SH1)
 # Not a pull request check: two runners can't run this ~9-minute stack for every push to every pull request. main.yml
 # calls it for main's newest head and deploys only if it passes. A pull request that changes the stack, its images or
 # this workflow can run it on demand: `gh workflow run selfhosted-spike.yml --ref <branch>`.
+#
+# `egress_source: vault` runs the same suite with the egress proxy taking its decisions from the M1 vault (#209,
+# experimental): `gh workflow run selfhosted-spike.yml --ref <branch> -f egress_source=vault`. main.yml leaves it at
+# `static`, the default a deployment gets, so an experimental path never decides whether main deploys.
 on:
-  workflow_call: {}
-  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      egress_source:
+        type: string
+        default: static
+  workflow_dispatch:
+    inputs:
+      egress_source:
+        description: Where the egress proxy takes its decisions from
+        type: choice
+        options: [static, vault]
+        default: static
 
 # Two runners (sal-harbour-1, sal-harbour-2) run every workflow's jobs one at a time each, so a second run by hand on
 # the same branch replaces the first rather than queueing behind it. "Tear down" runs on cancel too and removes the
@@ -23,12 +37,13 @@ jobs:
     env:
       HARBOUR_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
       HARBOUR_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
-      # Experimental (#18): the egress proxy takes its decisions from the M1 vault (HARBOUR_EGRESS_SOURCE=vault), set
-      # up by deploy/compose/egress-vault.yaml on top of compose.yaml; every compose command and script below reads
-      # COMPOSE_FILE. The vault injects only over https, so the scripted task fetches the research fixture over https.
-      COMPOSE_FILE: deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml
+      # Every compose command and script below reads COMPOSE_FILE. With `egress_source: vault` (experimental, #18) the
+      # egress proxy takes its decisions from the M1 vault (HARBOUR_EGRESS_SOURCE=vault), set up by
+      # deploy/compose/egress-vault.yaml on top of compose.yaml. The vault injects only over https, so the scripted task
+      # then fetches the research fixture over https.
+      COMPOSE_FILE: ${{ inputs.egress_source == 'vault' && 'deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml' || 'deploy/compose/compose.yaml' }}
       HARBOUR_EGRESS_KEY: ci-egress-${{ github.run_id }}-${{ github.run_attempt }}
-      HARBOUR_RESEARCH_URL: https://research-site/
+      HARBOUR_RESEARCH_URL: ${{ inputs.egress_source == 'vault' && 'https://research-site/' || 'http://research-site/' }}
       # The stack runs in a Docker daemon of its own (see "Start this run's Docker daemon"), not the host's.
       DIND_NAME: harbour-ci-dind-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -120,6 +135,7 @@ jobs:
 
       # The proxy decides with the vault, and says so; the gateway imported the policy file's credentialed routes.
       - name: Egress decisions come from the vault
+        if: inputs.egress_source == 'vault'
         run: |
           docker compose exec -T vault-proxy node -e "fetch('http://127.0.0.1:3128/healthz').then(async (r) => { const h = await r.json(); console.log(h); process.exit(h.source === 'vault' && h.ok ? 0 : 1); })"
           docker compose logs --no-color gateway | grep -F 'egress grants from /etc/harbour/vault-policy.json'
@@ -127,6 +143,7 @@ jobs:
       # With the gateway down, the vault's routes are refused, saying why, and never fall back to the policy file's
       # credentials; then the gateway comes back and they work again.
       - name: The proxy fails closed without the vault
+        if: inputs.egress_source == 'vault'
         run: |
           docker compose cp apps/vault-proxy/test/connect-probe.mjs vault-proxy:/tmp/connect-probe.mjs
           # Each probe and each check on its own line, so either failing fails the step.
