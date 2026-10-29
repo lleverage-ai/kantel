@@ -510,6 +510,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
+		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
 
 		async fork(sessionId, itemId) {
 			const response = await call(sessionUrl(sessionId, "/fork"), {

@@ -105,6 +105,10 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   the chevron, with the full date and time as its title. Hidden, it is out of the flow, so it never costs the label
   width. Focus anywhere in the call shows it, so it is there for the keyboard too.
 - **Open:** the arguments and the output.
+- **Images:** a call that returned images (`item.images`, such as a browser's screenshot of the page it left) shows
+  them under the row, open or not, at most `--hb-tool-image-width` wide, so a person watches the browser move without
+  opening anything. Each is a button ("Open full size") that opens the image in a new tab; its alt text says which
+  call it came after. `ToolImages({ item, images? })` draws them, for a host that shows a call's images elsewhere.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").
@@ -149,7 +153,8 @@ under "Worked for …" (`MessagesTimeline.logic.ts`), the calls carry no duratio
 the one place the time is told; collapsing only larger groups would leave a short one with no time at all.
 
 A failed or interrupted call stays visible while the group is collapsed: it is shown under the summary, so a failure
-is never hidden behind "Worked for". Expanded, it is in its place among the others.
+is never hidden behind "Worked for". Expanded, it is in its place among the others. The last image the group's calls
+returned (the page a browser ended on) also stays under the folded summary.
 
 **Not for** calls from different turns: the transcript ends a group at any other item.
 
@@ -204,8 +209,8 @@ is the only animation, CSS only, and stops under reduced motion (it stays, still
 ### WorkingIndicator
 
 **For** saying the agent is working on a turn, live: the working status's pulsing dot, then "Working for 12s" in
-muted `--hb-text-sm` with tabular numbers, the words under a slow light sweep (`--hb-duration-shimmer`), after T3
-Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
+muted `--hb-text-sm` with tabular numbers, the words breathing as a skeleton does (`hb-shimmer`,
+`--hb-duration-shimmer`), after T3 Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
 say, for another kind of work).
 
 **States:** with `since`, it counts from it and is a `role="timer"` named after the label, whose implicit `aria-live`
@@ -216,8 +221,11 @@ is off: screen readers can read it but are not told every second. Without `since
 **Not for** a session's status in a header or a list (`StatusLabel`), or a control that is busy (a button's own
 spinner).
 
-**Cost:** memoised on its props. The dot's pulse and the sweep are CSS only and stop under reduced motion; the timer
-is an `Elapsed` on the shared one-second clock, so only that leaf renders each second.
+**Cost:** memoised on its props. The dot's pulse and the words' breathing animate opacity alone, which the
+compositor runs without the main thread, and stop under reduced motion; the timer is an `Elapsed` on the shared
+one-second clock, so only that leaf renders each second. Don't animate anything that repaints here (a moving
+background clipped to the text did, every frame: a fifth of the main thread at rest without a GPU, and the stream above
+it stuttered).
 
 ### MessageActions
 

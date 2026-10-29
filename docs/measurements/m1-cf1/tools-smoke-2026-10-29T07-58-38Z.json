@@ -1,0 +1,164 @@
+{
+	"brwsrSession": "5a8dfd11-a3c4-4048-8732-548bd1cf8ea1",
+	"startedAt": "2026-10-29T07:58:38.845Z",
+	"endedAt": "2026-10-29T07:58:54.493Z",
+	"from": "https://harbour.myslop.app/healthz",
+	"sessionId": "efc4893d-de68-4cf7-b9e0-3bf707730634",
+	"workspaceId": "ws_ed3f6a07-a6af-4bdb-b63d-898413d8ab0b",
+	"createStatus": 201,
+	"promptStatus": 202,
+	"history": {
+		"sessionId": "efc4893d-de68-4cf7-b9e0-3bf707730634",
+		"items": [
+			{
+				"kind": "assistant",
+				"id": "a17",
+				"at": 1793260733039,
+				"text": "File text: `measurement file 0`\n\nNumber of files in `src`: 30",
+				"streaming": false
+			},
+			{
+				"kind": "tool",
+				"id": "t11:toolu_01LFkeExr4fWmGJVUHuJx9Pz",
+				"at": 1793260727688,
+				"callId": "toolu_01LFkeExr4fWmGJVUHuJx9Pz",
+				"name": "bash",
+				"label": "Calling bash",
+				"status": "done",
+				"args": {
+					"command": "ls src | wc -l"
+				},
+				"output": "30\n",
+				"endedAt": 1793260727689
+			},
+			{
+				"kind": "tool",
+				"id": "t11:toolu_01PK1kJwpbgvW9XGBUVC5npE",
+				"at": 1793260727688,
+				"callId": "toolu_01PK1kJwpbgvW9XGBUVC5npE",
+				"name": "read",
+				"label": "Calling read",
+				"status": "done",
+				"args": {
+					"path": "src/file-00.txt"
+				},
+				"output": "measurement file 0\n",
+				"endedAt": 1793260727732
+			},
+			{
+				"kind": "user",
+				"id": "u7",
+				"at": 1793260719872,
+				"text": "First use the read tool to read src/file-00.txt. Then use the bash tool to run: ls src | wc -l. Reply with the file's text and the number.",
+				"via": "prompt",
+				"requestId": "e91fdbe8-f91d-4e05-83b0-2d2db29616d1"
+			}
+		]
+	},
+	"afterCreate": [
+		{
+			"at": 1793260719285,
+			"type": "session.created",
+			"actor": "human"
+		}
+	],
+	"afterRun": [
+		{
+			"at": 1793260719285,
+			"type": "session.created",
+			"actor": "human"
+		},
+		{
+			"at": 1793260719872,
+			"type": "session.prompted",
+			"actor": "human"
+		},
+		{
+			"at": 1793260721508,
+			"type": "vault.use.injected",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260719872,
+			"type": "model.call",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260727688,
+			"type": "sandbox.lease.acquired",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260727732,
+			"type": "model.call",
+			"actor": "agent"
+		}
+	],
+	"afterClose": [
+		{
+			"at": 1793260719285,
+			"type": "session.created",
+			"actor": "human"
+		},
+		{
+			"at": 1793260719872,
+			"type": "session.prompted",
+			"actor": "human"
+		},
+		{
+			"at": 1793260721508,
+			"type": "vault.use.injected",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260719872,
+			"type": "model.call",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260727688,
+			"type": "sandbox.lease.acquired",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260727732,
+			"type": "model.call",
+			"actor": "agent"
+		},
+		{
+			"at": 1793260734224,
+			"type": "sandbox.lease.released",
+			"actor": "system"
+		},
+		{
+			"at": 1793260734224,
+			"type": "session.aborted",
+			"actor": "human"
+		}
+	],
+	"summary": {
+		"sessionId": "efc4893d-de68-4cf7-b9e0-3bf707730634",
+		"status": "idle",
+		"elapsed": 12701,
+		"closeStatus": 204,
+		"leasesAfterCreate": 0,
+		"afterRun": [
+			"session.created/human",
+			"session.prompted/human",
+			"vault.use.injected/agent",
+			"model.call/agent",
+			"sandbox.lease.acquired/agent",
+			"model.call/agent"
+		],
+		"afterClose": [
+			"session.created/human",
+			"session.prompted/human",
+			"vault.use.injected/agent",
+			"model.call/agent",
+			"sandbox.lease.acquired/agent",
+			"model.call/agent",
+			"sandbox.lease.released/system",
+			"session.aborted/human"
+		]
+	}
+}

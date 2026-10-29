@@ -26,6 +26,7 @@ import {
 	type ToolRegistration,
 	type Wake,
 } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
 	type AccessCheck,
 	type Actor,
@@ -137,6 +138,15 @@ export interface SessionRuntimeOptions {
 	 * shows on the tool's item.
 	 */
 	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[];
+	/**
+	 * The execution environment a session's tools work in (Pi Durable's `ExecutionEnv`, which `read`, `write`, `edit`
+	 * and `bash` need), such as `createSandboxExecutionEnv` over the session's workspace. Built once when the session
+	 * opens in this process and given to its Harness; `undefined` for a session with none, whose tools that need one
+	 * then fail with an error result. Building it must acquire nothing: a sandbox is leased by the first command that
+	 * needs one, and released by the session-end hook. Abort and close call its `cleanup`, which stops waiting for
+	 * commands still running.
+	 */
+	readonly environment?: (session: SessionRecord) => ExecutionEnv | undefined;
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
 	/** Told of each session `resume()` could not open. Default: ignored. */
@@ -226,6 +236,8 @@ interface OpenSession {
 	/** The session's Pi models: what its prompts may name (`SessionModels`). */
 	readonly models: Models;
 	readonly registry: Registry;
+	/** The session's execution environment (`SessionRuntimeOptions.environment`), if it has one. */
+	readonly env: ExecutionEnv | undefined;
 	view: AttachedReplicatedState<ConversationView>;
 	/** Stops following `view`. */
 	unsubscribeView: () => void;
@@ -628,11 +640,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const context = BACKGROUND_CONTEXT;
 		const sessionModels = typeof models === "function" ? await models(record) : models;
 		const storage = await options.storage(record);
+		// Built here, acquiring nothing: what its commands need is acquired by the first command that needs it.
+		const env = options.environment?.(record);
 		// Wakes go to the session once it exists; the first (from open) is read with `harness.wake()` below.
 		let onWake: (wake: Wake) => void = () => {};
 		const harness = await Harness.open(
 			storage,
-			{ models: sessionModels, registry, now: () => clock.now(), onWake: (wake) => onWake(wake) },
+			{
+				models: sessionModels,
+				registry,
+				now: () => clock.now(),
+				onWake: (wake) => onWake(wake),
+				...(env === undefined ? {} : { env: () => env }),
+			},
 			context,
 		);
 		let conversation: Conversation;
@@ -660,6 +680,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			conversation,
 			models: sessionModels,
 			registry,
+			env,
 			view,
 			unsubscribeView: () => {},
 			stream: newStream(record),
@@ -762,6 +783,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			}
 		}
 		await admitting(session, () => session.conversation.abort(piContext(ctx)));
+		// Stops waiting for commands still running; what the session holds is released by the session-end hook below.
+		await session.env?.cleanup(BACKGROUND_CONTEXT).catch(() => undefined);
 		await sync(session);
 		const run = session.aborts + 1;
 		session.aborts = run;
@@ -1559,6 +1582,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				await session.waking.catch(() => undefined);
 				await session.publishing.catch(() => undefined);
 				await session.harness.close(BACKGROUND_CONTEXT);
+				await session.env?.cleanup(BACKGROUND_CONTEXT).catch(() => undefined);
 			}
 		},
 	};

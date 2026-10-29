@@ -1,4 +1,4 @@
-import type { SessionStatus } from "@harbour/protocol";
+import type { SessionStatus, TranscriptItem } from "@harbour/protocol";
 import type { ComposerProps, ComposerState } from "@harbour/ui";
 import type { SessionControl } from "../api/client.ts";
 
@@ -24,6 +24,11 @@ export type SessionActions = {
 	promptedAt?: number;
 	/** Why the last send or stop failed, shown on the composer until the next one. */
 	failure?: string;
+	/**
+	 * Allows or declines the agent's waiting browser request (`browserRequestOf`), when the client can. Absent, the
+	 * request shows with no buttons.
+	 */
+	onBrowserDecision?: (callId: string, allow: boolean) => void;
 	/** The composer's model and thinking pickers, when the session offers a choice. */
 	pickers?: Pick<
 		ComposerProps,
@@ -34,6 +39,35 @@ export type SessionActions = {
 	/** Rewinds the session to a message and sends new words in its place. Absent when the host can't. */
 	onEdit?: (itemId: string, text: string) => Promise<void>;
 };
+
+/** An agent's request for a browser that waits for a person: the call, why, and the sites it names. */
+export type BrowserRequest = {
+	readonly callId: string;
+	readonly reason: string;
+	readonly sites: readonly string[];
+};
+
+/**
+ * The agent's waiting browser request: the last `browser_request` call still running. It returns once a person allows
+ * or declines it, so a finished one needs nothing.
+ */
+export function browserRequestOf(items: readonly TranscriptItem[]): BrowserRequest | undefined {
+	for (let i = items.length - 1; i >= 0; i -= 1) {
+		const item = items[i];
+		if (item?.kind !== "tool" || item.name !== "browser_request") continue;
+		if (item.status !== "running") return undefined;
+		const args = (typeof item.args === "object" && item.args !== null ? item.args : {}) as {
+			reason?: unknown;
+			sites?: unknown;
+		};
+		return {
+			callId: item.callId,
+			reason: typeof args.reason === "string" ? args.reason : "",
+			sites: Array.isArray(args.sites) ? args.sites.filter((site): site is string => typeof site === "string") : [],
+		};
+	}
+	return undefined;
+}
 
 /**
  * Whether the transcript shows the turn working, and from when, after T3 Code (ChatView.tsx:1394-1398): from the moment
