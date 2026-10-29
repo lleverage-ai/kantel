@@ -27,6 +27,10 @@ The cold runs' timing anomaly is the Workers clock itself, not a slow step: see 
 (#216), not because of this change**
 ([Session ready, time to first token and first bash](#session-ready-time-to-first-token-and-first-bash-isolate-on-demand-196-29-oct-2026)).
 
+**After #216 and #218 (29 Oct 2026, 18:42 UTC): cold create is 211 ms p50 with 880 sessions held, against 1,715 ms at
+670 before; warm `write` is 542 and 579 ms p50 in two batches, against 899 ms, which misses #218's ≤500 ms target**
+([After the cold create and commit fixes](#after-the-cold-create-and-commit-fixes-216-218-29-oct-2026-1842-utc)).
+
 Everything above
 [After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc) was measured with D1 in North America.
 
@@ -406,13 +410,74 @@ environment's size limit (#199) are target-neutral, in `packages/`.
 ### Deferred
 
 - **#216: cold create grows with the number of sessions held.** This is the largest cold cost now, and it grows with
-  every measurement batch.
+  every measurement batch. Fixed since: see
+  [After the cold create and commit fixes](#after-the-cold-create-and-commit-fixes-216-218-29-oct-2026-1842-utc).
 - **#218: a workspace write takes ~900 ms**, four sequential R2 writes per commit. `write` and `edit` are now a
-  session's slowest tools.
+  session's slowest tools. Two round trips since (same section): about 560 ms.
 - **A session's directory row kept in the object instead of read from D1, and a cold session's D1 row written in the
   background.** Neither is needed for the warm target, which is met (above), and the cold path is dominated by #216.
 - **A warm isolate pool.** None is added: a pooled isolate would have to be blank until bound and never reused across
   sessions (#196).
+
+## After the cold create and commit fixes (#216, #218, 29 Oct 2026, 18:42 UTC)
+
+Deployed main `42ddedc`, Worker version `07172b7d`, deployed 18:28:40 UTC. It carries:
+
+- **#218** (https://github.com/tvdavies/harbour/pull/245): a workspace commit writes the blob, the tree and the
+  previous version's archive record at once, then the conditional head put: two R2 round trips instead of four.
+- **#216** (https://github.com/tvdavies/harbour/pull/249): a new session's Pi tables are created at the current schema
+  version (no migration replay), and a closed session's tables are archived into one table and dropped, so the object's
+  schema grows with its open sessions, not with every session held.
+- **The backfill** (https://github.com/tvdavies/harbour/pull/252): sessions closed before #249 are archived from the
+  object's alarm, 5 at a time every 2 s, until none is left.
+
+Placement as before: object `LHR`, D1 `WEUR`, edge `LHR`. Every run answered (50 of 50 in each batch). The runs came
+from a signed-in `/healthz` page in brwsr.
+
+| Measurement, ms p50 / p95 (min–max) | Before | After |
+| --- | --- | --- |
+| Session ready, cold (create → 201) | 1,715 / 1,979, 670 sessions held | **211 / 332 (154–823), 880 sessions held** |
+| `write`, warm (`scratch/measure.txt`) | 899 / 1,334 (451–1,470) | **542 / 759 (245–902)**; again: 579 / 763 (350–1,063) |
+| `read`, warm | 72 / 146 (16–172) | 72 / 192 (10–3,563); again: 71 / 117 (29–222) |
+
+Files: [`create-cold-…-after-216.json`](create-cold-2026-10-29T18-45-11Z-after-216.json) (from
+[`harness/create-cold.js`](harness/create-cold.js)),
+[`first-bash-…-after-218-warm-tools.json`](first-bash-2026-10-29T18-42-38Z-after-218-warm-tools.json) and
+[`…-2.json`](first-bash-2026-10-29T18-43-46Z-after-218-warm-tools-2.json), and the session counts
+[before](session-count-2026-10-29T18-35-05Z.json) and [after](session-count-2026-10-29T18-45-00Z.json) the backfill.
+
+**Verdict: #216 is fixed on the deployed stack; #218 halved the commit's round trips but misses its target.**
+
+- **Cold create is 8× faster with more sessions held.** The before is `session-ready-…-after.json` (07:49 UTC, 670
+  sessions held), the same `POST /v1/sessions` timed the same way. `create-cold.js` times only the create and then
+  closes the session, so it makes no model calls.
+- **The backfill.** The object can't be asked how many closed sessions still have tables, so its progress shows only
+  in the timings. The default project held 865 sessions, 46 of them open, when the object first woke after the deploy
+  (18:35 UTC).
+  - Five creates at 18:36 took 2,669 ms p50, with closes at 2,723 ms
+    ([probe 1](create-cold-2026-10-29T18-35-57Z-probe-1.json)): the batches' `DROP`s on the full schema hold the
+    object.
+  - At 18:42 creates took 383 ms and closes 285 ms ([probe 2](create-cold-2026-10-29T18-42-10Z-probe-2.json)).
+  - At 18:45 creates took 211 ms p50.
+  - Listing the project's sessions took 33.2 s at 18:35 and 2.1 s at 18:45.
+  - The replay in #252 (800 sessions, batches of 5) predicted about 161 batches, roughly 6 minutes. The timings fit
+    the backfill having finished by 18:42; that is inferred, not read from the object.
+- **`write` is 542–579 ms p50, a 36–40% cut from 899 ms, against #218's ≤500 ms.** Two rounds of R2 writes at about
+  270 ms each fit it, against the ~225 ms per write the earlier estimate assumed. The spans aren't timed separately.
+  The next step in #218 is the one it already names: make the object's own storage the commit point, so a write waits
+  on no R2 round trip after the blob.
+- **One slow `read`, 3,563 ms, in the first batch** set that batch's maximum. Its p50 and p95 are as before.
+
+To run them again, from `harness/`, with `BRWSR_API_KEY` and `BRWSR_API_URL` set and the `sal` context signed in to
+Access:
+
+```sh
+node run-in-page.mjs count-sessions.js ../session-count-$(date -u +%Y-%m-%dT%H-%M-%SZ).json
+node run-in-page.mjs create-cold.js ../create-cold-$(date -u +%Y-%m-%dT%H-%M-%SZ).json '{"runs":50}'
+node run-in-page.mjs first-bash.js ../first-bash-$(date -u +%Y-%m-%dT%H-%M-%SZ)-warm-tools.json '{"warmTools":true}'
+```
+
+Record the session count with every cold create: it still depends on the sessions open in the object.
 
 ## Where the time goes
 

@@ -1,0 +1,13 @@
+{
+	"brwsrSession": "a2f8416f-abcf-4973-aa4b-6b39a08954ef",
+	"startedAt": "2026-10-29T18:45:03.759Z",
+	"endedAt": "2026-10-29T18:45:06.087Z",
+	"from": "https://harbour.myslop.app/healthz",
+	"summary": {
+		"projectId": "prj_b8566943-a8e3-4fd6-8330-4a2282ccd610",
+		"total": 880,
+		"open": 49,
+		"at": {},
+		"ms": 2118
+	}
+}
