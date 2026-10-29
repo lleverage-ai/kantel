@@ -2,8 +2,8 @@
 
 `@harbour/runtime/http` serves the session runtime contracts (`SessionRuntime`, `SessionDirectory`, `AgentProfiles`,
 `HostToolBridge`) over HTTP as one portable fetch handler, and gives host apps a client that implements the same
-contracts over it. It imports only `@harbour/contracts` and `@harbour/protocol`, never Pi, so it runs in a Worker, a
-Durable Object, Bun or Node, and a host app can import the client and the callback endpoint on their own.
+contracts over it. It imports only `@harbour/contracts`, `@harbour/protocol` and `@harbour/api`, never Pi, so it runs
+in a Worker, a Durable Object, Bun or Node, and a host app can import the client and the callback endpoint on their own.
 
 ```ts
 import { createAuthenticator } from "@harbour/identity/authenticator";
@@ -34,6 +34,12 @@ Only `result` (its wait stops, answering `aborted`) and `events` (its watch clos
 ## Routes
 
 Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 MiB.
+
+The routes in Harbour's public API are defined once in `@harbour/api` (`packages/api/src/routes.ts`), with their
+schemas; the server answers them through that package's router, which checks the path, query and body before the
+contract call, and the OpenAPI document and TS SDK are generated from the same definitions. They are `POST /sessions`,
+`GET /sessions`, `GET /sessions/:id`, `POST /sessions/:id/abort` and `POST /sessions/:id/close` so far. The rest of
+this table moves there route by route (#150); until then those routes are served as before.
 
 | Route | Contract call | Answer |
 | --- | --- | --- |
