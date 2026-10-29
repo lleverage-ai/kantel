@@ -50,6 +50,12 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts
   the session releases it.
 - **Confined.** Paths outside `/workspace` and its mounts are refused, mounts are read-only, a file over 16 MiB is
   neither read nor written, and every write is a commit audited with the agent as its actor.
+- **JavaScript runs; Python doesn't yet.** On the `in-process` isolate, `node script.js` runs the script in QuickJS,
+  compiled to WebAssembly (`@harbour/sandbox/isolate-node`): plain JavaScript (ES2023) with `console`, `process.argv`,
+  `process.env` and `process.exit`, but no `require`, `fs`, network or timers. Each run gets its own engine instance in
+  a 32 MiB WebAssembly memory (24 MiB of heap), up to 1 MiB of script and of output, and a budget of interrupt checks
+  (a few seconds of busy CPU), because the clock stands still while a Worker runs code. `python`, `npm`, `git` writes
+  and the other real binaries need the container tier, which isn't on Cloudflare yet, and are refused.
 
 ## The browser
 
@@ -127,7 +133,8 @@ the isolate-ready measurement can run on each and the target is set with real nu
 runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate, runs the same shell in a
 Dynamic Worker per session through the `LOADER` (`worker_loaders`) binding, as the M0 spike ran it
 (`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. The container tier is not on
-Cloudflare yet: a command routed to it is refused `unavailable`.
+Cloudflare yet: a command routed to it is refused `unavailable`. Only `in-process` has `node` so far: on
+`dynamic-worker`, `node` goes to the container tier and is refused.
 
 How `dynamic-worker` works:
 

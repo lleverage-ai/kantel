@@ -79,6 +79,9 @@ importers:
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
+      "@jitl/quickjs-wasmfile-release-sync":
+        specifier: 0.32.0
+        version: 0.32.0
       quickjs-wasi:
         specifier: 3.6.2
         version: 3.6.2
@@ -545,12 +548,18 @@ importers:
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../workspace
+      "@jitl/quickjs-wasmfile-release-sync":
+        specifier: 0.32.0
+        version: 0.32.0
       isomorphic-git:
         specifier: 1.44.8
         version: 1.44.8
       just-bash:
         specifier: 3.6.0
         version: 3.6.0
+      quickjs-emscripten-core:
+        specifier: 0.32.0
+        version: 0.32.0
     devDependencies:
       "@earendil-works/chord":
         specifier: 1.4.0
@@ -2041,6 +2050,14 @@ packages:
     peerDependenciesMeta:
       "@types/node":
         optional: true
+
+  "@jitl/quickjs-ffi-types@0.32.0":
+    resolution:
+      { integrity: sha512-v9T+GQpmk43VDJ7d72sf0Nexhk+ArvtUihW27dy7lqAl0zBObFKtSBBIm5RBjwIhE8VwsPPm9PNuvPvNqLWUEg== }
+
+  "@jitl/quickjs-wasmfile-release-sync@0.32.0":
+    resolution:
+      { integrity: sha512-BKNDI/TPBfGlLNGYpLrhcDGXmIk4xHm4MRAisOBnOzpXVn9HZWsfmMAc9WMBrAHjvvds6HOikKeaOBKdPdpVrg== }
 
   "@jridgewell/gen-mapping@0.3.13":
     resolution:
@@ -4817,6 +4834,10 @@ packages:
     resolution:
       { integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A== }
 
+  quickjs-emscripten-core@0.32.0:
+    resolution:
+      { integrity: sha512-QFnPfjFey8EqknSrSxe1hZrf1/8z7/6s1QzGOmKo6++02r7QRRX7ZoyNaZh7JuVjWsVW87KnQrbZqnHkOAzUyg== }
+
   quickjs-wasi@3.6.2:
     resolution:
       { integrity: sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg== }
@@ -6585,6 +6606,12 @@ snapshots:
   "@inquirer/type@4.2.1(@types/node@26.6.5)":
     optionalDependencies:
       "@types/node": 26.6.5
+
+  "@jitl/quickjs-ffi-types@0.32.0": {}
+
+  "@jitl/quickjs-wasmfile-release-sync@0.32.0":
+    dependencies:
+      "@jitl/quickjs-ffi-types": 0.32.0
 
   "@jridgewell/gen-mapping@0.3.13":
     dependencies:
@@ -9128,6 +9155,10 @@ snapshots:
       split-on-first: 3.0.0
 
   queue-microtask@1.2.3: {}
+
+  quickjs-emscripten-core@0.32.0:
+    dependencies:
+      "@jitl/quickjs-ffi-types": 0.32.0
 
   quickjs-wasi@3.6.2: {}
 

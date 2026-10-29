@@ -8,6 +8,10 @@
  * `cloudflare:workers` and `node:*` stay external: the isolates run with nodejs_compat (the `dynamic-worker` one) or need
  * neither (code mode).
  *
+ * It also copies the QuickJS build the in-process isolate's `node` runs (`src/sandboxes.ts`,
+ * `@harbour/sandbox/isolate-node`) to `generated/quickjs-node.wasm`, which wrangler compiles: its `CompiledWasm` rule
+ * matches an import's path, and the package exports the file only as `@jitl/quickjs-wasmfile-release-sync/wasm`.
+ *
  * `pnpm dev`, `pnpm deploy:dry-run` and the deploy workflow run it before wrangler; the tests don't need it.
  *
  * Usage: node scripts/build-isolate.ts
@@ -50,3 +54,6 @@ await bundle("../src/codemode/entry.ts", "codemode.bundle.txt", [quickjsModule])
 const quickjs = createRequire(import.meta.url).resolve("quickjs-wasi/quickjs.wasm");
 await copyFile(quickjs, new URL("../generated/quickjs.wasm.bin", import.meta.url));
 console.log("generated/quickjs.wasm.bin: QuickJS");
+const quickjsNode = createRequire(import.meta.url).resolve("@jitl/quickjs-wasmfile-release-sync/wasm");
+await copyFile(quickjsNode, new URL("../generated/quickjs-node.wasm", import.meta.url));
+console.log("generated/quickjs-node.wasm: QuickJS for node");

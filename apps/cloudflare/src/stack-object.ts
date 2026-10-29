@@ -27,6 +27,7 @@ import { d1Driver } from "@harbour/sql/sqlite";
 import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
+import QUICKJS_NODE from "../generated/quickjs-node.wasm";
 import { objectSqlDriver } from "./audit-outbox.ts";
 import { type BrowserVars, brwsrProviderFrom } from "./browser.ts";
 import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
@@ -172,6 +173,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 							bundleId: CODEMODE_BUNDLE_ID,
 						},
 					}),
+			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.
+			nodeEngine: QUICKJS_NODE,
 			vault: approvalVaultOver((method, ctx, args) =>
 				namedObject(env.VAULTS, VAULT_NAME, env).approvalCall(method, ctx, args),
 			),

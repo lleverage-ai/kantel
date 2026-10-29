@@ -86,6 +86,7 @@ import {
 	DEFAULT_ISOLATE_BACKEND,
 	type ExtraIsolateBackends,
 	type IsolateBackendName,
+	type NodeEngine,
 	type StackSandboxes,
 } from "./sandboxes.ts";
 
@@ -203,6 +204,8 @@ export interface StackOptions {
 	readonly isolateBackend?: IsolateBackendName;
 	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
 	readonly extraIsolateBackends?: ExtraIsolateBackends;
+	/** The compiled QuickJS module: with it, `node` runs plain JavaScript in the in-process isolate (`src/sandboxes.ts`). */
+	readonly nodeEngine?: NodeEngine;
 	/**
 	 * The browser provider (brwsr, `src/browser.ts`), when the Worker has its key. With it the default profile has the
 	 * browser's tools; without it sessions have none.
@@ -417,6 +420,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			clock,
 			backend: options.isolateBackend ?? DEFAULT_ISOLATE_BACKEND,
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
+			...(options.nodeEngine === undefined ? {} : { nodeEngine: options.nodeEngine }),
 		});
 		const sandboxes = built;
 		// Skills and memory check project-owned records with the runtime's access, and audit into the one store. Memory
