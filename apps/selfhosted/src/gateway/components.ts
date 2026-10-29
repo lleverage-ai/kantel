@@ -29,6 +29,7 @@ import {
 } from "@harbour/contracts";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
+import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
@@ -69,6 +70,11 @@ export interface GatewayComponents {
 	readonly hosts?: DurableHosts;
 	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
+	/**
+	 * People's passkeys (#132), kept with identity: the vault page asks for one before an approval once the person has
+	 * registered one, as on Cloudflare.
+	 */
+	readonly passkeys: Passkeys;
 	/**
 	 * The vault, behind the egress proxy's decisions and the vault page's approval API. Absent on durable stores without a
 	 * cipher key (HARBOUR_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
@@ -238,6 +244,7 @@ export function createGatewayComponents(
 		memory,
 		sandboxes,
 		otp: createMemoryOtpStores(),
+		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
 		vault,
 		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 		...(browser === undefined ? {} : { browser }),
