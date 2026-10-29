@@ -1,0 +1,53 @@
+{
+	"brwsrSession": "0f4f42e1-c5cf-4916-a298-cfc24c265079",
+	"startedAt": "2026-10-29T18:36:01.220Z",
+	"endedAt": "2026-10-29T18:36:31.850Z",
+	"from": "https://harbour.myslop.app/healthz",
+	"runs": [
+		{
+			"at": "2026-10-29T18:36:03.346Z",
+			"status": 201,
+			"create": 2349,
+			"close": 2723,
+			"closeStatus": 204
+		},
+		{
+			"at": "2026-10-29T18:36:08.419Z",
+			"status": 201,
+			"create": 2334,
+			"close": 3039,
+			"closeStatus": 204
+		},
+		{
+			"at": "2026-10-29T18:36:13.794Z",
+			"status": 201,
+			"create": 4647,
+			"close": 2688,
+			"closeStatus": 204
+		},
+		{
+			"at": "2026-10-29T18:36:21.130Z",
+			"status": 201,
+			"create": 2669,
+			"close": 477,
+			"closeStatus": 204
+		},
+		{
+			"at": "2026-10-29T18:36:24.277Z",
+			"status": 201,
+			"create": 2857,
+			"close": 4614,
+			"closeStatus": 204
+		}
+	],
+	"summary": {
+		"ok": 5,
+		"of": 5,
+		"createP50": 2669,
+		"createP95": 4647,
+		"min": 2334,
+		"max": 4647,
+		"closeP50": 2723,
+		"statuses": ["201/204"]
+	}
+}
