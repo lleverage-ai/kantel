@@ -60,6 +60,7 @@
 		"@harbour/protocol": "workspace:*",
 		"@harbour/schedules": "workspace:*",
 		"@harbour/vault": "workspace:*",
+		"pdfjs-dist": "6.4.299",
 		"react-markdown": "10.1.0",
 		"remark-gfm": "4.0.1",
 		"virtua": "0.53.6"

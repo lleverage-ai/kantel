@@ -1,6 +1,8 @@
+import type { PresentedFile } from "@harbour/protocol";
 import type { Crumb } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConsoleClient, SendOptions } from "../api/client.ts";
+import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
+import { ApiError } from "../api/http.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
@@ -200,7 +202,24 @@ export function SessionScreen({
 		[edit, sessionId],
 	);
 
+	// A presented file is read from the session's own workspace, through the read API with the console's credentials.
+	const readPresented = useMemo(() => {
+		let files: Promise<WorkspaceFiles | undefined> | undefined;
+		return async (file: PresentedFile, signal: AbortSignal) => {
+			files ??= client.workspace(sessionId);
+			const workspace = await files.catch((reason: unknown) => {
+				files = undefined;
+				throw reason;
+			});
+			if (workspace === undefined || workspace.id !== file.workspaceId) {
+				throw new ApiError("not_found", "The file isn't in this session's workspace");
+			}
+			return workspace.read(file.path, signal);
+		};
+	}, [client, sessionId]);
+
 	const actions: SessionActions = {
+		readPresented,
 		...(onFork === undefined ? {} : { onFork }),
 		...(onEdit === undefined ? {} : { onEdit }),
 		control: client.control(sessionId),

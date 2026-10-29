@@ -14,6 +14,7 @@
 		"./pi-env": "./src/pi-env.ts",
 		"./dependencies": "./src/dependencies.ts",
 		"./coding-tools": "./src/coding-tools.ts",
+		"./present-files": "./src/present-files.ts",
 		"./isolate-git": "./src/isolate-git.ts",
 		"./isolate-node": "./src/isolate-node.ts"
 	},

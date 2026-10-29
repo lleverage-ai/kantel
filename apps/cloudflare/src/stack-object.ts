@@ -63,6 +63,11 @@ export interface Env
 	 * did before. Anything else (the default) serves both.
 	 */
 	readonly HARBOUR_SESSION_WEBSOCKET?: string;
+	/**
+	 * `off` takes the experimental `present_files` tool away (`@harbour/sandbox/present-files`). Anything else (the
+	 * default) offers it, and the console shows the files it presents as cards that open a viewer.
+	 */
+	readonly HARBOUR_PRESENT_FILES?: string;
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
 	readonly VAULTS: DurableObjectNamespace<HarbourVault>;
@@ -183,6 +188,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		}
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
+			presentFiles: (env.HARBOUR_PRESENT_FILES ?? "").trim() !== "off",
 			// Code mode, when the Worker has the loader and HARBOUR_CODEMODE isn't `off`: each session's scripts run in its own
 			// isolate, with no bindings and no network, loaded by its first script (`src/codemode.ts`).
 			...(loader === undefined || !codemodeEnabled(env)

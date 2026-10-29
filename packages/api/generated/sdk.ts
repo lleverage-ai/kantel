@@ -462,6 +462,22 @@ export interface PageQuery {
 	readonly cursor?: string;
 }
 
+/** A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials. */
+export interface PresentedFile {
+	/** The session's workspace the file is in. */
+	readonly workspaceId: string;
+	/** Its path in the workspace, for `GET /v1/workspaces/{workspaceId}/content?path=`: "out/report.pdf", or "/project/README.md" under a mount. */
+	readonly path: string;
+	/** Its file name: "report.pdf". */
+	readonly name: string;
+	/** Its media type, from its name: "application/pdf". */
+	readonly mimeType: string;
+	/** Its size in bytes when it was presented. */
+	readonly size: number;
+	/** The first lines of a text file, for a preview card. */
+	readonly preview?: string;
+}
+
 export interface PreviewScheduleQuery {
 	/** How many due times. Default 5. */
 	readonly n?: number;
@@ -849,6 +865,8 @@ export interface ToolItem {
 	readonly status: "running" | "done" | "error" | "interrupted";
 	readonly args?: unknown;
 	readonly output?: string;
+	/** The files the call presented to the person (`present_files`), the most relevant first. */
+	readonly files?: readonly PresentedFile[];
 	readonly tier?: "isolate" | "container";
 	/** Epoch milliseconds, UTC. */
 	readonly endedAt?: number;

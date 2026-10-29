@@ -65,6 +65,26 @@ export interface ToolImage {
 	readonly data: string;
 }
 
+/**
+ * A file the agent presented to the person (the `present_files` tool): a card in the transcript that opens a viewer.
+ * Only where it is: a client reads its bytes through the workspace read API with its own credentials
+ * (`GET /v1/workspaces/{workspaceId}/content?path=`), never from a link in the stream.
+ */
+export interface PresentedFile {
+	/** The session's workspace the file is in. */
+	readonly workspaceId: string;
+	/** Its path in the workspace, as the read API takes it: "out/report.pdf", or "/project/README.md" under a mount. */
+	readonly path: string;
+	/** Its file name: "report.pdf". */
+	readonly name: string;
+	/** Its media type, from its name: "application/pdf". */
+	readonly mimeType: string;
+	/** Its size in bytes when it was presented. */
+	readonly size: number;
+	/** The first lines of a text file (Markdown, CSV, plain text), for the card; never more than a few hundred characters. */
+	readonly preview?: string;
+}
+
 export interface ToolItem {
 	readonly kind: "tool";
 	readonly id: string;
@@ -83,6 +103,8 @@ export interface ToolItem {
 	 * ask for its live view. Only an ID: never a link or a credential.
 	 */
 	readonly browserSessionId?: string;
+	/** The files the call presented to the person (`present_files`), the most relevant first. */
+	readonly files?: readonly PresentedFile[];
 	readonly tier?: SandboxTierName;
 	readonly endedAt?: Timestamp;
 }

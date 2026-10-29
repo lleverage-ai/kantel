@@ -23,3 +23,19 @@
 .hb-story-viewer-frame-tall {
 	height: calc(var(--hb-space-11) * 14);
 }
+
+/* The presented files' cards beside their viewer, as the console's session screen lays them out. */
+.hb-story-presented-split {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+	gap: var(--hb-space-5);
+	height: calc(var(--hb-space-11) * 12);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	overflow: hidden;
+}
+
+.hb-story-presented-split > :first-child {
+	padding: var(--hb-space-5);
+	overflow: auto;
+}

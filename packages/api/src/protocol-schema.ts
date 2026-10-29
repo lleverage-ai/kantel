@@ -47,6 +47,25 @@ export const AssistantItem = Type.Object(
 	{ title: "AssistantItem" },
 );
 
+export const PresentedFile = Type.Object(
+	{
+		workspaceId: Type.String({ description: "The session's workspace the file is in." }),
+		path: Type.String({
+			description:
+				'Its path in the workspace, for `GET /v1/workspaces/{workspaceId}/content?path=`: "out/report.pdf", or "/project/README.md" under a mount.',
+		}),
+		name: Type.String({ description: 'Its file name: "report.pdf".' }),
+		mimeType: Type.String({ description: 'Its media type, from its name: "application/pdf".' }),
+		size: Type.Integer({ description: "Its size in bytes when it was presented." }),
+		preview: Type.Optional(Type.String({ description: "The first lines of a text file, for a preview card." })),
+	},
+	{
+		title: "PresentedFile",
+		description:
+			"A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials.",
+	},
+);
+
 export const ToolItem = Type.Object(
 	{
 		kind: Type.Literal("tool"),
@@ -63,6 +82,11 @@ export const ToolItem = Type.Object(
 		]),
 		args: Type.Optional(Type.Unknown()),
 		output: Type.Optional(Type.String()),
+		files: Type.Optional(
+			Type.Array(PresentedFile, {
+				description: "The files the call presented to the person (`present_files`), the most relevant first.",
+			}),
+		),
 		tier: Type.Optional(Type.Union([Type.Literal("isolate"), Type.Literal("container")])),
 		endedAt: Type.Optional(Timestamp),
 	},

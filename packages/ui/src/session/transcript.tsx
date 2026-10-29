@@ -1,4 +1,4 @@
-import type { Card, CardItem, TranscriptItem } from "@harbour/protocol";
+import type { Card, CardItem, PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
 import {
 	type DragEvent,
 	memo,
@@ -11,6 +11,8 @@ import {
 	useState,
 } from "react";
 import { VList, type VListHandle } from "virtua";
+import { PresentedFiles } from "../presented/presented-file-card.tsx";
+import { presentedKey } from "../presented/presented-file-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -117,7 +119,16 @@ type RowProps = {
 	report: (id: string, phase: RowRenderPhase) => void;
 	/** The linked turn is in this row: the row is highlighted, and a tool call in it opens its group and stands out. */
 	highlight: string | undefined;
+	/** Opens a presented file's viewer; without it the cards only show what the files are. */
+	onOpenFile: ((file: PresentedFile, item: ToolItem) => void) | undefined;
+	/** The key of the file open in the viewer, when it is one this row presented. */
+	openFile: string | undefined;
 };
+
+/** Whether a row of tool calls presented the file with this key. */
+function presents(row: TranscriptRow, key: string): boolean {
+	return row.kind === "tools" && row.items.some((item) => item.files?.some((file) => presentedKey(file) === key));
+}
 
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
 export type RowRenderPhase = "mount" | "update";
@@ -129,19 +140,28 @@ function rowBody(
 	browserSlots: RowProps["browserSlots"],
 	renderBrowserView: RowProps["renderBrowserView"],
 	highlight: RowProps["highlight"],
+	onOpenFile: RowProps["onOpenFile"],
+	openFile: RowProps["openFile"],
 ): ReactNode {
 	if (row.kind === "tools") {
 		const views =
 			browserSlots === undefined || renderBrowserView === undefined
 				? undefined
 				: new Map(browserSlots.map((slot) => [slot.item.id, renderBrowserView(slot)] as const));
+		// The files the calls presented stay in view under the group, folded or not.
+		const presenting = row.items.filter((item) => item.status === "done" && (item.files?.length ?? 0) > 0);
 		return (
-			<ToolCallGroup
-				items={row.items}
-				live={row.live}
-				{...(views === undefined ? {} : { browserViews: views })}
-				{...(highlight === undefined ? {} : { focus: highlight })}
-			/>
+			<>
+				<ToolCallGroup
+					items={row.items}
+					live={row.live}
+					{...(views === undefined ? {} : { browserViews: views })}
+					{...(highlight === undefined ? {} : { focus: highlight })}
+				/>
+				{presenting.map((item) => (
+					<PresentedFiles key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+				))}
+			</>
 		);
 	}
 	const { item } = row;
@@ -169,6 +189,8 @@ const Row = memo(function Row({
 	renderBrowserView,
 	report,
 	highlight,
+	onOpenFile,
+	openFile,
 }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
@@ -184,7 +206,7 @@ const Row = memo(function Row({
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
-				{rowBody(row, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight)}
+				{rowBody(row, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight, onOpenFile, openFile)}
 			</div>
 		</div>
 	);
@@ -239,6 +261,13 @@ export type TranscriptProps = {
 	 * scrolls to it, once per ID, and stops following the end.
 	 */
 	focusBrowser?: string;
+	/**
+	 * Opens a file a call presented (`present_files`) in the host's viewer, from its card under the call's group. Keep it
+	 * stable: every row with a presented file re-renders when it changes. Without it the cards show read-only.
+	 */
+	onOpenFile?: (file: PresentedFile, item: ToolItem) => void;
+	/** The key (`presentedKey`) of the presented file open in the host's viewer: its card shows it is open. */
+	openFile?: string;
 	/** The first page is loading: shows skeleton rows while there are no items. */
 	loading?: boolean;
 	/** What an empty transcript says. Defaults to "No messages yet". */
@@ -301,6 +330,8 @@ export function Transcript({
 	renderCard,
 	renderBrowserView,
 	focusBrowser,
+	onOpenFile,
+	openFile,
 	loading = false,
 	empty,
 	error,
@@ -677,6 +708,8 @@ export function Transcript({
 								renderBrowserView={renderBrowserView}
 								report={report}
 								highlight={highlight?.row === entry.id ? highlight.item : undefined}
+								onOpenFile={onOpenFile}
+								openFile={openFile !== undefined && presents(entry, openFile) ? openFile : undefined}
 							/>
 						)
 					}

@@ -16,6 +16,7 @@ import {
 	attentionFor,
 	type DeltaOp,
 	type NoticeItem,
+	type PresentedFile,
 	type SessionStatus,
 	type Timestamp,
 	TOOL_IMAGE_TYPES,
@@ -41,7 +42,24 @@ export function harbourUserEntry(via: UserItemVia, requestId?: string): InputEnt
 
 /** The plain-language chip label of a tool call. */
 export function toolLabel(name: string, args?: unknown): string {
-	return browserToolLabel(name, args) ?? `Calling ${name}`;
+	return browserToolLabel(name, args) ?? presentLabel(name, args) ?? `Calling ${name}`;
+}
+
+/** `present_files`' label: "Presenting report.pdf", or "Presenting 3 files". */
+function presentLabel(name: string, args: unknown): string | undefined {
+	if (name !== "present_files") return undefined;
+	const paths = typeof args === "object" && args !== null ? (args as { filepaths?: unknown }).filepaths : undefined;
+	if (!Array.isArray(paths) || paths.length === 0) return "Presenting files";
+	if (paths.length > 1) return `Presenting ${paths.length} files`;
+	const only = paths[0];
+	const file =
+		typeof only === "string"
+			? only
+					.split("/")
+					.filter((part) => part !== "")
+					.at(-1)
+			: undefined;
+	return file === undefined ? "Presenting a file" : `Presenting ${file}`;
 }
 
 function hostOf(url: unknown): string | undefined {
@@ -134,6 +152,41 @@ export function toolBrowserSessionOf(message: Pick<ToolResultMessage, "details">
 	if (typeof details !== "object" || details === null) return undefined;
 	const id = details.browserSessionId;
 	return typeof id === "string" && id !== "" && id.length <= 200 ? id : undefined;
+}
+
+/** The most files one tool item presents. */
+export const MAX_PRESENTED_FILES = 20;
+/** The longest preview a presented file carries. */
+export const MAX_PRESENTED_PREVIEW = 600;
+
+function presentedFile(value: unknown): PresentedFile | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { workspaceId, path, name, mimeType, size, preview } = value as { readonly [key: string]: unknown };
+	if (typeof workspaceId !== "string" || workspaceId === "" || workspaceId.length > 200) return undefined;
+	if (typeof path !== "string" || path === "" || path.length > 1024) return undefined;
+	if (typeof name !== "string" || name === "" || name.length > 255) return undefined;
+	if (typeof mimeType !== "string" || mimeType === "" || mimeType.length > 200) return undefined;
+	if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) return undefined;
+	return {
+		workspaceId,
+		path,
+		name,
+		mimeType,
+		size,
+		...(typeof preview === "string" && preview !== "" ? { preview: preview.slice(0, MAX_PRESENTED_PREVIEW) } : {}),
+	};
+}
+
+/** The files a tool result's UI details say it presented (`details.presentedFiles`), at most `MAX_PRESENTED_FILES`. */
+export function toolPresentedFilesOf(message: Pick<ToolResultMessage, "details">): PresentedFile[] {
+	const details = message.details as { readonly presentedFiles?: unknown } | undefined;
+	if (typeof details !== "object" || details === null || !Array.isArray(details.presentedFiles)) return [];
+	const files: PresentedFile[] = [];
+	for (const value of details.presentedFiles) {
+		const file = presentedFile(value);
+		if (file !== undefined) files.push(file);
+	}
+	return files.slice(0, MAX_PRESENTED_FILES);
 }
 
 /** Tool result diagnostics that mean the call stopped before it finished. */
@@ -325,12 +378,15 @@ export class ConversationProjector {
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
 		const images = toolImagesOf(message);
 		const browserSessionId = toolBrowserSessionOf(message);
+		// Only `present_files` presents files: another tool's details can't put a card in the transcript.
+		const files = running.name === "present_files" && status === "done" ? toolPresentedFilesOf(message) : [];
 		const item: ToolItem = {
 			...running,
 			status,
 			output: textOf(message.content),
 			...(images.length === 0 ? {} : { images }),
 			...(browserSessionId === undefined ? {} : { browserSessionId }),
+			...(files.length === 0 ? {} : { files }),
 			endedAt: this.#now(),
 		};
 		ops.push({ op: "replace", item });

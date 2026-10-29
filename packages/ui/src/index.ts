@@ -73,6 +73,23 @@ export {
 export { MemoryPage, type MemoryPageProps, type MemoryView } from "./memory/memory-page.tsx";
 export { MemoryProposals, type MemoryProposalsProps } from "./memory/memory-proposals.tsx";
 export { MemoryRecall, type MemoryRecallProps } from "./memory/memory-recall.tsx";
+export { FilePanel, type FilePanelProps, type FilePanelState, saveFile } from "./presented/file-panel.tsx";
+export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
+// Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
+export {
+	PresentedFileCard,
+	type PresentedFileCardProps,
+	PresentedFiles,
+	type PresentedFilesProps,
+} from "./presented/presented-file-card.tsx";
+export {
+	fileToOpen,
+	type PresentedKind,
+	presentedFiles,
+	presentedKey,
+	presentedKind,
+	presentedKindLabel,
+} from "./presented/presented-file-model.ts";
 export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from "./primitives/breadcrumbs.tsx";
 export {
 	Button,
