@@ -9,16 +9,22 @@ name: Main
 on:
   push:
     branches: [main]
+    # A push that only changes Markdown (READMEs, CONTRACT.md, docs/) builds and deploys nothing different, so it
+    # starts no run. Nothing reads a .md file at build or test time, and Biome ignores them. Skipping the run also
+    # cancels nothing: the build already going carries on, and the next code push checks the whole tree.
+    paths-ignore:
+      - "**/*.md"
   workflow_dispatch: {}
 
-# Batched: one group for main, never cancelled in progress. The running build always finishes, deploy included, and a
-# newer push only replaces the pending one, so a burst of merges is checked once, on the newest head, and there is at
-# most one run going and one waiting. This reverses PR #131's group per main run, which checked every merge and left
-# 55 runs queued on two runners. Cancelling the running build instead would let a steady stream of merges starve the
-# deploy. The called workflows' own groups have other names: a group shared with this one would deadlock.
-concurrency:
-  group: main-${{ github.ref }}
-  cancel-in-progress: false
+# Only main's newest head is built (Tom, 29 Oct). Concurrency is per job, not per workflow:
+# - the checks (CI, self-hosted, Sandbox image) are cancelled by a newer push even while they run, so the runners
+#   only ever work on the latest merge. A superseded run's deploy is then skipped, because it needs all three.
+# - the deploy is never cancelled half way: a newer deploy waits for it, and replaces any that is still pending.
+# This reverses PR #131's group per main run, which checked every merge and left 55 runs queued on two runners, and
+# #221's single group with cancel-in-progress off, which let a superseded build run to the end. The trade-off: a merge
+# every few minutes keeps cancelling the checks, so nothing deploys until main is quiet for one build (about 8 minutes).
+# The groups' names differ from the called workflows' own (`ci-`, `selfhosted-`, `sandbox-image-<run id>`,
+# `cloudflare-deploy-<ref>`): a shared name would cancel or deadlock the caller.
 
 permissions:
   contents: read
@@ -26,21 +32,35 @@ permissions:
 jobs:
   ci:
     name: CI
+    concurrency:
+      group: main-ci-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/ci.yml
     with:
       tests: true
 
   selfhosted:
     name: self-hosted
+    concurrency:
+      group: main-selfhosted-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/selfhosted-spike.yml
 
   sandbox-image:
     name: Sandbox image
+    concurrency:
+      group: main-sandbox-image-${{ github.ref }}
+      cancel-in-progress: true
     uses: ./.github/workflows/sandbox-image.yml
 
+  # No `if:`, so the default success() applies: a check that failed or was cancelled by a newer push skips the deploy.
+  # Never `always()` or `!cancelled()` here.
   deploy:
     name: Cloudflare deploy
     needs: [ci, selfhosted, sandbox-image]
+    concurrency:
+      group: main-deploy-${{ github.ref }}
+      cancel-in-progress: false
     uses: ./.github/workflows/cloudflare-deploy.yml
     with:
       deploy: true
