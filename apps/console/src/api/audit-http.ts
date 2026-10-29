@@ -11,7 +11,7 @@ import {
 	type SessionRecord,
 } from "@harbour/contracts";
 import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
-import { sessionTurnPath, vaultRequestPath } from "../app/router.ts";
+import { sessionBrowserPath, sessionTurnPath, vaultRequestPath } from "../app/router.ts";
 import type { AuditScope, ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
@@ -116,6 +116,8 @@ export function apiAudit(
 			// Session pages sit under their project; an event that names none stays unlinked.
 			session: (sessionId, turn, projectId) =>
 				projectId === undefined ? undefined : sessionTurnPath(projectId, sessionId, turn),
+			browser: (sessionId, browserSessionId, projectId) =>
+				projectId === undefined ? undefined : sessionBrowserPath(projectId, sessionId, browserSessionId),
 			...(vaultRequests === true ? { proposal: vaultRequestPath } : {}),
 		},
 		choices: {},

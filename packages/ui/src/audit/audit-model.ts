@@ -77,6 +77,11 @@ export interface AuditFilters {
 	readonly sessionId?: string;
 	/** A vault item ID, matched by the store as `AuditQuery.itemId`: its uses, requests, approvals and policies. */
 	readonly credential?: string;
+	/**
+	 * A browser session ID, matched by the store as the events' subject: one browser's whole history (open, steps,
+	 * refusals, shares and embeds, close, recording).
+	 */
+	readonly browserSession?: string;
 }
 
 export const DEFAULT_FILTERS: AuditFilters = { range: "day", kind: "all" };
@@ -159,6 +164,7 @@ export function toQuery(filters: AuditFilters, now: number): AuditViewQuery {
 		...(set(filters.agentId) ? { agentId: filters.agentId } : {}),
 		...(set(filters.sessionId) ? { sessionId: filters.sessionId } : {}),
 		...(set(filters.credential) ? { itemId: filters.credential } : {}),
+		...(set(filters.browserSession) ? { subject: { kind: BROWSER_SUBJECT, id: filters.browserSession } } : {}),
 		...(from === undefined ? {} : { from }),
 		...(to === undefined ? {} : { to }),
 	};
@@ -174,6 +180,14 @@ export function eventItemId(event: AuditEvent): string | undefined {
 	return typeof itemId === "string" ? itemId : undefined;
 }
 
+/** The subject kind of every event about one browser session. */
+export const BROWSER_SUBJECT = "browser.session";
+
+/** The browser session an event is about, when its subject is one. */
+export function eventBrowserSession(event: AuditEvent): string | undefined {
+	return event.subject?.kind === BROWSER_SUBJECT ? event.subject.id : undefined;
+}
+
 /** Whether any filter narrows the log, for the "Clear filters" action and the empty state's copy. */
 export function isFiltered(filters: AuditFilters): boolean {
 	return (
@@ -182,7 +196,8 @@ export function isFiltered(filters: AuditFilters): boolean {
 		set(filters.projectId) ||
 		set(filters.agentId) ||
 		set(filters.sessionId) ||
-		set(filters.credential)
+		set(filters.credential) ||
+		set(filters.browserSession)
 	);
 }
 
@@ -207,6 +222,8 @@ export interface AuditLinks {
 	session?(sessionId: string, turn?: string, projectId?: string): string | undefined;
 	/** The vault page for a proposal (its decision lives there too). */
 	proposal?(proposalId: string): string | undefined;
+	/** A session at one of its browsers, where its live view or replay is, for an event about that browser. */
+	browser?(sessionId: string, browserSessionId: string, projectId?: string): string | undefined;
 }
 
 export function actorName(actor: Actor, directory: AuditDirectory = {}): string {
@@ -261,8 +278,15 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			: { href: sessionHref, label: directory.session?.(event.sessionId) ?? event.sessionId };
 	const proposalHref = event.subject?.kind === "vault.proposal" ? links.proposal?.(event.subject.id) : undefined;
 	const proposalLink = proposalHref === undefined ? undefined : { href: proposalHref, label: "Vault request" };
-	const withLink = (line: Omit<EventLine, "link">, link = proposalLink ?? sessionLink): EventLine =>
+	const browserSession = eventBrowserSession(event);
+	const browserHref =
+		browserSession === undefined || event.sessionId === undefined
+			? undefined
+			: links.browser?.(event.sessionId, browserSession, event.projectId);
+	const browserLink = browserHref === undefined ? undefined : { href: browserHref, label: "Browser" };
+	const withLink = (line: Omit<EventLine, "link">, link = proposalLink ?? browserLink ?? sessionLink): EventLine =>
 		link === undefined ? line : { ...line, link };
+	const count = (value: JsonValue | undefined) => (typeof value === "number" ? value : undefined);
 
 	switch (event.type) {
 		case "vault.use.injected": {
@@ -352,6 +376,68 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				tone: text(data.outcome) === "error" ? "error" : "neutral",
 				label: "Tool",
 			});
+		// Harbour's browsers (docs/design/browser-runtime.md). No event holds a value typed, a whole URL or a link.
+		case "browser.session.opened":
+			return withLink({ action: "opened a browser", tone: "working", label: "Browser" });
+		case "browser.session.closed": {
+			const reason = text(data.endReason);
+			return withLink({
+				action: `closed the browser${reason === undefined || reason === "closed" ? "" : ` (${reason.replace(/_/g, " ")})`}`,
+				tone: "idle",
+				label: "Browser",
+			});
+		}
+		case "browser.session.step": {
+			const host = text(data.host);
+			return withLink({
+				action: `${data.succeeded === false ? "tried" : "took"} a browser step: ${text(data.step) ?? "a step"}${host === undefined || host === "" ? "" : ` on ${host}`}`,
+				tone: data.succeeded === false ? "error" : "neutral",
+				label: "Browser step",
+			});
+		}
+		case "browser.site.refused":
+			return withLink({
+				action: `was refused ${text(data.host) || "a site"} in the browser, off the grant's sites`,
+				tone: "error",
+				label: "Site refused",
+			});
+		case "browser.session.shared": {
+			const minutes = count(data.minutes);
+			const what =
+				data.replay === true
+					? "the browser's replay"
+					: data.watch === true
+						? "a watch-only view of the browser"
+						: "the browser with control";
+			return withLink({
+				action: `opened ${what}${minutes === undefined ? "" : ` for ${minutes} minutes`}`,
+				tone: data.replay === true || data.watch === true ? "neutral" : "approval",
+				label: "Browser view",
+			});
+		}
+		case "browser.session.embedded": {
+			const minutes = count(data.minutes);
+			return withLink({
+				action: `made an embed link to the browser's ${data.mode === "replay" ? "replay" : "live view"}${minutes === undefined ? "" : ` for ${minutes} minutes`}`,
+				tone: "neutral",
+				label: "Browser embed",
+			});
+		}
+		case "browser.recording.stored": {
+			const frames = count(data.frames);
+			const pages = count(data.pages);
+			const seconds = count(data.durationMs);
+			const parts = [
+				...(frames === undefined ? [] : [`${frames} ${frames === 1 ? "frame" : "frames"}`]),
+				...(pages === undefined ? [] : [`${pages} ${pages === 1 ? "page" : "pages"}`]),
+				...(seconds === undefined ? [] : [`${Math.round(seconds / 1000)}s`]),
+			];
+			return withLink({
+				action: `stored the browser's recording${parts.length === 0 ? "" : ` (${parts.join(", ")})`}`,
+				tone: "done",
+				label: "Recording",
+			});
+		}
 		default: {
 			// Readable from the type alone: "browser.session.opened" reads "browser session opened".
 			const words = event.type.split(".").join(" ").replace(/_/g, " ");
