@@ -11,7 +11,9 @@ import {
 	type Clock,
 	type Concept,
 	type ConceptInput,
+	DEFAULT_MEMORY_AUTHORITY,
 	HarbourError,
+	type MemoryAuthority,
 	type MemoryProposal,
 	type MemorySearchRequest,
 	type MemorySnapshot,
@@ -20,13 +22,14 @@ import {
 	type OwnerRef,
 	type Page,
 	type PageRequest,
+	type ParaphraseCheck,
 	type ProjectAccess,
 	type RecallRequest,
 	type Role,
 	type SnapshotConcept,
 	systemContext,
 } from "@harbour/contracts";
-import { DEFAULT_SIMILARITY_THRESHOLD, renderConcept, similarity, validateConceptId } from "./index.ts";
+import { type DuplicateMatch, nearDuplicate, nearestConcepts, renderConcept, validateConceptId } from "./index.ts";
 import { MAX_SEARCH_RESULTS, type RecallEntry } from "./recall.ts";
 
 /** Memory appends its audit events as itself. */
@@ -67,6 +70,8 @@ export function byId(left: Concept, right: Concept): number {
 }
 
 function assertConceptInput(input: ConceptInput): void {
+	if (typeof input !== "object" || input === null) throw new HarbourError("invalid", "A write needs a concept");
+	if (typeof input.id !== "string") throw new HarbourError("invalid", "A concept needs an ID");
 	validateConceptId(input.id);
 	if (!nonEmpty(input.title)) throw new HarbourError("invalid", "A concept needs a title");
 	if (!nonEmpty(input.statement)) throw new HarbourError("invalid", "A concept needs a statement");
@@ -164,21 +169,59 @@ export function assertSearchRequest(request: MemorySearchRequest): void {
 	}
 }
 
+/** A memory's authority, checked: each write a role. Without one, `DEFAULT_MEMORY_AUTHORITY`. */
+export function authorityOf(authority: MemoryAuthority | undefined): MemoryAuthority {
+	if (authority === undefined) return DEFAULT_MEMORY_AUTHORITY;
+	const roles = new Set<unknown>(["viewer", "operator", "admin"]);
+	for (const write of Object.keys(DEFAULT_MEMORY_AUTHORITY) as (keyof MemoryAuthority)[]) {
+		if (!roles.has(authority[write]))
+			throw new HarbourError("invalid", `The memory authority needs a role for ${write}`);
+	}
+	return Object.freeze({ ...authority });
+}
+
+/**
+ * Checks the role a write needs on a space of `owner` (`MemoryAuthority`): on the project for a project's space;
+ * otherwise across the organisation, except that a user always may write to their own space. An agent acts through
+ * its own open session, as an operator. Without `access` the memory checks only the organisation.
+ */
+export async function requireWrite(
+	access: ProjectAccess | undefined,
+	ctx: CallContext,
+	owner: OwnerRef,
+	needed: Role,
+	operation: string,
+	subject?: { readonly kind: string; readonly id: string },
+): Promise<void> {
+	if (access === undefined || owner.kind === "platform") return;
+	const actor = ctx.actor;
+	if (owner.kind === "user" && actor.kind === "human" && actor.userId === owner.userId) return;
+	await access.require(ctx, {
+		...(owner.kind === "project" ? { projectId: owner.projectId } : {}),
+		...(actor.kind === "agent" ? { sessionId: actor.sessionId } : {}),
+		needed,
+		operation,
+		...(subject === undefined ? {} : { subject }),
+	});
+}
+
 /** The checks `createSpace` makes before it creates anything. */
 export async function checkCreateSpace(
 	access: ProjectAccess | undefined,
+	authority: MemoryAuthority,
 	ctx: CallContext,
 	input: { readonly owner: OwnerRef; readonly name: string },
 ): Promise<void> {
 	forbidAgent(ctx, "create a memory space");
-	const owner = input.owner;
-	if (owner.kind === "platform" || owner.organisationId !== ctx.organisationId) {
+	const owner = input?.owner;
+	if (owner?.kind === "platform" || owner?.organisationId !== ctx.organisationId) {
 		throw new HarbourError("invalid", "A memory space must be owned within the caller's organisation");
 	}
-	if (!nonEmpty(input.name)) throw new HarbourError("invalid", "A memory space needs a name");
-	if (access !== undefined && owner.kind === "project") {
-		await access.require(ctx, { projectId: owner.projectId, needed: "operator", operation: "memory.createSpace" });
+	if (owner.kind !== "organisation" && owner.kind !== "project" && owner.kind !== "user") {
+		throw new HarbourError("invalid", "A memory space is owned by an organisation, a project or a user");
 	}
+	if (!nonEmpty(input.name)) throw new HarbourError("invalid", "A memory space needs a name");
+	await requireWrite(access, ctx, owner, authority.createSpace, "memory.createSpace");
 }
 
 /**
@@ -346,36 +389,57 @@ function assertVersion(concept: Concept, expectedVersion: number): void {
 	}
 }
 
-/** The most similar active concept whose statement nearly duplicates `statement`, if any. */
-function duplicateOf(state: SpaceState, conceptId: string, statement: string): string | undefined {
-	let best: { id: string; score: number } | undefined;
-	for (const concept of state.concepts.values()) {
-		if (concept.status !== "active" || concept.id === conceptId) continue;
-		const score = similarity(statement, concept.statement);
-		if (score >= DEFAULT_SIMILARITY_THRESHOLD && (best === undefined || score > best.score)) {
-			best = { id: concept.id, score };
-		}
+/**
+ * The statement a write puts into memory, with the IDs a duplicate may not be (the concepts it changes), or undefined
+ * for a `forget`.
+ */
+function newStatement(
+	write: MemoryWrite,
+): { readonly candidate: ConceptInput; readonly exclude: ReadonlySet<string> } | undefined {
+	switch (write.op) {
+		case "remember":
+		case "correct":
+			return { candidate: write.concept, exclude: new Set([write.concept.id]) };
+		case "supersede":
+			return { candidate: write.replacement, exclude: new Set([write.conceptId, write.replacement.id]) };
+		case "forget":
+			return undefined;
 	}
-	return best?.id;
 }
 
 /**
- * Checks a write against the space as it is and builds the pending proposal (without an ID's uniqueness, which the
- * caller's store settles). Throws as `propose` must.
+ * The active concept a checked write's new statement nearly repeats, if any: Harbour's own checks (`nearDuplicate`),
+ * then, when they find none and a host gave one, the host's `ParaphraseCheck` over the nearest concepts. A host check
+ * naming a concept it was not shown, or a score outside 0 to 1, is ignored.
  */
-export function proposalFor(
-	ctx: CallContext,
+export async function findDuplicate(
 	state: SpaceState,
 	write: MemoryWrite,
-	id: string,
-	createdAt: number,
-): MemoryProposal {
-	let duplicate: string | undefined;
+	paraphrase: ParaphraseCheck | undefined,
+): Promise<DuplicateMatch | undefined> {
+	const target = newStatement(write);
+	if (target === undefined) return undefined;
+	const found = nearDuplicate(target.candidate, state.concepts.values(), target.exclude);
+	if (found !== undefined || paraphrase === undefined) return found;
+	const nearest = nearestConcepts(target.candidate, state.concepts.values(), target.exclude);
+	if (nearest.length === 0) return undefined;
+	const { id, title, statement } = target.candidate;
+	const judged = await paraphrase.check({ id, title, statement }, nearest);
+	if (judged === undefined || !nearest.some((concept) => concept.id === judged.conceptId)) return undefined;
+	if (!(judged.score >= 0 && judged.score <= 1)) return undefined;
+	return { conceptId: judged.conceptId, score: judged.score, check: paraphrase.name };
+}
+
+/**
+ * Checks a write against the space as it is, as `propose` must, before any duplicate check runs: valid input, the
+ * concepts it names in the state it needs, and an agent changing nothing the owner set.
+ */
+export function checkWrite(ctx: CallContext, state: SpaceState, write: MemoryWrite): void {
+	if (typeof write !== "object" || write === null) throw new HarbourError("invalid", "Unknown memory write");
 	switch (write.op) {
 		case "remember":
 			assertConceptInput(write.concept);
 			assertNotActive(state, write.concept.id);
-			duplicate = duplicateOf(state, write.concept.id, write.concept.statement);
 			break;
 		case "correct":
 			assertConceptInput(write.concept);
@@ -401,6 +465,20 @@ export function proposalFor(
 		default:
 			throw new HarbourError("invalid", "Unknown memory write");
 	}
+}
+
+/**
+ * Builds the pending proposal for a write `checkWrite` passed (without an ID's uniqueness, which the caller's store
+ * settles), with the duplicate `findDuplicate` found.
+ */
+export function proposalFor(
+	ctx: CallContext,
+	state: SpaceState,
+	write: MemoryWrite,
+	id: string,
+	createdAt: number,
+	duplicate: DuplicateMatch | undefined,
+): MemoryProposal {
 	return {
 		id,
 		spaceId: state.spaceId,
@@ -408,9 +486,32 @@ export function proposalFor(
 		proposedBy: ctx.actor,
 		...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId } : {}),
 		status: "pending",
-		...(duplicate === undefined ? {} : { duplicateOf: duplicate }),
+		...(duplicate === undefined
+			? {}
+			: { duplicateOf: duplicate.conceptId, duplicate: { score: duplicate.score, check: duplicate.check } }),
 		createdAt,
 	};
+}
+
+/**
+ * A proposal whose duplicate is still active cannot be applied, nor one Harbour's own checks find nearly repeats an
+ * active concept now: one applied since it was proposed (two pending corrections to the same statement, say). The
+ * host's check is not run again here, since applying is synchronous.
+ */
+function assertNoActiveDuplicate(state: SpaceState, proposal: MemoryProposal): void {
+	const target = newStatement(proposal.write);
+	const recorded = proposal.duplicateOf;
+	const duplicate =
+		recorded !== undefined && state.concepts.get(recorded)?.status === "active"
+			? recorded
+			: target === undefined
+				? undefined
+				: nearDuplicate(target.candidate, state.concepts.values(), target.exclude)?.conceptId;
+	if (duplicate !== undefined) {
+		throw new HarbourError("conflict", `The statement nearly duplicates concept ${duplicate}`, {
+			duplicateOf: duplicate,
+		});
+	}
 }
 
 /**
@@ -433,11 +534,7 @@ export function applyWrite(
 	switch (write.op) {
 		case "remember": {
 			assertNotActive(state, write.concept.id);
-			if (proposal.duplicateOf !== undefined && state.concepts.get(proposal.duplicateOf)?.status === "active") {
-				throw new HarbourError("conflict", `The statement nearly duplicates concept ${proposal.duplicateOf}`, {
-					duplicateOf: proposal.duplicateOf,
-				});
-			}
+			assertNoActiveDuplicate(state, proposal);
 			const concept = conceptFrom(state.spaceId, write.concept, setBy, nextVersion(state, write.concept.id), now);
 			put(concept);
 			return { concept, changed };
@@ -446,6 +543,7 @@ export function applyWrite(
 			const current = activeConcept(state, write.concept.id);
 			assertMayChange(proposal.proposedBy, current);
 			assertVersion(current, write.expectedVersion);
+			assertNoActiveDuplicate(state, proposal);
 			const concept = conceptFrom(state.spaceId, write.concept, setBy, current.version + 1, now);
 			put(concept);
 			return { concept, changed };
@@ -455,6 +553,7 @@ export function applyWrite(
 			assertMayChange(proposal.proposedBy, current);
 			assertVersion(current, write.expectedVersion);
 			assertNotActive(state, write.replacement.id);
+			assertNoActiveDuplicate(state, proposal);
 			const replacement = conceptFrom(
 				state.spaceId,
 				write.replacement,

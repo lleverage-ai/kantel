@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 registerMemoryConformance(
 	{ describe, expect, it },
 	"in-memory memory",
-	async (deps, use) => {
-		await use({ memory: createMemoryMemory({ clock: deps.clock, audit: deps.audit, access: deps.access }) });
+	async (deps, use, settings) => {
+		await use({
+			memory: createMemoryMemory({ clock: deps.clock, audit: deps.audit, access: deps.access, ...settings }),
+		});
 	},
-	{ projectAccess: true },
+	{ projectAccess: true, writes: true },
 );

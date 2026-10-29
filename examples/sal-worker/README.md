@@ -8,7 +8,17 @@ given what a local Sal worker is given for the same task (issue #12).
   Harbour has no field for in the `sal` extension. A concept Sal reads but a snapshot cannot hold (an empty title or
   body, an empty `applies_to`, an `overrides` that is not a concept ID) is refused on its own, and the rest of the
   bundle is still imported. A `generated.at` that is not a real time in the form YAML gives a date gets a warning,
-  because Sal orders the profile by that text.
+  because Sal orders the profile by that text. Writing goes the other way (M2-BE5, issue #25): `okfConceptText` renders
+  a Harbour concept as Sal's writer does (active, superseded with its note, forgotten), keeping a file's unknown fields
+  and source details, and keeping its bytes when it already says the same; `okfIndexes` rewrites the directory
+  indexes above changed concepts, never the root one.
+- `src/memory-source.ts`: `salMemorySource`, sal-memory as a `MemorySource` both ways: `snapshot(ref)` for
+  `importSnapshot`, and `publish` with `render` for `withBundlePublishing`, committing changed concept files and their
+  indexes to a branch through `commitFiles` (`src/git.ts`: objects and a throwaway index, never a checkout, and only
+  if the branch has not moved). Nothing outside the bundle, and no concept file Harbour does not hold, is touched.
+  Tests run it on a fixture and, when `~/dev/tvdavies/sal-memory` (or `SAL_MEMORY_REPO`) exists, on a bare clone of
+  the real repository: the whole bundle round-trips without a commit, every index Sal wrote is reproduced exactly, and
+  one applied write commits only its file and its directory's index.
 - `src/skill-sources.ts`: skill sources pinned per ref, either a Git repository at a commit (Tom's agent-toolkit, Sal's
   own skills) or a directory pinned by a digest of its contents (skills installed without Git). Discovery follows Pi's
   loader:

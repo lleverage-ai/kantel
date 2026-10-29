@@ -4,9 +4,11 @@ import {
 	type Clock,
 	HarbourError,
 	type Memory,
+	type MemoryAuthority,
 	type MemoryProposal,
 	type MemorySpace,
 	type OrganisationId,
+	type ParaphraseCheck,
 	type ProjectAccess,
 	type RecallRenderer,
 	systemClock,
@@ -19,11 +21,14 @@ import {
 	assertRecallRequest,
 	assertSearchRequest,
 	assertSnapshot,
+	authorityOf,
 	bundleOf,
 	byId,
 	bySpaceAge,
 	checkCreateSpace,
+	checkWrite,
 	decided,
+	findDuplicate,
 	forbidAgent,
 	listsSpace,
 	memoryAudit,
@@ -31,6 +36,7 @@ import {
 	proposalFor,
 	recallCorpusOf,
 	requireSpace,
+	requireWrite,
 	type SpaceState,
 	snapshotConcepts,
 } from "./rules.ts";
@@ -44,6 +50,14 @@ export interface MemoryMemoryOptions {
 	 * conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
+	/**
+	 * The role each write needs (`MemoryAuthority`), checked through `access` for every owner: on the project for a
+	 * project's space, across the organisation otherwise (a user may always write to their own). Default
+	 * `DEFAULT_MEMORY_AUTHORITY`.
+	 */
+	readonly authority?: MemoryAuthority;
+	/** A host's paraphrase check, asked when Harbour's own checks find no near-duplicate. */
+	readonly paraphrase?: ParaphraseCheck;
 	/** How recall renders its text and counts its byte budgets. Default `defaultRecallRenderer`. */
 	readonly renderer?: RecallRenderer;
 }
@@ -72,6 +86,7 @@ interface StoredProposal {
 export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 	const clock = options.clock ?? systemClock;
 	const access = options.access;
+	const authority = authorityOf(options.authority);
 	const audits = memoryAudit(options.audit, clock);
 	const renderer = options.renderer ?? defaultRecallRenderer;
 
@@ -127,7 +142,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 	return {
 		async createSpace(ctx, input) {
-			await checkCreateSpace(access, ctx, input);
+			await checkCreateSpace(access, authority, ctx, input);
 			const space: MemorySpace = {
 				id: `space_${crypto.randomUUID()}`,
 				owner: { ...input.owner },
@@ -188,7 +203,10 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 		async importSnapshot(ctx, spaceId, snapshot) {
 			forbidAgent(ctx, "import a memory snapshot");
 			const stored = spaceFor(ctx, spaceId);
-			await requireSpace(access, ctx, stored.space, "operator", "memory.importSnapshot");
+			await requireWrite(access, ctx, stored.space.owner, authority.importSnapshot, "memory.importSnapshot", {
+				kind: "memory.space",
+				id: spaceId,
+			});
 			assertSnapshot(snapshot);
 			return serially(stored, async () => {
 				const current = stored.space.snapshot;
@@ -212,8 +230,15 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 		async propose(ctx, spaceId, write) {
 			const stored = spaceFor(ctx, spaceId);
-			await requireSpace(access, ctx, stored.space, "operator", "memory.propose");
-			const proposal = proposalFor(ctx, stored.state, write, `memprop_${crypto.randomUUID()}`, clock.now());
+			await requireWrite(access, ctx, stored.space.owner, authority.propose, "memory.propose", {
+				kind: "memory.space",
+				id: spaceId,
+			});
+			checkWrite(ctx, stored.state, write);
+			const duplicate = await findDuplicate(stored.state, write, options.paraphrase);
+			// A host check may take a while: check again against the space as it is now.
+			checkWrite(ctx, stored.state, write);
+			const proposal = proposalFor(ctx, stored.state, write, `memprop_${crypto.randomUUID()}`, clock.now(), duplicate);
 			proposals.set(proposal.id, { organisationId: ctx.organisationId, proposal });
 			await audits.proposed(ctx, proposal);
 			return proposal;
@@ -224,7 +249,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			const record = proposalRecord(ctx, proposalId);
 			assertOutcome(input.outcome);
 			const space = spaceFor(ctx, record.proposal.spaceId);
-			await requireSpace(access, ctx, space.space, "operator", "memory.decide", {
+			await requireWrite(access, ctx, space.space.owner, authority.decide, "memory.decide", {
 				kind: "memory.proposal",
 				id: proposalId,
 			});

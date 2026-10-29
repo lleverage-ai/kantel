@@ -12,6 +12,7 @@
  * snapshot a host's `MemorySource` loaded (`importSnapshot`), which replaces its concepts at a recorded ref.
  */
 import type { Actor, CallContext, JsonValue, OwnerRef, Page, PageRequest, SessionId, Timestamp } from "./common.ts";
+import type { Role } from "./identity.ts";
 
 export interface MemorySpace {
 	readonly id: string;
@@ -112,8 +113,14 @@ export interface MemoryProposal {
 	readonly proposedBy: Actor;
 	readonly sessionId?: SessionId;
 	readonly status: "pending" | "applied" | "rejected";
-	/** A near-duplicate active concept found when the proposal was made. Approving a `remember` with one is `conflict`. */
+	/**
+	 * A near-duplicate active concept found when the proposal was made: one whose statement a `remember`, a `correct`
+	 * or a `supersede`'s replacement nearly repeats or paraphrases. Applying the proposal while it is active is
+	 * `conflict`.
+	 */
 	readonly duplicateOf?: string;
+	/** With `duplicateOf`: how near it is (0 to 1) and which check found it (`similarity`, `paraphrase` or a host's). */
+	readonly duplicate?: { readonly score: number; readonly check: string };
 	readonly createdAt: Timestamp;
 	readonly decidedBy?: Actor;
 	readonly decidedAt?: Timestamp;
@@ -253,11 +260,58 @@ export interface Memory {
 }
 
 /**
+ * Who may write to memory, as the least role each write needs (M2-BE5). A memory takes one; without it every write
+ * needs `operator`, as `DEFAULT_MEMORY_AUTHORITY` says. Where the role is held depends on the space's owner:
+ *
+ * - A project's space: on that project (`ProjectAccess`); an agent through its own open session in the project.
+ * - An organisation's space: across the organisation, from a binding with no project; an agent through its own open
+ *   session anywhere in the organisation.
+ * - A user's space: that user always may; anyone else needs the role across the organisation, and an agent acts
+ *   through its own open session.
+ *
+ * An agent counts as an operator, never an admin, so a write needing `admin` is never an agent's. Agents never decide
+ * or import, whatever the authority says.
+ */
+export interface MemoryAuthority {
+	readonly createSpace: Role;
+	readonly propose: Role;
+	readonly decide: Role;
+	readonly importSnapshot: Role;
+}
+
+export const DEFAULT_MEMORY_AUTHORITY: MemoryAuthority = Object.freeze({
+	createSpace: "operator",
+	propose: "operator",
+	decide: "operator",
+	importSnapshot: "operator",
+});
+
+/**
+ * A host's paraphrase check, run when Harbour's own checks find no near-duplicate: a model or embeddings judging
+ * whether a proposed statement says what an existing concept says in other words ("wants check-ins to finish
+ * silently" and "prefers not to receive check-in messages"). It is given the few active concepts nearest by words,
+ * never the whole space.
+ */
+export interface ParaphraseCheck {
+	/** Named in `MemoryProposal.duplicate.check`. */
+	readonly name: string;
+	check(
+		candidate: { readonly id: string; readonly title: string; readonly statement: string },
+		nearest: readonly Concept[],
+	): Promise<{ readonly conceptId: string; readonly score: number } | undefined>;
+}
+
+/**
  * A host's memory source, such as Sal's sal-memory repo. Harbour pushes applied writes to it, and a host loads a
  * snapshot from it for `importSnapshot`.
  */
 export interface MemorySource {
 	readonly id: string;
+	/**
+	 * Writes a space's whole bundle (every concept, any status, so nothing ever needs deleting) and returns the ref it
+	 * now stands at, such as a commit. Files equal to what the source holds are left as they are. Harbour calls it
+	 * after applied writes, one call at a time per space (`@harbour/memory/publish`).
+	 */
 	publish(
 		spaceId: string,
 		files: readonly { readonly path: string; readonly content: string }[],
