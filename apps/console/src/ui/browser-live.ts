@@ -1,4 +1,4 @@
-import type { BrowserLiveStatus } from "@harbour/ui";
+import type { BrowserLiveSource, BrowserLiveStatus } from "@harbour/ui";
 import type { BrowserLiveLink } from "../api/client.ts";
 
 // The session screen's live-view links, one per browser the transcript names: asked for once, when the browser's view
@@ -9,8 +9,22 @@ import type { BrowserLiveLink } from "../api/client.ts";
 /** One browser's live view, as `BrowserLiveView` shows it. */
 export type BrowserLive = {
 	readonly status: BrowserLiveStatus;
-	readonly url?: string;
+	readonly source?: BrowserLiveSource;
 };
+
+/** The link as the view plays it: an embedded page. */
+export function sourceOf(link: BrowserLiveLink): BrowserLiveSource {
+	return {
+		kind: "embed",
+		mode: "live",
+		url: link.url,
+		...(link.endMessage === undefined ? {} : { endMessage: link.endMessage }),
+	};
+}
+
+function urlOf(view: BrowserLive | undefined): string | undefined {
+	return view?.source?.kind === "embed" ? view.source.url : undefined;
+}
 
 /** Asks Harbour for a browser's live-view link; rejects with an error whose `code` says why there is none. */
 export type LoadBrowserLive = (browserSessionId: string, signal: AbortSignal) => Promise<BrowserLiveLink>;
@@ -55,7 +69,7 @@ export function createBrowserLiveStore(load: LoadBrowserLive): BrowserLiveStore 
 		aborts.add(abort);
 		load(id, abort.signal)
 			.then(
-				(link) => set(id, link.url === previous ? ENDED : { status: "live", url: link.url }),
+				(link) => set(id, link.url === previous ? ENDED : { status: "live", source: sourceOf(link) }),
 				(reason: unknown) => set(id, statusOfFailure(reason)),
 			)
 			.finally(() => aborts.delete(abort));
@@ -82,7 +96,7 @@ export function createBrowserLiveStore(load: LoadBrowserLive): BrowserLiveStore 
 			const view = views.get(id);
 			if (view?.status !== "live") return;
 			set(id, CONNECTING);
-			ask(id, view.url);
+			ask(id, urlOf(view));
 		},
 		dispose() {
 			disposed = true;

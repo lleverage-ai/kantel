@@ -130,7 +130,11 @@ export interface WorkspaceFiles {
 
 /** A watch-only live view of one of a session's browsers: the link to embed, and when it stops working (epoch ms). */
 export type BrowserLiveLink = {
+	/** A page to embed. The only kind today; Harbour's own browser runtime may add a frames stream or a replay. */
+	readonly kind: "embed";
 	readonly url: string;
+	/** What the page posts to its parent once its stream is over. */
+	readonly endMessage?: string;
 	readonly expiresAt?: number;
 };
 

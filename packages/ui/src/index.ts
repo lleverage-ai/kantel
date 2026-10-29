@@ -153,11 +153,13 @@ export {
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export {
-	BROWSER_DISCONNECTED_MESSAGE,
+	type BrowserFrame,
+	type BrowserFrameSink,
+	type BrowserLiveSource,
 	type BrowserLiveStatus,
 	BrowserLiveView,
 	type BrowserLiveViewProps,
-	liveFrameSrc,
+	embeddable,
 } from "./session/browser-live-view.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
 export {

@@ -23,6 +23,15 @@ import {
 } from "@harbour/contracts";
 
 export const BRWSR_API_URL = "https://api.brwsr.dev";
+/** What brwsr's live page posts to its parent once the browser it shows has gone, or its link has run out. */
+export const BRWSR_LIVE_END_MESSAGE = "browserbase-disconnected";
+
+/** A brwsr share link in another page's iframe: without brwsr's address bar, ending with its live page's message. */
+export function brwsrEmbed(url: string): { readonly url: string; readonly endMessage: string } {
+	const embedded = new URL(url);
+	embedded.searchParams.set("navbar", "false");
+	return { url: embedded.toString(), endMessage: BRWSR_LIVE_END_MESSAGE };
+}
 
 /** brwsr's own bounds on a session's `timeout`, in seconds. */
 export const BRWSR_MIN_TIMEOUT_S = 60;
@@ -239,7 +248,11 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 			const url = str(raw.url);
 			if (!url.startsWith("https://")) throw new HarbourError("unavailable", "brwsr returned no share link");
 			const expiresAt = Date.parse(str(raw.expiresAt));
-			const link: BrowserShareLink = { url, ...(Number.isFinite(expiresAt) ? { expiresAt } : {}) };
+			const link: BrowserShareLink = {
+				url,
+				...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+				embed: brwsrEmbed(url),
+			};
 			return link;
 		},
 

@@ -248,6 +248,7 @@ describe("the brwsr provider", () => {
 		expect(await provider.share("s-1", 60)).toEqual({
 			url: "https://brwsr.dev/s/abc",
 			expiresAt: Date.parse("2026-10-29T00:15:00.000Z"),
+			embed: { url: "https://brwsr.dev/s/abc?navbar=false", endMessage: "browserbase-disconnected" },
 		});
 		expect(api.seen[0]?.body).toEqual({ control: true, minutes: 60 });
 	});
@@ -255,7 +256,11 @@ describe("the brwsr provider", () => {
 	it("makes a watch-only share link when asked for no control", async () => {
 		const api = fakeApi([["POST", "/brwsr/v1/sessions/s-1/shares", 201, { url: "https://brwsr.dev/s/def" }]]);
 		const provider = createBrwsrProvider({ apiKey: KEY, fetch: api.fetch });
-		expect(await provider.share("s-1", 60, undefined, { control: false })).toEqual({ url: "https://brwsr.dev/s/def" });
+		expect(await provider.share("s-1", 60, undefined, { control: false })).toEqual({
+			url: "https://brwsr.dev/s/def",
+			// Embedded without brwsr's address bar; its live page posts this message once the browser has gone.
+			embed: { url: "https://brwsr.dev/s/def?navbar=false", endMessage: "browserbase-disconnected" },
+		});
 		expect(api.seen[0]?.body).toEqual({ control: false, minutes: 60 });
 	});
 

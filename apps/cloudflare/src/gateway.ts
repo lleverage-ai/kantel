@@ -60,7 +60,11 @@ const MEASURE_BODY_LIMIT = 1024;
 /** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
 export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
 const DECISION_BODY_LIMIT = 1024;
-/** A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` -> `{ url, expiresAt? }`. */
+/**
+ * A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` ->
+ * `{ kind: "embed", url, endMessage?, expiresAt? }`, a provider-neutral live source: a page to embed, and what it posts
+ * to its parent once its stream is over. Other kinds (frames over Harbour's own socket, replays) can join it later.
+ */
 export const BROWSER_LIVE_PATH = "/v1/browser/live";
 
 export const API_BASE = "/v1";
@@ -353,8 +357,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		try {
 			const ctx = callContextFor(caller, { signal: request.signal });
 			const link = await browser.liveView(ctx, { sessionId, browserSessionId });
+			const embed = link.embed ?? { url: link.url };
 			return Response.json(
-				{ url: link.url, ...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }) },
+				{
+					kind: "embed",
+					url: embed.url,
+					...(embed.endMessage === undefined ? {} : { endMessage: embed.endMessage }),
+					...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }),
+				},
 				{ headers: { ...noStore, "referrer-policy": "no-referrer" } },
 			);
 		} catch (error) {

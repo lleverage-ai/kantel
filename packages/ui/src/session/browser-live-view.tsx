@@ -1,49 +1,68 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Spinner } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { ToolImages, toolImageSrc } from "./tool-call.tsx";
 import "./browser-live-view.css";
 
 /**
- * Where a browser's live view is:
- * - `connecting`: the host is asking for a link; the last screenshot shows meanwhile.
- * - `live`: the browser, as it is now, in a watch-only frame.
+ * Where a browser's view is:
+ * - `connecting`: the host is getting a source; the last screenshot shows meanwhile.
+ * - `live`: the source plays: the browser as it is now, or a replay of it.
  * - `ended`: the browser has closed; the last screenshot stays, said to be the last.
- * - `unavailable`: there is no live view to have (no browser here, or no right to watch it): the last screenshot
- *   shows as it would without a live view, and nothing more is said.
+ * - `unavailable`: there is no view to have (no browser here, or no right to watch it): the last screenshot shows as
+ *   it would without a live view, and nothing more is said.
  */
 export type BrowserLiveStatus = "connecting" | "live" | "ended" | "unavailable";
 
-/** The message brwsr's live page posts to its parent once the browser it shows has gone, or its link has run out. */
-export const BROWSER_DISCONNECTED_MESSAGE = "browserbase-disconnected";
+/** One picture of the page, as a frames source sends it. */
+export type BrowserFrame = ToolImage;
+
+/** What a frames source tells the view: each new frame, and that the stream is over. */
+export interface BrowserFrameSink {
+	frame(frame: BrowserFrame): void;
+	end(): void;
+}
+
+/**
+ * What the view plays, whatever runs the browser. Two shapes, so the component never knows the provider:
+ * - `embed`: a page that draws the browser itself, in a sandboxed iframe: a provider's watch-only share link today
+ *   (brwsr's `/s/<token>`), or a browser runtime's own embed page. If the page posts `endMessage` to its parent when
+ *   the stream is over, the view reports the end; it must never be able to take control.
+ * - `frames`: pictures pushed to the view (a live screencast over the host's own socket, or a recording played back).
+ *   `subscribe` starts the stream and returns how to stop it; the view stops it when it unmounts, so a source costs
+ *   nothing while its view is off screen.
+ *
+ * `mode` says what the person is watching: `live` (the browser now, watch-only) or `replay` (a recording).
+ */
+export type BrowserLiveSource =
+	| {
+			readonly kind: "embed";
+			readonly mode?: "live" | "replay";
+			readonly url: string;
+			/** The message the page posts to its parent once its stream is over. Without it, the view never ends itself. */
+			readonly endMessage?: string;
+	  }
+	| {
+			readonly kind: "frames";
+			readonly mode?: "live" | "replay";
+			subscribe(sink: BrowserFrameSink): () => void;
+	  };
 
 export type BrowserLiveViewProps = {
 	status: BrowserLiveStatus;
-	/** The newest tool call on the browser, whose label names the frame for a screen reader. */
+	/** The newest tool call on the browser, whose label names the view for a screen reader. */
 	item: ToolItem;
-	/** The watch-only link the frame shows while live: a brwsr share link, never one that can take control. */
-	url?: string;
-	/** The last screenshot of the browser, for every status but live. */
+	/** What plays while `live`. */
+	source?: BrowserLiveSource;
+	/** The last screenshot of the browser, for every status but live, and a frames source's first picture. */
 	screenshot?: ToolImage;
-	/** The frame said the browser has gone (or the link ran out). The host asks again, or settles on `ended`. */
-	onDisconnected?: () => void;
+	/** The source said its stream is over (the browser went, or the link ran out). The host asks again, or ends. */
+	onEnded?: () => void;
 };
 
-/** The link as the frame loads it: without brwsr's address bar, which a watch-only viewer has no use for. */
-export function liveFrameSrc(url: string): string {
-	try {
-		const parsed = new URL(url);
-		if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return url;
-		parsed.searchParams.set("navbar", "false");
-		return parsed.toString();
-	} catch {
-		return url;
-	}
-}
-
-/** Only a web page (or a story's inline page) goes in the frame: never a `javascript:` URL. */
-function frameable(url: string): boolean {
+/** Only a web page (or a story's inline page) goes in the iframe: never a `javascript:` URL. */
+export function embeddable(url: string): boolean {
 	try {
 		return ["https:", "http:", "data:"].includes(new URL(url).protocol);
 	} catch {
@@ -51,31 +70,84 @@ function frameable(url: string): boolean {
 	}
 }
 
-/**
- * A browser the agent is using, live, inline in the transcript under the newest call on it: a person watches the
- * page move as the agent works, without opening anything. The frame is watch-only (the link can't take control) and
- * sandboxed; it costs a WebSocket of JPEG frames while it is on screen, and nothing once it scrolls away (the
- * transcript unmounts it) or the browser closes, when the last screenshot takes its place.
- */
-export function BrowserLiveView({ status, item, url, screenshot, onDisconnected }: BrowserLiveViewProps) {
-	const frame = useRef<HTMLIFrameElement>(null);
-	const disconnected = useRef(onDisconnected);
-	disconnected.current = onDisconnected;
-	const liveUrl = status === "live" && url !== undefined && frameable(url) ? url : undefined;
-	const live = liveUrl !== undefined;
+function playable(source: BrowserLiveSource | undefined): source is BrowserLiveSource {
+	return source !== undefined && (source.kind === "frames" || embeddable(source.url));
+}
 
-	// brwsr's page tells its parent when the browser has gone. Only this frame's own message counts.
+/** An embed source's page, sandboxed, reporting the end its page posts. Only this frame's own message counts. */
+function EmbedFrame({
+	url,
+	endMessage,
+	title,
+	onEnded,
+}: {
+	url: string;
+	endMessage: string | undefined;
+	title: string;
+	onEnded: () => void;
+}) {
+	const frame = useRef<HTMLIFrameElement>(null);
+	const ended = useRef(onEnded);
+	ended.current = onEnded;
 	useEffect(() => {
-		if (liveUrl === undefined) return;
-		const origin = new URL(liveUrl).origin;
+		if (endMessage === undefined) return;
+		const origin = new URL(url).origin;
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== frame.current?.contentWindow || event.origin !== origin) return;
-			if (event.data === BROWSER_DISCONNECTED_MESSAGE) disconnected.current?.();
+			if (event.data === endMessage) ended.current();
 		};
 		window.addEventListener("message", onMessage);
 		return () => window.removeEventListener("message", onMessage);
-	}, [liveUrl]);
+	}, [url, endMessage]);
+	return (
+		<iframe
+			ref={frame}
+			src={url}
+			title={title}
+			// The page draws the browser; the sandbox keeps it from navigating this one or opening windows.
+			sandbox="allow-scripts allow-same-origin"
+			referrerPolicy="no-referrer"
+			loading="lazy"
+		/>
+	);
+}
 
+/** A frames source, drawn as the newest picture it sent (the last screenshot until the first arrives). */
+function FramesView({
+	source,
+	first,
+	alt,
+	onEnded,
+}: {
+	source: Extract<BrowserLiveSource, { kind: "frames" }>;
+	first: ToolImage | undefined;
+	alt: string;
+	onEnded: () => void;
+}) {
+	const [frame, setFrame] = useState<BrowserFrame | undefined>(first);
+	const ended = useRef(onEnded);
+	ended.current = onEnded;
+	useEffect(
+		() =>
+			source.subscribe({
+				frame: setFrame,
+				end: () => ended.current(),
+			}),
+		[source],
+	);
+	return frame === undefined ? null : <img src={toolImageSrc(frame)} alt={alt} decoding="async" />;
+}
+
+/**
+ * A browser the agent is using, inline in the transcript under the newest call on it: a person watches the page move
+ * as the agent works, or plays it back, without opening anything. Provider-neutral: the host passes a source (an
+ * embeddable page or a stream of frames, see `BrowserLiveSource`). Watch-only: the view sends nothing to the browser.
+ * It costs the source's stream while it is on screen, and nothing once it scrolls away (the transcript unmounts it)
+ * or the browser closes, when the last screenshot takes its place.
+ */
+export function BrowserLiveView({ status, item, source, screenshot, onEnded }: BrowserLiveViewProps) {
+	const ended = () => onEnded?.();
+	const live = status === "live" && playable(source);
 	if (status === "unavailable" || (status === "live" && !live)) {
 		return screenshot === undefined ? null : <ToolImages item={item} images={[screenshot]} />;
 	}
@@ -91,16 +163,29 @@ export function BrowserLiveView({ status, item, url, screenshot, onDisconnected 
 			</div>
 		);
 	}
+	const replay = source?.mode === "replay";
+	const title = `${replay ? "Replay" : "Live view"} of the browser: ${item.label}`;
 	return (
 		<figure className={`hb-browser-live hb-browser-live-${status}`} aria-busy={live ? undefined : true}>
 			<figcaption className="hb-browser-live-caption">
-				{liveUrl !== undefined ? (
+				{live ? (
 					<>
-						<StatusLabel status="working">Live</StatusLabel>
+						{replay ? (
+							<StatusLabel status="idle">Replay</StatusLabel>
+						) : (
+							<StatusLabel status="working">Live</StatusLabel>
+						)}
 						<span className="hb-browser-live-note">Watch only</span>
-						<a className="hb-browser-live-open hb-focusable" href={liveUrl} target="_blank" rel="noopener noreferrer">
-							Open in a new tab
-						</a>
+						{source.kind === "embed" ? (
+							<a
+								className="hb-browser-live-open hb-focusable"
+								href={source.url}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								Open in a new tab
+							</a>
+						) : null}
 					</>
 				) : (
 					<span className="hb-browser-live-wait" role="status">
@@ -110,18 +195,14 @@ export function BrowserLiveView({ status, item, url, screenshot, onDisconnected 
 				)}
 			</figcaption>
 			<div className="hb-browser-live-frame">
-				{liveUrl !== undefined ? (
-					<iframe
-						ref={frame}
-						src={liveFrameSrc(liveUrl)}
-						title={`Live view of the browser: ${item.label}`}
-						// Watch-only already; the sandbox keeps the page from navigating this one or opening windows.
-						sandbox="allow-scripts allow-same-origin"
-						referrerPolicy="no-referrer"
-						loading="lazy"
-					/>
-				) : screenshot === undefined ? null : (
-					<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
+				{!live ? (
+					screenshot === undefined ? null : (
+						<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
+					)
+				) : source.kind === "embed" ? (
+					<EmbedFrame url={source.url} endMessage={source.endMessage} title={title} onEnded={ended} />
+				) : (
+					<FramesView source={source} first={screenshot} alt={title} onEnded={ended} />
 				)}
 			</div>
 		</figure>

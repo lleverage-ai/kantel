@@ -555,9 +555,22 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				body: JSON.stringify({ sessionId, browserSessionId }),
 				...(signal === undefined ? {} : { signal }),
 			});
-			const link = (await response.json()) as { url?: unknown; expiresAt?: unknown };
-			if (typeof link.url !== "string") throw new ApiError("unavailable", "Harbour sent no live-view link");
-			return { url: link.url, ...(typeof link.expiresAt === "number" ? { expiresAt: link.expiresAt } : {}) };
+			const link = (await response.json()) as {
+				kind?: unknown;
+				url?: unknown;
+				endMessage?: unknown;
+				expiresAt?: unknown;
+			};
+			// A kind this console doesn't know is no live view, rather than a guess at how to play it.
+			if ((link.kind ?? "embed") !== "embed" || typeof link.url !== "string") {
+				throw new ApiError("unavailable", "Harbour sent no live view this console can show");
+			}
+			return {
+				kind: "embed",
+				url: link.url,
+				...(typeof link.endMessage === "string" ? { endMessage: link.endMessage } : {}),
+				...(typeof link.expiresAt === "number" ? { expiresAt: link.expiresAt } : {}),
+			};
 		},
 
 		async fork(sessionId, itemId) {

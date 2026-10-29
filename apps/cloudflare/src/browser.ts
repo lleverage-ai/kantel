@@ -16,8 +16,9 @@
  *   every `browser_act` but `look`), a screenshot goes into the result's UI details, so the console shows the browser
  *   moving without spending the model's tokens on it. Every call on a browser also names it there
  *   (`details.browserSessionId`), so the console knows which browser a tool item used.
- * - **The live view.** A person watching the session asks `liveView` for a watch-only brwsr share link to one of its
- *   browsers (`POST /v1/browser/live`), and the console embeds it on the browser's newest tool item. The link is
+ * - **The live view.** A person watching the session asks `liveView` for a watch-only share link to one of its
+ *   browsers (`POST /v1/browser/live`, which answers with a provider-neutral embed source: the page to embed and the
+ *   message it posts once its stream is over), and the console plays it on the browser's newest tool item. The link is
  *   minted for that person's call, as them (viewer on the session is enough), never for the agent or the model, and is
  *   kept nowhere but here: brwsr closes its viewer when the link expires or the browser ends.
  * - **In memory**, as the sandboxes' leases are: a restarted object forgets its grants and open browsers. brwsr ends

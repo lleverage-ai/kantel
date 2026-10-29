@@ -132,6 +132,12 @@ export interface BrowserScreenshot {
 export interface BrowserShareLink {
 	readonly url: string;
 	readonly expiresAt?: Timestamp;
+	/**
+	 * How to put the link's view in another page's iframe, when the provider supports it: the URL to embed (such as the
+	 * link without the provider's own chrome) and the message the embedded page posts to its parent once its stream is
+	 * over. Provider-specific details stay here, so a client only knows "an embeddable page".
+	 */
+	readonly embed?: { readonly url: string; readonly endMessage?: string };
 }
 
 /** The provider behind the broker, such as brwsr. Implementations hold the provider key; nothing else sees it. */

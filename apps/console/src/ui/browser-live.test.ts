@@ -17,6 +17,8 @@ function scripted() {
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const embed = (url: string): BrowserLiveLink => ({ kind: "embed", url, endMessage: "gone" });
+const playing = (url: string) => ({ status: "live", source: { kind: "embed", mode: "live", url, endMessage: "gone" } });
 
 describe("the session screen's live-view links", () => {
 	it("asks once per browser, and goes live with the link", async () => {
@@ -29,9 +31,9 @@ describe("the session screen's live-view links", () => {
 		expect(store.get("bs_1")).toBe(store.get("bs_1"));
 		expect(load).toHaveBeenCalledTimes(1);
 
-		answers[0]?.resolve({ url: "https://brwsr.dev/s/one", expiresAt: 1 });
+		answers[0]?.resolve({ ...embed("https://brwsr.dev/s/one"), expiresAt: 1 });
 		await settle();
-		expect(store.get("bs_1")).toEqual({ status: "live", url: "https://brwsr.dev/s/one" });
+		expect(store.get("bs_1")).toEqual(playing("https://brwsr.dev/s/one"));
 		expect(seen).toHaveBeenCalledTimes(1);
 		expect(load).toHaveBeenCalledTimes(1);
 	});
@@ -48,19 +50,19 @@ describe("the session screen's live-view links", () => {
 		const { load, answers } = scripted();
 		const store = createBrowserLiveStore(load);
 		store.get("bs_1");
-		answers[0]?.resolve({ url: "https://brwsr.dev/s/one" });
+		answers[0]?.resolve(embed("https://brwsr.dev/s/one"));
 		await settle();
 
 		// The link ran out while the browser was still open: a new one.
 		store.disconnected("bs_1");
 		expect(store.get("bs_1").status).toBe("connecting");
-		answers[1]?.resolve({ url: "https://brwsr.dev/s/two" });
+		answers[1]?.resolve(embed("https://brwsr.dev/s/two"));
 		await settle();
-		expect(store.get("bs_1")).toEqual({ status: "live", url: "https://brwsr.dev/s/two" });
+		expect(store.get("bs_1")).toEqual(playing("https://brwsr.dev/s/two"));
 
 		// The browser closed, but Harbour hasn't noticed: the same link, so the view settles on ended.
 		store.disconnected("bs_1");
-		answers[2]?.resolve({ url: "https://brwsr.dev/s/two" });
+		answers[2]?.resolve(embed("https://brwsr.dev/s/two"));
 		await settle();
 		expect(store.get("bs_1").status).toBe("ended");
 
@@ -87,7 +89,7 @@ describe("the session screen's live-view links", () => {
 		const signal = load.mock.calls[0]?.[1];
 		store.dispose();
 		expect(signal?.aborted).toBe(true);
-		answers[0]?.resolve({ url: "https://brwsr.dev/s/one" });
+		answers[0]?.resolve(embed("https://brwsr.dev/s/one"));
 		await settle();
 		expect(seen).not.toHaveBeenCalled();
 		store.get("bs_2");

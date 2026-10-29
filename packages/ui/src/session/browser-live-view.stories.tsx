@@ -1,7 +1,7 @@
 import type { ToolItem } from "@harbour/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
-import { BrowserLiveView } from "./browser-live-view.tsx";
+import { type BrowserLiveSource, BrowserLiveView } from "./browser-live-view.tsx";
 import { EXAMPLE_SCREENSHOT } from "./fixture-screenshot.ts";
 import { tool } from "./fixtures.ts";
 import { ToolCallGroup } from "./tool-call.tsx";
@@ -10,11 +10,24 @@ export default { title: "Session/Browser live view" } satisfies StoryDefault;
 
 const shot = { mimeType: "image/png", data: EXAMPLE_SCREENSHOT } as const;
 
-// The live page, as a story can show it without brwsr: the browser's last frame, inline. In the console it is a
-// watch-only brwsr share link.
-const LIVE_PAGE = `data:text/html;charset=utf-8,${encodeURIComponent(
-	`<body style="margin:0"><img alt="" style="display:block;width:100%" src="data:image/png;base64,${EXAMPLE_SCREENSHOT}"></body>`,
-)}`;
+// An embed source, as a story can show it without a browser: the browser's last frame, inline. In the console it is
+// a watch-only share link from the browser provider.
+const LIVE_PAGE: BrowserLiveSource = {
+	kind: "embed",
+	url: `data:text/html;charset=utf-8,${encodeURIComponent(
+		`<body style="margin:0"><img alt="" style="display:block;width:100%" src="data:image/png;base64,${EXAMPLE_SCREENSHOT}"></body>`,
+	)}`,
+};
+
+// A frames source played back: a recording, as Harbour's own browser runtime will send one. Here, the one screenshot.
+const REPLAY: BrowserLiveSource = {
+	kind: "frames",
+	mode: "replay",
+	subscribe(sink) {
+		sink.frame(shot);
+		return () => {};
+	},
+};
 
 const opened: ToolItem = {
 	...tool("v1", "browser_open", "Opening example.com", {
@@ -48,7 +61,12 @@ export const States: Story = () => (
 	>
 		<Section title="Live">
 			<Column>
-				<BrowserLiveView status="live" item={looked} url={LIVE_PAGE} screenshot={shot} />
+				<BrowserLiveView status="live" item={looked} source={LIVE_PAGE} screenshot={shot} />
+			</Column>
+		</Section>
+		<Section title="Replay, from a frames source">
+			<Column>
+				<BrowserLiveView status="live" item={looked} source={REPLAY} />
 			</Column>
 		</Section>
 		<Section title="Connecting">
@@ -80,7 +98,12 @@ export const States: Story = () => (
 );
 
 const view = (status: "live" | "ended") => (
-	<BrowserLiveView status={status} item={looked} screenshot={shot} {...(status === "live" ? { url: LIVE_PAGE } : {})} />
+	<BrowserLiveView
+		status={status}
+		item={looked}
+		screenshot={shot}
+		{...(status === "live" ? { source: LIVE_PAGE } : {})}
+	/>
 );
 
 export const InTheTranscript: Story = () => (

@@ -241,7 +241,8 @@ describe("the browser on the stack", () => {
 		// A watch-only link, the same one for the same person while it lasts, and never in the transcript.
 		const first = await live({ sessionId: session.id, browserSessionId });
 		expect(first.status).toBe(200);
-		const link = (await first.json()) as { url: string };
+		const link = (await first.json()) as { kind: string; url: string };
+		expect(link.kind).toBe("embed");
 		expect(link.url).toMatch(/^https:\/\/.*watch=1/);
 		expect(fake.shares()).toBe(1);
 		const again = await live({ sessionId: session.id, browserSessionId });

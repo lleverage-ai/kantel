@@ -89,9 +89,9 @@ function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserVi
 		<BrowserLiveView
 			status={live.status}
 			item={slot.item}
-			{...(live.url === undefined ? {} : { url: live.url })}
+			{...(live.source === undefined ? {} : { source: live.source })}
 			{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
-			onDisconnected={() => store.disconnected(id)}
+			onEnded={() => store.disconnected(id)}
 		/>
 	);
 }
