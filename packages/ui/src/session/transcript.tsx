@@ -20,6 +20,7 @@ import { BrowserGrantCard } from "./browser-grant-card.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
+import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
 import { finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
@@ -211,6 +212,12 @@ export type TranscriptProps = {
 	 */
 	onRowRender?: (id: string, phase: RowRenderPhase) => void;
 	/**
+	 * The host's Fork from this response and Edit from here, for the messages' actions; left out, a message has only
+	 * Copy and its time. Messages render again only when one of its fields changes, such as `editBlocked` while a run
+	 * goes, so keep the functions stable.
+	 */
+	messageActions?: MessageActionHandlers;
+	/**
 	 * Docked over the transcript's foot, usually a Composer, as T3 Code's thread: the list scrolls under it and its
 	 * end makes room for it. A Composer here rests (folds to one line) while the reader scrolls back, comes back at
 	 * the end, and takes files dropped anywhere on the transcript.
@@ -243,9 +250,19 @@ export function Transcript({
 	error,
 	working,
 	onRowRender,
+	messageActions,
 	dock,
 	className,
 }: TranscriptProps) {
+	const { fork, edit, editBlocked } = messageActions ?? {};
+	const actionHandlers = useMemo<MessageActionHandlers>(
+		() => ({
+			...(fork === undefined ? {} : { fork }),
+			...(edit === undefined ? {} : { edit }),
+			...(editBlocked === undefined ? {} : { editBlocked }),
+		}),
+		[fork, edit, editBlocked],
+	);
 	// Rows keep their identity across renders wherever their items are unchanged.
 	const previousRows = useRef<readonly TranscriptRow[] | undefined>(undefined);
 	const rows = useMemo(() => {
@@ -597,7 +614,7 @@ export function Transcript({
 					</div>
 				</div>
 			) : null}
-			{body}
+			<MessageActionsContext.Provider value={actionHandlers}>{body}</MessageActionsContext.Provider>
 			{docked ? (
 				<ComposerDockContext.Provider value={dockContext}>
 					<div className="hb-transcript-dock" ref={dockElement}>

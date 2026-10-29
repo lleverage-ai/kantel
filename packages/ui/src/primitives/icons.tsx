@@ -224,6 +224,21 @@ export const RetryIcon = (props: IconProps) => (
 		<path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.75v2.5h-2.5" />
 	</Svg>
 );
+/** Fork from this response: a branch splitting in two, after Lucide's git-fork, which T3 Code uses. */
+export const ForkIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="4.5" cy="3.5" r="1.75" />
+		<circle cx="11.5" cy="3.5" r="1.75" />
+		<circle cx="8" cy="12.5" r="1.75" />
+		<path d="M4.5 5.25v.75A1.5 1.5 0 0 0 6 7.5h4A1.5 1.5 0 0 0 11.5 6v-.75M8 7.5v3.25" />
+	</Svg>
+);
+/** Edit from here: an arrow turning back, after Lucide's undo-2, which T3 Code uses. */
+export const RewindIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M5.5 9.5 2.5 6.5l3-3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7.5" />
+	</Svg>
+);
 /** A model: a four-point spark. */
 export const SparkIcon = (props: IconProps) => (
 	<Svg {...props}>

@@ -9,6 +9,7 @@ import {
 	type AuditSource,
 	HarbourError,
 	type JsonValue,
+	MAX_AUDIT_QUERY_TYPES,
 } from "@harbour/contracts";
 
 export const AUDIT_SOURCES: readonly AuditSource[] = [
@@ -95,6 +96,26 @@ export function typeMatches(type: string, wanted: string): boolean {
 }
 
 /**
+ * Rejects with `invalid` unless the query's `types`, when set, lists 1 to `MAX_AUDIT_QUERY_TYPES` non-empty types
+ * without a comma. Stores check it before reading, so every target refuses the same queries.
+ */
+export function assertValidAuditQuery(query: AuditQuery): void {
+	const { types } = query;
+	if (types === undefined) return;
+	if (!Array.isArray(types) || types.length === 0) {
+		throw new HarbourError("invalid", "An audit query's types must list at least one type");
+	}
+	if (types.length > MAX_AUDIT_QUERY_TYPES) {
+		throw new HarbourError("invalid", `An audit query's types may list at most ${MAX_AUDIT_QUERY_TYPES} types`);
+	}
+	for (const type of types) {
+		if (!isNonEmptyString(type) || type.includes(",")) {
+			throw new HarbourError("invalid", "Each of an audit query's types must be a non-empty type without a comma");
+		}
+	}
+}
+
+/**
  * The vault record of `kind` (`vault.item` or `vault.grant`) an event is about: its subject when the subject is of that
  * kind, or else `data[key]` (`itemId` or `grantId`) when it is a string. The SQL store indexes the same expression.
  */
@@ -126,6 +147,7 @@ export function matchesQuery(event: AuditEventInput, query: AuditQuery): boolean
 		(query.actor === undefined || actorMatches(event.actor, query.actor)) &&
 		(query.source === undefined || event.source === query.source) &&
 		(query.type === undefined || typeMatches(event.type, query.type)) &&
+		(query.types === undefined || query.types.some((wanted) => typeMatches(event.type, wanted))) &&
 		(query.subject === undefined ||
 			(event.subject?.kind === query.subject.kind && event.subject.id === query.subject.id)) &&
 		(query.itemId === undefined || eventItemId(event) === query.itemId) &&

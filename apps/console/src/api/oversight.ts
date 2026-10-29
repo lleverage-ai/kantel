@@ -44,6 +44,13 @@ export interface ConsoleKeys {
 	readonly roles: readonly HeldRole[];
 }
 
+/** The projects, agents and sessions the audit log may be filtered by, each as a value and its name. */
+export interface AuditScope {
+	readonly projects: readonly Choice[];
+	readonly agents: readonly Choice[];
+	readonly sessions: readonly Choice[];
+}
+
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */
 export interface ConsoleAudit {
 	readonly source: AuditSource;
@@ -55,6 +62,12 @@ export interface ConsoleAudit {
 	 * become the *Credential* choices and name the items in rows. A failed read leaves both as they were.
 	 */
 	readonly credentials?: () => Promise<readonly Choice[]>;
+	/**
+	 * Reads the projects, agents and sessions to filter by, each time the audit log opens, for a host with no list of them
+	 * up front. They become the *Project*, *Agent* and *Session* choices and name them in rows. A failed read leaves both
+	 * as they were.
+	 */
+	readonly scope?: () => Promise<AuditScope>;
 	/** Check for newer events this often (ms). */
 	readonly pollMs?: number;
 }

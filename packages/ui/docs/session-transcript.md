@@ -105,6 +105,10 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   the chevron, with the full date and time as its title. Hidden, it is out of the flow, so it never costs the label
   width. Focus anywhere in the call shows it, so it is there for the keyboard too.
 - **Open:** the arguments and the output.
+- **Images:** a call that returned images (`item.images`, such as a browser's screenshot of the page it left) shows
+  them under the row, open or not, at most `--hb-tool-image-width` wide, so a person watches the browser move without
+  opening anything. Each is a button ("Open full size") that opens the image in a new tab; its alt text says which
+  call it came after. `ToolImages({ item, images? })` draws them, for a host that shows a call's images elsewhere.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").
@@ -149,7 +153,8 @@ under "Worked for …" (`MessagesTimeline.logic.ts`), the calls carry no duratio
 the one place the time is told; collapsing only larger groups would leave a short one with no time at all.
 
 A failed or interrupted call stays visible while the group is collapsed: it is shown under the summary, so a failure
-is never hidden behind "Worked for". Expanded, it is in its place among the others.
+is never hidden behind "Worked for". Expanded, it is in its place among the others. The last image the group's calls
+returned (the page a browser ended on) also stays under the folded summary.
 
 **Not for** calls from different turns: the transcript ends a group at any other item.
 
@@ -164,8 +169,10 @@ that chip. Collapsed chips are not rendered.
 **For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
 `--hb-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
 sent while the agent was working (`via` is `steer` or `followUp`). Under the bubble, on hover or focus, a
-`MessageActions` line: when it was sent and Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}`
-leaves the line out (a preview), `showActions` shows it without a hover (stories).
+`MessageActions` line: when it was sent, Edit from here (when the host gives `MessageActionsContext` an `edit`) and
+Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}` leaves the line out (a preview),
+`showActions` shows it without a hover (stories). Edit from here turns the bubble into a `MessageEditor`; while the
+host sets `editBlocked` (a run is going) the button is off and its label says why.
 
 **Not for** the agent's words, or quoted text inside an answer.
 
@@ -177,7 +184,9 @@ transcript; it holds no timer.
 **For** the agent's answer, unboxed on the canvas, its text as `Markdown`.
 `AssistantMessage({ item, turnStartedAt?, actions?, showActions? })`; `turnStartedAt` is when the answer's turn
 started, which `Transcript` passes. With `actions`, a finished answer with text has a `MessageActions` line under it on
-hover or focus: Copy and the time it was generated. `Transcript` turns `actions` on for each turn's final answer only
+hover or focus: Copy, Fork from this response (when the host gives `MessageActionsContext` a `fork`; a spinner while
+it runs, and why on the line when it fails) and the time it was generated. `Transcript` turns `actions` on for each
+turn's final answer only
 (`finalAnswerIds`), as T3 Code shows its message meta only on a turn's terminal answer, so the words an agent says
 between tool calls have none, and neither does an answer still streaming.
 
@@ -200,8 +209,8 @@ is the only animation, CSS only, and stops under reduced motion (it stays, still
 ### WorkingIndicator
 
 **For** saying the agent is working on a turn, live: the working status's pulsing dot, then "Working for 12s" in
-muted `--hb-text-sm` with tabular numbers, the words under a slow light sweep (`--hb-duration-shimmer`), after T3
-Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
+muted `--hb-text-sm` with tabular numbers, the words breathing as a skeleton does (`hb-shimmer`,
+`--hb-duration-shimmer`), after T3 Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
 say, for another kind of work).
 
 **States:** with `since`, it counts from it and is a `role="timer"` named after the label, whose implicit `aria-live`
@@ -212,19 +221,41 @@ is off: screen readers can read it but are not told every second. Without `since
 **Not for** a session's status in a header or a list (`StatusLabel`), or a control that is busy (a button's own
 spinner).
 
-**Cost:** memoised on its props. The dot's pulse and the sweep are CSS only and stop under reduced motion; the timer
-is an `Elapsed` on the shared one-second clock, so only that leaf renders each second.
+**Cost:** memoised on its props. The dot's pulse and the words' breathing animate opacity alone, which the
+compositor runs without the main thread, and stop under reduced motion; the timer is an `Elapsed` on the shared
+one-second clock, so only that leaf renders each second. Don't animate anything that repaints here (a moving
+background clipped to the text did, every frame: a fifth of the main thread at rest without a GPU, and the stream above
+it stuttered).
 
 ### MessageActions
 
 **For** the quiet line under a message, after T3 Code's message meta rows (pingdotgg/t3code at `9826dbb9`,
 `apps/web/src/components/chat/TimelineUserMessageRow.tsx` lines 196 to 229 and `TimelineAssistantRows.tsx` lines
 144 to 196): the message's time (`ClockTime`: "16:38", "Yesterday at 16:38", the full date and time as its title)
-and small ghost icon buttons, Copy last. `MessageActions({ at, text, align, children?, visible?, now? })`.
+and small ghost icon buttons, Copy on the aligned edge. `MessageActions({ at, text, align, children?, after?, visible?, now? })`.
 `align="end"` sits under a person's bubble, the time first; `align="start"` sits under an answer, the actions first,
 the first icon pulled left onto the answer's text edge (optical alignment: the icon lines up, not its button's box).
-`children` are more actions, before Copy: `MessageAction({ label, icon, onClick, disabled?, busy? })`, a 24px ghost
-`IconButton` whose label is its accessible name and tooltip.
+`children` are more actions, beside Copy (before it under a bubble, after it under an answer, so the line reads time,
+Edit from here, Copy and Copy, Fork, time as T3 Code's do): `MessageAction({ label, icon, onClick, disabled?, busy? })`,
+a 24px ghost `IconButton` whose label is its accessible name and tooltip. `after` follows the time, such as why an
+action failed (`.hb-message-actions-error`, which keeps the line shown).
+
+`Transcript({ messageActions })` gives every message the host's `MessageActionHandlers` through
+`MessageActionsContext`: `fork(itemId)`, `edit(itemId, text)` and `editBlocked`, the reason Edit from here is off.
+Each is optional; an action the host leaves out is not shown. Messages render again only when one changes, so keep
+the functions stable.
+
+### MessageEditor
+
+**For** Edit from here: the person's message in place, as a field the column's width on the bubble's surface and
+radius, "Sending reruns from here. What came after this message leaves the session." under it, then Cancel and Send.
+`MessageEditor({ text, onSend, onCancel, autoFocus? })`. It takes focus with the cursor at the end.
+
+**States:** editing; sending (the field read-only, Send busy, Cancel off); refused (the rejection's message, in the
+error colour, in place of the hint, and the words kept to try again).
+
+**Keyboard:** Enter sends and Shift+Enter starts a new line, as in the composer; Escape cancels. The surface shows
+the focus ring for the field (`data-focus-surface`).
 
 The time is trimmed to its capitals (`text-box: trim-both cap alphabetic`), as a button's label is, so its figures
 sit on the icons' centre line; the alignment gate checks icons against it.

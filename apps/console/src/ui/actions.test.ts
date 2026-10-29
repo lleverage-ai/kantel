@@ -1,5 +1,43 @@
+import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
-import { composerState, createRequestIds, offersFollowUp, TITLE_MAX, titleFrom, transcriptWorking } from "./actions.ts";
+import {
+	browserRequestOf,
+	composerState,
+	createRequestIds,
+	offersFollowUp,
+	TITLE_MAX,
+	titleFrom,
+	transcriptWorking,
+} from "./actions.ts";
+
+describe("an agent's request for a browser", () => {
+	const tool = (name: string, status: ToolItem["status"], callId: string, args?: unknown): ToolItem => ({
+		kind: "tool",
+		id: `item-${callId}`,
+		at: 0,
+		callId,
+		name,
+		label: name,
+		status,
+		...(args === undefined ? {} : { args }),
+	});
+
+	it("waits while its call runs, with why and the sites", () => {
+		const items: TranscriptItem[] = [
+			tool("browser_request", "running", "c1", { reason: "Read the docs", sites: ["example.com", 3] }),
+		];
+		expect(browserRequestOf(items)).toEqual({ callId: "c1", reason: "Read the docs", sites: ["example.com"] });
+	});
+
+	it("is answered once its call has finished, and only the last one counts", () => {
+		expect(browserRequestOf([tool("browser_request", "done", "c1")])).toBeUndefined();
+		expect(
+			browserRequestOf([tool("browser_request", "running", "c1"), tool("browser_request", "error", "c2")]),
+		).toBeUndefined();
+		expect(browserRequestOf([tool("browser_open", "running", "c3")])).toBeUndefined();
+		expect(browserRequestOf([])).toBeUndefined();
+	});
+});
 
 describe("the transcript's working row", () => {
 	it("shows from the moment a prompt is sent, timed from then, before the host says it runs", () => {

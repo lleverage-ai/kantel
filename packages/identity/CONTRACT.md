@@ -126,6 +126,52 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
 6. Rate-limit `/auth/otp/*` per client address at the edge too; the per-email limits do not stop one client from
    trying many emails.
 
+## Passkeys (#132, for M1-FE2's vault approvals)
+
+A person registers passkeys with identity, and the vault's approval API asks for one before an approval reaches the
+vault. Harbour is the WebAuthn relying party; the wire types are in `packages/contracts/src/passkey.ts`.
+
+- **Relying party.** `RelyingParty { id, name, origin }`: by default the origin the request was made to
+  (`relyingPartyFor(request.url)`), so on Cloudflare it is the gateway's hostname and self-hosted the host the
+  gateway is reached on. A deployment behind a proxy that rewrites the host passes its own (`relyingParty` option).
+  Each challenge stores the relying party it was issued for, and a passkey stores the RP ID it was made for, so an
+  assertion is checked against the origin it was asked for on and never another.
+- **Registration.** `registrationOptions(ctx, rp)` issues a challenge for the person (`attestation: "none"`,
+  `userVerification: "required"`, the person's passkeys in `excludeCredentials`); `register(ctx, response, name?)`
+  takes that challenge out of the store (single use) and checks the client data (type, challenge, origin, not
+  cross-origin), the RP ID hash, user presence and verification, and that the credential ID matches the
+  authenticator's. It stores the public key (ES256, EdDSA or RS256 as a JWK), counter, transports and backup flag,
+  never a secret; a credential ID registered already (to anyone) is `conflict`; at most `PASSKEYS_PER_PERSON` (20).
+  Audited `identity.passkey.registered`; `remove` is audited `identity.passkey.removed`.
+- **Approval challenge.** `approvalChallenge(ctx, rp, binding)` issues a random 32-byte challenge, valid
+  `PASSKEY_CHALLENGE_TTL_MILLISECONDS` (5 minutes), bound to the person, the relying party and a `PasskeyBinding`:
+  the proposal, its terms hash, `approve` or `paste`, and the narrowing shown (compared in canonical form, methods
+  sorted). It lists the person's passkeys for this RP ID as `allowCredentials`.
+- **Verification.** `verifyApproval(ctx, binding, assertion)` takes the challenge the client data names out of the
+  store first (one `DELETE … RETURNING`), so it is used once whatever happens next and only one of two concurrent
+  uses gets it. It then needs: a challenge issued to this person for an approval, unexpired; the same binding as the
+  decision cites; a passkey of this person's for that RP ID; the origin and RP ID hash; user presence and
+  verification; a signature that verifies over the authenticator data and the client data's hash; and a counter
+  that moves on when either side counts (one that doesn't means a cloned key). The counter moves with an `UPDATE`
+  guarded by the value read. Every refusal is `refused` with `details.passkey`, a `PasskeyRefusal`: `missing`,
+  `malformed`, `challenge`, `binding`, `origin`, `credential`, `user_verification`, `signature`, `counter` or
+  `algorithm`. Identity does not audit refusals: the approval API does, as `vault.passkey.refused`.
+- **When one is needed.** `required(ctx)`: with `approvals: "registered"` (the default) once the person has a passkey,
+  so nobody is locked out on the day passkeys arrive; with `"always"`, for every approval.
+- **Only a person.** Every call but `required` is `forbidden` for anyone but a human actor.
+- **Stores.** `createSqlPasskeyStores(driver)` (tables `identity_passkeys`, `UNIQUE` on `credential_id`, and
+  `identity_passkey_challenges`, created by `migrateIdentity`) on Postgres self-hosted and D1 on Cloudflare, or
+  `createMemoryPasskeyStores()`. Expired challenges are deleted as new ones are issued.
+- **HTTP** (`@harbour/identity/passkey/http`): `createPasskeyHandler({ passkeys, authenticator, relyingParty?,
+  signIn? })` serves `GET`/`POST /v1/me/passkeys`, `POST /v1/me/passkeys/registration` and
+  `POST /v1/me/passkeys/:id/remove` behind the authenticator (POSTs need `application/json`, else 415; a refusal is
+  422 with `error.passkey`), and `createPasskeyClient` calls them.
+- **Proof.** `packages/identity/test/passkey.test.ts` runs on memory, PGlite, `node:sqlite`, D1 in Miniflare and
+  (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres, with a software authenticator
+  (`@harbour/identity/passkey/testing`) making real ES256, EdDSA and RS256 passkeys. Not checked: attestation
+  statements (Harbour asks for none) and whether a second passkey may be added without the first; anyone signed in
+  as the person can register one.
+
 ## The authenticator (M1-BE7)
 
 `Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Harbour API takes. It turns a

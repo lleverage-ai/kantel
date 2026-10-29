@@ -33,7 +33,10 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
   each, even when drained twice".
 - Rows come in `seq` order (or reversed with `newestFirst`); every query field narrows; a type ending in `.` is a prefix;
   actors compare by kind and ID (a service's key only when asked); `from` is inclusive and `to` exclusive: "returns rows
-  in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time".
+  in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time". `types` matches
+  any of 1 to 20 types and prefixes (`["vault.policy.", "capability.grant."]` is every policy change) and narrows with
+  `type` and the rest; an empty list, an empty type, a type holding a comma or more than 20 types is `invalid`, in the
+  same test.
 - `itemId` and `grantId` match the vault item or grant an event is about: its subject when that is a `vault.item` or
   `vault.grant`, or else `data.itemId` or `data.grantId` when it is a string (a number, a list or a nested field is not
   an ID). They combine with every other field, page by cursor and keep to the rows the caller may see: "narrows by vault
@@ -81,6 +84,7 @@ The audit view (M1-FE3) and host apps read the store through two `GET` routes, d
   `AuditStore.query` with the query and page as search parameters. `auditQueryToSearchParams` writes them and
   `auditQueryFromSearchParams` reads them: `projectId`, `sessionId`, `agentId`, `actorKind` with `actorId` (plus
   `actorKeyId` for a service's key, `actorSessionId` for an agent), `source`, `type` (a prefix when it ends in `.`),
+  `types` (`AuditQuery.types` joined with commas),
   `subjectKind` with `subjectId`, `itemId`, `grantId`, `from` and `to` in epoch milliseconds, `order` (`oldest` or `newest`), `limit` and
   `cursor`. An unknown, repeated, empty or half-given parameter is `invalid`.
 - `GET /v1/audit/event?id=<id>` (`AUDIT_EVENT_PATH`) answers `AuditEventResponse` (`{ event }`): `AuditStore.get`. The

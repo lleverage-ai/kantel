@@ -31,6 +31,12 @@ export interface CheckSettings {
 	readonly risingFactor?: number;
 	/** Failed runs in a row before a `check-failed` finding is raised. Default 3. */
 	readonly failuresBeforeRaise?: number;
+	/**
+	 * Severities, worst first, case-insensitive, for raising a finding that got worse as `escalated`. Default `urgent`,
+	 * `high`, `medium`, `low`, `warn`, `info`; `sev1`, `sev2` and `sev3` read as `urgent`, `high` and `low`. A severity
+	 * the list doesn't name ranks below all of them.
+	 */
+	readonly severityOrder?: readonly string[];
 }
 
 export interface ScheduleInput {
@@ -88,12 +94,17 @@ export interface Finding {
 	readonly summary: string;
 	/** A number to compare with `risingFactor`, such as an error count. */
 	readonly value?: number;
+	/**
+	 * The command's own view, such as `new`, `escalated` or `unchanged`: advisory, as the store decides from its record,
+	 * except that `escalated` with a severity other than the one last raised raises it (one `severityOrder` can't rank).
+	 */
+	readonly status?: string;
 }
 
 export interface RaisedFinding extends Finding {
 	readonly scheduleId: string;
 	readonly occurrenceId: string;
-	readonly reason: "new" | "reraise" | "rising" | "failures";
+	readonly reason: "new" | "escalated" | "reraise" | "rising" | "failures";
 }
 
 export interface CheckReport {

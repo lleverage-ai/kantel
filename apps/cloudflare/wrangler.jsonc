@@ -35,12 +35,13 @@
 		{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] },
 		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] }
 	],
-	// Named but not given IDs: the first real deploy creates them (wrangler's automatic provisioning), later deploys find
-	// them by name. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. The deploy can point
-	// them at others made elsewhere (HARBOUR_D1_DATABASE_NAME with HARBOUR_D1_DATABASE_ID, HARBOUR_R2_BUCKET; see
-	// scripts/deploy-config.ts), such as ones created in another region.
-	"d1_databases": [{ "binding": "DB", "database_name": "harbour" }],
-	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces" }],
+	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
+	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
+	// weur location hint, next to the objects (docs/measurements/m1-cf1/README.md); the first ones, `harbour` and
+	// `harbour-workspaces`, are deleted. The deploy can point them at others (HARBOUR_D1_DATABASE_NAME with
+	// HARBOUR_D1_DATABASE_ID, HARBOUR_R2_BUCKET; see scripts/deploy-config.ts).
+	"d1_databases": [{ "binding": "DB", "database_name": "harbour-weur" }],
+	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces-weur" }],
 	"vars": {
 		// The Access team domain (such as harbour.cloudflareaccess.com) and the Access application's AUD tag. Empty means
 		// people cannot sign in; API keys still work. The deploy workflow fills both from repository variables.

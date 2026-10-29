@@ -1,0 +1,22 @@
+{
+	"name": "@harbour/api",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Harbour's public API, defined once: versioned routes over @harbour/contracts, with the OpenAPI document and TS SDK generated from them",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./sdk": "./generated/sdk.ts",
+		"./openapi.json": "./generated/openapi.json"
+	},
+	"scripts": {
+		"generate": "node scripts/generate.ts",
+		"generate:check": "node scripts/generate.ts --check"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/protocol": "workspace:*",
+		"typebox": "1.3.27"
+	}
+}
