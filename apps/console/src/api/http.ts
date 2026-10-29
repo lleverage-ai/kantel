@@ -548,6 +548,18 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
 		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
 
+		async browserLive(sessionId, browserSessionId, signal) {
+			const response = await call(`${base}/browser/live`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ sessionId, browserSessionId }),
+				...(signal === undefined ? {} : { signal }),
+			});
+			const link = (await response.json()) as { url?: unknown; expiresAt?: unknown };
+			if (typeof link.url !== "string") throw new ApiError("unavailable", "Harbour sent no live-view link");
+			return { url: link.url, ...(typeof link.expiresAt === "number" ? { expiresAt: link.expiresAt } : {}) };
+		},
+
 		async fork(sessionId, itemId) {
 			const response = await call(sessionUrl(sessionId, "/fork"), {
 				method: "POST",

@@ -152,6 +152,13 @@ export {
 } from "./schedules/schedules-page.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
+export {
+	BROWSER_DISCONNECTED_MESSAGE,
+	type BrowserLiveStatus,
+	BrowserLiveView,
+	type BrowserLiveViewProps,
+	liveFrameSrc,
+} from "./session/browser-live-view.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
 export {
 	type AttachSource,
@@ -254,7 +261,13 @@ export {
 	type TranscriptProps,
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
-export { finalAnswerIds, groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
+export {
+	type BrowserViewSlot,
+	browserViewSlots,
+	finalAnswerIds,
+	groupTranscript,
+	type TranscriptRow,
+} from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
 	type BindingCodePickerProps,

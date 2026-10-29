@@ -7,7 +7,8 @@
  * - `act` runs one model-free Reflex step in the session's container (`/brwsr/v1/sessions/{id}/reflex/act` and
  *   `/reflex/look`), which needs only the project key.
  * - `screenshot` captures the page over a short-lived CDP connection.
- * - `share` makes a live-view link with control (`/brwsr/v1/sessions/{id}/shares`).
+ * - `share` makes a live-view link (`/brwsr/v1/sessions/{id}/shares`): with control by default, or watch-only, which
+ *   brwsr enforces on the viewer's socket (its input never reaches the browser).
  *
  * Portable: `fetch` and `WebSocket` only, no Node APIs.
  */
@@ -230,9 +231,10 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 			return captureScreenshot(openSocket(connectUrl), timeoutMs, signal);
 		},
 
-		async share(providerSessionId, minutes, signal) {
+		async share(providerSessionId, minutes, signal, shareOptions) {
+			const control = shareOptions?.control ?? true;
 			const raw = record(
-				await request("POST", `${brwsrPath(providerSessionId)}/shares`, { control: true, minutes }, signal, true),
+				await request("POST", `${brwsrPath(providerSessionId)}/shares`, { control, minutes }, signal, true),
 			);
 			const url = str(raw.url);
 			if (!url.startsWith("https://")) throw new HarbourError("unavailable", "brwsr returned no share link");

@@ -14,7 +14,12 @@
  * - **What the model sees.** Each result's text, and a `browser_screenshot`'s image. A browser's CDP URL is left out:
  *   a session here has no code that could use it. After a step that may change the page (`browser_open` at a URL, and
  *   every `browser_act` but `look`), a screenshot goes into the result's UI details, so the console shows the browser
- *   moving without spending the model's tokens on it.
+ *   moving without spending the model's tokens on it. Every call on a browser also names it there
+ *   (`details.browserSessionId`), so the console knows which browser a tool item used.
+ * - **The live view.** A person watching the session asks `liveView` for a watch-only brwsr share link to one of its
+ *   browsers (`POST /v1/browser/live`), and the console embeds it on the browser's newest tool item. The link is
+ *   minted for that person's call, as them (viewer on the session is enough), never for the agent or the model, and is
+ *   kept nowhere but here: brwsr closes its viewer when the link expires or the browser ends.
  * - **In memory**, as the sandboxes' leases are: a restarted object forgets its grants and open browsers. brwsr ends
  *   each browser at its grant's timeout whatever happens here.
  */
@@ -26,7 +31,6 @@ import {
 	BROWSER_ACT_CAPABILITY,
 	BROWSER_OPEN_CAPABILITY,
 	BROWSER_REQUEST_CAPABILITY,
-	BROWSER_SCREENSHOT_CAPABILITY,
 	browserCapabilities,
 	browserCapabilityHandler,
 } from "@harbour/browser/capabilities";
@@ -35,6 +39,7 @@ import {
 	type AuditSink,
 	type Browser,
 	type BrowserProvider,
+	type BrowserShareLink,
 	type CallContext,
 	type CapabilityDefinition,
 	type CapabilityHandler,
@@ -61,6 +66,10 @@ export const BROWSER_CONTEXT_NAME = "harbour";
 export const GRANT_TIMEOUT_MS = 30 * 60_000;
 /** How long `browser_request` waits for a person before it gives up. */
 export const DECISION_TIMEOUT_MS = 10 * 60_000;
+/** How long a live-view link lasts: past a grant's whole life, so it ends with the browser, not before. */
+export const LIVE_VIEW_MINUTES = 60;
+/** A person's live-view link is handed out again while it has this long left, so a reload doesn't make another. */
+const LIVE_VIEW_REUSE_MS = 10 * 60_000;
 
 /** A capability's tool name: `browser.open` is `browser_open`, as model tool names have no dots. */
 export const toolName = (capability: string): string => capability.replaceAll(".", "_");
@@ -100,6 +109,12 @@ export interface StackBrowserOptions {
 	readonly decisionTimeoutMs?: number;
 }
 
+export interface BrowserLiveViewInput {
+	readonly sessionId: SessionId;
+	/** The browser, as its tool items name it (`browser_open`'s `browserSessionId`). */
+	readonly browserSessionId: string;
+}
+
 export interface BrowserDecision {
 	readonly sessionId: SessionId;
 	/** The `browser_request` call's ID, as its tool item names it. */
@@ -117,6 +132,12 @@ export interface StackBrowser {
 	 * that is not waiting (answered already, or gone with a restart) is `not_found`.
 	 */
 	decide(ctx: CallContext, decision: BrowserDecision): Promise<{ readonly status: "granted" | "declined" }>;
+	/**
+	 * A watch-only live-view link to one of a session's open browsers, for the person asking (viewer on the session is
+	 * enough; an agent is `forbidden`). A browser of another session is `not_found`; one that has closed is `expired`.
+	 * The same person asking again for the same browser gets the same link while it has a while left.
+	 */
+	liveView(ctx: CallContext, input: BrowserLiveViewInput): Promise<BrowserShareLink>;
 	/** The runtime's `browser` teardown: closes the session's browsers and ends its grants. */
 	readonly teardown: SessionTeardown;
 }
@@ -187,8 +208,18 @@ export function createStackBrowser(options: StackBrowserOptions): StackBrowser {
 		}
 	};
 
-	/** A capability result as the model's content: its text, and the image a screenshot returned. */
-	const toPi = (result: CapabilityResult, images: readonly { mimeType: string; data: string }[] = []) => {
+	// Each person's live-view links, by browser: handed out again while they last, so a reload makes no new one.
+	const liveViews = new Map<string, BrowserShareLink>();
+
+	/**
+	 * A capability result as the model's content: its text, and the image a screenshot returned. The UI details (never
+	 * the model's) carry the transcript's screenshots and the browser the call used.
+	 */
+	const toPi = (
+		result: CapabilityResult,
+		images: readonly { mimeType: string; data: string }[] = [],
+		browserSessionId?: string,
+	) => {
 		const output = isObject(result.output) ? result.output : {};
 		const text = typeof output.text === "string" ? output.text : JSON.stringify(result.output);
 		const image = isObject(output.image) ? output.image : undefined;
@@ -198,10 +229,14 @@ export function createStackBrowser(options: StackBrowserOptions): StackBrowser {
 		if (image !== undefined && typeof image.mimeType === "string" && typeof image.data === "string") {
 			content.push({ type: "image", mimeType: image.mimeType, data: image.data });
 		}
+		const details = {
+			...(images.length === 0 ? {} : { images: images.map((each) => ({ ...each })) }),
+			...(browserSessionId === undefined ? {} : { browserSessionId }),
+		};
 		return {
 			output: content,
 			isError: result.isError === true,
-			...(images.length === 0 ? {} : { details: { images: images.map((each) => ({ ...each })) } }),
+			...(Object.keys(details).length === 0 ? {} : { details }),
 		};
 	};
 
@@ -280,17 +315,23 @@ export function createStackBrowser(options: StackBrowserOptions): StackBrowser {
 								: `No one answered the browser request within ${Math.round(decisionTimeoutMs / 60_000)} minutes.`;
 					return { output: [{ type: "text" as const, text }], isError: decision.status !== "granted" };
 				}
-				if (result.isError === true) return toPi(result);
-				// A screenshot for the transcript after a step that may have moved the page.
+				// The browser the call used: the one it opened, or the one it named.
 				const args_ = isObject(args as JsonValue) ? (args as { readonly [key: string]: JsonValue }) : {};
-				let shown: string | undefined;
-				if (definition.name === BROWSER_OPEN_CAPABILITY && typeof args_.url === "string") {
-					shown = typeof output.browserSessionId === "string" ? output.browserSessionId : undefined;
-				} else if (definition.name === BROWSER_ACT_CAPABILITY && args_.action !== "look") {
-					shown = typeof args_.browserSessionId === "string" ? args_.browserSessionId : undefined;
-				}
-				if (shown === undefined || definition.name === BROWSER_SCREENSHOT_CAPABILITY) return toPi(result);
-				return toPi(result, await uiShot(record, shown, signal));
+				const used =
+					definition.name === BROWSER_OPEN_CAPABILITY
+						? typeof output.browserSessionId === "string"
+							? output.browserSessionId
+							: undefined
+						: typeof args_.browserSessionId === "string"
+							? args_.browserSessionId
+							: undefined;
+				if (result.isError === true) return toPi(result, [], used);
+				// A screenshot for the transcript after a step that may have moved the page.
+				const moved =
+					(definition.name === BROWSER_OPEN_CAPABILITY && typeof args_.url === "string") ||
+					(definition.name === BROWSER_ACT_CAPABILITY && args_.action !== "look");
+				if (!moved || used === undefined) return toPi(result, [], used);
+				return toPi(result, await uiShot(record, used, signal), used);
 			},
 		});
 
@@ -327,6 +368,25 @@ export function createStackBrowser(options: StackBrowserOptions): StackBrowser {
 			});
 			entry.settle({ status: "granted", sites: entry.sites });
 			return { status: "granted" };
+		},
+		async liveView(ctx, input) {
+			// The broker checks the caller may view the browser's session, and hides another organisation's browser.
+			const session = await broker.get(ctx, input.browserSessionId);
+			if (session.sessionId !== input.sessionId) {
+				throw new HarbourError("not_found", "No such browser in this session");
+			}
+			if (session.status !== "open") throw new HarbourError("expired", "The browser has closed");
+			const now = clock.now();
+			for (const [key, link] of liveViews) {
+				if ((link.expiresAt ?? 0) - now <= LIVE_VIEW_REUSE_MS) liveViews.delete(key);
+			}
+			const key = `${JSON.stringify(ctx.actor)}\u0000${session.id}`;
+			const kept = liveViews.get(key);
+			if (kept !== undefined) return kept;
+			const link = await broker.share(ctx, session.id, { watch: true, minutes: LIVE_VIEW_MINUTES });
+			// A link with no expiry said is never handed out twice.
+			if (link.expiresAt !== undefined) liveViews.set(key, link);
+			return link;
 		},
 		teardown: browserTeardown(broker),
 	};

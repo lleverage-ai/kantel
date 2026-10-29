@@ -128,7 +128,7 @@ export interface BrowserScreenshot {
 	readonly data: string;
 }
 
-/** A link that opens the browser's live view, with control, without signing in to the provider. */
+/** A link that opens the browser's live view (with control, or watch-only) without signing in to the provider. */
 export interface BrowserShareLink {
 	readonly url: string;
 	readonly expiresAt?: Timestamp;
@@ -147,8 +147,16 @@ export interface BrowserProvider {
 	act(providerSessionId: string, action: BrowserAction, signal?: AbortSignal): Promise<BrowserPage>;
 	/** The page as it is now. A browser that has ended is `expired`. */
 	screenshot(providerSessionId: string, signal?: AbortSignal): Promise<BrowserScreenshot>;
-	/** A live-view link with control that lasts `minutes`. A browser that has ended is `expired`. */
-	share(providerSessionId: string, minutes: number, signal?: AbortSignal): Promise<BrowserShareLink>;
+	/**
+	 * A live-view link that lasts `minutes`: with control, or watch-only when `options.control` is `false` (its viewer's
+	 * input never reaches the browser). A browser that has ended is `expired`.
+	 */
+	share(
+		providerSessionId: string,
+		minutes: number,
+		signal?: AbortSignal,
+		options?: { readonly control?: boolean },
+	): Promise<BrowserShareLink>;
 }
 
 export interface GrantBrowserInput {
@@ -208,8 +216,16 @@ export interface Browser {
 	 * agent is `forbidden`), with operator on the agent session. `minutes` is 15 or 60 (default 15); anything else is `invalid`. The link never
 	 * outlives the browser session. Audited as
 	 * `browser.session.shared`, never with the link.
+	 *
+	 * With `watch: true` the link is watch-only, so a person can follow the agent's browser as it works (the console's
+	 * live view): its viewer's input never reaches the browser, and viewer on the agent session is enough. Still humans
+	 * and services only, audited the same way with `watch: true`.
 	 */
-	share(ctx: CallContext, browserSessionId: string, input?: { readonly minutes?: number }): Promise<BrowserShareLink>;
+	share(
+		ctx: CallContext,
+		browserSessionId: string,
+		input?: { readonly minutes?: number; readonly watch?: boolean },
+	): Promise<BrowserShareLink>;
 	/**
 	 * The session-end teardown: closes every open browser session of an agent session (with `reason` as its end reason)
 	 * and ends its grants and the grants passed on from them. `session_ended` also declines its pending requests; after

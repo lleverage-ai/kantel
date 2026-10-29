@@ -252,6 +252,13 @@ describe("the brwsr provider", () => {
 		expect(api.seen[0]?.body).toEqual({ control: true, minutes: 60 });
 	});
 
+	it("makes a watch-only share link when asked for no control", async () => {
+		const api = fakeApi([["POST", "/brwsr/v1/sessions/s-1/shares", 201, { url: "https://brwsr.dev/s/def" }]]);
+		const provider = createBrwsrProvider({ apiKey: KEY, fetch: api.fetch });
+		expect(await provider.share("s-1", 60, undefined, { control: false })).toEqual({ url: "https://brwsr.dev/s/def" });
+		expect(api.seen[0]?.body).toEqual({ control: false, minutes: 60 });
+	});
+
 	it("finds a context by name, or makes it, and looks again when another caller made it first", async () => {
 		const found = fakeApi([["GET", "/v1/contexts?name=sal", 200, [{ id: "ctx-sal", name: "sal" }]]]);
 		expect(await createBrwsrProvider({ apiKey: KEY, fetch: found.fetch }).contextId("sal")).toBe("ctx-sal");

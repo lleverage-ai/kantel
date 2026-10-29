@@ -1,5 +1,7 @@
 import type { Cursor, SessionStatus, TranscriptItem } from "@harbour/protocol";
 import {
+	BrowserLiveView,
+	type BrowserViewSlot,
 	Button,
 	Composer,
 	type ConnectionStateValue,
@@ -11,7 +13,7 @@ import {
 	type Status,
 	Transcript,
 } from "@harbour/ui";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
@@ -22,6 +24,7 @@ import {
 	type SessionActions,
 	transcriptWorking,
 } from "./actions.ts";
+import type { BrowserLiveStore } from "./browser-live.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -75,6 +78,24 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 	}
 }
 
+/** A browser's live view, as the session screen's link store has it. */
+function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserViewSlot }) {
+	const id = slot.browserSessionId;
+	const live = useSyncExternalStore(
+		useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]),
+		() => store.get(id),
+	);
+	return (
+		<BrowserLiveView
+			status={live.status}
+			item={slot.item}
+			{...(live.url === undefined ? {} : { url: live.url })}
+			{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+			onDisconnected={() => store.disconnected(id)}
+		/>
+	);
+}
+
 export function SessionView({
 	client,
 	project,
@@ -114,7 +135,14 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control, onFork, onEdit } = actions;
+	const { control, onFork, onEdit, browserLive } = actions;
+	const renderBrowserView = useMemo(
+		() =>
+			browserLive === undefined
+				? undefined
+				: (slot: BrowserViewSlot) => <LiveBrowser store={browserLive} slot={slot} />,
+		[browserLive],
+	);
 	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
 	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
@@ -207,6 +235,7 @@ export function SessionView({
 						working={working}
 						onRowRender={recordRow}
 						messageActions={messageActions}
+						{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
 						dock={
 							<Composer
 								state={composerState(control, state.status, actions.sending)}

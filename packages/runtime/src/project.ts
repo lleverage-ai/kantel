@@ -128,6 +128,14 @@ export function toolImagesOf(message: Pick<ToolResultMessage, "content" | "detai
 	return images.slice(0, MAX_TOOL_IMAGES);
 }
 
+/** The browser a tool result's UI details say the call used (`details.browserSessionId`), if any. */
+export function toolBrowserSessionOf(message: Pick<ToolResultMessage, "details">): string | undefined {
+	const details = message.details as { readonly browserSessionId?: unknown } | undefined;
+	if (typeof details !== "object" || details === null) return undefined;
+	const id = details.browserSessionId;
+	return typeof id === "string" && id !== "" && id.length <= 200 ? id : undefined;
+}
+
 /** Tool result diagnostics that mean the call stopped before it finished. */
 const INTERRUPTED_CODES = new Set(["aborted", "interrupted", "abandoned"]);
 
@@ -316,11 +324,13 @@ export class ConversationProjector {
 		const interrupted = diagnostics.some((diagnostic) => INTERRUPTED_CODES.has(diagnostic.code ?? ""));
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
 		const images = toolImagesOf(message);
+		const browserSessionId = toolBrowserSessionOf(message);
 		const item: ToolItem = {
 			...running,
 			status,
 			output: textOf(message.content),
 			...(images.length === 0 ? {} : { images }),
+			...(browserSessionId === undefined ? {} : { browserSessionId }),
 			endedAt: this.#now(),
 		};
 		ops.push({ op: "replace", item });

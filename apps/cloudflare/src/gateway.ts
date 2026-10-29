@@ -15,6 +15,7 @@
  * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin |
  * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space and loading a snapshot for the organisation's admin |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
+ * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
@@ -59,6 +60,8 @@ const MEASURE_BODY_LIMIT = 1024;
 /** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
 export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
 const DECISION_BODY_LIMIT = 1024;
+/** A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` -> `{ url, expiresAt? }`. */
+export const BROWSER_LIVE_PATH = "/v1/browser/live";
 
 export const API_BASE = "/v1";
 
@@ -303,6 +306,62 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
+	/** A browser route's JSON body, at most `DECISION_BODY_LIMIT` bytes, or `undefined` when it is too big or not JSON. */
+	const browserBody = async (request: Request): Promise<{ readonly [key: string]: unknown } | undefined> => {
+		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
+		try {
+			const body = bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
+			return typeof body === "object" && body !== null && !Array.isArray(body)
+				? (body as { readonly [key: string]: unknown })
+				: undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
+	const browserLive = async (request: Request): Promise<Response> => {
+		const noStore = { "cache-control": "no-store" };
+		if (request.method !== "POST") {
+			return Response.json(
+				{ error: { code: "invalid", message: "POST only" } },
+				{ status: 405, headers: { allow: "POST", ...noStore } },
+			);
+		}
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		const browser = stack.browser;
+		if (browser === undefined) {
+			return Response.json(
+				{ error: { code: "unavailable", message: "This deployment has no browser" } },
+				{ status: 503, headers: noStore },
+			);
+		}
+		const body = await browserBody(request);
+		const sessionId = body?.sessionId;
+		const browserSessionId = body?.browserSessionId;
+		if (
+			typeof sessionId !== "string" ||
+			sessionId === "" ||
+			typeof browserSessionId !== "string" ||
+			browserSessionId === ""
+		) {
+			return Response.json(
+				{ error: { code: "invalid", message: 'The body is { "sessionId": string, "browserSessionId": string }' } },
+				{ status: 400, headers: noStore },
+			);
+		}
+		try {
+			const ctx = callContextFor(caller, { signal: request.signal });
+			const link = await browser.liveView(ctx, { sessionId, browserSessionId });
+			return Response.json(
+				{ url: link.url, ...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }) },
+				{ headers: { ...noStore, "referrer-policy": "no-referrer" } },
+			);
+		} catch (error) {
+			return errorResponse(error);
+		}
+	};
+
 	const decideBrowser = async (request: Request): Promise<Response> => {
 		const noStore = { "cache-control": "no-store" };
 		if (request.method !== "POST") {
@@ -360,6 +419,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
 			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
+			if (path === BROWSER_LIVE_PATH) return browserLive(request);
 			if (under(path, WORKSPACE_READ_API_BASE)) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {

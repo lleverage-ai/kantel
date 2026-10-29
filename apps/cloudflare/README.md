@@ -64,6 +64,10 @@ With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the defaul
   and no CDP URL.
 - **Screenshots.** `browser_screenshot` returns its image to the model. After `browser_open` at a URL and each
   `browser_act` but `look`, a screenshot goes to the transcript only, so the console shows the page moving.
+- **The live view.** Each browser call's tool item names its browser (`browserSessionId`, an ID only). The console
+  asks `POST /v1/browser/live` for a watch-only brwsr share link to it, minted for the person signed in (viewer on the
+  session is enough; an agent can't), and embeds it inline under the browser's newest call. The link can't take
+  control, lasts an hour at most and stops with the browser; afterwards the last screenshot takes its place.
 - **Released with the session.** Closing or aborting a session closes its browsers and ends its grants (the
   runtime's session-end hook). Grants and open browsers are in memory: a restarted object forgets them, and brwsr
   ends each browser at its timeout.

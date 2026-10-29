@@ -84,6 +84,8 @@ const otherOperator = contextFor(actors.human("operator-b"), ORG, OTHER_PROJECT)
 const otherAgent = contextFor(actors.agent(OTHER_AGENT, OTHER_SESSION), ORG, OTHER_PROJECT);
 /** An operator across the whole organisation, who may create organisation-owned contexts. */
 const orgOperator = contextFor(actors.human("org-operator-1"), ORG);
+/** A viewer of the project: may watch its sessions, never act in them. */
+const viewer = contextFor(actors.human("viewer-1"), ORG, PROJECT);
 
 /**
  * Seeds `deps.tenancy` with the roles and agent sessions the cases act with: the human and service are operators on
@@ -94,6 +96,7 @@ function seedTenancy({ tenancy }: ConformanceDeps): void {
 	tenancy.bind(service.actor, ORG, "operator", PROJECT);
 	tenancy.bind(orgOperator.actor, ORG, "operator");
 	tenancy.bind(otherOperator.actor, ORG, "operator", OTHER_PROJECT);
+	tenancy.bind(viewer.actor, ORG, "viewer", PROJECT);
 	const inProject = { organisationId: ORG, projectId: PROJECT };
 	tenancy.session({ ...inProject, id: PARENT_SESSION, agentId: PARENT_AGENT });
 	tenancy.session({ ...inProject, id: SESSION, agentId: AGENT, parentSessionId: PARENT_SESSION });
@@ -1227,6 +1230,33 @@ export function createBrowserConformance(options: {
 				],
 			);
 			assert.ok(!JSON.stringify(shared).includes(link.url), "the audit never holds the link");
+		}),
+
+		test("gives a viewer a watch-only share link, and an agent none", async (subject, deps) => {
+			const { browser } = subject;
+			const { grant } = await grantFresh(browser, { persist: false });
+			const session = await browser.open(agent, { grantId: grant.id });
+			await assert.rejectsWithCode(browser.share(viewer, session.id), "forbidden", "a viewer gets no control");
+			const link = await browser.share(viewer, session.id, { watch: true, minutes: 60 });
+			assert.ok(link.url.startsWith("https://"), "the link is an https URL");
+			await assert.rejectsWithCode(
+				browser.share(agent, session.id, { watch: true }),
+				"forbidden",
+				"the agent's own browser",
+			);
+			await assert.rejectsWithCode(
+				browser.share(outsider, session.id, { watch: true }),
+				"not_found",
+				"another organisation's browser",
+			);
+			const shared = deps.audit.ofType("browser.session.shared");
+			assert.deepEqual(
+				shared.map((event) => [event.actor, event.data]),
+				[[viewer.actor, { minutes: 60, watch: true }]],
+			);
+			assert.ok(!JSON.stringify(shared).includes(link.url), "the audit never holds the link");
+			await browser.close(agent, session.id);
+			await assert.rejectsWithCode(browser.share(viewer, session.id, { watch: true }), "expired", "a closed browser");
 		}),
 
 		test("session end: closes the session's browsers, ends its grants and those passed on, declines its requests, once", async (subject, deps) => {

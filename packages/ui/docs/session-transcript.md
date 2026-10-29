@@ -109,6 +109,14 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   them under the row, open or not, at most `--hb-tool-image-width` wide, so a person watches the browser move without
   opening anything. Each is a button ("Open full size") that opens the image in a new tab; its alt text says which
   call it came after. `ToolImages({ item, images? })` draws them, for a host that shows a call's images elsewhere.
+- **Live browser:** with `Transcript`'s `renderBrowserView`, the newest call on each browser the calls name
+  (`item.browserSessionId`) shows that browser's live view in place of its images, and a folded group keeps it in
+  view under its summary. The host renders a `BrowserLiveView` with a watch-only link: the column's width at the
+  browser's 16 by 9, a "Live" label with "Watch only" and "Open in a new tab". Before the link arrives it shows the
+  last screenshot, dimmed, with "Connecting to the live view"; once the frame posts that the browser has gone (brwsr's
+  `browserbase-disconnected`) the host asks again or settles on ended, "The browser has closed" over the last
+  screenshot. With no view to have (`unavailable`) it is the screenshot alone, as without a live view. The frame is
+  sandboxed, sends no referrer, and is unmounted when it scrolls away, so it costs a WebSocket only while on screen.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").

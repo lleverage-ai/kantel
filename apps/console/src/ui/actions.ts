@@ -1,6 +1,7 @@
 import type { SessionStatus, TranscriptItem } from "@harbour/protocol";
 import type { ComposerProps, ComposerState } from "@harbour/ui";
 import type { SessionControl } from "../api/client.ts";
+import type { BrowserLiveStore } from "./browser-live.ts";
 
 /**
  * What the person can do from the composer: send, steer, queue a follow-up or stop, or nothing, with the reason. The
@@ -29,6 +30,8 @@ export type SessionActions = {
 	 * request shows with no buttons.
 	 */
 	onBrowserDecision?: (callId: string, allow: boolean) => void;
+	/** The live views of the session's browsers, when the client can have them. Absent, browser calls show screenshots. */
+	browserLive?: BrowserLiveStore;
 	/** The composer's model and thinking pickers, when the session offers a choice. */
 	pickers?: Pick<
 		ComposerProps,
