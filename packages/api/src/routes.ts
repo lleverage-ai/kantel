@@ -3,14 +3,19 @@
  * the server must implement it (`createRouter` takes a handler for each), and the OpenAPI document and the SDK pick it
  * up when they are generated (`pnpm --filter @harbour/api generate`; CI fails while they are stale).
  */
+
+import { HistoryQuery, ServerFrame, SessionHistoryPage, StreamQuery } from "./protocol-schema.ts";
 import { defineRoute } from "./route.ts";
 import {
 	AbortSessionBody,
+	CreatedSession,
 	CreateSessionBody,
 	ListSessionsQuery,
+	MessageBody,
 	SessionPage,
 	SessionPath,
 	SessionRecord,
+	Submission,
 } from "./schema.ts";
 
 /** The version's base path, before every route's own path. */
@@ -22,9 +27,11 @@ export const createSession = defineRoute({
 	path: "/sessions",
 	tag: "sessions",
 	summary: "Create a session",
-	description: "Starts a session of an agent profile in a project. Needs the operator role on the project.",
+	description:
+		"Starts a session of an agent profile in a project, and sends it `message` when there is one. Needs the operator " +
+		"role on the project. If the first message is refused, the session is closed and the refusal answered.",
 	body: CreateSessionBody,
-	answer: { status: 201, description: "The new session.", schema: SessionRecord },
+	answer: { status: 201, description: "The new session.", schema: CreatedSession },
 	errors: ["invalid", "forbidden", "not_found", "refused"],
 });
 
@@ -77,8 +84,67 @@ export const abortSession = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "conflict"],
 });
 
+export const sendMessage = defineRoute({
+	operationId: "sendMessage",
+	method: "POST",
+	path: "/sessions/{sessionId}/messages",
+	tag: "messages",
+	summary: "Send a message",
+	description:
+		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the " +
+		"session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers " +
+		"the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+	params: SessionPath,
+	body: MessageBody,
+	idempotent: true,
+	answer: { status: 202, description: "The session accepted the message.", schema: Submission },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "refused"],
+});
+
+export const streamSession = defineRoute({
+	operationId: "streamSession",
+	method: "GET",
+	path: "/sessions/{sessionId}/stream",
+	tag: "stream",
+	summary: "Stream a session",
+	description:
+		"The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with " +
+		"`after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. " +
+		"Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as " +
+		"server-sent events.",
+	params: SessionPath,
+	query: StreamQuery,
+	stream: { frame: ServerFrame },
+	answer: { status: 200, description: "The stream." },
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+export const getSessionHistory = defineRoute({
+	operationId: "getSessionHistory",
+	method: "GET",
+	path: "/sessions/{sessionId}/history",
+	tag: "stream",
+	summary: "Page back through a session",
+	description:
+		"The session's transcript in pages, newest first, for scrolling back past a snapshot's items: start with " +
+		"`before` set to the snapshot's `items[0].id`, then follow `nextCursor`.",
+	params: SessionPath,
+	query: HistoryQuery,
+	answer: { status: 200, description: "One page of items.", schema: SessionHistoryPage },
+	errors: ["invalid", "forbidden", "not_found", "not_supported"],
+});
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. */
-export const routes = { createSession, listSessions, getSession, closeSession, abortSession } as const;
+export const routes = {
+	createSession,
+	listSessions,
+	getSession,
+	closeSession,
+	abortSession,
+	sendMessage,
+	streamSession,
+	getSessionHistory,
+} as const;
 
 export type Routes = typeof routes;
 export type OperationId = keyof Routes;

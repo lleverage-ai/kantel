@@ -18,6 +18,15 @@
  *   beside it, because a real session's tool call already has its session;
  * - the caller closes the session with the session API (`POST /v1/sessions/:id/close`), which ends its lease.
  *
+ * With `tools: true` (on the backend sessions use), the session's file tools run first, before the command, through
+ * the environment its tools get (`Stack.environment`, as its agent): `read` of one file, `ls` of `src`, and `write` of
+ * `scratch/measure.txt`. Their times are answered as `timings.read`, `timings.ls` and `timings.write`, and
+ * `leasedBeforeBash` says how many leases the session held after them. On a cold run that is 0 (the file tools went
+ * straight to the workspace), and the command that follows is the session's first `bash` call. On a warm run
+ * (`sessionId`) the session is already open, so the times are the tools' alone: a cold run's also hold whatever the
+ * session's opening left for the next I/O, because a Worker's clock stands still during synchronous work such as the
+ * opening's SQLite schema.
+ *
  * With `placement`, the answer also says where the stack runs (`Placement`): the stack object's colo, the request's
  * edge colo, and D1's region, colo and per-query latency as the object sees them. It is probed after the run, so it
  * adds nothing to the run's times.
@@ -32,7 +41,15 @@
  * deadline), so a mark can be older than the request: the script checks each mark against its own send and receive
  * times rather than trusting a server step that came out longer than the whole call.
  */
-import { type CallContext, HarbourError, isHarbourError, type WorkspaceId } from "@harbour/contracts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
+import {
+	type CallContext,
+	HarbourError,
+	isHarbourError,
+	type SessionRecord,
+	type WorkspaceId,
+} from "@harbour/contracts";
 import type { TieredSandboxes } from "@harbour/sandbox/tiered";
 import { type IsolateBackendName, isIsolateBackend } from "./sandboxes.ts";
 import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";
@@ -53,6 +70,8 @@ export interface IsolateReady {
 	readonly exitCode: number;
 	/** Lines `ls -1R` printed, so a run that listed nothing is visible. */
 	readonly listed: number;
+	/** With `tools`: the session's live leases after its file tools ran, before its first command. */
+	readonly leasedBeforeBash?: number;
 	/** Milliseconds: `session` (create), `isolate` (acquire and run), `total`, then the sandbox's own phases. */
 	readonly timings: Record<string, number>;
 	/**
@@ -151,7 +170,12 @@ export interface MeasureInput {
 	readonly keep?: boolean;
 	/** Run on this open measurement session instead of a new one: a warm run. */
 	readonly sessionId?: string;
+	/** Run the session's file tools before its first command (a cold run on the sessions' backend). */
+	readonly tools?: boolean;
 }
+
+/** The file the `tools` run writes, the same in every run. */
+export const MEASURE_WRITE_PATH = "scratch/measure.txt";
 
 export async function measureIsolateReady(
 	stack: Stack,
@@ -163,7 +187,12 @@ export async function measureIsolateReady(
 	if (!isIsolateBackend(backend)) throw new HarbourError("invalid", `No isolate backend ${backend}`);
 	const sandboxes = stack.sandboxes.on(backend);
 	if (sandboxes === undefined) throw new HarbourError("unavailable", `This Worker has no ${backend} isolate backend`);
-	if (input.sessionId !== undefined) return warmRun(stack, ctx, backend, sandboxes, input.sessionId);
+	if (input.tools === true && backend !== stack.sandboxes.backend) {
+		throw new HarbourError("invalid", `The tools run is on the backend sessions use, ${stack.sandboxes.backend}`);
+	}
+	if (input.sessionId !== undefined) {
+		return warmRun(stack, ctx, backend, sandboxes, input.sessionId, input.tools === true);
+	}
 	const workspaceId = await workspace(ctx);
 
 	const started = performance.now();
@@ -179,6 +208,8 @@ export async function measureIsolateReady(
 	const createdAt = Date.now();
 	let kept = false;
 	try {
+		const files = input.tools === true ? await fileTools(stack, ctx, sandboxes, session) : undefined;
+		const toolsDone = performance.now();
 		const result = await sandboxes.run(ctx, {
 			sessionId: session.id,
 			workspaceId,
@@ -197,9 +228,11 @@ export async function measureIsolateReady(
 			open: kept,
 			exitCode: result.exitCode,
 			listed: result.stdout.split("\n").filter((line) => line !== "").length,
+			...(files === undefined ? {} : { leasedBeforeBash: files.leased }),
 			timings: {
 				session: round(created - started),
-				isolate: round(ran - created),
+				...(files === undefined ? {} : files.timings),
+				isolate: round(ran - toolsDone),
 				total: round(ran - started),
 				...result.timings,
 			},
@@ -211,6 +244,27 @@ export async function measureIsolateReady(
 	}
 }
 
+/** The session's file tools, timed, through the environment its tools get; then the leases it holds. */
+async function fileTools(
+	stack: Stack,
+	ctx: CallContext,
+	sandboxes: TieredSandboxes,
+	session: SessionRecord,
+): Promise<{ timings: Record<string, number>; leased: number }> {
+	const env = stack.environment(session);
+	if (env === undefined) throw new HarbourError("unavailable", "The measurement session has no environment");
+	const context = BACKGROUND_CONTEXT;
+	const t0 = performance.now();
+	getOrThrow(await env.readTextFile("src/file-00.txt", context));
+	const t1 = performance.now();
+	getOrThrow(await env.listDir("src", context));
+	const t2 = performance.now();
+	getOrThrow(await env.writeFile(MEASURE_WRITE_PATH, `measured in ${session.id}\n`, context));
+	const t3 = performance.now();
+	const leased = (await sandboxes.leases(ctx, { sessionId: session.id, live: true })).length;
+	return { timings: { read: round(t1 - t0), ls: round(t2 - t1), write: round(t3 - t2) }, leased };
+}
+
 /** `ls -1R` again on an open measurement session on `backend`: its lease and isolate are warm. It stays open. */
 async function warmRun(
 	stack: Stack,
@@ -218,6 +272,7 @@ async function warmRun(
 	backend: IsolateBackendName,
 	sandboxes: TieredSandboxes,
 	sessionId: string,
+	tools: boolean,
 ): Promise<IsolateReady> {
 	const looking = performance.now();
 	const lookingAt = Date.now();
@@ -232,6 +287,8 @@ async function warmRun(
 		throw new HarbourError("invalid", `Session ${sessionId} is not an isolate-ready measurement session on ${backend}`);
 	}
 	if (session.status === "done") throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+	const looked = performance.now();
+	const files = tools ? await fileTools(stack, ctx, sandboxes, session) : undefined;
 	const started = performance.now();
 	const startedAt = Date.now();
 	const result = await sandboxes.run(ctx, {
@@ -250,8 +307,10 @@ async function warmRun(
 		open: true,
 		exitCode: result.exitCode,
 		listed: result.stdout.split("\n").filter((line) => line !== "").length,
+		...(files === undefined ? {} : { leasedBeforeBash: files.leased }),
 		timings: {
-			lookup: round(started - looking),
+			...(files === undefined ? {} : files.timings),
+			lookup: round(looked - looking),
 			isolate: round(ran - started),
 			total: round(ran - started),
 			...result.timings,

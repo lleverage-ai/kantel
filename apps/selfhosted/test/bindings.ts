@@ -76,6 +76,13 @@ const BINDINGS: readonly Binding[] = [
 		blocks: /^self-hosted workspaces on Postgres \+ S3/,
 	},
 	{
+		contract: "gateway",
+		implementation: "the M1 gateway on all of the above, across a restart (durable.ts)",
+		cwd: "apps/selfhosted",
+		files: ["test/gateway/durable.stack.test.ts"],
+		blocks: /^the gateway on Postgres and S3$/,
+	},
+	{
 		contract: "vault",
 		implementation: "vault engine on the Postgres vault store (#75)",
 		cwd: "targets/selfhosted/vault",

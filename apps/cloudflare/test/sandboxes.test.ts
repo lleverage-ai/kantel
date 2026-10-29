@@ -5,7 +5,7 @@ import { createMockAccess } from "@harbour/identity/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
-import { MEASURE_COMMAND, MEASURE_FILES, MEASURE_PATH } from "../src/measure.ts";
+import { MEASURE_COMMAND, MEASURE_FILES, MEASURE_PATH, MEASURE_WRITE_PATH } from "../src/measure.ts";
 import { isolateBackendName } from "../src/sandboxes.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
@@ -239,6 +239,51 @@ describe("the isolate-ready measurement", () => {
 		const after = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });
 		expect(after).toHaveLength(0);
 		expect((await measure({ sessionId: warmup.sessionId })).status).toBe(409);
+	});
+
+	it("with tools, runs the session's file tools on its workspace first, leasing nothing until the command", async () => {
+		const { stack, measure } = await setup();
+		const response = await measure({ tools: true });
+		expect(response.status).toBe(200);
+		const run = (await response.json()) as {
+			sessionId: string;
+			workspaceId: string;
+			exitCode: number;
+			leasedBeforeBash: number;
+			timings: Record<string, number>;
+		};
+		expect(run).toMatchObject({ exitCode: 0, leasedBeforeBash: 0 });
+		for (const phase of ["session", "read", "ls", "write", "isolate", "total"]) {
+			expect(run.timings[phase]).toBeTypeOf("number");
+		}
+		const wrote = await stack.workspaces.read(stack.admin, run.workspaceId, MEASURE_WRITE_PATH);
+		expect(new TextDecoder().decode(wrote.content)).toBe(`measured in ${run.sessionId}\n`);
+		// Written as the session's agent, and the command's lease ended with the session.
+		const [commit] = (await stack.audit.query(stack.admin, { type: "workspace.committed", sessionId: run.sessionId }))
+			.items;
+		expect(commit?.actor).toEqual({ kind: "agent", agentId: DEFAULT_AGENT_ID, sessionId: run.sessionId });
+		expect(await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: run.sessionId, live: true })).toEqual([]);
+		expect((await measure({ tools: "yes" })).status).toBe(400);
+	});
+
+	it("with tools on a warm session, times the file tools on the open session, then runs on its lease", async () => {
+		const { stack, measure } = await setup();
+		const warmup = (await (await measure({ keep: true })).json()) as { sessionId: string };
+		const [lease] = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });
+		const response = await measure({ sessionId: warmup.sessionId, tools: true });
+		expect(response.status).toBe(200);
+		const run = (await response.json()) as {
+			warm: boolean;
+			exitCode: number;
+			leasedBeforeBash: number;
+			timings: Record<string, number>;
+		};
+		// The warm-up's lease, and no other: the file tools took none.
+		expect(run).toMatchObject({ warm: true, exitCode: 0, leasedBeforeBash: 1 });
+		for (const phase of ["read", "ls", "write", "lookup", "isolate"]) expect(run.timings[phase]).toBeTypeOf("number");
+		const live = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });
+		expect(live.map((each) => each.id)).toEqual([lease!.id]);
+		await stack.runtime.runtime.close(stack.admin, warmup.sessionId);
 	});
 
 	it("runs warm only on an open measurement session on the same backend", async () => {

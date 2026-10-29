@@ -25,11 +25,12 @@ docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all
 
 ## The M1 gateway and the console
 
-`gateway` serves the M1 APIs behind the API-key authenticator (`@harbour/identity/authenticator`), and the
-console's build (`apps/console`) on every other path:
+`gateway` serves the M1 APIs behind the authenticator (`@harbour/identity/authenticator`), which takes an API key or
+a Harbour session from email one-time PIN sign-in, and the console's build (`apps/console`) on every other path:
 
 | Path | API |
 |---|---|
+| `/auth/otp/start`, `/auth/otp/verify`, `/auth/session/end` | Email one-time PIN sign-in (`@harbour/identity/otp/http`), no credentials |
 | `/v1/sessions`, `/v1/profiles`, `/v1/hosts` | Session API (`@harbour/runtime/http`, see `packages/runtime/HTTP.md`) |
 | `/v1/workspaces/:id/...` | Workspace read API (`@harbour/workspace/read-api`) |
 | `/v1/audit/events`, `/v1/audit/event` | Audit query API (`@harbour/audit/http`) |
@@ -41,24 +42,50 @@ Open the console at <http://127.0.0.1:58090/> (`HARBOUR_GATEWAY_PORT` moves it).
 port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console still shows its recorded sessions until it gets a
 client for the session API (M1-FE1).
 
-Every component behind the gateway is the in-memory implementation for now (the runtime answers with an `echo`
-model), so the gateway's state lasts as long as its container. On each start it creates an organisation, a project,
-an `echo` agent profile, a workspace with a README and an operator API key on the project, and writes their IDs and
-the key to `/var/lib/harbour/bootstrap.json` in the container:
+The components behind the gateway are the real implementations (`apps/selfhosted/src/gateway/durable.ts`): the
+runtime's SQL session store and Pi Durable tables, the SQL audit store and identity directory, all on this Postgres in
+the `harbour_m1` schema (`HARBOUR_GATEWAY_SCHEMA`; M0 keeps `harbour`), and workspaces with their trees in MinIO under
+`m1/workspaces/`. The runtime still answers with an `echo` model until the model gateway lands. Without
+`HARBOUR_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests do.
+
+On its first start the gateway creates an organisation, a project and an operator API key on the project, and writes
+their IDs and the key to `/var/lib/harbour/bootstrap.json` in the container. On later starts it reads the file back
+and, while the key still works, keeps that deployment, its sessions and audit trail; it ensures the `echo` agent
+profile and a workspace with a README every time:
 
 ```bash
 docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
 bun apps/selfhosted/test/gateway/stack.ts     # the end-to-end test CI runs against the stack
 ```
 
-### Mail
+### Signing in, and mail
 
-Sign-in is by email one-time PIN (#15, Sign-in). The gateway sends mail through `HARBOUR_SMTP_URL` (`smtp://` with
-STARTTLS, or `smtps://`, credentials in the URL if the relay needs them) from `HARBOUR_MAIL_FROM`. In compose both
-default to Mailpit (`smtp://mailpit:1025`, `Harbour <harbour@harbour.localhost>`); set them to use a real relay. The
-gateway refuses to start on a malformed value, and `/v1/deployment` shows the server and From address, never the
-credentials. Read what was sent at <http://127.0.0.1:58025/> or through Mailpit's API
-(`/api/v1/search?query=to:"…"`), which is how the end-to-end tests read codes.
+Sign-in is by email one-time PIN (#15, Sign-in; the identity lane's flow, `packages/identity/CONTRACT.md`). Harbour is
+invite-only: the gateway invites `HARBOUR_ADMIN_EMAIL` (default `admin@harbour.localhost`) as an organisation admin at
+start, unless someone can already sign in with that email. To sign in as them:
+
+```bash
+curl -s -X POST http://127.0.0.1:58090/auth/otp/start -H 'content-type: application/json' \
+  -d '{"email":"admin@harbour.localhost"}'                       # 202, whoever the email is
+# read the code at http://127.0.0.1:58025/, then:
+curl -s -X POST http://127.0.0.1:58090/auth/otp/verify -H 'content-type: application/json' \
+  -d '{"email":"admin@harbour.localhost","code":"123456"}'       # 200 {token: "hbs_…", user, organisationIds}
+curl -s http://127.0.0.1:58090/v1/audit/events -H "authorization: Bearer hbs_…"
+```
+
+Codes last 10 minutes and sessions 12 hours, both on Postgres (`identity_otp_codes`, `identity_sessions`). Sign-in and
+sign-out are audited. Beside the identity lane's limit of 5 codes per email an hour, the gateway allows 30 sign-in
+requests per client address per 15 minutes (429 past it). Behind a reverse proxy every client shares its address, so
+limit there instead.
+
+The gateway sends codes through `HARBOUR_SMTP_URL` from `HARBOUR_MAIL_FROM`: `smtps://` (TLS from the start),
+`smtp://` (STARTTLS required), or `smtp://…?starttls=off` (in the clear, for a relay on a private network),
+credentials in the URL if the relay needs them. In compose both default to Mailpit
+(`smtp://mailpit:1025?starttls=off`, `Harbour <harbour@harbour.localhost>`); set them to use a real relay. Without
+`HARBOUR_SMTP_URL` the sign-in routes answer 503. The gateway refuses to start on a malformed value, and
+`/v1/deployment` shows the server and From address, never the credentials. Read what was sent at
+<http://127.0.0.1:58025/> or through Mailpit's API (`/api/v1/search?query=to:"…"`), which is how the end-to-end tests
+read codes.
 
 ### Bindings: the real implementations against the stack
 
@@ -73,6 +100,7 @@ job runs it and puts the table in the job summary. A suite that skips for want o
 | Identity | SQL identity directory on Postgres | `packages/identity/test/sql.conformance.test.ts` |
 | Email one-time PIN | OTP sign-in, mail through Mailpit | `packages/identity/test/otp.mailpit.test.ts` |
 | Workspaces | Postgres and S3 (MinIO), keyed | `targets/selfhosted/workspace/test/conformance.stack.test.ts` |
+| Gateway | all of the above behind the gateway, across a restart | `apps/selfhosted/test/gateway/durable.stack.test.ts` |
 | Vault | engine on the Postgres vault store | `targets/selfhosted/vault/test/postgres.conformance.test.ts` |
 
 Each suite works in its own fresh schema (and object prefix) and drops it afterwards, so running it against a shared
@@ -109,7 +137,7 @@ The tests take the matching URLs: `HARBOUR_DATABASE_URL`, `S3_ENDPOINT`, `--base
 | `minio` | Content-addressed workspace blobs and manifests. | 59000 |
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
 | `sandbox-image` | Builds `harbour-sandbox:dev`, the container tier's warm image, and exits. | none |
-| `gateway` | The M1 gateway (Bun): session, workspace read and audit query APIs behind the API-key authenticator, and the console. | 58090 |
+| `gateway` | The M1 gateway (Bun): session, workspace read and audit query APIs behind the authenticator, email one-time PIN sign-in, and the console. | 58090 |
 | `mailpit` | The SMTP server sign-in codes go to (email one-time PIN, #15). Keeps messages in memory and relays nothing; web UI and API on 58025, SMTP on 58125. | 58025, 58125 |
 
 Networks: `control` (everything but sandboxes and the fixture) and `upstream`
