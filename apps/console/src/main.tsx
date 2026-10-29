@@ -3,15 +3,17 @@ import { StrictMode, Suspense, use, useCallback, useMemo, useState } from "react
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
+import { apiAgent } from "./api/agent-http.ts";
 import { apiAudit } from "./api/audit-http.ts";
 import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
-import type { ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
+import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App } from "./app/app.tsx";
+import { createRecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
@@ -39,6 +41,9 @@ import "./ui/styles.css";
 // in-memory vault and audit store in the page (recorded/oversight.ts).
 //
 // On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
+//
+// The skills and memory pages follow the source too: on `api` the public API's skills and memory routes (`/v1/skills`,
+// `/v1/memory`), read-only; on `recorded` @harbour/ui's fixture stores in the page, with authoring and proposals.
 //
 // The schedules page runs on @harbour/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
 // sessions. On `api` it is not listed yet: the console gets it with a client for the public API's schedule routes.
@@ -105,6 +110,7 @@ type Oversight = {
 	readonly audit?: ConsoleAudit;
 	readonly keys?: ConsoleKeys;
 	readonly schedules?: ConsoleSchedules;
+	readonly agent?: ConsoleAgent;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -114,9 +120,10 @@ const recordedOversight: Promise<Oversight> | undefined =
 				createRecordedSchedules(
 					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
 				),
-			]).then(([made, schedules]: [RecordedOversight, ConsoleSchedules]): Oversight => {
+				createRecordedAgent(),
+			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, ConsoleAgent]): Oversight => {
 				proposals = made.proposals;
-				return { vault: made.vault, audit: made.audit, schedules };
+				return { vault: made.vault, audit: made.audit, schedules, agent };
 			})
 		: undefined;
 
@@ -126,7 +133,7 @@ function OversightConsole({ client, oversight }: { client: ConsoleClient; oversi
 }
 
 function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
-	const { vault, audit, keys, schedules } = oversight;
+	const { vault, audit, keys, schedules, agent } = oversight;
 	return (
 		<App
 			client={client}
@@ -134,6 +141,7 @@ function Console({ client, oversight }: { client: ConsoleClient; oversight: Over
 			{...(audit === undefined ? {} : { audit })}
 			{...(keys === undefined ? {} : { keys })}
 			{...(schedules === undefined ? {} : { schedules })}
+			{...(agent === undefined ? {} : { agent })}
 			onOpen={onOpen}
 		/>
 	);
@@ -209,6 +217,10 @@ function SignedInConsole({
 		// Rows about a vault request link to its page, when the console has the vault page to open it on.
 		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
+		const agent = {
+			...apiAgent({ headers: state.headers, onUnauthenticated }),
+			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
+		};
 		return {
 			client: createApiClient({
 				actor: state.actor,
@@ -220,10 +232,10 @@ function SignedInConsole({
 			}),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
-				(vault): Oversight => ({ vault, audit: audit(true), ...(keys === undefined ? {} : { keys }) }),
+				(vault): Oversight => ({ vault, audit: audit(true), agent, ...(keys === undefined ? {} : { keys }) }),
 				(error: unknown): Oversight => {
 					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
-					return { audit: audit(false), ...(keys === undefined ? {} : { keys }) };
+					return { audit: audit(false), agent, ...(keys === undefined ? {} : { keys }) };
 				},
 			),
 		};

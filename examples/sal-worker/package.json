@@ -9,9 +9,11 @@
 		"typecheck": "tsc -p tsconfig.json",
 		"test": "vitest run",
 		"harbour": "node scripts/harbour-sal.ts",
-		"parity": "node scripts/parity.ts"
+		"parity": "node scripts/parity.ts",
+		"import": "node scripts/import-to-harbour.ts"
 	},
 	"dependencies": {
+		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/memory": "workspace:*",
 		"@harbour/skills": "workspace:*",

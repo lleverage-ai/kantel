@@ -36,7 +36,7 @@ export interface SkillsPageProps {
 	readonly source: SkillsSource;
 	/** Whose view of the skills to show: a session in this project, opened by this user. */
 	readonly visibility: SkillVisibility;
-	/** Projects the viewer may switch the view to. Hidden when absent. */
+	/** Projects the viewer may switch the view to; an option whose value is `""` means no project. Hidden when absent. */
 	readonly projects?: readonly SelectOption[];
 	/** Names for people, agents and projects, from the host's directories. */
 	readonly directory?: AuditDirectory;
@@ -140,7 +140,9 @@ export function SkillsPage({
 								options={projects}
 								value={visibility.projectId ?? ""}
 								onChange={(event) => {
-									setVisibility({ ...visibility, projectId: event.target.value });
+									// An option whose value is "" is no project: the organisation's view.
+									const { projectId: _, ...rest } = visibility;
+									setVisibility(event.target.value === "" ? rest : { ...rest, projectId: event.target.value });
 									open(undefined);
 								}}
 							/>

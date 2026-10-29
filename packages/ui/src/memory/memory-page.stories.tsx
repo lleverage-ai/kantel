@@ -11,6 +11,7 @@ import {
 	placeholderSpace,
 	SAMPLE_QUERY,
 } from "./fixtures.ts";
+import type { MemoryPageSource } from "./memory-model.ts";
 import { MemoryPage, type MemoryView } from "./memory-page.tsx";
 import "./stories.css";
 
@@ -28,6 +29,7 @@ function ScenarioPage({
 	empty,
 	brokenDecisions,
 	readOnly,
+	noProposals,
 }: {
 	view?: MemoryView;
 	open?: string;
@@ -37,6 +39,8 @@ function ScenarioPage({
 	empty?: boolean;
 	brokenDecisions?: boolean;
 	readOnly?: boolean;
+	/** A source with reads only, no proposals, as the console's API source is until memory writes land. */
+	noProposals?: boolean;
 }) {
 	const [scenario, setScenario] = useState<MemoryScenario>();
 	useEffect(() => {
@@ -48,7 +52,7 @@ function ScenarioPage({
 			live = false;
 		};
 	}, [empty]);
-	const source =
+	const made =
 		scenario === undefined
 			? pendingSource
 			: brokenDecisions === true
@@ -56,6 +60,15 @@ function ScenarioPage({
 				: readOnly === true
 					? { ...scenario.source, propose: undefined }
 					: scenario.source;
+	const source: MemoryPageSource =
+		noProposals === true
+			? {
+					listConcepts: made.listConcepts,
+					getConcept: made.getConcept,
+					search: made.search,
+					recall: made.recall,
+				}
+			: made;
 	return (
 		<div className="memory-story">
 			<MemoryPage
@@ -103,6 +116,9 @@ export const SearchNothing: Story = () => <ScenarioPage search="kubernetes" />;
 
 /** Waiting for a person: approve or reject each. One nearly repeats a concept, so approving it would be refused. */
 export const Proposals: Story = () => <ScenarioPage view="proposals" />;
+
+/** Reads only, as the console's API source: no Proposals view, no Correct or Forget, and a concept shows no history. */
+export const ReadsOnly: Story = () => <ScenarioPage noProposals open="projects/harbour/vault-binding-codes" />;
 
 /** Approving fails: nothing is written and the proposal says so. */
 export const DecisionError: Story = () => <ScenarioPage view="proposals" brokenDecisions />;
