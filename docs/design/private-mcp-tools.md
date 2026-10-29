@@ -48,7 +48,7 @@ refused when the profile is saved, not at call time. `hostId` stays as an alias 
 move over.
 
 **Descriptions are the server's.** Harbour adds no prompt text: each tool's name, description and input schema go to
-the model as the server gave them. Harbour snapshots the list on connect and on `notifications/tools/list_changed`,
+the model as the server gave them. Harbour snapshots the list on connect and whenever the server says it changed,
 audits a change with the old and new hash, and offers a changed tool to new sessions only (a running session keeps the
 list it started with). MCP annotations set `replay`: `readOnlyHint: true` is `safe`, anything else `unsafe`.
 
