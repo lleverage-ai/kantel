@@ -9,9 +9,12 @@
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
 		"./brwsr": "./src/brwsr.ts",
-		"./capabilities": "./src/capabilities.ts"
+		"./capabilities": "./src/capabilities.ts",
+		"./http": "./src/http.ts",
+		"./runtime": "./src/runtime/index.ts"
 	},
 	"dependencies": {
+		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*"
 	},
 	"devDependencies": {
