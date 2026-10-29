@@ -52,6 +52,7 @@ import {
 	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
+	checkReadSize,
 	compare,
 	decodeCursor,
 	encodeCursor,
@@ -377,9 +378,13 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(head.record, path);
 				await checks.requireMountRead(ctx, head.record, mount);
-				return sources.read(ctx, mount, sourcePath, path);
+				const read = await sources.read(ctx, mount, sourcePath, path);
+				checkReadSize(path, read.content.byteLength, readOptions?.maxBytes);
+				return read;
 			}
 			const file = readTree(await treeAt(head, readOptions?.version), normalizeWorkspacePath(path));
+			// The tree holds the size, so a file over the limit is refused before its body is fetched.
+			checkReadSize(path, file.size, readOptions?.maxBytes);
 			const content = await readBlobObject(head.organisationId, file.digest);
 			return { path, content, version: file.version, digest: file.digest };
 		},
