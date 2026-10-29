@@ -32,6 +32,11 @@ export interface TierRoute {
 	readonly tool: string;
 	/** Programs that send a shell command to this tier, such as `git` or `bun`. Absent: any command. */
 	readonly programs?: readonly string[];
+	/**
+	 * With `programs`: the row matches only a single simple command (no `&&`, `;` or pipes) whose first argument is one
+	 * of these, such as git's read subcommands. Absent: any arguments.
+	 */
+	readonly subcommands?: readonly string[];
 	readonly tier: SandboxTier;
 }
 

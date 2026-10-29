@@ -191,8 +191,13 @@ deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs 
 
 ## Deploy
 
-CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, on a push to main that touches the
-Worker, the console or a package, or a manual run from main. The account side (the token, the Access application, the
+CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, called by
+`.github/workflows/main.yml` on every push to main (or a manual run of it from main). Pull requests are gated only on
+`CI`'s install, typecheck and lint, so they stay quick on Harbour's two self-hosted runners; main runs the heavy
+checks once, on its newest head (a newer push replaces a run still waiting, never one already going): `CI` with the
+tests, `self-hosted` and `Sandbox image`. The deploy runs only once all three have passed on that same commit, so a
+failing check on main means nothing deploys. A pull request that changes the Worker can dry-run it on demand with
+`gh workflow run cloudflare-deploy.yml --ref <branch>`. The account side (the token, the Access application, the
 VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
 
 | Name | Kind | What it is |
@@ -210,8 +215,8 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
 | `HARBOUR_BRWSR_API_KEY` | optional secret | brwsr's project key (see The browser above), set on the Worker when it exists. Without it sessions have no browser |
 
-Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
---dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
+Until the secret and every variable exist, and on any run other than main.yml's on main, the workflow only runs
+`wrangler deploy --dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
 
 1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,

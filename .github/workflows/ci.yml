@@ -1,14 +1,27 @@
 name: CI
 
+# The pull request gate, kept quick for the two self-hosted runners: install, typecheck, lint and the generated API
+# files, no tests. The tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
+# and Sandbox image suites, and deploys only once all three pass. On a branch, `gh workflow run ci.yml --ref <branch>
+# -f tests=true` runs the tests too.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      tests:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Run the tests too
+        type: boolean
+        default: false
 
-# A re-push cancels the pull request's older run, queued or running. Runs on main are never cancelled: each gets a group
-# of its own, since a shared group would still cancel an older pending run when a newer one queues.
+# A re-push cancels the pull request's older run, queued or running. Called from main.yml (where github.event_name is
+# main.yml's) or run by hand, each run gets a group of its own: main.yml does main's batching.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ci-${{ github.workflow == 'CI' && github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -16,10 +29,13 @@ permissions:
 
 jobs:
   check:
-    name: Install, typecheck, lint and test
-    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    # The PR check keeps the workflow's name, `CI`, as the merge gate; the job's name says what ran.
+    name: ${{ inputs.tests && 'Install, typecheck, lint and test' || 'Install, typecheck and lint' }}
+    # Harbour's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
+    # budget.
     runs-on: [self-hosted, harbour]
-    # Four test workers on a shared host take about 7 minutes; GitHub-hosted took about 4.
+    # Without the tests about a minute. With them, four test workers on a shared host take about 7 minutes;
+    # GitHub-hosted took about 4.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -35,16 +51,9 @@ jobs:
           corepack enable
           pnpm --version
 
-      - name: Locate the pnpm store
-        id: pnpm-store
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-${{ runner.os }}-
-
+      # No actions/cache: the pnpm store is in the runner user's home, which persists between jobs on a self-hosted
+      # runner, so it's already warm. Restoring the 250 MB cache from GitHub took about 25 s a run, and saving it 8 s
+      # more, against an install of under 10 s from the local store.
       - name: Install
         run: pnpm install --frozen-lockfile
 
@@ -62,6 +71,7 @@ jobs:
       # The runner's host has 48 cores shared with other work. Left alone, vitest starts a worker per core, and the
       # PGlite suites run past their 10 s timeout. Four workers is a GitHub-hosted runner's size, what they were tuned on.
       - name: Test
+        if: inputs.tests
         env:
           VITEST_MAX_WORKERS: "4"
         run: |

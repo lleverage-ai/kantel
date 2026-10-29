@@ -1,0 +1,47 @@
+name: Main
+
+# The release pipeline: Harbour has no tags or releases, so a push to main is the release and deploys to Cloudflare.
+# Pull requests are gated only on CI's install, typecheck and lint (ci.yml), so they move quickly on the two
+# self-hosted runners. The heavy checks run here once, on main's newest head: CI with the tests, the self-hosted stack
+# and the sandbox image, side by side. The Cloudflare deploy needs all three to pass on this same commit; if any fails
+# or is cancelled, nothing deploys and the commit shows the failing check. A run by hand on main (`gh workflow run
+# main.yml --ref main`) is the way to redeploy.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Batched: one group for main, never cancelled in progress. The running build always finishes, deploy included, and a
+# newer push only replaces the pending one, so a burst of merges is checked once, on the newest head, and there is at
+# most one run going and one waiting. This reverses PR #131's group per main run, which checked every merge and left
+# 55 runs queued on two runners. Cancelling the running build instead would let a steady stream of merges starve the
+# deploy. The called workflows' own groups have other names: a group shared with this one would deadlock.
+concurrency:
+  group: main-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    with:
+      tests: true
+
+  selfhosted:
+    name: self-hosted
+    uses: ./.github/workflows/selfhosted-spike.yml
+
+  sandbox-image:
+    name: Sandbox image
+    uses: ./.github/workflows/sandbox-image.yml
+
+  deploy:
+    name: Cloudflare deploy
+    needs: [ci, selfhosted, sandbox-image]
+    uses: ./.github/workflows/cloudflare-deploy.yml
+    with:
+      deploy: true
+    secrets: inherit

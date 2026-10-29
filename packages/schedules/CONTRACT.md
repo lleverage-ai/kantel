@@ -138,11 +138,13 @@ drive it with the manual clock and manual timers:
 
 `@harbour/schedules/handlers` has one handler per kind, after Sal's:
 
-- `createTaskHandler({ runtime, directory, waitForRun? })` starts a session through the public session API only:
+- `createTaskHandler({ runtime, directory, defaultAgentId?, waitForRun? })` starts a session through the public session API only:
   `runtime.create` (labelled `harbour.schedule` and `harbour.occurrence`), `runtime.prompt` with `requestId`
   `schedule:<occurrence>`, then `runtime.wait`. A retried run finds the session by its label and the prompt by its
   `requestId`. Listing and creating are not atomic, so it prompts only after `holdLease`; an attempt that lost the
-  occurrence closes the session it created unprompted ("two attempts racing past a stalled create prompt one session"). The payload is `{ agentId, message, projectId?, title?, labels? }`;
+  occurrence closes the session it created unprompted ("two attempts racing past a stalled create prompt one session"). The payload is `{ agentId?, prompt, projectId?, title?, labels? }`,
+  as the public API documents it: `prompt` is the session's first message, sent exactly as written (Harbour adds no
+  text of its own); `agentId` defaults to the host's `defaultAgentId`, and a payload with neither fails as `invalid`;
   `projectId` defaults to the owning project.
 - `createReminderHandler({ deliver, quietHours? })` hands the reminder to the host, keyed by the occurrence's ID, with
   `holdUntil` when it fell in the owner's quiet hours and is not `urgent`.

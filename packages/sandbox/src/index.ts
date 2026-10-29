@@ -133,8 +133,23 @@ export function commandProgram(command: string | readonly string[]): string | un
 }
 
 /**
+ * The first argument of a single simple command (`git status`), or undefined for anything else: a list, a pipe, a
+ * redirection or a command with no argument.
+ */
+export function commandSubcommand(command: string | readonly string[]): string | undefined {
+	if (typeof command !== "string") return command[1];
+	const { tokens, problem } = tokenizeShell(command);
+	if (problem !== undefined || tokens.some((token) => token.kind !== "word")) return undefined;
+	const words = tokens.map((token) => token.value);
+	let index = 0;
+	while (index < words.length && isAssignmentWord(words[index] as string)) index++;
+	return words[index + 1];
+}
+
+/**
  * Routes a tool call through a `TierRoute` table: the first row whose tool matches, and whose `programs` (when present)
- * include the command's program, wins. Tools no row matches run in the isolate.
+ * include the command's program, wins; a row with `subcommands` also needs a single simple command whose first
+ * argument is one of them. Tools no row matches run in the isolate.
  */
 export function routeTool(
 	table: readonly TierRoute[],
@@ -145,7 +160,10 @@ export function routeTool(
 	for (const row of table) {
 		if (row.tool !== tool) continue;
 		if (row.programs === undefined) return row.tier;
-		if (program !== undefined && row.programs.includes(program)) return row.tier;
+		if (program === undefined || !row.programs.includes(program)) continue;
+		if (row.subcommands === undefined) return row.tier;
+		const subcommand = command === undefined ? undefined : commandSubcommand(command);
+		if (subcommand !== undefined && row.subcommands.includes(subcommand)) return row.tier;
 	}
 	return "isolate";
 }
