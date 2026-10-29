@@ -1,8 +1,9 @@
 /**
- * `wrangler dev` only (src/dev.ts): the echo model, plus one scripted errand so the browser can be tried end to end
- * without a model gateway. A message `browse <url>` makes it ask for a browser on the URL's host, open the URL once a
- * person allows it, take a screenshot and say what it saw; anything else is echoed. The browser calls are real: the
- * broker, brwsr and the console's Allow are what a deployed session uses.
+ * `wrangler dev` only (src/dev.ts): the echo model, plus two scripted errands so the browser and code mode can be tried
+ * end to end without a model gateway. A message `browse <url>` makes it ask for a browser on the URL's host, open the
+ * URL once a person allows it, take a screenshot and say what it saw. A message `codemode <script>` makes it run the
+ * script with the `codemode` tool and say what it answered. Anything else is echoed. The tool calls are real: the
+ * broker, brwsr, the console's Allow and the code mode isolate are what a deployed session uses.
  */
 import type { Message } from "@earendil-works/pi-ai";
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
@@ -29,6 +30,14 @@ export function nextStep(messages: readonly Message[]) {
 	let start = messages.length - 1;
 	while (start >= 0 && messages[start]?.role !== "user") start -= 1;
 	const said = start < 0 ? "" : textOf((messages[start] as { content: Parameters<typeof textOf>[0] }).content).trim();
+	const script = /^codemode\s+([\s\S]+)$/i.exec(said)?.[1];
+	if (script !== undefined) {
+		const answered = messages.slice(start + 1).find((message) => message.role === "toolResult");
+		if (answered === undefined) {
+			return fauxAssistantMessage([fauxToolCall("codemode", { code: script })], { stopReason: "toolUse" });
+		}
+		return fauxAssistantMessage(fauxText(`Done: ${textOf(answered.content)}`));
+	}
 	const match = /^browse\s+(\S+)/i.exec(said);
 	let url: URL | undefined;
 	try {

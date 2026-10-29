@@ -73,6 +73,33 @@ model gateway, a message `browse <url>` makes the dev model ask for a browser, o
 take a screenshot (`src/dev-browser-model.ts`). If the console's dev server leaves a session on Connecting, open it
 with `?transport=sse`.
 
+## Code mode
+
+Every session that has tools also has `codemode` (`src/codemode.ts`): the model writes a JavaScript script that calls
+the session's other tools (`await tools.read({ path })`, `await tools.bash({ command })`), and the script runs in the
+isolate tier, a Dynamic Worker per session loaded through `LOADER`. `HARBOUR_CODEMODE=off` takes it away.
+
+- **The tool** is Pi Durable's code mode (`createCodemodeTool`). Each tool call a script makes is a nested call of the
+  session's own tool, as its agent, with the same checks, audit, approvals and lazy leases as one the model makes. A
+  script's start and every result it got are journalled in the session's storage, so a script an eviction cut off
+  resumes without running finished calls again.
+- **Where it runs.** The isolate (`src/codemode/entry.ts`, bundled into `generated/codemode.bundle.txt`, with QuickJS's
+  WebAssembly beside it as its own module) runs the script in a QuickJS VM, through pi-codemode's
+  `RemoteCodemodeSandbox`. The stack object keeps the tools, the journal and the abort; each tool call comes back to it
+  over RPC through the `exchange` function passed with the script.
+- **Only the tool bindings cross.** The isolate has `env: {}` and `globalOutbound: null`, so no bindings, secrets or
+  network, and the VM has no `fetch`, timers, modules or I/O. A script reaches the world only through a session tool.
+- **Loaded when used.** The first script a session runs loads its isolate (one loader ID per organisation, session and
+  code digest); later scripts reuse it while it's warm. A session that never runs a script never has one.
+- **No prompt of Harbour's.** Pi Durable's code mode extension would add a system prompt section listing the tools, so
+  Harbour uses the tool alone, and its description says the script's `tools` are the tools the model is offered.
+- **It shares the object's thread.** A Dynamic Worker loaded by a Durable Object runs on that object's thread, so a
+  script that computes without calling a tool holds `HarbourStack` until it calls one or uses up its interrupt budget
+  (`CODEMODE_INTERRUPT_BUDGET`, about 5 s on Cloudflare), when it fails with a timeout. The VM's heap is capped at 32 MiB.
+
+Under `wrangler dev --env dev` with no model gateway, a message `codemode <script>` makes the dev model run the script
+with the tool (`src/dev-browser-model.ts`).
+
 ## Decisions
 
 **One Durable Object for every session in M1** (28 Oct 2026). `HarbourStack` is M1's SessionDO: the runtime lane's

@@ -11,8 +11,12 @@
 	"workers_dev": false,
 	"preview_urls": false,
 	"observability": { "enabled": true },
-	// The dynamic-worker isolate's code (scripts/build-isolate.ts), imported as text for the Worker Loader.
-	"rules": [{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true }],
+	// The isolates' code (scripts/build-isolate.ts), imported as text for the Worker Loader, and QuickJS's WebAssembly as
+	// bytes for code mode's isolate.
+	"rules": [
+		{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true },
+		{ "type": "Data", "globs": ["**/*.wasm.bin"], "fallthrough": true }
+	],
 	"assets": {
 		"directory": "../console/dist",
 		"binding": "ASSETS",
@@ -21,7 +25,8 @@
 		"run_worker_first": ["/v1/*", "/healthz"]
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
-	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so.
+	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so. Code mode loads one per session
+	// that runs a script (src/codemode.ts), unless HARBOUR_CODEMODE is `off`.
 	"worker_loaders": [{ "binding": "LOADER" }],
 	"durable_objects": {
 		"bindings": [
@@ -54,6 +59,8 @@
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
 		// dynamic-worker, the same shell in a Dynamic Worker per session. The measurement can run on either.
 		"HARBOUR_ISOLATE_BACKEND": "in-process",
+		// `off` takes the `codemode` tool away (src/codemode.ts). Anything else offers it to sessions with tools.
+		"HARBOUR_CODEMODE": "on",
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
 		"HARBOUR_SESSION_WEBSOCKET": "on",
