@@ -17,9 +17,31 @@ await container.reapExpired();
 ```
 
 Options: `socketPath` (default `/var/run/docker.sock`), `runtime` (default `runsc-kvm`; `runsc` inside a VM without
-nested KVM, `runc` only for development), `memoryBytes`, `nanoCpus`, `network` (`{ name, proxyUrl }`: an existing
-internal network whose only exit is the vault proxy; absent means `NetworkMode: none`), `labelPrefix` (default
-`harbour`), `clock`, `execTimeoutMs` (default 120 s) and `maxOutputBytes` (default 1 MiB per stream).
+nested KVM, `runc` only for development), `memoryBytes`, `nanoCpus`, `network` (the vault proxy, below; absent means
+`NetworkMode: none`), `proxyCredentials` (below), `labelPrefix` (default `harbour`), `clock`, `execTimeoutMs`
+(default 120 s) and `maxOutputBytes` (default 1 MiB per stream).
+
+`network` is `{ name, proxyUrl, isolation?, proxyContainer?, subnetPool? }`:
+
+- `isolation: "shared"` (the default): `name` is an existing internal network whose only exit is the proxy, and every
+  lease's container joins it. Sandboxes on it can reach each other.
+- `isolation: "per-lease"`: each lease gets an internal network of its own, `<name>-<random>`, created with its
+  container, removed with it (or by the janitor) and labelled like it. The proxy's container (`proxyContainer`,
+  default the proxy URL's host) is connected to it under the proxy URL's host name, so the proxy is the sandbox's only
+  peer and no sandbox can reach another. `proxyUrl` must name the proxy by host name. `subnetPool` (such as
+  `10.248.0.0/16`) gives each lease's network a free /28 of that range; without it Docker's default address pools
+  apply, which hold only about 30 networks on a default daemon.
+
+`proxyCredentials` is `{ issue({ ctx, lease }), revoke(leaseId) }`. `issue` returns the token the vault proxy knows the
+lease by, each time the lease's container is created; it goes into `HTTP(S)_PROXY` as `http://sbx:<token>@<proxy>`, so
+every request the sandbox sends through the proxy carries it as `Proxy-Authorization: Basic`, and the proxy resolves it
+to the lease's organisation, project, agent and session for the vault's egress decision. `revoke` is called before the
+lease's container and network are removed (`ended`, a fresh container for the lease, or `reapExpired`), and must be
+safe to repeat: a failure fails that call and leaves the lease's resources in place, so a retry or the janitor revokes it
+again rather than leaving a live token behind. Before `issue`, the backend creates an empty volume labelled with the
+lease (`<prefix>.role=credentials`), so the janitor finds a lease whose container never came up even where nothing
+else was labelled with it. The janitor revokes and removes in the lease's turn, after checking again that no command
+has started a container for it since it listed. Needs `network`.
 
 ## How it works
 
@@ -81,7 +103,10 @@ They run the sandbox conformance suite (with project access) over `createTieredS
 in-process isolate, plus focused cases: both directions of visibility, the executable bit, cwd/env/stdin, timeouts,
 truncation, read-only `/project`, removal on `ended`, `reapExpired`, `git --version` and `uname -a` (gVisor reports
 its own kernel), no import of the working copy's Python modules, head files owned by user 1000 with their modes,
-unreadable paths skipped, and background jobs killed before the final snapshot. Optional: `HARBOUR_TEST_SANDBOX_IMAGE` (default `harbour-sandbox:dev`), `HARBOUR_TEST_SANDBOX_RUNTIME`
+unreadable paths skipped, and background jobs killed before the final snapshot. With per-lease networks and a stand-in
+proxy: each lease's own network holds only it and the proxy, its proxied requests carry its own token, one lease cannot
+reach another's address, and ending or reaping a lease removes its network and revokes its token (these need the host
+to resolve `.localhost` names, as systemd-resolved does, and are skipped where it does not). Optional: `HARBOUR_TEST_SANDBOX_IMAGE` (default `harbour-sandbox:dev`), `HARBOUR_TEST_SANDBOX_RUNTIME`
 (default `runsc-kvm`), `HARBOUR_TEST_DOCKER_SOCKET` and `HARBOUR_TEST_LABEL_PREFIX` (default `harbour-test`). Every case
 labels what it creates with its own `<HARBOUR_TEST_LABEL_PREFIX>-<random>` prefix and removes it afterwards; CI sets a
 per-run base so it can also remove what a cancelled run left behind. None of it carries `harbour.owner`, so a Harbour
@@ -93,7 +118,13 @@ stack's sandbox janitor on the same daemon never sees it.
 - Background jobs are not paused during the scans and re-bases of ordinary commands, so a job writing at that moment
   can race them (the spike stops their process groups first); the race stays within what user 1000 can do. Only the
   final `pending` kills them.
-- With `network`, sandboxes share the given network rather than getting one each, and requests carry no per-sandbox
-  proxy token.
+- With `isolation: "per-lease"`, the proxy joins each lease's network when its container is created. A proxy container
+  that is recreated (not just restarted) leaves those networks, so live leases lose their way out until their next
+  container; recreate the proxy only with the sandboxes.
+- With `network` and the default `isolation: "shared"`, sandboxes share the given network rather than getting one
+  each; and without `proxyCredentials` requests carry no per-lease proxy token. Both are opt-in so existing callers
+  keep their behaviour.
 - A lease's `expires-at` label is its expiry when the container was created; renewals do not update it. The janitor
-  never reaps a lease the running backend serves or is creating a container for, so this matters only after a restart.
+  never reaps a lease the running backend serves or is creating a container for, so this matters only after a restart,
+  and when several deployments share one Docker daemon: one's janitor would reap the other's renewed leases. Give each
+  deployment on a daemon its own `labelPrefix`.
