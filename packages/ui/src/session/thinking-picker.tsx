@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { CheckIcon } from "../primitives/icons.tsx";
+import { BrainIcon, CheckIcon, ChevronDownIcon } from "../primitives/icons.tsx";
 import { chosenThinking, clampThinking, THINKING_LABELS, type ThinkingLevel } from "./thinking-model.ts";
 import "./thinking-picker.css";
 
@@ -26,9 +26,10 @@ export type ThinkingPickerProps = {
 };
 
 /**
- * How hard the model thinks before it answers, after T3 Code's traits picker: a quiet word after the model's name
- * ("High") that opens a short menu of the levels the model supports, with the default marked. Renders nothing for a
- * model that can't think. Up and Down move, Enter or Space chooses, Escape closes.
+ * How hard the model thinks before it answers, after T3 Code's traits picker: a control of its own after the model's,
+ * a brain, the level ("High") and a chevron, that opens a short menu of the levels the model supports, with the
+ * default marked. Renders nothing for a model that can't think. Up and Down move, Enter or Space chooses, Escape
+ * closes.
  */
 export function ThinkingPicker({
 	levels,
@@ -155,7 +156,9 @@ export function ThinkingPicker({
 				onClick={() => (open ? close("trigger") : setOpen(true))}
 				onKeyDown={onTriggerKey}
 			>
+				<BrainIcon size={size === "xs" ? "sm" : "md"} />
 				<span className="hb-thinking-trigger-label">{label}</span>
+				<ChevronDownIcon size="sm" className="hb-thinking-trigger-chevron" />
 			</button>
 			{open ? (
 				<div

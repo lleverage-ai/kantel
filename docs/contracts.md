@@ -242,11 +242,12 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
     [settled decisions](#settled-decisions-the-suites-enforce). Still open from the same question: lazy expiry (vault
     proposals, browser timeouts) runs before a call's access check, so a refused call can still expire records that
     were already due. That is time-driven housekeeping, not a change the caller asked for.
-14. **Prompt attachments and the model catalogue. Proposed (27 Oct 2026), not implemented.** `session.ts` adds
+14. **Prompt attachments and the model catalogue. Proposed (27 Oct 2026). The model catalogue is implemented (28 Oct
+    2026, #146); attachments are not.** `session.ts` adds
     `ModelOption` and `SessionModels.listModels` (what a session's prompts may name, read off the gateway's `config`
     after the project's policy) and `PromptInput.model` and `PromptInput.attachments` (`PromptAttachment`), the shapes
-    `@harbour/ui`'s composer takes. The host uploads and stores attachments; the prompt carries only a reference. Still
-    open: how the runtime reads an attachment's bytes (through the host that uploaded it, by a host tool or a signed
+    `@harbour/ui`'s composer takes. The host uploads and stores attachments; the prompt carries only a reference. The
+    console's paperclip shows disabled until the runtime reads them. Still open: how the runtime reads an attachment's bytes (through the host that uploaded it, by a host tool or a signed
     URL, or from a store the platform owns), and whether the organisation's configuration also sets attachment limits
     (count, size, types) next to the model list.
 15. **Session history pages. Proposed (28 Oct 2026), implemented in the in-memory and SQL runtimes, the session API

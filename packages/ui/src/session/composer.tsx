@@ -26,6 +26,7 @@ import {
 	XCircleIcon,
 } from "../primitives/icons.tsx";
 import { Kbd } from "../primitives/spinner.tsx";
+import { AccessPicker, type ComposerAccessOption } from "./access-picker.tsx";
 import { AttachmentStrip, type AttachSource, type ComposerAttachment } from "./composer-attachments.tsx";
 import { useComposerDock } from "./composer-dock.ts";
 import {
@@ -101,6 +102,17 @@ export type ComposerProps = {
 	/** Without it there is no thinking picker. */
 	onThinkingChange?: (level: ThinkingLevel) => void;
 
+	/**
+	 * The levels of access the agent may run with ("Full access"), from the host. With them, an access picker (a lock,
+	 * the level, a chevron) follows the thinking picker. A level the host can't honour yet goes in with its
+	 * `disabledReason`.
+	 */
+	accessOptions?: readonly ComposerAccessOption[];
+	/** The chosen level's id. Without it the first level that can be chosen shows as chosen. */
+	access?: string;
+	/** Without it the access menu only shows the levels and what the chosen one means. */
+	onAccessChange?: (id: string) => void;
+
 	/** The draft's attachments, as the host reports them. */
 	attachments?: readonly ComposerAttachment[];
 	/**
@@ -109,6 +121,11 @@ export type ComposerProps = {
 	 */
 	onAttach?: (files: readonly File[], source: AttachSource) => void;
 	onRemoveAttachment?: (id: string) => void;
+	/**
+	 * Without `onAttach`: why the composer can't take files yet ("Attaching files is coming soon"). The paperclip then
+	 * shows, disabled, with this as its title, so the place it will be is there and says why it isn't working.
+	 */
+	attachUnavailable?: string;
 	/** Retries a failed upload. Without it a failed attachment can only be removed. */
 	onRetryAttachment?: (id: string) => void;
 	/**
@@ -204,8 +221,12 @@ export function Composer({
 	thinking,
 	defaultThinking,
 	onThinkingChange,
+	accessOptions,
+	access,
+	onAccessChange,
 	attachments = [],
 	onAttach,
+	attachUnavailable,
 	onRemoveAttachment,
 	onRetryAttachment,
 	attachmentLimits = {},
@@ -237,6 +258,7 @@ export function Composer({
 	const showModels = models !== undefined && models.length > 0 && onModelChange !== undefined;
 	const levels = useMemo(() => offeredLevels(chosen?.capabilities?.thinking), [chosen]);
 	const showThinking = levels.length > 0 && onThinkingChange !== undefined;
+	const showAccess = accessOptions !== undefined && accessOptions.length > 0;
 
 	// Attachments, and what stops the draft going.
 	const ready = useMemo(() => attachments.filter((attachment) => attachment.status === "ready"), [attachments]);
@@ -261,7 +283,8 @@ export function Composer({
 	const [focused, setFocused] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
-	const menuOpen = modelMenuOpen || thinkingMenuOpen;
+	const [accessMenuOpen, setAccessMenuOpen] = useState(false);
+	const menuOpen = modelMenuOpen || thinkingMenuOpen || accessMenuOpen;
 	const [narrow, setNarrow] = useState(false);
 	const [wraps, setWraps] = useState(false);
 	const [dragDepth, setDragDepth] = useState(0);
@@ -569,7 +592,8 @@ export function Composer({
 			? { level: "error" as const, text: rejected }
 			: undefined;
 
-	const hasControls = !showReason && (showModels || showThinking || (footer !== undefined && footer !== null));
+	const hasControls =
+		!showReason && (showModels || showThinking || showAccess || (footer !== undefined && footer !== null));
 	const attachTitle = limitsText === "" ? "Attach files" : `Attach files. ${limitsText}.`;
 
 	return (
@@ -649,7 +673,6 @@ export function Composer({
 									size={rest ? "xs" : "sm"}
 									onOpenChange={setModelMenuOpen}
 									returnFocus={focusField}
-									chevron={false}
 								/>
 							) : null}
 							{showThinking && onThinkingChange !== undefined ? (
@@ -664,10 +687,31 @@ export function Composer({
 									returnFocus={focusField}
 								/>
 							) : null}
+							{showAccess ? (
+								<AccessPicker
+									options={accessOptions}
+									value={access}
+									{...(onAccessChange === undefined ? {} : { onChange: onAccessChange })}
+									disabled={disabled}
+									size={rest ? "xs" : "sm"}
+									onOpenChange={setAccessMenuOpen}
+									returnFocus={focusField}
+								/>
+							) : null}
 							{footer}
 						</div>
 					) : null}
 					<div className="hb-composer-actions">
+						{onAttach === undefined && attachUnavailable !== undefined ? (
+							<IconButton
+								className="hb-composer-attach"
+								variant="ghost"
+								label={`Attach files: ${attachUnavailable}`}
+								title={attachUnavailable}
+								icon={<PaperclipIcon />}
+								disabled
+							/>
+						) : null}
 						{onAttach === undefined ? null : (
 							<>
 								<IconButton

@@ -274,7 +274,13 @@ export function measureAlignment(): Misalignment[] {
 	// Thinking picker: the level on its button's centre and on the model's name beside it; each row's name on the row's
 	// centre, the tick on the name and "Default" on its baseline.
 	for (const trigger of root.querySelectorAll(".hb-thinking-trigger")) {
-		const line = labelled("thinking trigger", trigger, trigger.querySelector(".hb-thinking-trigger-label"), [], true);
+		const line = labelled(
+			"thinking trigger",
+			trigger,
+			trigger.querySelector(".hb-thinking-trigger-label"),
+			trigger.querySelectorAll(":scope > .hb-icon"),
+			true,
+		);
 		const model = trigger.closest(".hb-composer-controls")?.querySelector(".hb-model-trigger .hb-model-trigger-label");
 		const modelLine = model === null || model === undefined ? null : textLine(model);
 		if (line !== null && modelLine !== null) compare("thinking on model", trigger, line.baseline, modelLine.baseline);
@@ -290,6 +296,29 @@ export function measureAlignment(): Misalignment[] {
 		const badge = option.querySelector(".hb-thinking-option-default");
 		const badgeLine = badge === null ? null : textLine(badge);
 		if (line !== null && badgeLine !== null) compare("thinking row default", option, badgeLine.baseline, line.baseline);
+	}
+	// Access picker: the level on its button's centre, the lock and chevron on it, and on the model's name beside it;
+	// each row's tick on the level's name.
+	for (const trigger of root.querySelectorAll(".hb-access-trigger")) {
+		const line = labelled(
+			"access trigger",
+			trigger,
+			trigger.querySelector(".hb-access-trigger-label"),
+			trigger.querySelectorAll(":scope > .hb-icon"),
+			true,
+		);
+		const model = trigger.closest(".hb-composer-controls")?.querySelector(".hb-model-trigger .hb-model-trigger-label");
+		const modelLine = model === null || model === undefined ? null : textLine(model);
+		if (line !== null && modelLine !== null) compare("access on model", trigger, line.baseline, modelLine.baseline);
+	}
+	for (const option of root.querySelectorAll(".hb-access-option")) {
+		const name = option.querySelector(".hb-access-option-name");
+		const line = visible(option) && name !== null ? textLine(name) : null;
+		const tick = option.querySelector(".hb-access-option-check > .hb-icon");
+		if (tick !== null && visible(tick)) {
+			if (line === null) unmeasured("access row", option);
+			else compare("access row tick", option, centre(tick), line.centre);
+		}
 	}
 	// The search field's magnifier on the field's words. A field has no text node to measure, but a one-line field
 	// centres its line in its content box, so its baseline is that centre plus half the font's ascent less its descent.

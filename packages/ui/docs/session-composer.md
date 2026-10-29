@@ -58,11 +58,16 @@ const uploads = useComposerAttachments(uploadToHost);
   Without `models` and `onModelChange` there is no picker.
 - Thinking: `thinking` (the chosen level), `defaultThinking` (the session's level when nobody chose one, marked
   Default) and `onThinkingChange`. The levels come from the chosen model's `capabilities.thinking`; a model without
-  any but `off`, or no `onThinkingChange`, has no thinking picker. With a picker the model's button drops its
-  chevron, so the level reads on from the name ("Claude Sonnet 4.5 High"), as T3 Code's does.
+  any but `off`, or no `onThinkingChange`, has no thinking picker. The model's button (its provider's mark, the name
+  and a chevron) and the thinking picker's (a brain, the level and a chevron) are separate controls, as in T3 Code's
+  footer.
+- Access: `accessOptions` (`ComposerAccessOption[]`: the levels of access the agent may run with, from the host),
+  `access` (the chosen id) and `onAccessChange`. With levels, an `AccessPicker` follows the thinking picker. A level
+  the host can't honour yet goes in with its `disabledReason`; without `onAccessChange` the menu only shows the levels.
 - Attachments: `attachments` (what the host reports, `ComposerAttachment[]`), `onAttach(files, source)`,
   `onRemoveAttachment(id)`, `onRetryAttachment(id)`, `attachmentLimits` and `pasteFold`. Without `onAttach` the
-  composer takes no files: no paperclip, no drop, no file paste.
+  composer takes no files: no paperclip, no drop, no file paste; with `attachUnavailable` (a reason) instead, the
+  paperclip shows disabled, its title the reason, so the place it will be is there and says why it isn't working.
 - `history`: messages sent before, oldest first, for Up and Down recall.
 - `captureTyping`: typing or pasting anywhere on the page outside another field goes into the composer, as in T3
   Code. Leave it off where the page has other keyboard uses.
@@ -154,7 +159,8 @@ off.
 #### Model picker
 
 `ModelPicker` is the composer's, and exported for hosts that put it elsewhere. A ghost button with the chosen model's
-label opens a popover upward: a search field, then the catalogue grouped by provider, each with its description, a
+provider mark (`ProviderIcon`: Anthropic, OpenAI and Google's from Simple Icons, the spark for any other), its label
+and a chevron opens a popover upward: a search field, then the catalogue grouped by provider, each with its description, a
 "Default" mark, an image icon when it reads images and a tick on the chosen one. A model with `disabledReason` shows
 dimmed with the reason and can't be chosen. `selectedModel(models, id)` falls back to the default, then the first
 enabled model; `filterModels(models, query)` matches every word against the label, provider, description and id.
@@ -171,13 +177,12 @@ type ComposerModelOption = {
 };
 ```
 
-The composer passes `chevron={false}` when a thinking picker follows the button; a host showing `ModelPicker` alone
-leaves it on.
+`chevron={false}` drops the chevron, for a host that wants the button bare; the composer keeps it.
 
 #### Thinking picker
 
 `ThinkingPicker` is the composer's, after T3 Code's traits picker, and exported for hosts that put it elsewhere. A
-quiet word after the model's name ("Medium") opens a short menu upward headed Thinking: the levels the model supports,
+button shaped as the model's, a brain, the level ("Medium") and a chevron, opens a short menu upward headed Thinking: the levels the model supports,
 in order, with the default marked "Default" and a tick on the chosen one. Up and Down move, Home and End jump, Enter or
 Space chooses and returns focus to the field, Escape closes back to the button, and Up or Down on the button opens it.
 It renders nothing for a model that can't think.
@@ -193,13 +198,30 @@ rules, pure and tested:
 - `chosenThinking(levels, value, fallback)`: what the button shows; `stepThinking(levels, current, ±1)` cycles, for a
   host's shortcut.
 
-**Sizes.** The button is the model button's height (28px, 24px in the resting strip) and type (14px, 12px resting),
-in `--hb-text-faint` until hovered or open; it pulls back by the toolbar's gap so the two words sit one model-button
-padding apart. The menu is `--hb-menu-width` (12rem) wide, rows 32px. Both words are trimmed to their capitals and
-centred, so the level and the model's name share a baseline; `loop/gates.ts` holds the level, each row's name, tick and
-"Default" to their text within 1px.
+**Sizes.** The button is the model button's height (28px, 24px in the resting strip), padding and type (14px, 12px
+resting), in `--hb-text-muted` until hovered or open. The menu is `--hb-menu-width` (12rem) wide, rows 32px. Both
+words are trimmed to their capitals and centred, so the level and the model's name share a baseline;
+`loop/gates.ts` holds the level, the brain and chevron, each row's name, tick and "Default" to their text within 1px.
 
-**Not for** settings that aren't the model's (permissions, the project): give those their own control in `footer`.
+**Not for** settings that aren't the model's (access, the project): `AccessPicker`, or a control in `footer`.
+
+**Cost:** one button; the menu mounts only while open.
+
+#### Access picker
+
+`AccessPicker` is the composer's, after T3 Code's permissions chip (`ComposerFooterControls.tsx`, with its levels in
+`runtimeModeConfig.ts`), and exported for hosts that put it elsewhere. A button shaped as the model's, a lock, the
+chosen level ("Full access") and a chevron, opens a menu upward headed Access: each level with what it means under
+its name and a tick on the chosen one. A level with `disabledReason` shows dimmed with the reason in place of its
+description, and can't be chosen. Keys as the thinking picker's. `chosenAccess(options, id)` falls back to the first
+level that can be chosen.
+
+```ts
+type ComposerAccessOption = { id: string; label: string; description?: string; disabledReason?: string };
+```
+
+The library has no levels of its own: the host says what its runtime honours. `loop/gates.ts` holds the lock, the
+level and the chevron to one line, the level to the model's name, and each row's tick to its name, within 1px.
 
 **Cost:** one button; the menu mounts only while open.
 

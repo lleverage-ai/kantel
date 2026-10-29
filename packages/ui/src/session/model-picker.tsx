@@ -17,9 +17,9 @@ import {
 	ImageIcon,
 	RepoIcon,
 	SearchIcon,
-	SparkIcon,
 } from "../primitives/icons.tsx";
 import "./model-picker.css";
+import { ProviderIcon } from "./provider-icon.tsx";
 import type { ThinkingLevel } from "./thinking-model.ts";
 
 /**
@@ -110,7 +110,8 @@ export type ModelPickerProps = {
 
 /** The words and icon of one kind of picker: the composer's models, or a new session's projects. */
 type PickerWords = {
-	readonly icon: (size: "sm" | "md") => ReactNode;
+	/** The trigger's icon, given the chosen option (a model's provider mark, say). */
+	readonly icon: (size: "sm" | "md", chosen?: ComposerModelOption) => ReactNode;
 	/** "Model", as the trigger's accessible name starts. */
 	readonly noun: string;
 	/** "Models", the list's name. */
@@ -121,7 +122,8 @@ type PickerWords = {
 };
 
 const MODEL_WORDS: PickerWords = {
-	icon: (size) => <SparkIcon size={size} className="hb-model-trigger-icon" />,
+	// The chosen model's provider mark, as T3 Code's trigger shows the provider's icon; the spark for any other.
+	icon: (size, chosen) => <ProviderIcon provider={chosen?.provider} size={size} className="hb-model-trigger-icon" />,
 	noun: "Model",
 	plural: "Models",
 	choose: "Choose a model",
@@ -446,7 +448,7 @@ function Picker({
 				onClick={() => (open ? close("trigger") : setOpen(true))}
 				onKeyDown={onTriggerKey}
 			>
-				{words.icon(size === "xs" ? "sm" : "md")}
+				{words.icon(size === "xs" ? "sm" : "md", chosen)}
 				<span className="hb-model-trigger-label">{label}</span>
 				{chevron ? <ChevronDownIcon size="sm" className="hb-model-trigger-chevron" /> : null}
 			</button>

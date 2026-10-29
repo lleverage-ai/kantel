@@ -26,6 +26,7 @@ import {
 	transcriptWorking,
 } from "./actions.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
+import { COMPOSER_ACCESS } from "./composer-access.ts";
 import { createAutoOpen } from "./presented.ts";
 import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
@@ -300,6 +301,7 @@ export function SessionView({
 									value={actions.draft}
 									onChange={actions.onDraft}
 									{...actions.pickers}
+									{...COMPOSER_ACCESS}
 									footer={
 										offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
 											<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
