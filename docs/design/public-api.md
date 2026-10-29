@@ -46,7 +46,8 @@ Planned, not built:
 | `POST /v1/sessions/{sessionId}/close` | `SessionRuntime.close` | In the public API |
 | `POST /v1/sessions/{sessionId}/abort` | `SessionRuntime.abort` | In the public API |
 | `POST /v1/sessions/{sessionId}/messages` | `prompt`, `steer` or `followUp` by `via`; `Idempotency-Key` is the input's `requestId` | In the public API |
-| `WS /v1/sessions/{sessionId}/stream` | `SessionRuntime.watch`, `@harbour/protocol` frames | Next |
+| `GET /v1/sessions/{sessionId}/stream` (WebSocket or SSE) | `SessionRuntime.watch`, `@harbour/protocol` frames | In the public API |
+| `GET /v1/sessions/{sessionId}/history` | `SessionHistory.history` | In the public API |
 | Presigned upload into the session workspace | `Workspaces` | Next |
 | `POST /v1/sessions/{sessionId}/cards/{cardId}/respond` | the card's owner (vault, questions, browser grants) | Next |
 
@@ -67,6 +68,20 @@ becomes the input's `requestId`, which the runtime already deduplicates per sess
 "returns the same submission for a retried requestId and asks the model once"): a replay answers the first submission
 and submits nothing, before or after the run ends. A key reused for a different `via` is `conflict`. The SDK sends it
 from `options.idempotencyKey`. Attachments wait for workspace uploads: they will be workspace paths, not message blobs.
+
+### Stream and history
+
+`GET /v1/sessions/{sessionId}/stream` is the session's `@harbour/protocol` stream: `hello`, then a `snapshot` (or,
+with `?after=<cursor>`, the deltas since when the stream still holds them), then live `delta`s, which the protocol's
+`applyFrames` folds. It's the same handler as the console's `/sessions/:id/events`: over a WebSocket when the request
+upgrades (each message a JSON array of frames, `[]` a keep-alive, `permessage-deflate` where the platform offers it, as
+in #147), and as server-sent events otherwise. The OpenAPI document describes the frames as the 101 answer's schema
+and the SSE answer's, and the type tests check them against `@harbour/protocol`'s types. The SDK's
+`streamSession(sessionId, handlers, { after })` opens the WebSocket and tracks the latest cursor to resume from; in
+Node it sends the bearer as a header, and in a browser (which can't) it needs a cookie session until token exchange.
+A refused or unknown session is a JSON error before any socket opens. `GET /v1/sessions/{sessionId}/history` pages
+back past a snapshot's items, newest first. The stream sends nothing org-wide: a host that wants every session's
+changes uses webhooks, later.
 
 ## Vault approvals in a host app
 

@@ -39,7 +39,8 @@ The routes in Harbour's public API are defined once in `@harbour/api` (`packages
 schemas; the server answers them through that package's router, which checks the path, query and body before the
 contract call, and the OpenAPI document and TS SDK are generated from the same definitions. They are `POST /sessions`,
 `GET /sessions`, `GET /sessions/:id`, `POST /sessions/:id/abort`, `POST /sessions/:id/close` and
-`POST /sessions/:id/messages` (prompt, steer or follow-up by `via`, with an `Idempotency-Key`) so far. The rest of
+`POST /sessions/:id/messages` (prompt, steer or follow-up by `via`, with an `Idempotency-Key`),
+`GET /sessions/:id/stream` (the `events` handler below: WebSocket or SSE) and `GET /sessions/:id/history` so far. The rest of
 this table moves there route by route (#150); until then those routes are served as before.
 
 | Route | Contract call | Answer |

@@ -37,6 +37,12 @@ export interface RouteDefinition {
 	 * The handler is given the key (`input.idempotencyKey`) and keeps the promise.
 	 */
 	readonly idempotent?: true;
+	/**
+	 * Answers a stream of frames instead of one JSON body: over a WebSocket (101) when the request upgrades, each message
+	 * a JSON array of frames, and as server-sent events otherwise, one frame per event. The handler returns the
+	 * `Response` itself, and the SDK's method opens the WebSocket.
+	 */
+	readonly stream?: { readonly frame: TSchema };
 	/** The error codes the route documents, besides `unauthenticated` (401), which every route can answer. */
 	readonly errors: readonly ErrorCode[];
 }

@@ -1,9 +1,15 @@
 // Contract tests for the public API's session routes (`@harbour/api`), called through the generated SDK against the
 // session API over the in-memory runtime, as a host app would call a deployed Harbour.
 
-import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
+import { createHarbourClient, HarbourApiError, type ServerFrame, type WebSocketLike } from "@harbour/api/sdk";
 import type { AgentProfile, Authentication } from "@harbour/contracts";
-import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
+import { applyFrames, type SessionSnapshot } from "@harbour/protocol";
+import {
+	type AcceptWebSocket,
+	createSessionApi,
+	type ServerWebSocket,
+	staticTokenAuthenticator,
+} from "@harbour/runtime/http";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -24,6 +30,33 @@ const profile: AgentProfile = {
 	memoryScopes: [],
 };
 
+/** A server socket that hands what it is sent to its client (holding it until one joins), which can hang up. */
+class FakeSocket implements ServerWebSocket {
+	closed: number | undefined;
+	readonly #held: string[] = [];
+	#client: ((data: string) => void) | undefined;
+	readonly #listeners = new Set<() => void>();
+	join(client: (data: string) => void) {
+		this.#client = client;
+		for (const data of this.#held.splice(0)) client(data);
+	}
+	send(data: string) {
+		if (this.closed !== undefined) throw new Error("closed");
+		if (this.#client === undefined) this.#held.push(data);
+		else this.#client(data);
+	}
+	close(code?: number) {
+		this.closed = code ?? 1000;
+	}
+	addEventListener(_type: "close" | "error", listener: () => void) {
+		this.#listeners.add(listener);
+	}
+	hangUp() {
+		this.closed = 1000;
+		for (const listener of this.#listeners) listener();
+	}
+}
+
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -31,22 +64,64 @@ afterEach(async () => {
 
 async function setUp() {
 	const { models, script } = createScriptedModel();
+	const sockets: FakeSocket[] = [];
+	const accept: AcceptWebSocket = () => {
+		const socket = new FakeSocket();
+		sockets.push(socket);
+		// A 101 can't be built outside a platform that upgrades; the API passes back whatever response it is given.
+		return { socket, response: new Response(null, { status: 204, headers: { "x-upgraded": "yes" } }) };
+	};
 	const memory = createMemoryRuntime({ models });
 	const api = createSessionApi({
 		runtime: memory.runtime,
 		directory: memory.directory,
 		profiles: memory.profiles,
 		hostTools: memory.hostTools,
+		history: memory.history,
 		authenticator: staticTokenAuthenticator({ host }),
+		acceptWebSocket: accept,
 	});
 	cleanups.push(async () => {
 		await api.close();
 		await memory.close();
 	});
 	const fetchApi = (input: string | URL | Request, init?: RequestInit) => api.fetch(new Request(input, init));
-	const client = createHarbourClient({ baseUrl: "https://harbour.test/v1", token: "host", fetch: fetchApi });
+	/** The SDK's WebSocket, joined to the API in process: the upgrade goes through `api.fetch`, as on a platform. */
+	const webSocket = (url: string, headers: { readonly [name: string]: string }): WebSocketLike => {
+		let server: FakeSocket | undefined;
+		const client: WebSocketLike = {
+			onopen: null,
+			onmessage: null,
+			onclose: null,
+			onerror: null,
+			close() {
+				server?.hangUp();
+				client.onclose?.({ code: 1000, reason: "" });
+			},
+		};
+		void (async () => {
+			const before = sockets.length;
+			const response = await fetchApi(url.replace(/^ws/, "http"), {
+				headers: { ...headers, upgrade: "websocket", connection: "Upgrade" },
+			});
+			server = sockets[before];
+			if (response.headers.get("x-upgraded") !== "yes" || server === undefined) {
+				client.onclose?.({ code: 1006, reason: `${response.status} ${await response.text()}` });
+				return;
+			}
+			client.onopen?.({});
+			server.join((data) => client.onmessage?.({ data }));
+		})();
+		return client;
+	};
+	const client = createHarbourClient({
+		baseUrl: "https://harbour.test/v1",
+		token: "host",
+		fetch: fetchApi,
+		webSocket,
+	});
 	await memory.profiles.put({ actor: host.actor, organisationId: ORG }, profile);
-	return { client, fetchApi, memory, script };
+	return { client, fetchApi, memory, script, sockets };
 }
 
 const asHost = { actor: host.actor, organisationId: ORG };
@@ -240,5 +315,116 @@ describe("public API: messages", () => {
 		const [session] = (await client.listSessions({ projectId: PROJECT })).items;
 		expect(session).toBeDefined();
 		expect((await failure(client.sendMessage(session?.id as string, { text: "Again" }))).code).toBe("conflict");
+	});
+});
+
+/** Opens the session's stream through the SDK and folds what it sends with the protocol's reducer. */
+function watch(client: ReturnType<typeof createHarbourClient>, sessionId: string, after?: string) {
+	const frames: ServerFrame[] = [];
+	let state: SessionSnapshot | undefined;
+	const closed: { code: number; reason: string }[] = [];
+	const handle = client.streamSession(
+		sessionId,
+		{
+			onFrames(batch) {
+				frames.push(...batch);
+				// A resumed stream's deltas fold onto the snapshot the client already holds; this one holds none.
+				if (after === undefined) state = applyFrames(batch, state);
+			},
+			onClose: (event) => closed.push(event),
+		},
+		after === undefined ? {} : { after },
+	);
+	return {
+		handle,
+		frames,
+		closed,
+		get state() {
+			return state;
+		},
+	};
+}
+
+const until = async (check: () => boolean) => {
+	for (let tries = 0; tries < 200 && !check(); tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+	expect(check()).toBe(true);
+};
+
+describe("public API: stream", () => {
+	it("streams hello, a snapshot, then the run's deltas as @harbour/protocol frames", async () => {
+		const { client, script } = await setUp();
+		script.reply({ text: "Streamed answer" });
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		const stream = watch(client, session.id);
+		await until(() => stream.state !== undefined);
+		expect(stream.frames.map((frame) => frame.type).slice(0, 2)).toEqual(["hello", "snapshot"]);
+		await client.sendMessage(session.id, { text: "Go" });
+		await until(() => stream.state?.items.some((item) => item.kind === "assistant" && !item.streaming) ?? false);
+		expect(stream.state?.items.map((item) => item.kind)).toEqual(["user", "assistant"]);
+		expect(stream.state?.items.at(-1)).toMatchObject({ text: "Streamed answer" });
+		expect(stream.handle.cursor).toBeDefined();
+		stream.handle.close();
+	});
+
+	it("resumes after a cursor with only the deltas since", async () => {
+		const { client, memory, script } = await setUp();
+		script.reply({ text: "One" }, { text: "Two" });
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		const first = await client.sendMessage(session.id, { text: "First" });
+		await memory.runtime.wait(asHost, session.id, first.id);
+		const { cursor } = await memory.runtime.snapshot(asHost, session.id);
+		const second = await client.sendMessage(session.id, { text: "Second" });
+		await memory.runtime.wait(asHost, session.id, second.id);
+		const stream = watch(client, session.id, cursor);
+		await until(() => stream.frames.some((frame) => frame.type === "delta"));
+		expect(stream.frames[0]).toMatchObject({ type: "hello", resumed: true });
+		expect(stream.frames.some((frame) => frame.type === "snapshot")).toBe(false);
+		stream.handle.close();
+	});
+
+	it("serves server-sent events without an upgrade", async () => {
+		const { client, fetchApi } = await setUp();
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		const abort = new AbortController();
+		const response = await fetchApi(`https://harbour.test/v1/sessions/${session.id}/stream`, {
+			headers: { authorization: "Bearer host" },
+			signal: abort.signal,
+		});
+		expect(response.headers.get("content-type")).toContain("text/event-stream");
+		const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+		let text = "";
+		while (!text.includes("event: ready")) text += new TextDecoder().decode((await reader.read()).value);
+		expect(text).toContain("event: hello");
+		expect(text).toContain("event: snapshot");
+		abort.abort();
+		await reader.cancel();
+	});
+
+	it("refuses an unknown session as JSON before any socket opens", async () => {
+		const { client, sockets } = await setUp();
+		const stream = watch(client, "ses-missing");
+		await until(() => stream.closed.length === 1);
+		expect(stream.closed[0]?.reason).toMatch(/^404 /);
+		expect(sockets).toHaveLength(0);
+	});
+});
+
+describe("public API: history", () => {
+	it("pages back through a session, newest first", async () => {
+		const { client, memory, script } = await setUp();
+		script.reply({ text: "A" }, { text: "B" });
+		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
+		for (const text of ["one", "two"]) {
+			const sent = await client.sendMessage(session.id, { text });
+			await memory.runtime.wait(asHost, session.id, sent.id);
+		}
+		const all = await client.getSessionHistory(session.id);
+		expect(all.items.map((item) => item.kind)).toEqual(["assistant", "user", "assistant", "user"]);
+		const page = await client.getSessionHistory(session.id, { limit: 2 });
+		expect(page.items).toHaveLength(2);
+		const older = await client.getSessionHistory(session.id, { cursor: page.nextCursor as string });
+		expect(older.items.map((item) => item.kind)).toEqual(["assistant", "user"]);
+		expect(older.nextCursor).toBeUndefined();
+		expect((await failure(client.getSessionHistory(session.id, { limit: 0 }))).code).toBe("invalid");
 	});
 });

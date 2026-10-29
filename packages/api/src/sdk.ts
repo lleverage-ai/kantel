@@ -88,6 +88,12 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 	const params = names.map((name) => name);
 	let body: string | undefined;
 	let query: string | undefined;
+	// A stream's handlers come straight after its path parameters, ahead of its optional query.
+	const frame = route.stream === undefined ? undefined : types.type(plain(route.stream.frame));
+	if (frame !== undefined) {
+		args.push(`handlers: StreamHandlers<${frame}>`);
+		params.push("handlers");
+	}
 	if (route.body !== undefined) {
 		const type = types.type(plain(route.body));
 		const optional = isOptional(route.body);
@@ -104,7 +110,10 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 	}
 	args.push("options?: CallOptions");
 	params.push("callOptions");
-	const output = route.answer.schema === undefined ? "void" : types.type(plain(route.answer.schema));
+	const output =
+		frame !== undefined
+			? "StreamHandle"
+			: `Promise<${route.answer.schema === undefined ? "void" : types.type(plain(route.answer.schema))}>`;
 	const path = route.path.replace(
 		/\{([A-Za-z][A-Za-z0-9]*)\}/g,
 		(_, name: string) => `\${encodeURIComponent(${name})}`,
@@ -124,8 +133,11 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		.map((part) => part.replace(/\.$/, ""))
 		.join(". ");
 	return {
-		signature: `${doc(`${summary.replace(/\.?$/, ".")} \`${route.method} ${route.path}\``, "\t")}\t${route.operationId}(${args.join(", ")}): Promise<${output}>;`,
-		implementation: `\t\t${route.operationId}: (${params.join(", ")}) => send(options, { ${call} }, callOptions),`,
+		signature: `${doc(`${summary.replace(/\.?$/, ".")} \`${route.method} ${route.path}\``, "\t")}\t${route.operationId}(${args.join(", ")}): ${output};`,
+		implementation:
+			frame !== undefined
+				? `\t\t${route.operationId}: (${params.join(", ")}) => openStream(options, { ${call} }, handlers, callOptions),`
+				: `\t\t${route.operationId}: (${params.join(", ")}) => send(options, { ${call} }, callOptions),`,
 	};
 }
 
