@@ -1,6 +1,7 @@
 /**
  * Who is signed in and which projects they have, over HTTP: `GET /v1/me` and `GET /v1/projects` (`ME_PATH` and
- * `PROJECTS_PATH`), and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
+ * `PROJECTS_PATH`); the organisations they may act in and the people in this one, by name: `GET /v1/organisations` and
+ * `GET /v1/members` (`ORGANISATIONS_PATH` and `MEMBERS_PATH`, bodies below); and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
  * the bodies are in `packages/contracts/src/identity.ts`). A Fetch-style handler behind the authenticator, so it
  * mounts in any Node, Bun or Worker router, and a client for these routes and for email one-time PIN sign-in
  * (`./otp-http.ts`), which the console and host apps call. Portable: Workers, Bun, Node and the browser.
@@ -30,6 +31,8 @@ import {
 	type JsonValue,
 	ME_PATH,
 	type MeResponse,
+	ORGANISATION_HEADER,
+	type OrganisationId,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
 	type OtpVerifyResponse,
@@ -40,6 +43,7 @@ import {
 	type ProjectsResponse,
 	ROLES,
 	type Role,
+	type RoleBinding,
 	roleSatisfies,
 	SESSION_END_PATH,
 	SIGN_IN_METHODS,
@@ -47,7 +51,53 @@ import {
 	systemClock,
 	systemContext,
 	type UnauthenticatedResponse,
+	type UserId,
 } from "@harbour/contracts";
+import { type SignedIn, signedInReaderOf } from "./signed-in.ts";
+
+/**
+ * `GET ORGANISATIONS_PATH`: the organisations the caller may act in, `OrganisationsResponse`. A person in several
+ * needn't name one (`Harbour-Organisation`) for this call alone; when they do, or have only one, it is `current`. An
+ * API key acts in its own organisation only.
+ */
+export const ORGANISATIONS_PATH = "/v1/organisations";
+
+/**
+ * `GET MEMBERS_PATH`: the people who hold a role in the caller's organisation, `MembersResponse`, for naming them (an
+ * audit row's actor). Needs a role on the organisation; a caller with roles on projects only gets the people bound to
+ * those projects. Names only: never an email.
+ */
+export const MEMBERS_PATH = "/v1/members";
+
+/** An organisation, by name. */
+export interface OrganisationSummary {
+	readonly id: OrganisationId;
+	readonly name: string;
+}
+
+export interface OrganisationsResponse {
+	/** The current organisation first, when there is one, then by name. */
+	readonly items: readonly OrganisationSummary[];
+	/** The organisation the call acted in: the one it named, or the caller's only one. */
+	readonly current?: OrganisationId;
+}
+
+/** A person who holds a role in the organisation. */
+export interface Member {
+	readonly userId: UserId;
+	readonly name: string;
+}
+
+export interface MembersResponse {
+	/** By name. */
+	readonly items: readonly Member[];
+}
+
+/** The most organisations `GET /v1/organisations` names; past it, the rest are left out. */
+export const ORGANISATIONS_CAP = 100;
+
+/** The most people `GET /v1/members` names; past it, the rest are left out. */
+export const MEMBERS_CAP = 1000;
 
 /** The handler reads roles as itself: `roleOf` is a worker call. */
 const IDENTITY_HTTP_CONTEXT = systemContext("identity.http");
@@ -103,8 +153,10 @@ export interface IdentityHandlerOptions {
 	readonly identity: Pick<
 		IdentityDirectory,
 		| "getUser"
+		| "getOrganisation"
 		| "getProject"
 		| "listProjects"
+		| "listRoleBindings"
 		| "roleOf"
 		| "authorize"
 		| "createServiceIdentity"
@@ -183,11 +235,15 @@ async function heldRoles(
 	return roles;
 }
 
-type Route = { readonly name: "me" | "projects" | "keys" } | { readonly name: "revoke"; readonly keyId: string };
+type Route =
+	| { readonly name: "me" | "projects" | "keys" | "organisations" | "members" }
+	| { readonly name: "revoke"; readonly keyId: string };
 
 const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
 	me: ["GET"],
 	projects: ["GET"],
+	organisations: ["GET"],
+	members: ["GET"],
 	keys: ["GET", "POST"],
 	revoke: ["POST"],
 };
@@ -197,6 +253,8 @@ const REVOKE_SUFFIX = "/revoke";
 function routeOf(path: string): Route | undefined {
 	if (path === ME_PATH) return { name: "me" };
 	if (path === PROJECTS_PATH) return { name: "projects" };
+	if (path === ORGANISATIONS_PATH) return { name: "organisations" };
+	if (path === MEMBERS_PATH) return { name: "members" };
 	if (path === API_KEYS_PATH) return { name: "keys" };
 	if (!path.startsWith(`${API_KEYS_PATH}/`) || !path.endsWith(REVOKE_SUFFIX)) return undefined;
 	const segment = path.slice(API_KEYS_PATH.length + 1, -REVOKE_SUFFIX.length);
@@ -225,6 +283,97 @@ async function mayReachKeys(
 	ctx: CallContext,
 ): Promise<boolean> {
 	return (await heldRoles(identity, caller, ctx)).some((held) => roleSatisfies(held.role, "operator"));
+}
+
+/** Refuses any query parameter: the organisation and member reads take none. */
+function noParameters(params: URLSearchParams): void {
+	for (const name of params.keys()) throw new HarbourError("invalid", `Unknown parameter ${name}`);
+}
+
+/**
+ * The organisations `signedIn` may act in, by name: the current one first, then by name, up to `ORGANISATIONS_CAP`.
+ * Each is read as the person in that organisation; one they may not read (they were invited to it but hold no role in
+ * it yet) is named by its ID.
+ */
+async function organisationsOf(
+	identity: IdentityHandlerOptions["identity"],
+	signedIn: SignedIn,
+	current: OrganisationId | undefined,
+	context: { readonly requestId?: string; readonly signal?: AbortSignal },
+): Promise<OrganisationsResponse> {
+	const ids = [...new Set(signedIn.organisationIds)].slice(0, ORGANISATIONS_CAP);
+	const items = await Promise.all(
+		ids.map(async (organisationId): Promise<OrganisationSummary> => {
+			const ctx = callContextFor({ actor: signedIn.actor, organisationId }, context);
+			try {
+				return { id: organisationId, name: (await identity.getOrganisation(ctx, organisationId)).name };
+			} catch (error) {
+				if (isHarbourError(error, "forbidden") || isHarbourError(error, "not_found")) {
+					return { id: organisationId, name: organisationId };
+				}
+				throw error;
+			}
+		}),
+	);
+	const rank = (item: OrganisationSummary) => (item.id === current ? 0 : 1);
+	items.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "en-GB") || a.id.localeCompare(b.id));
+	return current === undefined ? { items } : { items, current };
+}
+
+/**
+ * The bindings the caller may list: the organisation's, or with no role on it, those of each project they hold a role
+ * on (a project they may not list is left out).
+ */
+async function visibleBindings(
+	identity: IdentityHandlerOptions["identity"],
+	ctx: CallContext,
+): Promise<readonly RoleBinding[]> {
+	try {
+		return await identity.listRoleBindings(ctx);
+	} catch (error) {
+		if (!isHarbourError(error, "forbidden")) throw error;
+	}
+	const bindings: RoleBinding[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await identity.listProjects(ctx, { limit: 100, ...(cursor === undefined ? {} : { cursor }) });
+		for (const project of page.items) {
+			try {
+				bindings.push(...(await identity.listRoleBindings(ctx, { projectId: project.id })));
+			} catch (error) {
+				if (!isHarbourError(error, "forbidden")) throw error;
+			}
+		}
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return bindings;
+}
+
+/** The people bound in the caller's organisation, by name, up to `MEMBERS_CAP`; one it can't read is left out. */
+async function membersOf(identity: IdentityHandlerOptions["identity"], ctx: CallContext): Promise<Member[]> {
+	const userIds = [
+		...new Set(
+			(await visibleBindings(identity, ctx)).flatMap((binding) =>
+				binding.principal.kind === "user" ? [binding.principal.userId] : [],
+			),
+		),
+	].slice(0, MEMBERS_CAP);
+	const members: Member[] = [];
+	// A few at a time: each is a read of its own.
+	for (let start = 0; start < userIds.length; start += 10) {
+		const read = await Promise.all(
+			userIds.slice(start, start + 10).map(async (userId): Promise<Member | undefined> => {
+				try {
+					return { userId, name: (await identity.getUser(ctx, userId)).name };
+				} catch (error) {
+					if (isHarbourError(error, "not_found")) return undefined;
+					throw error;
+				}
+			}),
+		);
+		for (const member of read) if (member !== undefined) members.push(member);
+	}
+	return members.sort((a, b) => a.name.localeCompare(b.name, "en-GB") || a.userId.localeCompare(b.userId));
 }
 
 /** Whether a POST says it carries JSON. */
@@ -314,8 +463,8 @@ async function issue(
 }
 
 /**
- * Serves `GET /v1/me`, `GET /v1/projects`, `GET` and `POST /v1/keys` and `POST /v1/keys/:id/revoke`; any other path is
- * 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
+ * Serves `GET /v1/me`, `GET /v1/projects`, `GET /v1/organisations`, `GET /v1/members`, `GET` and `POST /v1/keys` and
+ * `POST /v1/keys/:id/revoke`; any other path is 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
  * `WWW-Authenticate` challenge and the deployment's sign-in methods, an organisation the caller may not act in is 403.
  * The key routes then need `admin` somewhere in the organisation (else 403), and their POSTs a JSON content type (else
  * 415). Errors other than `HarbourError`s are 500 with no detail.
@@ -332,6 +481,25 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 		return json(401, body, { "www-authenticate": `Bearer realm="harbour"` });
 	};
 
+	/** The answer to a call that didn't authenticate: 401, 403 for an organisation it may not act in, or as `failed`. */
+	const refusal = (error: unknown): Response => {
+		const failure = authenticationFailureOf(error);
+		if (failure === "organisation") {
+			return json(403, {
+				error: {
+					code: "forbidden",
+					failure,
+					message: isHarbourError(error) ? error.message : "You may not act here",
+				},
+			});
+		}
+		if (failure !== undefined) {
+			return unauthenticated(failure === "missing" ? "This call needs credentials" : "The credentials are not valid");
+		}
+		if (isHarbourError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
+		return failed(error);
+	};
+
 	return async (request) => {
 		const url = new URL(request.url);
 		const route = routeOf(url.pathname);
@@ -341,30 +509,56 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 			return errorResponse(405, "invalid", `Use ${allowed.join(" or ")}`, { allow: allowed.join(", ") });
 		}
 
+		const requestId = request.headers.get("harbour-request-id") ?? undefined;
+		const context = { ...(requestId === undefined ? {} : { requestId }), signal: request.signal };
+
+		// A person in several organisations may list them without naming one, so this read asks who they are first.
+		const readSignedIn = route.name === "organisations" ? signedInReaderOf(authenticator) : undefined;
+		if (readSignedIn !== undefined) {
+			try {
+				noParameters(url.searchParams);
+				const signedIn = await readSignedIn(request);
+				if (signedIn !== undefined) {
+					const named = request.headers.get(ORGANISATION_HEADER)?.trim();
+					const ids = signedIn.organisationIds;
+					let current: OrganisationId | undefined;
+					if (named !== undefined && named !== "") {
+						// As `authenticate`: naming one they may not act in is refused.
+						if (!ids.includes(named)) await authenticator.authenticate(request);
+						current = named;
+					} else if (ids.length === 1) {
+						current = ids[0];
+					}
+					return json(200, await organisationsOf(identity, signedIn, current, context));
+				}
+			} catch (error) {
+				return refusal(error);
+			}
+		}
+
 		let caller: AuthenticatedCaller;
 		try {
 			caller = await authenticator.authenticate(request);
 		} catch (error) {
-			const failure = authenticationFailureOf(error);
-			if (failure === "organisation") {
-				return json(403, {
-					error: {
-						code: "forbidden",
-						failure,
-						message: isHarbourError(error) ? error.message : "You may not act here",
-					},
-				});
-			}
-			if (failure !== undefined) {
-				return unauthenticated(failure === "missing" ? "This call needs credentials" : "The credentials are not valid");
-			}
-			if (isHarbourError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
-			return failed(error);
+			return refusal(error);
 		}
 
-		const requestId = request.headers.get("harbour-request-id") ?? undefined;
-		const ctx = callContextFor(caller, { ...(requestId === undefined ? {} : { requestId }), signal: request.signal });
+		const ctx = callContextFor(caller, context);
 		try {
+			if (route.name === "organisations") {
+				noParameters(url.searchParams);
+				const signedIn: SignedIn = {
+					actor: caller.actor,
+					method: caller.method,
+					organisationIds: [caller.organisationId],
+				};
+				return json(200, await organisationsOf(identity, signedIn, caller.organisationId, context));
+			}
+			if (route.name === "members") {
+				noParameters(url.searchParams);
+				const body: MembersResponse = { items: await membersOf(identity, ctx) };
+				return json(200, body);
+			}
 			if (route.name === "keys" || route.name === "revoke") {
 				if (!(await mayReachKeys(identity, caller, ctx))) {
 					return errorResponse(403, "forbidden", "API keys need the operator role or stronger");
@@ -433,6 +627,10 @@ export interface IdentityClient {
 	listProjects(page?: PageRequest, signal?: AbortSignal): Promise<Page<Project>>;
 	/** Every one of the caller's projects, following the pages. */
 	allProjects(signal?: AbortSignal): Promise<Project[]>;
+	/** The organisations the caller may act in, the current one first. */
+	organisations(signal?: AbortSignal): Promise<OrganisationsResponse>;
+	/** The people who hold a role in the caller's organisation, by name. */
+	members(signal?: AbortSignal): Promise<Member[]>;
 	/** Asks for a sign-in code. Resolves the same whoever `email` names. */
 	startOtp(email: string, signal?: AbortSignal): Promise<void>;
 	/** Signs in with a code and starts a Harbour session. */
@@ -543,6 +741,12 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 				cursor = page.nextCursor;
 			} while (cursor !== undefined);
 			return projects;
+		},
+
+		organisations: (signal) => getJson<OrganisationsResponse>(ORGANISATIONS_PATH, signal),
+
+		async members(signal) {
+			return [...(await getJson<MembersResponse>(MEMBERS_PATH, signal)).items];
 		},
 
 		async startOtp(email, signal) {

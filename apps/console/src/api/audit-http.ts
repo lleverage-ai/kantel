@@ -10,9 +10,10 @@ import {
 	type Project,
 	type SessionRecord,
 } from "@harbour/contracts";
+import { createIdentityClient, type OrganisationSummary } from "@harbour/identity/http";
 import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
 import { sessionBrowserPath, sessionTurnPath, vaultRequestPath } from "../app/router.ts";
-import type { AuditScope, ConsoleAudit } from "./oversight.ts";
+import type { AuditPeople, AuditScope, ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
 	readonly baseUrl: string;
@@ -48,6 +49,49 @@ export function auditApiSource(options: AuditApiSourceOptions): AuditSource {
 		query({ organisationId, ...query }, page) {
 			return clientFor(organisationId).query(query, page);
 		},
+	};
+}
+
+/**
+ * Remembers the `requestId` each message's audit event names (`session.prompted`, `session.steered`), by its submission,
+ * as the source reads them. A transcript knows a message by its item and the request ID it was sent with, never by the
+ * runtime's submission ID (`<sessionId>/<n>`) an event's subject names, so a row's link at a message names the request
+ * ID instead (`Transcript`'s `turn` matches either).
+ */
+export function rememberRequests(source: AuditSource): {
+	readonly source: AuditSource;
+	readonly requestOf: (submissionId: string) => string | undefined;
+} {
+	const requests = new Map<string, string>();
+	return {
+		source: {
+			async query(query, page) {
+				const result = await source.query(query, page);
+				for (const event of result.items) {
+					const requestId = event.data?.requestId;
+					if (event.subject?.kind === "session.submission" && typeof requestId === "string" && requestId !== "") {
+						requests.set(event.subject.id, requestId);
+					}
+				}
+				return result;
+			},
+		},
+		requestOf: (submissionId) => requests.get(submissionId),
+	};
+}
+
+/**
+ * Where a row links in a session: at the turn when the transcript can find it. A tool call's turn is its call ID, which
+ * the transcript knows. A message's is its submission (`<sessionId>/<n>`), which it doesn't: the link names the request
+ * ID the message was sent with when the event gave one, and otherwise opens the session at its end.
+ */
+export function sessionLink(
+	requestOf: (submissionId: string) => string | undefined,
+): (sessionId: string, turn?: string, projectId?: string) => string | undefined {
+	return (sessionId, turn, projectId) => {
+		if (projectId === undefined) return undefined;
+		const submission = turn?.startsWith(`${sessionId}/`) === true;
+		return sessionTurnPath(projectId, sessionId, submission && turn !== undefined ? requestOf(turn) : turn);
 	};
 }
 
@@ -95,12 +139,74 @@ export async function readAuditScope(options: Partial<AuditApiSourceOptions> = {
 	};
 }
 
+/** A person's key as the audit view's actor filter takes it (`actorKey` in @harbour/ui's audit model). */
+export const personKey = (userId: string): string => `human:${userId}`;
+
+/** The most organisations whose people `readAuditPeople` reads. */
+export const PEOPLE_ORGANISATIONS_CAP = 20;
+
+/** People's names by user ID, and the organisations they were read from when those could be read. */
+export interface People {
+	readonly names: ReadonlyMap<string, string>;
+	readonly organisations?: readonly OrganisationSummary[];
+}
+
+/**
+ * People's names from the identity API on the same origin: `GET /v1/organisations`, then `GET /v1/members` in each of
+ * them (naming it with `Harbour-Organisation`), so a record from any organisation the viewer may read names its
+ * person. Without the organisations, the people of the caller's own. An organisation whose people can't be read adds
+ * none; rejects only when no one could be read at all.
+ */
+export async function readPeople(options: Partial<AuditApiSourceOptions> = {}): Promise<People> {
+	const clientFor = (organisationId?: string) =>
+		createIdentityClient({
+			baseUrl: options.baseUrl ?? "",
+			...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+			headers: async () => {
+				const headers = new Headers((await options.headers?.()) ?? {});
+				if (organisationId !== undefined) headers.set(ORGANISATION_HEADER, organisationId);
+				return Object.fromEntries(headers);
+			},
+		});
+	const organisations = await clientFor()
+		.organisations()
+		.catch(() => undefined);
+	const ids = organisations?.items.slice(0, PEOPLE_ORGANISATIONS_CAP).map((organisation) => organisation.id);
+	const reads =
+		ids === undefined || ids.length <= 1
+			? [clientFor().members()]
+			: ids.map((organisationId) => clientFor(organisationId).members());
+	const read = await Promise.allSettled(reads);
+	const found = read.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+	if (found.length === 0) {
+		throw (read[0] as PromiseRejectedResult | undefined)?.reason ?? new Error("No people could be read");
+	}
+	const names = new Map<string, string>();
+	for (const member of found.flat()) if (!names.has(member.userId)) names.set(member.userId, member.name);
+	return { names, ...(organisations === undefined ? {} : { organisations: organisations.items }) };
+}
+
+/**
+ * The people and organisations to filter the log by (`readPeople`): the Who filter's choices, a `human:<userId>` key
+ * each, and the Organisation filter's, the current one first.
+ */
+export async function readAuditPeople(options: Partial<AuditApiSourceOptions> = {}): Promise<AuditPeople> {
+	const { names, organisations } = await readPeople(options);
+	return {
+		actors: [...names].map(([userId, name]) => ({ value: personKey(userId), label: name })).sort(byLabel),
+		...(organisations === undefined
+			? {}
+			: { organisations: organisations.map((organisation) => ({ value: organisation.id, label: organisation.name })) }),
+	};
+}
+
 /**
  * The audit log on the gateway this console is served by (`source=api`). Same-origin, like the session API: behind
- * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. With no identity API yet, there
- * is no list of organisations or people: the log is the caller's own organisation's and rows name people by ID. The
- * credentials to filter by, and their names, come from the log's own `vault.item.created` events; the projects, agents
- * and sessions from the session API (`readAuditScope`). Rows link to the session they came from, at the turn when the
+ * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. The people and organisations to
+ * filter by, and the names rows give people, come from the identity API (`readAuditPeople`); the log starts on the
+ * caller's own organisation, and rows name a person it can't name by ID. The credentials to filter by, and their
+ * names, come from the log's own `vault.item.created` events; the projects, agents and sessions from the session API
+ * (`readAuditScope`). Rows link to the session they came from, at the turn when the
  * event names one, and rows about a vault request (asked, approved, denied, withdrawn) to its page on the vault, when
  * the console has one (`vaultRequests`).
  */
@@ -108,14 +214,13 @@ export function apiAudit(
 	options: Partial<AuditApiSourceOptions> & { readonly vaultRequests?: boolean } = {},
 ): ConsoleAudit {
 	const { vaultRequests, ...sourceOptions } = options;
-	const source = auditApiSource({ baseUrl: "", ...sourceOptions });
+	const { source, requestOf } = rememberRequests(auditApiSource({ baseUrl: "", ...sourceOptions }));
 	return {
 		source,
 		directory: {},
 		links: {
 			// Session pages sit under their project; an event that names none stays unlinked.
-			session: (sessionId, turn, projectId) =>
-				projectId === undefined ? undefined : sessionTurnPath(projectId, sessionId, turn),
+			session: sessionLink(requestOf),
 			browser: (sessionId, browserSessionId, projectId) =>
 				projectId === undefined ? undefined : sessionBrowserPath(projectId, sessionId, browserSessionId),
 			...(vaultRequests === true ? { proposal: vaultRequestPath } : {}),
@@ -123,6 +228,7 @@ export function apiAudit(
 		choices: {},
 		credentials: () => credentialChoices(source),
 		scope: () => readAuditScope(sourceOptions),
+		people: () => readAuditPeople(sourceOptions),
 		pollMs: 10_000,
 	};
 }

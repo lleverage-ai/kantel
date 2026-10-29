@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient, SendOptions } from "../api/client.ts";
+import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
 import { SessionClient } from "../state/session-client.ts";
@@ -8,7 +9,19 @@ import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
 import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
-import { browserFromHash } from "./router.ts";
+import { browserFromHash, turnOfHash, useHash } from "./router.ts";
+
+/**
+ * The turn a `#turn=<id>` link names, on load and whenever the hash changes, and where the search for it stands. A turn
+ * that isn't loaded yet is looked for by paging back through the session's history, a page at a time, until it is
+ * found or there is nothing older.
+ */
+function useLinkedTurn(session: SessionClient): { turn: string | undefined; search: TurnSearch } {
+	const turn = turnOfHash(useHash());
+	const [search, setSearch] = useState<TurnSearch>("none");
+	useEffect(() => followTurn(session, turn, setSearch), [session, turn]);
+	return { turn, search: turn === undefined ? "none" : search };
+}
 
 /**
  * One open session: a SessionClient over the console client's transport, started while the screen is shown, and the
@@ -56,6 +69,7 @@ export function SessionScreen({
 	}, [client, sessionId]);
 	useEffect(() => () => browserLive?.dispose(), [browserLive]);
 	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
+	const linked = useLinkedTurn(session);
 
 	useEffect(() => {
 		session.start();
@@ -217,6 +231,7 @@ export function SessionScreen({
 			actions={actions}
 			onBack={onBack}
 			onFiles={onFiles}
+			{...(linked.turn === undefined ? {} : { turn: linked.turn, turnSearch: linked.search })}
 			{...(focusBrowser === undefined ? {} : { focusBrowser })}
 		/>
 	);

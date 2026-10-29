@@ -59,6 +59,63 @@
 	height: var(--hb-space-10);
 }
 
+/* A linked turn (`#turn=<id>`) stands out for a moment and fades, so the reader sees where the link landed: a message
+   the person sent gets an accent ring round its bubble; an answer, notice or card its column, and a tool call its row,
+   in the accent's soft tint. Under reduced motion it stays marked, without a fade, while the transcript highlights it. */
+.hb-transcript-row-linked.hb-transcript-row-user .hb-user-message-bubble {
+	animation: hb-transcript-linked-ring var(--hb-duration-shimmer) var(--hb-ease) both;
+}
+
+.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-user) > .hb-transcript-column,
+.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
+	border-radius: var(--hb-radius-sm);
+	animation: hb-transcript-linked var(--hb-duration-shimmer) var(--hb-ease) both;
+}
+
+@keyframes hb-transcript-linked-ring {
+	from,
+	50% {
+		box-shadow:
+			0 0 0 var(--hb-ring) var(--hb-accent),
+			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+	}
+
+	to {
+		box-shadow:
+			0 0 0 var(--hb-ring) transparent,
+			0 0 0 var(--hb-space-3) transparent;
+	}
+}
+
+@keyframes hb-transcript-linked {
+	from,
+	50% {
+		background: var(--hb-accent-soft);
+		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+	}
+
+	to {
+		background: transparent;
+		box-shadow: 0 0 0 var(--hb-space-3) transparent;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-transcript-row-linked.hb-transcript-row-user .hb-user-message-bubble {
+		animation: none;
+		box-shadow:
+			0 0 0 var(--hb-ring) var(--hb-accent),
+			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+	}
+
+	.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-user) > .hb-transcript-column,
+	.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
+		animation: none;
+		background: var(--hb-accent-soft);
+		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+	}
+}
+
 /* The top of a paged transcript with nothing older: a hairline either side of one quiet line. */
 .hb-transcript-start {
 	padding: var(--hb-space-7) var(--hb-space-7) var(--hb-space-4);

@@ -11,6 +11,7 @@ import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } 
 import { apiKeys } from "./api/keys.ts";
 import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
+import { apiSchedules } from "./api/schedules-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App } from "./app/app.tsx";
 import { createRecordedAgent } from "./recorded/agent.ts";
@@ -47,7 +48,11 @@ import "./ui/styles.css";
 // `/v1/memory`), read-only; on `recorded` @harbour/ui's fixture stores in the page, with authoring and proposals.
 //
 // The schedules page runs on @harbour/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
-// sessions. On `api` it is not listed yet: the console gets it with a client for the public API's schedule routes.
+// sessions. On `api` it runs on the public API's schedule routes (`/v1/schedules`, api/schedules-http.ts); New
+// schedule needs a project the person may operate in and an agent profile to ask.
+//
+// On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
+// identity API (`/v1/organisations`, `/v1/members`).
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -235,12 +240,23 @@ function SignedInConsole({
 				onTransport: (sessionId, how) => transports.set(sessionId, how),
 			}),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
-			oversight: apiVault({ headers: state.headers }).then(
-				(vault): Oversight => ({ vault, audit: audit(true), agent, ...(keys === undefined ? {} : { keys }) }),
-				(error: unknown): Oversight => {
-					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
-					return { audit: audit(false), agent, ...(keys === undefined ? {} : { keys }) };
-				},
+			oversight: Promise.all([
+				apiVault({ headers: state.headers }).then(
+					(vault) => vault,
+					(error: unknown) => {
+						console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
+						return undefined;
+					},
+				),
+				apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
+			]).then(
+				([vault, schedules]): Oversight => ({
+					...(vault === undefined ? {} : { vault }),
+					audit: audit(vault !== undefined),
+					agent,
+					schedules,
+					...(keys === undefined ? {} : { keys }),
+				}),
 			),
 		};
 	}, [state, onSignedOut]);

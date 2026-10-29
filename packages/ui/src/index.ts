@@ -267,8 +267,12 @@ export {
 	type BrowserViewSlot,
 	browserViewSlots,
 	finalAnswerIds,
+	findTurn,
 	groupTranscript,
+	isTurn,
+	rowOfTurn,
 	type TranscriptRow,
+	turnAnchor,
 } from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
