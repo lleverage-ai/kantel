@@ -165,16 +165,16 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
 
 ## Schedules
 
-The schedule form, in `src/schedules/form/`. The schedules list, a schedule's detail and its run history are in
-`src/schedules/` beside it.
+The schedule form, in `src/schedules/form/`. The schedules page (list, detail, run history) is in `src/schedules/`
+beside it and opens the form for New schedule and Edit; see [schedules-skills-memory.md](schedules-skills-memory.md).
 
 - **`ScheduleForm`**: creates or edits a task (an agent and a prompt) or a check (a command), repeating every N
   minutes, hours or days, on weekdays, on chosen days of the week or on a day of the month, or once; with its time
   zone, an optional limit on runs, a check's re-raise settings, and the next five due times beside it as the person
   types. Editing offers End after a confirmation. The prompt goes to the agent exactly as written. The preview uses
   `previewDue` from `@harbour/schedules`, the scheduler's own function, on each render; no timers.
-- **`ScheduleWrites`**: the calls the form makes, `create`, `update` and `end`, shaped like `Schedules` with the
-  viewer's call context bound (`bindScheduleWrites`). `@harbour/ui/schedules/form/fixtures` has one over the
-  in-memory store at a fixed time, for stories, tests and a console without the API.
+- **`ScheduleWrites`**: the calls the form makes, `create`, `update` and `end`: the writes of the page's
+  `SchedulesSource` (`bindSchedules`), so the page's source is the form's. The fixtures are the page's
+  (`@harbour/ui/schedules/fixtures`).
 - **Payloads**: a task's is `{ agentId, prompt }`, a check's is its argument list (`taskPayload`,
   `readTaskPayload`, `readCheckPayload`). A schedule whose payload is another shape keeps it when edited.

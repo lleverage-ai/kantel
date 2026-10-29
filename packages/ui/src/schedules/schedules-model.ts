@@ -10,6 +10,7 @@ import type {
 	RaisedFinding,
 	Recurrence,
 	Schedule,
+	ScheduleInput,
 	ScheduleKind,
 	Schedules,
 	Timestamp,
@@ -17,18 +18,42 @@ import type {
 } from "@harbour/contracts";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type { BadgeTone } from "../primitives/status.tsx";
+import { readTaskPayload } from "./form/schedule-writes.ts";
+
+/** The fields `update` may change: everything but the owner and the kind, which are fixed at create. */
+export type ScheduleUpdate = Partial<Omit<ScheduleInput, "owner" | "kind">>;
 
 /**
  * What the page reads and changes: `Schedules`' calls with the viewer's call context already bound, so the page never
  * holds one. `bindSchedules` makes one from any implementation, the in-memory store or the console's API client.
+ *
+ * One call per public API route (`@harbour/api`'s `scheduleRoutes`, under `/v1`), so an API client fits as it is:
+ *
+ * | Call | Route |
+ * | --- | --- |
+ * | `list` | `GET /schedules` |
+ * | `get` | `GET /schedules/{scheduleId}` |
+ * | `create` | `POST /schedules` |
+ * | `update` | `PATCH /schedules/{scheduleId}` |
+ * | `pause`, `resume` | `POST /schedules/{scheduleId}/pause`, `/resume` |
+ * | `end` | `DELETE /schedules/{scheduleId}` (it ends the schedule; it stays listed, as ended) |
+ * | `preview` | `GET /schedules/{scheduleId}/preview` |
+ * | `listOccurrences` | `GET /schedules/{scheduleId}/runs` |
+ *
+ * Failures reject with Harbour's `HarbourError`s: `invalid` (with the server's reason), `forbidden`, `not_found`,
+ * `conflict`, or anything else when Harbour can't answer.
  */
 export interface SchedulesSource {
 	list(filter?: { readonly status?: Schedule["status"] }, page?: PageRequest): Promise<Page<Schedule>>;
 	get(scheduleId: string): Promise<Schedule>;
 	preview(scheduleId: string, n: number): Promise<readonly Timestamp[]>;
 	listOccurrences(scheduleId: string, page?: PageRequest): Promise<Page<Occurrence>>;
+	create(input: ScheduleInput): Promise<Schedule>;
+	update(scheduleId: string, input: ScheduleUpdate): Promise<Schedule>;
 	pause(scheduleId: string): Promise<Schedule>;
 	resume(scheduleId: string): Promise<Schedule>;
+	/** Ends the schedule for good: nothing more runs, and it stays listed as ended with its run history. */
+	end(scheduleId: string): Promise<Schedule>;
 	/**
 	 * The findings a check raised, newest first. `Schedules` has no read for these yet: `reportCheck` returns them to
 	 * the runner and the store audits each as `schedules.finding.raised`, so a host reads them from the audit log or
@@ -37,7 +62,10 @@ export interface SchedulesSource {
 	findings?(scheduleId: string): Promise<readonly RaisedFinding[]>;
 }
 
-export type SchedulesApi = Pick<Schedules, "list" | "get" | "preview" | "listOccurrences" | "pause" | "resume">;
+export type SchedulesApi = Pick<
+	Schedules,
+	"list" | "get" | "preview" | "listOccurrences" | "create" | "update" | "pause" | "resume" | "end"
+>;
 
 /** The page's source over `Schedules`, as the viewer `ctx`. */
 export function bindSchedules(
@@ -50,8 +78,11 @@ export function bindSchedules(
 		get: (id) => schedules.get(ctx, id),
 		preview: (id, n) => schedules.preview(ctx, id, n),
 		listOccurrences: (id, page) => schedules.listOccurrences(ctx, id, page),
+		create: (input) => schedules.create(ctx, input),
+		update: (id, input) => schedules.update(ctx, id, input),
 		pause: (id) => schedules.pause(ctx, id),
 		resume: (id) => schedules.resume(ctx, id),
+		end: (id) => schedules.end(ctx, id),
 		...(findings === undefined ? {} : { findings }),
 	};
 }
@@ -252,7 +283,7 @@ export function countByStatus(schedules: readonly Schedule[]): Readonly<Record<S
 
 /** What runs, as the page shows it: a message or brief as text, a command in mono, anything else as JSON. */
 export type PayloadView =
-	| { readonly kind: "text"; readonly label: string; readonly text: string }
+	| { readonly kind: "text"; readonly label: string; readonly text: string; readonly agentId?: string }
 	| { readonly kind: "command"; readonly label: string; readonly text: string }
 	| { readonly kind: "json"; readonly label: string; readonly text: string };
 
@@ -272,6 +303,8 @@ const isStringArray = (value: JsonValue): value is readonly string[] =>
 export function payloadView(schedule: Pick<Schedule, "kind" | "payload">): PayloadView {
 	const label = PAYLOAD_LABELS[schedule.kind];
 	const { payload } = schedule;
+	const task = schedule.kind === "task" ? readTaskPayload(payload) : undefined;
+	if (task !== undefined) return { kind: "text", label: "Prompt", text: task.prompt, agentId: task.agentId };
 	if (typeof payload === "string") {
 		return schedule.kind === "check" || schedule.kind === "program"
 			? { kind: "command", label, text: payload }
@@ -326,6 +359,15 @@ export function runDetail(occurrence: Occurrence, kind: ScheduleKind): string | 
 	if (occurrence.coalesced > 1) parts.push(`Stood for ${occurrence.coalesced} missed runs`);
 	if (occurrence.attempt > 1) parts.push(`Attempt ${occurrence.attempt}`);
 	return parts.length === 0 ? undefined : parts.join(". ");
+}
+
+/**
+ * The session a run started, when it names one: a task's result is `{ sessionId, ... }` (the public API's
+ * `listScheduleRuns`). A failed run that got as far as starting its session names it too.
+ */
+export function runSession(occurrence: Occurrence): string | undefined {
+	const sessionId = field(occurrence.result, "sessionId");
+	return typeof sessionId === "string" && sessionId !== "" ? sessionId : undefined;
 }
 
 /** A run worth a look: it failed, or a check found something. */

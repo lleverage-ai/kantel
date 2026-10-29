@@ -1,4 +1,4 @@
-import type { Occurrence, RaisedFinding, Schedule, ScheduleKind } from "@harbour/contracts";
+import type { Occurrence, OwnerRef, RaisedFinding, Schedule, ScheduleKind } from "@harbour/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
@@ -10,6 +10,9 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Field, FieldList, Notice, Panel } from "../primitives/surface.tsx";
 import { ClockTime } from "../primitives/time.tsx";
+import { ScheduleForm } from "./form/schedule-form.tsx";
+import { payloadEditable, type ScheduleAgent } from "./form/schedule-form-model.ts";
+import { isFormKind } from "./form/schedule-writes.ts";
 import {
 	countByStatus,
 	FINDING_REASON,
@@ -22,6 +25,7 @@ import {
 	payloadView,
 	readPages,
 	runDetail,
+	runSession,
 	runState,
 	SCHEDULE_STATUS,
 	type SchedulesSource,
@@ -37,9 +41,33 @@ import {
 } from "./schedules-model.ts";
 import "./schedules-page.css";
 
+/** Where the page links. An absent builder, or undefined from one (a record the host can't open), leaves it unlinked. */
+export interface ScheduleLinks {
+	/** The session a task's run started, to open in the host's session view. */
+	session?(sessionId: string, schedule: Schedule): string | undefined;
+}
+
+/** What the schedule form needs from the host, to create and edit tasks and checks on the page. */
+export interface ScheduleFormSettings {
+	/** The agents a task can ask, by name. */
+	readonly agents: readonly ScheduleAgent[];
+	/** Who owns a new schedule: the project the person is in. */
+	readonly owner: OwnerRef;
+	/** A new schedule's time zone. Default the browser's. */
+	readonly timezone?: string;
+}
+
+/** The form open in the detail pane: a new schedule, or one being edited. */
+type Editing = { readonly kind: "new" } | { readonly kind: "edit"; readonly schedule: Schedule };
+
 export interface SchedulesPageProps {
 	/** `Schedules`, bound to the viewer (see `bindSchedules`). */
 	readonly source: SchedulesSource;
+	/**
+	 * Create, edit and end tasks and checks on the page. Absent, the page reads and pauses only: no New schedule or Edit.
+	 */
+	readonly form?: ScheduleFormSettings;
+	readonly links?: ScheduleLinks;
 	/** Names for people, agents and projects, from the host's directories. */
 	readonly directory?: AuditDirectory;
 	/** The time the page measures from, for stories and screenshots. Default `Date.now()` when it renders. */
@@ -51,6 +79,8 @@ export interface SchedulesPageProps {
 	readonly previewCount?: number;
 	/** Called when a schedule is opened or closed, for a host that keeps it in the URL. */
 	readonly onSelect?: (scheduleId: string | undefined) => void;
+	/** Open the form for a new schedule when the page loads, with `form`: for a host's `/schedules/new`, and stories. */
+	readonly initialNew?: boolean;
 }
 
 /**
@@ -68,9 +98,15 @@ export function SchedulesPage({
 	initialFilter = "active",
 	previewCount = 5,
 	onSelect,
+	form,
+	links,
+	initialNew = false,
 }: SchedulesPageProps) {
 	const [filter, setFilter] = useState<StatusFilter>(initialFilter);
 	const [selected, setSelected] = useState<string | undefined>(initialSelected);
+	const [editing, setEditing] = useState<Editing | undefined>(
+		initialNew && form !== undefined ? { kind: "new" } : undefined,
+	);
 	const { state, reload } = useLoad(
 		async () => (await readPages((page) => source.list(undefined, page))).items,
 		[source],
@@ -81,16 +117,36 @@ export function SchedulesPage({
 	const shown = filterSchedules(all, filter);
 	const open = useCallback(
 		(id: string | undefined) => {
+			setEditing(undefined);
 			setSelected(id);
 			onSelect?.(id);
 		},
 		[onSelect],
 	);
+	// After a save or an end: show the schedule as it now is, under a filter that lists it.
+	const saved = (schedule: Schedule) => {
+		if (filter !== "all" && filter !== schedule.status) setFilter("all");
+		open(schedule.id);
+		reload();
+	};
+	const formNow = fixedNow === undefined ? undefined : () => fixedNow;
 
 	return (
-		<div className="hb-schedules" data-view={selected === undefined ? "list" : "detail"}>
+		<div className="hb-schedules" data-view={selected === undefined && editing === undefined ? "list" : "detail"}>
 			<header className="hb-schedules-head">
-				<h1 className="hb-schedules-title">Schedules</h1>
+				<div className="hb-schedules-head-row">
+					<h1 className="hb-schedules-title">Schedules</h1>
+					{form === undefined ? null : (
+						<Button
+							size="sm"
+							variant="primary"
+							disabled={editing?.kind === "new"}
+							onClick={() => setEditing({ kind: "new" })}
+						>
+							New schedule
+						</Button>
+					)}
+				</div>
 				<p className="hb-schedules-lede">
 					What runs on its own: reminders, tasks, summaries, checks and programs, with when each runs next.
 				</p>
@@ -157,7 +213,27 @@ export function SchedulesPage({
 					)}
 				</section>
 				<section className="hb-schedules-detail" aria-label="Schedule">
-					{selected === undefined ? (
+					{editing !== undefined && form !== undefined ? (
+						<div className="hb-schedule">
+							<div className="hb-schedules-back">
+								<Button size="sm" variant="ghost" onClick={() => setEditing(undefined)}>
+									{editing.kind === "new" ? "All schedules" : "Back to the schedule"}
+								</Button>
+							</div>
+							<ScheduleForm
+								key={editing.kind === "new" ? "new" : editing.schedule.id}
+								writes={source}
+								agents={form.agents}
+								owner={form.owner}
+								{...(form.timezone === undefined ? {} : { timezone: form.timezone })}
+								{...(editing.kind === "edit" ? { schedule: editing.schedule } : {})}
+								{...(formNow === undefined ? {} : { now: formNow })}
+								onSaved={saved}
+								onEnded={saved}
+								onCancel={() => setEditing(undefined)}
+							/>
+						</div>
+					) : selected === undefined ? (
 						<div className="hb-schedules-placeholder">
 							<EmptyState title="Pick a schedule">
 								See when it runs next, what it runs and how its runs went.
@@ -173,6 +249,10 @@ export function SchedulesPage({
 							previewCount={previewCount}
 							onBack={() => open(undefined)}
 							onChanged={reload}
+							{...(form === undefined
+								? {}
+								: { agents: form.agents, onEdit: (schedule: Schedule) => setEditing({ kind: "edit", schedule }) })}
+							{...(links === undefined ? {} : { links })}
 						/>
 					)}
 				</section>
@@ -202,6 +282,11 @@ export interface ScheduleDetailProps {
 	readonly onBack?: () => void;
 	/** After pause or resume, so the host's list reads again. */
 	readonly onChanged?: () => void;
+	/** Shows Edit on a task or check the form can edit. */
+	readonly onEdit?: (schedule: Schedule) => void;
+	/** The agents a task's prompt names, by name. */
+	readonly agents?: readonly ScheduleAgent[];
+	readonly links?: ScheduleLinks;
 }
 
 /** One schedule: its timing and next runs, what it runs, its findings and its run history, newest first. */
@@ -213,6 +298,9 @@ export function ScheduleDetail({
 	previewCount = 5,
 	onBack,
 	onChanged,
+	onEdit,
+	agents = [],
+	links,
 }: ScheduleDetailProps) {
 	const { state, reload } = useLoad<DetailData>(async () => {
 		const [schedule, runs, findings] = await Promise.all([
@@ -312,9 +400,16 @@ export function ScheduleDetail({
 					</div>
 				</div>
 				{schedule.status === "ended" ? null : (
-					<Button size="sm" variant="secondary" busy={changing} onClick={() => void change(schedule)}>
-						{schedule.status === "active" ? "Pause" : "Resume"}
-					</Button>
+					<div className="hb-schedule-actions">
+						{onEdit !== undefined && isFormKind(schedule.kind) && payloadEditable(schedule) ? (
+							<Button size="sm" variant="ghost" disabled={changing} onClick={() => onEdit(schedule)}>
+								Edit
+							</Button>
+						) : null}
+						<Button size="sm" variant="secondary" busy={changing} onClick={() => void change(schedule)}>
+							{schedule.status === "active" ? "Pause" : "Resume"}
+						</Button>
+					</div>
 				)}
 			</header>
 			{changeFailed ? (
@@ -363,6 +458,17 @@ export function ScheduleDetail({
 			</Panel>
 
 			<Panel header={<h3 className="hb-schedule-section">{payload.label}</h3>}>
+				{payload.kind === "text" && payload.agentId !== undefined ? (
+					<p className="hb-schedule-payload-agent">
+						Asks{" "}
+						<strong>
+							{agents.find((agent) => agent.id === payload.agentId)?.name ??
+								directory.agent?.(payload.agentId) ??
+								payload.agentId}
+						</strong>
+						, in a new session each run, with this prompt as written:
+					</p>
+				) : null}
 				{payload.kind === "text" ? (
 					<p className="hb-schedule-payload-text hb-selectable">{payload.text}</p>
 				) : (
@@ -434,9 +540,19 @@ export function ScheduleDetail({
 					</p>
 				) : (
 					<ol className="hb-schedule-runs">
-						{visible.map((run) => (
-							<RunRow key={run.id} run={run} kind={schedule.kind} timezone={schedule.timezone} />
-						))}
+						{visible.map((run) => {
+							const sessionId = runSession(run);
+							const href = sessionId === undefined ? undefined : links?.session?.(sessionId, schedule);
+							return (
+								<RunRow
+									key={run.id}
+									run={run}
+									kind={schedule.kind}
+									timezone={schedule.timezone}
+									{...(href === undefined ? {} : { sessionHref: href })}
+								/>
+							);
+						})}
 					</ol>
 				)}
 			</Panel>
@@ -444,19 +560,42 @@ export function ScheduleDetail({
 	);
 }
 
-/** One run, at its due time in the schedule's own time zone, as the next runs above it are. */
-function RunRow({ run, kind, timezone }: { run: Occurrence; kind: ScheduleKind; timezone: string }) {
+/**
+ * One run, at its due time in the schedule's own time zone, as the next runs above it are, with a link to the session
+ * it started when the host can open it.
+ */
+function RunRow({
+	run,
+	kind,
+	timezone,
+	sessionHref,
+}: {
+	run: Occurrence;
+	kind: ScheduleKind;
+	timezone: string;
+	sessionHref?: string;
+}) {
 	const state = runState(run, kind);
 	const detail = runDetail(run, kind);
+	const when = zonedText(run.dueAt, timezone);
 	return (
-		<li className="hb-schedule-run">
+		<li className="hb-schedule-run" data-linked={sessionHref === undefined ? undefined : ""}>
 			<time className="hb-schedule-run-time" dateTime={new Date(run.dueAt).toISOString()}>
-				{zonedText(run.dueAt, timezone)}
+				{when}
 			</time>
 			<span className="hb-schedule-run-state">
 				<Badge tone={state.tone}>{state.label}</Badge>
 			</span>
 			<span className="hb-schedule-run-detail">{detail ?? ""}</span>
+			{sessionHref === undefined ? null : (
+				<a
+					className="hb-schedule-run-link hb-focusable"
+					href={sessionHref}
+					aria-label={`Open session, from the run at ${when}`}
+				>
+					Open session
+				</a>
+			)}
 		</li>
 	);
 }

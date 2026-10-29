@@ -2,7 +2,7 @@ import type { Occurrence, Schedule } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import { ownerName } from "../primitives/owner.ts";
-import { createSchedulesScenario, directory, FIXTURE_NOW } from "./fixtures.ts";
+import { createSchedulesScenario, directory, FIXTURE_NOW, FIXTURE_OWNER } from "./fixtures.ts";
 import {
 	countByStatus,
 	filterSchedules,
@@ -15,6 +15,7 @@ import {
 	readPages,
 	recurrenceText,
 	runDetail,
+	runSession,
 	runState,
 	severityText,
 	severityTone,
@@ -184,7 +185,7 @@ describe("the fixture over the in-memory store", () => {
 	it("plays three days of runs into the real store", async () => {
 		const scenario = await createSchedulesScenario();
 		const { items } = await readPages((page) => scenario.source.list(undefined, page));
-		expect(countByStatus(items)).toMatchObject({ active: 7, paused: 1, ended: 2 });
+		expect(countByStatus(items)).toMatchObject({ active: 8, paused: 1, ended: 2 });
 
 		const disk = await readPages((page) => scenario.source.listOccurrences(scenario.ids.disk, page));
 		const states = disk.items.map((occurrence) => runState(occurrence, "check").label);
@@ -214,5 +215,36 @@ describe("the fixture over the in-memory store", () => {
 	it("can start empty", async () => {
 		const scenario = await createSchedulesScenario({ empty: true });
 		expect((await scenario.source.list()).items).toHaveLength(0);
+	});
+
+	it("names the session each task run started, from the host's own when it gives them", async () => {
+		const scenario = await createSchedulesScenario({ sessions: ["ses_a", "ses_b"] });
+		const runs = (await readPages((page) => scenario.source.listOccurrences(scenario.ids.triage, page))).items;
+		expect(runs.length).toBeGreaterThan(400);
+		const sessions = new Set(runs.map(runSession));
+		expect(sessions).toEqual(new Set(["ses_a", "ses_b"]));
+		const triage = await scenario.source.get(scenario.ids.triage);
+		expect(payloadView(triage)).toMatchObject({ kind: "text", label: "Prompt", agentId: "agt_triage" });
+
+		const made = await createSchedulesScenario();
+		const [first] = (await made.source.listOccurrences(made.ids.triage, { limit: 1 })).items;
+		expect(first === undefined ? undefined : runSession(first)).toMatch(/^ses_/);
+		const disk = (await made.source.listOccurrences(made.ids.disk, { limit: 5 })).items;
+		expect(disk.map(runSession)).toEqual(disk.map(() => undefined));
+	});
+
+	it("creates, changes and ends through the same source it lists from", async () => {
+		const { source } = await createSchedulesScenario({ empty: true });
+		const made = await source.create({
+			owner: FIXTURE_OWNER,
+			kind: "check",
+			title: "Disk",
+			timezone: "Europe/London",
+			repeat: { every: "hours", interval: 1, from: FIXTURE_NOW },
+			payload: ["checks/disk.sh"],
+		});
+		expect((await source.update(made.id, { title: "Disk free" })).title).toBe("Disk free");
+		expect((await source.end(made.id)).status).toBe("ended");
+		expect((await source.list({ status: "ended" })).items.map((schedule) => schedule.title)).toEqual(["Disk free"]);
 	});
 });

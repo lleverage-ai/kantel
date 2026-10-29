@@ -1,47 +1,15 @@
-// What the schedule form changes, and the payloads it writes. The calls are `Schedules`' `create`, `update` and `end`
-// with the viewer's call context already bound, so the form never holds one; they are shaped like the public API's
-// schedule routes (one route per contract call, after issue #150), so the console's API client fits them as it is.
+// What the schedule form changes, and the payloads it writes. The calls are the schedules page's `SchedulesSource`'s
+// writes (`create`, `update`, `end`), so any source the page reads from, the fixtures or the console's API client,
+// is one the form saves through.
 
-import type {
-	AgentId,
-	CallContext,
-	JsonValue,
-	Schedule,
-	ScheduleInput,
-	ScheduleKind,
-	Schedules,
-} from "@harbour/contracts";
-
-/** The fields `update` may change: everything but the owner and the kind, which are fixed at create. */
-export type ScheduleUpdate = Partial<Omit<ScheduleInput, "owner" | "kind">>;
+import type { AgentId, JsonValue, ScheduleKind } from "@harbour/contracts";
+import type { SchedulesSource } from "../schedules-model.ts";
 
 /**
- * What the form calls. Failures reject with Harbour's `HarbourError`s: `invalid` (with the server's reason),
- * `forbidden`, `not_found`, or anything else when Harbour can't answer.
- *
- * Named and shaped to sit beside the schedules page's read calls (`list`, `get`, `preview`, `listOccurrences`, `pause`,
- * `resume`) as one client over the schedule routes.
+ * What the form calls: `POST /v1/schedules`, `PATCH /v1/schedules/{scheduleId}` and `DELETE /v1/schedules/{scheduleId}`
+ * (which ends a schedule; the contract has no delete, so the form's "End schedule" is this call).
  */
-export interface ScheduleWrites {
-	create(input: ScheduleInput): Promise<Schedule>;
-	update(scheduleId: string, input: ScheduleUpdate): Promise<Schedule>;
-	/**
-	 * Ends the schedule for good: nothing more runs, and it stays in the list as ended with its run history. The
-	 * contract has no delete; the form's "End schedule" is this call.
-	 */
-	end(scheduleId: string): Promise<Schedule>;
-}
-
-export type ScheduleWritesApi = Pick<Schedules, "create" | "update" | "end">;
-
-/** The form's calls over `Schedules`, as the viewer `ctx`. */
-export function bindScheduleWrites(schedules: ScheduleWritesApi, ctx: CallContext): ScheduleWrites {
-	return {
-		create: (input) => schedules.create(ctx, input),
-		update: (id, input) => schedules.update(ctx, id, input),
-		end: (id) => schedules.end(ctx, id),
-	};
-}
+export type ScheduleWrites = Pick<SchedulesSource, "create" | "update" | "end">;
 
 /** The kinds the form creates and edits. Other kinds open read-only on the schedules page. */
 export type FormKind = Extract<ScheduleKind, "task" | "check">;
