@@ -1,9 +1,11 @@
 import type { AssistantItem, NoticeItem, UserItem } from "@harbour/protocol";
-import { memo } from "react";
+import { memo, useContext, useState } from "react";
 import { Disclosure } from "../primitives/controls.tsx";
+import { ForkIcon, RewindIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
 import { Markdown } from "./markdown.tsx";
+import { MessageAction, MessageActions, MessageActionsContext, MessageEditor } from "./message-actions.tsx";
 import { WorkingIndicator } from "./working-indicator.tsx";
 import "./message.css";
 
@@ -13,14 +15,57 @@ import "./message.css";
 
 const viaCaption = { prompt: undefined, steer: "Steered", followUp: "Follow-up" } as const;
 
-/** What the person sent: a right-aligned bubble, at most 80% of the column wide. */
-export const UserMessage = memo(function UserMessage({ item }: { item: UserItem }) {
+/**
+ * What the person sent: a right-aligned bubble, at most 80% of the column wide, with the time it was sent, Edit from
+ * here (when the host gives `MessageActionsContext` an `edit`) and Copy under it on hover or focus (`MessageActions`).
+ * Edit from here turns the bubble into a `MessageEditor`; sending rewinds the session to this message. `actions: false`
+ * leaves that line out, for a preview.
+ */
+export const UserMessage = memo(function UserMessage({
+	item,
+	actions = true,
+	showActions = false,
+}: {
+	item: UserItem;
+	/** The time and Copy under the bubble. Default on. */
+	actions?: boolean;
+	/** Shows them without a hover, for stories and screenshots. */
+	showActions?: boolean;
+}) {
 	useRenderProbe("UserMessage", item.id);
+	const { edit, editBlocked } = useContext(MessageActionsContext);
+	const [editing, setEditing] = useState(false);
 	const caption = viaCaption[item.via];
+	if (editing && edit !== undefined) {
+		return (
+			<div className="hb-user-message">
+				<MessageEditor
+					text={item.text}
+					onCancel={() => setEditing(false)}
+					onSend={async (text) => {
+						await edit(item.id, text);
+						setEditing(false);
+					}}
+				/>
+			</div>
+		);
+	}
 	return (
 		<div className="hb-user-message">
 			{caption === undefined ? null : <span className="hb-user-message-via">{caption}</span>}
 			<div className="hb-user-message-bubble">{item.text}</div>
+			{actions ? (
+				<MessageActions at={item.at} text={item.text} align="end" visible={showActions}>
+					{edit === undefined ? null : (
+						<MessageAction
+							label={editBlocked ?? "Edit from here"}
+							icon={<RewindIcon size="sm" />}
+							disabled={editBlocked !== undefined}
+							onClick={() => setEditing(true)}
+						/>
+					)}
+				</MessageActions>
+			) : null}
 		</div>
 	);
 });
@@ -46,18 +91,44 @@ function ThinkingPreview({ thinking }: { thinking: string }) {
  * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
  * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview;
  * before any text or thought arrives, "Working for 12s" says it is working, timed from `turnStartedAt` (when the turn
- * started), or "Working" without it.
+ * started), or "Working" without it. With `actions`, a finished answer with text has Copy, Fork from this response
+ * (when the host gives `MessageActionsContext` a `fork`) and the time it was
+ * generated under it, on hover or focus (`MessageActions`).
  */
 export const AssistantMessage = memo(function AssistantMessage({
 	item,
 	turnStartedAt,
+	actions = false,
+	showActions = false,
 }: {
 	item: AssistantItem;
 	/** When the turn this answer belongs to started, for the working row's timer. */
 	turnStartedAt?: number | undefined;
+	/**
+	 * Copy and the time under the answer, once it has finished. The transcript turns it on for a turn's final answer
+	 * only, as T3 Code does, not for the words an agent says between tool calls.
+	 */
+	actions?: boolean;
+	/** Shows them without a hover, for stories and screenshots. */
+	showActions?: boolean;
 }) {
 	useRenderProbe("AssistantMessage", item.id);
+	const { fork } = useContext(MessageActionsContext);
+	const [forking, setForking] = useState(false);
+	const [forkError, setForkError] = useState<string | undefined>(undefined);
 	const { streaming, text, thinking } = item;
+	const onFork = async () => {
+		if (fork === undefined || forking) return;
+		setForking(true);
+		setForkError(undefined);
+		try {
+			await fork(item.id);
+		} catch (reason) {
+			setForkError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setForking(false);
+		}
+	};
 	return (
 		<div className={`hb-assistant-message${streaming ? " hb-assistant-message-streaming" : ""}`}>
 			{thinking ? (
@@ -73,6 +144,30 @@ export const AssistantMessage = memo(function AssistantMessage({
 				<Markdown text={text} />
 			) : streaming && !thinking ? (
 				<WorkingIndicator since={turnStartedAt} />
+			) : null}
+			{actions && !streaming && text !== "" ? (
+				<MessageActions
+					at={item.at}
+					text={text}
+					align="start"
+					visible={showActions}
+					after={
+						forkError === undefined ? null : (
+							<span className="hb-message-actions-error" role="alert">
+								{forkError}
+							</span>
+						)
+					}
+				>
+					{fork === undefined ? null : (
+						<MessageAction
+							label="Fork from this response"
+							icon={<ForkIcon size="sm" />}
+							busy={forking}
+							onClick={() => void onFork()}
+						/>
+					)}
+				</MessageActions>
 			) : null}
 		</div>
 	);
