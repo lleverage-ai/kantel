@@ -40,6 +40,7 @@ import {
 } from "@harbour/contracts";
 import {
 	apiKeyName,
+	apiKeyPermissions,
 	apiKeyPrefix,
 	generateApiKeySecret,
 	hashApiKeySecret,
@@ -472,6 +473,9 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			serviceIn(ctx.organisationId, input.serviceId);
 			const role = requireRoleValue(input.role);
 			const name = apiKeyName(input.name);
+			const permissions = apiKeyPermissions(input.permissions);
+			// A permission reaches beyond the key's projects, so only an organisation admin may hand one out.
+			if (permissions !== undefined) requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const now = clock.now();
 			if (input.expiresAt !== undefined && input.expiresAt <= now) {
 				throw new HarbourError("invalid", "a key cannot expire before it is issued");
@@ -483,6 +487,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				organisationId: ctx.organisationId,
 				projectIds: Object.freeze(projectIds),
 				role,
+				...(permissions === undefined ? {} : { permissions }),
 				prefix: apiKeyPrefix(secret),
 				...(name === undefined ? {} : { name }),
 				createdAt: now,
@@ -499,6 +504,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 					serviceId: key.serviceId,
 					projectIds: [...key.projectIds],
 					role,
+					...(permissions === undefined ? {} : { permissions: [...permissions] }),
 					...(name === undefined ? {} : { name }),
 					...(key.expiresAt === undefined ? {} : { expiresAt: key.expiresAt }),
 				},
@@ -594,6 +600,23 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		async roleOf(ctx, actor, organisationId, projectId) {
 			await requireSystem(ctx, "identity.roleOf", { ...(audit === undefined ? {} : { audit }), clock, organisationId });
 			return resolveRole(actor, organisationId, projectId);
+		},
+
+		async keyPermits(ctx, actor, organisationId, permission) {
+			await requireSystem(ctx, "identity.keyPermits", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				organisationId,
+			});
+			if (actor?.kind !== "service" || actor.keyId === undefined) return false;
+			const key = apiKeys.get(actor.keyId);
+			return (
+				key !== undefined &&
+				key.serviceId === actor.serviceId &&
+				key.organisationId === organisationId &&
+				keyIsLive(key) &&
+				(key.permissions ?? []).includes(permission)
+			);
 		},
 
 		async authorize(ctx, needed) {

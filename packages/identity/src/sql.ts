@@ -57,6 +57,7 @@ import {
 } from "@harbour/sql";
 import {
 	apiKeyName,
+	apiKeyPermissions,
 	apiKeyPrefix,
 	generateApiKeySecret,
 	hashApiKeySecret,
@@ -165,6 +166,12 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			name TEXT,
 			last_used_at ${time}
 		)`,
+		// A key's permissions beyond its role (`API_KEY_PERMISSIONS`), as a JSON list, in a table of their own for the same
+		// reason. Written once, with the key; a key with none has no row.
+		`CREATE TABLE IF NOT EXISTS identity_api_key_permissions (
+			key_id TEXT PRIMARY KEY,
+			permissions TEXT NOT NULL
+		)`,
 		...otpSchema(dialect),
 		...passkeySchema(dialect),
 	];
@@ -228,6 +235,7 @@ type ApiKeyRow = {
 	revoked_at: unknown;
 	name: unknown;
 	last_used_at: unknown;
+	permissions: unknown;
 };
 type FoundRow = { found: unknown };
 
@@ -236,7 +244,7 @@ const USER_COLUMNS = "id, name, email, external_subject, created_in_organisation
 const BINDING_COLUMNS = "organisation_id, principal_kind, principal_id, scope, role, granted_at, granted_by";
 /** Every key column, with its details; follow with a `WHERE` on `k`. */
 const SELECT_KEYS =
-	"SELECT k.id, k.service_id, k.organisation_id, k.project_ids, k.role, k.prefix, k.created_at, k.expires_at, k.revoked_at, d.name, d.last_used_at FROM identity_api_keys k LEFT JOIN identity_api_key_details d ON d.key_id = k.id";
+	"SELECT k.id, k.service_id, k.organisation_id, k.project_ids, k.role, k.prefix, k.created_at, k.expires_at, k.revoked_at, d.name, d.last_used_at, kp.permissions FROM identity_api_keys k LEFT JOIN identity_api_key_details d ON d.key_id = k.id LEFT JOIN identity_api_key_permissions kp ON kp.key_id = k.id";
 
 interface StoredUser {
 	readonly user: User;
@@ -305,12 +313,15 @@ function apiKeyOf(row: ApiKeyRow): ApiKey {
 	const name = sqlOptionalString(row.name);
 	const lastUsedAt = optionalNumber(row.last_used_at);
 	const projectIds = (JSON.parse(String(row.project_ids)) as unknown[]).map(String);
+	const stored = sqlOptionalString(row.permissions);
+	const permissions = stored === undefined ? undefined : apiKeyPermissions(JSON.parse(stored));
 	return Object.freeze({
 		id: String(row.id),
 		serviceId: String(row.service_id),
 		organisationId: String(row.organisation_id),
 		projectIds: Object.freeze(projectIds),
 		role: String(row.role) as Role,
+		...(permissions === undefined ? {} : { permissions }),
 		prefix: String(row.prefix),
 		...(name === undefined ? {} : { name }),
 		createdAt: sqlNumber(row.created_at),
@@ -988,6 +999,9 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			await serviceIn(ctx.organisationId, input.serviceId);
 			const role = requireRoleValue(input.role);
 			const name = apiKeyName(input.name);
+			const permissions = apiKeyPermissions(input.permissions);
+			// A permission reaches beyond the key's projects, so only an organisation admin may hand one out.
+			if (permissions !== undefined) await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const now = clock.now();
 			if (input.expiresAt !== undefined && input.expiresAt <= now) {
 				throw new HarbourError("invalid", "a key cannot expire before it is issued");
@@ -999,6 +1013,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				organisationId: ctx.organisationId,
 				projectIds: Object.freeze(projectIds),
 				role,
+				...(permissions === undefined ? {} : { permissions }),
 				prefix: apiKeyPrefix(secret),
 				...(name === undefined ? {} : { name }),
 				createdAt: now,
@@ -1018,18 +1033,26 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					key.expiresAt ?? null,
 				],
 			};
-			// The key and its name land together or not at all.
-			await driver.batch(
-				name === undefined
-					? [insertKey]
+			// The key, its name and its permissions land together or not at all.
+			await driver.batch([
+				insertKey,
+				...(name === undefined
+					? []
 					: [
-							insertKey,
 							{
 								sql: "INSERT INTO identity_api_key_details (key_id, name, last_used_at) VALUES (?, ?, NULL)",
 								params: [key.id, name],
 							},
-						],
-			);
+						]),
+				...(permissions === undefined
+					? []
+					: [
+							{
+								sql: "INSERT INTO identity_api_key_permissions (key_id, permissions) VALUES (?, ?)",
+								params: [key.id, JSON.stringify(permissions)],
+							},
+						]),
+			]);
 			await emit(
 				ctx,
 				"identity.key.issued",
@@ -1039,6 +1062,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					serviceId: key.serviceId,
 					projectIds: [...key.projectIds],
 					role,
+					...(permissions === undefined ? {} : { permissions: [...permissions] }),
 					...(name === undefined ? {} : { name }),
 					...(key.expiresAt === undefined ? {} : { expiresAt: key.expiresAt }),
 				},
@@ -1206,6 +1230,19 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		async roleOf(ctx, actor, organisationId, projectId) {
 			await requireSystem(ctx, "identity.roleOf", { ...workerOptions, organisationId });
 			return resolveRole(actor, organisationId, projectId);
+		},
+
+		async keyPermits(ctx, actor, organisationId, permission) {
+			await requireSystem(ctx, "identity.keyPermits", { ...workerOptions, organisationId });
+			if (actor?.kind !== "service" || actor.keyId === undefined) return false;
+			const key = await keyById(actor.keyId);
+			return (
+				key !== undefined &&
+				key.serviceId === actor.serviceId &&
+				key.organisationId === organisationId &&
+				keyIsLive(key) &&
+				(key.permissions ?? []).includes(permission)
+			);
 		},
 
 		async authorize(ctx, needed) {

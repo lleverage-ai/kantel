@@ -9,8 +9,10 @@
 import {
 	type Actor,
 	API_KEY_NAME_MAX_LENGTH,
+	API_KEY_PERMISSIONS,
 	API_KEYS_PATH,
 	type ApiKey,
+	type ApiKeyPermission,
 	type ApiKeysResponse,
 	type AuthenticatedCaller,
 	type Authenticator,
@@ -399,14 +401,14 @@ async function readJson(request: Request): Promise<unknown> {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-const CREATE_FIELDS = new Set(["name", "projectIds", "role", "expiresAt", "serviceId"]);
+const CREATE_FIELDS = new Set(["name", "projectIds", "role", "expiresAt", "serviceId", "permissions"]);
 
 /** A `CreateApiKeyRequest`, checked field by field, or an `invalid` error naming what is wrong. */
 function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
 	const invalid = (message: string) => new HarbourError("invalid", message);
-	if (!isRecord(body)) throw invalid("The body is { name, projectIds, role, expiresAt?, serviceId? }");
+	if (!isRecord(body)) throw invalid("The body is { name, projectIds, role, expiresAt?, serviceId?, permissions? }");
 	for (const field of Object.keys(body)) if (!CREATE_FIELDS.has(field)) throw invalid(`Unknown field ${field}`);
-	const { name, projectIds, role, expiresAt, serviceId } = body;
+	const { name, projectIds, role, expiresAt, serviceId, permissions } = body;
 	if (typeof name !== "string" || name.trim() === "") throw invalid("name must be a non-empty string");
 	if (name.trim().length > API_KEY_NAME_MAX_LENGTH) {
 		throw invalid(`name is at most ${API_KEY_NAME_MAX_LENGTH} characters`);
@@ -428,12 +430,20 @@ function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
 	if (serviceId !== undefined && (typeof serviceId !== "string" || serviceId === "")) {
 		throw invalid("serviceId must be a non-empty string");
 	}
+	if (
+		permissions !== undefined &&
+		(!Array.isArray(permissions) ||
+			!permissions.every((permission) => API_KEY_PERMISSIONS.includes(permission as ApiKeyPermission)))
+	) {
+		throw invalid(`permissions must list only ${API_KEY_PERMISSIONS.join(", ")}`);
+	}
 	return {
 		name: name.trim(),
 		projectIds: [...new Set(projectIds as string[])],
 		role: role as Role,
 		...(expiresAt === undefined ? {} : { expiresAt: expiresAt as number }),
 		...(serviceId === undefined ? {} : { serviceId: serviceId as string }),
+		...(permissions === undefined ? {} : { permissions: permissions as ApiKeyPermission[] }),
 	};
 }
 
@@ -459,6 +469,7 @@ async function issue(
 		role: request.role,
 		name: request.name,
 		...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
+		...(request.permissions === undefined ? {} : { permissions: request.permissions }),
 	});
 }
 

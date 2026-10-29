@@ -95,6 +95,7 @@ import { CODEMODE_TOOL, type SessionCodemodeOptions, sessionCodemodeTool } from 
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
+import { withKeyImports } from "./import-access.ts";
 import type { StackModels } from "./models.ts";
 import { memoiseRoleOf } from "./role-memo.ts";
 import {
@@ -394,24 +395,26 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Harbour
 	// adds no prompt of its own, so the listing is Pi's block of the skills a profile names, and recall is the memory
 	// store's rendering (the stack's recall renderer, Harbour's default one unless it is given another), both placed by
-	// the runtime before a session's first prompt.
+	// the runtime before a session's first prompt. An API key with the `import` permission passes their
+	// organisation-wide check for an import, and only for one (`./import-access.ts`).
+	const storeAccess = withKeyImports(auditAccess, identity);
 	const skillObjects = storage.skillObjects;
 	const skills =
 		driver === undefined || skillObjects === undefined
-			? createMemorySkills({ clock, audit, access: auditAccess, mountRoot: SKILLS_MOUNT_ROOT })
+			? createMemorySkills({ clock, audit, access: storeAccess, mountRoot: SKILLS_MOUNT_ROOT })
 			: createSqlSkills({
 					driver,
 					objects: skillObjects,
 					clock,
 					audit,
-					access: auditAccess,
+					access: storeAccess,
 					mountRoot: SKILLS_MOUNT_ROOT,
 				});
 	const renderer = options.recallRenderer ?? defaultRecallRenderer;
 	const memory =
 		driver === undefined
-			? createMemoryMemory({ clock, audit, access: auditAccess, renderer })
-			: createSqlMemory({ driver, clock, audit, access: auditAccess, renderer });
+			? createMemoryMemory({ clock, audit, access: storeAccess, renderer })
+			: createSqlMemory({ driver, clock, audit, access: storeAccess, renderer });
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
