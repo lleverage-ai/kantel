@@ -18,6 +18,7 @@ import {
 	type MountSource,
 	type PageRequest,
 	type ProjectAccess,
+	type SeedStatusSink,
 	type SessionId,
 	systemClock,
 	systemContext,
@@ -43,6 +44,7 @@ import {
 	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
+	checkReadSize,
 	compare,
 	decodeCursor,
 	encodeCursor,
@@ -94,6 +96,8 @@ export interface MemoryWorkspacesOptions {
 	readonly access?: ProjectAccess;
 	/** How seed sources other than `files` are fetched. Without a git fetcher, git sources wait at `metadata`. */
 	readonly seeders?: Seeders;
+	/** Receives a `seed.status` event as each seed reaches a readiness stage, or fails. */
+	readonly onSeedStatus?: SeedStatusSink;
 }
 
 export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): KeyedWorkspaces {
@@ -155,7 +159,12 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 		for (const request of requests.values()) mounts.push(await sources.resolve(ctx, request));
 		checkMountsDisjoint(mounts);
 
-		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock, mounts);
+		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock, mounts, {
+			workspaceId: id,
+			organisationId: ctx.organisationId,
+			...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+			...(options.onSeedStatus === undefined ? {} : { onStatus: options.onSeedStatus }),
+		});
 		const prepared = await prepareChanges(
 			[...seeded.files].map(([path, file]) => ({ op: "put", path, content: file.content })),
 		);
@@ -259,9 +268,12 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state.record, path);
 				await checks.requireMountRead(ctx, state.record, mount);
-				return sources.read(ctx, mount, sourcePath, path);
+				const read = await sources.read(ctx, mount, sourcePath, path);
+				checkReadSize(path, read.content.byteLength, readOptions?.maxBytes);
+				return read;
 			}
 			const file = readTree(treeAt(state, readOptions?.version), normalizeWorkspacePath(path));
+			checkReadSize(path, file.content.byteLength, readOptions?.maxBytes);
 			return { path, content: new Uint8Array(file.content), version: file.version, digest: file.digest };
 		},
 

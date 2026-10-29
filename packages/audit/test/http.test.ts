@@ -30,6 +30,8 @@ describe("audit query search parameters", () => {
 		{ source: "vault", type: "vault.", subject: { kind: "vault.proposal", id: "x&y=z" } },
 		{ from: 0, to: 1_800_000_000_000, newestFirst: true },
 		{ itemId: "item/linear key", grantId: "grant&1", type: "vault.use." },
+		{ types: ["vault.policy.", "capability.grant."] },
+		{ types: ["session.created"], type: "session." },
 	];
 	it("round-trips every query field and the page", () => {
 		for (const query of queries) {
@@ -53,6 +55,9 @@ describe("audit query search parameters", () => {
 			"actorKeyId=k",
 			"subjectKind=k",
 			"itemId=",
+			"types=",
+			"types=vault.,,session.",
+			"types=vault.&types=session.",
 			"grantId=a&grantId=b",
 			"from=yesterday",
 			"to=1.5",

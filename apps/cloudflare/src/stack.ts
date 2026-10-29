@@ -5,17 +5,23 @@
  * Each part is durable when its storage is given (`StackStorage`), and in memory otherwise:
  *
  * - `sql`: the identity directory and the audit store (D1 on Cloudflare);
+ * - `auditOutbox`: where components' audit events queue before a background drain takes them to that store (the stack
+ *   object's own SQLite, `src/audit-outbox.ts`), so no request waits on an audit write;
  * - `sessions`: the session runtime, as the runtime lane's `SessionRuntimeDurableObjectCore` over the stack Durable
  *   Object's SQLite and alarm: its directory, profiles, host registrations and each session's Pi storage, and the
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
  * - `workspaces`: workspace heads, versions and blobs (R2). A seed's git source is fetched as a GitHub tarball
  *   (`createGitHubTarballFetcher`, #81) over `StackOptions.gitFetch`;
+ * - skills (#12): packages, revisions and pins in `sql`, each file's body in `skillObjects` (R2);
+ * - memory (#12): spaces, concepts and proposals in `sql`;
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
  * `HarbourStack` hosts it in one Durable Object over the real bindings.
  */
+
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import {
@@ -23,16 +29,20 @@ import {
 	type AuditSink,
 	type AuditStore,
 	type Authenticator,
+	type BrowserProvider,
 	type CallContext,
 	type Clock,
 	type IdentityDirectory,
 	isHarbourError,
 	type LeaseEndReason,
+	type Memory,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
+	type SessionRecord,
 	type SignInMethod,
+	type Skills,
 	type SystemContext,
 	systemClock,
 } from "@harbour/contracts";
@@ -41,6 +51,8 @@ import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
+import { createMemoryMemory } from "@harbour/memory/memory";
+import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import {
@@ -48,6 +60,8 @@ import {
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
+import { createMemorySkills } from "@harbour/skills/memory";
+import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
@@ -57,7 +71,10 @@ import {
 	type StoredWorkspaces,
 	type WorkspaceStore,
 } from "@harbour/workspace/stored";
+import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
+import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
+import { CODING_TOOLS, sessionCodingTools, sessionEnvironments } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
 import type { StackModels } from "./models.ts";
@@ -140,12 +157,22 @@ export interface SessionObjectStorage {
 
 /** Durable storage for the stack's parts. Each one left out is in memory, and gone when the stack is. */
 export interface StackStorage {
-	/** The identity directory and the audit store. Their migrations run on every start; each is idempotent. */
+	/**
+	 * The identity directory, the audit store, skills and memory. Their migrations run on every start; each is
+	 * idempotent.
+	 */
 	readonly sql?: SqlDriver;
+	/** Skill files' bodies, by their SHA-256 (`skills/org/<organisation>/<sha256>`). Needs `sql`. */
+	readonly skillObjects?: ObjectBucket;
 	/** The session runtime's store, each session's Pi storage and the alarm that resumes them. */
 	readonly sessions?: SessionObjectStorage;
 	readonly workspaces?: WorkspaceStore;
 	readonly bootstrap?: BootstrapStore;
+	/**
+	 * With `sql`: components' audit events queue in this driver (the object's own SQLite, `objectSqlDriver`) and drain to
+	 * the store in the background, kept alive by `background` (`ctx.waitUntil`). Left out, they go straight to the store.
+	 */
+	readonly auditOutbox?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
 }
 
 export interface StackOptions {
@@ -174,6 +201,11 @@ export interface StackOptions {
 	readonly isolateBackend?: IsolateBackendName;
 	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
 	readonly extraIsolateBackends?: ExtraIsolateBackends;
+	/**
+	 * The browser provider (brwsr, `src/browser.ts`), when the Worker has its key. With it the default profile has the
+	 * browser's tools; without it sessions have none.
+	 */
+	readonly browserProvider?: BrowserProvider;
 }
 
 export interface Stack {
@@ -183,7 +215,18 @@ export interface Stack {
 	/** The runtime's project access: who may do what in which project. */
 	readonly access: ProjectAccess;
 	readonly sandboxes: StackSandboxes;
+	/**
+	 * A session's execution environment, as its tools get it (`src/coding-tools.ts`): its workspace, as its agent, and
+	 * the stack's sandboxes for commands. `undefined` for a session without a workspace.
+	 */
+	readonly environment: (session: SessionRecord) => ExecutionEnv | undefined;
+	/** The browser broker, its session tools and people's answers to browser requests, when the stack has a provider. */
+	readonly browser?: StackBrowser;
 	readonly audit: AuditStore;
+	/** Agent Skills packages and their revisions (#12). */
+	readonly skills: Skills;
+	/** Memory spaces and their concepts (#12). */
+	readonly memory: Memory;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -217,6 +260,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	if (driver !== undefined) {
 		await migrateIdentity(driver);
 		await migrateAudit(driver);
+		await migrateSkills(driver);
+		await migrateMemory(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -231,10 +276,18 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		require: (ctx, check) => lateAccess().require(ctx, check),
 		allows: (ctx, check) => lateAccess().allows(ctx, check),
 	};
-	const audit: AuditStore =
+	const store: AuditStore =
 		driver === undefined
 			? createMemoryAuditStore({ clock, access: auditAccess })
 			: createSqlAuditStore({ driver, clock, access: auditAccess });
+	let outboxed: OutboxedAudit | undefined;
+	if (driver !== undefined && storage.auditOutbox !== undefined) {
+		await migrateObjectAuditOutbox(storage.auditOutbox.driver);
+		outboxed = outboxedAudit({ store, clock, ...storage.auditOutbox });
+		// Whatever an earlier instance of the object queued and didn't get to the store.
+		outboxed.kick();
+	}
+	const audit: AuditStore = outboxed ?? store;
 
 	const identity =
 		driver === undefined ? createMemoryIdentity({ clock, audit }) : createSqlIdentity({ driver, clock, audit });
@@ -262,6 +315,32 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (built === undefined) throw new Error("the sandboxes are not ready");
 		return built;
 	};
+	let builtWorkspaces: StoredWorkspaces | undefined;
+	const environment = sessionEnvironments({
+		sandboxes: () => lateSandboxes().sandboxes,
+		workspaces: () => lateWorkspaces(),
+	});
+	const lateWorkspaces = (): StoredWorkspaces => {
+		if (builtWorkspaces === undefined) throw new Error("the workspaces are not ready");
+		return builtWorkspaces;
+	};
+	// The browser is built before the runtime, so a session the runtime resumes as it starts has its tools; it asks for the
+	// runtime's access, and for the bootstrap's admin, only when a call needs them.
+	let bootstrapAdmin: CallContext | undefined;
+	const browser =
+		options.browserProvider === undefined
+			? undefined
+			: createStackBrowser({
+					provider: options.browserProvider,
+					audit,
+					clock,
+					access: auditAccess,
+					admin: () => {
+						if (bootstrapAdmin === undefined) throw new Error("the bootstrap is not finished");
+						return bootstrapAdmin;
+					},
+				});
+	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,
 		audit,
@@ -275,6 +354,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				built === undefined ? Promise.resolve() : lateSandboxes().releaseSession(ctx, sessionId, reason),
 			sweep: async (ctx: SystemContext) => (built === undefined ? [] : lateSandboxes().sweep(ctx)),
 		},
+		// A session on a workspace gets the coding tools its profile names (`src/coding-tools.ts`): the file tools work on
+		// the workspace directly, and `bash` leases an isolate on its first command, not before.
+		// With a browser provider, every session also gets the browser's tools, bound to it (`src/browser.ts`).
+		tools: (record: SessionRecord) =>
+			browser === undefined ? codingToolsFor(record) : [...codingToolsFor(record), ...browser.tools(record)],
+		environment,
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -294,6 +379,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
+		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
+		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const seeders = {
 			git: createGitHubTarballFetcher({ fetch: options.gitFetch ?? ((input, init) => fetch(input, init)) }),
 		};
@@ -304,6 +391,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			access,
 			seeders,
 		});
+		builtWorkspaces = workspaces;
 		built = createStackSandboxes({
 			workspaces,
 			access,
@@ -313,6 +401,17 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
 		});
 		const sandboxes = built;
+		// Skills and memory check project-owned records with the runtime's access, and audit into the one store. Memory
+		// renders recall with its default renderer: Harbour adds no prompt of its own.
+		const skillObjects = storage.skillObjects;
+		const skills =
+			driver === undefined || skillObjects === undefined
+				? createMemorySkills({ clock, audit, access })
+				: createSqlSkills({ driver, objects: skillObjects, clock, audit, access });
+		const memory =
+			driver === undefined
+				? createMemoryMemory({ clock, audit, access })
+				: createSqlMemory({ driver, clock, audit, access });
 
 		const { organisation, project, admin } = await bootstrap({
 			identity,
@@ -321,6 +420,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			adminEmail: options.config.adminEmail,
 			adminName: options.config.adminName,
 		});
+		bootstrapAdmin = admin;
 		const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
 			if (isHarbourError(error, "not_found")) return undefined;
 			throw error;
@@ -333,7 +433,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			model: { route: "default" },
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
-			tools: [],
+			// The coding tools are offered only in a session that has a workspace; the browser's only when the stack has a
+			// provider. Tools describe themselves through their schemas; Harbour adds no prompt about them.
+			tools: browser === undefined ? [...CODING_TOOLS] : [...CODING_TOOLS, ...BROWSER_TOOL_NAMES],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
 			memoryScopes: [],
@@ -346,7 +448,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			workspaces,
 			access,
 			sandboxes,
+			environment,
+			...(browser === undefined ? {} : { browser }),
 			audit,
+			skills,
+			memory,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			passkeys,
@@ -356,10 +462,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			project,
 			admin,
 			alarm: async () => {
+				outboxed?.kick();
 				await core?.alarm();
 			},
 			close: async () => {
 				await (core === undefined ? runtime.close() : core.close());
+				// What's queued stays queued if this fails; the next start drains it.
+				await outboxed?.drain().catch(() => undefined);
 			},
 		};
 	} catch (error) {

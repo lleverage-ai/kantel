@@ -2,7 +2,9 @@
 // missed deltas, and keeps the transcript. Two things are tracked apart, as T3 Code does: connection health (is the
 // socket up?) and data freshness (is what is shown the host's latest?). Token deltas are coalesced: streamed text and
 // a running tool's output wait up to COALESCE_MS and are applied together, in order, so a fast stream renders about
-// five times a second; anything else flushes at once, so the order things happened is the order they show.
+// ten times a second, as often as the host commits a partial answer (about every 100 ms); anything else flushes at
+// once, so the order things happened is the order they show. At 200 ms, with a busy main thread on top, the answer
+// visibly grew only every third of a second though the deltas came three times as often.
 //
 // Deltas are applied with @harbour/protocol's `applyDelta`, which keeps the identity of every item a delta does not
 // name. Rows are memoised on the item object, so that is what keeps earlier rows from rendering again.
@@ -20,7 +22,7 @@ import {
 	type TranscriptItem,
 } from "@harbour/protocol";
 
-export const COALESCE_MS = 200;
+export const COALESCE_MS = 100;
 export const RECONNECT_MS = [500, 1000, 2000, 4000];
 export const HISTORY_PAGE = 120;
 /** The code of the error frame a transport sends when an earlier page fails; the session itself is unaffected. */

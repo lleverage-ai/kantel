@@ -1,7 +1,7 @@
 import type { TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
-import { groupTranscript, type TranscriptRow } from "./transcript-model.ts";
+import { finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
 
 const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
@@ -121,5 +121,31 @@ describe("groupTranscript", () => {
 			assistant("a1", "Done."),
 		];
 		expect(shape(groupTranscript(items))).toEqual(["tools t1 [t1,t2,t3]", "item a1"]);
+	});
+});
+
+describe("finalAnswerIds", () => {
+	it("picks each turn's last answer, not the words between tool calls", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Fix the bug."),
+			assistant("a1", "Let me look."),
+			tool("x1", "read", "Read a.md"),
+			assistant("a2", "Fixed it."),
+			notice("n1", "warning", "The last command may have partly run."),
+			user("u2", "Thanks. Now the docs."),
+			assistant("a3", "Reading them."),
+			tool("x2", "read", "Read docs.md"),
+		];
+		expect([...finalAnswerIds(groupTranscript(items))]).toEqual(["a2"]);
+	});
+
+	it("counts a turn with only an answer", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Hi."),
+			assistant("a1", "Hello."),
+			user("u2", "Bye."),
+			assistant("a2", "Bye."),
+		];
+		expect([...finalAnswerIds(groupTranscript(items))].sort()).toEqual(["a1", "a2"]);
 	});
 });
