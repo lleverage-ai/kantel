@@ -1,17 +1,27 @@
 /**
  * A `GitFetcher` for GitHub repositories over `fetch` alone, so it runs in a Worker as well as on a node: it resolves
- * the ref to a commit with the REST API, then reads the commit's tarball. Pass the vault's egress `fetch`, which adds
- * the credentials; the spec never carries them.
+ * the ref to a commit over git's smart HTTP protocol (`ls-refs`, see `git-refs.ts`), then reads the commit's tarball.
+ * Pass the vault's egress `fetch`, which adds the credentials; the spec never carries them.
+ *
+ * The REST API is asked only for an abbreviated commit ID, which `ls-refs` can't resolve: unauthenticated, it allows
+ * 60 requests an hour per IP, and a Worker shares its egress IPs, so resolving every ref through it fails with 403
+ * long before Harbour's own traffic would justify it.
  *
  * The tarball holds the tree without history or `.git`. Symlinks and submodules are left out (`skipped` counts them).
  */
 import { type GitFetcher, type GitSeedSource, type GitTree, HarbourError, type SeedFile } from "@harbour/contracts";
+import { createGitRefLister, type GitRefLister } from "./git-refs.ts";
+import { gitHubRepo } from "./github-repo.ts";
+
+export { gitHubRepo };
 
 export interface GitHubTarballFetcherOptions {
 	/** The egress `fetch`; the global one when absent. */
 	readonly fetch?: typeof fetch;
-	/** Default `https://api.github.com`. */
+	/** Default `https://api.github.com`; asked only for an abbreviated commit ID. */
 	readonly apiBase?: string;
+	/** Resolves refs; by default `ls-refs` against `https://github.com` over `fetch`. */
+	readonly refs?: GitRefLister;
 	/** Default `https://codeload.github.com`. */
 	readonly codeloadBase?: string;
 	/** The largest tarball read, uncompressed. Default 512 MiB. */
@@ -26,17 +36,7 @@ export interface GitHubTarballFetcher extends GitFetcher {
 }
 
 const COMMIT = /^[0-9a-f]{40}$/;
-
-/** `owner/name`, or a github.com URL, as `[owner, name]`; anything else is not this fetcher's. */
-export function gitHubRepo(repo: string): [string, string] {
-	const match =
-		/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repo) ??
-		/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(repo);
-	if (match === null || /^\.+$/.test(match[1]!) || /^\.+$/.test(match[2]!)) {
-		throw new HarbourError("not_supported", `the GitHub fetcher cannot fetch ${repo}`, { repo });
-	}
-	return [match[1]!, match[2]!];
-}
+const ABBREVIATED = /^[0-9a-f]{4,39}$/;
 
 export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions = {}): GitHubTarballFetcher {
 	const send = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -45,6 +45,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 	const maxBytes = options.maxBytes ?? 512 * 1024 * 1024;
 	const maxFiles = options.maxFiles ?? 100_000;
 	const skipped = { symlinks: 0, other: 0 };
+	const refs = options.refs ?? createGitRefLister({ fetch: send });
 
 	async function resolve(owner: string, name: string, source: GitSeedSource): Promise<string> {
 		if (source.commit !== undefined) {
@@ -52,6 +53,11 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 			return source.commit;
 		}
 		if (COMMIT.test(source.ref)) return source.ref;
+		const named = await refs.resolve(`${owner}/${name}`, source.ref);
+		if (named !== undefined) return named;
+		if (!ABBREVIATED.test(source.ref)) {
+			throw new HarbourError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
+		}
 		const response = await send(`${api}/repos/${owner}/${name}/commits/${encodeURIComponent(source.ref)}`, {
 			headers: { accept: "application/vnd.github.sha", "user-agent": "harbour-workspace" },
 		});

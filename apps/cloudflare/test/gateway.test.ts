@@ -20,13 +20,22 @@ const BASE = "https://harbour.test";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
-/** Stands in for GitHub: every ref is COMMIT, and its tarball is an empty archive. Records what was asked. */
+/** One pkt-line, as git's smart HTTP protocol frames it. */
+const pkt = (text: string) => `${(new TextEncoder().encode(text).length + 4).toString(16).padStart(4, "0")}${text}`;
+
+/**
+ * Stands in for GitHub: every ref `ls-refs` is asked about is COMMIT, and its tarball is an empty archive. Records
+ * what was asked.
+ */
 function fakeGitHub() {
 	const calls: string[] = [];
-	const fetch = (async (input: string | URL | Request) => {
+	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		calls.push(url);
-		if (url.startsWith("https://api.github.com/repos/")) return new Response(COMMIT);
+		if (url.endsWith(".git/git-upload-pack")) {
+			const prefixes = [...String(init?.body ?? "").matchAll(/ref-prefix (\S+)\n/g)].map((match) => match[1]!);
+			return new Response(`${prefixes.map((ref) => pkt(`${COMMIT} ${ref}\n`)).join("")}0000`);
+		}
 		const empty = new Blob([new Uint8Array(1024)]).stream().pipeThrough(new CompressionStream("gzip"));
 		return new Response(empty);
 	}) as typeof globalThis.fetch;
@@ -234,7 +243,7 @@ describe("the gateway", () => {
 		expect(workspace.seedReadiness).toBe("files");
 		expect(workspace.seedReport).toMatchObject({ sources: [{ kind: "git", commit: COMMIT }, { kind: "files" }] });
 		expect(github.calls).toEqual([
-			"https://api.github.com/repos/octocat/Hello-World/commits/master",
+			"https://github.com/octocat/Hello-World.git/git-upload-pack",
 			`https://codeload.github.com/octocat/Hello-World/tar.gz/${COMMIT}`,
 		]);
 
