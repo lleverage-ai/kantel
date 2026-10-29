@@ -3,6 +3,9 @@
 // code once the identity lane's flow lands (#15, Sign-in).
 import { connect } from "node:net";
 
+/** How long before its deadline `latestMessageTo` starts its last search. */
+const SEARCH_MARGIN_MS = 500;
+
 /** Sends one plain-text message with the bare SMTP dialogue. For tests against Mailpit only: no TLS, no auth. */
 export async function sendPlainSmtp(options: {
 	readonly host: string;
@@ -123,8 +126,9 @@ export async function latestMessageTo(
 				text: message.Text,
 			};
 		}
-		// Leave time for one more search to answer; a search that starts after the deadline would only abort.
-		const left = deadline - Date.now() - 200;
+		// Leave time for one more search to answer, even on a busy machine; a search that starts too close to the
+		// deadline would only abort, and a stalled Mailpit is an error, not "no message".
+		const left = deadline - Date.now() - SEARCH_MARGIN_MS;
 		if (left <= 0) return undefined;
 		await new Promise((resolve) => setTimeout(resolve, Math.min(200, left)));
 	}
