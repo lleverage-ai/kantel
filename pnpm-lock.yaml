@@ -238,6 +238,9 @@ importers:
       "@harbour/identity":
         specifier: workspace:*
         version: link:../../packages/identity
+      "@harbour/memory":
+        specifier: workspace:*
+        version: link:../../packages/memory
       "@harbour/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
@@ -250,6 +253,9 @@ importers:
       "@harbour/selfhosted-workspace":
         specifier: workspace:*
         version: link:../../targets/selfhosted/workspace
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../../packages/skills
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql

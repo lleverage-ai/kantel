@@ -7,8 +7,6 @@ import { normaliseEmail, ORGANISATION_HEADER } from "@harbour/contracts";
 import type { E2eCheck, E2eTarget } from "./e2e.ts";
 
 export interface SignInTarget extends E2eTarget {
-	/** The deployment's organisation, which the admin is invited into. */
-	readonly organisationId: string;
 	/** An invited user's email (the gateway's HARBOUR_ADMIN_EMAIL). */
 	readonly adminEmail: string;
 	/** The newest code sent to `email` since `since` (ms), waiting up to `timeoutMs`; undefined if none came. */
@@ -127,6 +125,72 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		"GET /v1/projects lists the deployment's project",
 		projects.ok && (projectsBody.items ?? []).some((project) => project.id === target.projectId),
 		projectsBody,
+	);
+
+	// Loading skills and memory, as a host adapter does, is the organisation admin's (#12): a skill imported for the
+	// project is listed and read back; a project space takes a snapshot and recalls from it.
+	const owner = { kind: "project", organisationId: target.organisationId, projectId: target.projectId };
+	const skillMd = "---\nname: e2e-signin\ndescription: Checks sign-in end to end\n---\n\n# e2e-signin\n";
+	const imported = await post(
+		"/v1/skills/import",
+		{
+			owner,
+			name: "e2e-signin",
+			description: "Checks sign-in end to end",
+			files: [{ path: "SKILL.md", content: skillMd }],
+			source: { sourceId: "e2e", ref: "1" },
+		},
+		asPerson,
+	);
+	const revision = (await body(imported)) as { skillId?: string; revision?: number };
+	check("POST /v1/skills/import publishes the admin's skill", imported.ok && typeof revision.skillId === "string", {
+		status: imported.status,
+		body: revision,
+	});
+	const file = await get(
+		`/v1/skills/${encodeURIComponent(revision.skillId ?? "")}/revisions/${revision.revision ?? 0}/file?path=SKILL.md`,
+	);
+	const fileBody = (await body(file)) as { content?: string };
+	check("GET /v1/skills/:id/revisions/:n/file reads its SKILL.md", file.ok && fileBody.content === skillMd, {
+		status: file.status,
+	});
+	const created = await post("/v1/memory/spaces", { owner, name: `e2e ${crypto.randomUUID().slice(0, 8)}` }, asPerson);
+	const space = (await body(created)) as { id?: string };
+	check("POST /v1/memory/spaces creates the admin's space", created.status === 201 && typeof space.id === "string", {
+		status: created.status,
+		body: space,
+	});
+	const snapshot = await post(
+		`/v1/memory/spaces/${encodeURIComponent(space.id ?? "")}/snapshot`,
+		{
+			sourceId: "e2e",
+			ref: "1",
+			concepts: [
+				{
+					id: "e2e/harbour-port",
+					title: "Harbour's port",
+					description: "Where the gateway listens",
+					statement: "The self-hosted gateway listens on port 8080 in its container.",
+					scope: { kind: "global" },
+					sources: ["e2e:1"],
+					setBy: "owner",
+					status: "active",
+					updatedAt: 1,
+				},
+			],
+		},
+		asPerson,
+	);
+	check("POST /v1/memory/spaces/:id/snapshot loads the admin's snapshot", snapshot.ok, {
+		status: snapshot.status,
+		body: snapshot.ok ? undefined : await body(snapshot),
+	});
+	const recalled = await post("/v1/memory/recall", { spaceIds: [space.id ?? ""], query: "gateway port" }, asPerson);
+	const recall = (await body(recalled)) as { concepts?: { id: string }[] };
+	check(
+		"POST /v1/memory/recall recalls the concept",
+		recalled.ok && (recall.concepts ?? []).some((concept) => concept.id === "e2e/harbour-port"),
+		recall,
 	);
 
 	// A host app's key, from issue to revocation: the secret is shown once, the key works, then it doesn't.

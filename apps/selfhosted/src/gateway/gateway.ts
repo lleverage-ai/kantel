@@ -9,6 +9,9 @@
 //   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
+//   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
+//   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
+//                               imports for the organisation's admin
 //   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
 //   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
@@ -26,7 +29,9 @@ import { createAuthenticator, withAuthentication } from "@harbour/identity/authe
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
 import { createOtpHandler } from "@harbour/identity/otp/http";
+import { createMemoryApi } from "@harbour/memory/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
+import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
@@ -79,6 +84,11 @@ const json = (value: unknown, status = 200) =>
 	});
 
 const AUDIT_PREFIX = "/v1/audit/";
+const SKILLS_BASE = "/v1/skills";
+const MEMORY_BASE = "/v1/memory";
+
+/** Whether `path` is `base` or under it. */
+const under = (path: string, base: string) => path === base || path.startsWith(`${base}/`);
 
 const SIGN_IN_PATHS: ReadonlySet<string> = new Set([OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH]);
 
@@ -166,6 +176,35 @@ export function createGateway(options: GatewayOptions): Gateway {
 						return await api(request);
 					});
 				})();
+	// Loading skills and memory (a host adapter's import, a new space) is the organisation admin's, on top of the stores'
+	// own rules, which refuse agents and check a project owner's role. Reads follow the stores' rules alone. As on
+	// Cloudflare (apps/cloudflare/src/gateway.ts).
+	const organisationAdmin = (ctx: CallContext) => components.identity.authorize(ctx, "admin");
+	const signedIn = async (request: Request): Promise<CallContext> => {
+		const ctx = callers.get(request);
+		if (ctx === undefined) throw new Error("skills or memory API reached without authentication");
+		return ctx;
+	};
+	const skillsApi = createSkillsApi({
+		skills: components.skills,
+		authenticate: signedIn,
+		authorizeImport: organisationAdmin,
+	});
+	const memoryApi = createMemoryApi({
+		memory: components.memory,
+		authenticate: signedIn,
+		authorizeWrite: organisationAdmin,
+	});
+	const notFound = () => json({ error: { code: "not_found", message: "No such route" } }, 404);
+	const skills = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await skillsApi.fetch(request)) ?? notFound();
+	});
+	const memory = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await memoryApi.fetch(request)) ?? notFound();
+	});
+
 	const egress =
 		vault === undefined || options.egress === undefined
 			? undefined
@@ -202,6 +241,8 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await workspaces(request);
 				}
 				if (path.startsWith(AUDIT_PREFIX)) return await audit(request);
+				if (under(path, SKILLS_BASE)) return await skills(request);
+				if (under(path, MEMORY_BASE)) return await memory(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);
 				}
