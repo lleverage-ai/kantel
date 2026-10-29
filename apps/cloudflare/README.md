@@ -192,11 +192,12 @@ deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs 
 ## Deploy
 
 CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, called by
-`.github/workflows/main.yml` on every push to main (or a manual run of it from main). Pull requests are gated only on
-`CI`'s install, typecheck and lint, so they stay quick on Harbour's two self-hosted runners; main runs the heavy
-checks once, on its newest head (a newer push replaces a run still waiting, never one already going): `CI` with the
-tests, `self-hosted` and `Sandbox image`. The deploy runs only once all three have passed on that same commit, so a
-failing check on main means nothing deploys. A pull request that changes the Worker can dry-run it on demand with
+`.github/workflows/main.yml` on every push to main that changes more than Markdown (or a manual run of it from main).
+Pull requests are gated only on `CI`'s install, typecheck and lint, so they stay quick on Harbour's two self-hosted
+runners; main runs the heavy checks only on its newest head: `CI` with the tests, `self-hosted` and `Sandbox image`.
+A newer push cancels them, even while they run, and skips the older commit's deploy. The deploy runs only once all
+three have passed on that same commit, so a failing check on main means nothing deploys; a deploy already going is
+never cancelled, and a newer one waits for it. A pull request that changes the Worker can dry-run it on demand with
 `gh workflow run cloudflare-deploy.yml --ref <branch>`. The account side (the token, the Access application, the
 VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
 
