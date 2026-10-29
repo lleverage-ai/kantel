@@ -147,10 +147,11 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 					data: btoa(`fake screenshot of ${browser.url}`),
 				};
 			},
-			async share(providerSessionId, minutes) {
+			async share(providerSessionId, minutes, _signal, options) {
 				liveSession(providerSessionId);
 				shares += 1;
-				return { url: `https://browser.invalid/share/${providerSessionId}?minutes=${minutes}` };
+				const watch = options?.control === false ? "&watch=1" : "";
+				return { url: `https://browser.invalid/share/${providerSessionId}?minutes=${minutes}${watch}` };
 			},
 		},
 		opened: () => [...opened],
@@ -912,13 +913,19 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			await sweep();
 			forbidAgent(ctx, "make a browser share link");
 			const stored = sessionFor(ctx, browserSessionId);
-			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "operator", operation: "browser.share" });
+			// A watch-only link shows what a viewer of the session may already see, live; control needs an operator.
+			const watch = input?.watch === true;
+			await requireAccess(ctx, {
+				...browserSessionScope(stored),
+				needed: watch ? "viewer" : "operator",
+				operation: "browser.share",
+			});
 			const minutes = input?.minutes ?? SHARE_MINUTES[0];
 			if (!(SHARE_MINUTES as readonly number[]).includes(minutes)) {
 				throw new HarbourError("invalid", `A share link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
 			}
 			openGrant(stored);
-			const link = await provider.share(stored.providerSessionId, minutes, ctx.signal);
+			const link = await provider.share(stored.providerSessionId, minutes, ctx.signal, { control: !watch });
 			const session = stored.session;
 			await emit({
 				id: `browser:session:${session.id}:shared:${ctx.requestId ?? crypto.randomUUID()}`,
@@ -929,7 +936,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				sessionId: session.sessionId,
 				agentId: stored.agentId,
 				subject: { kind: "browser.session", id: session.id },
-				data: { minutes },
+				data: watch ? { minutes, watch } : { minutes },
 			});
 			return link;
 		},

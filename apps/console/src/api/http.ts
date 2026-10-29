@@ -548,6 +548,31 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
 		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
 
+		async browserLive(sessionId, browserSessionId, signal) {
+			const response = await call(`${base}/browser/live`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ sessionId, browserSessionId }),
+				...(signal === undefined ? {} : { signal }),
+			});
+			const link = (await response.json()) as {
+				kind?: unknown;
+				url?: unknown;
+				endMessage?: unknown;
+				expiresAt?: unknown;
+			};
+			// A kind this console doesn't know is no live view, rather than a guess at how to play it.
+			if ((link.kind ?? "embed") !== "embed" || typeof link.url !== "string") {
+				throw new ApiError("unavailable", "Harbour sent no live view this console can show");
+			}
+			return {
+				kind: "embed",
+				url: link.url,
+				...(typeof link.endMessage === "string" ? { endMessage: link.endMessage } : {}),
+				...(typeof link.expiresAt === "number" ? { expiresAt: link.expiresAt } : {}),
+			};
+		},
+
 		async fork(sessionId, itemId) {
 			const response = await call(sessionUrl(sessionId, "/fork"), {
 				method: "POST",

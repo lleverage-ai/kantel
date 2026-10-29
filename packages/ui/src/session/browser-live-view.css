@@ -1,0 +1,89 @@
+/* A browser's live view, under the newest call on it, in line with the call's label as its screenshots are. The frame
+   takes the transcript column's width, at the browser's own shape (brwsr's default 1280 by 720), so the page is
+   readable without opening it. */
+.hb-browser-live {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	min-width: 0;
+	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
+}
+
+.hb-tool-group-collapsible > .hb-browser-live {
+	margin-left: var(--hb-space-7);
+}
+
+/* Ended: the screenshot under it already has its own margin, in line with the caption. */
+.hb-browser-live-ended {
+	gap: 0;
+}
+
+.hb-browser-live-ended > .hb-tool-images {
+	margin-left: 0;
+}
+
+.hb-browser-live-caption {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-browser-live-note {
+	color: var(--hb-text-faint);
+}
+
+.hb-browser-live-wait {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+}
+
+/* A whole control's height, so it is a touch target of its own beside the tool rows above it. */
+.hb-browser-live-open {
+	display: inline-flex;
+	align-items: center;
+	min-height: var(--hb-control-xs);
+	margin-left: auto;
+	border-radius: var(--hb-radius-xs);
+	color: var(--hb-text-muted);
+	text-decoration: underline;
+	text-decoration-color: var(--hb-border-strong);
+	text-underline-offset: var(--hb-space-1);
+}
+
+.hb-browser-live-open:hover {
+	color: var(--hb-text);
+}
+
+.hb-browser-live-frame {
+	position: relative;
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	overflow: hidden;
+	border: var(--hb-hairline) solid var(--hb-border-strong);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+}
+
+.hb-browser-live-frame > iframe,
+.hb-browser-live-frame > img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border: 0;
+}
+
+.hb-browser-live-frame > img {
+	object-fit: contain;
+}
+
+/* Connecting: the last screenshot, dimmed, holds the frame's place until the live page arrives. */
+.hb-browser-live-connecting .hb-browser-live-frame > img {
+	opacity: 0.6;
+}

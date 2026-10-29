@@ -47,6 +47,9 @@ things.
   Humans and services only; an agent is `forbidden`, even for its own browser. Audited `browser.session.shared` with
   the minutes, never the link: "gives a supervisor a share link with control for 15 or 60 minutes, audited without the
   link".
+- `share(ctx, browserSessionId, { watch: true })` makes a watch-only link instead, for a person following the agent's
+  browser live (the console's live view): viewer on the agent session is enough, the provider is asked for no
+  control, and the audit event says `watch: true`: "gives a viewer a watch-only share link, and an agent none".
 
 ## Capabilities
 
@@ -83,7 +86,8 @@ brwsr.dev, holding the project key:
 - `release`: `REQUEST_RELEASE`; a session already gone counts as released.
 - `act`: brwsr's Reflex verbs (`/brwsr/v1/sessions/{id}/reflex/act`, `GET …/reflex/look`), which need no model key.
 - `screenshot`: a JPEG over a short CDP connection to the session's first page that is not blank.
-- `share`: `POST /brwsr/v1/sessions/{id}/shares` with `control: true`.
+- `share`: `POST /brwsr/v1/sessions/{id}/shares` with `control: true`, or `control: false` for a watch-only link
+  (brwsr drops a watch-only viewer's input on its socket).
 - `contextId(name)`: finds or makes the brwsr context with that name, for an operator's `putContext`.
 
 A session brwsr no longer runs is `expired`. `test/brwsr.test.ts` covers it over a fake API; `test/brwsr.live.test.ts`

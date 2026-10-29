@@ -11,7 +11,7 @@ import { BROWSER_TOOL_NAMES, brwsrProviderFrom, toolName } from "../src/browser.
 import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createDevBrowserModels } from "../src/dev-browser-model.ts";
-import { BROWSER_DECISIONS_PATH, createGateway } from "../src/gateway.ts";
+import { BROWSER_DECISIONS_PATH, BROWSER_LIVE_PATH, createGateway } from "../src/gateway.ts";
 import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 
 const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
@@ -46,6 +46,17 @@ async function setup(options: { browser?: boolean; devModel?: boolean } = {}) {
 				body: JSON.stringify(body),
 			}),
 		);
+	const live = async (body: unknown, email = ADMIN) =>
+		gateway.fetch(
+			new Request(`${BASE}${BROWSER_LIVE_PATH}`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"cf-access-jwt-assertion": await mock.sign({ sub: `sub-${email}`, email }),
+				},
+				body: JSON.stringify(body),
+			}),
+		);
 	const runtime = stack.runtime.runtime;
 	const session = await runtime.create(stack.admin, {
 		projectId: stack.project.id,
@@ -63,7 +74,7 @@ async function setup(options: { browser?: boolean; devModel?: boolean } = {}) {
 		}
 		throw new Error("the agent never asked for a browser");
 	};
-	return { stack, gateway, fake, scripted, runtime, session, tools, waitingRequest, decide };
+	return { stack, gateway, fake, scripted, runtime, session, tools, waitingRequest, decide, live };
 }
 
 /** The tool results the model has had, as text. */
@@ -202,6 +213,48 @@ describe("the browser on the stack", () => {
 			["browser_screenshot", "done"],
 		]);
 		expect(fake.live()).toHaveLength(1);
+		await stack.close();
+	});
+
+	it("names each call's browser on its tool item, and gives the person watching a watch-only live view of it", async () => {
+		const { stack, fake, scripted, runtime, session, tools, waitingRequest, decide, live } = await setup();
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Read the page", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_open", args: { url: "https://example.com/" } }] },
+			(view) => {
+				const id = lastBrowserSessionId(view);
+				return { toolCalls: [{ name: "browser_act", args: { browserSessionId: id, action: "scroll" } }] };
+			},
+			{ text: "Scrolled." },
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Look" });
+		const request = await waitingRequest();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		await runtime.wait(stack.admin, session.id, prompt.id);
+		const items = await tools();
+		const opened = items.find((item) => item.name === "browser_open");
+		const browserSessionId = opened?.browserSessionId ?? "";
+		expect(browserSessionId).toMatch(/^bsession_/);
+		expect(items.find((item) => item.name === "browser_act")?.browserSessionId).toBe(browserSessionId);
+		expect(items.find((item) => item.name === "browser_request")?.browserSessionId).toBeUndefined();
+
+		// A watch-only link, the same one for the same person while it lasts, and never in the transcript.
+		const first = await live({ sessionId: session.id, browserSessionId });
+		expect(first.status).toBe(200);
+		const link = (await first.json()) as { kind: string; url: string };
+		expect(link.kind).toBe("embed");
+		expect(link.url).toMatch(/^https:\/\/.*watch=1/);
+		expect(fake.shares()).toBe(1);
+		const again = await live({ sessionId: session.id, browserSessionId });
+		expect(((await again.json()) as { url: string }).url).toBe(link.url);
+		expect(JSON.stringify(await runtime.snapshot(stack.admin, session.id))).not.toContain(link.url);
+
+		// Another session's ID doesn't reach this browser; a closed browser has no live view.
+		expect((await live({ sessionId: "session-other", browserSessionId })).status).toBe(404);
+		expect((await live({ sessionId: session.id })).status).toBe(400);
+		await runtime.close(stack.admin, session.id);
+		const closed = await live({ sessionId: session.id, browserSessionId });
+		expect(closed.status).toBe(410);
 		await stack.close();
 	});
 

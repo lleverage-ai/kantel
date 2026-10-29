@@ -109,6 +109,17 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   them under the row, open or not, at most `--hb-tool-image-width` wide, so a person watches the browser move without
   opening anything. Each is a button ("Open full size") that opens the image in a new tab; its alt text says which
   call it came after. `ToolImages({ item, images? })` draws them, for a host that shows a call's images elsewhere.
+- **Live browser:** with `Transcript`'s `renderBrowserView`, the newest call on each browser the calls name
+  (`item.browserSessionId`) shows that browser's live view in place of its images, and a folded group keeps it in
+  view under its summary. The host renders a `BrowserLiveView` with a source, which knows no provider
+  (`BrowserLiveSource`): an `embed` page (a watch-only share link, or a browser runtime's own embed page, with the
+  message it posts to its parent when its stream is over) or `frames` pushed to it (a screencast, or a recording
+  played back, `mode: "replay"`). It is the column's width at the browser's 16 by 9, a "Live" (or "Replay") label
+  with "Watch only", and "Open in a new tab" for an embed. Before the source arrives it shows the last screenshot,
+  dimmed, with "Connecting to the live view"; once the source ends (`onEnded`) the host asks again or settles on
+  ended, "The browser has closed" over the last screenshot. With no view to have (`unavailable`) it is the screenshot
+  alone, as without a live view. An embed is sandboxed and sends no referrer; either kind is unmounted, and a frames
+  source unsubscribed, when it scrolls away, so it costs a stream only while on screen.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").

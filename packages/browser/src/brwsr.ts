@@ -7,7 +7,8 @@
  * - `act` runs one model-free Reflex step in the session's container (`/brwsr/v1/sessions/{id}/reflex/act` and
  *   `/reflex/look`), which needs only the project key.
  * - `screenshot` captures the page over a short-lived CDP connection.
- * - `share` makes a live-view link with control (`/brwsr/v1/sessions/{id}/shares`).
+ * - `share` makes a live-view link (`/brwsr/v1/sessions/{id}/shares`): with control by default, or watch-only, which
+ *   brwsr enforces on the viewer's socket (its input never reaches the browser).
  *
  * Portable: `fetch` and `WebSocket` only, no Node APIs.
  */
@@ -22,6 +23,15 @@ import {
 } from "@harbour/contracts";
 
 export const BRWSR_API_URL = "https://api.brwsr.dev";
+/** What brwsr's live page posts to its parent once the browser it shows has gone, or its link has run out. */
+export const BRWSR_LIVE_END_MESSAGE = "browserbase-disconnected";
+
+/** A brwsr share link in another page's iframe: without brwsr's address bar, ending with its live page's message. */
+export function brwsrEmbed(url: string): { readonly url: string; readonly endMessage: string } {
+	const embedded = new URL(url);
+	embedded.searchParams.set("navbar", "false");
+	return { url: embedded.toString(), endMessage: BRWSR_LIVE_END_MESSAGE };
+}
 
 /** brwsr's own bounds on a session's `timeout`, in seconds. */
 export const BRWSR_MIN_TIMEOUT_S = 60;
@@ -230,14 +240,19 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 			return captureScreenshot(openSocket(connectUrl), timeoutMs, signal);
 		},
 
-		async share(providerSessionId, minutes, signal) {
+		async share(providerSessionId, minutes, signal, shareOptions) {
+			const control = shareOptions?.control ?? true;
 			const raw = record(
-				await request("POST", `${brwsrPath(providerSessionId)}/shares`, { control: true, minutes }, signal, true),
+				await request("POST", `${brwsrPath(providerSessionId)}/shares`, { control, minutes }, signal, true),
 			);
 			const url = str(raw.url);
 			if (!url.startsWith("https://")) throw new HarbourError("unavailable", "brwsr returned no share link");
 			const expiresAt = Date.parse(str(raw.expiresAt));
-			const link: BrowserShareLink = { url, ...(Number.isFinite(expiresAt) ? { expiresAt } : {}) };
+			const link: BrowserShareLink = {
+				url,
+				...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+				embed: brwsrEmbed(url),
+			};
 			return link;
 		},
 

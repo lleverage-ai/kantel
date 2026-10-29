@@ -128,6 +128,16 @@ export interface WorkspaceFiles {
 	read(path: string, signal?: AbortSignal): Promise<WorkspaceFile>;
 }
 
+/** A watch-only live view of one of a session's browsers: the link to embed, and when it stops working (epoch ms). */
+export type BrowserLiveLink = {
+	/** A page to embed. The only kind today; Harbour's own browser runtime may add a frames stream or a replay. */
+	readonly kind: "embed";
+	readonly url: string;
+	/** What the page posts to its parent once its stream is over. */
+	readonly endMessage?: string;
+	readonly expiresAt?: number;
+};
+
 export interface ConsoleClient {
 	readonly actor: ConsoleActor;
 	projects(): Promise<readonly ProjectSummary[]>;
@@ -185,6 +195,12 @@ export interface ConsoleClient {
 	 * it asked for, as the signed-in person. Absent on a client that can't (a recorded session).
 	 */
 	decideBrowser?(sessionId: string, callId: string, allow: boolean): Promise<void>;
+	/**
+	 * A watch-only live-view link to one of the session's browsers (a tool item's `browserSessionId`), for the signed-in
+	 * person: a brwsr share link that can't take control, and expires. Rejects with `expired` once the browser has
+	 * closed, and `not_found` for a browser the session doesn't have. Absent on a client that has no live browsers.
+	 */
+	browserLive?(sessionId: string, browserSessionId: string, signal?: AbortSignal): Promise<BrowserLiveLink>;
 	/**
 	 * The session is on screen: it is no longer unread, and doesn't become unread while it stays shown. Call the
 	 * returned function when it leaves the screen.

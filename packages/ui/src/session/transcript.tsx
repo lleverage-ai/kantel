@@ -23,7 +23,13 @@ import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
-import { finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
+import {
+	type BrowserViewSlot,
+	browserViewSlots,
+	finalAnswerIds,
+	groupTranscript,
+	type TranscriptRow,
+} from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
 import { WorkingIndicator } from "./working-indicator.tsx";
 import "./transcript.css";
@@ -110,6 +116,9 @@ type RowProps = {
 	/** The row is its turn's final answer, which gets Copy and its time on hover. */
 	finalAnswer: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
+	/** The browsers whose live view goes in this row, under their newest call. */
+	browserSlots: readonly BrowserViewSlot[] | undefined;
+	renderBrowserView: ((slot: BrowserViewSlot) => ReactNode) | undefined;
 	report: (id: string, phase: RowRenderPhase) => void;
 };
 
@@ -121,8 +130,18 @@ function rowBody(
 	turnStartedAt: number | undefined,
 	finalAnswer: boolean,
 	renderCard: RowProps["renderCard"],
+	browserSlots: RowProps["browserSlots"],
+	renderBrowserView: RowProps["renderBrowserView"],
 ): ReactNode {
-	if (row.kind === "tools") return <ToolCallGroup items={row.items} live={row.live} />;
+	if (row.kind === "tools") {
+		const views =
+			browserSlots === undefined || renderBrowserView === undefined
+				? undefined
+				: new Map(browserSlots.map((slot) => [slot.item.id, renderBrowserView(slot)] as const));
+		return (
+			<ToolCallGroup items={row.items} live={row.live} {...(views === undefined ? {} : { browserViews: views })} />
+		);
+	}
 	const { item } = row;
 	switch (item.kind) {
 		case "user":
@@ -138,7 +157,17 @@ function rowBody(
 
 // Memoised on the row object, which groupTranscript keeps while the row's items are unchanged: while an answer
 // streams, every earlier row gets the same props and React skips it.
-const Row = memo(function Row({ row, first, turnStart, turnStartedAt, finalAnswer, renderCard, report }: RowProps) {
+const Row = memo(function Row({
+	row,
+	first,
+	turnStart,
+	turnStartedAt,
+	finalAnswer,
+	renderCard,
+	browserSlots,
+	renderBrowserView,
+	report,
+}: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
 	useRenderProbe("TranscriptRow", row.id);
@@ -151,7 +180,9 @@ const Row = memo(function Row({ row, first, turnStart, turnStartedAt, finalAnswe
 			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}`}
 			data-row={row.id}
 		>
-			<div className="hb-transcript-column">{rowBody(row, turnStartedAt, finalAnswer, renderCard)}</div>
+			<div className="hb-transcript-column">
+				{rowBody(row, turnStartedAt, finalAnswer, renderCard, browserSlots, renderBrowserView)}
+			</div>
 		</div>
 	);
 });
@@ -194,6 +225,12 @@ export type TranscriptProps = {
 	 * when it changes. Without it cards show read-only, from the same components.
 	 */
 	renderCard?: (item: CardItem) => ReactNode;
+	/**
+	 * Renders a browser's live view (usually a `BrowserLiveView` with the host's link), under the newest call on each
+	 * browser the calls name. Keep it stable: every row with a browser re-renders when it changes. Without it a browser
+	 * call shows its screenshots only.
+	 */
+	renderBrowserView?: (slot: BrowserViewSlot) => ReactNode;
 	/** The first page is loading: shows skeleton rows while there are no items. */
 	loading?: boolean;
 	/** What an empty transcript says. Defaults to "No messages yet". */
@@ -245,6 +282,7 @@ export function Transcript({
 	onLoadOlder,
 	olderError,
 	renderCard,
+	renderBrowserView,
 	loading = false,
 	empty,
 	error,
@@ -270,6 +308,13 @@ export function Transcript({
 		previousRows.current = next;
 		return next;
 	}, [items]);
+	// Each browser's live view, under its newest call. Rows keep their slots' identity while they don't change.
+	const previousSlots = useRef<ReadonlyMap<string, readonly BrowserViewSlot[]> | undefined>(undefined);
+	const slots = useMemo(() => {
+		const next = browserViewSlots(rows, previousSlots.current);
+		previousSlots.current = next;
+		return next;
+	}, [rows]);
 	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
 	const paged = onLoadOlder !== undefined;
 	const atStart = paged && !hasOlder && rows.length > 0;
@@ -558,6 +603,8 @@ export function Transcript({
 								turnStartedAt={turnStarts.get(entry.id)}
 								finalAnswer={finalAnswers.has(entry.id)}
 								renderCard={renderCard}
+								browserSlots={slots.get(entry.id)}
+								renderBrowserView={renderBrowserView}
 								report={report}
 							/>
 						)

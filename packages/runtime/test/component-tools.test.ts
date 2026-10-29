@@ -45,6 +45,7 @@ function setUp(tools: string[]) {
 							{ mimeType: "image/svg+xml", data: "PHN2Zy8+" },
 							{ mimeType: "image/jpeg", data: PIXEL },
 						],
+						browserSessionId: "bsession_1",
 					},
 				};
 			},
@@ -60,7 +61,7 @@ function setUp(tools: string[]) {
 }
 
 describe("the runtime's own tools", () => {
-	it("offers a session the tools its profile names, bound to it, and shows their images on the tool item", async () => {
+	it("offers a session the tools its profile names, bound to it, and shows their images and browser on the tool item", async () => {
 		const { service, script, bound } = setUp(["shot"]);
 		try {
 			await service.profiles.put(ctx, profile(["shot"]));
@@ -79,6 +80,8 @@ describe("the runtime's own tools", () => {
 				{ mimeType: "image/png", data: PIXEL },
 				{ mimeType: "image/jpeg", data: PIXEL },
 			]);
+			// The browser the call used, from its UI details, for the console's live view.
+			expect(tool?.browserSessionId).toBe("bsession_1");
 		} finally {
 			await service.close();
 		}

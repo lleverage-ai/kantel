@@ -1,4 +1,4 @@
-import type { ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { ToolImage, ToolItem, TranscriptItem } from "@harbour/protocol";
 
 // The transcript's rows, derived from its items. Consecutive tool calls become one group row (T3 Code's work log
 // groups, MessagesTimeline.logic.ts:1758-1889); every other item is a row of its own. Any non-tool item ends a group.
@@ -103,4 +103,53 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 		}
 	}
 	return ids;
+}
+
+/** Where a browser's live view goes: under the newest call on it, with the last screenshot it left. */
+export type BrowserViewSlot = {
+	readonly browserSessionId: string;
+	/** The newest call on the browser, which the view sits under. */
+	readonly item: ToolItem;
+	/** The newest image any call on the browser returned, for before the view connects and after the browser closes. */
+	readonly screenshot?: ToolImage;
+};
+
+const sameSlot = (a: BrowserViewSlot | undefined, b: BrowserViewSlot): boolean =>
+	a !== undefined && a.browserSessionId === b.browserSessionId && a.item === b.item && a.screenshot === b.screenshot;
+
+/**
+ * Each browser's view slot, by the id of the tool row it goes in: one per browser the transcript's calls name
+ * (`ToolItem.browserSessionId`), under its newest call, so the view moves down the transcript with the browser.
+ * Pass the previous result as `previous` to keep the identity of every row's slots that did not change, so only the
+ * rows the view leaves or joins render again.
+ */
+export function browserViewSlots(
+	rows: readonly TranscriptRow[],
+	previous?: ReadonlyMap<string, readonly BrowserViewSlot[]>,
+): ReadonlyMap<string, readonly BrowserViewSlot[]> {
+	const newest = new Map<string, { rowId: string; item: ToolItem; screenshot?: ToolImage }>();
+	for (const row of rows) {
+		if (row.kind !== "tools") continue;
+		for (const item of row.items) {
+			const id = item.browserSessionId;
+			if (id === undefined) continue;
+			const screenshot = item.images?.at(-1) ?? newest.get(id)?.screenshot;
+			newest.set(id, { rowId: row.id, item, ...(screenshot === undefined ? {} : { screenshot }) });
+		}
+	}
+	const byRow = new Map<string, BrowserViewSlot[]>();
+	for (const [browserSessionId, { rowId, item, screenshot }] of newest) {
+		const slot: BrowserViewSlot = { browserSessionId, item, ...(screenshot === undefined ? {} : { screenshot }) };
+		const list = byRow.get(rowId) ?? [];
+		list.push(slot);
+		byRow.set(rowId, list);
+	}
+	const result = new Map<string, readonly BrowserViewSlot[]>();
+	for (const [rowId, slots] of byRow) {
+		const before = previous?.get(rowId);
+		const same =
+			before !== undefined && before.length === slots.length && slots.every((slot, i) => sameSlot(before[i], slot));
+		result.set(rowId, same ? before : slots);
+	}
+	return result;
 }

@@ -78,6 +78,11 @@ export interface ToolItem {
 	readonly output?: string;
 	/** Images the call returned, in order, such as a browser's screenshot of the page it is on. */
 	readonly images?: readonly ToolImage[];
+	/**
+	 * The browser the call used, such as the one `browser_open` opened or the one `browser_act` stepped, so a client can
+	 * ask for its live view. Only an ID: never a link or a credential.
+	 */
+	readonly browserSessionId?: string;
 	readonly tier?: SandboxTierName;
 	readonly endedAt?: Timestamp;
 }
