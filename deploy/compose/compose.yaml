@@ -214,9 +214,9 @@ services:
     volumes: []
     healthcheck: { disable: true }
 
-  # The M1 gateway. Every component is in memory until its lane's real one
-  # lands, so it needs nothing else in the stack yet; it writes its bootstrap
-  # organisation, project, workspace and API key to HARBOUR_BOOTSTRAP_FILE.
+  # The M1 gateway: the session, workspace read and audit APIs, email one-time
+  # PIN sign-in, and the console. It writes its bootstrap organisation,
+  # project, workspace and API key to HARBOUR_BOOTSTRAP_FILE.
   gateway:
     build:
       context: ../..
@@ -227,10 +227,14 @@ services:
     environment:
       HARBOUR_BOOTSTRAP_FILE: /var/lib/harbour/bootstrap.json
       HARBOUR_CONSOLE_DIR: /harbour/apps/console/dist
-      # Where sign-in codes are sent (#15, email one-time PIN): Mailpit here;
-      # any relay in production (smtp:// with STARTTLS, or smtps://).
-      HARBOUR_SMTP_URL: ${HARBOUR_SMTP_URL:-smtp://mailpit:1025}
+      # Where sign-in codes are sent (#15, email one-time PIN): Mailpit here,
+      # in the clear on the private network (starttls=off); any relay in
+      # production (smtp:// with STARTTLS required, or smtps://).
+      HARBOUR_SMTP_URL: ${HARBOUR_SMTP_URL:-smtp://mailpit:1025?starttls=off}
       HARBOUR_MAIL_FROM: ${HARBOUR_MAIL_FROM:-Harbour <harbour@harbour.localhost>}
+      # Invited as an organisation admin, so someone can sign in: Harbour is
+      # invite-only. Its codes land in Mailpit.
+      HARBOUR_ADMIN_EMAIL: ${HARBOUR_ADMIN_EMAIL:-admin@harbour.localhost}
       # The real components (#18 step 3): runtime, audit, identity and
       # workspaces on this Postgres, in their own schema apart from M0's
       # `harbour`, with workspace trees in MinIO under their own prefix.

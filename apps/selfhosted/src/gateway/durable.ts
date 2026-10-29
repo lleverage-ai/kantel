@@ -4,14 +4,15 @@
 //
 //   audit       SQL audit store on Postgres (@harbour/audit/sql, #70)
 //   identity    SQL identity directory on Postgres (@harbour/identity/sql, #83)
+//   sign-in     email one-time PIN codes and Harbour sessions on Postgres (@harbour/identity/sql, #93)
 //   runtime     SQL session store and each session's Pi Durable tables (@harbour/runtime/sql, #69), on one Postgres
 //               connection through PostgresSqliteDatabase; unfinished runs resume on start
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@harbour/selfhosted-workspace, #72)
 //
-// Their tables do not collide: `audit_*`, `identity_*`, `harbour_*` and `pi_<session>_*`, `workspace_heads` and
+// Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
 // `workspace_versions`. The model is still the echo model until the model gateway (M1-BE9) lands.
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import { createSqlIdentity, migrateIdentity } from "@harbour/identity/sql";
+import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSessionRuntime } from "@harbour/runtime/core";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import {
@@ -121,11 +122,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			runtime,
 			workspaces,
+			otp: createSqlOtpStores(driver),
 			bindings: {
 				identity: "postgres",
 				audit: "postgres",
 				runtime: "postgres session store and Pi Durable tables (echo model)",
 				workspaces: "postgres + s3",
+				signIn: "postgres",
 			},
 			close,
 		};
