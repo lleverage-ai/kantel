@@ -49,6 +49,7 @@ Planned, not built:
 | `GET /v1/sessions/{sessionId}/stream` (WebSocket or SSE) | `SessionRuntime.watch`, `@harbour/protocol` frames | In the public API |
 | `GET /v1/sessions/{sessionId}/history` | `SessionHistory.history` | In the public API |
 | Presigned upload into the session workspace | `Workspaces` | Next |
+| `POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed` | a live or replay view link for an iframe ([browser runtime](browser-runtime.md)) | Next |
 | `POST /v1/sessions/{sessionId}/cards/{cardId}/respond` | the card's owner (vault, questions, browser grants) | Next |
 | `GET /v1/skills` | `Skills.list` (the project named and the calling person's own) | In the public API |
 | `GET /v1/skills/{skillId}` | `Skills.get` | In the public API |
