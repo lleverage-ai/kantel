@@ -26,7 +26,7 @@ The cold runs' timing anomaly is the Workers clock itself, not a slow step: see 
 
 | Item | State |
 | --- | --- |
-| Isolate-ready ≤100 ms p50 / ≤300 ms p95 on the deployed stack | **Met**, warm (Tom, 28 Oct 2026): 0 / 0 ms on the server in all 100 warm runs ([below](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)) |
+| Isolate-ready ≤100 ms p50 / ≤300 ms p95 on the deployed stack | **Met**, warm: 0 / 0 ms on the server in all 100 warm runs ([below](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)). The issue's text still says "50 runs, a new session each"; Tom set the target to a warm session on 28 Oct 2026, and the issue hasn't been edited to match |
 | The conformance suite passes against the deployed stack | **Met** (Tom, 29 Oct 2026; see below) |
 | A real Sal research task runs end to end | Open: waits on Sal's placement reaching the deployed stack ([below](#a-real-sal-research-task)) |
 | Monthly cost estimate checked against the first week's bill | Open: due around 4 Nov 2026 ([Cost estimate](#cost-estimate)) |
