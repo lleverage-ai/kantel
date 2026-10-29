@@ -13,6 +13,7 @@ import type {
 	ScheduleInput,
 	ScheduleKind,
 	Schedules,
+	ScheduleUpdate,
 	Timestamp,
 	Weekday,
 } from "@harbour/contracts";
@@ -20,8 +21,12 @@ import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type { BadgeTone } from "../primitives/status.tsx";
 import { readTaskPayload } from "./form/schedule-writes.ts";
 
-/** The fields `update` may change: everything but the owner and the kind, which are fixed at create. */
-export type ScheduleUpdate = Partial<Omit<ScheduleInput, "owner" | "kind">>;
+/**
+ * The fields `update` may change: everything but the owner and the kind, which are fixed at create. A field left out
+ * stays as it is; `null` on `at`, `repeat`, `until` or `count` clears it, as the public API's PATCH body does, so the
+ * same update works in process and as JSON.
+ */
+export type { ScheduleUpdate };
 
 /**
  * What the page reads and changes: `Schedules`' calls with the viewer's call context already bound, so the page never

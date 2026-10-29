@@ -314,16 +314,17 @@ export function createInput(value: ReadDraft, kind: FormKind, owner: OwnerRef): 
 }
 
 /**
- * An edit's fields. Switching between a one-off and a recurrence sets the other to undefined, and a cleared limit
- * sets `count` to undefined, so the store drops them.
+ * An edit's fields. Switching between a one-off and a recurrence sends the other as `null`, and a cleared limit sends
+ * `count` as `null`, so the store clears them: `null`, unlike undefined, survives the PATCH body's JSON. The form has
+ * no end date, so it leaves `until` out and the schedule keeps its own.
  */
 export function updateInput(value: ReadDraft, schedule: Schedule): ScheduleUpdate {
 	return {
 		title: value.title,
 		timezone: value.timezone,
-		at: value.at,
-		repeat: value.repeat,
-		count: value.count,
+		at: value.at ?? null,
+		repeat: value.repeat ?? null,
+		count: value.count ?? null,
 		payload: value.payload,
 		...(schedule.kind === "check" ? { check: value.check } : {}),
 	};

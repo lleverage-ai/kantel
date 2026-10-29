@@ -1,6 +1,7 @@
 import { HarbourError } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 import { createSchedulesScenario, FIXTURE_AGENTS, FIXTURE_NOW, FIXTURE_OWNER } from "../fixtures.ts";
+import type { SchedulesSource, ScheduleUpdate } from "../schedules-model.ts";
 import {
 	createScheduleFormFlow,
 	draftFromSchedule,
@@ -9,9 +10,24 @@ import {
 	readDraft,
 	type ScheduleDraft,
 } from "./schedule-form-model.ts";
-import { joinCommand, readTaskPayload, splitCommand } from "./schedule-writes.ts";
+import { joinCommand, readTaskPayload, type ScheduleWrites, splitCommand } from "./schedule-writes.ts";
 
 const MINUTE = 60_000;
+
+/** The source's writes with each update sent as JSON, as the console's API client sends the PATCH body. */
+function overJson(source: SchedulesSource): { readonly writes: ScheduleWrites; readonly sent: ScheduleUpdate[] } {
+	const sent: ScheduleUpdate[] = [];
+	return {
+		sent,
+		writes: {
+			...source,
+			update: (id, input) => {
+				sent.push(input);
+				return source.update(id, JSON.parse(JSON.stringify(input)) as ScheduleUpdate);
+			},
+		},
+	};
+}
 
 const draft = (patch: Partial<ScheduleDraft> = {}): ScheduleDraft => ({
 	...emptyDraft({ agents: FIXTURE_AGENTS, timezone: "Europe/London", now: FIXTURE_NOW }),
@@ -168,6 +184,70 @@ describe("the form flow on the fixtures", () => {
 		const once = await again.save();
 		expect(once?.repeat).toBeUndefined();
 		expect(once?.at).toBe(Date.UTC(2026, 9, 30, 9, 15));
+	});
+
+	it("switches a one-off to a recurrence and back over JSON, sending null for the one it drops", async () => {
+		const { source } = await createSchedulesScenario({ empty: true });
+		const { writes, sent } = overJson(source);
+		const reminder = await source.create({
+			owner: FIXTURE_OWNER,
+			kind: "task",
+			title: "Chase the review",
+			timezone: "Europe/London",
+			at: Date.UTC(2026, 9, 30, 9, 15),
+			payload: { agentId: "agt_triage", prompt: "Chase the review." },
+		});
+		const toRepeat = createScheduleFormFlow({
+			writes,
+			owner: FIXTURE_OWNER,
+			draft: { ...draftFromSchedule(reminder, FIXTURE_NOW), when: "repeat", every: "hours", interval: "2" },
+			schedule: reminder,
+			now: () => FIXTURE_NOW,
+		});
+		const repeating = await toRepeat.save();
+		expect(sent[0]).toMatchObject({ at: null, count: null });
+		expect(sent[0]).not.toHaveProperty("until");
+		expect(repeating).not.toHaveProperty("at");
+		expect(repeating?.repeat).toMatchObject({ every: "hours", interval: 2 });
+
+		const toOnce = createScheduleFormFlow({
+			writes,
+			owner: FIXTURE_OWNER,
+			draft: { ...draftFromSchedule(repeating ?? reminder, FIXTURE_NOW), when: "once", once: "2026-10-31T08:00" },
+			schedule: repeating ?? reminder,
+			now: () => FIXTURE_NOW,
+		});
+		const once = await toOnce.save();
+		expect(sent[1]).toMatchObject({ repeat: null });
+		expect(once).not.toHaveProperty("repeat");
+		expect(once?.at).toBe(Date.UTC(2026, 9, 31, 8, 0));
+	});
+
+	it("removes a run limit over JSON by sending count as null", async () => {
+		const { source } = await createSchedulesScenario({ empty: true });
+		const { writes, sent } = overJson(source);
+		const limited = await source.create({
+			owner: FIXTURE_OWNER,
+			kind: "task",
+			title: "Triage",
+			timezone: "Europe/London",
+			repeat: { every: "minutes", interval: 10, from: FIXTURE_NOW },
+			count: 3,
+			payload: { agentId: "agt_triage", prompt: "Label the new issues." },
+		});
+		const editing = draftFromSchedule(limited, FIXTURE_NOW);
+		expect(editing.count).toBe("3");
+		const flow = createScheduleFormFlow({
+			writes,
+			owner: FIXTURE_OWNER,
+			draft: { ...editing, count: "" },
+			schedule: limited,
+			now: () => FIXTURE_NOW,
+		});
+		const saved = await flow.save();
+		expect(sent[0]).toMatchObject({ count: null, at: null });
+		expect(saved).not.toHaveProperty("count");
+		expect(saved?.repeat).toEqual(limited.repeat);
 	});
 
 	it("ends a schedule only after the confirmation, and it stays listed as ended", async () => {
