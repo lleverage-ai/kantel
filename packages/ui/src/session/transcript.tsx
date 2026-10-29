@@ -11,6 +11,8 @@ import {
 	useState,
 } from "react";
 import { VList, type VListHandle } from "virtua";
+import { PresentedFiles } from "../presented/presented-file-card.tsx";
+import { presentedKey } from "../presented/presented-file-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -21,8 +23,6 @@ import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
-import { PresentedFiles } from "./presented-file-card.tsx";
-import { presentedKey } from "./presented-file-model.ts";
 import { QuestionCard } from "./question-card.tsx";
 import { ToolCallGroup } from "./tool-call.tsx";
 import {
@@ -206,16 +206,7 @@ const Row = memo(function Row({
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
-				{rowBody(
-					row,
-					finalAnswer,
-					renderCard,
-					browserSlots,
-					renderBrowserView,
-					highlight,
-					onOpenFile,
-					openFile,
-				)}
+				{rowBody(row, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight, onOpenFile, openFile)}
 			</div>
 		</div>
 	);

@@ -36,9 +36,9 @@ body { font: 15px system-ui, sans-serif; margin: 24px; color: #1d1d1f; }
 .bar { height: 18px; background: #4b6bfb; border-radius: 4px; margin: 6px 0; color: white; font-size: 12px; padding-left: 6px; }
 </style></head>
 <body><h1>Signups by week</h1>
-<div class="bar" style="width: 40%">W1 · 120</div>
-<div class="bar" style="width: 65%">W2 · 195</div>
-<div class="bar" style="width: 90%">W3 · 270</div>
+<div class="bar" style="width: 40%">W1: 120</div>
+<div class="bar" style="width: 65%">W2: 195</div>
+<div class="bar" style="width: 90%">W3: 270</div>
 <p id="note">This page runs in a sandbox.</p>
 <script>document.getElementById("note").textContent += " Its script ran; it can't reach the console.";</script>
 </body></html>

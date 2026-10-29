@@ -168,7 +168,7 @@ body {
 
 /* A presented file's viewer: beside the transcript on a wide screen, over it on a narrow one. */
 .console-file-panel {
-	flex: 0 0 clamp(26rem, 48%, 56rem);
+	flex: 0 0 clamp(var(--hb-card-width), 48%, var(--hb-content-width));
 	min-width: 0;
 	min-height: 0;
 }

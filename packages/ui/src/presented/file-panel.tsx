@@ -4,12 +4,12 @@ import { IconButton } from "../primitives/button.tsx";
 import { XIcon } from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
-import { type PresentedKind, presentedKind, presentedKindLabel } from "../session/presented-file-model.ts";
+import { NoteMarkdown } from "../workspace/note-markdown.tsx";
+import { ViewerHeader, ViewerScroll } from "../workspace/viewer-header.tsx";
+import { fileViewerLineCap, formatBytes, textLines } from "../workspace/workspace-model.ts";
 import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
-import { NoteMarkdown } from "./note-markdown.tsx";
 import { PdfView } from "./pdf-view.tsx";
-import { ViewerHeader, ViewerScroll } from "./viewer-header.tsx";
-import { fileViewerLineCap, formatBytes, textLines } from "./workspace-model.ts";
+import { type PresentedKind, presentedKind, presentedKindLabel } from "./presented-file-model.ts";
 import "./file-panel.css";
 
 // The viewer a presented file opens in: a panel that slides in from the right, with the file's name, kind and size,

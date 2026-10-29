@@ -1,6 +1,6 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
-import { framedHtml, HTML_FRAME_SANDBOX } from "../workspace/html-frame.ts";
+import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
 import { fileToOpen, presentedFiles, presentedKey, presentedKind } from "./presented-file-model.ts";
 
 const file = (path: string, mimeType = "application/octet-stream"): PresentedFile => ({

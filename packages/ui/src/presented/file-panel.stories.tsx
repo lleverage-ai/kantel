@@ -1,10 +1,10 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { useState } from "react";
-import { PresentedFileCard, PresentedFiles } from "../session/presented-file-card.tsx";
-import { presentedKey } from "../session/presented-file-model.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { FilePanel, type FilePanelState } from "./file-panel.tsx";
+import { PresentedFileCard, PresentedFiles } from "./presented-file-card.tsx";
+import { presentedKey } from "./presented-file-model.ts";
 import {
 	bytesOf,
 	dashboardHtml,
@@ -16,7 +16,7 @@ import {
 	reportMarkdown,
 	samplePdf,
 } from "./presented-fixtures.ts";
-import "./stories.css";
+import "../workspace/stories.css";
 
 export default { title: "Workspace/Presented files" } satisfies StoryDefault;
 
