@@ -103,3 +103,9 @@
 	-webkit-line-clamp: 2;
 	line-clamp: 2;
 }
+
+/* What a working subagent is doing now: one line that changes in place, cut short rather than wrapping, as T3's. */
+.hb-subagent-activity {
+	-webkit-line-clamp: 1;
+	line-clamp: 1;
+}

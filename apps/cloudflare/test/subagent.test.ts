@@ -7,7 +7,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
-import { SUBAGENT_CALL_LABEL, SUBAGENT_TOOL, subagentsEnabled, subagentTitle } from "../src/subagent.ts";
+import {
+	MAX_SUBAGENT_DEPTH,
+	SUBAGENT_CALL_LABEL,
+	SUBAGENT_DEPTH_LABEL,
+	SUBAGENT_TOOL,
+	subagentDepth,
+	subagentsEnabled,
+	subagentTitle,
+} from "../src/subagent.ts";
 
 const opened: Stack[] = [];
 afterEach(async () => {
@@ -83,20 +91,54 @@ describe("subagents", () => {
 		expect(call?.kind === "tool" ? call.status : undefined).toBe("done");
 	});
 
-	it("isn't offered to a subagent's own session", async () => {
+	it("nests: a subagent starts its own, each a level deeper, and the answer comes back up", async () => {
+		const { stack, admin, script, sessions, run, create } = await setUp(true);
+		const top = await create();
+		script.reply(
+			// The top session hands the task to a subagent, which hands part of it to one of its own.
+			{ toolCalls: [{ name: SUBAGENT_TOOL, args: { task: "Check the refunds, with help.", title: "Refunds" } }] },
+			{ toolCalls: [{ name: SUBAGENT_TOOL, args: { task: "Count the partial refunds.", title: "Partial refunds" } }] },
+			{ text: "3 partial refunds." },
+			{ text: "Refunds checked: 3 partial." },
+			{ text: "Done: 3 partial refunds." },
+		);
+		const result = await run(top.id, "Check the refunds.");
+		expect(result.answer).toBe("Done: 3 partial refunds.");
+
+		const [child] = (await stack.runtime.directory.list(admin, { parentSessionId: top.id })).items;
+		const [grandchild] = (await stack.runtime.directory.list(admin, { parentSessionId: child?.id ?? "" })).items;
+		expect(child?.labels[SUBAGENT_DEPTH_LABEL]).toBe("1");
+		expect(grandchild?.title).toBe("Partial refunds");
+		expect(grandchild?.labels[SUBAGENT_DEPTH_LABEL]).toBe("2");
+		expect(grandchild?.workspaceId).toBe(top.workspaceId);
+		// The grandchild was started by its parent, the subagent, not by the top session.
+		expect(grandchild?.createdBy).toEqual({ kind: "agent", agentId: DEFAULT_AGENT_ID, sessionId: child?.id });
+		const call = (await sessions.snapshot(admin, child?.id ?? "")).items.find((item) => item.kind === "tool");
+		expect(call?.kind === "tool" ? call.output : undefined).toBe("3 partial refunds.");
+	});
+
+	it("isn't offered to a session already as deep as subagents go", async () => {
 		const { stack, admin, script, sessions, create, run } = await setUp(true);
 		const parent = await create();
-		const child = await sessions.create(admin, {
+		const deepest = await sessions.create(admin, {
 			projectId: stack.project.id,
 			agentId: DEFAULT_AGENT_ID,
 			parentSessionId: parent.id,
+			labels: { [SUBAGENT_DEPTH_LABEL]: String(MAX_SUBAGENT_DEPTH) },
 		});
-		// The child asks for a subagent of its own: the call fails, and no grandchild is started.
+		// It asks for a subagent of its own: the call fails, and no child is started.
 		script.reply({ toolCalls: [{ name: SUBAGENT_TOOL, args: { task: "Go deeper" } }] }, { text: "Couldn't" });
-		await run(child.id, "Hi");
-		const call = (await sessions.snapshot(admin, child.id)).items.find((item) => item.kind === "tool");
+		await run(deepest.id, "Hi");
+		const call = (await sessions.snapshot(admin, deepest.id)).items.find((item) => item.kind === "tool");
 		expect(call?.kind === "tool" ? call.status : undefined).toBe("error");
-		expect((await stack.runtime.directory.list(admin, { parentSessionId: child.id })).items).toEqual([]);
+		expect((await stack.runtime.directory.list(admin, { parentSessionId: deepest.id })).items).toEqual([]);
+	});
+
+	it("reads a session's depth from its label, counting an unlabelled child as one level down", () => {
+		expect(subagentDepth({ labels: {} })).toBe(0);
+		expect(subagentDepth({ parentSessionId: "s", labels: {} })).toBe(1);
+		expect(subagentDepth({ parentSessionId: "s", labels: { [SUBAGENT_DEPTH_LABEL]: "3" } })).toBe(3);
+		expect(subagentDepth({ parentSessionId: "s", labels: { [SUBAGENT_DEPTH_LABEL]: "x" } })).toBe(1);
 	});
 
 	it("names a child after its task's first line when not given a title", () => {

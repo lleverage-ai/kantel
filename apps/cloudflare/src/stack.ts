@@ -246,7 +246,8 @@ export interface StackOptions {
 	readonly presentFiles?: boolean;
 	/**
 	 * Subagents (`src/subagent.ts`, experimental): with it the default profile has the `subagent` tool, offered to every
-	 * top-level session, which hands a task to a child session of the same agent. Default off.
+	 * session down to `MAX_SUBAGENT_DEPTH` levels of subagents, which hands a task to a child session of the same agent.
+	 * Default off.
 	 */
 	readonly subagents?: boolean;
 	/** Runs check schedules' commands. Default the isolate tier (`src/schedule-checks.ts`). */
@@ -472,7 +473,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			const codemode = options.codemode;
 			const withCodemode =
 				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
-			// With subagents on, a top-level session also gets `subagent` (`src/subagent.ts`); a subagent's session doesn't.
+			// With subagents on, a session also gets `subagent` (`src/subagent.ts`), unless it is already as deep as subagents go.
 			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
 			return subagent === undefined ? withCodemode : [...withCodemode, subagent];
 		},

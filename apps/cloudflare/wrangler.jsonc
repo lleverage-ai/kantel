@@ -139,7 +139,9 @@
 				// links and sealed blobs. The deployed Worker's are secrets.
 				"HARBOUR_BROWSER_PROVIDER": "harbour",
 				"HARBOUR_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
-				"HARBOUR_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001"
+				"HARBOUR_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
+				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
+				"HARBOUR_SUBAGENTS": "on"
 			}
 		}
 	}

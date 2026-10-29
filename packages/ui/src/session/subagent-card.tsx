@@ -9,7 +9,7 @@ import "./subagent-card.css";
 
 // A subagent in the thread: the task an agent handed to a session of its own, as one card that opens that session.
 // After T3 Code's subagent timeline link (V2LifecycleRow.tsx, SubagentTimelineLink): a status dot, the title, one
-// line of detail (the task while it works, its answer once done), the status in words with how long it has taken, and
+// line of detail (what it is doing now while it works, as T3's progress line, else its task; its answer once done), the status in words with how long it has taken, and
 // a chevron when it opens. The card is the link: the whole of it goes to the subagent's own session, which streams.
 // Which calls are subagents, and what the card says about one, is in subagent-model.ts.
 
@@ -26,6 +26,11 @@ export type SubagentCardProps = {
 	readonly task?: string | undefined;
 	/** The opening of its answer, once it has one: the detail line then. */
 	readonly summary?: string | undefined;
+	/**
+	 * What it is doing now, while it works (`subagentActivity` of its own session: "Reading billing/refund.ts", or
+	 * "Waiting on its subagent: Partial refunds"): the detail line in place of the task. Ignored once it has ended.
+	 */
+	readonly activity?: string | undefined;
 	readonly status: ToolItemStatus;
 	/** When it started (the call's time), for "Working 1m 12s". */
 	readonly startedAt: number;
@@ -44,13 +49,14 @@ function Timing({ status, startedAt, endedAt }: Pick<SubagentCardProps, "status"
 }
 
 /**
- * A subagent's card in the thread. Running, it says "Working" with a live timer and its task; done, its answer's
- * opening; failed or stopped, which, with the task. It opens the subagent's session when given `href` or `onOpen`.
+ * A subagent's card in the thread. Running, it says "Working" with a live timer and what it is doing now (its task
+ * until it has started); done, its answer's opening; failed or stopped, which, with the task. It opens the subagent's session when given `href` or `onOpen`.
  */
 export const SubagentCard = memo(function SubagentCard({
 	title,
 	task,
 	summary,
+	activity,
 	status,
 	startedAt,
 	endedAt,
@@ -58,7 +64,9 @@ export const SubagentCard = memo(function SubagentCard({
 	onOpen,
 }: SubagentCardProps) {
 	const { status: tone, words } = STATUS[status];
-	const detail = status === "done" ? (summary ?? task) : (task ?? summary);
+	const detail =
+		status === "done" ? (summary ?? task) : status === "running" ? (activity ?? task ?? summary) : (task ?? summary);
+	const live = status === "running" && activity !== undefined;
 	const opens = href !== undefined || onOpen !== undefined;
 	const body: ReactNode = (
 		<>
@@ -71,7 +79,9 @@ export const SubagentCard = memo(function SubagentCard({
 				</span>
 				{opens ? <ChevronRightIcon className="hb-subagent-chevron" /> : null}
 			</span>
-			{detail === undefined ? null : <span className="hb-subagent-detail">{detail}</span>}
+			{detail === undefined ? null : (
+				<span className={`hb-subagent-detail${live ? " hb-subagent-activity" : ""}`}>{detail}</span>
+			)}
 		</>
 	);
 	const className = `hb-subagent-card hb-subagent-${status}${opens ? " hb-subagent-opens hb-focusable" : ""}`;

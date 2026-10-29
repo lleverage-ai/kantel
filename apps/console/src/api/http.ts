@@ -636,6 +636,8 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			});
 			const record = (await response.json()) as SessionRecord;
 			projectOfSession.set(record.id, record.projectId);
+			// Known at once, so the new session's lineage (none) is too, and the list shows it working without a request.
+			records.set(record.id, record);
 			return record.id;
 		},
 

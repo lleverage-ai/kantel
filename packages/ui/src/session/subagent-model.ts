@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 
 // A subagent's call, read for its card: which calls are subagents, and what the card says about one.
 
@@ -23,6 +23,40 @@ export function plainText(markdown: string): string {
 }
 
 const firstLine = (text: string): string => text.trim().split("\n")[0]?.trim() ?? "";
+
+/** The most of a subagent's latest activity the card says: a line. */
+const ACTIVITY_CHARS = 160;
+
+const lastLine = (text: string): string =>
+	text
+		.split("\n")
+		.map((line) => plainText(line))
+		.filter((line) => line !== "")
+		.at(-1) ?? "";
+
+/**
+ * What a working subagent is doing now, from its own session's transcript, as T3 Code's card shows a running
+ * subagent's progress: the call it is making (one of its own subagents by title), else the last line it wrote, else
+ * that it is thinking. Undefined before it has done anything after its task.
+ */
+export function subagentActivity(items: readonly TranscriptItem[]): string | undefined {
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const item = items[index];
+		if (item === undefined || item.kind === "user") return undefined;
+		if (item.kind === "tool") {
+			const line = isSubagentCall(item)
+				? `${item.status === "running" ? "Waiting on its subagent" : "Heard back from its subagent"}: ${subagentOf(item).title}`
+				: item.label;
+			return line.slice(0, ACTIVITY_CHARS);
+		}
+		if (item.kind === "assistant") {
+			const line = lastLine(item.text);
+			if (line !== "") return line.slice(0, ACTIVITY_CHARS);
+			if ((item.thinking ?? "") !== "") return "Thinking";
+		}
+	}
+	return undefined;
+}
 
 /** What a subagent call's card shows, from the call: its title, its task and, once it has one, its answer. */
 export function subagentOf(item: ToolItem): {

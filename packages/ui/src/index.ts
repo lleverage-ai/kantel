@@ -295,7 +295,13 @@ export {
 	sessionStatus,
 } from "./session/session-model.ts";
 export { SubagentCard, type SubagentCardProps } from "./session/subagent-card.tsx";
-export { isSubagentCall, plainText, SUBAGENT_TOOL, subagentOf } from "./session/subagent-model.ts";
+export {
+	isSubagentCall,
+	plainText,
+	SUBAGENT_TOOL,
+	subagentActivity,
+	subagentOf,
+} from "./session/subagent-model.ts";
 export {
 	chosenThinking,
 	clampThinking,
