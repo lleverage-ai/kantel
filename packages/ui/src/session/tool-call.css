@@ -191,3 +191,43 @@
 	min-width: 0;
 	padding-left: var(--hb-space-7);
 }
+
+/* Images a call returned, such as a browser's screenshot: under the row, in line with its label, always shown, so a
+   person watches the browser move without opening anything. Each is a button that opens the image full size. */
+.hb-tool {
+	/* The widest a tool image is shown. Candidate token: --hb-tool-image-width. */
+	--hb-tool-image-width: calc(var(--hb-space-11) * 8);
+}
+
+.hb-tool-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
+}
+
+.hb-tool-group-collapsible > .hb-tool-images {
+	margin-left: var(--hb-space-7);
+}
+
+.hb-tool-image {
+	display: block;
+	max-width: min(100%, var(--hb-tool-image-width));
+	padding: 0;
+	overflow: hidden;
+	border: var(--hb-hairline) solid var(--hb-border-strong);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-panel);
+	cursor: zoom-in;
+}
+
+.hb-tool-image img {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+
+.hb-tool-image:hover {
+	border-color: var(--hb-text-faint);
+}

@@ -134,6 +134,48 @@ export function TextField({
 	);
 }
 
+/**
+ * A labelled multi-line input for text a person writes out: a scheduled task's prompt, a note. It grows with its rows
+ * and the person can drag it taller. Not the composer, which sends on Enter.
+ */
+export function TextAreaField({
+	label,
+	hint,
+	error,
+	className,
+	id: suppliedId,
+	rows = 4,
+	...rest
+}: ComponentProps<"textarea"> & { label: string; hint?: string; error?: string }) {
+	const generatedId = useId();
+	const id = suppliedId ?? generatedId;
+	const described = error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
+	return (
+		<div className={`hb-text-field${className ? ` ${className}` : ""}`}>
+			<label className="hb-text-field-label" htmlFor={id}>
+				{label}
+			</label>
+			<textarea
+				id={id}
+				rows={rows}
+				className="hb-input hb-textarea hb-focusable"
+				aria-invalid={error !== undefined || undefined}
+				aria-describedby={described}
+				{...rest}
+			/>
+			{error !== undefined ? (
+				<p id={`${id}-error`} className="hb-text-field-error">
+					{error}
+				</p>
+			) : hint !== undefined ? (
+				<p id={`${id}-hint`} className="hb-text-field-hint">
+					{hint}
+				</p>
+			) : null}
+		</div>
+	);
+}
+
 export type SelectOption = { readonly value: string; readonly label: string };
 
 /**

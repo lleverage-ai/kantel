@@ -10,6 +10,7 @@
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
  * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
  * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
+ * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
@@ -46,6 +47,10 @@ import type { Stack } from "./stack.ts";
 
 /** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"?, "tools"? }`: a few bytes. */
 const MEASURE_BODY_LIMIT = 1024;
+
+/** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
+export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
+const DECISION_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
 
@@ -260,9 +265,63 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
+	const decideBrowser = async (request: Request): Promise<Response> => {
+		const noStore = { "cache-control": "no-store" };
+		if (request.method !== "POST") {
+			return Response.json(
+				{ error: { code: "invalid", message: "POST only" } },
+				{ status: 405, headers: { allow: "POST", ...noStore } },
+			);
+		}
+		const caller = await authenticate(request);
+		if (caller instanceof Response) return caller;
+		const browser = stack.browser;
+		if (browser === undefined) {
+			return Response.json(
+				{ error: { code: "unavailable", message: "This deployment has no browser" } },
+				{ status: 503, headers: noStore },
+			);
+		}
+		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
+		const body = (() => {
+			try {
+				return bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
+			} catch {
+				return undefined;
+			}
+		})() as { sessionId?: unknown; callId?: unknown; allow?: unknown } | undefined;
+		if (
+			typeof body !== "object" ||
+			body === null ||
+			typeof body.sessionId !== "string" ||
+			body.sessionId === "" ||
+			typeof body.callId !== "string" ||
+			body.callId === "" ||
+			typeof body.allow !== "boolean"
+		) {
+			return Response.json(
+				{
+					error: {
+						code: "invalid",
+						message: 'The body is { "sessionId": string, "callId": string, "allow": boolean }',
+					},
+				},
+				{ status: 400, headers: noStore },
+			);
+		}
+		try {
+			const ctx = callContextFor(caller, { signal: request.signal });
+			const result = await browser.decide(ctx, { sessionId: body.sessionId, callId: body.callId, allow: body.allow });
+			return Response.json(result, { headers: noStore });
+		} catch (error) {
+			return errorResponse(error);
+		}
+	};
+
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
+			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
 			if (under(path, WORKSPACE_READ_API_BASE)) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {

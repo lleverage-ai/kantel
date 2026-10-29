@@ -19,40 +19,20 @@
 	translate: 0 var(--hb-on-cap);
 }
 
-/* A light sweeps across the words, after T3 Code's shimmer: the text is painted by a gradient a little brighter in
-   the middle, moved across it. Under reduced motion it stops, and the words stay muted. */
+/* The words breathe, as a skeleton does (hb-shimmer, an opacity animation): the compositor runs it, so it costs the
+   page nothing per frame. A light swept across the words (T3 Code's shimmer, a moving background clipped to the text)
+   repainted them on the main thread every frame, which on a browser without a GPU cost a fifth of the main thread
+   while it sat still and stuttered the answer streaming above it. Under reduced motion it stops, and the words stay
+   muted. */
 .hb-working-indicator-text {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	background:
-		linear-gradient(
-			90deg,
-			var(--hb-text-faint) 0%,
-			var(--hb-text-faint) 40%,
-			var(--hb-text) 50%,
-			var(--hb-text-faint) 60%,
-			var(--hb-text-faint) 100%
-		)
-		0 0 / 300% 100%;
-	background-clip: text;
-	color: transparent;
-	animation: hb-working-sweep var(--hb-duration-shimmer) linear infinite;
-}
-
-@keyframes hb-working-sweep {
-	from {
-		background-position: 100% 0;
-	}
-	to {
-		background-position: 0 0;
-	}
+	animation: hb-shimmer var(--hb-duration-shimmer) ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
 	.hb-working-indicator-text {
 		animation: none;
-		background: none;
-		color: var(--hb-text-muted);
 	}
 }

@@ -12,6 +12,8 @@
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
  * - `workspaces`: workspace heads, versions and blobs (R2). A seed's git source is fetched as a GitHub tarball
  *   (`createGitHubTarballFetcher`, #81) over `StackOptions.gitFetch`;
+ * - skills (#12): packages, revisions and pins in `sql`, each file's body in `skillObjects` (R2);
+ * - memory (#12): spaces, concepts and proposals in `sql`;
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
  *
@@ -27,17 +29,20 @@ import {
 	type AuditSink,
 	type AuditStore,
 	type Authenticator,
+	type BrowserProvider,
 	type CallContext,
 	type Clock,
 	type IdentityDirectory,
 	isHarbourError,
 	type LeaseEndReason,
+	type Memory,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
 	type SessionRecord,
 	type SignInMethod,
+	type Skills,
 	type SystemContext,
 	systemClock,
 } from "@harbour/contracts";
@@ -45,6 +50,8 @@ import { createAuthenticator } from "@harbour/identity/authenticator";
 import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity/jwt";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createSqlIdentity, migrateIdentity } from "@harbour/identity/sql";
+import { createMemoryMemory } from "@harbour/memory/memory";
+import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import {
@@ -52,6 +59,8 @@ import {
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
+import { createMemorySkills } from "@harbour/skills/memory";
+import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
@@ -63,6 +72,7 @@ import {
 } from "@harbour/workspace/stored";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
+import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
@@ -146,8 +156,13 @@ export interface SessionObjectStorage {
 
 /** Durable storage for the stack's parts. Each one left out is in memory, and gone when the stack is. */
 export interface StackStorage {
-	/** The identity directory and the audit store. Their migrations run on every start; each is idempotent. */
+	/**
+	 * The identity directory, the audit store, skills and memory. Their migrations run on every start; each is
+	 * idempotent.
+	 */
 	readonly sql?: SqlDriver;
+	/** Skill files' bodies, by their SHA-256 (`skills/org/<organisation>/<sha256>`). Needs `sql`. */
+	readonly skillObjects?: ObjectBucket;
 	/** The session runtime's store, each session's Pi storage and the alarm that resumes them. */
 	readonly sessions?: SessionObjectStorage;
 	readonly workspaces?: WorkspaceStore;
@@ -185,6 +200,11 @@ export interface StackOptions {
 	readonly isolateBackend?: IsolateBackendName;
 	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
 	readonly extraIsolateBackends?: ExtraIsolateBackends;
+	/**
+	 * The browser provider (brwsr, `src/browser.ts`), when the Worker has its key. With it the default profile has the
+	 * browser's tools; without it sessions have none.
+	 */
+	readonly browserProvider?: BrowserProvider;
 }
 
 export interface Stack {
@@ -199,7 +219,13 @@ export interface Stack {
 	 * the stack's sandboxes for commands. `undefined` for a session without a workspace.
 	 */
 	readonly environment: (session: SessionRecord) => ExecutionEnv | undefined;
+	/** The browser broker, its session tools and people's answers to browser requests, when the stack has a provider. */
+	readonly browser?: StackBrowser;
 	readonly audit: AuditStore;
+	/** Agent Skills packages and their revisions (#12). */
+	readonly skills: Skills;
+	/** Memory spaces and their concepts (#12). */
+	readonly memory: Memory;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -228,6 +254,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	if (driver !== undefined) {
 		await migrateIdentity(driver);
 		await migrateAudit(driver);
+		await migrateSkills(driver);
+		await migrateMemory(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -288,6 +316,23 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (builtWorkspaces === undefined) throw new Error("the workspaces are not ready");
 		return builtWorkspaces;
 	};
+	// The browser is built before the runtime, so a session the runtime resumes as it starts has its tools; it asks for the
+	// runtime's access, and for the bootstrap's admin, only when a call needs them.
+	let bootstrapAdmin: CallContext | undefined;
+	const browser =
+		options.browserProvider === undefined
+			? undefined
+			: createStackBrowser({
+					provider: options.browserProvider,
+					audit,
+					clock,
+					access: auditAccess,
+					admin: () => {
+						if (bootstrapAdmin === undefined) throw new Error("the bootstrap is not finished");
+						return bootstrapAdmin;
+					},
+				});
+	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,
 		audit,
@@ -303,7 +348,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 		// A session on a workspace gets the coding tools its profile names (`src/coding-tools.ts`): the file tools work on
 		// the workspace directly, and `bash` leases an isolate on its first command, not before.
-		tools: sessionCodingTools(),
+		// With a browser provider, every session also gets the browser's tools, bound to it (`src/browser.ts`).
+		tools: (record: SessionRecord) =>
+			browser === undefined ? codingToolsFor(record) : [...codingToolsFor(record), ...browser.tools(record)],
 		environment,
 	};
 	const sessions = storage.sessions;
@@ -324,6 +371,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
+		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
+		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const seeders = {
 			git: createGitHubTarballFetcher({ fetch: options.gitFetch ?? ((input, init) => fetch(input, init)) }),
 		};
@@ -344,6 +393,17 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
 		});
 		const sandboxes = built;
+		// Skills and memory check project-owned records with the runtime's access, and audit into the one store. Memory
+		// renders recall with its default renderer: Harbour adds no prompt of its own.
+		const skillObjects = storage.skillObjects;
+		const skills =
+			driver === undefined || skillObjects === undefined
+				? createMemorySkills({ clock, audit, access })
+				: createSqlSkills({ driver, objects: skillObjects, clock, audit, access });
+		const memory =
+			driver === undefined
+				? createMemoryMemory({ clock, audit, access })
+				: createSqlMemory({ driver, clock, audit, access });
 
 		const { organisation, project, admin } = await bootstrap({
 			identity,
@@ -352,6 +412,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			adminEmail: options.config.adminEmail,
 			adminName: options.config.adminName,
 		});
+		bootstrapAdmin = admin;
 		const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
 			if (isHarbourError(error, "not_found")) return undefined;
 			throw error;
@@ -364,8 +425,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			model: { route: "default" },
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
-			// Offered only in a session that has a workspace.
-			tools: [...CODING_TOOLS],
+			// The coding tools are offered only in a session that has a workspace; the browser's only when the stack has a
+			// provider. Tools describe themselves through their schemas; Harbour adds no prompt about them.
+			tools: browser === undefined ? [...CODING_TOOLS] : [...CODING_TOOLS, ...BROWSER_TOOL_NAMES],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
 			memoryScopes: [],
@@ -379,7 +441,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			access,
 			sandboxes,
 			environment,
+			...(browser === undefined ? {} : { browser }),
 			audit,
+			skills,
+			memory,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			...(core === undefined ? {} : { hosts: runtime.hosts }),

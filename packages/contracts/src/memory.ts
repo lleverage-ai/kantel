@@ -202,6 +202,11 @@ export interface MemorySearchHit {
 export interface Memory {
 	/** Humans and services only. */
 	createSpace(ctx: CallContext, input: { readonly owner: OwnerRef; readonly name: string }): Promise<MemorySpace>;
+	/**
+	 * The spaces of the caller's organisation it may read, oldest first: the organisation's, those of projects it may
+	 * view, and a user's own. A person never sees another user's space here; services and Harbour see every one.
+	 */
+	listSpaces(ctx: CallContext, page?: PageRequest): Promise<Page<MemorySpace>>;
 	getConcept(ctx: CallContext, spaceId: string, conceptId: string): Promise<Concept>;
 	listConcepts(
 		ctx: CallContext,
