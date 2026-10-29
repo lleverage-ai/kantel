@@ -3,7 +3,7 @@
  * SQLite (through `DurableObjectSessionDatabase`), and the core a session Durable Object class wraps. Portable to
  * Workers: no Node modules and no workers-types at runtime.
  */
-import { type Authenticator, type Clock, systemClock } from "@harbour/contracts";
+import { type Authenticator, type Clock, type SessionId, systemClock } from "@harbour/contracts";
 import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@harbour/runtime/core";
 import { callbackHostHandlers, createSessionApi, type SessionApi, type SessionApiOptions } from "@harbour/runtime/http";
 import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
@@ -48,9 +48,34 @@ export interface SessionRuntimeDurableObjectCoreOptions
 	 * resume it. Default 30 s.
 	 */
 	readonly watchdogMs?: number;
+	/**
+	 * The backfill of closed sessions whose Pi tables are still in the object's SQLite (closed before archiving shipped,
+	 * #216, or whose archive failed): each alarm archives up to `batch` of them, and while a batch comes back full the
+	 * core arms the alarm again `intervalMs` later. Starting the object only arms the first alarm; it archives nothing.
+	 * Default 5 sessions every 2 s; `false` turns it off.
+	 */
+	readonly archiveSweep?: false | { readonly batch?: number; readonly intervalMs?: number };
 }
 
 const DEFAULT_WATCHDOG_MS = 30_000;
+const DEFAULT_ARCHIVE_SWEEP_BATCH = 5;
+const DEFAULT_ARCHIVE_SWEEP_INTERVAL_MS = 2_000;
+
+/** A Pi Durable table set's `durable_schema` table, under the session's prefix (`piPrefixFor`). */
+const PI_SCHEMA_TABLE = /^pi_([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})_durable_schema$/;
+
+/** The sessions with Pi tables in the object's SQLite, open or closed, from its schema. */
+export async function sessionsWithPiTables(database: DurableObjectSessionDatabase): Promise<SessionId[]> {
+	const rows = await database.all<{ name: string }>(
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'pi_*_durable_schema' ORDER BY name",
+	);
+	const ids: SessionId[] = [];
+	for (const { name } of rows) {
+		const parts = PI_SCHEMA_TABLE.exec(name);
+		if (parts !== null) ids.push(parts.slice(1).join("-") as SessionId);
+	}
+	return ids;
+}
 
 /**
  * Everything a session Durable Object needs, so its class (owned by the deployment) is a thin wrapper: construct this
@@ -73,6 +98,7 @@ export class SessionRuntimeDurableObjectCore {
 	readonly #getAlarm: (() => Promise<number | null>) | undefined;
 	readonly #onAlarmError: ((error: unknown) => void) | undefined;
 	readonly #watchdogMs: number;
+	readonly #archiveSweep: { readonly batch: number; readonly intervalMs: number } | undefined;
 	#store: SessionStore | undefined;
 	#api: SessionApi | undefined;
 	/** The alarm this instance last armed; cleared when it fires. */
@@ -100,6 +126,17 @@ export class SessionRuntimeDurableObjectCore {
 			throw new RangeError(`watchdogMs must be a positive number of milliseconds, not ${watchdogMs}`);
 		}
 		this.#watchdogMs = watchdogMs;
+		if (options.archiveSweep !== false) {
+			const batch = options.archiveSweep?.batch ?? DEFAULT_ARCHIVE_SWEEP_BATCH;
+			const intervalMs = options.archiveSweep?.intervalMs ?? DEFAULT_ARCHIVE_SWEEP_INTERVAL_MS;
+			if (!Number.isInteger(batch) || batch <= 0) {
+				throw new RangeError(`archiveSweep.batch must be a positive whole number, not ${batch}`);
+			}
+			if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+				throw new RangeError(`archiveSweep.intervalMs must be a positive number of milliseconds, not ${intervalMs}`);
+			}
+			this.#archiveSweep = { batch, intervalMs };
+		}
 		this.ready = this.#start(options);
 		// Whoever awaits `ready` (fetch, alarm, the object's constructor) sees a failure; this only keeps it handled.
 		this.ready.catch(() => undefined);
@@ -113,6 +150,7 @@ export class SessionRuntimeDurableObjectCore {
 			getAlarm: _getAlarm,
 			onAlarmError: _onAlarmError,
 			watchdogMs: _watchdogMs,
+			archiveSweep: _archiveSweep,
 			authenticator,
 			api,
 			prefix,
@@ -133,6 +171,7 @@ export class SessionRuntimeDurableObjectCore {
 			storage: (session) => sqlPiStorage(this.database, session.id),
 			// A closed session's tables are archived and dropped, so the object's schema grows with its open sessions (#216).
 			archive: runtimeOptions.archive ?? ((session) => archiveSqlPiStorage(this.database, session.id)),
+			unarchived: runtimeOptions.unarchived ?? (() => sessionsWithPiTables(this.database)),
 			onWakeAt: (at) => this.#arm(at),
 		});
 		this.#api = createSessionApi({
@@ -146,7 +185,8 @@ export class SessionRuntimeDurableObjectCore {
 			authenticator,
 		});
 		await service.resume();
-		await this.#armNext();
+		// Closed sessions' tables are archived from the alarm, a batch at a time, never here: the object's input waits for this.
+		await this.#armNext(undefined, this.#archiveSweep !== undefined && (await this.#archiveBacklog(store)));
 		return service;
 	}
 
@@ -156,7 +196,10 @@ export class SessionRuntimeDurableObjectCore {
 		return this.#api!.fetch(request);
 	}
 
-	/** The object's alarm handler: resumes every session whose wake is due, then arms the alarm for the next one. */
+	/**
+	 * The object's alarm handler: resumes every session whose wake is due, archives a batch of closed sessions' tables
+	 * (`archiveSweep`), then arms the alarm for the next wake, or the next batch while a batch comes back full.
+	 */
 	async alarm(): Promise<void> {
 		const service = await this.ready;
 		this.#armedAt = undefined;
@@ -165,7 +208,9 @@ export class SessionRuntimeDurableObjectCore {
 		this.#skipped = undefined;
 		try {
 			await service.resume();
-			await this.#armNext(skipped);
+			const sweep = this.#archiveSweep;
+			const more = sweep !== undefined && (await service.sweepArchive(sweep.batch)) >= sweep.batch;
+			await this.#armNext(skipped, more);
 		} finally {
 			this.#firing = false;
 		}
@@ -181,19 +226,31 @@ export class SessionRuntimeDurableObjectCore {
 		await this.database.close();
 	}
 
+	/** Whether a session the store doesn't count as open still has its Pi tables: the archive backfill has work. */
+	async #archiveBacklog(store: SessionStore): Promise<boolean> {
+		const withTables = await sessionsWithPiTables(this.database);
+		if (withTables.length === 0) return false;
+		const notClosed = new Set((await store.openSessions()).map((session) => session.record.id));
+		return withTables.some((id) => !notClosed.has(id));
+	}
+
 	/**
 	 * Arms the alarm for the earliest stored wake still to come (a session not open in this instance has no timer here
 	 * and tells the core nothing until it opens), or for `skipped` if that is earlier. While a session's wake is due (it
 	 * is running), no later than the watchdog, so an object evicted mid-run comes back to resume it; the alarm that
-	 * brought it here is spent. Waits for every arming queued before it.
+	 * brought it here is spent. With `sweep`, no later than `archiveSweep.intervalMs`, for the next batch of the archive
+	 * backfill. Waits for every arming queued before it.
 	 */
-	async #armNext(skipped?: number): Promise<void> {
+	async #armNext(skipped?: number, sweep = false): Promise<void> {
 		const now = this.#clock.now();
 		const store = this.#store!;
 		const running = (await store.wakeable(now)).length > 0;
-		const candidates = [await store.nextWake(now), skipped, running ? now + this.#watchdogMs : undefined].filter(
-			(at): at is number => at !== undefined,
-		);
+		const candidates = [
+			await store.nextWake(now),
+			skipped,
+			running ? now + this.#watchdogMs : undefined,
+			sweep && this.#archiveSweep !== undefined ? now + this.#archiveSweep.intervalMs : undefined,
+		].filter((at): at is number => at !== undefined);
 		if (candidates.length > 0) this.#arm(Math.min(...candidates));
 		await this.#arming;
 	}

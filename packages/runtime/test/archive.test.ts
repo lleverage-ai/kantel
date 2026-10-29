@@ -47,15 +47,31 @@ function databaseFile(): string {
 	return join(dir, "harbour.db");
 }
 
-/** One process on the database file, archiving closed sessions as the targets do. */
-async function processOn(file: string, archive = true) {
+/** The sessions with Pi tables in the database, from its schema, as the Durable Object target lists them. */
+async function sessionsWithTables(db: SqliteDatabase): Promise<string[]> {
+	const rows = await db.all<{ name: string }>(
+		"SELECT name FROM sqlite_schema WHERE type = 'table' AND name GLOB 'pi_*_durable_schema' ORDER BY name",
+	);
+	return rows.map(({ name }) => name.replace(/^pi_(.{8})(.{4})(.{4})(.{4})(.{12})_durable_schema$/, "$1-$2-$3-$4-$5"));
+}
+
+/**
+ * One process on the database file, archiving closed sessions as the targets do. Without `archive`, it keeps them; with
+ * `migrate` too, a session's tables come from Pi Durable's migrations, as every session's did before #216.
+ */
+async function processOn(file: string, archive = true, migrate = false) {
 	const db = await openNodeSqliteDatabase(file);
 	const { models, script } = createScriptedModel();
 	const errors: unknown[] = [];
 	const service = createSessionRuntime({
 		store: await createSqlSessionStore(db),
-		storage: (session) => sqlPiStorage(db, session.id),
-		...(archive ? { archive: (session) => archiveSqlPiStorage(db, session.id) } : {}),
+		storage: (session) =>
+			migrate
+				? SqliteStorage.open(borrowDatabase(db), { prefix: piPrefixFor(session.id) })
+				: sqlPiStorage(db, session.id),
+		...(archive
+			? { archive: (session) => archiveSqlPiStorage(db, session.id), unarchived: () => sessionsWithTables(db) }
+			: {}),
 		onArchiveError: (_id, error) => errors.push(error),
 		models,
 	});
@@ -211,6 +227,49 @@ describe("closing a session archives its Pi tables", () => {
 		const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
 		await service.runtime.close(ctx, session.id);
 		expect((await tablesOf(db, session.id)).length).toBe(9);
+	});
+
+	it("sweeps sessions closed before archiving in bounded batches, stops when none is left, and reads them back", async () => {
+		const file = databaseFile();
+		// Before #216: every session's tables come from the migrations, and a closed session keeps them.
+		const before = await processOn(file, false, true);
+		const talked = await before.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		before.script.reply({ text: "Hello back" });
+		const prompt = await before.service.runtime.prompt(ctx, talked.id, { text: "Hello" });
+		await before.service.runtime.wait(ctx, talked.id, prompt.id);
+		const transcript = (await before.service.runtime.snapshot(ctx, talked.id)).items;
+		await before.service.runtime.close(ctx, talked.id);
+		const closed = [talked.id];
+		for (let index = 0; index < 5; index++) {
+			const session = await before.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+			await before.service.runtime.close(ctx, session.id);
+			closed.push(session.id);
+		}
+		const stillOpen = await before.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		await before.close();
+
+		const after = await processOn(file);
+		expect((await sessionsWithTables(after.db)).sort()).toEqual([...closed, stillOpen.id].sort());
+		// A closed session being read is open here: the sweep leaves it to the runtime's own close.
+		const reading = closed[1]!;
+		await after.service.runtime.snapshot(ctx, reading);
+
+		// Five closed sessions to archive, two at a time: the short batch says nothing is left.
+		expect(await after.service.sweepArchive(2)).toBe(2);
+		expect(await after.service.sweepArchive(2)).toBe(2);
+		expect(await after.service.sweepArchive(2)).toBe(1);
+		expect(await after.service.sweepArchive(2)).toBe(0);
+		expect(after.errors).toEqual([]);
+		expect((await sessionsWithTables(after.db)).sort()).toEqual([reading, stillOpen.id].sort());
+		for (const id of closed.filter((id) => id !== reading)) expect(await tablesOf(after.db, id)).toEqual([]);
+
+		// An archived session reads as it did, and goes back to its archive when the runtime closes.
+		expect((await after.service.runtime.snapshot(ctx, talked.id)).items).toEqual(transcript);
+		expect((await after.service.runtime.snapshot(ctx, stillOpen.id)).status).toBe("idle");
+		await after.close();
+		const last = await openNodeSqliteDatabase(file);
+		cleanups.push(() => last.close());
+		expect(await sessionsWithTables(last)).toEqual([stillOpen.id]);
 	});
 
 	it("reports a failed archive and leaves the closed session readable", async () => {
