@@ -8,12 +8,16 @@ import {
 	type AuditEvent,
 	type CallContext,
 	type Decision,
+	type MeResponse,
+	PASSKEY_CONFIRMATION_PATH,
 	PASSKEY_REGISTRATION_PATH,
 	PASSKEYS_PATH,
 	type Passkey,
 	type PasskeyChallenge,
 	type PasskeyRegistrationOptions,
 	type PasskeysResponse,
+	passkeyRemovePath,
+	passkeyResetPath,
 	type SessionRecord,
 } from "@harbour/contracts";
 import { PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
@@ -180,6 +184,37 @@ describe("passkeys on Cloudflare", () => {
 		});
 		expect(approved.status).toBe(200);
 		expect(approved.body.effectiveTerms?.route?.methods).toEqual(["GET"]);
+	});
+
+	it("needs a passkey to add or remove one, and lets the admin reset them, audited", async () => {
+		const { call, register, device, auditOf } = await setup();
+		const first = await register();
+		const another = async () =>
+			device.create((await call<PasskeyRegistrationOptions>(PASSKEY_REGISTRATION_PATH, {})).body);
+
+		const unconfirmed = await call<{ error: { passkey: string } }>(PASSKEYS_PATH, { response: await another() });
+		expect(unconfirmed.status).toBe(422);
+		expect(unconfirmed.body.error.passkey).toBe("missing");
+		const forAdding = await call<PasskeyChallenge>(PASSKEY_CONFIRMATION_PATH, { change: "register" });
+		expect(forAdding.body.rpId).toBe("harbour.test");
+		const added = await call<Passkey>(PASSKEYS_PATH, {
+			response: await another(),
+			confirmation: await device.get(forAdding.body),
+		});
+		expect(added.status).toBe(201);
+		expect((await call(passkeyRemovePath(first.id), {})).status).toBe(422);
+		expect(await auditOf("identity.passkey.refused")).toHaveLength(2);
+
+		// Lost them all: the admin (here, themselves) resets them, and a sign-in enrols a new one.
+		const me = (await call<MeResponse>("/v1/me")).body;
+		if (me.actor.kind !== "human") throw new Error("not signed in as a person");
+		const reset = await call<{ removed: number }>(passkeyResetPath(me.actor.userId), {});
+		expect(reset).toEqual({ status: 200, body: { removed: 2 } });
+		expect((await call("/v1/vault/viewer")).body).toMatchObject({ passkeyRequired: false });
+		expect(await auditOf("identity.passkey.reset")).toMatchObject([
+			{ actor: me.actor, subject: { kind: "identity.user", id: me.actor.userId }, data: { removed: 2 } },
+		]);
+		await register();
 	});
 
 	it("binds a paste to its secret request: the action is the proposal's, not the caller's", async () => {

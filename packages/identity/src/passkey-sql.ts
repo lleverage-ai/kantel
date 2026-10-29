@@ -37,8 +37,8 @@ export function passkeySchema(dialect: SqlDialect): readonly string[] {
 			last_used_at ${time}
 		)`,
 		"CREATE INDEX IF NOT EXISTS identity_passkeys_by_user ON identity_passkeys (user_id, created_at)",
-		// `binding` is the approval's `PasskeyBinding` as JSON, NULL for a registration. Expired rows are deleted as new
-		// challenges are issued.
+		// `binding` is the approval's `PasskeyBinding` as JSON, or a change's `PasskeyChange`, NULL for a registration.
+		// Expired rows are deleted as new challenges are issued.
 		`CREATE TABLE IF NOT EXISTS identity_passkey_challenges (
 			challenge TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
@@ -100,19 +100,32 @@ type ChallengeRow = {
 };
 
 function challengeOf(row: ChallengeRow): PasskeyChallengeRecord {
-	const binding = sqlOptionalString(row.binding);
+	const bound = sqlOptionalString(row.binding);
 	const purpose = String(row.purpose);
-	if (purpose !== "registration" && purpose !== "approval") throw new Error(`Unknown challenge purpose ${purpose}`);
+	if (purpose !== "registration" && purpose !== "approval" && purpose !== "change") {
+		throw new Error(`Unknown challenge purpose ${purpose}`);
+	}
+	const parsed = bound === undefined ? undefined : (JSON.parse(bound) as unknown);
 	return {
 		challenge: String(row.challenge),
 		userId: String(row.user_id),
 		purpose,
 		rpId: String(row.rp_id),
 		origin: String(row.origin),
-		...(binding === undefined ? {} : { binding: JSON.parse(binding) as PasskeyChallengeRecord["binding"] }),
+		...(parsed === undefined
+			? {}
+			: purpose === "change"
+				? { change: parsed as PasskeyChallengeRecord["change"] }
+				: { binding: parsed as PasskeyChallengeRecord["binding"] }),
 		createdAt: sqlNumber(row.created_at),
 		expiresAt: sqlNumber(row.expires_at),
 	};
+}
+
+/** What a challenge is bound to, as its `binding` column holds it: an approval's binding or a change, else NULL. */
+function boundOf(record: PasskeyChallengeRecord): string | null {
+	const bound = record.binding ?? record.change;
+	return bound === undefined ? null : JSON.stringify(bound);
 }
 
 /** Whether `error` is a unique constraint failing, on Postgres or SQLite. */
@@ -204,7 +217,7 @@ export function createSqlPasskeyStores(driver: SqlDriver): {
 							record.purpose,
 							record.rpId,
 							record.origin,
-							record.binding === undefined ? null : JSON.stringify(record.binding),
+							boundOf(record),
 							record.createdAt,
 							record.expiresAt,
 						],

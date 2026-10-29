@@ -155,15 +155,42 @@ export type PasskeyRefusal =
  * - `POST PASSKEYS_PATH` with `RegisterPasskeyRequest` verifies the browser's response against that challenge
  *   (which it uses up) and answers 201 with the new `Passkey`. A refused registration is 422 `refused`, with the
  *   `PasskeyRefusal` in `error.passkey`; a passkey registered already is 409 `conflict`.
- * - `POST passkeyRemovePath(id)` with `{}` removes one of the person's passkeys and answers 204.
+ * - `POST passkeyRemovePath(id)` with `RemovePasskeyRequest` removes one of the person's passkeys and answers 204.
+ *
+ * Changing passkeys needs a passkey (#132): a person with none enrols their first on their sign-in alone, but adding
+ * another or removing one needs a fresh assertion from one they have, as `confirmation`. `POST
+ * PASSKEY_CONFIRMATION_PATH` with a `PasskeyChange` answers 200 with a single-use `PasskeyChallenge` bound to that
+ * change, which the person signs. A change without one, or with one that fails, is 422 `refused` with the
+ * `PasskeyRefusal` in `error.passkey`, audited as `identity.passkey.refused`.
+ *
+ * Someone who has lost their passkeys asks an admin: `POST passkeyResetPath(userId)` with `{}` removes every passkey a
+ * member of the caller's organisation has, so they can enrol again with a sign-in, and answers 200 with
+ * `PasskeyResetResponse`. It needs the organisation's `admin` role (else 403) and is audited as
+ * `identity.passkey.reset`, naming the admin as actor and the person as subject.
  *
  * Every POST needs `Content-Type: application/json` (else 415), as the key routes do.
  */
 export const PASSKEYS_PATH = "/v1/me/passkeys";
 export const PASSKEY_REGISTRATION_PATH = "/v1/me/passkeys/registration";
+export const PASSKEY_CONFIRMATION_PATH = "/v1/me/passkeys/confirmation";
 /** `/v1/me/passkeys/:id/remove`. */
 export const passkeyRemovePath = (passkeyId: string): string =>
 	`${PASSKEYS_PATH}/${encodeURIComponent(passkeyId)}/remove`;
+/** `/v1/members/:userId/passkeys/reset`: an admin's reset of a member's passkeys. */
+export const passkeyResetPath = (userId: UserId): string => `/v1/members/${encodeURIComponent(userId)}/passkeys/reset`;
+
+/** A change to a person's passkeys that needs one of them to confirm it. */
+export type PasskeyChange = { readonly change: "register" } | { readonly change: "remove"; readonly passkeyId: string };
+
+export interface RemovePasskeyRequest {
+	/** An assertion over a `PasskeyChange` challenge for removing this passkey. */
+	readonly confirmation?: PasskeyAssertion;
+}
+
+export interface PasskeyResetResponse {
+	/** How many passkeys were removed. */
+	readonly removed: number;
+}
 
 export interface PasskeysResponse {
 	readonly items: readonly Passkey[];
@@ -175,4 +202,9 @@ export interface RegisterPasskeyRequest {
 	readonly response: PasskeyAttestation;
 	/** What the person calls it, such as "MacBook". Default "Passkey". */
 	readonly name?: string;
+	/**
+	 * Once the person has a passkey: an assertion from one of them over a `{ change: "register" }` challenge. Not needed
+	 * for their first.
+	 */
+	readonly confirmation?: PasskeyAssertion;
 }

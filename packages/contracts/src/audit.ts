@@ -80,6 +80,8 @@ export type KnownAuditEventType =
 	| "identity.session.ended"
 	| "identity.passkey.registered"
 	| "identity.passkey.removed"
+	| "identity.passkey.refused"
+	| "identity.passkey.reset"
 	| "capability.registered"
 	| "capability.grant.created"
 	| "capability.grant.revoked"

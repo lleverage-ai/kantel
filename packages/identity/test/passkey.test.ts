@@ -4,13 +4,17 @@ import {
 	authenticationError,
 	type CallContext,
 	type HarbourError,
+	HarbourError as HarbourErrorClass,
 	isHarbourError,
+	PASSKEY_CONFIRMATION_PATH,
 	PASSKEY_REGISTRATION_PATH,
 	PASSKEYS_PATH,
 	type PasskeyBinding,
+	type PasskeyChange,
 	type PasskeyRegistrationOptions,
 	type PasskeysResponse,
 	passkeyRemovePath,
+	passkeyResetPath,
 	type RelyingParty,
 } from "@harbour/contracts";
 import {
@@ -35,6 +39,21 @@ const RP: RelyingParty = { id: "harbour.test", name: "Harbour", origin: "https:/
 const ada: CallContext = { actor: { kind: "human", userId: "user-ada" }, organisationId: ORG };
 const lin: CallContext = { actor: { kind: "human", userId: "user-lin" }, organisationId: ORG };
 const hostApp: CallContext = { actor: { kind: "service", serviceId: "svc-sal", keyId: "key-1" }, organisationId: ORG };
+const admin: CallContext = { actor: { kind: "human", userId: "user-admin" }, organisationId: ORG };
+
+/** Identity as `reset` reads it: `user-admin` is the organisation's admin; Ada, Lin and the admin are its members. */
+const directory: NonNullable<PasskeysOptions["identity"]> = {
+	async getUser(_ctx, id) {
+		if (!["user-ada", "user-lin", "user-admin"].includes(id)) throw new HarbourErrorClass("not_found", "No such user");
+		return { id, name: id, createdAt: 0 };
+	},
+	async authorize(ctx, needed) {
+		const isAdmin = ctx.actor.kind === "human" && ctx.actor.userId === "user-admin";
+		if (needed !== "admin" || !isAdmin || ctx.projectId !== undefined) {
+			throw new HarbourErrorClass("forbidden", "Needs admin");
+		}
+	},
+};
 
 const binding: PasskeyBinding = {
 	proposalId: "proposal-1",
@@ -109,7 +128,10 @@ describe.each(backends)("passkeys on $name", (backend) => {
 			const creation = await passkeys.registrationOptions(ctx, RP);
 			return passkeys.register(ctx, await device.create(creation), "Laptop");
 		};
-		return { clock, audit, passkeys, device, register, opened };
+		/** An assertion from the device over a challenge for `change`. */
+		const confirmation = async (change: PasskeyChange, ctx: CallContext = ada) =>
+			device.get(await passkeys.changeChallenge(ctx, RP, change));
+		return { clock, audit, passkeys, device, register, confirmation, opened };
 	}
 
 	it.each(["ES256", "EdDSA", "RS256"] as const)(
@@ -186,7 +208,7 @@ describe.each(backends)("passkeys on $name", (backend) => {
 	});
 
 	it("refuses to register one passkey twice, to the same person or another", async () => {
-		const { passkeys, device, opened } = await world();
+		const { passkeys, device, confirmation, opened } = await world();
 		const first = await device.create(await passkeys.registrationOptions(ada, RP));
 		await passkeys.register(ada, first);
 		// The same authenticator data under a new challenge: with no attestation, nothing else ties it to a session.
@@ -196,20 +218,133 @@ describe.each(backends)("passkeys on $name", (backend) => {
 			const clientDataJSON = toBase64url(new TextEncoder().encode(JSON.stringify({ ...client, challenge })));
 			return { ...first, response: { ...first.response, clientDataJSON } };
 		};
-		expect((await refusal(passkeys.register(ada, await replayed(ada)))).code).toBe("conflict");
+		const again = await replayed(ada);
+		const confirmed = await confirmation({ change: "register" });
+		expect((await refusal(passkeys.register(ada, again, undefined, confirmed))).code).toBe("conflict");
 		expect((await refusal(passkeys.register(lin, await replayed(lin)))).code).toBe("conflict");
 		expect(await passkeys.list(lin)).toEqual([]);
 		await opened.close();
 	});
 
 	it("removes a passkey for its owner only, audited as identity.passkey.removed", async () => {
-		const { passkeys, register, audit, opened } = await world();
+		const { passkeys, register, confirmation, audit, opened } = await world();
 		const registered = await register();
+		const change = { change: "remove", passkeyId: registered.id } as const;
 		expect((await refusal(passkeys.remove(lin, registered.id))).code).toBe("not_found");
-		await passkeys.remove(ada, registered.id);
+		await passkeys.remove(ada, registered.id, await confirmation(change));
 		expect(await passkeys.list(ada)).toEqual([]);
 		expect(audit.ofType("identity.passkey.removed")).toHaveLength(1);
 		expect((await refusal(passkeys.remove(ada, registered.id))).code).toBe("not_found");
+		await opened.close();
+	});
+
+	it("enrols a first passkey on the sign-in alone, then needs one to add another or remove one", async () => {
+		const { passkeys, device, register, confirmation, audit, opened } = await world();
+		const first = await register();
+		const second = async () => device.create(await passkeys.registrationOptions(ada, RP));
+
+		// Another passkey: refused without a confirmation, or with one for another change, or with one used already.
+		expect(await reasonOf(passkeys.register(ada, await second()))).toBe("missing");
+		const forRemoving = await confirmation({ change: "remove", passkeyId: first.id });
+		expect(await reasonOf(passkeys.register(ada, await second(), undefined, forRemoving))).toBe("binding");
+		const confirmed = await confirmation({ change: "register" });
+		const added = await passkeys.register(ada, await second(), "Phone", confirmed);
+		expect(added.name).toBe("Phone");
+		expect(await reasonOf(passkeys.register(ada, await second(), undefined, confirmed))).toBe("challenge");
+
+		// Removing one: refused without, or with a confirmation for removing another; then removed.
+		const removeFirst = { change: "remove", passkeyId: first.id } as const;
+		expect(await reasonOf(passkeys.remove(ada, first.id))).toBe("missing");
+		const forOther = await confirmation({ change: "remove", passkeyId: added.id });
+		expect(await reasonOf(passkeys.remove(ada, first.id, forOther))).toBe("binding");
+		await passkeys.remove(ada, first.id, await confirmation(removeFirst));
+		expect((await passkeys.list(ada)).map((passkey) => passkey.id)).toEqual([added.id]);
+
+		const refused = audit.ofType("identity.passkey.refused");
+		expect(refused.map((event) => event.data?.reason)).toEqual([
+			"missing",
+			"binding",
+			"challenge",
+			"missing",
+			"binding",
+		]);
+		expect(refused[0]).toMatchObject({
+			source: "identity",
+			actor: ada.actor,
+			subject: { kind: "identity.user", id: "user-ada" },
+			data: { change: "register" },
+		});
+		expect(refused[3]).toMatchObject({
+			subject: { kind: "identity.passkey", id: first.id },
+			data: { change: "remove" },
+		});
+		await opened.close();
+	});
+
+	it("refuses a confirmation from another person's passkey, and a registration challenge from before the first", async () => {
+		const { passkeys, device, register, opened } = await world();
+		const early = await device.create(await passkeys.registrationOptions(ada, RP));
+		await register();
+		// Issued while Ada had no passkey, used after: it still needs a confirmation.
+		expect(await reasonOf(passkeys.register(ada, early))).toBe("missing");
+
+		const linDevice = createSoftwareAuthenticator({ origin: RP.origin });
+		await passkeys.register(lin, await linDevice.create(await passkeys.registrationOptions(lin, RP)));
+		const forAda = await passkeys.changeChallenge(ada, RP, { change: "register" });
+		const linSigned = await linDevice.get({ ...forAda, allowCredentials: [] });
+		const another = await device.create(await passkeys.registrationOptions(ada, RP));
+		expect(await reasonOf(passkeys.register(ada, another, undefined, linSigned))).toBe("credential");
+		await opened.close();
+	});
+
+	it("issues a change challenge only to a person with a passkey, for one of theirs", async () => {
+		const { passkeys, register, opened } = await world();
+		expect((await refusal(passkeys.changeChallenge(ada, RP, { change: "register" }))).code).toBe("invalid");
+		const registered = await register();
+		const challenge = await passkeys.changeChallenge(ada, RP, { change: "register" });
+		expect(challenge.allowCredentials.map((descriptor) => descriptor.id)).toEqual([registered.credentialId]);
+		expect((await refusal(passkeys.changeChallenge(ada, RP, { change: "remove", passkeyId: "pk_x" }))).code).toBe(
+			"not_found",
+		);
+		expect((await refusal(passkeys.changeChallenge(hostApp, RP, { change: "register" }))).code).toBe("forbidden");
+		await opened.close();
+	});
+
+	it("lets an organisation admin reset a member's passkeys, audited, so they enrol again on a sign-in", async () => {
+		const { passkeys, device, register, confirmation, audit, opened } = await world({ identity: directory });
+		const first = await register();
+		const second = await passkeys.register(
+			ada,
+			await device.create(await passkeys.registrationOptions(ada, RP)),
+			"Phone",
+			await confirmation({ change: "register" }),
+		);
+
+		expect((await refusal(passkeys.reset(lin, "user-ada"))).code).toBe("forbidden");
+		expect((await refusal(passkeys.reset(hostApp, "user-ada"))).code).toBe("forbidden");
+		expect((await refusal(passkeys.reset(admin, "user-stranger"))).code).toBe("not_found");
+		// The organisation's admin, even on a call that names a project.
+		expect(await passkeys.reset({ ...admin, projectId: "project-1" }, "user-ada")).toBe(2);
+		expect(await passkeys.list(ada)).toEqual([]);
+		const resets = audit.ofType("identity.passkey.reset");
+		expect(resets).toMatchObject([
+			{
+				source: "identity",
+				actor: admin.actor,
+				organisationId: ORG,
+				subject: { kind: "identity.user", id: "user-ada" },
+				data: { removed: 2 },
+			},
+		]);
+		// Both registered at the same instant, so in either order.
+		const passkeyIds = (resets[0]?.data?.passkeyIds ?? []) as string[];
+		expect([...passkeyIds].sort()).toEqual([first.id, second.id].sort());
+		expect(await passkeys.required(ada)).toBe(false);
+		await register();
+		expect(await passkeys.list(ada)).toHaveLength(1);
+
+		const without = createPasskeys({ ...opened.again() });
+		expect((await refusal(without.reset(admin, "user-ada"))).code).toBe("not_supported");
 		await opened.close();
 	});
 
@@ -404,7 +539,31 @@ describe("passkey routes", () => {
 		const listed: PasskeysResponse = await asAda.list();
 		expect(listed).toEqual({ items: [registered], approvals: "registered" });
 		expect((await client({ "x-user": "user-lin" }).list()).items).toEqual([]);
-		await asAda.remove(registered.id);
+
+		// Another needs one of Ada's to confirm it.
+		const unconfirmed = await refusal(
+			asAda.register({ response: await device.create(await asAda.registrationOptions()) }),
+		);
+		expect(unconfirmed.details).toEqual({ passkey: "missing" });
+		const added = await asAda.register({
+			response: await device.create(await asAda.registrationOptions()),
+			confirmation: await device.get(await asAda.confirmation({ change: "register" })),
+		});
+		const removing = { change: "remove", passkeyId: registered.id } as const;
+		expect((await refusal(asAda.remove(registered.id))).details).toEqual({ passkey: "missing" });
+		await asAda.remove(registered.id, await device.get(await asAda.confirmation(removing)));
+		expect((await asAda.list()).items).toEqual([added]);
+	});
+
+	it("resets a member's passkeys for the organisation's admin only", async () => {
+		const passkeys = createPasskeys({ ...createMemoryPasskeyStores(), clock: new ManualClock(), identity: directory });
+		const { client } = routes(passkeys);
+		const device = createSoftwareAuthenticator({ origin: RP.origin });
+		const asAda = client({ "x-user": "user-ada" });
+		await asAda.register({ response: await device.create(await asAda.registrationOptions()) });
+		expect((await refusal(asAda.reset("user-ada"))).code).toBe("forbidden");
+		expect((await refusal(client({ "x-key": "1" }).reset("user-ada"))).code).toBe("forbidden");
+		expect(await client({ "x-user": "user-admin" }).reset("user-ada")).toEqual({ removed: 1 });
 		expect((await asAda.list()).items).toEqual([]);
 	});
 
@@ -452,6 +611,10 @@ describe("passkey routes", () => {
 		expect(isPasskeyPath(PASSKEYS_PATH)).toBe(true);
 		expect(isPasskeyPath(PASSKEY_REGISTRATION_PATH)).toBe(true);
 		expect(isPasskeyPath(passkeyRemovePath("pk_1"))).toBe(true);
+		expect(isPasskeyPath(PASSKEY_CONFIRMATION_PATH)).toBe(true);
+		expect(isPasskeyPath(passkeyResetPath("user-ada"))).toBe(true);
+		expect(isPasskeyPath("/v1/members")).toBe(false);
+		expect(isPasskeyPath("/v1/members/a/b/passkeys/reset")).toBe(false);
 		expect(isPasskeyPath("/v1/me")).toBe(false);
 		expect(isPasskeyPath(`${PASSKEYS_PATH}/pk_1`)).toBe(false);
 	});

@@ -1,6 +1,7 @@
 /**
- * A person's passkeys over HTTP (#132): `GET` and `POST /v1/me/passkeys`, `POST /v1/me/passkeys/registration` and
- * `POST /v1/me/passkeys/:id/remove` (`PASSKEYS_PATH`; the bodies are in `packages/contracts/src/passkey.ts`). A
+ * A person's passkeys over HTTP (#132): `GET` and `POST /v1/me/passkeys`, `POST /v1/me/passkeys/registration`,
+ * `POST /v1/me/passkeys/confirmation` and `POST /v1/me/passkeys/:id/remove` (`PASSKEYS_PATH`), and an admin's
+ * `POST /v1/members/:userId/passkeys/reset` (the bodies are in `packages/contracts/src/passkey.ts`). A
  * Fetch-style handler behind the authenticator, so it mounts in any Node, Bun or Worker router, and a client for the
  * console. Portable: Workers, Bun, Node and the browser.
  *
@@ -14,13 +15,19 @@ import {
 	type ErrorCode,
 	HarbourError,
 	isHarbourError,
+	PASSKEY_CONFIRMATION_PATH,
 	PASSKEY_REGISTRATION_PATH,
 	PASSKEYS_PATH,
 	type Passkey,
+	type PasskeyAssertion,
 	type PasskeyAttestation,
+	type PasskeyChallenge,
+	type PasskeyChange,
 	type PasskeyRegistrationOptions,
+	type PasskeyResetResponse,
 	type PasskeysResponse,
 	passkeyRemovePath,
+	passkeyResetPath,
 	type RegisterPasskeyRequest,
 	type RelyingParty,
 	relyingPartyFor,
@@ -69,27 +76,68 @@ function failed(error: unknown): Response {
 	return errorResponse(500, "internal", "Internal error");
 }
 
-type Route = { readonly name: "passkeys" | "registration" } | { readonly name: "remove"; readonly passkeyId: string };
+type Route =
+	| { readonly name: "passkeys" | "registration" | "confirmation" }
+	| { readonly name: "remove"; readonly passkeyId: string }
+	| { readonly name: "reset"; readonly userId: string };
 
 const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
 	passkeys: ["GET", "POST"],
 	registration: ["POST"],
+	confirmation: ["POST"],
 	remove: ["POST"],
+	reset: ["POST"],
 };
 
 const REMOVE_SUFFIX = "/remove";
+const MEMBERS_PREFIX = "/v1/members/";
+const RESET_SUFFIX = "/passkeys/reset";
+
+/** The one path segment between `prefix` and `suffix`, decoded, or undefined. */
+function segmentOf(path: string, prefix: string, suffix: string): string | undefined {
+	if (!path.startsWith(prefix) || !path.endsWith(suffix) || path.length <= prefix.length + suffix.length) {
+		return undefined;
+	}
+	const segment = path.slice(prefix.length, -suffix.length);
+	if (segment.includes("/")) return undefined;
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return undefined;
+	}
+}
 
 function routeOf(path: string): Route | undefined {
 	if (path === PASSKEYS_PATH) return { name: "passkeys" };
 	if (path === PASSKEY_REGISTRATION_PATH) return { name: "registration" };
-	if (!path.startsWith(`${PASSKEYS_PATH}/`) || !path.endsWith(REMOVE_SUFFIX)) return undefined;
-	const segment = path.slice(PASSKEYS_PATH.length + 1, -REMOVE_SUFFIX.length);
-	if (segment === "" || segment.includes("/")) return undefined;
-	try {
-		return { name: "remove", passkeyId: decodeURIComponent(segment) };
-	} catch {
-		return undefined;
+	if (path === PASSKEY_CONFIRMATION_PATH) return { name: "confirmation" };
+	const passkeyId = segmentOf(path, `${PASSKEYS_PATH}/`, REMOVE_SUFFIX);
+	if (passkeyId !== undefined) return { name: "remove", passkeyId };
+	const userId = segmentOf(path, MEMBERS_PREFIX, RESET_SUFFIX);
+	if (userId !== undefined) return { name: "reset", userId };
+	return undefined;
+}
+
+/** The change a confirmation body names, or `invalid`. */
+function changeOf(body: unknown): PasskeyChange {
+	if (isRecord(body) && body.change === "register" && Object.keys(body).length === 1) return { change: "register" };
+	if (
+		isRecord(body) &&
+		body.change === "remove" &&
+		typeof body.passkeyId === "string" &&
+		body.passkeyId !== "" &&
+		Object.keys(body).length === 2
+	) {
+		return { change: "remove", passkeyId: body.passkeyId };
 	}
+	throw new HarbourError("invalid", 'The body is { change: "register" } or { change: "remove", passkeyId }');
+}
+
+/** A `confirmation` field: absent, or an object for the passkeys to verify. */
+function confirmationOf(value: unknown): PasskeyAssertion | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) throw new HarbourError("invalid", "confirmation must be a passkey assertion");
+	return value as unknown as PasskeyAssertion;
 }
 
 /** Whether the path is one this handler serves, for a router deciding where a request goes. */
@@ -182,22 +230,35 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 			}
 			if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
 			const body = await readJson(request);
-			if (route.name === "registration" || route.name === "remove") {
+			if (route.name === "registration" || route.name === "reset") {
 				if (!isRecord(body) || Object.keys(body).length > 0) {
 					throw new HarbourError("invalid", "The body is {}");
 				}
-				if (route.name === "remove") {
-					await passkeys.remove(ctx, route.passkeyId);
-					return new Response(null, { status: 204, headers: NO_STORE });
+				if (route.name === "reset") {
+					const reset: PasskeyResetResponse = { removed: await passkeys.reset(ctx, route.userId) };
+					return json(200, reset);
 				}
 				const options: PasskeyRegistrationOptions = await passkeys.registrationOptions(ctx, relyingParty(request));
 				return json(200, options);
 			}
+			if (route.name === "confirmation") {
+				const challenge: PasskeyChallenge = await passkeys.changeChallenge(ctx, relyingParty(request), changeOf(body));
+				return json(200, challenge);
+			}
+			if (route.name === "remove") {
+				if (!isRecord(body) || Object.keys(body).some((field) => field !== "confirmation")) {
+					throw new HarbourError("invalid", "The body is { confirmation }");
+				}
+				await passkeys.remove(ctx, route.passkeyId, confirmationOf(body.confirmation));
+				return new Response(null, { status: 204, headers: NO_STORE });
+			}
 			if (!isRecord(body) || !isRecord(body.response)) {
-				throw new HarbourError("invalid", "The body is { response, name? }");
+				throw new HarbourError("invalid", "The body is { response, name?, confirmation? }");
 			}
 			for (const field of Object.keys(body)) {
-				if (field !== "response" && field !== "name") throw new HarbourError("invalid", `Unknown field ${field}`);
+				if (field !== "response" && field !== "name" && field !== "confirmation") {
+					throw new HarbourError("invalid", `Unknown field ${field}`);
+				}
 			}
 			if (body.name !== undefined && typeof body.name !== "string") {
 				throw new HarbourError("invalid", "name must be a string");
@@ -206,6 +267,7 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 				ctx,
 				body.response as unknown as PasskeyAttestation,
 				body.name as string | undefined,
+				confirmationOf(body.confirmation),
 			);
 			return json(201, registered);
 		} catch (error) {
@@ -226,7 +288,11 @@ export interface PasskeyClient {
 	list(signal?: AbortSignal): Promise<PasskeysResponse>;
 	registrationOptions(signal?: AbortSignal): Promise<PasskeyRegistrationOptions>;
 	register(request: RegisterPasskeyRequest, signal?: AbortSignal): Promise<Passkey>;
-	remove(passkeyId: string, signal?: AbortSignal): Promise<void>;
+	/** A challenge for confirming `change` with one of the person's passkeys. */
+	confirmation(change: PasskeyChange, signal?: AbortSignal): Promise<PasskeyChallenge>;
+	remove(passkeyId: string, confirmation?: PasskeyAssertion, signal?: AbortSignal): Promise<void>;
+	/** An admin removes every passkey a member has. */
+	reset(userId: string, signal?: AbortSignal): Promise<PasskeyResetResponse>;
 }
 
 /**
@@ -271,6 +337,9 @@ export function createPasskeyClient(options: PasskeyClientOptions = {}): Passkey
 		list: (signal) => call(PASSKEYS_PATH, { signal }),
 		registrationOptions: (signal) => call(PASSKEY_REGISTRATION_PATH, { body: {}, signal }),
 		register: (request, signal) => call(PASSKEYS_PATH, { body: request, signal }),
-		remove: (passkeyId, signal) => call(passkeyRemovePath(passkeyId), { body: {}, signal }),
+		confirmation: (change, signal) => call(PASSKEY_CONFIRMATION_PATH, { body: change, signal }),
+		remove: (passkeyId, confirmation, signal) =>
+			call(passkeyRemovePath(passkeyId), { body: confirmation === undefined ? {} : { confirmation }, signal }),
+		reset: (userId, signal) => call(passkeyResetPath(userId), { body: {}, signal }),
 	};
 }
