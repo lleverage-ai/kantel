@@ -1,0 +1,26 @@
+# Harbour's own browsers on Kubernetes (docs/design/browser-runtime.md): the self-hosted browser host
+# (apps/selfhosted/src/browser/host.ts) with HARBOUR_BROWSER_DRIVER=kubernetes, starting one Pod of images/browser per
+# browser in this namespace. See README.md beside this file.
+#
+#   kubectl create namespace harbour-browsers
+#   kubectl -n harbour-browsers create secret generic harbour-browser-host \
+#     --from-literal=HARBOUR_BROWSER_HOST_TOKEN="$(openssl rand -hex 32)" \
+#     --from-literal=HARBOUR_BROWSER_VIEW_KEY="$(openssl rand -hex 32)" \
+#     --from-literal=HARBOUR_BROWSER_SEAL_KEY="$(openssl rand -hex 32)"
+#   kubectl apply -k deploy/kubernetes/browser-host
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: harbour-browsers
+resources:
+  - rbac.yaml
+  - host.yaml
+  - network-policy.yaml
+images:
+  # Built from apps/selfhosted/Dockerfile and images/browser; push both where the cluster pulls from.
+  - name: harbour-selfhosted
+    newName: harbour-selfhosted
+    newTag: dev
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: harbour
+    includeSelectors: false

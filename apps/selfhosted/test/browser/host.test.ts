@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createBrowserViewSigner } from "@harbour/browser/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { directoryBlobStore, sweepRecordings } from "../../src/browser/blobs.ts";
-import { createBrowserHost } from "../../src/browser/host.ts";
+import { createBrowserHost, dockerMachines } from "../../src/browser/host.ts";
 
 const VIEW_KEY = "test-browser-view-key-0123456789abcdef";
 const HOST_TOKEN = "test-browser-host-token-0123456789abcdef";
@@ -26,7 +26,13 @@ async function host() {
 		sealKey: "test-browser-seal-key-0123456789abcdef",
 		dataDir: await scratch(),
 		recordingRetentionMs: 60_000,
-		docker: { socket: "/nonexistent.sock", image: "harbour-browser:test", stack: "test", memoryBytes: 1, nanoCpus: 1 },
+		machines: dockerMachines({
+			socket: "/nonexistent.sock",
+			image: "harbour-browser:test",
+			stack: "test",
+			memoryBytes: 1,
+			nanoCpus: 1,
+		}),
 	});
 	const server = { upgrade: () => false } as never;
 	return {

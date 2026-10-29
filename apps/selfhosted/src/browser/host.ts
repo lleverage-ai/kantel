@@ -1,5 +1,5 @@
-// The self-hosted browser host (docs/design/browser-runtime.md): Harbour's own browsers on Docker, one container of
-// images/browser per browser, each run by the portable coordinator (`@harbour/browser/runtime`), the same code the
+// The self-hosted browser host (docs/design/browser-runtime.md): Harbour's own browsers on Docker (docker.ts) or
+// Kubernetes (kubernetes.ts), one container or Pod of images/browser per browser, each run by the portable coordinator (`@harbour/browser/runtime`), the same code the
 // Cloudflare host runs in its `HarbourBrowser` objects. A gateway's harbour provider reaches it over HTTP
 // (`httpBrowserHost`); a viewer reaches it with a view link's token.
 //
@@ -16,6 +16,8 @@
 //   HARBOUR_BROWSER_IMAGE        the browser image (default harbour-browser:dev)
 //   HARBOUR_BROWSER_STACK        names this host's containers, so its janitor touches only its own (default local)
 //   HARBOUR_BROWSER_NETWORK, HARBOUR_BROWSER_RUNTIME, HARBOUR_BROWSER_MEMORY_MB, HARBOUR_BROWSER_CPUS: see docker.ts
+//   HARBOUR_BROWSER_DRIVER       `docker` (the default) or `kubernetes`: a Pod per browser in the host's own namespace
+//                                (or HARBOUR_BROWSER_NAMESPACE), HARBOUR_BROWSER_RUNTIME_CLASS: see kubernetes.ts
 //   HARBOUR_BROWSER_RECORDING_DAYS  how long recordings are kept (default 7)
 //   DOCKER_SOCKET                (default /var/run/docker.sock); PORT (default 8790); HOST (default 127.0.0.1)
 //
@@ -37,6 +39,19 @@ import {
 import type { ServerWebSocket } from "bun";
 import { directoryBlobStore, sweepRecordings } from "./blobs.ts";
 import { type DockerBrowserMachine, type DockerOptions, dockerMachine, removeLeftovers } from "./docker.ts";
+import { inClusterOptions, kubernetesMachine, removeKubernetesLeftovers } from "./kubernetes.ts";
+
+/** Where the host's browsers run: a machine per browser, and the janitor for what an earlier run left. */
+export interface BrowserMachines {
+	machine(browserId: string): DockerBrowserMachine;
+	cleanUp(keep: ReadonlySet<string>): Promise<number>;
+}
+
+/** Containers on a Docker daemon. */
+export const dockerMachines = (options: DockerOptions): BrowserMachines => ({
+	machine: (browserId) => dockerMachine(options, browserId),
+	cleanUp: (keep) => removeLeftovers(options, keep),
+});
 
 const TICK_MS = 5_000;
 const BROWSER_PATH = /^\/browsers\/([A-Za-z0-9-]{1,64})(\/.*)$/;
@@ -46,7 +61,7 @@ export interface BrowserHostOptions {
 	readonly viewKey: string;
 	readonly sealKey: string;
 	readonly dataDir: string;
-	readonly docker: DockerOptions;
+	readonly machines: BrowserMachines;
 	readonly recordingRetentionMs: number;
 }
 
@@ -100,7 +115,7 @@ export function createBrowserHost(options: BrowserHostOptions) {
 	const browserFor = (id: string, create: boolean): Running | undefined => {
 		const known = browsers.get(id);
 		if (known !== undefined || !create) return known;
-		const machine = dockerMachine(options.docker, id);
+		const machine = options.machines.machine(id);
 		const state = new Map<string, unknown>();
 		const coordinator = createBrowserCoordinator({
 			id,
@@ -209,7 +224,7 @@ export function createBrowserHost(options: BrowserHostOptions) {
 		fetch,
 		websocket,
 		/** Removes containers a previous run of this host left behind. */
-		cleanUp: () => removeLeftovers(options.docker, new Set(browsers.keys())),
+		cleanUp: () => options.machines.cleanUp(new Set(browsers.keys())),
 		async stop() {
 			clearInterval(timer);
 			clearInterval(sweeper);
@@ -226,21 +241,44 @@ function required(name: string): string {
 
 if (import.meta.main) {
 	const days = Number(process.env.HARBOUR_BROWSER_RECORDING_DAYS ?? "7");
+	const image = process.env.HARBOUR_BROWSER_IMAGE ?? "harbour-browser:dev";
+	const stack = process.env.HARBOUR_BROWSER_STACK ?? "local";
+	const memoryBytes = Number(process.env.HARBOUR_BROWSER_MEMORY_MB ?? "2048") * 1024 * 1024;
+	const nanoCpus = Math.round(Number(process.env.HARBOUR_BROWSER_CPUS ?? "1") * 1e9);
+	const driver = process.env.HARBOUR_BROWSER_DRIVER?.trim() || "docker";
+	if (driver !== "docker" && driver !== "kubernetes") throw new Error("HARBOUR_BROWSER_DRIVER is docker or kubernetes");
+	let machines: BrowserMachines;
+	if (driver === "kubernetes") {
+		const options = await inClusterOptions({
+			image,
+			stack,
+			memoryBytes,
+			nanoCpus,
+			...(process.env.HARBOUR_BROWSER_NAMESPACE ? { namespace: process.env.HARBOUR_BROWSER_NAMESPACE } : {}),
+			...(process.env.HARBOUR_BROWSER_RUNTIME_CLASS ? { runtimeClass: process.env.HARBOUR_BROWSER_RUNTIME_CLASS } : {}),
+		});
+		machines = {
+			machine: (browserId) => kubernetesMachine(options, browserId),
+			cleanUp: (keep) => removeKubernetesLeftovers(options, keep),
+		};
+	} else {
+		machines = dockerMachines({
+			socket: process.env.DOCKER_SOCKET ?? "/var/run/docker.sock",
+			image,
+			stack,
+			...(process.env.HARBOUR_BROWSER_RUNTIME ? { runtime: process.env.HARBOUR_BROWSER_RUNTIME } : {}),
+			...(process.env.HARBOUR_BROWSER_NETWORK ? { network: process.env.HARBOUR_BROWSER_NETWORK } : {}),
+			memoryBytes,
+			nanoCpus,
+		});
+	}
 	const host = createBrowserHost({
 		token: required("HARBOUR_BROWSER_HOST_TOKEN"),
 		viewKey: required("HARBOUR_BROWSER_VIEW_KEY"),
 		sealKey: required("HARBOUR_BROWSER_SEAL_KEY"),
 		dataDir: process.env.HARBOUR_BROWSER_DATA_DIR ?? "./data/browser",
 		recordingRetentionMs: (Number.isFinite(days) && days > 0 ? days : 7) * 24 * 3_600_000,
-		docker: {
-			socket: process.env.DOCKER_SOCKET ?? "/var/run/docker.sock",
-			image: process.env.HARBOUR_BROWSER_IMAGE ?? "harbour-browser:dev",
-			stack: process.env.HARBOUR_BROWSER_STACK ?? "local",
-			...(process.env.HARBOUR_BROWSER_RUNTIME ? { runtime: process.env.HARBOUR_BROWSER_RUNTIME } : {}),
-			...(process.env.HARBOUR_BROWSER_NETWORK ? { network: process.env.HARBOUR_BROWSER_NETWORK } : {}),
-			memoryBytes: Number(process.env.HARBOUR_BROWSER_MEMORY_MB ?? "2048") * 1024 * 1024,
-			nanoCpus: Math.round(Number(process.env.HARBOUR_BROWSER_CPUS ?? "1") * 1e9),
-		},
+		machines,
 	});
 	const removed = await host.cleanUp();
 	if (removed > 0) console.log(`browser host: removed ${removed} container(s) left from before`);
