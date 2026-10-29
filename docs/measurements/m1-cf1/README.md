@@ -15,9 +15,12 @@ cloud browser (the round-trip probes below reached Cloudflare in LHR, AMS and CD
 then 50 runs on it ([Warm session](#warm-session-28-oct-2026-2031-utc), below). The batches before that section are
 **cold**: 50 runs, a new session each, as in M0.
 
-**Latest: after D1 and R2 moved to `weur`, a warm session takes 114 / 172 ms p50 / p95 on the server (in-process),
-so the p95 target is met and p50 misses by 14 ms** ([After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc)).
-Everything above that section was measured with D1 in North America.
+**Latest: with the workspace head cached in the object and the audit append queued off the path, a warm run does no
+I/O, and its server time is 0 ms on both backends (below the Worker timers' resolution, in all 50 runs). The target is
+met. The client sees 104 / 142 ms p50 / p95 for the whole request, which also covers the trip from the browser, sign-in
+and the session lookup** ([After the head cache and audit outbox](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)).
+The cold runs' timing anomaly is the Workers clock itself, not a slow step: see that section. Everything above
+[After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc) was measured with D1 in North America.
 
 ## Results
 
@@ -160,6 +163,70 @@ misses by 14 ms in process and 34 ms on Dynamic Workers.**
 - **Placement is fixed per object.** The stack object was already in `LHR` and stays there; a location hint only
   places a new object, so existing objects keep where they are and new ones get `weur` (#140).
 
+## After the head cache and audit outbox (29 Oct 2026, 07:27 UTC)
+
+The same four batches again, from `/healthz`, on `b5d74be`. That deploy includes the following changes:
+
+- #172: `wrangler.jsonc`'s defaults now point at the weur pair.
+- #188: the workspace heads are kept in the stack object, in front of R2.
+- #198: the audit appends queue in the object's SQLite and drain to D1 in the background.
+- #206: each run also answers its marks as Unix milliseconds (`clock`), and the client records `sentAt` and
+  `receivedAt` beside them.
+
+The deploy log reads `env.DB (harbour-weur)` and `env.WORKSPACES (harbour-workspaces-weur)`. An anonymous request
+still gets a 302 to Access sign-in. All eight placement probes said object `LHR`, D1 `WEUR` (`LHR`, primary).
+
+| Batch | Kind | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 (min–max) | Sign-in p50 / p95 | Before, server p50 / p95 |
+| --- | --- | --- | --- | --- | --- |
+| [`…T07-27-02Z-final-warm-in-process.json`](isolate-ready-2026-10-29T07-27-02Z-final-warm-in-process.json) | in-process, **warm** | 104 / 142 (95–163) | **0 / 0** (0–0) | 42 / 61 | 114 / 172 |
+| [`…T07-27-20Z-final-warm-dynamic-worker.json`](isolate-ready-2026-10-29T07-27-20Z-final-warm-dynamic-worker.json) | dynamic-worker, **warm** | 104 / 133 (92–161) | **0 / 0** (0–0) | 44 / 58 | 134 / 223 |
+| [`…T07-27-37Z-final-in-process.json`](isolate-ready-2026-10-29T07-27-37Z-final-in-process.json) | in-process, cold | 1,098 / 1,344 (1,011–1,396) | 38 / 465 (20–730) | 60 / 99 | 437 / 1,746 |
+| [`…T07-28-48Z-final-dynamic-worker.json`](isolate-ready-2026-10-29T07-28-48Z-final-dynamic-worker.json) | dynamic-worker, cold | 1,441 / 1,732 (1,277–1,777) | 1,332 / 2,449 (200–2,737) | 49 / 89 | 690 / 1,733 |
+
+In every batch, all 50 runs answered 200 with exit code 0. Both warm batches stayed on the warm-up's session and closed
+it with 204. Target: ≤100 / ≤300 ms, warm.
+
+**Verdict: the warm target is met. A warm run on an open session waits on no I/O, so its server time is 0 ms in all 100
+warm runs; the Date.now marks agree (`started` to `ran` 0 ms in all 100).** Even the client's whole request is
+104 ms p50, with the browser's round trip, Access, sign-in and the session lookup in it.
+
+- **0 ms means no I/O, not no time.** Worker timers only move on I/O, so the run's CPU time (the listing and the bash
+  command) isn't in these numbers. The bound on it is what the client sees. In process, a warm request's server marks
+  run as follows, p50 / p95: `entered` to `signedIn` 42 / 61 ms, the lookup (`looking` to `started`) 28 / 37 ms, and the
+  run (`started` to `ran`) 0 / 0 ms. With the trip from brwsr's browser (about 15–25 ms to the edge, in the
+  [round trips](#where-the-time-goes)), that accounts for nearly all of the 104 ms wall time.
+- **The two backends take the same time warm.** On Dynamic Workers, `isolate.cold` was 0 and `isolate.call` 0 ms in
+  all 50.
+- **The cold runs got slower in the client's wall time, and not in the measured steps.** In process, the wall time
+  went from 897 to 1,098 ms p50, while the server's span from `entered` to `ran` is 96 ms p50. So about 1 s now goes
+  after `ran`, in the session close the request awaits (lease release, the session's end), or outside the Worker.
+  17 commits from several lanes landed between the two measurements (runtime changes included), so the cause isn't
+  attributed here. Cold runs aren't #17's target, but this is the next thing to look at for them.
+
+### The cold timing anomaly: the Workers clock, not a slow step
+
+The cold batches again have server times longer than the client's whole request. That happened in 22 of 50 runs
+on Dynamic Workers (`created` to `ran` up to 2.1 s, against a wall time of 1.3–1.8 s), and in none in process this
+time. #206's `clock` marks let a stale mark be told from a slow step, and it's a stale mark:
+
+- **The server's entry mark jumps.** If the server's clock were live when a request arrives, the step in `entered`
+  from one run to the next would track the step in the client's `sentAt`, give or take the network. In the warm
+  batches it does, within 60 ms either way (p95 26 ms in process, 35 ms on Dynamic Workers). In the cold batches it doesn't. The server's step was up to
+  1.3 s (Dynamic Workers) and 1.6 s (in process) longer than the client's, and in other runs up to 1.1 s shorter. A
+  clock that's 1.1–1.6 s behind at one entry and caught up at the next gives exactly that.
+- **No single clock offset fits the runs.** In real time, each request enters the Worker after the client sends it,
+  and its last mark comes before the client receives the answer. So every run bounds the server's clock offset from
+  the client's. In all four batches those bounds contradict each other: the spread is about 0.2–0.3 s warm, and
+  0.7–1.3 s cold. The client's clock is a browser's, so the server's marks are the ones that are off.
+- **So it's the platform, not Harbour's code.** On Cloudflare,
+  [`Date.now()` and `performance.now()` are the same frozen clock](https://developers.cloudflare.com/workers/runtime-apis/performance/),
+  and they advance only on I/O. A span that starts at a stale mark is inflated by however far behind the mark is.
+  Cold runs do much more synchronous work (a new isolate, a Dynamic Worker load) than warm ones, and that is most
+  likely what leaves a mark behind (an inference: the platform doesn't say when it refreshes the clock).
+
+In short, read cold latency from the client's wall time, and treat a server span as the I/O waits inside it, not as
+elapsed time. The warm figures are unaffected, because a warm run's steps are 0 ms whichever mark they start from.
+
 ## Where the time goes
 
 Round trips from the same signed-in page (15 calls each for the first three rows; 5, 3, 5 and 5 for the API rows), p50 in ms:
@@ -198,10 +265,10 @@ What would get near the target, roughly in order of payoff:
    cut every call.
 2. **Sign-in once per token, not once per request.** A short cache keyed on the Access JWT would save about 0.3 s a
    call. That's the identity lane's authenticator.
-3. **Audit off the critical path.** Append after the answer (`ctx.waitUntil`), not before it, both in the measured
-   steps and in the close. Done in `apps/cloudflare/src/audit-outbox.ts`: appends queue in the object's SQLite and
-   drain to D1 in the background; not yet measured on the deployed stack.
-4. **Then the M0 levers:** the workspace head and manifest in Durable Object storage instead of R2. A pool of
+3. **Audit off the critical path.** Done in `apps/cloudflare/src/audit-outbox.ts` (#198): appends queue in the
+   object's SQLite and drain to D1 in the background. Measured on 29 Oct 2026, with item 4's head cache: a warm run now
+   waits on no I/O ([above](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)).
+4. **Then the M0 levers:** the workspace head in Durable Object storage instead of R2 (done, #188). A pool of
    pre-created SessionDOs measured 79 / 170 ms ready in option (a)
    ([m1-cf1-ready-preload](../m1-cf1-ready-preload/README.md)), but only once storage round trips are out of the
    path.
@@ -237,6 +304,26 @@ From the same signed-in brwsr context:
 - **The audit view responds.** `GET /v1/audit/events` answered 200, and the console's Audit log page showed 16 events
   for the last 24 hours (sessions started and stopped, sandbox leases acquired and released, the model call).
 
+## Checks against the deployed stack (29 Oct 2026, 07:32 UTC)
+
+The test is `apps/cloudflare/test/remote/deployed.test.ts` (#207), run on `b5d74be` from Sal's host. It uses a project
+API key issued from the signed-in console: "Sal deployed-stack check (TASK-3461)", prefix `hbr_Wf-WW9AS`, operator on
+the Default project, expiring 28 Nov 2026. It also uses that page's Access cookie, because host apps aren't let
+through Access yet.
+
+**Result: 6 of 6 passed.** The test checked that:
+
+- an anonymous request is sent to Access sign-in;
+- a bad key is refused even with the cookie;
+- the key's projects, profiles and sessions are listed;
+- a session's workspace can be read through the workspace read API;
+- the audit query API answers newest first;
+- one labelled session runs to a real model answer (4.0 s), with its audit events, and is closed.
+
+The shared conformance suites in `@harbour/testing` take in-process implementations and fakes, so they run on the
+Cloudflare implementations in `targets/cloudflare` (runtime, vault and workspace) in CI, not against the hostname. The
+`apps/cloudflare` README says how to run this check again.
+
 ## How to run it again
 
 From a signed-in page on the hostname, such as `/healthz` (not the console, which polls into the same object):
@@ -267,7 +354,8 @@ const q = (xs, p) => [...xs].sort((a, b) => a - b)[Math.ceil(p * xs.length) - 1]
 
 Each file holds that script's output, `runs` included: `status`, `wall` (client ms), `server` (`timings.total`),
 `session`, `isolate`, `exit` and `listed` per run, plus the warm-up and the summary. The two later files add
-`signIn`, `call` and `cold` per run, and `placement` on the warm-up and `after`.
+`signIn`, `call` and `cold` per run, and `placement` on the warm-up and `after`. The `final` files (29 Oct) add
+`sentAt` and `receivedAt` (the client's `Date.now()` around each call) and the response's `clock` per run.
 
 The warm batch runs on one session, which it closes whatever happens (in a fresh page, not after the script above):
 

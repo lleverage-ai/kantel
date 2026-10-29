@@ -1,0 +1,1111 @@
+{
+  "brwsrSession": "7103aac0-0249-4182-b20b-29e12b21529f",
+  "backend": "in-process",
+  "startedAt": "2026-10-29T07:27:37.447Z",
+  "from": "/healthz",
+  "warmup": {
+    "status": 200,
+    "wall": 1476.8999999994412,
+    "sentAt": 1793258858184,
+    "receivedAt": 1793258859660,
+    "clock": {
+      "entered": 1793258858298,
+      "signedIn": 1793258858334,
+      "started": 1793258858334,
+      "created": 1793258858356,
+      "ran": 1793258858356
+    },
+    "server": 22,
+    "session": 22,
+    "isolate": 0,
+    "signIn": 36,
+    "exit": 0,
+    "listed": 68,
+    "placement": {
+      "objectColo": "LHR",
+      "edgeColo": "CDG",
+      "d1": {
+        "region": "WEUR",
+        "colo": "LHR",
+        "primary": true,
+        "queries": [
+          {
+            "roundTripMs": 52,
+            "sqlMs": 0.1395
+          },
+          {
+            "roundTripMs": 30,
+            "sqlMs": 0.1395
+          },
+          {
+            "roundTripMs": 44,
+            "sqlMs": 0.1692
+          },
+          {
+            "roundTripMs": 22,
+            "sqlMs": 0.2108
+          },
+          {
+            "roundTripMs": 18,
+            "sqlMs": 0.1253
+          }
+        ]
+      },
+      "r2": {
+        "queries": [
+          {
+            "roundTripMs": 93
+          },
+          {
+            "roundTripMs": 73
+          },
+          {
+            "roundTripMs": 88
+          },
+          {
+            "roundTripMs": 83
+          },
+          {
+            "roundTripMs": 70
+          }
+        ]
+      }
+    }
+  },
+  "runs": [
+    {
+      "status": 200,
+      "wall": 1064.6000000005588,
+      "sentAt": 1793258859660,
+      "receivedAt": 1793258860725,
+      "clock": {
+        "entered": 1793258859047,
+        "signedIn": 1793258859106,
+        "started": 1793258859106,
+        "created": 1793258859148,
+        "ran": 1793258859148
+      },
+      "server": 42,
+      "session": 42,
+      "isolate": 0,
+      "signIn": 59,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1132.2000000001863,
+      "sentAt": 1793258860725,
+      "receivedAt": 1793258861857,
+      "clock": {
+        "entered": 1793258860446,
+        "signedIn": 1793258860503,
+        "started": 1793258860503,
+        "created": 1793258860534,
+        "ran": 1793258860534
+      },
+      "server": 31,
+      "session": 31,
+      "isolate": 0,
+      "signIn": 57,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1038.3999999994412,
+      "sentAt": 1793258861857,
+      "receivedAt": 1793258862896,
+      "clock": {
+        "entered": 1793258860703,
+        "signedIn": 1793258860768,
+        "started": 1793258860768,
+        "created": 1793258860816,
+        "ran": 1793258860816
+      },
+      "server": 48,
+      "session": 48,
+      "isolate": 0,
+      "signIn": 65,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1040.2999999998137,
+      "sentAt": 1793258862896,
+      "receivedAt": 1793258863936,
+      "clock": {
+        "entered": 1793258862438,
+        "signedIn": 1793258862491,
+        "started": 1793258862491,
+        "created": 1793258862526,
+        "ran": 1793258862526
+      },
+      "server": 35,
+      "session": 35,
+      "isolate": 0,
+      "signIn": 53,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1098,
+      "sentAt": 1793258863936,
+      "receivedAt": 1793258865034,
+      "clock": {
+        "entered": 1793258862713,
+        "signedIn": 1793258862962,
+        "started": 1793258862962,
+        "created": 1793258863008,
+        "ran": 1793258863008
+      },
+      "server": 46,
+      "session": 46,
+      "isolate": 0,
+      "signIn": 249,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1034,
+      "sentAt": 1793258865034,
+      "receivedAt": 1793258866068,
+      "clock": {
+        "entered": 1793258864247,
+        "signedIn": 1793258864306,
+        "started": 1793258864306,
+        "created": 1793258864343,
+        "ran": 1793258864343
+      },
+      "server": 37,
+      "session": 37,
+      "isolate": 0,
+      "signIn": 59,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1257,
+      "sentAt": 1793258866069,
+      "receivedAt": 1793258867326,
+      "clock": {
+        "entered": 1793258864496,
+        "signedIn": 1793258864598,
+        "started": 1793258864598,
+        "created": 1793258865327,
+        "ran": 1793258865328
+      },
+      "server": 730,
+      "session": 729,
+      "isolate": 1,
+      "signIn": 102,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1197.699999999255,
+      "sentAt": 1793258867326,
+      "receivedAt": 1793258868524,
+      "clock": {
+        "entered": 1793258867388,
+        "signedIn": 1793258867425,
+        "started": 1793258867425,
+        "created": 1793258867449,
+        "ran": 1793258867449
+      },
+      "server": 24,
+      "session": 24,
+      "isolate": 0,
+      "signIn": 37,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1285.2999999998137,
+      "sentAt": 1793258868524,
+      "receivedAt": 1793258869809,
+      "clock": {
+        "entered": 1793258867594,
+        "signedIn": 1793258867678,
+        "started": 1793258867678,
+        "created": 1793258867732,
+        "ran": 1793258867732
+      },
+      "server": 54,
+      "session": 54,
+      "isolate": 0,
+      "signIn": 84,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1029.7000000001863,
+      "sentAt": 1793258869809,
+      "receivedAt": 1793258870839,
+      "clock": {
+        "entered": 1793258868984,
+        "signedIn": 1793258869049,
+        "started": 1793258869049,
+        "created": 1793258869092,
+        "ran": 1793258869092
+      },
+      "server": 43,
+      "session": 43,
+      "isolate": 0,
+      "signIn": 65,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1226.2000000001863,
+      "sentAt": 1793258870839,
+      "receivedAt": 1793258872065,
+      "clock": {
+        "entered": 1793258870721,
+        "signedIn": 1793258870764,
+        "started": 1793258870764,
+        "created": 1793258870788,
+        "ran": 1793258870788
+      },
+      "server": 24,
+      "session": 24,
+      "isolate": 0,
+      "signIn": 43,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1010.5,
+      "sentAt": 1793258872065,
+      "receivedAt": 1793258873075,
+      "clock": {
+        "entered": 1793258872034,
+        "signedIn": 1793258872069,
+        "started": 1793258872069,
+        "created": 1793258872091,
+        "ran": 1793258872091
+      },
+      "server": 22,
+      "session": 22,
+      "isolate": 0,
+      "signIn": 35,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1050.199999999255,
+      "sentAt": 1793258873075,
+      "receivedAt": 1793258874125,
+      "clock": {
+        "entered": 1793258872200,
+        "signedIn": 1793258872261,
+        "started": 1793258872261,
+        "created": 1793258872307,
+        "ran": 1793258872307
+      },
+      "server": 46,
+      "session": 46,
+      "isolate": 0,
+      "signIn": 61,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1396,
+      "sentAt": 1793258874125,
+      "receivedAt": 1793258875521,
+      "clock": {
+        "entered": 1793258873577,
+        "signedIn": 1793258873628,
+        "started": 1793258873628,
+        "created": 1793258873669,
+        "ran": 1793258873669
+      },
+      "server": 41,
+      "session": 41,
+      "isolate": 0,
+      "signIn": 51,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1254.1000000005588,
+      "sentAt": 1793258875521,
+      "receivedAt": 1793258876776,
+      "clock": {
+        "entered": 1793258875029,
+        "signedIn": 1793258875080,
+        "started": 1793258875080,
+        "created": 1793258875118,
+        "ran": 1793258875118
+      },
+      "server": 38,
+      "session": 38,
+      "isolate": 0,
+      "signIn": 51,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1070.2000000001863,
+      "sentAt": 1793258876776,
+      "receivedAt": 1793258877846,
+      "clock": {
+        "entered": 1793258875264,
+        "signedIn": 1793258875357,
+        "started": 1793258875357,
+        "created": 1793258875818,
+        "ran": 1793258875822
+      },
+      "server": 465,
+      "session": 461,
+      "isolate": 4,
+      "signIn": 93,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1081.5999999996275,
+      "sentAt": 1793258877846,
+      "receivedAt": 1793258878927,
+      "clock": {
+        "entered": 1793258877876,
+        "signedIn": 1793258877920,
+        "started": 1793258877920,
+        "created": 1793258877948,
+        "ran": 1793258877948
+      },
+      "server": 28,
+      "session": 28,
+      "isolate": 0,
+      "signIn": 44,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1313.9000000003725,
+      "sentAt": 1793258878927,
+      "receivedAt": 1793258880241,
+      "clock": {
+        "entered": 1793258878058,
+        "signedIn": 1793258878137,
+        "started": 1793258878137,
+        "created": 1793258878184,
+        "ran": 1793258878184
+      },
+      "server": 47,
+      "session": 47,
+      "isolate": 0,
+      "signIn": 79,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1360.5,
+      "sentAt": 1793258880241,
+      "receivedAt": 1793258881602,
+      "clock": {
+        "entered": 1793258880064,
+        "signedIn": 1793258880133,
+        "started": 1793258880133,
+        "created": 1793258880159,
+        "ran": 1793258880159
+      },
+      "server": 26,
+      "session": 26,
+      "isolate": 0,
+      "signIn": 69,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1340.8999999994412,
+      "sentAt": 1793258881602,
+      "receivedAt": 1793258882943,
+      "clock": {
+        "entered": 1793258880895,
+        "signedIn": 1793258880956,
+        "started": 1793258880956,
+        "created": 1793258881063,
+        "ran": 1793258881063
+      },
+      "server": 107,
+      "session": 107,
+      "isolate": 0,
+      "signIn": 61,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1014.4000000003725,
+      "sentAt": 1793258882943,
+      "receivedAt": 1793258883957,
+      "clock": {
+        "entered": 1793258882204,
+        "signedIn": 1793258882265,
+        "started": 1793258882265,
+        "created": 1793258882309,
+        "ran": 1793258882309
+      },
+      "server": 44,
+      "session": 44,
+      "isolate": 0,
+      "signIn": 61,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1269.0999999996275,
+      "sentAt": 1793258883957,
+      "receivedAt": 1793258885226,
+      "clock": {
+        "entered": 1793258883171,
+        "signedIn": 1793258883230,
+        "started": 1793258883230,
+        "created": 1793258883267,
+        "ran": 1793258883267
+      },
+      "server": 37,
+      "session": 37,
+      "isolate": 0,
+      "signIn": 59,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1033.2000000001863,
+      "sentAt": 1793258885226,
+      "receivedAt": 1793258886259,
+      "clock": {
+        "entered": 1793258884932,
+        "signedIn": 1793258884981,
+        "started": 1793258884981,
+        "created": 1793258885011,
+        "ran": 1793258885011
+      },
+      "server": 30,
+      "session": 30,
+      "isolate": 0,
+      "signIn": 49,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1218.2000000001863,
+      "sentAt": 1793258886259,
+      "receivedAt": 1793258887478,
+      "clock": {
+        "entered": 1793258885743,
+        "signedIn": 1793258885803,
+        "started": 1793258885803,
+        "created": 1793258885839,
+        "ran": 1793258885839
+      },
+      "server": 36,
+      "session": 36,
+      "isolate": 0,
+      "signIn": 60,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1020.8999999994412,
+      "sentAt": 1793258887478,
+      "receivedAt": 1793258888498,
+      "clock": {
+        "entered": 1793258885987,
+        "signedIn": 1793258886062,
+        "started": 1793258886062,
+        "created": 1793258886111,
+        "ran": 1793258886111
+      },
+      "server": 49,
+      "session": 49,
+      "isolate": 0,
+      "signIn": 75,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1023.5,
+      "sentAt": 1793258888499,
+      "receivedAt": 1793258889522,
+      "clock": {
+        "entered": 1793258887951,
+        "signedIn": 1793258888007,
+        "started": 1793258888007,
+        "created": 1793258888043,
+        "ran": 1793258888043
+      },
+      "server": 36,
+      "session": 36,
+      "isolate": 0,
+      "signIn": 56,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1227.3999999994412,
+      "sentAt": 1793258889522,
+      "receivedAt": 1793258890749,
+      "clock": {
+        "entered": 1793258888183,
+        "signedIn": 1793258888266,
+        "started": 1793258888266,
+        "created": 1793258888335,
+        "ran": 1793258888335
+      },
+      "server": 69,
+      "session": 69,
+      "isolate": 0,
+      "signIn": 83,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1187.1000000005588,
+      "sentAt": 1793258890749,
+      "receivedAt": 1793258891936,
+      "clock": {
+        "entered": 1793258890159,
+        "signedIn": 1793258890228,
+        "started": 1793258890228,
+        "created": 1793258890261,
+        "ran": 1793258890261
+      },
+      "server": 33,
+      "session": 33,
+      "isolate": 0,
+      "signIn": 69,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1062.8999999994412,
+      "sentAt": 1793258891937,
+      "receivedAt": 1793258893000,
+      "clock": {
+        "entered": 1793258891951,
+        "signedIn": 1793258891992,
+        "started": 1793258891992,
+        "created": 1793258892016,
+        "ran": 1793258892016
+      },
+      "server": 24,
+      "session": 24,
+      "isolate": 0,
+      "signIn": 41,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1096.7000000001863,
+      "sentAt": 1793258893000,
+      "receivedAt": 1793258894096,
+      "clock": {
+        "entered": 1793258892129,
+        "signedIn": 1793258892187,
+        "started": 1793258892187,
+        "created": 1793258892235,
+        "ran": 1793258892235
+      },
+      "server": 48,
+      "session": 48,
+      "isolate": 0,
+      "signIn": 58,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1091.1000000005588,
+      "sentAt": 1793258894096,
+      "receivedAt": 1793258895187,
+      "clock": {
+        "entered": 1793258894179,
+        "signedIn": 1793258894215,
+        "started": 1793258894215,
+        "created": 1793258894235,
+        "ran": 1793258894235
+      },
+      "server": 20,
+      "session": 20,
+      "isolate": 0,
+      "signIn": 36,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1108.5,
+      "sentAt": 1793258895187,
+      "receivedAt": 1793258896296,
+      "clock": {
+        "entered": 1793258894361,
+        "signedIn": 1793258894441,
+        "started": 1793258894441,
+        "created": 1793258894482,
+        "ran": 1793258894482
+      },
+      "server": 41,
+      "session": 41,
+      "isolate": 0,
+      "signIn": 80,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1340,
+      "sentAt": 1793258896296,
+      "receivedAt": 1793258897636,
+      "clock": {
+        "entered": 1793258896327,
+        "signedIn": 1793258896364,
+        "started": 1793258896364,
+        "created": 1793258896386,
+        "ran": 1793258896386
+      },
+      "server": 22,
+      "session": 22,
+      "isolate": 0,
+      "signIn": 37,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1046.0999999996275,
+      "sentAt": 1793258897636,
+      "receivedAt": 1793258898682,
+      "clock": {
+        "entered": 1793258896606,
+        "signedIn": 1793258896682,
+        "started": 1793258896682,
+        "created": 1793258896723,
+        "ran": 1793258896723
+      },
+      "server": 41,
+      "session": 41,
+      "isolate": 0,
+      "signIn": 76,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1030.2000000001863,
+      "sentAt": 1793258898682,
+      "receivedAt": 1793258899712,
+      "clock": {
+        "entered": 1793258897894,
+        "signedIn": 1793258897949,
+        "started": 1793258897949,
+        "created": 1793258897990,
+        "ran": 1793258897990
+      },
+      "server": 41,
+      "session": 41,
+      "isolate": 0,
+      "signIn": 55,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1247.2999999998137,
+      "sentAt": 1793258899712,
+      "receivedAt": 1793258900959,
+      "clock": {
+        "entered": 1793258899047,
+        "signedIn": 1793258899124,
+        "started": 1793258899124,
+        "created": 1793258899162,
+        "ran": 1793258899162
+      },
+      "server": 38,
+      "session": 38,
+      "isolate": 0,
+      "signIn": 77,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1223.5999999996275,
+      "sentAt": 1793258900959,
+      "receivedAt": 1793258902183,
+      "clock": {
+        "entered": 1793258899331,
+        "signedIn": 1793258899430,
+        "started": 1793258899430,
+        "created": 1793258899840,
+        "ran": 1793258899841
+      },
+      "server": 411,
+      "session": 410,
+      "isolate": 1,
+      "signIn": 99,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1098.2000000001863,
+      "sentAt": 1793258902183,
+      "receivedAt": 1793258903281,
+      "clock": {
+        "entered": 1793258901911,
+        "signedIn": 1793258901961,
+        "started": 1793258901961,
+        "created": 1793258901989,
+        "ran": 1793258901989
+      },
+      "server": 28,
+      "session": 28,
+      "isolate": 0,
+      "signIn": 50,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1270.4000000003725,
+      "sentAt": 1793258903281,
+      "receivedAt": 1793258904552,
+      "clock": {
+        "entered": 1793258902118,
+        "signedIn": 1793258902185,
+        "started": 1793258902185,
+        "created": 1793258902234,
+        "ran": 1793258902234
+      },
+      "server": 49,
+      "session": 49,
+      "isolate": 0,
+      "signIn": 67,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1258.1000000005588,
+      "sentAt": 1793258904552,
+      "receivedAt": 1793258905810,
+      "clock": {
+        "entered": 1793258904287,
+        "signedIn": 1793258904332,
+        "started": 1793258904332,
+        "created": 1793258904358,
+        "ran": 1793258904358
+      },
+      "server": 26,
+      "session": 26,
+      "isolate": 0,
+      "signIn": 45,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1052.2999999998137,
+      "sentAt": 1793258905810,
+      "receivedAt": 1793258906862,
+      "clock": {
+        "entered": 1793258905277,
+        "signedIn": 1793258905321,
+        "started": 1793258905321,
+        "created": 1793258905356,
+        "ran": 1793258905356
+      },
+      "server": 35,
+      "session": 35,
+      "isolate": 0,
+      "signIn": 44,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1278.5999999996275,
+      "sentAt": 1793258906862,
+      "receivedAt": 1793258908141,
+      "clock": {
+        "entered": 1793258905493,
+        "signedIn": 1793258905570,
+        "started": 1793258905570,
+        "created": 1793258906046,
+        "ran": 1793258906047
+      },
+      "server": 477,
+      "session": 476,
+      "isolate": 1,
+      "signIn": 77,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1243.1000000005588,
+      "sentAt": 1793258908141,
+      "receivedAt": 1793258909384,
+      "clock": {
+        "entered": 1793258908100,
+        "signedIn": 1793258908132,
+        "started": 1793258908132,
+        "created": 1793258908157,
+        "ran": 1793258908157
+      },
+      "server": 25,
+      "session": 25,
+      "isolate": 0,
+      "signIn": 32,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1091.199999999255,
+      "sentAt": 1793258909384,
+      "receivedAt": 1793258910475,
+      "clock": {
+        "entered": 1793258908289,
+        "signedIn": 1793258908366,
+        "started": 1793258908366,
+        "created": 1793258908413,
+        "ran": 1793258908413
+      },
+      "server": 47,
+      "session": 47,
+      "isolate": 0,
+      "signIn": 77,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1083.6000000005588,
+      "sentAt": 1793258910475,
+      "receivedAt": 1793258911559,
+      "clock": {
+        "entered": 1793258910420,
+        "signedIn": 1793258910460,
+        "started": 1793258910460,
+        "created": 1793258910493,
+        "ran": 1793258910493
+      },
+      "server": 33,
+      "session": 33,
+      "isolate": 0,
+      "signIn": 40,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1100.3999999994412,
+      "sentAt": 1793258911559,
+      "receivedAt": 1793258912659,
+      "clock": {
+        "entered": 1793258910628,
+        "signedIn": 1793258910688,
+        "started": 1793258910688,
+        "created": 1793258910728,
+        "ran": 1793258910728
+      },
+      "server": 40,
+      "session": 40,
+      "isolate": 0,
+      "signIn": 60,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1344.1000000005588,
+      "sentAt": 1793258912659,
+      "receivedAt": 1793258914003,
+      "clock": {
+        "entered": 1793258912091,
+        "signedIn": 1793258912151,
+        "started": 1793258912151,
+        "created": 1793258912183,
+        "ran": 1793258912183
+      },
+      "server": 32,
+      "session": 32,
+      "isolate": 0,
+      "signIn": 60,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1093.5,
+      "sentAt": 1793258914003,
+      "receivedAt": 1793258915097,
+      "clock": {
+        "entered": 1793258913143,
+        "signedIn": 1793258913213,
+        "started": 1793258913213,
+        "created": 1793258913252,
+        "ran": 1793258913252
+      },
+      "server": 39,
+      "session": 39,
+      "isolate": 0,
+      "signIn": 70,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1067.3999999994412,
+      "sentAt": 1793258915097,
+      "receivedAt": 1793258916164,
+      "clock": {
+        "entered": 1793258913408,
+        "signedIn": 1793258913495,
+        "started": 1793258913495,
+        "created": 1793258913909,
+        "ran": 1793258913910
+      },
+      "server": 415,
+      "session": 414,
+      "isolate": 1,
+      "signIn": 87,
+      "exit": 0,
+      "listed": 68
+    },
+    {
+      "status": 200,
+      "wall": 1126,
+      "sentAt": 1793258916164,
+      "receivedAt": 1793258917290,
+      "clock": {
+        "entered": 1793258915976,
+        "signedIn": 1793258916013,
+        "started": 1793258916013,
+        "created": 1793258916042,
+        "ran": 1793258916042
+      },
+      "server": 29,
+      "session": 29,
+      "isolate": 0,
+      "signIn": 37,
+      "exit": 0,
+      "listed": 68
+    }
+  ],
+  "after": {
+    "status": 200,
+    "wall": 1578.6000000005588,
+    "sentAt": 1793258917290,
+    "receivedAt": 1793258918869,
+    "clock": {
+      "entered": 1793258916195,
+      "signedIn": 1793258916268,
+      "started": 1793258916268,
+      "created": 1793258916312,
+      "ran": 1793258916312
+    },
+    "server": 44,
+    "session": 44,
+    "isolate": 0,
+    "signIn": 73,
+    "exit": 0,
+    "listed": 68,
+    "placement": {
+      "objectColo": "LHR",
+      "edgeColo": "CDG",
+      "d1": {
+        "region": "WEUR",
+        "colo": "LHR",
+        "primary": true,
+        "queries": [
+          {
+            "roundTripMs": 46,
+            "sqlMs": 0.1569
+          },
+          {
+            "roundTripMs": 22,
+            "sqlMs": 0.129
+          },
+          {
+            "roundTripMs": 28,
+            "sqlMs": 0.1362
+          },
+          {
+            "roundTripMs": 17,
+            "sqlMs": 0.1377
+          },
+          {
+            "roundTripMs": 18,
+            "sqlMs": 0.2376
+          }
+        ]
+      },
+      "r2": {
+        "queries": [
+          {
+            "roundTripMs": 78
+          },
+          {
+            "roundTripMs": 86
+          },
+          {
+            "roundTripMs": 64
+          },
+          {
+            "roundTripMs": 74
+          },
+          {
+            "roundTripMs": 69
+          }
+        ]
+      }
+    }
+  },
+  "summary": {
+    "backend": "in-process",
+    "ok": 50,
+    "wallP50": 1098.2000000001863,
+    "wallP95": 1344.1000000005588,
+    "serverP50": 38,
+    "serverP95": 465,
+    "sessionP50": 38,
+    "sessionP95": 461,
+    "isolateP50": 0,
+    "isolateP95": 1,
+    "signInP50": 60,
+    "signInP95": 99
+  },
+  "endedAt": "2026-10-29T07:28:39.103Z"
+}
