@@ -3,6 +3,7 @@
 // environment only:
 //
 //   PORT                        default 8080
+//   HOST                        the address to listen on; default 0.0.0.0. 127.0.0.1 on the host's network
 //   HARBOUR_CONSOLE_DIR         the console's build; default apps/console/dist in this checkout
 //   HARBOUR_BOOTSTRAP_FILE      where the bootstrap's IDs and API key are written (mode 0600), and read back on the
 //                               next start; default .harbour/bootstrap.json under the working directory
@@ -13,7 +14,9 @@
 //   HARBOUR_GATEWAY_S3_PREFIX   their key prefix in the bucket; default m1/workspaces/
 //   HARBOUR_ORGANISATION_NAME   default "Harbour"
 //   HARBOUR_PROJECT_NAME        default "default"
-//   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use; default any https: URL
+//   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use, each `scheme://host[:port]` or
+//                               `scheme://host:*` for any port on that host (callbacks.ts); default any https: URL.
+//                               Next to Sal: `http://127.0.0.1:*`, where Sal's worker serves its host tools
 //   HARBOUR_SMTP_URL            where sign-in codes are sent (see mail.ts); unset, sign-in by email answers 503
 //   HARBOUR_MAIL_FROM           their From address; required with HARBOUR_SMTP_URL
 //   HARBOUR_ADMIN_EMAIL         invited as an organisation admin at start, unless someone can already sign in with it,
@@ -23,6 +26,7 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
@@ -30,14 +34,12 @@ import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail
 import { listen } from "./node-http.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
-	const origins = (env.HARBOUR_CALLBACK_ORIGINS ?? "")
-		.split(",")
-		.map((origin) => origin.trim())
-		.filter((origin) => origin !== "");
+	const origins = parseCallbackOrigins(env.HARBOUR_CALLBACK_ORIGINS);
 	const adminEmail = env.HARBOUR_ADMIN_EMAIL?.trim() ?? "";
 	if (adminEmail !== "" && !plausibleAddress(adminEmail)) throw new Error("HARBOUR_ADMIN_EMAIL must be one address");
 	return {
 		port: Number(env.PORT ?? "8080"),
+		host: env.HOST?.trim() || "0.0.0.0",
 		consoleDir: env.HARBOUR_CONSOLE_DIR ?? fileURLToPath(new URL("../../../console/dist", import.meta.url)),
 		bootstrapFile: resolve(env.HARBOUR_BOOTSTRAP_FILE ?? ".harbour/bootstrap.json"),
 		organisation: env.HARBOUR_ORGANISATION_NAME ?? "Harbour",
@@ -120,11 +122,9 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		components,
 		consoleDir: cfg.consoleDir,
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
-		...(cfg.callbackOrigins.length === 0
-			? {}
-			: { allowCallbackUrl: (url: URL) => cfg.callbackOrigins.includes(url.origin) }),
+		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
 	});
-	const server = await listen(gateway.fetch, cfg.port);
+	const server = await listen(gateway.fetch, cfg.port, { host: cfg.host });
 	console.log(
 		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}; ` +
 			`bootstrap key in ${cfg.bootstrapFile}; bindings ${JSON.stringify(components.bindings)}; ` +

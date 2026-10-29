@@ -21,6 +21,7 @@ import {
 } from "@harbour/contracts";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
+import type { DurableHosts } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import type { KeyedWorkspaces } from "@harbour/workspace";
 import { createMemoryWorkspaces } from "@harbour/workspace/memory";
@@ -39,6 +40,12 @@ export interface GatewayComponents {
 	readonly audit: AuditStore;
 	readonly runtime: MemoryRuntime;
 	readonly workspaces: KeyedWorkspaces;
+	/**
+	 * Where the session API keeps host registrations so they outlive the process: the runtime's `hosts`, when its store
+	 * is durable and it serves stored registrations over their signed callbacks. Absent in memory, where a registration
+	 * lives as long as the gateway.
+	 */
+	readonly hosts?: DurableHosts;
 	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */

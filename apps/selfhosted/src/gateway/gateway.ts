@@ -107,6 +107,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 		directory: runtime.directory,
 		profiles: runtime.profiles,
 		hostTools: runtime.hostTools,
+		...(components.hosts === undefined ? {} : { hosts: components.hosts }),
 		authenticator,
 		...(options.allowCallbackUrl === undefined ? {} : { allowCallbackUrl: options.allowCallbackUrl }),
 	});

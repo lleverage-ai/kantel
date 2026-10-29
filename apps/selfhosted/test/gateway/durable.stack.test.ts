@@ -6,10 +6,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CallContext } from "@harbour/contracts";
+import type { CallContext, HostToolCall } from "@harbour/contracts";
+import { bearer, createSessionApiClient } from "@harbour/runtime/http";
+import { createScriptedModel } from "@harbour/runtime/testing";
 import { AwsClient } from "aws4fetch";
 import pg from "pg";
 import { afterAll, describe, expect, test } from "vitest";
+import { callbackUrlAllowed, parseCallbackOrigins } from "../../src/gateway/callbacks.ts";
 import { type Bootstrap, bootstrap, type GatewayComponents } from "../../src/gateway/components.ts";
 import { createDurableGatewayComponents, type DurableConfig, withSearchPath } from "../../src/gateway/durable.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
@@ -73,9 +76,17 @@ async function deleteRunObjects(): Promise<void> {
 }
 
 /** Components for `schema`, closed when `work` ends however it ends. */
-async function withComponents<T>(schema: string, work: (components: GatewayComponents) => Promise<T>): Promise<T> {
+async function withComponents<T>(
+	schema: string,
+	work: (components: GatewayComponents) => Promise<T>,
+	models?: DurableConfig["models"],
+): Promise<T> {
 	schemas.push(schema);
-	const components = await createDurableGatewayComponents({ ...config, schema });
+	const components = await createDurableGatewayComponents({
+		...config,
+		schema,
+		...(models === undefined ? {} : { models }),
+	});
 	try {
 		return await work(components);
 	} finally {
@@ -171,6 +182,118 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 			const fresh = await bootstrap(other, names, previous);
 			expect(fresh.organisationId).not.toBe(previous.organisationId);
 		});
+	});
+
+	test("a host app's tools on a loopback callback still answer after a restart, with nobody registering again", {
+		timeout: 60_000,
+	}, async () => {
+		const schema = `${config.schema}_hosts`;
+		const calls: HostToolCall[] = [];
+		// Sal's worker's shape: one callback server on a loopback port the OS picks, a route per host.
+		const endpoints = new Map<string, (request: Request) => Promise<Response>>();
+		const host = await listen(
+			async (request) => {
+				const match = /^\/hosts\/([^/]+)$/.exec(new URL(request.url).pathname);
+				const endpoint = match === null ? undefined : endpoints.get(decodeURIComponent(match[1] as string));
+				return endpoint === undefined ? new Response("not found", { status: 404 }) : endpoint(request);
+			},
+			0,
+			{ host: "127.0.0.1" },
+		);
+		const loopback = callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*"));
+		const serve = async <T>(components: GatewayComponents, work: (baseUrl: string) => Promise<T>) => {
+			const gateway = createGateway({ components, allowCallbackUrl: loopback });
+			const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
+			try {
+				return await work(`${server.url}/v1`);
+			} finally {
+				await gateway.close();
+				await server.close();
+			}
+		};
+		try {
+			let seeded: Bootstrap | undefined;
+			const ctx = (deployment: Bootstrap): CallContext => ({
+				actor: { kind: "service", serviceId: "sal" },
+				organisationId: deployment.organisationId,
+				projectId: deployment.projectId,
+			});
+			const client = (baseUrl: string, deployment: Bootstrap) =>
+				createSessionApiClient({
+					baseUrl,
+					credentials: bearer(deployment.apiKey),
+					hostCallbacks: {
+						url: (hostId) => `${host.url}/hosts/${encodeURIComponent(hostId)}`,
+						serve: (hostId, endpoint) => {
+							if (endpoint === undefined) endpoints.delete(hostId);
+							else endpoints.set(hostId, endpoint);
+						},
+					},
+				});
+
+			// The first process: the host registers its tool, and the gateway stops.
+			await withComponents(schema, async (first) => {
+				const deployment = await bootstrap(first, names);
+				seeded = deployment;
+				await first.runtime.profiles.put(
+					{ ...ctx(deployment), actor: { kind: "system", component: "durable-test" } },
+					{
+						id: "worker",
+						organisationId: deployment.organisationId,
+						projectId: deployment.projectId,
+						name: "Worker",
+						model: { route: "default" },
+						promptLayers: [],
+						tools: ["ping"],
+						skills: [],
+						sandbox: { tiers: [] },
+						memoryScopes: [],
+						hostId: "sal",
+					},
+				);
+				await serve(first, (baseUrl) =>
+					client(baseUrl, deployment).hostTools.register(
+						ctx(deployment),
+						"sal",
+						[{ name: "ping", description: "Answers pong", inputSchema: { type: "object" }, replay: "safe" }],
+						async (call) => {
+							calls.push(call);
+							return { output: "pong" };
+						},
+					),
+				);
+			});
+			if (seeded === undefined) throw new Error("no deployment");
+			const deployment = seeded;
+
+			// The next process on the same schema calls the tool over the stored callback.
+			const { models, script } = createScriptedModel();
+			script.reply({ toolCalls: [{ name: "ping", args: {} }] });
+			script.reply({ text: "The host said pong" });
+			await withComponents(
+				schema,
+				async (second) => {
+					await bootstrap(second, names, deployment);
+					await serve(second, async (baseUrl) => {
+						const api = client(baseUrl, deployment).runtime;
+						const session = await api.create(ctx(deployment), {
+							projectId: deployment.projectId,
+							agentId: "worker",
+						});
+						const prompt = await api.prompt(ctx(deployment), session.id, { text: "Ping the host" });
+						expect(await api.wait(ctx(deployment), session.id, prompt.id)).toMatchObject({
+							status: "answered",
+							answer: "The host said pong",
+						});
+					});
+				},
+				{ models },
+			);
+			expect(calls.map((call) => call.tool)).toEqual(["ping"]);
+			expect(script.requests[1]?.messages.at(-1)).toMatchObject({ role: "tool", text: "pong" });
+		} finally {
+			await host.close();
+		}
 	});
 
 	test("reads a database URL as node-postgres does, a socket URL with no host included", () => {

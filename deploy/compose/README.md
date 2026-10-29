@@ -87,6 +87,27 @@ credentials in the URL if the relay needs them. In compose both default to Mailp
 <http://127.0.0.1:58025/> or through Mailpit's API (`/api/v1/search?query=to:"…"`), which is how the end-to-end tests
 read codes.
 
+### Next to Sal: host tools on a loopback callback
+
+Sal's Harbour worker (`experimental.harbour` in tvdavies/sal) serves its host tools on `http://127.0.0.1:<port>`, a
+port the OS picks for each run, and registers that URL with the session API. The API calls only `https:` callbacks
+unless the deployment says otherwise, and inside compose's bridge network 127.0.0.1 is the gateway's own container. So
+the gateway next to Sal runs on the host's network, listening on 127.0.0.1 only, with
+`HARBOUR_CALLBACK_ORIGINS=http://127.0.0.1:*`:
+
+```bash
+docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
+```
+
+Sal's `experimental.harbour.url` is then `http://127.0.0.1:58090/v1`. `HARBOUR_CALLBACK_ORIGINS` takes origins
+(`https://sal.example`) and origins with any port (`http://127.0.0.1:*`), comma-separated; the gateway refuses to start
+on anything else. With `*`, any operator key on the gateway can make it POST signed tool calls to any port on that
+host, so use it only where the keys are the host app's own.
+
+Host registrations are kept in Postgres with their callback URL and secret, so after a restart of the gateway the
+host's tools still answer and a call cut off mid-way is rerun (replay-safe tools) or reported interrupted, without the
+host registering again (#113).
+
 ### Bindings: the real implementations against the stack
 
 `bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its
