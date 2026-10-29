@@ -88,9 +88,21 @@ function useProjects(client: ConsoleClient): { projects?: readonly ProjectSummar
 	const [state, setState] = useState<{ projects?: readonly ProjectSummary[]; error?: string }>({});
 	useEffect(() => {
 		let live = true;
+		let answered = false;
+		// The projects this browser last showed, until the API answers.
+		client.cachedProjects?.().then(
+			(projects) => live && !answered && projects !== undefined && setState({ projects }),
+			() => {},
+		);
 		client.projects().then(
-			(projects) => live && setState({ projects }),
-			(reason: unknown) => live && setState({ error: String(reason) }),
+			(projects) => {
+				answered = true;
+				if (live) setState({ projects });
+			},
+			(reason: unknown) => {
+				answered = true;
+				if (live) setState({ error: String(reason) });
+			},
 		);
 		return () => {
 			live = false;

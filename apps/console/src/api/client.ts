@@ -4,6 +4,7 @@
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
+import type { SessionSnapshot } from "@harbour/protocol";
 import type { ComposerModelOption, SessionSummary, ThinkingLevel, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
@@ -226,4 +227,13 @@ export interface ConsoleClient {
 	markRead(sessionId: string): () => void;
 	/** The session's workspace, read-only, or undefined when it has none. Rejects when there's no such session. */
 	workspace(sessionId: string): Promise<WorkspaceFiles | undefined>;
+	/**
+	 * The projects as this browser last showed them to the signed-in person, to show while `projects()` answers.
+	 * Absent without a local cache (api/cached.ts).
+	 */
+	cachedProjects?(): Promise<readonly ProjectSummary[] | undefined>;
+	/** A session as this browser last held it, to show while its stream connects. Absent without a local cache. */
+	cachedSession?(sessionId: string): Promise<SessionSnapshot | undefined>;
+	/** Keeps a session as it is on screen, for the next load. Absent without a local cache. */
+	rememberSession?(snapshot: SessionSnapshot): void;
 }

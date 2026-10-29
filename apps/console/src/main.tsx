@@ -6,6 +6,7 @@ import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
 import { apiAgent } from "./api/agent-http.ts";
 import { apiAudit } from "./api/audit-http.ts";
+import { withLocalCache } from "./api/cached.ts";
 import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
@@ -20,6 +21,7 @@ import { createRecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
+import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { profileStore } from "./ui/profile.tsx";
 import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
@@ -178,12 +180,46 @@ function hasStorage(): boolean {
 	}
 }
 
+// This browser's cache of what the console last showed (state/local-cache.ts), so a reload shows it at once: per
+// person, opened once `/v1/me` has said who is signed in, and cleared on signing out or a 401. `?cache=off` turns it off
+// (and clears it) for this browser; `?cache=on` turns it back on.
+const cacheOn = cacheSwitch(params, hasStorage() ? localStorage : undefined);
+const cacheStore = (() => {
+	try {
+		return indexedDbCacheStore(typeof indexedDB === "undefined" ? undefined : indexedDB);
+	} catch {
+		return undefined;
+	}
+})();
+/** Bumped by each clear, so a cache opened before it stops reading and writing. */
+let cacheGeneration = 0;
+const forgetCache = (): Promise<void> => {
+	cacheGeneration += 1;
+	return cacheStore?.clear().catch(() => {}) ?? Promise.resolve();
+};
+// Opening IndexedDB takes a while on a cold start, so it opens beside `/v1/me` rather than after it.
+if (!cacheOn) void forgetCache();
+else if (source === "api") void cacheStore?.keys().catch(() => {});
+
+/** This person's cache, for as long as it isn't cleared. */
+function openCache(store: NonNullable<typeof cacheStore>, owner: string) {
+	const generation = cacheGeneration;
+	return openLocalCache(store, owner, { open: () => generation === cacheGeneration });
+}
+
 type Boot = ConsoleBoot | { readonly kind: "failed"; readonly message: string };
 const boot = (): Promise<Boot> =>
-	identity.boot().catch((reason: unknown) => ({
-		kind: "failed" as const,
-		message: reason instanceof Error ? reason.message : String(reason),
-	}));
+	identity.boot().then(
+		(state) => {
+			// Nobody is signed in: nothing anyone was shown stays behind.
+			if (state.kind !== "signed-in") void forgetCache();
+			return state;
+		},
+		(reason: unknown) => ({
+			kind: "failed" as const,
+			message: reason instanceof Error ? reason.message : String(reason),
+		}),
+	);
 
 // Started here, not in render: a component that suspends before it mounts loses its state, so a promise made in
 // render would be made again on every retry.
@@ -196,7 +232,18 @@ const firstBoot: Promise<Boot> | undefined = source === "recorded" || viewing !=
 function ApiConsole({ first }: { first: Promise<Boot> }) {
 	const [booting, setBooting] = useState(first);
 	const reboot = useCallback(() => setBooting(boot()), []);
-	const state = use(booting);
+	// Awaited in an effect rather than suspended on: React holds a Suspense boundary's fallback for at least 300 ms, which
+	// was most of a reload's wait once `/v1/me` answers in a fraction of that.
+	const [answer, setAnswer] = useState<{ for: Promise<Boot>; state: Boot }>();
+	useEffect(() => {
+		let live = true;
+		void booting.then((state) => live && setAnswer({ for: booting, state }));
+		return () => {
+			live = false;
+		};
+	}, [booting]);
+	if (answer?.for !== booting) return <ShellPlaceholder />;
+	const { state } = answer;
 	if (state.kind === "signed-in") return <SignedInConsole state={state} onSignedOut={reboot} />;
 	if (state.kind === "sign-in") {
 		return (
@@ -236,8 +283,31 @@ function SignedInConsole({
 			if (over) return;
 			over = true;
 			identity.forget();
+			void forgetCache();
 			onSignedOut();
 		};
+		// Signing out clears this browser's cache before the session ends.
+		const { signOut } = state.actor;
+		const actor =
+			signOut === undefined
+				? state.actor
+				: {
+						...state.actor,
+						signOut: async () => {
+							await forgetCache();
+							await signOut();
+						},
+					};
+		// The cache is this person's: their organisation and who `/v1/me` says they are.
+		const owner = `${state.me.organisationId}/${JSON.stringify(state.me.actor)}`;
+		const api = createApiClient({
+			actor,
+			roles: state.me.roles,
+			headers: state.headers,
+			onUnauthenticated,
+			...(sockets ? {} : { openSocket: false }),
+			onTransport: (sessionId, how) => transports.set(sessionId, how),
+		});
 		// Rows about a vault request link to its page, when the console has the vault page to open it on.
 		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
@@ -247,14 +317,7 @@ function SignedInConsole({
 			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
 		};
 		return {
-			client: createApiClient({
-				actor: state.actor,
-				roles: state.me.roles,
-				headers: state.headers,
-				onUnauthenticated,
-				...(sockets ? {} : { openSocket: false }),
-				onTransport: (sessionId, how) => transports.set(sessionId, how),
-			}),
+			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
 			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
 			ready: {
 				agent,

@@ -140,6 +140,32 @@ export class SessionClient {
 		this.open();
 	}
 
+	/**
+	 * Shows a snapshot this browser kept of the session (state/local-cache.ts) until the host's own answer comes, and, when
+	 * given before `start()`, resumes from its cursor, so the host sends only what changed since. Freshness stays `stale`
+	 * until the host has said hello. Ignored once the host has sent anything to show, or for another session.
+	 */
+	seed(snapshot: SessionSnapshot): void {
+		if (this.view !== undefined || snapshot.sessionId !== this.state.sessionId) return;
+		this.view = snapshot;
+		this.received = snapshot.cursor;
+		this.set({
+			title: snapshot.title ?? "",
+			items: snapshot.items,
+			status: snapshot.status,
+			cursor: snapshot.cursor,
+			hasEarlier: snapshot.hasEarlier,
+			freshness: this.catchUpTo === undefined ? { state: "stale" } : { state: "catching-up", head: this.catchUpTo },
+			flushes: this.state.flushes + 1,
+		});
+	}
+
+	/** The session as shown, with every delta received applied, for keeping (`seed` takes it back); undefined before any. */
+	kept(): SessionSnapshot | undefined {
+		this.flush();
+		return this.view;
+	}
+
 	stop(): void {
 		this.stopped = true;
 		// Apply what was received but still coalescing, so a later start() resumes from a cursor that is on screen.
