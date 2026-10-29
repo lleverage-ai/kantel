@@ -71,7 +71,15 @@ describe("filters", () => {
 			event("revoked", "capability.grant.revoked", "capability", 5),
 		]);
 		const source = storeSource(store, { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION });
-		expect((await source.query(query)).items.map((row) => row.id)).toEqual(["revoked", "grant", "policy"]);
+		const page = await source.query(query);
+		expect(page.items.map((row) => row.id)).toEqual(["revoked", "grant", "policy"]);
+		const grant = { ...page.items[1]!, data: { capabilities: ["linear.issues.read", "linear.issues.write"] } };
+		expect(describeEvent(grant).action).toBe("granted linear.issues.read, linear.issues.write");
+		expect(describeEvent({ ...grant, data: {} }).action).toBe("granted capabilities");
+		expect(describeEvent({ ...page.items[0]!, data: {} }).action).toBe("revoked a capability grant");
+		expect(describeEvent({ ...page.items[0]!, data: { reason: "session ended" } }).action).toBe(
+			"revoked a capability grant: session ended",
+		);
 	});
 
 	it("leave the credential to the store, so its first page is the credential's however far back it was used", async () => {

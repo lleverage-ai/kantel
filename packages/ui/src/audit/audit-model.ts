@@ -312,6 +312,20 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			return withLink({ action: "added a standing vault policy", tone: "accent", label: "Policy" });
 		case "vault.policy.revoked":
 			return withLink({ action: "removed a standing vault policy", tone: "idle", label: "Policy" });
+		case "capability.grant.created": {
+			const names = Array.isArray(data.capabilities) ? data.capabilities.flatMap((name) => text(name) ?? []) : [];
+			return withLink({
+				action: names.length === 0 ? "granted capabilities" : `granted ${names.join(", ")}`,
+				tone: "accent",
+				label: "Capability grant",
+			});
+		}
+		case "capability.grant.revoked":
+			return withLink({
+				action: `revoked a capability grant${text(data.reason) === undefined ? "" : `: ${text(data.reason)}`}`,
+				tone: "idle",
+				label: "Capability grant",
+			});
 		case "access.denied":
 			return withLink({
 				action: `was refused ${text(data.operation) ?? event.subject?.kind ?? "access"}`,

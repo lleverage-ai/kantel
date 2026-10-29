@@ -457,6 +457,62 @@ export function createAuditConformance(options: {
 			);
 		}),
 
+		test("narrows by any of a list of types: each row once, characters not bytes, caller's organisation, paged", async ({
+			store,
+		}) => {
+			const t = 1_500_000;
+			await store.append(WORKER, [
+				auditEvent("policy-1", t, { type: "vault.policy.created" }),
+				auditEvent("use-1", t + 1, { type: "vault.use.injected" }),
+				auditEvent("grant-1", t + 2, { type: "capability.grant.created" }),
+				auditEvent("call-1", t + 3, { type: "capability.call.settled" }),
+				auditEvent("policy-2", t + 4, { type: "vault.policy.revoked" }),
+				auditEvent("session-1", t + 5, { type: "session.created" }),
+				auditEvent("near-1", t + 6, { type: "vault.policy" }),
+				auditEvent("grant-2", t + 7, { type: "capability.grant.revoked" }),
+				auditEvent("wide-1", t + 8, { type: "vault.règle.noted" }),
+				auditEvent("theirs", t + 9, { type: "vault.policy.created", organisationId: OTHER_ORG }),
+			]);
+			const policyChanges = ["vault.policy.", "capability.grant."];
+			assert.deepEqual(
+				await queryIds(store, { types: policyChanges }),
+				["policy-1", "grant-1", "policy-2", "grant-2"],
+				"any of two prefixes, in seq order",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.policy", "capability.call."] }),
+				["call-1", "near-1"],
+				"exact and prefix mixed; without a dot the type is exact",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.règle."] }),
+				["wide-1"],
+				"a prefix beyond ASCII is measured in characters",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.policy.", "vault."] }),
+				["policy-1", "use-1", "policy-2", "near-1", "wide-1"],
+				"a row two types match comes once",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["capability.grant."], type: "vault.policy.created" }),
+				[],
+				"type and types that share no row match nothing",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: policyChanges }, outsider),
+				["theirs"],
+				"still the caller's organisation only",
+			);
+			const paged = await allPages(store, { types: policyChanges, newestFirst: true }, 3);
+			assert.deepEqual(
+				paged.events.map((event) => event.id),
+				["grant-2", "policy-2", "grant-1", "policy-1"],
+				"pages newest first",
+			);
+			assert.deepEqual(paged.pageSizes, [3, 1]);
+		}),
+
 		test("narrows by vault item and grant, by the record's subject or a string in data, and pages by them", async ({
 			store,
 		}) => {
