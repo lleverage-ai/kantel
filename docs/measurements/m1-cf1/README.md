@@ -22,6 +22,43 @@ and the session lookup** ([After the head cache and audit outbox](#after-the-hea
 The cold runs' timing anomaly is the Workers clock itself, not a slow step: see that section. Everything above
 [After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc) was measured with D1 in North America.
 
+## Definition of done (#17)
+
+| Item | State |
+| --- | --- |
+| Isolate-ready ≤100 ms p50 / ≤300 ms p95 on the deployed stack | **Met**, warm (Tom, 28 Oct 2026): 0 / 0 ms on the server in all 100 warm runs ([below](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)) |
+| The conformance suite passes against the deployed stack | **Met** (Tom, 29 Oct 2026; see below) |
+| A real Sal research task runs end to end | Open: waits on Sal's placement reaching the deployed stack ([below](#a-real-sal-research-task)) |
+| Monthly cost estimate checked against the first week's bill | Open: due around 4 Nov 2026 ([Cost estimate](#cost-estimate)) |
+
+**Conformance.** On 29 Oct 2026 Tom decided that two things together count as "the conformance suite passes against
+the deployed stack". The first is the deployed-stack check, which passed 6 of 6 against `https://harbour.myslop.app`
+on `b5d74be`, a real-model session included
+([Checks against the deployed stack](#checks-against-the-deployed-stack-29-oct-2026-0732-utc)). It ran from Sal's
+host, not CI, because it needs a signed-in Access cookie; the test is `apps/cloudflare/test/remote/deployed.test.ts`
+(https://github.com/tvdavies/harbour/pull/207). The second is the shared conformance suites from `@harbour/testing`
+passing on the Cloudflare implementations in CI on the same commit: `targets/cloudflare/runtime` 34 tests,
+`targets/cloudflare/vault` 68 and `targets/cloudflare/workspace` 108, in
+https://github.com/tvdavies/harbour/actions/runs/40830185542. There is no HTTP adapter that runs `@harbour/testing`
+against a URL, and none is planned for M1.
+
+### A real Sal research task
+
+Sal's placement on Harbour (#14) is in tvdavies/sal behind `experimental.harbour`, off by default, and has been
+tested only against Harbour's HTTP server inside Sal's own tests. Running a Sal task on this deployment needs, outside this lane:
+
+- **Callbacks Harbour can reach.** Sal's worker serves its host tools on `http://<callbackHost>:<ephemeral port>`.
+  The gateway accepts only `https:` callback URLs, and a Worker can't reach Sal's loopback, so the worker needs a
+  public HTTPS route to a fixed port (for example a hostname on the `sal-app` tunnel). That's a change in Sal and in
+  the tunnel's ingress.
+- **A way through Access for Sal.** Sal calls with an API key only, and Access turns away a request with no
+  `CF_Authorization` cookie. #17's Sign-in section leaves a service-token policy for when #14 needs it; Sal's client
+  would then send the service token's headers as well as its key.
+- **Sal's configuration**: `experimental.harbour` pointing at `https://harbour.myslop.app/v1`, and a key with operator
+  on the projects named after Sal's Docket workspaces (the deployed-stack check's key is operator on `Default` only).
+
+The remaining placement gaps are tracked in #113.
+
 ## Results
 
 | Batch | Deployed `main` | Client wall p50 / p95 (min–max), ms | Server `total` p50 / p95 | `session` p50 / p95 | `isolate` p50 / p95 |
@@ -206,7 +243,8 @@ p50, and that includes the browser's round trip, Access, sign-in and the session
   accounted for by the recorded server spans. The session close, which the request awaits after `ran` (lease
   release, the session's end), and time outside the Worker are the candidates. These marks don't place it, though:
   there's no mark after the close, and a stale clock hides time before `ran` too. 17 commits from several lanes landed between the two measurements (runtime changes included), so the cause isn't
-  attributed here. Cold runs aren't #17's target, but this is the next thing to look at for them.
+  attributed here. **Known gap, not investigated:** cold runs aren't #17's target, so this extra ~1 s is left as it is
+for M1.
 
 ### The cold timing anomaly: the Workers clock, not a slow step
 
