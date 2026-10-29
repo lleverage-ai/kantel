@@ -7,6 +7,7 @@ import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import type { Sandboxes } from "@harbour/contracts";
 import {
+	type AuditSink,
 	type AuditStore,
 	type CallContext,
 	EMAIL_OTP_ISSUER,
@@ -59,9 +60,24 @@ export interface GatewayComponents {
 	 * cipher key (HARBOUR_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
 	 */
 	readonly vault?: HarbourVault;
+	/**
+	 * The route the bootstrap's `assistant` profile names, when sessions are on the model gateway (`models.ts`). Absent
+	 * on the echo model, where the bootstrap makes only the `echo` profile.
+	 */
+	readonly assistantRoute?: string;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
+}
+
+/**
+ * Sessions on the model gateway (`models.ts`), built once the components have made their vault and audit store: the
+ * gateway reads CPA's key through the vault and records each call in the audit.
+ */
+export interface ModelGatewaySource {
+	/** The route the bootstrap's `assistant` profile names. */
+	readonly route: string;
+	build(deps: { readonly vault: () => HarbourVault | undefined; readonly audit: AuditSink }): GatewayModels;
 }
 
 type TextContext = { readonly messages: readonly { readonly role: string; readonly content: unknown }[] };
@@ -81,7 +97,19 @@ function lastUserText(context: TextContext): string {
  * (M1-BE9) replaces it; until then the session API runs end to end with no provider key on the host.
  */
 export function createEchoModels() {
-	const core = createFauxCore({ provider: "harbour-echo", models: [{ id: "echo" }] });
+	const models = createModels();
+	models.setProvider(echoProvider());
+	return models;
+}
+
+/** The route, and the model, of the echo provider (`echoProvider`). */
+export const ECHO_ROUTE = "echo";
+/** The bootstrap's profile on the model gateway, when sessions are on it: Cloudflare's default profile's ID. */
+export const ASSISTANT_PROFILE = "assistant";
+
+/** The echo model's pi-ai provider, `harbour-echo`, with its one model, `echo`. */
+export function echoProvider() {
+	const core = createFauxCore({ provider: "harbour-echo", models: [{ id: ECHO_ROUTE }] });
 	const reply = (context: TextContext) => fauxAssistantMessage(fauxText(`Echo: ${lastUserText(context)}`));
 	const provider = createProvider({
 		id: core.provider,
@@ -98,9 +126,7 @@ export function createEchoModels() {
 			},
 		},
 	});
-	const models = createModels();
-	models.setProvider(provider);
-	return models;
+	return provider;
 }
 
 /**
@@ -127,15 +153,21 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 /** The sessions' models: a test's scripted model, say. Default the echo model. */
 export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 
-export function createGatewayComponents(options: { readonly models?: GatewayModels } = {}): GatewayComponents {
+export function createGatewayComponents(
+	options: { readonly models?: GatewayModels; readonly modelGateway?: ModelGatewaySource } = {},
+): GatewayComponents {
 	const auditAccess = deferredAccess();
 	const audit = createMemoryAuditStore({ access: auditAccess.access });
 	const identity = createMemoryIdentity({ audit });
 	const gatewaySandboxes = createGatewaySandboxes();
+	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
+	let vault: HarbourVault | undefined;
+	const models = options.models ??
+		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
 	const runtime = createMemoryRuntime({
 		audit,
 		identity,
-		...(options.models ?? { models: createEchoModels() }),
+		...models,
 		...gatewaySandboxes.runtimeOptions,
 	});
 	// Given `identity`, the runtime always builds its check; the components share it.
@@ -144,6 +176,8 @@ export function createGatewayComponents(options: { readonly models?: GatewayMode
 	auditAccess.set(access);
 	const workspaces = createStoredWorkspaces({ store: createMemoryWorkspaceStore(), audit, access });
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
+	vault = createMemoryVault({ audit, access });
+	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
 		audit,
@@ -151,11 +185,17 @@ export function createGatewayComponents(options: { readonly models?: GatewayMode
 		workspaces,
 		sandboxes,
 		otp: createMemoryOtpStores(),
-		vault: createMemoryVault({ audit, access }),
+		vault,
+		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 		bindings: {
 			identity: "memory",
 			audit: "memory",
-			runtime: options.models === undefined ? "memory (echo model)" : "memory",
+			runtime:
+				options.models !== undefined
+					? "memory"
+					: modelGateway !== undefined
+						? "memory (model gateway)"
+						: "memory (echo model)",
 			workspaces: "memory",
 			sandboxes: SANDBOX_BINDING,
 			signIn: "memory",
@@ -181,6 +221,11 @@ export interface Bootstrap {
 	 * import nothing, so a policy an admin revoked or changed on the vault page stays as they left it.
 	 */
 	readonly egressGrants?: string;
+	/**
+	 * The platform vault item holding CPA's key (models.ts), made for the key named by its hash: the next start reuses it
+	 * while the key is the same, as the vault lists no platform items.
+	 */
+	readonly cpaItem?: { readonly name: string; readonly id: string };
 }
 
 /**
@@ -235,20 +280,34 @@ export async function bootstrap(
 		organisationId,
 		projectId,
 	};
+	// In a session on a workspace: the file tools on the workspace directly, and `bash` in an isolate leased on its
+	// first command (`sandboxes.ts`).
+	const coding = { tools: [...CODING_TOOLS], skills: [], sandbox: { tiers: ["isolate" as const] }, memoryScopes: [] };
 	await runtime.profiles.put(inProject, {
 		id: "echo",
 		organisationId,
 		projectId,
 		name: "Echo",
-		model: { route: "echo" },
+		model: { route: ECHO_ROUTE },
 		promptLayers: [],
-		// In a session on a workspace: the file tools on the workspace directly, and `bash` in an isolate leased on its
-		// first command (`sandboxes.ts`).
-		tools: [...CODING_TOOLS],
-		skills: [],
-		sandbox: { tiers: ["isolate"] },
-		memoryScopes: [],
+		...coding,
 	});
+	if (components.assistantRoute !== undefined) {
+		// On the model gateway, as Cloudflare's default profile. Its prompt is the user's alone: one they set is kept.
+		const stored = await runtime.profiles.get(inProject, ASSISTANT_PROFILE).catch((error: unknown) => {
+			if (error instanceof HarbourError && error.code === "not_found") return undefined;
+			throw error;
+		});
+		await runtime.profiles.put(inProject, {
+			id: ASSISTANT_PROFILE,
+			organisationId,
+			projectId,
+			name: "Assistant",
+			model: { route: components.assistantRoute },
+			promptLayers: stored?.promptLayers ?? [],
+			...coding,
+		});
+	}
 	const workspace = await workspaces.ensure(inProject, `bootstrap_${projectId}`, {
 		owner: { kind: "project", organisationId, projectId },
 	});

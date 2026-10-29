@@ -112,6 +112,25 @@ Host registrations are kept in Postgres with their callback URL and secret, so a
 host's tools still answer and a call cut off mid-way is rerun (replay-safe tools) or reported interrupted, without the
 host registering again (#113).
 
+### Real models: CLIProxyAPI through the model gateway
+
+Without further setup, sessions answer with the echo model (`Echo: …`). With `HARBOUR_CPA_URL` and
+`HARBOUR_CPA_API_KEY`, the gateway runs `@harbour/model-gateway` in its process with one CLIProxyAPI connector and a
+`default` route to `HARBOUR_DEFAULT_MODEL` (default `claude-sonnet-5-5`), as Cloudflare does (#17, #232). CPA's key is
+kept as a platform item in the gateway's vault, which records each use, so a gateway on Postgres also needs
+`HARBOUR_VAULT_CIPHER_KEY` (`openssl rand -base64 32`, kept: the vault's values are sealed with it). The first start
+makes the item and records it in the bootstrap file; a new key makes a new item. The bootstrap adds an `assistant`
+profile on `default` beside `echo`, which stays on the echo model. On Sal's host, next to Sal:
+
+```bash
+HARBOUR_CPA_URL=http://100.92.85.97:8317/v1 HARBOUR_CPA_API_KEY=... HARBOUR_VAULT_CIPHER_KEY=... \
+  docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
+```
+
+CPA listens on Sal's tailnet address there, not on 127.0.0.1. `next-to-sal.yaml` passes these four variables to the
+gateway; with `egress-vault.yaml` as well, set `HARBOUR_VAULT_CIPHER_KEY` yourself, as `next-to-sal.yaml` passes it
+on empty otherwise.
+
 ### Bindings: the real implementations against the stack
 
 `bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its
