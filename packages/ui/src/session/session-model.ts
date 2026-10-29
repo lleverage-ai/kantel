@@ -21,6 +21,11 @@ export type SessionSummary = {
 	needs?: "approval" | "answer";
 	startedAt: number;
 	updatedAt: number;
+	/**
+	 * When the run under way started, while status is "running": the row's "Working 12s" counts from it. Without it the
+	 * row counts from `startedAt`.
+	 */
+	workingSince?: number;
 	/** Finished since you last opened it. */
 	unread?: boolean;
 };

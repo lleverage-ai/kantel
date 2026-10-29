@@ -35,6 +35,18 @@
 	padding-bottom: var(--hb-space-1);
 }
 
+/* A working turn's header sits close under the person's message, its divider then leading into the turn; the
+   activity row at the foot is a work-log row, spaced as the tool calls are. */
+.hb-transcript-row-working {
+	padding-top: var(--hb-space-4);
+	padding-bottom: var(--hb-space-3);
+}
+
+.hb-transcript-row-activity {
+	padding-top: var(--hb-space-1);
+	padding-bottom: var(--hb-space-1);
+}
+
 .hb-transcript-row-card {
 	padding-top: var(--hb-space-3);
 	padding-bottom: var(--hb-space-3);

@@ -108,6 +108,30 @@
 	}
 }
 
+/* A working session's status, after T3 Code's (text-info-foreground, a 16px spinner, gap 1): the spinner, "Working"
+   and its time in the accent's blue, medium weight, with tabular numbers so the row doesn't shift as it counts. The
+   spinner's moving arc takes the same blue, and sits on the middle of the words' capitals. */
+.hb-session-working {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-2);
+	color: var(--hb-accent-text);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.hb-session-working > .hb-spinner {
+	border-top-color: currentcolor;
+}
+
+.hb-session-working-text {
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
+}
+
 .hb-session-project,
 .hb-session-branch {
 	min-width: 0;

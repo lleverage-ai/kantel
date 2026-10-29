@@ -92,6 +92,24 @@ export function measureAlignment(): Misalignment[] {
 		const line = textLine(label);
 		if (dot !== null && visible(dot) && line !== null) compare("status dot", label, centre(dot), line.centre);
 	}
+	// A working session's spinner on its "Working 12s".
+	for (const status of root.querySelectorAll(".hb-session-working")) {
+		const spinner = status.querySelector(":scope > .hb-spinner");
+		const text = status.querySelector(".hb-session-working-text");
+		const line = text === null || !visible(status) ? null : textLine(text);
+		if (spinner === null || !visible(status)) continue;
+		if (line === null) unmeasured("working spinner", status);
+		else compare("working spinner", status, centre(spinner), line.centre);
+	}
+	// The live activity row's brain on its "Thinking".
+	for (const row of root.querySelectorAll(".hb-live-activity")) {
+		if (!visible(row)) continue;
+		const icon = row.querySelector(".hb-live-activity-icon > *");
+		const text = row.querySelector(".hb-live-activity-text");
+		const line = text === null ? null : textLine(text);
+		if (icon === null || line === null) unmeasured("activity icon", row);
+		else compare("activity icon", row, centre(icon), line.centre);
+	}
 	// List rows: the leading dot or icon on the title's first line.
 	for (const row of root.querySelectorAll(".hb-list-row")) {
 		const leading = row.querySelector(".hb-list-row-leading > *");

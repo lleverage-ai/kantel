@@ -1,7 +1,7 @@
 import { memo, type ReactNode, useCallback, useMemo } from "react";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
-import { Skeleton } from "../primitives/spinner.tsx";
+import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { Elapsed, RelativeTime } from "../primitives/time.tsx";
@@ -21,11 +21,42 @@ export type SessionListItemProps = {
 };
 
 /**
+ * A working session's status, after T3 Code's sidebar (SidebarThreadRow.tsx:723-728 and 1478-1494): a spinner,
+ * "Working" and how long the turn has run ("Working 12s") in the accent's blue, ticking on the shared clock, in place
+ * of the session's age. The time is hidden from screen readers, as T3 Code's is: the list is no live region, and the
+ * open session's transcript says how long it has worked.
+ */
+function WorkingStatus({ since }: { since: number }) {
+	return (
+		<span className="hb-session-working">
+			<Spinner size="sm" />
+			<span className="hb-session-working-text">
+				Working{" "}
+				<span aria-hidden="true">
+					<Elapsed since={since} />
+				</span>
+			</span>
+		</span>
+	);
+}
+
+/**
  * The line above the title: the project and the branch as separate facts (no dot between them, a gap), and the
  * status at the right end. The status lives on this line rather than in a column beside the title so the title gets
- * the row's full width; the project and branch truncate before the status does.
+ * the row's full width; the project and branch truncate before the status does. A working session's status is its
+ * spinner and running time (`WorkingStatus`), given as `since`.
  */
-function Overline({ project, branch, status }: { project?: string; branch?: string; status?: Status }) {
+function Overline({
+	project,
+	branch,
+	status,
+	since,
+}: {
+	project?: string;
+	branch?: string;
+	status?: Status;
+	since?: number;
+}) {
 	return (
 		<span className="hb-session-overline">
 			{project === undefined && branch === undefined ? null : (
@@ -36,7 +67,11 @@ function Overline({ project, branch, status }: { project?: string; branch?: stri
 			)}
 			{status === undefined ? null : (
 				<span className="hb-session-status">
-					<StatusLabel status={status} />
+					{status === "working" && since !== undefined ? (
+						<WorkingStatus since={since} />
+					) : (
+						<StatusLabel status={status} />
+					)}
 				</span>
 			)}
 		</span>
@@ -45,8 +80,8 @@ function Overline({ project, branch, status }: { project?: string; branch?: stri
 
 /**
  * One session in the list, after T3 Code's sidebar cards and slim rows. Sessions that need you or are working get
- * three lines: project and branch with the status at the right end, the title across the full width, and the elapsed
- * time. Settled ones are one quiet line with their time, unless they finished unseen (an emerald Done) or failed.
+ * two lines: project and branch with the status at the right end (a working one's spinner and "Working 12s", ticking),
+ * then the title across the full width. Settled ones are one quiet line with their time, unless they finished unseen (an emerald Done) or failed.
  * Memoised on its props.
  */
 export const SessionListItem = memo(function SessionListItem({
@@ -77,18 +112,15 @@ export const SessionListItem = memo(function SessionListItem({
 
 	const overline =
 		session.project === undefined && session.branch === undefined && status === undefined ? undefined : (
-			<Overline project={session.project} branch={session.branch} status={status} />
+			<Overline
+				project={session.project}
+				branch={session.branch}
+				status={status}
+				{...(session.status === "running" ? { since: session.workingSince ?? session.startedAt } : {})}
+			/>
 		);
 	// No trailing column: the status is in the overline, so nothing sits beside the title.
-	return (
-		<ListRow
-			{...main}
-			density="comfortable"
-			overline={overline}
-			title={session.title}
-			meta={session.status === "running" ? <Elapsed since={session.startedAt} /> : undefined}
-		/>
-	);
+	return <ListRow {...main} density="comfortable" overline={overline} title={session.title} />;
 });
 
 export type SessionListProps = {

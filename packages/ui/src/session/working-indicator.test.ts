@@ -3,18 +3,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { assistant } from "./fixtures.ts";
 import { AssistantMessage } from "./message.tsx";
-import { WorkingIndicator } from "./working-indicator.tsx";
+import { LiveActivity, WorkingIndicator } from "./working-indicator.tsx";
 
 const text = (html: string) => html.replace(/<[^>]+>/g, "");
 
-describe("the working indicator", () => {
+describe("the working header", () => {
 	it("counts from when the turn started, as a timer named after its label", () => {
 		const html = renderToStaticMarkup(createElement(WorkingIndicator, { since: Date.now() - 12_000 }));
 		// The shared clock reads the time when it first ticks, so the count may lag by a second or so here.
 		expect(text(html)).toMatch(/^Working for 1\ds$/);
 		expect(html).toContain('role="timer"');
 		expect(html).toContain('aria-label="Working"');
-		expect(html).toContain("hb-status-dot hb-status-working");
+		// Muted words only, as T3 Code's: no dot, nothing breathing.
+		expect(html).not.toContain("hb-status-dot");
 	});
 
 	it("says the label alone, as a status, without a start", () => {
@@ -24,17 +25,29 @@ describe("the working indicator", () => {
 	});
 });
 
+describe("the live activity row", () => {
+	it("says Thinking beside a brain by default", () => {
+		const html = renderToStaticMarkup(createElement(LiveActivity));
+		expect(text(html)).toBe("Thinking");
+		expect(html).toContain("hb-live-activity-icon");
+		expect(html).toContain('role="status"');
+	});
+});
+
 describe("an answer as it streams", () => {
 	const render = (item: ReturnType<typeof assistant>) =>
-		renderToStaticMarkup(createElement(AssistantMessage, { item, turnStartedAt: Date.now() - 5_000 }));
+		renderToStaticMarkup(createElement(AssistantMessage, { item }));
 
-	it("shows the working row before its first word or thought", () => {
-		expect(text(render(assistant("a", "", { streaming: true })))).toMatch(/^Working for \ds$/);
+	it("shows the live activity row before its first word or thought", () => {
+		const html = render(assistant("a", "", { streaming: true }));
+		expect(text(html)).toBe("Thinking");
+		expect(html).toContain("hb-live-activity");
 	});
 
-	it("shows its thought live, not behind a disclosure, before its first word", () => {
+	it("shows its thought live under Thinking, not behind a disclosure, before its first word", () => {
 		const html = render(assistant("a", "", { streaming: true, thinking: "Checking the retry path" }));
 		expect(html).toContain("hb-assistant-message-thinking-live");
+		expect(html).toContain("hb-live-activity");
 		expect(text(html)).toContain("Checking the retry path");
 		expect(html).not.toContain("aria-expanded");
 		expect(text(html)).not.toContain("Working");

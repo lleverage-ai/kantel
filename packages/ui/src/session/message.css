@@ -45,8 +45,9 @@
 	overflow-wrap: anywhere;
 }
 
-/* A thought as it streams, before the answer's first word: "Thinking", then a window four lines tall onto the end of
-   the thought, so its newest lines show and the row never grows past four lines. */
+/* A thought as it streams, before the answer's first word: the activity row (a brain and "Thinking"), then a window
+   four lines tall onto the end of the thought, so its newest lines show and the row never grows past four lines. The
+   window starts under the word, past the icon, as a tool call's detail does. */
 .hb-assistant-message-thinking-live {
 	display: flex;
 	flex-direction: column;
@@ -54,13 +55,8 @@
 	min-width: 0;
 }
 
-.hb-assistant-message-thinking-label {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-sm);
-	line-height: var(--hb-leading);
-}
-
 .hb-assistant-message-thought-window {
+	margin-left: calc(var(--hb-icon-md) + var(--hb-space-4));
 	display: flex;
 	flex-direction: column;
 	justify-content: flex-end;

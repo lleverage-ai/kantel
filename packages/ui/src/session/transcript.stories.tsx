@@ -90,13 +90,15 @@ function StreamingDemo() {
 		}, 60);
 		return () => clearInterval(timer);
 	}, []);
+	const last = items.at(-1);
+	const working = last?.kind === "assistant" && last.streaming;
 	return (
 		<Sheet
 			title="Transcript streaming"
-			intro="After a second of Working for 30s, an answer streams in a word every 60ms, about 400 words. Only the streaming row renders; the list follows the end unless you scroll up, which brings up Scroll to end."
+			intro="Under the prompt, Working for 30s; after a second of Thinking, an answer streams in a word every 60ms, about 400 words, and the header goes when it ends. Only the streaming row and the timer render; the list follows the end unless you scroll up, which brings up Scroll to end."
 		>
 			<div className="hb-story-transcript-frame">
-				<Transcript items={items} />
+				<Transcript items={items} working={working} />
 			</div>
 		</Sheet>
 	);
@@ -114,10 +116,10 @@ function WorkingDemo() {
 	return (
 		<Sheet
 			title="Transcript working"
-			intro="Not one of the required states: the turn before the answer's first word. The transcript ends with Working for 12s, timed from the prompt and counting each second."
+			intro="Not one of the required states: the turn before the answer's first word. Under the prompt, Working for 12s, timed from it and counting each second, with a divider; then the answer's own activity row, a brain and Thinking."
 		>
 			<div className="hb-story-transcript-frame">
-				<Transcript items={items} />
+				<Transcript items={items} working />
 			</div>
 		</Sheet>
 	);
@@ -134,7 +136,7 @@ function JustSentDemo() {
 	return (
 		<Sheet
 			title="Transcript just sent"
-			intro="The turn has started (working) and no item of the answer has arrived. The transcript ends with the working row at once, so the reader sees the agent has the message before its first token."
+			intro="The turn has started (working) and no item of the answer has arrived. The working header goes under the message at once, and Thinking under it, so the reader sees the agent has the message before its first token."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} working />
@@ -145,7 +147,7 @@ function JustSentDemo() {
 
 export const JustSent: Story = () => <JustSentDemo />;
 
-/** Between steps of a turn: a call has finished, the next has not started, so only the turn's working row moves. */
+/** Between steps of a turn: a call has finished, the next has not started, so the activity row says Thinking. */
 function WorkingBetweenStepsDemo() {
 	const [items] = useState<TranscriptItem[]>(() => [
 		...finishedTurn,
@@ -156,7 +158,7 @@ function WorkingBetweenStepsDemo() {
 	return (
 		<Sheet
 			title="Transcript working between steps"
-			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The working row stays at the end, counting from the prompt."
+			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The header under the prompt keeps counting, and the turn ends with Thinking until the next call or word arrives."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} working />
@@ -202,7 +204,7 @@ function ThinkingDemo() {
 	return (
 		<Sheet
 			title="Transcript thinking"
-			intro="A thought streams live, its newest four lines under Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
+			intro="A thought streams live, its newest four lines under the brain and Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} working />

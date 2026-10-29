@@ -302,6 +302,8 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			status: listStatus(record.status),
 			startedAt: record.createdAt,
 			updatedAt: record.updatedAt,
+			// The runtime moves a record's updatedAt only when its status changes, so a running one's is when its run started.
+			...(record.status === "running" ? { workingSince: record.updatedAt } : {}),
 			...(unread ? { unread: true } : {}),
 		};
 	};

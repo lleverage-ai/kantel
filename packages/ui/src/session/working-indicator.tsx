@@ -1,12 +1,14 @@
-import { memo } from "react";
-import { StatusDot } from "../primitives/status.tsx";
+import { memo, type ReactNode } from "react";
+import { BrainIcon } from "../primitives/icons.tsx";
 import { Elapsed } from "../primitives/time.tsx";
 import "./working-indicator.css";
 
-// The turn's working state, after T3 Code's working row (TimelineWorkGroupRows.tsx:274-308): while the agent works on
-// a turn, the transcript ends with "Working for 12s", from the moment the message is sent until the run settles, not
-// only before the first word. The dot is the working status's pulsing dot, centred on the capitals of the words beside
-// it; the words breathe softly, so the row reads as live even when nothing else on screen has moved for a while.
+// A working turn's two live rows, after T3 Code's timeline (TimelineWorkGroupRows.tsx:277-309 and 360-420):
+//
+// - WorkingIndicator, the turn's header: right under the person's message, "Working for 12s" in muted type with a
+//   hairline divider under it, from the moment the message is sent until the run settles. Still: only its timer moves.
+// - LiveActivity, the turn's foot: what the agent is doing now, an icon and a word or two ("Thinking", with a brain),
+//   whose words breathe softly, so the turn reads as live even when nothing else on screen has moved for a while.
 
 export type WorkingIndicatorProps = {
 	/** When the turn started (epoch ms): the timer counts from it. Without it the row says the label alone. */
@@ -16,9 +18,9 @@ export type WorkingIndicatorProps = {
 };
 
 /**
- * A live "Working for 12s" row with the working dot. Only the `Elapsed` leaf renders each second, on the shared clock.
- * With a time it is a `role="timer"` named after the label, whose implicit aria-live is off, so screen readers can read
- * it but are not told every second; without one it is a polite status, announced once.
+ * The turn's "Working for 12s" header, with the divider under it. Only the `Elapsed` leaf renders each second, on the
+ * shared clock. With a time it is a `role="timer"` named after the label, whose implicit aria-live is off, so screen
+ * readers can read it but are not told every second; without one it is a polite status, announced once.
  */
 export const WorkingIndicator = memo(function WorkingIndicator({ since, label = "Working" }: WorkingIndicatorProps) {
 	const timed = since !== undefined;
@@ -28,7 +30,6 @@ export const WorkingIndicator = memo(function WorkingIndicator({ since, label = 
 			{...(timed ? { role: "timer", "aria-label": label } : { role: "status" })}
 			data-working=""
 		>
-			<StatusDot status="working" />
 			<span className="hb-working-indicator-text">
 				{timed ? (
 					<>
@@ -38,6 +39,27 @@ export const WorkingIndicator = memo(function WorkingIndicator({ since, label = 
 					label
 				)}
 			</span>
+		</div>
+	);
+});
+
+export type LiveActivityProps = {
+	/** What the agent is doing now. Default "Thinking". */
+	label?: ReactNode;
+	/** The activity's icon, 16px. Default the brain. */
+	icon?: ReactNode;
+};
+
+/**
+ * The live activity row at the foot of a working turn: an icon and a word or two, the words breathing. "Thinking"
+ * with a brain between steps and before the first word; the transcript leaves it out while a call runs or an answer
+ * streams, since those show the activity themselves. A polite status, announced once, not on every breath.
+ */
+export const LiveActivity = memo(function LiveActivity({ label = "Thinking", icon }: LiveActivityProps) {
+	return (
+		<div className="hb-live-activity" role="status">
+			<span className="hb-live-activity-icon">{icon ?? <BrainIcon />}</span>
+			<span className="hb-live-activity-text">{label}</span>
 		</div>
 	);
 });
