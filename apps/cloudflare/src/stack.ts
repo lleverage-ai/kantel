@@ -18,6 +18,8 @@
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
  * `HarbourStack` hosts it in one Durable Object over the real bindings.
  */
+
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import {
@@ -34,6 +36,7 @@ import {
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
+	type SessionRecord,
 	type SignInMethod,
 	type SystemContext,
 	systemClock,
@@ -60,6 +63,7 @@ import {
 } from "@harbour/workspace/stored";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
+import { CODING_TOOLS, sessionCodingTools, sessionEnvironments } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
 import type { StackModels } from "./models.ts";
@@ -190,6 +194,11 @@ export interface Stack {
 	/** The runtime's project access: who may do what in which project. */
 	readonly access: ProjectAccess;
 	readonly sandboxes: StackSandboxes;
+	/**
+	 * A session's execution environment, as its tools get it (`src/coding-tools.ts`): its workspace, as its agent, and
+	 * the stack's sandboxes for commands. `undefined` for a session without a workspace.
+	 */
+	readonly environment: (session: SessionRecord) => ExecutionEnv | undefined;
 	readonly audit: AuditStore;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
@@ -270,6 +279,15 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (built === undefined) throw new Error("the sandboxes are not ready");
 		return built;
 	};
+	let builtWorkspaces: StoredWorkspaces | undefined;
+	const environment = sessionEnvironments({
+		sandboxes: () => lateSandboxes().sandboxes,
+		workspaces: () => lateWorkspaces(),
+	});
+	const lateWorkspaces = (): StoredWorkspaces => {
+		if (builtWorkspaces === undefined) throw new Error("the workspaces are not ready");
+		return builtWorkspaces;
+	};
 	const runtimeOptions = {
 		clock,
 		audit,
@@ -283,6 +301,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				built === undefined ? Promise.resolve() : lateSandboxes().releaseSession(ctx, sessionId, reason),
 			sweep: async (ctx: SystemContext) => (built === undefined ? [] : lateSandboxes().sweep(ctx)),
 		},
+		// A session on a workspace gets the coding tools its profile names (`src/coding-tools.ts`): the file tools work on
+		// the workspace directly, and `bash` leases an isolate on its first command, not before.
+		tools: sessionCodingTools(),
+		environment,
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -312,6 +334,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			access,
 			seeders,
 		});
+		builtWorkspaces = workspaces;
 		built = createStackSandboxes({
 			workspaces,
 			access,
@@ -341,7 +364,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			model: { route: "default" },
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
-			tools: [],
+			// Offered only in a session that has a workspace.
+			tools: [...CODING_TOOLS],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
 			memoryScopes: [],
@@ -354,6 +378,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			workspaces,
 			access,
 			sandboxes,
+			environment,
 			audit,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],

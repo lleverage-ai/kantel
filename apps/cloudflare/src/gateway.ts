@@ -44,7 +44,7 @@ import {
 import { readLimited } from "./route.ts";
 import type { Stack } from "./stack.ts";
 
-/** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"? }`: a few bytes. */
+/** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"?, "tools"? }`: a few bytes. */
 const MEASURE_BODY_LIMIT = 1024;
 
 export const API_BASE = "/v1";
@@ -208,7 +208,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				}
 			})();
 			const body = parsed as
-				| { backend?: unknown; placement?: unknown; keep?: unknown; sessionId?: unknown }
+				| { backend?: unknown; placement?: unknown; keep?: unknown; sessionId?: unknown; tools?: unknown }
 				| undefined;
 			if (
 				typeof parsed !== "object" ||
@@ -216,6 +216,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				(body?.backend !== undefined && typeof body.backend !== "string") ||
 				(body?.placement !== undefined && typeof body.placement !== "boolean") ||
 				(body?.keep !== undefined && typeof body.keep !== "boolean") ||
+				(body?.tools !== undefined && typeof body.tools !== "boolean") ||
+				// The file tools run before a session's first command: a cold run.
+				(body?.tools === true && body.sessionId !== undefined) ||
 				(body?.sessionId !== undefined && (typeof body.sessionId !== "string" || body.sessionId === "")) ||
 				// A warm run's session is open already: `keep` is for the cold run that opens it.
 				(body?.keep === true && body.sessionId !== undefined)
@@ -225,7 +228,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 						error: {
 							code: "invalid",
 							message:
-								'The body is { "backend"?: string, "placement"?: boolean, "keep"?: boolean } or { "sessionId": string, "backend"?: string, "placement"?: boolean }',
+								'The body is { "backend"?: string, "placement"?: boolean, "keep"?: boolean, "tools"?: boolean } or { "sessionId": string, "backend"?: string, "placement"?: boolean }',
 						},
 					},
 					{ status: 400, headers: { "cache-control": "no-store" } },
@@ -234,6 +237,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			input = {
 				...(typeof body?.backend === "string" ? { backend: body.backend } : {}),
 				...(body?.keep === true ? { keep: true } : {}),
+				...(body?.tools === true ? { tools: true } : {}),
 				...(typeof body?.sessionId === "string" ? { sessionId: body.sessionId } : {}),
 			};
 			placement = body?.placement === true;
