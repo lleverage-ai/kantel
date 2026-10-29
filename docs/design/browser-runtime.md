@@ -1,0 +1,133 @@
+# Browser runtime: Harbour runs its own browsers
+
+Tom, 29 Oct 2026: browser execution is part of Harbour, so the whole platform runs self-hosted (Docker, Kubernetes)
+or on Cloudflare without brwsr.dev. brwsr's execution layer (tvdavies/brwsr) comes over; the brwsr platform does not.
+The broker and its contract (`packages/browser/CONTRACT.md`) stay as they are: this adds a provider and two hosts
+under it, a live view and replay in the session, an embed API, and audit links.
+
+## Shape
+
+```
+agent tools ─► broker (@harbour/browser, unchanged rules) ─► BrowserProvider
+                                                              ├─ brwsr      (today: api.brwsr.dev, a project key)
+                                                              └─ harbour    (new: @harbour/browser/runtime)
+                                                                   │ coordinator protocol (HTTP + WebSocket)
+                                                    ┌──────────────┴──────────────┐
+                                     Cloudflare: one Durable Object      Self-hosted: browser host service
+                                     per browser + a Container,          (Node, Docker today; Kubernetes:
+                                     R2 for profiles and recordings      one Pod per browser), a blob store
+                                                    └──────────────┬──────────────┘
+                                                     browser image (images/browser): Chromium + the agent
+```
+
+`HARBOUR_BROWSER_PROVIDER` picks `brwsr` (the default while this matures) or `harbour`, per deployment. Nothing else
+changes for a session: same tools, same grants, same teardown.
+
+## The browser image (`images/browser`)
+
+brwsr's `container/` copied, with a header in each file naming its origin (tvdavies/brwsr at 0d22bf8): Debian
+Chromium and Chrome for Testing's headless shell, fonts, a prebuilt profile template, and the Node agent on `:8080`.
+Every call but `GET /health` needs the per-start agent token (`x-harbour-agent-token`), so a page in the browser can't
+drive its own agent. What Harbour uses of the agent: `start`, `stop`, `health`, `screenshot`, Reflex `act`/`look`
+(model-free steps), `PUT /profile` and `POST /export` (stored contexts), `domains` (the grant's sites enforced inside
+the browser, which `checkSite` alone never was), the `recording/*` endpoints, and the `/cdp` and `/live` sockets.
+
+## The coordinator (one per browser)
+
+`@harbour/browser/runtime` holds the portable part, written once and run by both hosts: start a browser (restore the
+context's profile, set the grant's sites, start recording), run steps and screenshots, proxy the live and CDP sockets,
+move closed recording chunks into the blob store as they appear, and on release export the profile (persisting grants
+only), drain the recording and stop the container. It is the part of brwsr's `src/session-do.ts` Harbour needs, without
+warm pools, billing, vault fills or Browserbase's session API.
+
+Hosts provide two things: a way to run the image (`BrowserMachine`: start with env, fetch the agent, stop) and a
+`BlobStore` (get, put, list, delete by key).
+
+- **Cloudflare**: `HarbourBrowser`, a Durable Object class with a Container, one per browser (`idFromName` of the
+  provider session ID), created with `HARBOUR_LOCATION_HINT` (weur). Profiles and recordings go to an R2 bucket made in
+  weur. The DO's alarm enforces the browser's timeout even if the stack object forgets it.
+- **Self-hosted**: `apps/selfhosted` gains a browser host service. It runs one container per browser through the Docker
+  API (labels and a janitor like the sandbox's; runc by default, runsc where configured), publishes nothing but the
+  agent port to the host network it shares with the gateway, and keeps blobs in S3/MinIO like workspaces (a directory
+  when there's no S3). On Kubernetes the same service creates a Pod per browser instead of a container (the
+  `m1-sh1/kubernetes` manifests gain a `browser-host` Deployment with a Role for Pods). A gateway that isn't
+  self-hosted (the Cloudflare app under `wrangler dev`) can use it too, over `HARBOUR_BROWSER_HOST_URL` with a bearer
+  token, which is how the console runs against local Docker browsers.
+
+The provider talks to either host through one client (`BrowserHostClient.fetch(browserId, path, init)`): a DO stub on
+Cloudflare, HTTP with the host token self-hosted. So one provider, one protocol, two hosts.
+
+## Profiles (contexts)
+
+A context's profile is a tarball in the blob store under `contexts/<providerContextId>`, sealed with AES-GCM under
+`HARBOUR_BROWSER_CONTEXT_KEY` (a secret) before it leaves the coordinator, so a bucket alone gives no cookies. A
+persisting grant writes it back on release; anything else only reads it. The broker's one-persisting-browser-per-context
+rule is unchanged.
+
+## Live view
+
+`share()` on the harbour provider returns a Harbour URL, not a brwsr one: `/browser/<token>`, a console route that
+needs no sign-in and shows only the browser. It is built from `@harbour/ui` like any console page: a new
+`BrowserScreen` component (brwsr's `web/live.js` canvas and frame protocol, ported) and `BrowserReplay` for replay. Its
+socket goes `/v1/browser/view/<token>/live` → host → coordinator → the agent's `/live` (JPEG frames out; input in only
+when the token allows control). The console's inline view from #233 (`BrowserLiveView`) stays the one component: it iframes
+whatever link the provider gives, so it works for brwsr and harbour alike, and the viewer posts the same
+`browserbase-disconnected` message when the browser goes.
+
+## Recording and replay
+
+brwsr's decided approach (Browserbase's): the recorder in the container screencasts each page and keeps a frame only
+when Chrome draws something new, appending JPEGs with their real timestamps to Matroska chunks; nothing is encoded in
+the browser container. The coordinator moves each closed chunk to the blob store under
+`recordings/<browserSessionId>/<page>/<chunk>.mkv` with a small manifest.
+
+Replay in the session plays those frames directly: `BrowserReplay` reads the chunks (`/v1/browser/view/<token>/…`) and draws each JPEG at its time on
+a canvas (seek, speed, tabs), so watching costs no encoding at all. An MP4 download is the only thing that encodes, on
+demand, in brwsr's encoder image run beside the browser host (later; not needed to watch). Retention is short: 7 days
+by default (`HARBOUR_BROWSER_RECORDING_DAYS`), an R2 lifecycle rule on Cloudflare and the host's janitor self-hosted.
+After that a replay link is `gone` and the audit trail still says what happened.
+
+In the console, once a browser closes its view switches from live to replay (when there is a recording) in the same
+`BrowserLiveView` slot, with *Play* over the last screenshot.
+
+## Embed API (for apps such as Lleverage)
+
+`POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed` with `{ mode: "live" | "replay", minutes? }` answers
+`{ url, expiresAt }`. It's in `@harbour/api` like every public route. The caller needs viewer on the session (a host
+app's API key, or a person). The URL is the same `/browser/<token>` page, for an iframe; the token says live or replay:
+
+- The token is an HMAC-SHA256-signed claim (`HARBOUR_BROWSER_VIEW_KEY`) naming the organisation, session, browser
+  session, mode, control (always off for embeds) and expiry: 5 to 60 minutes, default 15. It grants that one view and
+  nothing else; it is not an API credential.
+- A live socket is closed when its token expires; a revoked grant or ended session closes it too (the browser goes).
+- Pages are `no-store`, `no-referrer`, and framed only by origins in `HARBOUR_EMBED_ORIGINS` (`frame-ancestors`).
+- Issuing is audited (`browser.session.embedded` with mode and expiry), never with the token or URL. Tokens never go
+  into tool results, transcripts or logs.
+
+On Cloudflare behind Access, `/browser/*` and `/v1/browser/view/*` need an Access bypass for an outside app to frame
+them; the token is their auth. That's a deployment setting for Tom (the console works without it).
+
+## Audit links
+
+Browser events already carry `subject: { kind: "browser.session", id }`. Added:
+
+- `browser.session.step` for each step (the verb and the page's host, never a value typed), and
+  `browser.recording.stored` when the recording is complete, so steps, sites, refusals and the recording sit beside
+  grants, opens, shares and closes.
+- The audit view links a browser event to its session at that browser (`/sessions/<id>?browser=<browserSessionId>`),
+  where the transcript scrolls to the browser and offers its replay, and a *Browser session* filter (by subject) shows
+  one browser's whole history: request, grant, open, steps, refusals, shares and embeds, close, recording.
+
+## Not ported
+
+brwsr's dashboard, billing and usage, Browserbase API parity (`/v1/sessions` and friends), Stagehand and Playground,
+the warm pool, CAPTCHA solving, vault credential fills inside the browser (Harbour's vault owns credentials), CLI
+tunnels and proxies, extensions and downloads. Each can come later behind the same coordinator if needed.
+
+## Order of work
+
+1. This note.
+2. The image, the coordinator and the harbour provider, with the self-hosted Docker host; the console's live view and
+   replay against local Docker browsers (screenshots on the PR).
+3. Cloudflare: the `HarbourBrowser` Container DO and R2 in weur, deployed behind the switch.
+4. The embed route and tokens, then the audit events, links and filter.
