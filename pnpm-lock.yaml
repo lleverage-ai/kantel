@@ -264,6 +264,9 @@ importers:
 
   examples/sal-worker:
     dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../../packages/api
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts

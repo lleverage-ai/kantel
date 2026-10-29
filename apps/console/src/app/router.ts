@@ -14,7 +14,9 @@
 //   /skills                                   the agent's skills
 //   /skills/:skillId                          one skill: its revisions and files
 //   /memory                                   the agent's memory: concepts by scope, search and recall
-//   /memory/:conceptId                        one concept, its ID (which has slashes) as one encoded segment
+//   /memory/:conceptId                        one concept: the rest of the path, slashes and all, is its ID
+//                                             (`projects/harbour/placement`). Not one encoded segment, as Workers
+//                                             static assets redirect an encoded slash to a plain one.
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
 //
@@ -57,12 +59,15 @@ export function parseRoute(pathname: string): Route {
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
-	if (parts[0] === "skills" || parts[0] === "memory") {
-		const name = parts[0];
-		if (parts.length === 1) return { name };
-		const id = parts[1] === undefined ? undefined : segment(parts[1]);
-		if (id !== undefined && parts.length === 2)
-			return name === "skills" ? { name, skillId: id } : { name, conceptId: id };
+	if (parts[0] === "skills") {
+		if (parts.length === 1) return { name: "skills" };
+		const skillId = parts[1] === undefined ? undefined : segment(parts[1]);
+		if (skillId !== undefined && parts.length === 2) return { name: "skills", skillId };
+	}
+	if (parts[0] === "memory") {
+		if (parts.length === 1) return { name: "memory" };
+		const ids = parts.slice(1).map(segment);
+		if (ids.every((id) => id !== undefined)) return { name: "memory", conceptId: ids.join("/") };
 	}
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
@@ -95,9 +100,9 @@ export const KEYS_PATH = "/keys";
 /** The skills page, or one skill on it. */
 export const skillsPath = (skillId?: string): string =>
 	skillId === undefined ? "/skills" : `/skills/${encodeURIComponent(skillId)}`;
-/** The memory page, or one concept on it; the concept's ID is one segment, its slashes encoded. */
+/** The memory page, or one concept on it; the concept's ID keeps its slashes, each part encoded. */
 export const memoryPath = (conceptId?: string): string =>
-	conceptId === undefined ? "/memory" : `/memory/${encodeURIComponent(conceptId)}`;
+	conceptId === undefined ? "/memory" : `/memory/${conceptId.split("/").map(encodeURIComponent).join("/")}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
 export const filesPath = (projectId: string, sessionId: string, path?: string): string =>
 	`${sessionPath(projectId, sessionId)}/files${path === undefined ? "" : `/${encodeURIComponent(path)}`}`;

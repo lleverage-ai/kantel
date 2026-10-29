@@ -19,13 +19,16 @@ describe("routes", () => {
 		expect(parseRoute(skillsPath())).toEqual({ name: "skills" });
 		expect(parseRoute(skillsPath("skl_1"))).toEqual({ name: "skills", skillId: "skl_1" });
 		expect(parseRoute(memoryPath())).toEqual({ name: "memory" });
-		// A concept's ID has slashes: one encoded segment.
-		expect(memoryPath("projects/harbour/placement")).toBe("/memory/projects%2Fharbour%2Fplacement");
+		// A concept's ID has slashes, and keeps them: Workers static assets redirect an encoded slash to a plain one.
+		expect(memoryPath("projects/harbour/placement")).toBe("/memory/projects/harbour/placement");
 		expect(parseRoute(memoryPath("projects/harbour/placement"))).toEqual({
 			name: "memory",
 			conceptId: "projects/harbour/placement",
 		});
-		expect(parseRoute("/memory/projects/harbour")).toMatchObject({ name: "not-found" });
+		expect(parseRoute("/memory/projects%2Fharbour%2Fplacement")).toEqual({
+			name: "memory",
+			conceptId: "projects/harbour/placement",
+		});
 		expect(parseRoute("/skills/a/b")).toMatchObject({ name: "not-found" });
 	});
 

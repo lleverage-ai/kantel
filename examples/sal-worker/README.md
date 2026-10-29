@@ -34,6 +34,23 @@ given what a local Sal worker is given for the same task (issue #12).
   its recall. Concepts the brief names, and their exceptions for the task, are left out of recall as Sal's selection
   leaves them out. `host.skillsMount` serves the pinned packages read-only at `/skills`.
 
+## Loading Sal's skills and memory into a deployed Harbour
+
+`scripts/import-to-harbour.ts` reads what `harbour-sal.ts` reads (the same config, without tasks) and loads it into a
+Harbour through the public API: each skill with `POST /v1/skills/import`, owned by the caller's organisation, and the
+bundle into a memory space (`Sal memory`, made if missing) with `POST /v1/memory/spaces/{spaceId}/snapshot`. On
+Cloudflare both need a person with the organisation's admin role. A second run at the same refs publishes nothing new.
+
+```sh
+# local: pnpm --filter @harbour/cloudflare dev, then sign in as the dev admin with the mock Access token
+node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --url http://localhost:8787 \
+  --header "Cf-Access-Jwt-Assertion: $(curl -s localhost:8787/__dev/access-token | jq -r .token)"
+# or write the requests to send from somewhere already signed in
+node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --out requests.json
+```
+
+The content is the owner's: keep the config, the requests and anything printed out of the repository.
+
 ## Parity with a local Sal
 
 `scripts/sal-local.ts` runs under Bun against an installed Sal release, and only reads. It calls Sal's own
