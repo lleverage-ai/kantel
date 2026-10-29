@@ -15,6 +15,8 @@
 import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
+import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
+import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
@@ -162,6 +164,14 @@ export async function routeRequest<StackId, VaultId>(
 	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
 		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
 		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	const skills = path === "/v1/skills" || path.startsWith("/v1/skills/");
+	if (request.method === "POST" && (skills || path.startsWith("/v1/memory/"))) {
+		// And for importing a skill, loading a snapshot, a search or a recall: the stack refuses a stranger before it reads
+		// the JSON body, at most a skill's files or a space's concepts.
+		const forwarded = await buffered(request, skills ? SKILL_IMPORT_BODY_LIMIT : MEMORY_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

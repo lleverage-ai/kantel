@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConsoleClient } from "../api/client.ts";
+import type { ConsoleClient, SendOptions } from "../api/client.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
 import { SessionClient } from "../state/session-client.ts";
 import { createRequestIds, type SessionActions } from "../ui/actions.ts";
 import { SessionView } from "../ui/session-view.tsx";
+import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 
 /**
@@ -107,19 +108,34 @@ export function SessionScreen({
 		[requestIds],
 	);
 
-	/** Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one. */
-	const send = (how: "prompt" | "steer" | "followUp", text: string) => {
+	/**
+	 * Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one, and
+	 * the pickers' model and level unless `choice` says otherwise.
+	 */
+	const send = (how: "prompt" | "steer" | "followUp", text: string, choice = pickers.send) => {
 		const at = Date.now();
 		if (how === "prompt") setPromptedAt(at);
 		void run(async () => {
 			try {
-				await client[how](sessionId, text, { requestId: requestIds.for(how, text), ...pickers.send });
+				await client[how](sessionId, text, { requestId: requestIds.for(how, text), ...choice });
 			} catch (reason) {
 				if (how === "prompt") setPromptedAt((current) => (current === at ? undefined : current));
 				throw reason;
 			}
 		}, text);
 	};
+
+	// A session the new-session screen just created brings its first message, sent from here so the turn shows working
+	// as the screen opens. It sits in the composer until it has gone, so a failed send stays there to send again.
+	const sendFirst = useRef<(text: string, choice: Pick<SendOptions, "model" | "thinking">) => void>(undefined);
+	sendFirst.current = (text, choice) => {
+		setDraft(text);
+		send("prompt", text, choice);
+	};
+	useEffect(() => {
+		const first = takeOver(sessionId);
+		if (first !== undefined) sendFirst.current?.(first.text, first.choice);
+	}, [sessionId]);
 
 	// Fork and Edit from here, when the host can branch a session. Stable, so the messages don't render again.
 	const { fork, edit } = client;

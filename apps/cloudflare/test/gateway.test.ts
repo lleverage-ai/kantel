@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { isHarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { createMockAccess } from "@harbour/identity/testing";
+import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
+import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
@@ -274,6 +276,69 @@ describe("the gateway", () => {
 		expect(github.calls).toEqual([]);
 	});
 
+	it("mounts the skills API: the admin imports a skill, and a host's key reads it but cannot import", async () => {
+		const { call, signedIn, withKey, stack } = await setup();
+		const admin = { ...(await signedIn()), "content-type": "application/json" };
+		const body = JSON.stringify({
+			owner: { kind: "organisation", organisationId: stack.organisation.id },
+			name: "hello",
+			description: "Say hello.",
+			files: [{ path: "SKILL.md", content: "---\nname: hello\ndescription: Say hello.\n---\n\nHello.\n" }],
+			source: { sourceId: "test", ref: "r1" },
+		});
+		const imported = await call("/v1/skills/import", admin, { method: "POST", body });
+		expect(imported.status).toBe(200);
+		const revision = (await imported.json()) as { skillId: string; revision: number };
+		expect(revision.revision).toBe(1);
+
+		const listed = await call("/v1/skills", withKey);
+		expect(((await listed.json()) as { items: { name: string }[] }).items.map((item) => item.name)).toEqual(["hello"]);
+		const file = await call(`/v1/skills/${revision.skillId}/revisions/1/file?path=SKILL.md`, withKey);
+		expect(((await file.json()) as { content: string }).content).toContain("Hello.");
+		const json = { ...withKey, "content-type": "application/json" };
+		expect((await call("/v1/skills/import", json, { method: "POST", body })).status).toBe(403);
+		const anonymous = await call("/v1/skills");
+		expect(anonymous.status).toBe(401);
+		expect(anonymous.headers.get("www-authenticate")).toContain("Bearer");
+	});
+
+	it("mounts the memory API: the admin loads a snapshot, then a host's key lists, searches and recalls it", async () => {
+		const { call, signedIn, withKey, stack } = await setup();
+		const admin = { ...(await signedIn()), "content-type": "application/json" };
+		const created = await call("/v1/memory/spaces", admin, {
+			method: "POST",
+			body: JSON.stringify({ owner: { kind: "organisation", organisationId: stack.organisation.id }, name: "Team" }),
+		});
+		expect(created.status).toBe(201);
+		const space = (await created.json()) as { id: string };
+		const concept = {
+			id: "projects/harbour/region",
+			title: "Harbour runs in weur",
+			statement: "New D1 and R2 resources go in the weur region.",
+			scope: { kind: "global" },
+			sources: ["tvdavies/harbour#12"],
+			setBy: "owner",
+			status: "active",
+			updatedAt: 1,
+		};
+		const snapshot = JSON.stringify({ sourceId: "test", ref: "r1", concepts: [concept] });
+		const loaded = await call(`/v1/memory/spaces/${space.id}/snapshot`, admin, { method: "POST", body: snapshot });
+		expect(loaded.status).toBe(200);
+
+		const spaces = await call("/v1/memory/spaces", withKey);
+		expect(((await spaces.json()) as { items: { name: string }[] }).items.map((item) => item.name)).toEqual(["Team"]);
+		const one = await call(`/v1/memory/spaces/${space.id}/concepts/${encodeURIComponent(concept.id)}`, withKey);
+		expect(await one.json()).toMatchObject({ id: concept.id, title: concept.title });
+		const json = { ...withKey, "content-type": "application/json" };
+		const query = JSON.stringify({ spaceIds: [space.id], query: "which region for D1" });
+		const search = await call("/v1/memory/search", json, { method: "POST", body: query });
+		expect(((await search.json()) as { hits: { concept: { id: string } }[] }).hits[0]?.concept.id).toBe(concept.id);
+		const recall = await call("/v1/memory/recall", json, { method: "POST", body: query });
+		expect(((await recall.json()) as { text: string }).text).toContain("weur");
+		const refused = await call(`/v1/memory/spaces/${space.id}/snapshot`, json, { method: "POST", body: snapshot });
+		expect(refused.status).toBe(403);
+	});
+
 	it("mounts the audit query API, showing the admin the bootstrap's own events", async () => {
 		const { call, signedIn } = await setup();
 		const response = await call("/v1/audit/events?type=identity.project.created", await signedIn());
@@ -456,6 +521,17 @@ describe("routing POST /v1/keys", () => {
 		expect(seen).toEqual([`${STACK_NAME} POST /v1/keys {"name":"a"}`, `${STACK_NAME} POST /v1/keys/key_1/revoke {}`]);
 		expect((await post("/v1/keys", "x".repeat(API_KEY_BODY_LIMIT + 1))).status).toBe(413);
 		expect(seen).toHaveLength(2);
+
+		// And a skill import or a memory snapshot, each up to its own limit.
+		expect((await post("/v1/skills/import", "{}")).status).toBe(204);
+		expect((await post("/v1/memory/spaces/s/snapshot", "{}")).status).toBe(204);
+		expect(seen.slice(2)).toEqual([
+			`${STACK_NAME} POST /v1/skills/import {}`,
+			`${STACK_NAME} POST /v1/memory/spaces/s/snapshot {}`,
+		]);
+		expect((await post("/v1/skills/import", "x".repeat(SKILL_IMPORT_BODY_LIMIT + 1))).status).toBe(413);
+		expect((await post("/v1/memory/recall", "x".repeat(MEMORY_BODY_LIMIT + 1))).status).toBe(413);
+		expect(seen).toHaveLength(4);
 	});
 });
 

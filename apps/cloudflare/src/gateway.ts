@@ -11,6 +11,8 @@
  * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
  * | `/v1/me/passkeys…` | the signed-in person's passkeys (`@harbour/identity/passkey/http`), which the approval API asks for |
  * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
+ * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin |
+ * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space and loading a snapshot for the organisation's admin |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
@@ -33,7 +35,9 @@ import {
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
+import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
+import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
@@ -153,6 +157,24 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		access: stack.access,
 		authenticate: callContext,
 	});
+
+	// Loading skills and memory (a host adapter's import, a new space) is the organisation admin's, on top of the stores'
+	// own rules, which refuse agents and check a project owner's role. Reads follow the stores' rules alone.
+	const organisationAdmin = (ctx: CallContext) => stack.identity.authorize(ctx, "admin");
+	const skills = createSkillsApi({
+		skills: stack.skills,
+		authenticate: callContext,
+		authorizeImport: organisationAdmin,
+		basePath: API_BASE,
+	});
+	const memory = createMemoryApi({
+		memory: stack.memory,
+		authenticate: callContext,
+		authorizeWrite: organisationAdmin,
+		basePath: API_BASE,
+	});
+	const SKILLS_BASE = `${API_BASE}/skills`;
+	const MEMORY_BASE = `${API_BASE}/memory`;
 
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
@@ -352,6 +374,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
 			if (isPasskeyPath(path)) return passkeys(request);
 			if (isIdentityPath(path)) return identity(request);
+			if (under(path, SKILLS_BASE) || under(path, MEMORY_BASE)) {
+				const caller = await authenticate(request);
+				if (caller instanceof Response) {
+					await request.body?.cancel().catch(() => undefined);
+					return caller;
+				}
+				callers.set(request, caller);
+				const api = under(path, SKILLS_BASE) ? skills : memory;
+				return (await api.fetch(request)) ?? notFound();
+			}
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();
 		},
