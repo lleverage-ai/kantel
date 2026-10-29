@@ -23,6 +23,8 @@ registerBrowserConformance(
 			},
 			failReleases: (times) => fake.failReleases(times),
 			holdNextOpen: () => fake.holdNextOpen(),
+			nextClickLandsOn: (url) => fake.nextClickLandsOn(url),
+			providerUrls: () => Object.values(fake.urls()),
 		});
 	},
 	{ projectAccess: true },

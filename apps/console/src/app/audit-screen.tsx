@@ -1,35 +1,68 @@
-// The audit log page: the library's AuditView over the console's audit seam. When the seam reads its credentials
-// rather than listing them up front (the gateway, which has no vault API for the console yet), they are read each time
-// the page opens and become the Credential filter's choices and the names rows give items.
+// The audit log page: the library's AuditView over the console's audit seam. When the seam reads its choices rather
+// than listing them up front (the gateway, which has no vault or identity API for the console yet), they are read each
+// time the page opens: the credentials become the Credential filter's choices, the projects, agents and sessions the
+// Project, Agent and Session filters', and each names its records in rows.
 
 import { type AuditDirectory, AuditView, type Choice } from "@harbour/ui";
 import { useEffect, useMemo, useState } from "react";
 import type { ConsoleAudit } from "../api/oversight.ts";
 
-export function AuditScreen({ audit }: { audit: ConsoleAudit }) {
-	const [credentials, setCredentials] = useState<readonly Choice[]>();
+/** What `read` resolves to, once it has; undefined before, without `read`, or when it fails. */
+function useRead<T>(read: (() => Promise<T>) | undefined): T | undefined {
+	const [value, setValue] = useState<T>();
 	useEffect(() => {
-		if (audit.credentials === undefined) return;
+		if (read === undefined) return;
 		let live = true;
-		audit.credentials().then(
-			(found) => live && setCredentials(found),
-			// The log itself says when it can't be read; without credentials the filter stays hidden.
+		read().then(
+			(found) => live && setValue(found),
+			// The log itself says when it can't be read; without choices their filters stay hidden.
 			() => {},
 		);
 		return () => {
 			live = false;
 		};
-	}, [audit]);
+	}, [read]);
+	return value;
+}
+
+type Named = "item" | "project" | "agent" | "session";
+
+/** `directory` with each of `named`'s choices naming its records first, and the directory the ones they don't hold. */
+function withNames(
+	directory: AuditDirectory,
+	named: Partial<Record<Named, readonly Choice[] | undefined>>,
+): AuditDirectory {
+	const result: AuditDirectory = { ...directory };
+	for (const [key, choices] of Object.entries(named) as [Named, readonly Choice[] | undefined][]) {
+		if (choices === undefined) continue;
+		const names = new Map(choices.map((choice) => [choice.value, choice.label]));
+		result[key] = (id: string) => names.get(id) ?? directory[key]?.(id);
+	}
+	return result;
+}
+
+export function AuditScreen({ audit }: { audit: ConsoleAudit }) {
+	const credentials = useRead(audit.credentials);
+	const scope = useRead(audit.scope);
 
 	const choices = useMemo(
-		() => (credentials === undefined ? audit.choices : { ...audit.choices, credentials }),
-		[audit.choices, credentials],
+		() => ({
+			...audit.choices,
+			...(credentials === undefined ? {} : { credentials }),
+			...(scope === undefined ? {} : { projects: scope.projects, agents: scope.agents, sessions: scope.sessions }),
+		}),
+		[audit.choices, credentials, scope],
 	);
-	const directory = useMemo((): AuditDirectory => {
-		if (credentials === undefined) return audit.directory;
-		const names = new Map(credentials.map((choice) => [choice.value, choice.label]));
-		return { ...audit.directory, item: (itemId) => names.get(itemId) ?? audit.directory.item?.(itemId) };
-	}, [audit.directory, credentials]);
+	const directory = useMemo(
+		() =>
+			withNames(audit.directory, {
+				item: credentials,
+				project: scope?.projects,
+				agent: scope?.agents,
+				session: scope?.sessions,
+			}),
+		[audit.directory, credentials, scope],
+	);
 
 	return (
 		<AuditView

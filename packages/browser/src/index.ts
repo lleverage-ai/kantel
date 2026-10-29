@@ -2,7 +2,86 @@
  * Portable browser-broker logic shared by every target: site matching, site coverage and the supervisor rule. No
  * storage and no clock here.
  */
-import { type Actor, HarbourError, type SessionId } from "@harbour/contracts";
+import {
+	type Actor,
+	type Browser,
+	type BrowserAction,
+	HarbourError,
+	type SessionId,
+	type SessionTeardown,
+} from "@harbour/contracts";
+
+/** The step kinds `browser.act` takes, in the order the capability lists them. */
+export const BROWSER_ACTION_KINDS = [
+	"look",
+	"goto",
+	"click",
+	"fill",
+	"select",
+	"check",
+	"press",
+	"scroll",
+	"wait",
+] as const satisfies readonly BrowserAction["kind"][];
+
+/** How long a share link may last, in minutes; the first is the default. */
+export const SHARE_MINUTES = [15, 60] as const;
+
+const MAX_VALUE_LENGTH = 2000;
+const MAX_URL_LENGTH = 2000;
+const KEY_PATTERN = /^[A-Za-z0-9+]{1,20}$/;
+
+/**
+ * Rejects with `invalid` unless `action` is a well-formed step: a known kind, a non-empty element ID where one is
+ * needed, a value or URL within 2,000 characters and a key name such as `Enter` or `Control+A`.
+ */
+export function assertValidAction(action: BrowserAction): void {
+	const raw = action as { readonly [key: string]: unknown };
+	if (!(BROWSER_ACTION_KINDS as readonly unknown[]).includes(raw.kind)) {
+		throw new HarbourError("invalid", `Unknown browser step ${String(raw.kind)}`);
+	}
+	const text = (key: string, max: number, allowEmpty = false) => {
+		const value = raw[key];
+		if (typeof value !== "string" || (!allowEmpty && value.trim().length === 0) || value.length > max) {
+			throw new HarbourError("invalid", `A ${action.kind} step needs ${key} (at most ${max} characters)`);
+		}
+	};
+	switch (action.kind) {
+		case "goto":
+			text("url", MAX_URL_LENGTH);
+			return;
+		case "click":
+		case "check":
+			text("element", 20);
+			return;
+		case "fill":
+		case "select":
+			text("element", 20);
+			text("value", MAX_VALUE_LENGTH, action.kind === "fill");
+			return;
+		case "press":
+			if (typeof action.key !== "string" || !KEY_PATTERN.test(action.key)) {
+				throw new HarbourError("invalid", "A press step needs a key name, such as Enter or Control+A");
+			}
+			return;
+		default:
+			return;
+	}
+}
+
+/** Whether a browser on `url` may be shown to its caller: a page on the grant's sites, or a blank one. */
+export function pageAllowed(allowedSites: readonly string[], url: string): boolean {
+	return url === "about:blank" || siteAllowed(allowedSites, url);
+}
+
+/**
+ * The broker's session-end teardown as a function the runtime can call or register itself (`sessionEnd.register(
+ * "browser", browserTeardown(browser))`), for a broker built without `sessionEnd`. It closes every browser of the
+ * ended session and ends its grants, through `Browser.endSession`, which refuses any caller but `system`.
+ */
+export function browserTeardown(browser: Pick<Browser, "endSession">): SessionTeardown {
+	return (ctx, end) => browser.endSession(ctx, end.sessionId, end.reason);
+}
 
 /** Tells the broker a session's parent session; the runtime's session directory supplies it in production. */
 export type ParentOf = (sessionId: SessionId) => SessionId | undefined;
