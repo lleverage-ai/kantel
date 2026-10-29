@@ -1,9 +1,11 @@
 name: Cloudflare deploy (M1-CF1)
 
 # Deploys apps/cloudflare (the `harbour` Worker: console and gateway on one hostname, behind Cloudflare Access) from
-# main, issue #17. It only deploys once Tom's setup runbook has created the secret and every variable below; until
-# then, and on every pull request, it builds the Worker and runs `wrangler deploy --dry-run`, which never contacts
-# Cloudflare.
+# main, issue #17. Only main.yml deploys, calling this with `deploy: true` once CI with the tests, self-hosted and
+# Sandbox image have passed on the same main commit. It only deploys once Tom's setup runbook has created the secret
+# and every variable below; until then, and on any other run (`gh workflow run cloudflare-deploy.yml --ref <branch>`
+# for a pull request that changes the Worker), it builds the Worker and runs `wrangler deploy --dry-run`, which never
+# contacts Cloudflare.
 #
 # Read from the repository (#17, Account setup):
 #   secret   CLOUDFLARE_API_TOKEN
@@ -28,29 +30,19 @@ name: Cloudflare deploy (M1-CF1)
 # provisioning). A dry run creates nothing.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/cloudflare/**"
-      - "apps/console/**"
-      - "packages/**"
-      - "targets/cloudflare/**"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/cloudflare-deploy.yml"
-  pull_request:
-    paths:
-      - "apps/cloudflare/**"
-      - "apps/console/**"
-      - "packages/**"
-      - "targets/cloudflare/**"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/cloudflare-deploy.yml"
+  workflow_call:
+    inputs:
+      deploy:
+        description: Deploy, not only dry run (main.yml, once main's checks have passed)
+        type: boolean
+        default: false
   workflow_dispatch: {}
 
-# One deploy at a time, never cancelled half way; superseded pull request runs are cancelled.
+# One run per branch at a time, never cancelled half way: a newer one waits, and replaces any that is still pending.
+# The name differs from main.yml's group, which would deadlock.
 concurrency:
-  group: cloudflare-deploy-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: cloudflare-deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -78,12 +70,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Deploy only from main (a push or a manual run), and only once the secret and every variable exist.
+      # Deploy only from main.yml on main, and only once the secret and every variable exist.
       # The token itself reaches only the deploy step; this step learns whether it is set, nothing more.
       - name: Deploy or dry run
         id: mode
         env:
-          EVENT: ${{ github.event_name }}
+          DEPLOY: ${{ inputs.deploy == true }}
           REF: ${{ github.ref }}
           HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         run: |
@@ -94,8 +86,8 @@ jobs:
             value="${!name}"
             [ -n "${value//[[:space:]]/}" ] || missing+=("$name")
           done
-          if [ "$EVENT" = "pull_request" ]; then
-            mode=dry-run; why="pull requests never deploy"
+          if [ "$DEPLOY" != "true" ]; then
+            mode=dry-run; why="only main.yml deploys, once main's checks pass"
           elif [ "$REF" != "refs/heads/main" ]; then
             mode=dry-run; why="only main deploys"
           elif [ "${#missing[@]}" -gt 0 ]; then
@@ -120,16 +112,7 @@ jobs:
           corepack enable
           pnpm --version
 
-      - name: Locate the pnpm store
-        id: pnpm-store
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-${{ runner.os }}-
-
+      # No actions/cache: the self-hosted runner's pnpm store persists between jobs (see ci.yml).
       - name: Install
         run: pnpm install --frozen-lockfile
 
