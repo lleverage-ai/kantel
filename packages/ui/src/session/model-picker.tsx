@@ -9,7 +9,16 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { CheckIcon, ChevronDownIcon, FolderIcon, ImageIcon, SearchIcon, SparkIcon } from "../primitives/icons.tsx";
+import {
+	BranchIcon,
+	CheckIcon,
+	ChevronDownIcon,
+	FolderIcon,
+	ImageIcon,
+	RepoIcon,
+	SearchIcon,
+	SparkIcon,
+} from "../primitives/icons.tsx";
 import "./model-picker.css";
 import type { ThinkingLevel } from "./thinking-model.ts";
 
@@ -129,6 +138,112 @@ const PROJECT_WORDS: PickerWords = {
 	none: (query) => `No project matches "${query}".`,
 };
 
+const REPO_WORDS: PickerWords = {
+	icon: (size) => <RepoIcon size={size} className="hb-model-trigger-icon" />,
+	noun: "Repository",
+	plural: "Repositories",
+	choose: "Choose a repository",
+	search: "owner/name or a GitHub link",
+	none: (query) => `"${query}" isn't a repository. Type it as owner/name.`,
+};
+
+const BRANCH_WORDS: PickerWords = {
+	icon: (size) => <BranchIcon size={size} className="hb-model-trigger-icon" />,
+	noun: "Branch",
+	plural: "Branches",
+	choose: "Choose a branch",
+	search: "Search branches",
+	none: (query) => `No branch matches "${query}".`,
+};
+
+/** The option that means a new session starts with an empty workspace. Its id is `""`. */
+export const NO_REPOSITORY: ComposerModelOption = { id: "", label: "No repository" };
+
+/**
+ * `owner/name` from what a person typed: `owner/name`, `owner/name.git` or a github.com link. Undefined for anything
+ * else.
+ */
+export function repositoryFrom(text: string): string | undefined {
+	const trimmed = text.trim().replace(/\/+$/, "");
+	const match =
+		/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed) ??
+		/^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/.*)?$/.exec(trimmed);
+	if (match === null) return undefined;
+	const [, owner, name] = match;
+	if (owner === undefined || name === undefined || /^\.+$/.test(owner) || /^\.+$/.test(name)) return undefined;
+	return `${owner}/${name}`;
+}
+
+export type RepoPickerProps = Omit<ModelPickerProps, "models" | "value" | "onChange"> & {
+	/** The chosen repository as `owner/name`, or `""` (the default) for none. */
+	value?: string;
+	onChange: (repo: string) => void;
+	/** Repositories to offer before anything is typed, such as the ones this person used last. */
+	recent?: readonly string[];
+};
+
+/**
+ * Which repository a new session's workspace starts from: the model picker's button and list, with a repository icon.
+ * The list offers "No repository" and the `recent` ones; typing `owner/name` or pasting a GitHub link offers that one.
+ * For the composer's `footer` on a new-session page, beside the project, with `BranchPicker` after it once one is
+ * chosen.
+ */
+export function RepoPicker({ value = "", onChange, recent = [], ...rest }: RepoPickerProps) {
+	const options = useMemo<ComposerModelOption[]>(() => {
+		const seen = new Set<string>();
+		const listed: ComposerModelOption[] = [NO_REPOSITORY];
+		for (const repo of value === "" ? recent : [value, ...recent]) {
+			if (seen.has(repo)) continue;
+			seen.add(repo);
+			listed.push({ id: repo, label: repo });
+		}
+		return listed;
+	}, [value, recent]);
+	const custom = useCallback((query: string): ComposerModelOption | undefined => {
+		const repo = repositoryFrom(query);
+		return repo === undefined ? undefined : { id: repo, label: repo, description: "Start from this repository" };
+	}, []);
+	return <Picker {...rest} models={options} value={value} onChange={onChange} custom={custom} words={REPO_WORDS} />;
+}
+
+/** A branch `BranchPicker` lists. */
+export type BranchOption = {
+	name: string;
+	/** The repository's default branch, marked Default. */
+	default?: boolean;
+};
+
+export type BranchPickerProps = Omit<ModelPickerProps, "models"> & {
+	branches: readonly BranchOption[];
+	/** The branches are being fetched: the button says so and can't open. */
+	loading?: boolean;
+};
+
+/**
+ * Which branch of the chosen repository a new session starts from: the model picker's button and searchable list, with
+ * a branch icon. The default branch is marked and chosen when `value` is absent.
+ */
+export function BranchPicker({ branches, loading = false, disabled, ...rest }: BranchPickerProps) {
+	const options = useMemo<ComposerModelOption[]>(
+		() =>
+			branches.map((branch) => ({
+				id: branch.name,
+				label: branch.name,
+				...(branch.default === true ? { default: true } : {}),
+			})),
+		[branches],
+	);
+	return (
+		<Picker
+			{...rest}
+			models={loading ? [] : options}
+			disabled={disabled === true || loading}
+			words={BRANCH_WORDS}
+			{...(loading ? { placeholder: "Loading branches" } : {})}
+		/>
+	);
+}
+
 /** A project a new session can start in, as `ProjectPicker` lists it. */
 export type ProjectOption = {
 	id: string;
@@ -170,7 +285,15 @@ function Picker({
 	defaultOpen = false,
 	chevron = true,
 	words,
-}: ModelPickerProps & { words: PickerWords }) {
+	custom,
+	placeholder,
+}: ModelPickerProps & {
+	words: PickerWords;
+	/** An option made from the query, offered first when the list doesn't already have it (a typed repository). */
+	custom?: (query: string) => ComposerModelOption | undefined;
+	/** The button's words when nothing is chosen. Default `words.choose`. */
+	placeholder?: string;
+}) {
 	const [open, setOpenState] = useState(defaultOpen);
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState<string | undefined>(undefined);
@@ -182,7 +305,16 @@ function Picker({
 	const optionId = (id: string) => `${listId}-${id.replace(/[^\w-]/g, "_")}`;
 	const chosen = selectedModel(models, value);
 
-	const filtered = useMemo(() => filterModels(models, query), [models, query]);
+	const optionsFor = useCallback(
+		(text: string): ComposerModelOption[] => {
+			const matching = filterModels(models, text);
+			const made = custom?.(text);
+			if (made === undefined || models.some((model) => model.id === made.id)) return matching;
+			return [made, ...matching];
+		},
+		[models, custom],
+	);
+	const filtered = useMemo(() => optionsFor(query), [optionsFor, query]);
 	const enabled = useMemo(() => filtered.filter((model) => model.disabledReason === undefined), [filtered]);
 	const groups = useMemo(() => groupByProvider(filtered), [filtered]);
 	const showGroups = groups.length > 1 || (groups[0]?.provider ?? "") !== "";
@@ -294,11 +426,11 @@ function Picker({
 	// Typing narrows the list; keep the active option on a visible one.
 	const changeQuery = (next: string) => {
 		setQuery(next);
-		const visible = filterModels(models, next).filter((model) => model.disabledReason === undefined);
+		const visible = optionsFor(next).filter((model) => model.disabledReason === undefined);
 		if (!visible.some((model) => model.id === active)) setActive(visible[0]?.id);
 	};
 
-	const label = chosen?.label ?? words.choose;
+	const label = placeholder ?? chosen?.label ?? words.choose;
 
 	return (
 		<div className={`hb-model-picker hb-model-picker-${size}`} ref={root}>
