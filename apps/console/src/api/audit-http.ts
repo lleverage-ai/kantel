@@ -12,7 +12,7 @@ import {
 } from "@harbour/contracts";
 import { createIdentityClient, type OrganisationSummary } from "@harbour/identity/http";
 import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
-import { sessionTurnPath, vaultRequestPath } from "../app/router.ts";
+import { sessionBrowserPath, sessionTurnPath, vaultRequestPath } from "../app/router.ts";
 import type { AuditPeople, AuditScope, ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
@@ -221,6 +221,8 @@ export function apiAudit(
 		links: {
 			// Session pages sit under their project; an event that names none stays unlinked.
 			session: sessionLink(requestOf),
+			browser: (sessionId, browserSessionId, projectId) =>
+				projectId === undefined ? undefined : sessionBrowserPath(projectId, sessionId, browserSessionId),
 			...(vaultRequests === true ? { proposal: vaultRequestPath } : {}),
 		},
 		choices: {},

@@ -9,7 +9,7 @@ import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
 import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
-import { turnOfHash, useHash } from "./router.ts";
+import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 
 /**
  * The turn a `#turn=<id>` link names, on load and whenever the hash changes, and where the search for it stands. A turn
@@ -59,9 +59,13 @@ export function SessionScreen({
 	// The session's browsers' live views, while the screen is open; none on a client that can't have them.
 	const browserLive = useMemo(() => {
 		const load = client.browserLive?.bind(client);
+		const replay = client.browserReplay?.bind(client);
 		return load === undefined
 			? undefined
-			: createBrowserLiveStore((browserSessionId, signal) => load(sessionId, browserSessionId, signal));
+			: createBrowserLiveStore(
+					(browserSessionId, signal) => load(sessionId, browserSessionId, signal),
+					replay === undefined ? undefined : (browserSessionId, signal) => replay(sessionId, browserSessionId, signal),
+				);
 	}, [client, sessionId]);
 	useEffect(() => () => browserLive?.dispose(), [browserLive]);
 	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
@@ -217,6 +221,9 @@ export function SessionScreen({
 		pickers: pickers.composer,
 	};
 
+	// An audit link to one of the session's browsers (`#browser=<id>`): the transcript scrolls to its view.
+	// Read once, as the screen opens: the hash is the link's, not state the screen keeps.
+	const [focusBrowser] = useState(() => browserFromHash(location.hash));
 	return (
 		<SessionView
 			client={session}
@@ -225,6 +232,7 @@ export function SessionScreen({
 			onBack={onBack}
 			onFiles={onFiles}
 			{...(linked.turn === undefined ? {} : { turn: linked.turn, turnSearch: linked.search })}
+			{...(focusBrowser === undefined ? {} : { focusBrowser })}
 		/>
 	);
 }

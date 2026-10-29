@@ -48,13 +48,28 @@ given what a local Sal worker is given for the same task (issue #12).
 
 `scripts/import-to-harbour.ts` reads what `harbour-sal.ts` reads (the same config, without tasks) and loads it into a
 Harbour through the public API: each skill with `POST /v1/skills/import`, owned by the caller's organisation, and the
-bundle into a memory space (`Sal memory`, made if missing) with `POST /v1/memory/spaces/{spaceId}/snapshot`. On
-Cloudflare both need a person with the organisation's admin role. A second run at the same refs publishes nothing new.
+bundle into a memory space (`Sal memory`, made if missing) with `POST /v1/memory/spaces/{spaceId}/snapshot`. With
+`--profile <agent ID>` it then names them on that agent's profile (`PUT /v1/profiles/{agentId}`): the skills Pi lists in
+a worker's prompt, and the space beside the profile's other memory scopes. That agent's new sessions then list the
+skills, read them at `/skills` and get recall. A second run at the same refs publishes nothing new.
+
+The Harbour and the credentials come from the environment, never the command line or the repository:
+
+| Variable | What |
+| --- | --- |
+| `HARBOUR_URL` | The Harbour's base URL (or `--url`) |
+| `HARBOUR_API_KEY` | An `hbr_` key, sent as `Authorization: Bearer` |
+| `HARBOUR_ACCESS_TOKEN` | A signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion` |
+
+On Cloudflare, importing skills and snapshots needs the organisation's admin role. Only a person holds that today: an
+API key's role is on its projects, so the gateway answers an operator key's import with 403 (`needs admin on the
+organisation`), though the key can set a profile.
 
 ```sh
 # local: pnpm --filter @harbour/cloudflare dev, then sign in as the dev admin with the mock Access token
-node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --url http://localhost:8787 \
-  --header "Cf-Access-Jwt-Assertion: $(curl -s localhost:8787/__dev/access-token | jq -r .token)"
+HARBOUR_URL=http://localhost:8787 \
+HARBOUR_ACCESS_TOKEN="$(curl -s localhost:8787/__dev/access-token | jq -r .token)" \
+  node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --profile assistant
 # or write the requests to send from somewhere already signed in
 node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --out requests.json
 ```
@@ -101,6 +116,12 @@ with identical packages, and the same 57 prompt entries. A control run with the 
 exclusion was flagged on every task.
 
 ## Known differences and gaps
+
+- A Cloudflare session recalls with the store's default renderer, not Sal's (`src/recall-renderer.ts`): Harbour adds
+  no prompt of its own. Budgets count rendered bytes, so its profile and matches can differ from a local Sal worker's
+  at the budget's edge. On 29 October 2026, with sal-memory `9a3cdfd7` and five worker briefs on `wrangler dev`, the
+  skills and prompt entries matched; recall kept 38 of Sal's 41 profile concepts, and the matches differed by one or
+  two each. The same five recalls run in Node with the default renderer gave the same concepts as Cloudflare.
 
 - Pi lists skills in its prompt in the order the file system returns directory entries. A pinned tree has no such
   order, so Harbour's order differs, though the entries are the same.

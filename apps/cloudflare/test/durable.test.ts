@@ -243,6 +243,76 @@ describe("the stack over durable storage", () => {
 		expect(kept.promptLayers).toEqual(layers);
 	});
 
+	it("keeps the skills and memory spaces the user named on the default profile across restarts", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const made = await first.stack.runtime.profiles.get(first.stack.admin, DEFAULT_AGENT_ID);
+		expect(made).toMatchObject({ skills: [], memoryScopes: [] });
+		await first.stack.runtime.profiles.put(first.stack.admin, {
+			...made,
+			skills: ["pr-review"],
+			memoryScopes: ["space-1"],
+		});
+		await first.stack.close();
+
+		const second = await start(storage);
+		const kept = await second.stack.runtime.profiles.get(second.stack.admin, DEFAULT_AGENT_ID);
+		expect(kept).toMatchObject({ skills: ["pr-review"], memoryScopes: ["space-1"] });
+	});
+
+	it("gives a session the skills and memory imported through the API, and again after a restart", async () => {
+		const storage = await durableStorage();
+		const first = await start(storage);
+		const { admin, organisation } = first.stack;
+		const owner = { kind: "organisation", organisationId: organisation.id };
+		const post = (path: string, body: unknown) => first.call(path, { method: "POST", body: JSON.stringify(body) });
+		const description = "Review a pull request.";
+		const imported = await post("/v1/skills/import", {
+			owner,
+			name: "pr-review",
+			description,
+			files: [
+				{ path: "SKILL.md", content: `---\nname: pr-review\ndescription: ${description}\n---\n\nRead the diff.\n` },
+			],
+			source: { sourceId: "agent-toolkit", ref: "abc123" },
+		});
+		expect(imported.status).toBe(200);
+		const space = (await (await post("/v1/memory/spaces", { owner, name: "Sal memory" })).json()) as { id: string };
+		const snapshot = await post(`/v1/memory/spaces/${space.id}/snapshot`, {
+			sourceId: "sal-memory",
+			ref: "def456",
+			concepts: [
+				{
+					id: "personal/timezone",
+					title: "Times in UK time",
+					statement: "Give times in UK time.",
+					tags: ["profile"],
+					scope: { kind: "global" },
+					sources: ["tvdavies/harbour#12"],
+					setBy: "owner",
+					status: "active",
+					updatedAt: 1,
+				},
+			],
+		});
+		expect(snapshot.status).toBe(200);
+		const made = await first.stack.runtime.profiles.get(admin, DEFAULT_AGENT_ID);
+		await first.stack.runtime.profiles.put(admin, { ...made, skills: ["pr-review"], memoryScopes: [space.id] });
+		await first.stack.close();
+
+		const second = await start(storage);
+		const session = await second.stack.runtime.runtime.create(admin, {
+			projectId: second.stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+		});
+		const prompt = await second.stack.runtime.runtime.prompt(admin, session.id, { text: "Review it" });
+		await second.stack.runtime.runtime.wait(admin, session.id, prompt.id);
+		const workspace = await second.stack.workspaces.get(admin, session.workspaceId ?? "");
+		expect(workspace.mounts.map((mount) => mount.path)).toEqual(["/skills"]);
+		const file = await second.stack.workspaces.read(admin, workspace.id, "/skills/pr-review/SKILL.md");
+		expect(new TextDecoder().decode(file.content)).toContain("Read the diff.");
+	});
+
 	it("drops the prompt layer earlier releases wrote into the default profile, and only that", async () => {
 		const storage = await durableStorage();
 		const first = await start(storage);

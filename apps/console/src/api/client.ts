@@ -202,6 +202,12 @@ export interface ConsoleClient {
 	 */
 	browserLive?(sessionId: string, browserSessionId: string, signal?: AbortSignal): Promise<BrowserLiveLink>;
 	/**
+	 * A replay link to one of the session's browsers, open or closed, for the signed-in person: Harbour's own browsers
+	 * record what they show (a deployment on brwsr answers `unavailable`). Rejects with `not_found` when nothing was
+	 * recorded and `expired` once the recording is past its retention. Absent on a client with no browsers.
+	 */
+	browserReplay?(sessionId: string, browserSessionId: string, signal?: AbortSignal): Promise<BrowserLiveLink>;
+	/**
 	 * The session is on screen: it is no longer unread, and doesn't become unread while it stays shown. Call the
 	 * returned function when it leaves the screen.
 	 */

@@ -131,6 +131,31 @@ CPA listens on Sal's tailnet address there, not on 127.0.0.1. `next-to-sal.yaml`
 gateway; with `egress-vault.yaml` as well, set `HARBOUR_VAULT_CIPHER_KEY` yourself, as `next-to-sal.yaml` passes it
 on empty otherwise.
 
+### Sal's projects, skills and memory
+
+Sal puts each task in the Harbour project of its Docket workspace (`sal` for a task that names none). Harbour
+generates project IDs (`prj_…`), so the bootstrap makes one project per name in `HARBOUR_PROJECTS` (comma-separated;
+`next-to-sal.yaml` defaults it to `dev,life,sal`), once, finds them by name on later starts, and puts all of them on
+its operator key. They are listed by `GET /v1/projects`, and the bootstrap file names their IDs:
+
+```bash
+docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml exec -T gateway \
+  cat /var/lib/harbour/bootstrap.json | jq '{organisationId, projects}'
+```
+
+Naming another project later makes it on the next start and issues a new operator key over them all, revoking the
+old one.
+
+Skills and memory (#12) are on the gateway's Postgres, with skill files' bodies in MinIO under
+`HARBOUR_SKILLS_S3_PREFIX` (default `m1/skills/`). The gateway serves `/v1/skills` and `/v1/memory`: reads for any key
+or person, and imports and new memory spaces for the organisation's admin only (a host adapter signed in as the
+invited admin). On a session's first prompt the gateway pins the skills it may see, lists the ones its profile names
+in a user message before the prompt, and recalls its profile's `memoryScopes` (memory space IDs) into the same
+message; the system prompt stays the profile's own. A session created without a workspace whose profile names skills
+gets a workspace of its own with them mounted read-only at `/skills`, so `read /skills/<name>/SKILL.md` works. A
+session whose profile names no skills gets no workspace, so a host's own `read`, `write`, `edit` and `ls` stay the
+host's.
+
 ### Bindings: the real implementations against the stack
 
 `bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its

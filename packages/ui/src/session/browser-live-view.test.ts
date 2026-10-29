@@ -41,6 +41,19 @@ describe("the browser's live view", () => {
 		expect(text(html)).toBe("Replay Watch only");
 	});
 
+	it("holds a replay's page behind Play over the last screenshot, so no recording is read until asked", () => {
+		const html = render({ source: { kind: "embed", mode: "replay", url: "/browser/b1#token" }, screenshot: shot });
+		expect(html).not.toContain("<iframe");
+		expect(html).toContain("data:image/png;base64,AAAA");
+		expect(text(html)).toBe("Replay Watch only Open in a new tab Play");
+		expect(html).toContain("hb-browser-live-frame-replay");
+	});
+
+	it("embeds a link on this page's own origin, as Harbour's view links are", () => {
+		expect(embeddable("/browser/b1#token")).toBe(true);
+		expect(render({ source: { kind: "embed", url: "/browser/b1#token" } })).toContain('src="/browser/b1#token"');
+	});
+
 	it("shows the last screenshot while connecting and once the browser has closed", () => {
 		expect(text(render({ status: "connecting", screenshot: shot }))).toBe("Connecting to the live view");
 		expect(render({ status: "connecting", screenshot: shot })).toContain('aria-busy="true"');

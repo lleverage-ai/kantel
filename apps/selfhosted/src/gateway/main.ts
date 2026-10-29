@@ -12,8 +12,13 @@
 //   S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION
 //                               where workspace trees go; required with HARBOUR_DATABASE_URL
 //   HARBOUR_GATEWAY_S3_PREFIX   their key prefix in the bucket; default m1/workspaces/
+//   HARBOUR_SKILLS_S3_PREFIX    the key prefix of skill files' bodies in the same bucket; default m1/skills/
 //   HARBOUR_ORGANISATION_NAME   default "Harbour"
 //   HARBOUR_PROJECT_NAME        default "default"
+//   HARBOUR_PROJECTS            comma-separated names of more projects, such as the Docket workspaces of the Sal next to
+//                               it (`sal,dev`): each made once and found by name after that, all on the bootstrap's
+//                               operator key, and named with their IDs in the bootstrap file. Naming a new one issues a
+//                               new key over them all and revokes the old one
 //   HARBOUR_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use, each `scheme://host[:port]` or
 //                               `scheme://host:*` for any port on that host (callbacks.ts); default any https: URL.
 //                               Next to Sal: `http://127.0.0.1:*`, where Sal's worker serves its host tools
@@ -65,6 +70,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		bootstrapFile: resolve(env.HARBOUR_BOOTSTRAP_FILE ?? ".harbour/bootstrap.json"),
 		organisation: env.HARBOUR_ORGANISATION_NAME ?? "Harbour",
 		project: env.HARBOUR_PROJECT_NAME ?? "default",
+		projects: projectList(env.HARBOUR_PROJECTS),
 		...(adminEmail === "" ? {} : { adminEmail }),
 		callbackOrigins: origins,
 		mail: mailConfig(env),
@@ -94,6 +100,11 @@ export async function writePrivateFile(path: string, content: string): Promise<v
 	}
 }
 
+/** HARBOUR_PROJECTS: comma-separated project names, each once. */
+export function projectList(value: string | undefined): string[] {
+	return [...new Set((value ?? "").split(",").map((name) => name.trim()))].filter((name) => name !== "");
+}
+
 /** The real components' configuration, or undefined (in memory) when HARBOUR_DATABASE_URL is unset. */
 export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConfig | undefined {
 	const databaseUrl = env.HARBOUR_DATABASE_URL?.trim() ?? "";
@@ -116,6 +127,7 @@ export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConf
 			secretAccessKey: need("S3_SECRET_KEY"),
 			...(region ? { region } : {}),
 			prefix: env.HARBOUR_GATEWAY_S3_PREFIX?.trim() || "m1/workspaces/",
+			skillsPrefix: env.HARBOUR_SKILLS_S3_PREFIX?.trim() || "m1/skills/",
 		},
 	};
 }
@@ -146,6 +158,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		{
 			organisation: cfg.organisation,
 			project: cfg.project,
+			projects: cfg.projects,
 			...(cfg.adminEmail === undefined ? {} : { adminEmail: cfg.adminEmail }),
 		},
 		previous,
@@ -192,7 +205,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	});
 	const server = await listen(gateway.fetch, cfg.port, { host: cfg.host });
 	console.log(
-		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}; ` +
+		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}` +
+			`${seeded.projects === undefined ? "" : `, projects ${JSON.stringify(seeded.projects)}`}; ` +
 			`bootstrap key in ${cfg.bootstrapFile}; bindings ${JSON.stringify(components.bindings)}; ` +
 			`mail ${cfg.mail === undefined ? "off" : JSON.stringify(describeMail(cfg.mail))}`,
 	);

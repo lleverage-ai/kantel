@@ -232,12 +232,18 @@ importers:
       "@harbour/audit":
         specifier: workspace:*
         version: link:../../packages/audit
+      "@harbour/browser":
+        specifier: workspace:*
+        version: link:../../packages/browser
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
       "@harbour/identity":
         specifier: workspace:*
         version: link:../../packages/identity
+      "@harbour/memory":
+        specifier: workspace:*
+        version: link:../../packages/memory
       "@harbour/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
@@ -250,6 +256,9 @@ importers:
       "@harbour/selfhosted-workspace":
         specifier: workspace:*
         version: link:../../targets/selfhosted/workspace
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../../packages/skills
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql
@@ -408,6 +417,9 @@ importers:
 
   packages/browser:
     dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts

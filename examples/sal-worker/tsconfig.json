@@ -4,5 +4,12 @@
 	"compilerOptions": {
 		"types": ["node"]
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts", "scripts/harbour-sal.ts", "scripts/parity.ts", "vitest.config.ts"]
+	"include": [
+		"src/**/*.ts",
+		"test/**/*.ts",
+		"scripts/harbour-sal.ts",
+		"scripts/parity.ts",
+		"scripts/import-to-harbour.ts",
+		"vitest.config.ts"
+	]
 }

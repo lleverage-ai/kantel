@@ -20,6 +20,7 @@ import { createRecordedOversight, type RecordedOversight } from "./recorded/over
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { profileStore } from "./ui/profile.tsx";
+import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
 
 // The console runs on one of two sources:
@@ -171,7 +172,10 @@ const boot = (): Promise<Boot> =>
 
 // Started here, not in render: a component that suspends before it mounts loses its state, so a promise made in
 // render would be made again on every retry.
-const firstBoot: Promise<Boot> | undefined = source === "recorded" ? undefined : boot();
+// A view link (`/browser/<browser>#<token>`) is a page of its own: one browser, live or replayed, with no sign-in and nothing
+// of the console (src/viewer/viewer.tsx).
+const viewing = viewOf(location.pathname, location.hash);
+const firstBoot: Promise<Boot> | undefined = source === "recorded" || viewing !== undefined ? undefined : boot();
 
 /** The console on the API: who is signed in first, then the shell, or the way to sign in. */
 function ApiConsole({ first }: { first: Promise<Boot> }) {
@@ -279,7 +283,9 @@ createRoot(document.getElementById("root")!).render(
 				</div>
 			}
 		>
-			{client !== undefined && recordedOversight !== undefined ? (
+			{viewing !== undefined ? (
+				<BrowserViewerPage view={viewing} />
+			) : client !== undefined && recordedOversight !== undefined ? (
 				<OversightConsole client={client} oversight={recordedOversight} />
 			) : firstBoot !== undefined ? (
 				<ApiConsole first={firstBoot} />

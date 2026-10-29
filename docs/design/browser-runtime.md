@@ -60,17 +60,20 @@ Cloudflare, HTTP with the host token self-hosted. So one provider, one protocol,
 ## Profiles (contexts)
 
 A context's profile is a tarball in the blob store under `contexts/<providerContextId>`, sealed with AES-GCM under
-`HARBOUR_BROWSER_CONTEXT_KEY` (a secret) before it leaves the coordinator, so a bucket alone gives no cookies. A
+`HARBOUR_BROWSER_SEAL_KEY` (a secret, which seals recordings too) before it leaves the coordinator, so a bucket alone
+gives no cookies. A
 persisting grant writes it back on release; anything else only reads it. The broker's one-persisting-browser-per-context
 rule is unchanged.
 
 ## Live view
 
-`share()` on the harbour provider returns a Harbour URL, not a brwsr one: `/browser/<token>`, a console route that
-needs no sign-in and shows only the browser. It is built from `@harbour/ui` like any console page: a new
-`BrowserScreen` component (brwsr's `web/live.js` canvas and frame protocol, ported) and `BrowserReplay` for replay. Its
-socket goes `/v1/browser/view/<token>/live` → host → coordinator → the agent's `/live` (JPEG frames out; input in only
-when the token allows control). The console's inline view from #233 (`BrowserLiveView`) stays the one component: it iframes
+`share()` on the harbour provider returns a Harbour URL, not a brwsr one: `/browser/<browserSessionId>#<token>`, a
+console route that needs no sign-in and shows only the browser. The token stays in the fragment, which a browser never
+sends, so it never lands in a request path or an access log; the page sends it as `Authorization: Bearer`, or for the
+live socket as a WebSocket subprotocol. The page is the console's viewer (`apps/console/src/viewer/`): brwsr's
+`web/live.js` canvas and frame protocol, ported, and a replay player. Its socket goes
+`/v1/browser/view/<browserSessionId>/live` → host → coordinator → the agent's `/live` (JPEG frames out; input in only
+when the token allows control; a watch-only socket forwards only frame acknowledgements and canvas sizes). The console's inline view from #233 (`BrowserLiveView`) stays the one component: it iframes
 whatever link the provider gives, so it works for brwsr and harbour alike, and the viewer posts the same
 `browserbase-disconnected` message when the browser goes.
 
@@ -81,7 +84,8 @@ when Chrome draws something new, appending JPEGs with their real timestamps to M
 the browser container. The coordinator moves each closed chunk to the blob store under
 `recordings/<browserSessionId>/<page>/<chunk>.mkv` with a small manifest.
 
-Replay in the session plays those frames directly: `BrowserReplay` reads the chunks (`/v1/browser/view/<token>/…`) and draws each JPEG at its time on
+Replay in the session plays those frames directly: the viewer reads the chunks (`/v1/browser/view/<browserSessionId>/…`,
+with the token as a bearer header) and draws each JPEG at its time on
 a canvas (seek, speed, tabs), so watching costs no encoding at all. An MP4 download is the only thing that encodes, on
 demand, in brwsr's encoder image run beside the browser host (later; not needed to watch). Retention is short: 7 days
 by default (`HARBOUR_BROWSER_RECORDING_DAYS`), an R2 lifecycle rule on Cloudflare and the host's janitor self-hosted.
@@ -93,8 +97,9 @@ In the console, once a browser closes its view switches from live to replay (whe
 ## Embed API (for apps such as Lleverage)
 
 `POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed` with `{ mode: "live" | "replay", minutes? }` answers
-`{ url, expiresAt }`. It's in `@harbour/api` like every public route. The caller needs viewer on the session (a host
-app's API key, or a person). The URL is the same `/browser/<token>` page, for an iframe; the token says live or replay:
+`{ url, mode, expiresAt }`. It's in `@harbour/api` like every public route, served by `@harbour/browser/http`. The
+caller needs viewer on the session (a host app's API key, or a person; never an agent). The URL is the same
+`/browser/<browserSessionId>#<token>` page, absolute, for an iframe; the token says live or replay:
 
 - The token is an HMAC-SHA256-signed claim (`HARBOUR_BROWSER_VIEW_KEY`) naming the organisation, session, browser
   session, mode, control (always off for embeds) and expiry: 5 to 60 minutes, default 15. It grants that one view and
@@ -114,9 +119,11 @@ Browser events already carry `subject: { kind: "browser.session", id }`. Added:
 - `browser.session.step` for each step (the verb and the page's host, never a value typed), and
   `browser.recording.stored` when the recording is complete, so steps, sites, refusals and the recording sit beside
   grants, opens, shares and closes.
-- The audit view links a browser event to its session at that browser (`/sessions/<id>?browser=<browserSessionId>`),
-  where the transcript scrolls to the browser and offers its replay, and a *Browser session* filter (by subject) shows
-  one browser's whole history: request, grant, open, steps, refusals, shares and embeds, close, recording.
+- The audit view links a browser event to its session at that browser (`/sessions/<id>#browser=<browserSessionId>`,
+  beside the existing `#turn=`), where the transcript scrolls to the browser and offers its replay, and a row's
+  *This browser's history* filters by subject to one browser's whole history: open, steps, refusals, shares and
+  embeds, close, recording. The request and grant before it keep their own subjects (`browser.request`,
+  `browser.grant`) and show under the session's filter.
 
 ## Not ported
 

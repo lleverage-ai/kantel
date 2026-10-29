@@ -16,6 +16,8 @@
  * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space and loading a snapshot for the organisation's admin |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
+ * | `POST /v1/browser/replay` | a replay link to one of a session's browsers, open or closed (harbour provider) |
+ * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
@@ -27,6 +29,7 @@
  * vault contract's project checks here with the runtime's `ProjectAccess` before each call reaches it.
  */
 import { createAuditQueryHandler } from "@harbour/audit/http";
+import { createBrowserApi } from "@harbour/browser/http";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
@@ -68,6 +71,16 @@ const DECISION_BODY_LIMIT = 1024;
  * to its parent once its stream is over. Other kinds (frames over Harbour's own socket, replays) can join it later.
  */
 export const BROWSER_LIVE_PATH = "/v1/browser/live";
+
+/** A person asks to replay one of a session's browsers: `{ "sessionId", "browserSessionId" }` -> `{ url, expiresAt }`. */
+export const BROWSER_REPLAY_PATH = "/v1/browser/replay";
+
+/**
+ * The embed API (`@harbour/browser/http`): an outside app (its API key) or a person asks for a link to frame,
+ * `{ "mode": "live" | "replay", "minutes"?: 5..60 }` -> `{ url, mode, expiresAt?, endMessage? }`. The URL is absolute;
+ * the token after its `#` is the only auth it needs.
+ */
+export const BROWSER_EMBED_PATH = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 
 export const API_BASE = "/v1";
 
@@ -192,6 +205,10 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
+	const browsers =
+		stack.browser === undefined
+			? undefined
+			: createBrowserApi({ browser: stack.browser.broker, authenticate: callContext, basePath: API_BASE });
 
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
@@ -328,7 +345,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
-	const browserLive = async (request: Request): Promise<Response> => {
+	/** A browser view link for the console: its live view (`live`) or replay (`replay`). The body names the browser. */
+	const browserView = async (request: Request, kind: "live" | "replay"): Promise<Response> => {
 		const noStore = { "cache-control": "no-store" };
 		if (request.method !== "POST") {
 			return Response.json(
@@ -361,11 +379,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 		try {
 			const ctx = callContextFor(caller, { signal: request.signal });
-			const link = await browser.liveView(ctx, { sessionId, browserSessionId });
+			const target = { sessionId, browserSessionId };
+			const link = kind === "live" ? await browser.liveView(ctx, target) : await browser.replay(ctx, target);
 			const embed = link.embed ?? { url: link.url };
+			// The console's links stay relative: it is served on the same origin.
 			return Response.json(
 				{
 					kind: "embed",
+					mode: kind,
 					url: embed.url,
 					...(embed.endMessage === undefined ? {} : { endMessage: embed.endMessage }),
 					...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }),
@@ -434,7 +455,22 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
 			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
-			if (path === BROWSER_LIVE_PATH) return browserLive(request);
+			if (path === BROWSER_LIVE_PATH) return browserView(request, "live");
+			if (path === BROWSER_REPLAY_PATH) return browserView(request, "replay");
+			if (BROWSER_EMBED_PATH.test(path)) {
+				if (browsers === undefined) {
+					return Response.json(
+						{ error: { code: "unavailable", message: "This deployment has no browser" } },
+						{ status: 503, headers: { "cache-control": "no-store" } },
+					);
+				}
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await browsers.fetch(request)) ?? notFound();
+			}
 			if (under(path, WORKSPACE_READ_API_BASE)) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {

@@ -14,11 +14,17 @@
 //               in an in-process isolate leased on its first command
 //   vault       the vault engine over the Postgres vault store (@harbour/vault-selfhosted, #75), in its own schema
 //               (`<schema>_vault`), values sealed with HARBOUR_VAULT_CIPHER_KEY; no vault without that key
+//   skills      packages, revisions and session pins on Postgres, each file's body in S3 by its SHA-256 under their own
+//               prefix (@harbour/skills/sql, #12); a session's pins are mounted read-only at `/skills` (skills-memory.ts)
+//   memory      spaces, concepts and proposals on Postgres (@harbour/memory/sql, #12); recall and the memory tools
 //
-// Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
-// `workspace_versions`. Sessions are on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
+// Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too),
+// `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
+// on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import { HarbourError } from "@harbour/contracts";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
+import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
 import { callbackHostHandlers } from "@harbour/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
@@ -28,15 +34,18 @@ import {
 	migrateWorkspaceStore,
 	pgDatabase,
 } from "@harbour/selfhosted-workspace";
+import { createSqlSkills, migrateSkills } from "@harbour/skills/sql";
 import { postgresPoolDriver } from "@harbour/sql/postgres";
 import { createAesGcmCipher } from "@harbour/vault/cipher";
 import { createVault, type HarbourVault } from "@harbour/vault/engine";
 import { createPostgresVaultStore } from "@harbour/vault-selfhosted";
+import type { StoredWorkspaces } from "@harbour/workspace/stored";
 import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
+import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
 export interface DurableConfig {
 	readonly databaseUrl: string;
@@ -50,6 +59,8 @@ export interface DurableConfig {
 		readonly region?: string;
 		/** Key prefix for workspace objects in the bucket, so the gateway can share M0's. */
 		readonly prefix: string;
+		/** Key prefix for skill files' bodies in the same bucket. Default `m1/skills/`. */
+		readonly skillsPrefix?: string;
 	};
 	/** The vault's 256-bit cipher key, base64. Without it the gateway has no vault. */
 	readonly vaultCipherKey?: string;
@@ -99,9 +110,23 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const driver = postgresPoolDriver(pool);
 		await migrateAudit(driver);
 		await migrateIdentity(driver);
+		await migrateSkills(driver);
+		await migrateMemory(driver);
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
+
+		// Skills and memory check project access with the runtime's check, which they reach only when called. Skill files'
+		// bodies go in the workspaces' bucket under a prefix of their own.
+		const skillObjects = createS3Objects({ ...config.s3, prefix: config.s3.skillsPrefix ?? "m1/skills/" });
+		await skillObjects.ensureBucket();
+		const skills = createSqlSkills({ driver, objects: skillObjects, audit, access: auditAccess.access });
+		const memory = createSqlMemory({ driver, audit, access: auditAccess.access });
+		let workspaces: StoredWorkspaces | undefined;
+		const lateWorkspaces = () => {
+			if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
+			return workspaces;
+		};
 
 		const db = await PostgresSqliteDatabase.open({ connectionString: config.databaseUrl, schema: config.schema });
 		closers.push(() => db.close());
@@ -111,18 +136,22 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const modelGateway = config.models === undefined ? config.modelGateway : undefined;
 		const models = config.models ??
 			modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
-		const runtime = createSessionRuntime({
-			...gatewaySandboxes.runtimeOptions,
-			store: await createSqlSessionStore(db),
-			storage: (session) => sqlPiStorage(db, session.id),
-			audit,
-			identity,
-			...models,
-			// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
-			hostHandler: callbackHostHandlers(),
-			onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
-			onWakeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not wake: ${error}`),
-		});
+		const runtime = withOwnWorkspaces(
+			createSessionRuntime({
+				...gatewaySandboxes.runtimeOptions,
+				store: await createSqlSessionStore(db),
+				storage: (session) => sqlPiStorage(db, session.id),
+				audit,
+				identity,
+				...models,
+				...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
+				// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
+				hostHandler: callbackHostHandlers(),
+				onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
+				onWakeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not wake: ${error}`),
+			}),
+			lateWorkspaces,
+		);
 		closers.push(() => runtime.close());
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime built no project-access check");
@@ -132,12 +161,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await objects.ensureBucket();
 		const workspaceDb = pgDatabase(pool);
 		await migrateWorkspaceStore(workspaceDb, config.schema);
-		const workspaces = createSelfHostedWorkspaces({
+		workspaces = createSelfHostedWorkspaces({
 			db: workspaceDb,
 			objects,
 			schema: config.schema,
 			audit,
 			access,
+			sources: [skillsMountSource(skills, () => runtime.directory)],
 		});
 		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 
@@ -155,6 +185,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			runtime,
 			workspaces,
+			skills,
+			memory,
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
@@ -168,6 +200,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 					config.models !== undefined ? "given models" : modelGateway !== undefined ? "model gateway" : "echo model"
 				})`,
 				workspaces: "postgres + s3",
+				skills: "postgres + s3",
+				memory: "postgres",
 				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",
 			},

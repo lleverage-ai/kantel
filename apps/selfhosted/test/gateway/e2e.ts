@@ -1,14 +1,18 @@
 // One end-to-end pass over the gateway's HTTP surface, shared by the in-process test (gateway.test.ts) and the
 // compose test (gateway.stack.test.ts): every mounted API refuses a call without credentials, then a session runs a
 // prompt to its answer and streams its events, the workspace read API lists and reads the bootstrap README, the
-// audit query API returns the session's rows, the identity routes say who the key is and which project it has (and
-// keep its keys from an operator who administers nothing), and the console's page is served.
+// audit query API returns the session's rows, the identity routes say who the key is and which projects it has (and
+// keep its keys from an operator who administers nothing), the skills and memory routes answer reads and refuse the
+// operator's imports, and the console's page is served.
 
 export interface E2eTarget {
 	readonly baseUrl: string;
 	readonly apiKey: string;
+	readonly organisationId: string;
 	readonly projectId: string;
 	readonly workspaceId: string;
+	/** The bootstrap's named projects (HARBOUR_PROJECTS), by name, all on the key. */
+	readonly projects?: { readonly [name: string]: string };
 }
 
 export interface E2eCheck {
@@ -80,6 +84,8 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 		"/v1/me",
 		"/v1/projects",
 		"/v1/keys",
+		"/v1/skills",
+		"/v1/memory/spaces",
 	]) {
 		const refused = await fetch(url(path));
 		check(`${path} without credentials is 401`, refused.status === 401, { status: refused.status });
@@ -90,21 +96,28 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 	const deployment = await call("/v1/deployment");
 	check("deployment lists its bindings", deployment.ok, await body(deployment));
 
-	// The identity routes, as the bootstrap's key: a service with operator on one project and nothing else.
+	// The identity routes, as the bootstrap's key: a service with operator on the deployment's projects and nothing else.
+	const named = Object.entries(target.projects ?? {});
+	const keyProjects = [...new Set([target.projectId, ...named.map(([, id]) => id)])].sort();
 	const me = await call("/v1/me");
 	const meBody = (await body(me)) as { actor?: { kind?: string }; roles?: { projectId?: string; role: string }[] };
+	const roles = meBody.roles ?? [];
 	check(
-		"GET /v1/me names the key's service and its operator role on the project",
+		"GET /v1/me names the key's service and its operator role on each of the deployment's projects",
 		me.ok &&
 			meBody.actor?.kind === "service" &&
-			JSON.stringify(meBody.roles) === JSON.stringify([{ projectId: target.projectId, role: "operator" }]),
+			roles.every((role) => role.role === "operator") &&
+			JSON.stringify(roles.map((role) => role.projectId).sort()) === JSON.stringify(keyProjects),
 		meBody,
 	);
 	const projects = await call("/v1/projects");
-	const projectsBody = (await body(projects)) as { items?: { id: string }[] };
+	const projectsBody = (await body(projects)) as { items?: { id: string; name: string }[] };
+	const listedProjects = projectsBody.items ?? [];
 	check(
-		"GET /v1/projects lists the key's project",
-		projects.ok && (projectsBody.items ?? []).some((project) => project.id === target.projectId),
+		"GET /v1/projects lists the key's project and the bootstrap's named projects, by name",
+		projects.ok &&
+			listedProjects.some((project) => project.id === target.projectId) &&
+			named.every(([name, id]) => listedProjects.some((project) => project.id === id && project.name === name)),
 		projectsBody,
 	);
 	const keys = await call("/v1/keys");
@@ -119,6 +132,43 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 	});
 	check("POST /v1/keys is 403 for an operator who administers nothing", issued.status === 403, {
 		status: issued.status,
+	});
+
+	// The skills and memory routes (#12): reads answer the key; loading them is the organisation admin's.
+	const skills = await call(`/v1/skills?projectId=${encodeURIComponent(target.projectId)}`);
+	const skillsBody = (await body(skills)) as { items?: unknown[] };
+	check("GET /v1/skills lists the skills the key sees", skills.ok && Array.isArray(skillsBody.items), skillsBody);
+	const skillImport = await call("/v1/skills/import", {
+		method: "POST",
+		body: JSON.stringify({
+			owner: { kind: "project", organisationId: target.organisationId, projectId: target.projectId },
+			name: "e2e-skill",
+			description: "An end-to-end skill",
+			files: [{ path: "SKILL.md", content: "---\nname: e2e-skill\ndescription: An end-to-end skill\n---\n" }],
+			source: { sourceId: "e2e", ref: "1" },
+		}),
+	});
+	check("POST /v1/skills/import is 403 for an operator who administers nothing", skillImport.status === 403, {
+		status: skillImport.status,
+		body: await body(skillImport),
+	});
+	const spaces = await call("/v1/memory/spaces");
+	const spacesBody = (await body(spaces)) as { items?: unknown[] };
+	check(
+		"GET /v1/memory/spaces lists the spaces the key reads",
+		spaces.ok && Array.isArray(spacesBody.items),
+		spacesBody,
+	);
+	const space = await call("/v1/memory/spaces", {
+		method: "POST",
+		body: JSON.stringify({
+			owner: { kind: "project", organisationId: target.organisationId, projectId: target.projectId },
+			name: "e2e",
+		}),
+	});
+	check("POST /v1/memory/spaces is 403 for an operator who administers nothing", space.status === 403, {
+		status: space.status,
+		body: await body(space),
 	});
 
 	// The session API: create, prompt, wait for the answer, then watch the events.

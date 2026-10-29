@@ -9,27 +9,34 @@ import type { Sandboxes } from "@harbour/contracts";
 import {
 	type AuditSink,
 	type AuditStore,
+	type Authentication,
 	type CallContext,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
+	type Memory,
 	normaliseEmail,
 	type OrganisationId,
 	PLATFORM_ORGANISATION,
+	type Project,
 	type ProjectAccess,
 	type ProjectId,
+	type Skills,
 	type WorkspaceId,
 } from "@harbour/contracts";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
+import { createMemoryMemory } from "@harbour/memory/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import { createMemorySkills } from "@harbour/skills/memory";
 import type { HarbourVault } from "@harbour/vault/engine";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
+import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
 /**
  * Harbour sets itself up as this system actor: the identity contract lets only `system` create an organisation. Its
@@ -45,6 +52,10 @@ export interface GatewayComponents {
 	readonly audit: AuditStore;
 	readonly runtime: MemoryRuntime;
 	readonly workspaces: StoredWorkspaces;
+	/** Agent Skills packages and their revisions (#12): listed to sessions and mounted at `/skills` (skills-memory.ts). */
+	readonly skills: Skills;
+	/** Memory spaces and their concepts (#12): recalled for sessions with memory scopes, and their memory tools. */
+	readonly memory: Memory;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -164,17 +175,34 @@ export function createGatewayComponents(
 	let vault: HarbourVault | undefined;
 	const models = options.models ??
 		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
-	const runtime = createMemoryRuntime({
-		audit,
-		identity,
-		...models,
-		...gatewaySandboxes.runtimeOptions,
-	});
+	// Skills and memory check project access with the runtime's check, which they reach only when called.
+	const skills = createMemorySkills({ audit, access: auditAccess.access });
+	const memory = createMemoryMemory({ audit, access: auditAccess.access });
+	let workspaces: StoredWorkspaces | undefined;
+	const lateWorkspaces = () => {
+		if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
+		return workspaces;
+	};
+	const runtime = withOwnWorkspaces(
+		createMemoryRuntime({
+			audit,
+			identity,
+			...models,
+			...gatewaySandboxes.runtimeOptions,
+			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
+		}),
+		lateWorkspaces,
+	);
 	// Given `identity`, the runtime always builds its check; the components share it.
 	const access = runtime.access;
 	if (access === undefined) throw new Error("the runtime built no project-access check");
 	auditAccess.set(access);
-	const workspaces = createStoredWorkspaces({ store: createMemoryWorkspaceStore(), audit, access });
+	workspaces = createStoredWorkspaces({
+		store: createMemoryWorkspaceStore(),
+		audit,
+		access,
+		sources: [skillsMountSource(skills, () => runtime.directory)],
+	});
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
@@ -183,6 +211,8 @@ export function createGatewayComponents(
 		audit,
 		runtime,
 		workspaces,
+		skills,
+		memory,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		vault,
@@ -197,6 +227,8 @@ export function createGatewayComponents(
 						? "memory (model gateway)"
 						: "memory (echo model)",
 			workspaces: "memory",
+			skills: "memory",
+			memory: "memory",
 			sandboxes: SANDBOX_BINDING,
 			signIn: "memory",
 			vault: "memory",
@@ -226,6 +258,32 @@ export interface Bootstrap {
 	 * while the key is the same, as the vault lists no platform items.
 	 */
 	readonly cpaItem?: { readonly name: string; readonly id: string };
+	/**
+	 * The deployment's named projects (`BootstrapNames.projects`, HARBOUR_PROJECTS), by name: each made once and found
+	 * again on later starts, and every one on the operator key. `GET /v1/projects` lists them with the key.
+	 */
+	readonly projects?: { readonly [name: string]: ProjectId };
+}
+
+/** What the bootstrap names: the organisation, its first project, the admin it invites and the other projects. */
+export interface BootstrapNames {
+	readonly organisation: string;
+	readonly project: string;
+	readonly adminEmail?: string;
+	/**
+	 * Projects the deployment has beside its first, by name, such as the Docket workspaces of the Sal next to it (`dev`,
+	 * `sal`): made on the start that first names them, and found by name after that. The operator key covers all of
+	 * them; a start that adds one issues a new key over them all and revokes the old one.
+	 */
+	readonly projects?: readonly string[];
+}
+
+/** A deployment's organisation, first project and operator key, with what the key may do. */
+interface Deployment {
+	readonly organisationId: OrganisationId;
+	readonly projectId: ProjectId;
+	readonly apiKey: string;
+	readonly key: Authentication;
 }
 
 /**
@@ -236,7 +294,7 @@ export interface Bootstrap {
 async function previousDeployment(
 	identity: IdentityDirectory,
 	previous: Bootstrap | undefined,
-): Promise<{ organisationId: OrganisationId; projectId: ProjectId; apiKey: string } | undefined> {
+): Promise<Deployment | undefined> {
 	if (previous === undefined) return undefined;
 	try {
 		const found = await identity.authenticateApiKey(BOOTSTRAP, previous.apiKey);
@@ -249,28 +307,115 @@ async function previousDeployment(
 			projectId: previous.projectId,
 		};
 		await identity.getProject(asKey, previous.projectId);
-		return { organisationId: previous.organisationId, projectId: previous.projectId, apiKey: previous.apiKey };
+		return {
+			organisationId: previous.organisationId,
+			projectId: previous.projectId,
+			apiKey: previous.apiKey,
+			key: found,
+		};
 	} catch (error) {
 		if (error instanceof HarbourError) return undefined;
 		throw error;
 	}
 }
 
+/** Every project of the organisation, as Harbour sees them. */
+async function allProjects(identity: IdentityDirectory, organisationId: OrganisationId): Promise<Project[]> {
+	const inOrganisation: CallContext = { actor: BOOTSTRAP.actor, organisationId };
+	const projects: Project[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await identity.listProjects(inOrganisation, {
+			limit: 100,
+			...(cursor === undefined ? {} : { cursor }),
+		});
+		projects.push(...page.items);
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return projects;
+}
+
+/** The names a bootstrap's `projects` setting gives, trimmed, each once, without the first project's. */
+export function projectNames(names: BootstrapNames): string[] {
+	const wanted = (names.projects ?? []).map((name) => name.trim()).filter((name) => name !== "");
+	return [...new Set(wanted)];
+}
+
+/**
+ * The deployment's named projects, by name: the one `known` (an earlier start's record) names while it still exists,
+ * the first project when the name is its own, else the oldest project of that name, else a new one.
+ */
+async function ensureProjects(
+	identity: IdentityDirectory,
+	organisationId: OrganisationId,
+	first: ProjectId,
+	wanted: readonly string[],
+	known: { readonly [name: string]: ProjectId } = {},
+): Promise<{ [name: string]: ProjectId }> {
+	if (wanted.length === 0) return {};
+	const existing = await allProjects(identity, organisationId);
+	const byId = new Map(existing.map((project) => [project.id, project]));
+	const inOrganisation: CallContext = { actor: BOOTSTRAP.actor, organisationId };
+	const projects: { [name: string]: ProjectId } = {};
+	for (const name of wanted) {
+		const remembered = known[name];
+		const found =
+			(remembered !== undefined && byId.get(remembered)?.name === name ? remembered : undefined) ??
+			(byId.get(first)?.name === name ? first : undefined) ??
+			existing.find((project) => project.name === name)?.id ??
+			(await identity.createProject(inOrganisation, { name })).id;
+		projects[name] = found;
+	}
+	return projects;
+}
+
+/**
+ * The operator key over the first project and `projects`: the deployment's own while it covers them all, else a new
+ * one for the same service, the old one revoked.
+ */
+async function keyCovering(
+	identity: IdentityDirectory,
+	deployment: Deployment,
+	projects: { readonly [name: string]: ProjectId },
+): Promise<string> {
+	const needed = [...new Set([deployment.projectId, ...Object.values(projects)])];
+	const held = new Set(deployment.key.projectIds ?? []);
+	if (needed.every((projectId) => held.has(projectId))) return deployment.apiKey;
+	const actor = deployment.key.actor;
+	if (actor.kind !== "service") throw new Error("the bootstrap's key is not a service's");
+	const inOrganisation: CallContext = { actor: BOOTSTRAP.actor, organisationId: deployment.organisationId };
+	const issued = await identity.issueApiKey(inOrganisation, {
+		serviceId: actor.serviceId,
+		projectIds: needed,
+		role: "operator",
+	});
+	if (actor.keyId !== undefined) await identity.revokeApiKey(inOrganisation, actor.keyId);
+	return issued.secret;
+}
+
 /**
  * Sets up the deployment, or picks up the one `previous` describes when it still exists: one organisation and project,
- * a service with an operator key on it, an `echo` agent profile and a workspace with a README, so every mounted API
- * has something to answer with. The profile and workspace are ensured every start, so they come back after a restart
+ * the projects `names.projects` names (made once, found by name after that), a service with an operator key on all of
+ * them, an `echo` agent profile and a workspace with a README, so every mounted API has something to answer with. The profile and workspace are ensured every start, so they come back after a restart
  * on in-memory components too.
  */
 export async function bootstrap(
 	components: GatewayComponents,
-	names: { readonly organisation: string; readonly project: string; readonly adminEmail?: string },
+	names: BootstrapNames,
 	previous?: Bootstrap,
 ): Promise<Bootstrap> {
 	const { identity, runtime, workspaces } = components;
 	const deployment = (await previousDeployment(identity, previous)) ?? (await createDeployment(identity, names));
 	const { organisationId, projectId } = deployment;
 	const reused = previous !== undefined && previous.organisationId === organisationId;
+	const projects = await ensureProjects(
+		identity,
+		organisationId,
+		projectId,
+		projectNames(names),
+		reused ? previous.projects : undefined,
+	);
+	const apiKey = await keyCovering(identity, deployment, projects);
 	const invitedAdmin = names.adminEmail === undefined ? undefined : normaliseEmail(names.adminEmail);
 	if (invitedAdmin !== undefined && !(reused && previous.invitedAdmin === invitedAdmin)) {
 		await inviteAdmin(identity, organisationId, invitedAdmin);
@@ -328,8 +473,9 @@ export async function bootstrap(
 		organisationId,
 		projectId,
 		workspaceId: workspace.id,
-		apiKey: deployment.apiKey,
+		apiKey,
 		...(invitedAdmin === undefined ? {} : { invitedAdmin }),
+		...(Object.keys(projects).length === 0 ? {} : { projects }),
 	};
 }
 
@@ -368,10 +514,8 @@ export async function inviteAdmin(
 	if (!held) await identity.grantRole(inOrganisation, { principal: { kind: "user", userId }, role: "admin" });
 }
 
-async function createDeployment(
-	identity: IdentityDirectory,
-	names: { readonly organisation: string; readonly project: string },
-): Promise<{ organisationId: OrganisationId; projectId: ProjectId; apiKey: string }> {
+/** A new organisation with its first project and named projects, and a service with an operator key over them all. */
+async function createDeployment(identity: IdentityDirectory, names: BootstrapNames): Promise<Deployment> {
 	const owner = await identity.createUser(BOOTSTRAP, { name: "Harbour admin" });
 	const organisation = await identity.createOrganisation(BOOTSTRAP, {
 		name: names.organisation,
@@ -379,11 +523,13 @@ async function createDeployment(
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: owner.id }, organisationId: organisation.id };
 	const project = await identity.createProject(admin, { name: names.project });
+	const named = await ensureProjects(identity, organisation.id, project.id, projectNames(names));
 	const service = await identity.createServiceIdentity(admin, { name: "self-hosted bootstrap" });
 	const issued = await identity.issueApiKey(admin, {
 		serviceId: service.id,
-		projectIds: [project.id],
+		projectIds: [...new Set([project.id, ...Object.values(named)])],
 		role: "operator",
 	});
-	return { organisationId: organisation.id, projectId: project.id, apiKey: issued.secret };
+	const key = await identity.authenticateApiKey(BOOTSTRAP, issued.secret);
+	return { organisationId: organisation.id, projectId: project.id, apiKey: issued.secret, key };
 }

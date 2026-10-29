@@ -10,7 +10,8 @@
 			"!**/.wrangler",
 			"!**/*.jsonl",
 			"!**/*.md",
-			"!docs/measurements/**/harness/*.js"
+			"!docs/measurements/**/harness/*.js",
+			"!images/browser/agent"
 		]
 	},
 	"formatter": {

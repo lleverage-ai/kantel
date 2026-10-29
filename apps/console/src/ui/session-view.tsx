@@ -105,6 +105,7 @@ export function SessionView({
 	onFiles,
 	turn,
 	turnSearch,
+	focusBrowser,
 }: {
 	client: SessionClient;
 	/** The project's name, shown with the session's facts. */
@@ -118,6 +119,8 @@ export function SessionView({
 	turn?: string;
 	/** Where the search for `turn` stands; `missing` says so above the composer. */
 	turnSearch?: TurnSearch;
+	/** A browser session to scroll to, from an audit link's `#browser=<id>`. */
+	focusBrowser?: string;
 }) {
 	const turnMissing = turn !== undefined && turnSearch === "missing";
 	const state = useSyncExternalStore(client.subscribe, client.getState);
@@ -245,6 +248,7 @@ export function SessionView({
 						messageActions={messageActions}
 						{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
 						{...(turn === undefined ? {} : { turn })}
+						{...(focusBrowser === undefined ? {} : { focusBrowser })}
 						dock={
 							<Composer
 								state={composerState(control, state.status, actions.sending)}

@@ -12,6 +12,7 @@ import {
 	type BrowserProvider,
 	type BrowserRequest,
 	type BrowserSession,
+	type BrowserShareLink,
 	type CallContext,
 	type Clock,
 	type GrantBrowserInput,
@@ -37,6 +38,7 @@ import {
 	assertValidAction,
 	assertValidSite,
 	browserTeardown,
+	EMBED_MINUTES,
 	isSupervisor,
 	type ParentOf,
 	pageAllowed,
@@ -311,7 +313,22 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		pending.attempts += 1;
 		const attempt = pending.attempts;
 		try {
-			await provider.release(pending.providerSessionId);
+			const released = await provider.release(pending.providerSessionId);
+			const recording = released === undefined ? undefined : released.recording;
+			if (recording !== undefined) {
+				// Counts and retention only; the replay link is made per viewer and never audited. One per browser.
+				await emit({
+					id: `browser:session:${pending.browserSessionId}:recording_stored`,
+					type: "browser.recording.stored",
+					actor: BROKER_ACTOR,
+					organisationId: pending.organisationId,
+					projectId: pending.projectId,
+					sessionId: pending.sessionId,
+					agentId: pending.agentId,
+					subject: { kind: "browser.session", id: pending.browserSessionId },
+					data: { ...recording },
+				}).catch(() => undefined);
+			}
 			return;
 		} catch {
 			pendingReleases.set(pending.providerSessionId, pending);
@@ -448,6 +465,15 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	 * Audits a page off the grant's sites as `browser.site.refused`, naming only the host (a URL may hold a token), and
 	 * returns the `refused` error to throw.
 	 */
+	/** A URL's host only (a whole URL may hold a token), or `""`. */
+	function hostOf(url: string): string {
+		try {
+			return new URL(url).hostname;
+		} catch {
+			return "";
+		}
+	}
+
 	async function refuseSite(
 		ctx: CallContext,
 		stored: StoredSession,
@@ -801,6 +827,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					providerContextId: context.providerContextId,
 					persist: grant.persist,
 					timeoutMs: grant.timeoutMs,
+					allowedSites: grant.allowedSites,
 				});
 			} catch (error) {
 				freeSlot();
@@ -894,6 +921,22 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					.catch(() => undefined);
 				throw await refuseSite(ctx, stored, action.kind, page.url, "landed");
 			}
+			// Every step that may move or change the page, by its verb and the host it ended on: never a value typed or a whole
+			// URL (either may hold a secret). A look changes nothing and isn't audited.
+			if (action.kind !== "look") {
+				const session = stored.session;
+				await emit({
+					id: `browser:session:${session.id}:step:${ctx.requestId ?? crypto.randomUUID()}`,
+					type: "browser.session.step",
+					actor: ctx.actor,
+					organisationId: session.organisationId,
+					projectId: stored.projectId,
+					sessionId: session.sessionId,
+					agentId: stored.agentId,
+					subject: { kind: "browser.session", id: session.id },
+					data: { step: action.kind, host: hostOf(page.url), succeeded: page.succeeded },
+				});
+			}
 			return page;
 		},
 
@@ -937,6 +980,74 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				agentId: stored.agentId,
 				subject: { kind: "browser.session", id: session.id },
 				data: watch ? { minutes, watch } : { minutes },
+			});
+			return link;
+		},
+
+		async replay(ctx, browserSessionId, input) {
+			await sweep();
+			forbidAgent(ctx, "make a browser replay link");
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "viewer", operation: "browser.replay" });
+			const minutes = input?.minutes ?? SHARE_MINUTES[0];
+			if (!(SHARE_MINUTES as readonly number[]).includes(minutes)) {
+				throw new HarbourError("invalid", `A replay link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
+			}
+			if (provider.replay === undefined) {
+				throw new HarbourError("unavailable", "This deployment's browser provider keeps no recordings");
+			}
+			const link = await provider.replay(stored.providerSessionId, minutes, ctx.signal);
+			const session = stored.session;
+			await emit({
+				id: `browser:session:${session.id}:replayed:${ctx.requestId ?? crypto.randomUUID()}`,
+				type: "browser.session.shared",
+				actor: ctx.actor,
+				organisationId: session.organisationId,
+				projectId: stored.projectId,
+				sessionId: session.sessionId,
+				agentId: stored.agentId,
+				subject: { kind: "browser.session", id: session.id },
+				data: { minutes, replay: true },
+			});
+			return link;
+		},
+
+		async embed(ctx, browserSessionId, input) {
+			await sweep();
+			forbidAgent(ctx, "make a browser embed link");
+			const mode = input?.mode;
+			if (mode !== "live" && mode !== "replay") throw new HarbourError("invalid", "An embed is live or replay");
+			const minutes = input.minutes ?? EMBED_MINUTES.default;
+			if (!Number.isInteger(minutes) || minutes < EMBED_MINUTES.min || minutes > EMBED_MINUTES.max) {
+				throw new HarbourError(
+					"invalid",
+					`An embed link lasts ${EMBED_MINUTES.min} to ${EMBED_MINUTES.max} whole minutes`,
+				);
+			}
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "viewer", operation: "browser.embed" });
+			let link: BrowserShareLink;
+			if (mode === "live") {
+				openGrant(stored);
+				// Watch-only: an outside app's viewer never drives the browser.
+				link = await provider.share(stored.providerSessionId, minutes, ctx.signal, { control: false });
+			} else {
+				if (provider.replay === undefined) {
+					throw new HarbourError("unavailable", "This deployment's browser provider keeps no recordings");
+				}
+				link = await provider.replay(stored.providerSessionId, minutes, ctx.signal);
+			}
+			const session = stored.session;
+			await emit({
+				id: `browser:session:${session.id}:embedded:${ctx.requestId ?? crypto.randomUUID()}`,
+				type: "browser.session.embedded",
+				actor: ctx.actor,
+				organisationId: session.organisationId,
+				projectId: stored.projectId,
+				sessionId: session.sessionId,
+				agentId: stored.agentId,
+				subject: { kind: "browser.session", id: session.id },
+				data: { mode, minutes },
 			});
 			return link;
 		},

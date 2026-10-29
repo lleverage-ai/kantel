@@ -2398,6 +2398,118 @@
 					}
 				}
 			}
+		},
+		"/sessions/{sessionId}/browsers/{browserSessionId}/embed": {
+			"post": {
+				"operationId": "embedBrowserSession",
+				"summary": "Embed a session's browser",
+				"description": "A link for an iframe: a watch-only live view of one of the session's open browsers, or a replay of one, open or closed. Needs viewer on the session; never an agent. The link carries a short-lived token scoped to that one view (never control), lasting `minutes`. A closed browser has no live view (`expired`); a deployment whose browsers keep no recordings has no replay (`unavailable`), and a recording past its retention is `expired`. Audited as `browser.session.embedded`, without the link.",
+				"tags": ["browsers"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "browserSessionId",
+						"in": "path",
+						"required": true,
+						"description": "The browser session's ID, as the session's browser tool items name it.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/EmbedBrowserBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The link to frame.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BrowserEmbed"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"410": {
+						"description": "`expired`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -2528,6 +2640,37 @@
 				],
 				"title": "Attention",
 				"description": "How a session list groups the session: working, waiting on someone, or done."
+			},
+			"BrowserEmbed": {
+				"type": "object",
+				"required": ["url", "mode"],
+				"properties": {
+					"url": {
+						"type": "string",
+						"description": "The page to frame. It holds its token after `#`, so the token reaches no server; treat the URL as a secret."
+					},
+					"mode": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "live"
+							},
+							{
+								"type": "string",
+								"const": "replay"
+							}
+						]
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endMessage": {
+						"type": "string",
+						"description": "What the page posts to its parent once its stream is over."
+					}
+				},
+				"title": "BrowserEmbed"
 			},
 			"BrowserGrantCard": {
 				"type": "object",
@@ -3055,6 +3198,32 @@
 				],
 				"title": "DeltaOp",
 				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's."
+			},
+			"EmbedBrowserBody": {
+				"type": "object",
+				"required": ["mode"],
+				"properties": {
+					"mode": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "live"
+							},
+							{
+								"type": "string",
+								"const": "replay"
+							}
+						],
+						"description": "`live`: the open browser as it is now, watch-only. `replay`: its recording."
+					},
+					"minutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 60,
+						"description": "How long the link lasts. Default 15."
+					}
+				},
+				"title": "EmbedBrowserBody"
 			},
 			"ErrorBody": {
 				"type": "object",
