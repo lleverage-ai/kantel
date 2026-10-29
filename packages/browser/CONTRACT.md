@@ -51,6 +51,30 @@ things.
   browser live (the console's live view): viewer on the agent session is enough, the provider is asked for no
   control, and the audit event says `watch: true`: "gives a viewer a watch-only share link, and an agent none".
 
+## Harbour's own browsers: steps, replays, embeds and recordings (docs/design/browser-runtime.md)
+
+- `open` passes the grant's sites to the provider (`allowedSites`), so a provider with a guard of its own (Harbour's
+  browser agent) refuses other sites in the browser too. The broker's checks above stay authoritative.
+- Each `act` that does something (every step but `look`) is audited `browser.session.step` with the verb, the host it
+  ended on and whether it succeeded, never a value typed or a whole URL: "audits each step by its verb and the host it
+  ended on, never a value or the whole URL".
+- `replay(ctx, browserSessionId, { minutes })` makes a link to a browser session's recording, open or closed, for
+  humans and services with viewer on its agent session, for 15 or 60 minutes. An agent is `forbidden`; a provider
+  without recordings (brwsr) is `unavailable`. Audited `browser.session.shared` with `replay: true`, never the link.
+- `embed(ctx, browserSessionId, { mode, minutes })` is the embed API's link for an outside app to frame: `live`
+  (watch-only, never control; a closed browser is `expired`) or `replay`. Viewer on the agent session; never an agent.
+  `minutes` is a whole number from 5 to 60 (default 15). Audited `browser.session.embedded` with the mode and minutes,
+  never the link: "makes an outside app's live embed watch-only, for 5 to 60 minutes, and audits it without the link".
+  `@harbour/browser/http`'s `createBrowserApi` serves it as `POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed`
+  (`@harbour/api`'s `browserRoutes`), with the link made absolute for the app.
+- A provider that records answers `release` with what it stored (`{ recording: { pages, frames, durationMs,
+  expiresAt } }`); the broker audits it once per browser session as `browser.recording.stored`, counts only.
+
+Every event about one browser session (opened, steps, site refusals, shares, embeds, a failed release, closed and the
+recording) has the subject `{ kind: "browser.session", id }`, so its history from open to recording is one audit
+query. The request and grant before it keep their own subjects (`browser.request`, `browser.grant`); the agent
+session's ID finds them.
+
 ## Capabilities
 
 `@harbour/browser/capabilities` exports `browserCapabilities` and `browserCapabilityHandler({ browser })` for the

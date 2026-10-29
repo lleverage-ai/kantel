@@ -8,6 +8,8 @@ import { HistoryQuery, ServerFrame, SessionHistoryPage, StreamQuery } from "./pr
 import { defineRoute } from "./route.ts";
 import {
 	AbortSessionBody,
+	BrowserEmbed,
+	BrowserSessionPath,
 	Concept,
 	ConceptPage,
 	ConceptPath,
@@ -15,6 +17,7 @@ import {
 	CreateMemorySpaceBody,
 	CreateScheduleBody,
 	CreateSessionBody,
+	EmbedBrowserBody,
 	ImportSkillBody,
 	ListConceptsQuery,
 	ListSchedulesQuery,
@@ -506,8 +509,37 @@ export const scheduleRoutes = {
 	listScheduleRuns,
 } as const;
 
+// Browsers (docs/design/browser-runtime.md): an outside app frames a session's browser.
+
+export const embedBrowserSession = defineRoute({
+	operationId: "embedBrowserSession",
+	method: "POST",
+	path: "/sessions/{sessionId}/browsers/{browserSessionId}/embed",
+	tag: "browsers",
+	summary: "Embed a session's browser",
+	description:
+		"A link for an iframe: a watch-only live view of one of the session's open browsers, or a replay of one, open or " +
+		"closed. Needs viewer on the session; never an agent. The link carries a short-lived token scoped to that one view " +
+		"(never control), lasting `minutes`. A closed browser has no live view (`expired`); a deployment whose browsers " +
+		"keep no recordings has no replay (`unavailable`), and a recording past its retention is `expired`. Audited as " +
+		"`browser.session.embedded`, without the link.",
+	params: BrowserSessionPath,
+	body: EmbedBrowserBody,
+	answer: { status: 200, description: "The link to frame.", schema: BrowserEmbed },
+	errors: ["invalid", "forbidden", "not_found", "expired", "unavailable"],
+});
+
+/** The browsers' routes, served by `@harbour/browser/http`. */
+export const browserRoutes = { embedBrowserSession } as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
-export const routes = { ...sessionRoutes, ...skillRoutes, ...memoryRoutes, ...scheduleRoutes } as const;
+export const routes = {
+	...sessionRoutes,
+	...skillRoutes,
+	...memoryRoutes,
+	...scheduleRoutes,
+	...browserRoutes,
+} as const;
 
 export type Routes = typeof routes;
 export type OperationId = keyof Routes;

@@ -27,6 +27,9 @@ export const BROWSER_ACTION_KINDS = [
 /** How long a share link may last, in minutes; the first is the default. */
 export const SHARE_MINUTES = [15, 60] as const;
 
+/** How long an embed link may last (the embed API, docs/design/browser-runtime.md): 5 to 60 minutes, 15 by default. */
+export const EMBED_MINUTES = { min: 5, max: 60, default: 15 } as const;
+
 const MAX_VALUE_LENGTH = 2000;
 const MAX_URL_LENGTH = 2000;
 const KEY_PATTERN = /^[A-Za-z0-9+]{1,20}$/;
