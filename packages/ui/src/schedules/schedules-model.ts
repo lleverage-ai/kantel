@@ -340,6 +340,7 @@ export function newestFirst(occurrences: readonly Occurrence[]): Occurrence[] {
 
 export const FINDING_REASON: Readonly<Record<RaisedFinding["reason"], string>> = {
 	new: "New",
+	escalated: "Escalated",
 	reraise: "Still present",
 	rising: "Rising",
 	failures: "Repeated failures",
