@@ -209,8 +209,8 @@ is the only animation, CSS only, and stops under reduced motion (it stays, still
 ### WorkingIndicator
 
 **For** saying the agent is working on a turn, live: the working status's pulsing dot, then "Working for 12s" in
-muted `--hb-text-sm` with tabular numbers, the words under a slow light sweep (`--hb-duration-shimmer`), after T3
-Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
+muted `--hb-text-sm` with tabular numbers, the words breathing as a skeleton does (`hb-shimmer`,
+`--hb-duration-shimmer`), after T3 Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
 say, for another kind of work).
 
 **States:** with `since`, it counts from it and is a `role="timer"` named after the label, whose implicit `aria-live`
@@ -221,8 +221,11 @@ is off: screen readers can read it but are not told every second. Without `since
 **Not for** a session's status in a header or a list (`StatusLabel`), or a control that is busy (a button's own
 spinner).
 
-**Cost:** memoised on its props. The dot's pulse and the sweep are CSS only and stop under reduced motion; the timer
-is an `Elapsed` on the shared one-second clock, so only that leaf renders each second.
+**Cost:** memoised on its props. The dot's pulse and the words' breathing animate opacity alone, which the
+compositor runs without the main thread, and stop under reduced motion; the timer is an `Elapsed` on the shared
+one-second clock, so only that leaf renders each second. Don't animate anything that repaints here (a moving
+background clipped to the text did, every frame: a fifth of the main thread at rest without a GPU, and the stream above
+it stuttered).
 
 ### MessageActions
 
