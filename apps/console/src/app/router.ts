@@ -109,6 +109,14 @@ export const sessionPath = (projectId: string, sessionId: string): string =>
 /** A session at one turn: the submission or tool call an audit event names, as the session's `#turn=<id>`. */
 export const sessionTurnPath = (projectId: string, sessionId: string, turn?: string): string =>
 	`${sessionPath(projectId, sessionId)}${turn === undefined || turn === "" ? "" : `#turn=${encodeURIComponent(turn)}`}`;
+/** A session at one of its browsers, as the audit log links a browser event: `#browser=<browserSessionId>`. */
+export const sessionBrowserPath = (projectId: string, sessionId: string, browserSessionId: string): string =>
+	`${sessionPath(projectId, sessionId)}#browser=${encodeURIComponent(browserSessionId)}`;
+/** The browser session a `#browser=<id>` hash names, if any. */
+export function browserFromHash(hash: string): string | undefined {
+	const value = new URLSearchParams(hash.replace(/^#/, "")).get("browser");
+	return value === null || value === "" ? undefined : value;
+}
 export const VAULT_PATH = "/vault";
 /** One vault request: the path the vault's own links use (`Proposal.link`, `@harbour/vault`'s `approvalLink`). */
 export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;

@@ -140,15 +140,32 @@ export interface BrowserShareLink {
 	readonly embed?: { readonly url: string; readonly endMessage?: string };
 }
 
+/** What a recording provider stored of a browser that has ended: counts and retention only, never a frame or a page. */
+export interface BrowserReleased {
+	readonly recording?: {
+		readonly pages: number;
+		readonly frames: number;
+		readonly durationMs: number;
+		/** When the recording is deleted. */
+		readonly expiresAt: Timestamp;
+	};
+}
+
 /** The provider behind the broker, such as brwsr. Implementations hold the provider key; nothing else sees it. */
 export interface BrowserProvider {
 	open(input: {
 		readonly providerContextId: string;
 		readonly persist: boolean;
 		readonly timeoutMs: number;
+		/** The grant's sites, for a provider that also enforces them inside the browser (Harbour's own runtime does). */
+		readonly allowedSites?: readonly string[];
 	}): Promise<{ readonly providerSessionId: string; readonly cdpUrl: string }>;
-	/** Ends the browser; a persisting one saves its context. A session already gone is not an error. */
-	release(providerSessionId: string): Promise<void>;
+	/**
+	 * Ends the browser; a persisting one saves its context. A session already gone is not an error. A provider that
+	 * records says what it stored, once the recording is complete.
+	 */
+	// biome-ignore lint/suspicious/noConfusingVoidType: a provider that records nothing keeps its plain `async` release.
+	release(providerSessionId: string): Promise<BrowserReleased | undefined | void>;
 	/** One step in the browser, then the page it is on. A browser that has ended is `expired`. */
 	act(providerSessionId: string, action: BrowserAction, signal?: AbortSignal): Promise<BrowserPage>;
 	/** The page as it is now. A browser that has ended is `expired`. */
@@ -163,6 +180,11 @@ export interface BrowserProvider {
 		signal?: AbortSignal,
 		options?: { readonly control?: boolean },
 	): Promise<BrowserShareLink>;
+	/**
+	 * A link to the browser's recording that lasts `minutes`, open or ended, while the recording is kept. A provider
+	 * that records nothing leaves it out. No recording is `not_found`; one past its retention is `expired`.
+	 */
+	replay?(providerSessionId: string, minutes: number, signal?: AbortSignal): Promise<BrowserShareLink>;
 }
 
 export interface GrantBrowserInput {
@@ -239,5 +261,23 @@ export interface Browser {
 	 * more, it changes and audits nothing. A worker call (settled question 13): any actor but `system` is `forbidden`.
 	 */
 	endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason): Promise<void>;
+	/**
+	 * A link to a browser session's recording, open or closed, for humans and services with viewer on its agent session
+	 * (an agent is `forbidden`). `minutes` is 15 or 60 (default 15). A provider without recordings is `unavailable`; no
+	 * recording is `not_found`, and one past its retention `expired`. Audited as `browser.session.shared` with
+	 * `replay: true`, never with the link.
+	 */
+	replay(ctx: CallContext, browserSessionId: string, input?: { readonly minutes?: number }): Promise<BrowserShareLink>;
+	/**
+	 * A link for an outside app to frame (the embed API): `live`, a watch-only view of an open browser session (a closed
+	 * one is `expired`), or `replay`, its recording (as `replay` answers). Never with control. Humans and services with
+	 * viewer on its agent session; an agent is `forbidden`. `minutes` is a whole number from 5 to 60 (default 15).
+	 * Audited as `browser.session.embedded` with the mode and minutes, never with the link.
+	 */
+	embed(
+		ctx: CallContext,
+		browserSessionId: string,
+		input: { readonly mode: "live" | "replay"; readonly minutes?: number },
+	): Promise<BrowserShareLink>;
 	get(ctx: CallContext, browserSessionId: string): Promise<BrowserSession>;
 }

@@ -1,0 +1,2 @@
+# Not part of the image; keeps a local npm install out of the build context and its source hash (scripts/container-images.mjs).
+**/node_modules

@@ -31,6 +31,14 @@ import {
 import { credentialUsage } from "./usage.ts";
 
 describe("filters", () => {
+	it("narrow to one browser session by the events' subject", () => {
+		expect(toQuery({ range: "all", kind: "all", browserSession: "brs_1" }, FIXTURE_NOW)).toEqual({
+			newestFirst: true,
+			subject: { kind: "browser.session", id: "brs_1" },
+		});
+		expect(toQuery({ range: "all", kind: "all", browserSession: "" }, FIXTURE_NOW)).toEqual({ newestFirst: true });
+	});
+
 	it("turn into the store's query, newest first, with the kind as a type prefix", () => {
 		expect(
 			toQuery({ range: "hour", kind: "credential-use", projectId: "prj_billing", actor: "human:usr_tom" }, FIXTURE_NOW),
@@ -171,8 +179,61 @@ describe("rows", () => {
 	});
 
 	it("read unknown types from the type itself", () => {
-		const event = { ...find("session.created"), type: "browser.session.opened", source: "browser" } as AuditEvent;
-		expect(describeEvent(event).action).toBe("browser session opened");
+		const event = { ...find("session.created"), type: "browser.context.created", source: "browser" } as AuditEvent;
+		expect(describeEvent(event).action).toBe("browser context created");
+	});
+
+	it("read a browser's events plainly and link them to the session at that browser", () => {
+		const base = find("session.created");
+		const browser = (type: string, data: AuditEvent["data"]) =>
+			({
+				...base,
+				type,
+				source: "browser",
+				subject: { kind: "browser.session", id: "brs_1" },
+				data,
+			}) as AuditEvent;
+		const seen: unknown[] = [];
+		const withBrowser = {
+			...links,
+			browser: (...args: [string, string, string?]) => {
+				seen.push(args);
+				return `#/sessions/${args[0]}#browser=${args[1]}`;
+			},
+		};
+		const step = describeEvent(
+			browser("browser.session.step", { step: "goto", host: "github.com", succeeded: true }),
+			directory,
+			withBrowser,
+		);
+		expect(step).toMatchObject({
+			action: "took a browser step: goto on github.com",
+			link: { href: `#/sessions/${base.sessionId}#browser=brs_1`, label: "Browser" },
+		});
+		expect(seen).toEqual([[base.sessionId, "brs_1", base.projectId]]);
+		expect(describeEvent(browser("browser.session.step", { step: "click", host: "", succeeded: false }))).toMatchObject(
+			{ action: "tried a browser step: click", tone: "error" },
+		);
+		expect(describeEvent(browser("browser.session.embedded", { mode: "replay", minutes: 15 })).action).toBe(
+			"made an embed link to the browser's replay for 15 minutes",
+		);
+		expect(describeEvent(browser("browser.session.shared", { minutes: 15, watch: true })).action).toBe(
+			"opened a watch-only view of the browser for 15 minutes",
+		);
+		expect(describeEvent(browser("browser.session.shared", { minutes: 60 })).action).toBe(
+			"opened the browser with control for 60 minutes",
+		);
+		expect(
+			describeEvent(browser("browser.recording.stored", { frames: 40, pages: 1, durationMs: 9_400, expiresAt: 1 }))
+				.action,
+		).toBe("stored the browser's recording (40 frames, 1 page, 9s)");
+		expect(describeEvent(browser("browser.session.closed", { endReason: "timeout" })).action).toBe(
+			"closed the browser (timeout)",
+		);
+		// Without a browser link, the session's link stands.
+		expect(describeEvent(browser("browser.session.opened", {}), directory, links).link?.href).toBe(
+			`#/sessions/${base.sessionId}`,
+		);
 	});
 
 	it("name the item an event is about as the store's itemId filter does", () => {

@@ -102,6 +102,7 @@ export function SessionView({
 	actions,
 	onBack,
 	onFiles,
+	focusBrowser,
 }: {
 	client: SessionClient;
 	/** The project's name, shown with the session's facts. */
@@ -111,6 +112,8 @@ export function SessionView({
 	onBack?: () => void;
 	/** Shows Files, to browse the session's workspace. */
 	onFiles?: () => void;
+	/** A browser session to scroll to, from an audit link's `#browser=<id>`. */
+	focusBrowser?: string;
 }) {
 	const state = useSyncExternalStore(client.subscribe, client.getState);
 	const [menu, setMenu] = useState(false);
@@ -236,6 +239,7 @@ export function SessionView({
 						onRowRender={recordRow}
 						messageActions={messageActions}
 						{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
+						{...(focusBrowser === undefined ? {} : { focusBrowser })}
 						dock={
 							<Composer
 								state={composerState(control, state.status, actions.sending)}

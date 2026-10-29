@@ -130,10 +130,17 @@ describe("the VaultDO's core", () => {
 				HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "",
 			}),
 		).toEqual({ "model-gateway": "model-token-0123456789" });
-		// The deploy writes exactly the secrets the stack reads: the vault's key, the components' keys, CPA's key and
-		// brwsr's key.
+		// The deploy writes exactly the secrets the stack reads: the vault's key, the components' keys, CPA's key,
+		// brwsr's key, and Harbour's own browsers' view and seal keys.
 		expect([...VAULT_SECRETS].sort()).toEqual(
-			["HARBOUR_VAULT_KEY", "HARBOUR_CPA_API_KEY", "HARBOUR_BRWSR_API_KEY", ...Object.values(COMPONENT_TOKENS)].sort(),
+			[
+				"HARBOUR_VAULT_KEY",
+				"HARBOUR_CPA_API_KEY",
+				"HARBOUR_BRWSR_API_KEY",
+				"HARBOUR_BROWSER_VIEW_KEY",
+				"HARBOUR_BROWSER_SEAL_KEY",
+				...Object.values(COMPONENT_TOKENS),
+			].sort(),
 		);
 	});
 });
@@ -280,14 +287,57 @@ describe("the vault's deploy", () => {
 			bindings: [
 				{ name: "STACK", class_name: "HarbourStack" },
 				{ name: "VAULTS", class_name: "HarbourVault" },
+				{ name: "BROWSERS", class_name: "HarbourBrowser" },
 			],
 		});
 		expect(config.migrations).toEqual([
 			{ tag: "v1", new_sqlite_classes: ["HarbourStack"] },
 			{ tag: "v2", new_sqlite_classes: ["HarbourVault"] },
+			{ tag: "v3", new_sqlite_classes: ["HarbourBrowser"] },
 		]);
 		// The vault's secrets are never vars of the deployed Worker; only the local dev environment has its own.
 		for (const name of VAULT_SECRETS) expect(config.vars as Record<string, unknown>).not.toHaveProperty(name);
+	});
+
+	it("deploys the browsers' containers only when asked, held to WEUR, and keeps brwsr unless told otherwise", () => {
+		const plain = deployConfig(rawConfig, values);
+		expect(plain).not.toHaveProperty("containers");
+		expect(plain.vars as Record<string, unknown>).not.toHaveProperty("HARBOUR_BROWSER_PROVIDER", "harbour");
+		const on = deployConfig(
+			rawConfig,
+			deployValues({ HARBOUR_BROWSER_CONTAINERS: "on", HARBOUR_BROWSER_PROVIDER: "harbour" }, "dry-run"),
+		);
+		expect(on.containers).toEqual([
+			expect.objectContaining({
+				class_name: "HarbourBrowser",
+				image: "../../images/browser/Dockerfile",
+				constraints: { regions: ["WEUR"] },
+			}),
+		]);
+		expect(on.vars).toMatchObject({ HARBOUR_BROWSER_PROVIDER: "harbour" });
+	});
+
+	it("refuses a browser setting it doesn't know", () => {
+		expect(() => deployValues({ HARBOUR_BROWSER_CONTAINERS: "yes" }, "dry-run")).toThrow(/HARBOUR_BROWSER_CONTAINERS/);
+		expect(() => deployValues({ HARBOUR_BROWSER_PROVIDER: "browserbase" }, "dry-run")).toThrow(
+			/HARBOUR_BROWSER_PROVIDER/,
+		);
+	});
+
+	it("sends the browser viewer page to the Worker first, for its framing headers, in both configs", () => {
+		const first = (assets: unknown) => (assets as { run_worker_first?: string[] }).run_worker_first;
+		expect(first(rawConfig.assets)).toContain("/browser/*");
+		const dev = (rawConfig.env as { dev: { assets: unknown } }).dev;
+		expect(first(dev.assets)).toContain("/browser/*");
+	});
+
+	it("passes the embed origins on, and refuses a wildcard, a path or plain http", () => {
+		const origins = "https://app.lleverage.ai, https://staging.lleverage.ai";
+		const config = deployConfig(rawConfig, deployValues({ HARBOUR_EMBED_ORIGINS: origins }, "dry-run"));
+		expect(config.vars).toMatchObject({ HARBOUR_EMBED_ORIGINS: origins });
+		for (const bad of ["https://*.lleverage.ai", "https://app.lleverage.ai/embed", "http://app.lleverage.ai"]) {
+			expect(() => deployValues({ HARBOUR_EMBED_ORIGINS: bad }, "dry-run")).toThrow(/HARBOUR_EMBED_ORIGINS/);
+		}
 	});
 
 	it("refuses a vault secret written into wrangler.jsonc as a var", () => {

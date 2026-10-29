@@ -83,6 +83,29 @@
 	object-fit: contain;
 }
 
+/* A replay's frame has its player's controls under the page: a little taller than the page's own shape. */
+.hb-browser-live-frame-replay {
+	aspect-ratio: auto;
+	height: calc(100cqi * 9 / 16 + var(--hb-space-11));
+	min-height: calc(var(--hb-space-11) * 4);
+}
+
+.hb-browser-live-replay {
+	container-type: inline-size;
+}
+
+/* A replay waits behind Play, over the last screenshot (dimmed), until a person asks for it. */
+.hb-browser-live-frame-replay > img {
+	opacity: 0.6;
+}
+
+.hb-browser-live-play {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+}
+
 /* Connecting: the last screenshot, dimmed, holds the frame's place until the live page arrives. */
 .hb-browser-live-connecting .hb-browser-live-frame > img {
 	opacity: 0.6;

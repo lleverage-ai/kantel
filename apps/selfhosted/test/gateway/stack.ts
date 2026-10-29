@@ -37,7 +37,7 @@ if (read.status !== 0) {
 	console.error(`could not read the gateway's bootstrap: ${read.stderr.trim()}`);
 	process.exit(2);
 }
-const seeded = JSON.parse(read.stdout) as Omit<E2eTarget, "baseUrl"> & { readonly organisationId: string };
+const seeded = JSON.parse(read.stdout) as Omit<E2eTarget, "baseUrl">;
 const adminEmail = inGateway("printenv", "HARBOUR_ADMIN_EMAIL").stdout.trim();
 
 const started = performance.now();

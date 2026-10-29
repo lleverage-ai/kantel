@@ -4,7 +4,8 @@ import type { BrowserLiveLink } from "../api/client.ts";
 // The session screen's live-view links, one per browser the transcript names: asked for once, when the browser's view
 // first comes on screen, and kept while the screen is open, so a view that scrolls away and back (the transcript
 // unmounts it) or moves down to a newer call doesn't ask again. The links come from Harbour (`POST /v1/browser/live`),
-// minted for the signed-in person; this holds them in memory only.
+// minted for the signed-in person; this holds them in memory only. A browser that has ended plays its replay instead,
+// when the client can ask for one (`POST /v1/browser/replay`, Harbour's own browsers) and it was recorded.
 
 /** One browser's live view, as `BrowserLiveView` shows it. */
 export type BrowserLive = {
@@ -13,10 +14,10 @@ export type BrowserLive = {
 };
 
 /** The link as the view plays it: an embedded page. */
-export function sourceOf(link: BrowserLiveLink): BrowserLiveSource {
+export function sourceOf(link: BrowserLiveLink, mode: "live" | "replay" = "live"): BrowserLiveSource {
 	return {
 		kind: "embed",
-		mode: "live",
+		mode,
 		url: link.url,
 		...(link.endMessage === undefined ? {} : { endMessage: link.endMessage }),
 	};
@@ -52,7 +53,7 @@ export function statusOfFailure(reason: unknown): BrowserLive {
 	return code === "expired" || code === "not_found" ? ENDED : UNAVAILABLE;
 }
 
-export function createBrowserLiveStore(load: LoadBrowserLive): BrowserLiveStore {
+export function createBrowserLiveStore(load: LoadBrowserLive, loadReplay?: LoadBrowserLive): BrowserLiveStore {
 	const views = new Map<string, BrowserLive>();
 	const listeners = new Map<string, Set<() => void>>();
 	const aborts = new Set<AbortController>();
@@ -64,13 +65,26 @@ export function createBrowserLiveStore(load: LoadBrowserLive): BrowserLiveStore 
 		for (const listener of listeners.get(id) ?? []) listener();
 	};
 
+	/** The browser has ended: its replay, when there is one, or `ended`. */
+	const ended = (id: string, signal: AbortSignal): Promise<void> | void => {
+		if (loadReplay === undefined) return set(id, ENDED);
+		return loadReplay(id, signal).then(
+			(link) => set(id, { status: "live", source: sourceOf(link, "replay") }),
+			() => set(id, ENDED),
+		);
+	};
+
 	const ask = (id: string, previous?: string) => {
 		const abort = new AbortController();
 		aborts.add(abort);
 		load(id, abort.signal)
 			.then(
-				(link) => set(id, link.url === previous ? ENDED : { status: "live", source: sourceOf(link) }),
-				(reason: unknown) => set(id, statusOfFailure(reason)),
+				(link) =>
+					link.url === previous ? ended(id, abort.signal) : set(id, { status: "live", source: sourceOf(link) }),
+				(reason: unknown) => {
+					const status = statusOfFailure(reason);
+					return status === ENDED ? ended(id, abort.signal) : set(id, status);
+				},
 			)
 			.finally(() => aborts.delete(abort));
 	};
@@ -94,7 +108,8 @@ export function createBrowserLiveStore(load: LoadBrowserLive): BrowserLiveStore 
 		},
 		disconnected(id) {
 			const view = views.get(id);
-			if (view?.status !== "live") return;
+			// A replay has no stream to lose: only a live browser is asked for again.
+			if (view?.status !== "live" || view.source?.mode === "replay") return;
 			set(id, CONNECTING);
 			ask(id, urlOf(view));
 		},

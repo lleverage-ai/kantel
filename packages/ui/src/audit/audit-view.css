@@ -89,6 +89,27 @@
 	align-items: flex-start;
 }
 
+/* One browser session's history: its ID, and the way back to every browser. */
+.hb-audit-filter-value {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	min-height: var(--hb-control-md);
+	min-width: 0;
+	font-size: var(--hb-text-sm);
+}
+
+.hb-audit-filter-value code {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-audit-row-actions {
+	display: flex;
+	gap: var(--hb-space-3);
+}
+
 .hb-audit-status {
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);

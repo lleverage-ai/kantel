@@ -13,7 +13,8 @@
  *
  * Without the model gateway, sessions run on the echo model with one errand (`src/dev-browser-model.ts`): `browse <url>`
  * asks for a browser, opens the URL once someone allows it in the console, and takes a screenshot. With
- * `HARBOUR_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser.
+ * `HARBOUR_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser; with `HARBOUR_BROWSER_PROVIDER=harbour` (the dev
+ * vars) it is one of Harbour's own, a `HarbourBrowser` object whose container wrangler runs in local Docker.
  *
  * This file is never the deployed entry point (wrangler.jsonc's top-level `main` is src/index.ts), so none of these
  * routes nor the mock issuer is in the deployed bundle; the deploy workflow checks that.
@@ -26,6 +27,9 @@ import { routeRequest } from "./index.ts";
 import { namedObject, VAULT_NAME } from "./route.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
 import { type Env, HarbourStackBase, STACK_NAME } from "./stack-object.ts";
+
+export { HarbourBrowser } from "./index.ts";
+
 import { HarbourVault as DeployedHarbourVault } from "./vault-object.ts";
 
 const DEV_PREFIX = "/__dev/";

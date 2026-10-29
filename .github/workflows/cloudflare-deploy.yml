@@ -67,6 +67,11 @@ jobs:
       HARBOUR_D1_DATABASE_ID: ${{ vars.HARBOUR_D1_DATABASE_ID }}
       HARBOUR_R2_BUCKET: ${{ vars.HARBOUR_R2_BUCKET }}
       HARBOUR_LOCATION_HINT: ${{ vars.HARBOUR_LOCATION_HINT }}
+      # Optional: Harbour's own browsers. `on` deploys their container app; the provider is `brwsr` unless set to `harbour`.
+      HARBOUR_BROWSER_CONTAINERS: ${{ vars.HARBOUR_BROWSER_CONTAINERS }}
+      HARBOUR_BROWSER_PROVIDER: ${{ vars.HARBOUR_BROWSER_PROVIDER }}
+      # Optional: the origins (a host app's) that may frame a browser's embed page, besides the console.
+      HARBOUR_EMBED_ORIGINS: ${{ vars.HARBOUR_EMBED_ORIGINS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -145,6 +150,9 @@ jobs:
           HARBOUR_CPA_API_KEY: ${{ secrets.HARBOUR_CPA_API_KEY }}
           # brwsr's project key: only the browser provider holds it (src/browser.ts).
           HARBOUR_BRWSR_API_KEY: ${{ secrets.HARBOUR_BRWSR_API_KEY }}
+          # Harbour's own browsers: view links' signing key and the key their profiles and recordings are sealed with.
+          HARBOUR_BROWSER_VIEW_KEY: ${{ secrets.HARBOUR_BROWSER_VIEW_KEY }}
+          HARBOUR_BROWSER_SEAL_KEY: ${{ secrets.HARBOUR_BROWSER_SEAL_KEY }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.
@@ -163,6 +171,23 @@ jobs:
             pnpm exec wrangler deploy --config wrangler.deploy.json --secrets-file "$SECRETS_FILE"
           else
             pnpm exec wrangler deploy --config wrangler.deploy.json
+          fi
+
+      # Harbour's own browsers keep recordings 7 days (HARBOUR_BROWSER_RECORDING_DAYS' default): a replay link past that is
+      # refused, and this rule deletes them a day later. Only recordings: contexts' profiles under browser/contexts/ stay.
+      # Added once; a later deploy finds it by name.
+      - name: Browser recordings expire
+        if: steps.mode.outputs.mode == 'deploy' && env.HARBOUR_BROWSER_CONTAINERS == 'on'
+        working-directory: apps/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          bucket=$(node -e 'console.log(require("./wrangler.deploy.json").r2_buckets[0].bucket_name)')
+          if pnpm exec wrangler r2 bucket lifecycle list "$bucket" | grep -q harbour-browser-recordings; then
+            echo "The recordings' rule is on $bucket already"
+          else
+            pnpm exec wrangler r2 bucket lifecycle add "$bucket" harbour-browser-recordings browser/recordings/ \
+              --expire-days 8 --force
           fi
 
       - name: Remove the vault secrets file

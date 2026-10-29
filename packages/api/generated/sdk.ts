@@ -43,6 +43,16 @@ export interface AssistantItem {
 /** How a session list groups the session: working, waiting on someone, or done. */
 export type Attention = "working" | "waiting" | "done";
 
+export interface BrowserEmbed {
+	/** The page to frame. It holds its token after `#`, so the token reaches no server; treat the URL as a secret. */
+	readonly url: string;
+	readonly mode: "live" | "replay";
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** What the page posts to its parent once its stream is over. */
+	readonly endMessage?: string;
+}
+
 export interface BrowserGrantCard {
 	readonly type: "browser.grant";
 	readonly requestId: string;
@@ -225,6 +235,13 @@ export type DeltaOp =
 			readonly op: "usage";
 			readonly usage: Usage;
 	  };
+
+export interface EmbedBrowserBody {
+	/** `live`: the open browser as it is now, watch-only. `replay`: its recording. */
+	readonly mode: "live" | "replay";
+	/** How long the link lasts. Default 15. */
+	readonly minutes?: number;
+}
 
 /** The session's first prompt, sent as soon as it exists. */
 export interface FirstMessage {
@@ -1194,6 +1211,13 @@ export interface HarbourClient {
 	previewSchedule(scheduleId: string, query?: PreviewScheduleQuery, options?: CallOptions): Promise<SchedulePreview>;
 	/** List a schedule's runs. The run history, a page at a time: each occurrence's status and times, and its result. A task's result names the session it started (`sessionId`). `GET /schedules/{scheduleId}/runs` */
 	listScheduleRuns(scheduleId: string, query?: PageQuery, options?: CallOptions): Promise<OccurrencePage>;
+	/** Embed a session's browser. A link for an iframe: a watch-only live view of one of the session's open browsers, or a replay of one, open or closed. Needs viewer on the session; never an agent. The link carries a short-lived token scoped to that one view (never control), lasting `minutes`. A closed browser has no live view (`expired`); a deployment whose browsers keep no recordings has no replay (`unavailable`), and a recording past its retention is `expired`. Audited as `browser.session.embedded`, without the link. `POST /sessions/{sessionId}/browsers/{browserSessionId}/embed` */
+	embedBrowserSession(
+		sessionId: string,
+		browserSessionId: string,
+		body: EmbedBrowserBody,
+		options?: CallOptions,
+	): Promise<BrowserEmbed>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -1287,5 +1311,15 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			),
 		listScheduleRuns: (scheduleId, query, callOptions) =>
 			send(options, { method: "GET", path: `/schedules/${encodeURIComponent(scheduleId)}/runs`, query }, callOptions),
+		embedBrowserSession: (sessionId, browserSessionId, body, callOptions) =>
+			send(
+				options,
+				{
+					method: "POST",
+					path: `/sessions/${encodeURIComponent(sessionId)}/browsers/${encodeURIComponent(browserSessionId)}/embed`,
+					body,
+				},
+				callOptions,
+			),
 	};
 }

@@ -15,6 +15,7 @@ import {
 	actorName,
 	DEFAULT_FILTERS,
 	describeEvent,
+	eventBrowserSession,
 	exportName,
 	isFiltered,
 	KINDS,
@@ -151,6 +152,7 @@ const AuditRow = memo(function AuditRow({
 	active,
 	onToggle,
 	onFocusRow,
+	onBrowser,
 }: {
 	event: AuditEvent;
 	directory: AuditDirectory;
@@ -160,8 +162,11 @@ const AuditRow = memo(function AuditRow({
 	active: boolean;
 	onToggle: (id: string) => void;
 	onFocusRow: (id: string) => void;
+	/** Narrows the log to one browser session's history; absent while it already is. */
+	onBrowser: ((browserSessionId: string) => void) | undefined;
 }) {
 	const line = describeEvent(event, directory, links);
+	const browserSession = eventBrowserSession(event);
 	const actor = actorName(event.actor, directory);
 	const detailsId = `audit-${event.seq}`;
 	const project = event.projectId === undefined ? undefined : (directory.project?.(event.projectId) ?? event.projectId);
@@ -241,6 +246,13 @@ const AuditRow = memo(function AuditRow({
 					{event.data === undefined ? null : (
 						<pre className="hb-audit-row-data hb-selectable">{JSON.stringify(event.data, null, 2)}</pre>
 					)}
+					{browserSession === undefined || onBrowser === undefined ? null : (
+						<div className="hb-audit-row-actions">
+							<Button size="sm" variant="secondary" onClick={() => onBrowser(browserSession)}>
+								This browser's history
+							</Button>
+						</div>
+					)}
 				</div>
 			) : null}
 		</div>
@@ -310,6 +322,7 @@ export function AuditView({
 		},
 		[fixedNow],
 	);
+	const showBrowser = useCallback((browserSession: string) => update({ browserSession }), [update]);
 	const toggle = useCallback((id: string) => {
 		setOpen((previous) => {
 			const next = new Set(previous);
@@ -497,6 +510,17 @@ export function AuditView({
 						onChange={(value) => update({ sessionId: value })}
 					/>
 				)}
+				{filters.browserSession === undefined || filters.browserSession === "" ? null : (
+					<div className="hb-audit-filter hb-audit-filter-browser">
+						<span className="hb-audit-filter-label">Browser session</span>
+						<span className="hb-audit-filter-value">
+							<code className="hb-mono">{filters.browserSession}</code>
+							<Button size="sm" variant="ghost" onClick={() => update({ browserSession: "" })}>
+								Every browser
+							</Button>
+						</span>
+					</div>
+				)}
 				{isFiltered(filters) ? (
 					<div className="hb-audit-filter hb-audit-filter-clear">
 						<Button
@@ -511,6 +535,7 @@ export function AuditView({
 									agentId: "",
 									sessionId: "",
 									credential: "",
+									browserSession: "",
 								})
 							}
 						>
@@ -601,6 +626,7 @@ export function AuditView({
 										active={index === activeIndex}
 										onToggle={toggle}
 										onFocusRow={setActiveId}
+										onBrowser={filters.browserSession ? undefined : showBrowser}
 									/>
 								)
 							}
