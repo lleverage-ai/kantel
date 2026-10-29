@@ -18,6 +18,7 @@
 		"@harbour/contracts": "workspace:*",
 		"@harbour/identity": "workspace:*",
 		"@harbour/runtime": "workspace:*",
+		"@harbour/sandbox": "workspace:*",
 		"@harbour/selfhosted-workspace": "workspace:*",
 		"@harbour/sql": "workspace:*",
 		"@harbour/workspace": "workspace:*",

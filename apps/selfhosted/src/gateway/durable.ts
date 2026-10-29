@@ -10,6 +10,8 @@
 //               kept in the store with their callback and served over it (callbackHostHandlers, #158), so a host
 //               app's tools, such as Sal's worker's, still answer after a restart without it registering again
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@harbour/selfhosted-workspace, #72)
+//   sandboxes   a session's coding tools (#196, sandboxes.ts): the file tools on those workspaces directly, `bash`
+//               in an in-process isolate leased on its first command
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
 // `workspace_versions`. The model is still the echo model until the model gateway (M1-BE9) lands.
@@ -29,6 +31,7 @@ import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents } from "./components.ts";
+import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 
 export interface DurableConfig {
 	readonly databaseUrl: string;
@@ -93,7 +96,9 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 
 		const db = await PostgresSqliteDatabase.open({ connectionString: config.databaseUrl, schema: config.schema });
 		closers.push(() => db.close());
+		const gatewaySandboxes = createGatewaySandboxes();
 		const runtime = createSessionRuntime({
+			...gatewaySandboxes.runtimeOptions,
 			store: await createSqlSessionStore(db),
 			storage: (session) => sqlPiStorage(db, session.id),
 			audit,
@@ -120,6 +125,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			access,
 		});
+		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
@@ -129,6 +135,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			runtime,
 			workspaces,
+			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
 			bindings: {
@@ -136,6 +143,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				audit: "postgres",
 				runtime: "postgres session store and Pi Durable tables (echo model)",
 				workspaces: "postgres + s3",
+				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",
 			},
 			close,

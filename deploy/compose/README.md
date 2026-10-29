@@ -45,7 +45,11 @@ client for the session API (M1-FE1).
 The components behind the gateway are the real implementations (`apps/selfhosted/src/gateway/durable.ts`): the
 runtime's SQL session store and Pi Durable tables, the SQL audit store and identity directory, all on this Postgres in
 the `harbour_m1` schema (`HARBOUR_GATEWAY_SCHEMA`; M0 keeps `harbour`), and workspaces with their trees in MinIO under
-`m1/workspaces/`. The runtime still answers with an `echo` model until the model gateway lands. Without
+`m1/workspaces/`. A session on a workspace gets the coding tools (#196): `read`, `write`, `edit` and `ls` work on the
+workspace directly, and `bash` leases an isolate (#94's just-bash shell, in the gateway's process) on its first command
+only; closing or aborting the session releases it. There is no container tier behind the gateway yet, so a command
+routed to one (`git`, `node`, `python`) is refused. The runtime still answers with an `echo` model until the model
+gateway lands. Without
 `HARBOUR_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests do.
 
 On its first start the gateway creates an organisation, a project and an operator API key on the project, and writes
