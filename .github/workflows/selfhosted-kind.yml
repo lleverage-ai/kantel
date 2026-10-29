@@ -120,9 +120,15 @@ jobs:
           --mailpit-url "http://$STACK:58325"
           --exec "kubectl --namespace harbour exec deploy/gateway --"
 
-      # A new pod on the same state volume and database: the same organisation, project, workspace and API key.
+      # A new pod on the same state volume and database: the same organisation, project, workspace and API key, and a
+      # session made before it (listed, its answer and its audit rows) read back after.
       - name: Replace the gateway pod, then end to end again
         run: |
+          kept() {
+            bun apps/selfhosted/test/gateway/kept.ts "$1" --base-url "http://$STACK:58390" \
+              --state "$RUNNER_TEMP/kept.json" --exec "kubectl --namespace harbour exec deploy/gateway --"
+          }
+          kept record
           before="$(kubectl --namespace harbour exec deploy/gateway -- cat /var/lib/harbour/bootstrap.json)"
           kubectl --namespace harbour rollout restart deployment/gateway
           kubectl --namespace harbour rollout status deployment/gateway --timeout 5m
@@ -131,6 +137,7 @@ jobs:
             echo "::error::the gateway's bootstrap changed when its pod was replaced"
             exit 1
           fi
+          kept check
           bun apps/selfhosted/test/gateway/stack.ts \
             --base-url "http://$STACK:58390" \
             --mailpit-url "http://$STACK:58325" \
@@ -167,4 +174,4 @@ jobs:
             echo "::error::could not confirm $DIND_NAME was removed"
             exit 1
           fi
-          rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP/bin/kind" "$RUNNER_TEMP/bin/kubectl"
+          rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP/bin/kind" "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/kept.json"

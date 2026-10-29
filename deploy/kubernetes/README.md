@@ -37,7 +37,8 @@ bun apps/selfhosted/test/gateway/stack.ts --base-url http://127.0.0.1:58390 --ma
 ```
 
 CI does the same in [selfhosted-kind.yml](../../.github/workflows/selfhosted-kind.yml), in a Docker daemon of its
-own, then replaces the gateway's pod and checks that the bootstrap and the test both survive.
+own, then replaces the gateway's pod and checks that the bootstrap, and a session made before it (its answer and
+audit rows), survive (`apps/selfhosted/test/gateway/kept.ts`).
 
 kube-proxy needs the kernel's REJECT support (`xt_REJECT`, or `nft_reject_inet` in nftables mode). On a host that
 can't load it (for example one running a kernel whose modules were upgraded away without a reboot), kube-proxy logs
@@ -50,8 +51,9 @@ never reach the API server, and every pod with a volume stays `Pending`.
   `behavior: replace`, or Secrets from your own store).
 - Point `HARBOUR_SMTP_URL` and `HARBOUR_MAIL_FROM` in `base/gateway.yaml` at a real relay, and leave out
   `mailpit.yaml`.
-- Use managed Postgres and S3 if you have them: set `HARBOUR_DATABASE_URL` and the `S3_*` variables and leave out
-  `postgres.yaml` and `minio.yaml`.
+- Use managed Postgres and S3 if you have them: put the database's URL in the `harbour-postgres` Secret's
+  `HARBOUR_DATABASE_URL` (the gateway and its wait for the database both read it), point `S3_ENDPOINT` and the
+  `harbour-s3` Secret at your store, and leave out `postgres.yaml` and `minio.yaml`.
 - Put an ingress with TLS in front of the `gateway` Service.
 
 ## Not here yet
