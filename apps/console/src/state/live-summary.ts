@@ -13,17 +13,28 @@ export type LiveSummary = {
 	readonly title?: string;
 };
 
-/** The list with the open session's live state laid over its row. The list's own order and other rows are kept. */
+/**
+ * The list with the open session's live state laid over its row. The list's own order and other rows are kept. A
+ * session the list doesn't have yet, such as one just started (the list is a poll of every session, which takes a
+ * few seconds), gets a row of its own while it is working or waiting, dated `now`; a settled one waits for the poll.
+ */
 export function withLive(
 	sessions: readonly SessionSummary[],
 	live: LiveSummary | undefined,
+	now: number = Date.now(),
 ): readonly SessionSummary[] {
 	if (live === undefined) return sessions;
 	const index = sessions.findIndex((session) => session.id === live.id);
 	const current = sessions[index];
-	if (current === undefined) return sessions;
 	// An idle session is listed as done, as the listing does.
 	const status: SessionStatus = live.status === "idle" ? "done" : live.status;
+	if (current === undefined) {
+		if (status !== "running" && status !== "waiting") return sessions;
+		const needs = status === "waiting" ? live.needs : undefined;
+		const title = live.title === undefined || live.title === "" ? "Untitled session" : live.title;
+		const row: SessionSummary = { id: live.id, title, status, startedAt: now, updatedAt: now };
+		return [needs === undefined ? row : { ...row, needs }, ...sessions];
+	}
 	const title = live.title === undefined || live.title === "" ? current.title : live.title;
 	const needs = status === "waiting" ? live.needs : undefined;
 	if (current.status === status && current.needs === needs && current.title === title) return sessions;

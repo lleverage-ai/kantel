@@ -34,8 +34,28 @@ describe("the open session's live row", () => {
 		expect(withLive(listed, { id: "a", status: "done", title: "" })).toBe(listed);
 	});
 
-	it("leaves the list alone for a session it doesn't have", () => {
-		expect(withLive(listed, { id: "z", status: "running" })).toBe(listed);
+	it("lists a working session the poll hasn't seen yet, first, until the poll has it", () => {
+		const next = withLive(listed, { id: "z", status: "running", title: "Write about harbours" }, 50);
+		expect(next[0]).toEqual({
+			id: "z",
+			title: "Write about harbours",
+			status: "running",
+			startedAt: 50,
+			updatedAt: 50,
+		});
+		expect(next.slice(1)).toEqual(listed);
+		expect(withLive(listed, { id: "z", status: "running" }, 50)[0]?.title).toBe("Untitled session");
+		expect(withLive(listed, { id: "z", status: "waiting", needs: "answer" }, 50)[0]).toMatchObject({
+			status: "waiting",
+			needs: "answer",
+		});
+		const polled = [row("z", "done"), ...listed];
+		expect(withLive(polled, { id: "z", status: "running" }, 50)).toHaveLength(3);
+	});
+
+	it("leaves the list alone for a settled session it doesn't have, or no session", () => {
+		expect(withLive(listed, { id: "z", status: "done" })).toBe(listed);
+		expect(withLive(listed, { id: "z", status: "idle" })).toBe(listed);
 		expect(withLive(listed, undefined)).toBe(listed);
 	});
 });
