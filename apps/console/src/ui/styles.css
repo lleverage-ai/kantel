@@ -173,8 +173,8 @@ body {
 		border-left: 0;
 	}
 
-	/* Its frame keeps the browser's shape at the height it has, centred. */
-	.console-browser .hb-browser-live-frame {
+	/* Its view (live, the last page or the replay) keeps the browser's shape at the height it has, centred. */
+	.console-browser .hb-browser-panel-body {
 		width: min(100%, calc((38dvh - var(--hb-space-11) * 2) * 16 / 9));
 		margin-inline: auto;
 	}
