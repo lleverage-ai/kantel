@@ -232,6 +232,9 @@ importers:
       "@harbour/audit":
         specifier: workspace:*
         version: link:../../packages/audit
+      "@harbour/browser":
+        specifier: workspace:*
+        version: link:../../packages/browser
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
