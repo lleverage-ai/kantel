@@ -7,7 +7,7 @@ for (const kind of testDatabaseKinds()) {
 	registerMemoryConformance(
 		{ describe, expect, it },
 		`SQL memory on ${kind.name}`,
-		async (deps, use) => {
+		async (deps, use, settings) => {
 			const database = await kind.open();
 			try {
 				await migrateMemory(database.driver);
@@ -17,12 +17,13 @@ for (const kind of testDatabaseKinds()) {
 						clock: deps.clock,
 						audit: deps.audit,
 						access: deps.access,
+						...settings,
 					}),
 				});
 			} finally {
 				await database.close();
 			}
 		},
-		{ projectAccess: true },
+		{ projectAccess: true, writes: true },
 	);
 }

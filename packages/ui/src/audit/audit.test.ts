@@ -51,30 +51,34 @@ describe("filters", () => {
 		});
 	});
 
-	it("ask for policy changes as two type prefixes in one query: credential policies and capability grants", async () => {
+	it("read policy changes as vault policies and capability grants, in one query", async () => {
 		const query = toQuery({ range: "all", kind: "policy" }, FIXTURE_NOW);
 		expect(query).toEqual({ newestFirst: true, types: ["vault.policy.", "capability.grant."] });
 		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
-		const event = (id: string, type: string, at: number) => ({
+		const event = (id: string, type: string, source: "vault" | "capability", at: number) => ({
 			id,
 			at,
-			source: "vault" as const,
+			source,
 			type,
 			actor: { kind: "human" as const, userId: "usr_tom" },
 			organisationId: ORGANISATION,
 		});
 		await store.append(systemContext("fixture"), [
-			event("policy", "vault.policy.created", FIXTURE_NOW - 3000),
-			event("use", "vault.use.injected", FIXTURE_NOW - 2000),
-			event("grant", "capability.grant.created", FIXTURE_NOW - 1000),
+			event("policy", "vault.policy.created", "vault", 1),
+			event("grant", "capability.grant.created", "capability", 2),
+			event("call", "capability.call.started", "capability", 3),
+			event("use", "vault.use.injected", "vault", 4),
+			event("revoked", "capability.grant.revoked", "capability", 5),
 		]);
 		const source = storeSource(store, { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION });
 		const page = await source.query(query);
-		expect(page.items.map((item) => item.id)).toEqual(["grant", "policy"]);
-		const grant = { ...page.items[0]!, data: { capabilities: ["linear.issues.read", "linear.issues.write"] } };
+		expect(page.items.map((row) => row.id)).toEqual(["revoked", "grant", "policy"]);
+		const grant = { ...page.items[1]!, data: { capabilities: ["linear.issues.read", "linear.issues.write"] } };
 		expect(describeEvent(grant).action).toBe("granted linear.issues.read, linear.issues.write");
-		expect(describeEvent({ ...grant, type: "capability.grant.revoked", data: {} }).action).toBe(
-			"revoked a capability grant",
+		expect(describeEvent({ ...grant, data: {} }).action).toBe("granted capabilities");
+		expect(describeEvent({ ...page.items[0]!, data: {} }).action).toBe("revoked a capability grant");
+		expect(describeEvent({ ...page.items[0]!, data: { reason: "session ended" } }).action).toBe(
+			"revoked a capability grant: session ended",
 		);
 	});
 

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ConsoleClient } from "../api/client.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ConsoleClient, SendOptions } from "../api/client.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
 import { SessionClient } from "../state/session-client.ts";
 import { createRequestIds, type SessionActions } from "../ui/actions.ts";
 import { SessionView } from "../ui/session-view.tsx";
+import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 
 /**
@@ -18,6 +19,7 @@ export function SessionScreen({
 	project,
 	onBack,
 	onFiles,
+	onForked,
 	onOpen,
 	onLive,
 }: {
@@ -28,6 +30,8 @@ export function SessionScreen({
 	project?: string;
 	onBack?: () => void;
 	onFiles?: () => void;
+	/** Opens a session forked from this one. */
+	onForked?: (sessionId: string) => void;
 	/** Told about each session client as it starts; the evidence script reads it from the page. */
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
@@ -104,13 +108,16 @@ export function SessionScreen({
 		[requestIds],
 	);
 
-	/** Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one. */
-	const send = (how: "prompt" | "steer" | "followUp", text: string) => {
+	/**
+	 * Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one, and
+	 * the pickers' model and level unless `choice` says otherwise.
+	 */
+	const send = (how: "prompt" | "steer" | "followUp", text: string, choice = pickers.send) => {
 		const at = Date.now();
 		if (how === "prompt") setPromptedAt(at);
 		void run(async () => {
 			try {
-				await client[how](sessionId, text, { requestId: requestIds.for(how, text), ...pickers.send });
+				await client[how](sessionId, text, { requestId: requestIds.for(how, text), ...choice });
 			} catch (reason) {
 				if (how === "prompt") setPromptedAt((current) => (current === at ? undefined : current));
 				throw reason;
@@ -118,7 +125,54 @@ export function SessionScreen({
 		}, text);
 	};
 
+	// A session the new-session screen just created brings its first message, sent from here so the turn shows working
+	// as the screen opens. It sits in the composer until it has gone, so a failed send stays there to send again.
+	const sendFirst = useRef<(text: string, choice: Pick<SendOptions, "model" | "thinking">) => void>(undefined);
+	sendFirst.current = (text, choice) => {
+		setDraft(text);
+		send("prompt", text, choice);
+	};
+	useEffect(() => {
+		const first = takeOver(sessionId);
+		if (first !== undefined) sendFirst.current?.(first.text, first.choice);
+	}, [sessionId]);
+
+	// Fork and Edit from here, when the host can branch a session. Stable, so the messages don't render again.
+	const { fork, edit } = client;
+	const onFork = useMemo(
+		() =>
+			fork === undefined
+				? undefined
+				: async (itemId: string) => {
+						const forkId = await fork(sessionId, itemId);
+						onForked?.(forkId);
+					},
+		[fork, sessionId, onForked],
+	);
+	// An edit reruns on the model and thinking the composer shows, read when it is sent, so a new choice doesn't render
+	// every message again. It shows the turn working at once, as a prompt does.
+	const pickerSend = useRef(pickers.send);
+	pickerSend.current = pickers.send;
+	const onEdit = useMemo(
+		() =>
+			edit === undefined
+				? undefined
+				: async (itemId: string, text: string) => {
+						const at = Date.now();
+						setPromptedAt(at);
+						try {
+							await edit(sessionId, itemId, text, { requestId: crypto.randomUUID(), ...pickerSend.current });
+						} catch (reason) {
+							setPromptedAt((current) => (current === at ? undefined : current));
+							throw reason;
+						}
+					},
+		[edit, sessionId],
+	);
+
 	const actions: SessionActions = {
+		...(onFork === undefined ? {} : { onFork }),
+		...(onEdit === undefined ? {} : { onEdit }),
 		control: client.control(sessionId),
 		sending,
 		...(promptedAt === undefined ? {} : { promptedAt }),
@@ -129,6 +183,12 @@ export function SessionScreen({
 		onSteer: (text) => send("steer", text),
 		onFollowUp: (text) => send("followUp", text),
 		onStop: () => void run(() => client.cancel(sessionId)),
+		...(client.decideBrowser === undefined
+			? {}
+			: {
+					onBrowserDecision: (callId: string, allow: boolean) =>
+						void run(() => client.decideBrowser?.(sessionId, callId, allow) ?? Promise.resolve()),
+				}),
 		pickers: pickers.composer,
 	};
 

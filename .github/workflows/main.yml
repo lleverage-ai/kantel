@@ -1,0 +1,67 @@
+name: Main
+
+# The release pipeline: Harbour has no tags or releases, so a push to main is the release and deploys to Cloudflare.
+# Pull requests are gated only on CI's install, typecheck and lint (ci.yml), so they move quickly on the two
+# self-hosted runners. The heavy checks run here once, on main's newest head: CI with the tests, the self-hosted stack
+# and the sandbox image, side by side. The Cloudflare deploy needs all three to pass on this same commit; if any fails
+# or is cancelled, nothing deploys and the commit shows the failing check. A run by hand on main (`gh workflow run
+# main.yml --ref main`) is the way to redeploy.
+on:
+  push:
+    branches: [main]
+    # A push that only changes Markdown (READMEs, CONTRACT.md, docs/) builds and deploys nothing different, so it
+    # starts no run. Nothing reads a .md file at build or test time, and Biome ignores them. Skipping the run also
+    # cancels nothing: the build already going carries on, and the next code push checks the whole tree.
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch: {}
+
+# Only main's newest head is built (Tom, 29 Oct). Concurrency is per job, not per workflow:
+# - the checks (CI, self-hosted, Sandbox image) are cancelled by a newer push even while they run, so the runners
+#   only ever work on the latest merge. A superseded run's deploy is then skipped, because it needs all three.
+# - the deploy is never cancelled half way: a newer deploy waits for it, and replaces any that is still pending.
+# This reverses PR #131's group per main run, which checked every merge and left 55 runs queued on two runners, and
+# #221's single group with cancel-in-progress off, which let a superseded build run to the end. The trade-off: a merge
+# every few minutes keeps cancelling the checks, so nothing deploys until main is quiet for one build (about 8 minutes).
+# The groups' names differ from the called workflows' own (`ci-`, `selfhosted-`, `sandbox-image-<run id>`,
+# `cloudflare-deploy-<ref>`): a shared name would cancel or deadlock the caller.
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    concurrency:
+      group: main-ci-${{ github.ref }}
+      cancel-in-progress: true
+    uses: ./.github/workflows/ci.yml
+    with:
+      tests: true
+
+  selfhosted:
+    name: self-hosted
+    concurrency:
+      group: main-selfhosted-${{ github.ref }}
+      cancel-in-progress: true
+    uses: ./.github/workflows/selfhosted-spike.yml
+
+  sandbox-image:
+    name: Sandbox image
+    concurrency:
+      group: main-sandbox-image-${{ github.ref }}
+      cancel-in-progress: true
+    uses: ./.github/workflows/sandbox-image.yml
+
+  # No `if:`, so the default success() applies: a check that failed or was cancelled by a newer push skips the deploy.
+  # Never `always()` or `!cancelled()` here.
+  deploy:
+    name: Cloudflare deploy
+    needs: [ci, selfhosted, sandbox-image]
+    concurrency:
+      group: main-deploy-${{ github.ref }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/cloudflare-deploy.yml
+    with:
+      deploy: true
+    secrets: inherit

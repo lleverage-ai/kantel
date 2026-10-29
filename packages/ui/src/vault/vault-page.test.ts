@@ -2,7 +2,7 @@
 // produces the grant the page promised, a wrong code is refused and audited, and a forwarded link is decided only on the
 // approver's own role. Rendering is to static markup (no DOM emulation); interaction is checked in the workbench.
 
-import { isHarbourError } from "@harbour/contracts";
+import { HarbourError, isHarbourError } from "@harbour/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -238,6 +238,14 @@ describe("a forwarded link", () => {
 			})
 			.catch((caught: unknown) => caught);
 		expect(decisionRefusal(error, { project: "Billing" })).toMatchObject({ kind: "role" });
+	});
+
+	it("reads the host's passkey refusal as a passkey problem, not a wrong code", () => {
+		const refused = (passkey?: string) =>
+			decisionRefusal(new HarbourError("refused", "Passkey refused", passkey === undefined ? undefined : { passkey }));
+		expect(refused("missing")).toMatchObject({ kind: "passkey", message: expect.stringMatching(/needs your passkey/) });
+		expect(refused("binding")).toMatchObject({ kind: "passkey", message: expect.stringMatching(/didn't match/) });
+		expect(refused().kind).toBe("code");
 	});
 
 	it("can't be opened at all by someone with no role on the project", async () => {

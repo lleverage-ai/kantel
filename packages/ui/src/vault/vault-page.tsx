@@ -356,6 +356,8 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 				proposalId: proposal.id,
 				termsHash: proposal.termsHash,
 				action: isSecret ? "paste" : "approve",
+				// The same narrowing the decision carries, so the passkey approves exactly these terms.
+				...(result.narrowing === undefined ? {} : { narrowing: result.narrowing }),
 			});
 			if (confirmed === "cancelled") {
 				setRefusal({ kind: "passkey", message: "You cancelled the passkey, so nothing was approved." });

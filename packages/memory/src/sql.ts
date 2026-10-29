@@ -23,9 +23,11 @@ import {
 	type Concept,
 	HarbourError,
 	type Memory,
+	type MemoryAuthority,
 	type MemoryProposal,
 	type MemorySpace,
 	type OwnerRef,
+	type ParaphraseCheck,
 	type ProjectAccess,
 	type RecallRenderer,
 	systemClock,
@@ -39,16 +41,22 @@ import {
 	assertRecallRequest,
 	assertSearchRequest,
 	assertSnapshot,
+	authorityOf,
 	bundleOf,
 	byId,
+	bySpaceAge,
 	checkCreateSpace,
+	checkWrite,
 	decided,
+	findDuplicate,
 	forbidAgent,
+	listsSpace,
 	memoryAudit,
 	paginate,
 	proposalFor,
 	recallCorpusOf,
 	requireSpace,
+	requireWrite,
 	type SpaceState,
 	snapshotConcepts,
 } from "./rules.ts";
@@ -59,6 +67,10 @@ export interface SqlMemoryOptions {
 	readonly audit?: AuditSink;
 	/** As for the in-memory memory; every target passes one. */
 	readonly access?: ProjectAccess;
+	/** As for the in-memory memory: the role each write needs. Default `DEFAULT_MEMORY_AUTHORITY`. */
+	readonly authority?: MemoryAuthority;
+	/** As for the in-memory memory: a host's paraphrase check. */
+	readonly paraphrase?: ParaphraseCheck;
 	/** How recall renders its text and counts its byte budgets. Default `defaultRecallRenderer`. */
 	readonly renderer?: RecallRenderer;
 }
@@ -80,6 +92,8 @@ export function memorySchema(dialect: SqlDialect): readonly string[] {
 			imports INTEGER NOT NULL DEFAULT 0,
 			generation INTEGER NOT NULL DEFAULT 0
 		)`,
+		// `listSpaces` reads an organisation's spaces through this one.
+		"CREATE INDEX IF NOT EXISTS memory_spaces_by_organisation ON memory_spaces (organisation_id, created_at)",
 		`CREATE TABLE IF NOT EXISTS memory_space_writes (
 			space_id TEXT NOT NULL,
 			generation INTEGER NOT NULL,
@@ -194,6 +208,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 	const { driver } = options;
 	const clock = options.clock ?? systemClock;
 	const access = options.access;
+	const authority = authorityOf(options.authority);
 	const audits = memoryAudit(options.audit, clock);
 	const renderer = options.renderer ?? defaultRecallRenderer;
 	/** The last recall index built, keyed by its spaces and their generations. */
@@ -377,7 +392,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 
 	return {
 		async createSpace(ctx, input) {
-			await checkCreateSpace(access, ctx, input);
+			await checkCreateSpace(access, authority, ctx, input);
 			const space: MemorySpace = {
 				id: `space_${crypto.randomUUID()}`,
 				owner: { ...input.owner },
@@ -390,6 +405,19 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			);
 			await audits.spaceCreated(ctx, space);
 			return space;
+		},
+
+		async listSpaces(ctx, page) {
+			const rows = await driver.query<SpaceRow>(
+				`SELECT ${SPACE_COLUMNS} FROM memory_spaces WHERE organisation_id = ? ORDER BY created_at, id`,
+				[ctx.organisationId],
+			);
+			const shown: MemorySpace[] = [];
+			for (const row of rows) {
+				const { space } = spaceFrom(row);
+				if (await listsSpace(access, ctx, space)) shown.push(space);
+			}
+			return paginate(shown.sort(bySpaceAge), page);
 		},
 
 		async getConcept(ctx, spaceId, conceptId) {
@@ -425,7 +453,10 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 		async importSnapshot(ctx, spaceId, snapshot) {
 			forbidAgent(ctx, "import a memory snapshot");
 			const before = await spaceFor(ctx, spaceId);
-			await requireSpace(access, ctx, before.space, "operator", "memory.importSnapshot");
+			await requireWrite(access, ctx, before.space.owner, authority.importSnapshot, "memory.importSnapshot", {
+				kind: "memory.space",
+				id: spaceId,
+			});
 			assertSnapshot(snapshot);
 			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 				const read = await spaceFor(ctx, spaceId);
@@ -474,8 +505,14 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 
 		async propose(ctx, spaceId, write) {
 			const loaded = await spaceFor(ctx, spaceId);
-			await requireSpace(access, ctx, loaded.space, "operator", "memory.propose");
-			const proposal = proposalFor(ctx, await stateOf(spaceId), write, `memprop_${crypto.randomUUID()}`, clock.now());
+			await requireWrite(access, ctx, loaded.space.owner, authority.propose, "memory.propose", {
+				kind: "memory.space",
+				id: spaceId,
+			});
+			const state = await stateOf(spaceId);
+			checkWrite(ctx, state, write);
+			const duplicate = await findDuplicate(state, write, options.paraphrase);
+			const proposal = proposalFor(ctx, state, write, `memprop_${crypto.randomUUID()}`, clock.now(), duplicate);
 			const insert = sql(
 				"INSERT INTO memory_proposals (id, organisation_id, space_id, status, proposal) VALUES (?, ?, ?, ?, ?)",
 				proposal.id,
@@ -500,7 +537,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			const record = await proposalRecord(ctx, proposalId);
 			assertOutcome(input.outcome);
 			const before = await spaceFor(ctx, record.proposal.spaceId);
-			await requireSpace(access, ctx, before.space, "operator", "memory.decide", {
+			await requireWrite(access, ctx, before.space.owner, authority.decide, "memory.decide", {
 				kind: "memory.proposal",
 				id: proposalId,
 			});

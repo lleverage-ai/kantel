@@ -3,7 +3,7 @@
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { Decision, DecisionInput, HeldRole } from "@harbour/contracts";
+import type { Decision, DecisionInput, HeldRole, MemorySpace } from "@harbour/contracts";
 import type {
 	ApiKeysApi,
 	AuditDirectory,
@@ -12,7 +12,13 @@ import type {
 	AuditViewProps,
 	Choice,
 	GrantSummary,
+	MemoryPageSource,
+	OwnerChoice,
 	PasskeyCheck,
+	ScheduleFormSettings,
+	SchedulesSource,
+	SkillsAuthor,
+	SkillsSource,
 	VaultRequest,
 	Viewer,
 } from "@harbour/ui";
@@ -33,6 +39,11 @@ export interface ConsoleVault {
 	 * host with no passkeys yet; the page then approves on the sign-in alone and says so.
 	 */
 	readonly passkey?: PasskeyCheck;
+	/**
+	 * Sets up a passkey for a person who has none yet, on a host that takes them. Resolves the passkey check approving
+	 * then needs, or `undefined` when the person dismissed the prompt.
+	 */
+	readonly registerPasskey?: () => Promise<PasskeyCheck | undefined>;
 }
 
 /**
@@ -44,13 +55,48 @@ export interface ConsoleKeys {
 	readonly roles: readonly HeldRole[];
 }
 
-/** The audit view's filter options, by filter. */
-export type AuditChoices = NonNullable<AuditViewProps["choices"]>;
+/** The projects, agents and sessions the audit log may be filtered by, each as a value and its name. */
+export interface AuditScope {
+	readonly projects: readonly Choice[];
+	readonly agents: readonly Choice[];
+	readonly sessions: readonly Choice[];
+}
 
-/** Filter options and names a host reads when the audit log opens, rather than knowing them up front. */
-export interface AuditLookups {
-	readonly choices: AuditChoices;
+/**
+ * The agent's skills and memory as the signed-in person may read them: the skills page's and memory page's sources.
+ * On `source=api` they run over the public API's skills and memory routes (`agent-http.ts`), read-only; on
+ * `source=recorded`, over in-memory stores in the page, with authoring and proposals.
+ */
+export interface ConsoleAgent {
+	readonly skills: SkillsSource;
+	/** The signed-in person's user ID, so the skills page lists their own skills as theirs. */
+	readonly viewer?: string;
+	/** Skills' writes, where the host serves them; absent, the skills page is read-only. */
+	readonly author?: SkillsAuthor;
+	/** The owners a new skill may go under, with `author`. */
+	readonly owners?: readonly OwnerChoice[];
+	readonly memory: MemoryPageSource;
+	/** The memory spaces the person may read, oldest first. */
+	spaces(): Promise<readonly MemorySpace[]>;
+	/** The projects the pages name and switch between, where they aren't the console's own (recorded fixtures). */
+	readonly projects?: readonly { readonly id: string; readonly name: string }[];
+	/** Concept IDs recalled whatever the query, where the host names a profile. */
+	readonly profile?: readonly string[];
+}
+
+/**
+ * The organisation's schedules as the signed-in person may see and change them. `source` is one call per schedule
+ * route in the public API (`/v1/schedules`, see `SchedulesSource`), so the API's client fits as it is; on
+ * `source=recorded` it is @harbour/ui's fixtures, in the page (`recorded/schedules.ts`).
+ */
+export interface ConsoleSchedules {
+	readonly source: SchedulesSource;
+	/** Names for the people, agents and projects schedules name. */
 	readonly directory: AuditDirectory;
+	/** New schedule and Edit, for a person who may make them; absent, the page reads, pauses and resumes only. */
+	readonly form?: ScheduleFormSettings;
+	/** The time the page measures from, for a fixture host whose store keeps its own clock. Default now. */
+	readonly now?: number;
 }
 
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */
@@ -58,18 +104,18 @@ export interface ConsoleAudit {
 	readonly source: AuditSource;
 	readonly directory: AuditDirectory;
 	readonly links: AuditLinks;
-	readonly choices: AuditChoices;
-	/**
-	 * Reads more filter options and names each time the audit log opens, for a host with no list of them up front: the
-	 * gateway's projects, agents and sessions. They are laid over `choices` and `directory`; a failed read leaves both
-	 * as they were.
-	 */
-	readonly lookups?: () => Promise<AuditLookups>;
+	readonly choices: NonNullable<AuditViewProps["choices"]>;
 	/**
 	 * Reads the credentials to filter by, each time the audit log opens, for a host with no list of them up front. They
 	 * become the *Credential* choices and name the items in rows. A failed read leaves both as they were.
 	 */
 	readonly credentials?: () => Promise<readonly Choice[]>;
+	/**
+	 * Reads the projects, agents and sessions to filter by, each time the audit log opens, for a host with no list of them
+	 * up front. They become the *Project*, *Agent* and *Session* choices and name them in rows. A failed read leaves both
+	 * as they were.
+	 */
+	readonly scope?: () => Promise<AuditScope>;
 	/** Check for newer events this often (ms). */
 	readonly pollMs?: number;
 }

@@ -19,7 +19,6 @@ import {
 	type AuditQuery,
 	type AuditSink,
 	type AuditStore,
-	assertAuditQueryTypes,
 	type CallContext,
 	type Clock,
 	HarbourError,
@@ -33,7 +32,7 @@ import {
 	systemContext,
 } from "@harbour/contracts";
 import { type SqlDialect, type SqlDriver, type SqlStatement, type SqlValue, sqlNumber } from "@harbour/sql";
-import { assertValidAuditEvent } from "./index.ts";
+import { assertValidAuditEvent, assertValidAuditQuery } from "./index.ts";
 import { OUTBOX_BATCH_SIZE } from "./memory.ts";
 
 const RELAY_CONTEXT: SystemContext = systemContext("audit.relay");
@@ -225,16 +224,6 @@ function inJsonList(dialect: SqlDialect, column: string): string {
 		: `${column} IN (SELECT value FROM json_each(?))`;
 }
 
-/**
- * The row's type starts with one of the prefixes in the JSON array bound as one parameter. The column is qualified
- * because SQLite's `json_each` has a `type` column of its own; the database counts the prefix's characters.
- */
-function underAnyPrefix(dialect: SqlDialect): string {
-	return dialect === "postgres"
-		? "EXISTS (SELECT 1 FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS prefix(value) WHERE substr(audit_events.type, 1, length(prefix.value)) = prefix.value)"
-		: "EXISTS (SELECT 1 FROM json_each(?) AS prefix WHERE substr(audit_events.type, 1, length(prefix.value)) = prefix.value)";
-}
-
 /** The `WHERE` conditions and parameters for the fields of `query`, after the organisation. */
 function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: string[]; params: SqlValue[] } {
 	const conditions: string[] = [];
@@ -254,30 +243,15 @@ function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: 
 		if (scope !== null) equal("actor_scope", scope);
 	}
 	if (query.source !== undefined) equal("source", query.source);
-	if (query.type !== undefined) {
-		if (query.type.endsWith(".")) {
-			// SQL counts characters, not UTF-16 units as JavaScript's `length` does, so the database measures the prefix.
-			conditions.push("substr(type, 1, length(CAST(? AS TEXT))) = ?");
-			params.push(query.type, query.type);
-		} else {
-			equal("type", query.type);
-		}
-	}
-	if (query.types !== undefined) {
-		// Exact types and prefixes each as one JSON array parameter, so a long list never meets D1's 100-parameter cap.
-		const exact = query.types.filter((type) => !type.endsWith("."));
-		const prefixes = query.types.filter((type) => type.endsWith("."));
-		const any: string[] = [];
-		if (exact.length > 0) {
-			any.push(inJsonList(dialect, "type"));
-			params.push(JSON.stringify(exact));
-		}
-		if (prefixes.length > 0) {
-			any.push(underAnyPrefix(dialect));
-			params.push(JSON.stringify(prefixes));
-		}
-		conditions.push(`(${any.join(" OR ")})`);
-	}
+	// An exact type, or a prefix ending in `.`. SQL counts characters, not UTF-16 units as JavaScript's `length` does, so
+	// the database measures the prefix.
+	const typeCondition = (wanted: string): string => {
+		params.push(...(wanted.endsWith(".") ? [wanted, wanted] : [wanted]));
+		return wanted.endsWith(".") ? "substr(type, 1, length(CAST(? AS TEXT))) = ?" : "type = ?";
+	};
+	if (query.type !== undefined) conditions.push(typeCondition(query.type));
+	// At most MAX_AUDIT_QUERY_TYPES types, two parameters each, so the statement stays under D1's 100-parameter cap.
+	if (query.types !== undefined) conditions.push(`(${query.types.map(typeCondition).join(" OR ")})`);
 	if (query.subject !== undefined) equal("subject", subjectColumn(query.subject));
 	if (query.itemId !== undefined) equal(itemExpression(dialect), query.itemId);
 	if (query.grantId !== undefined) equal(grantExpression(dialect), query.grantId);
@@ -343,7 +317,7 @@ export function createSqlAuditStore(options: SqlAuditStoreOptions): AuditStore {
 
 		async query(ctx: CallContext, query: AuditQuery, page?: PageRequest): Promise<Page<AuditEvent>> {
 			forbidAgent(ctx, "read the audit log");
-			assertAuditQueryTypes(query.types);
+			assertValidAuditQuery(query);
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
 			const scoped = query.projectId !== undefined || query.sessionId !== undefined;

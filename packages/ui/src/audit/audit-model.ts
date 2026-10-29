@@ -21,8 +21,8 @@ export interface AuditSource {
 }
 
 /**
- * The kinds of event the view filters by. Each is a list of types, each exact or a prefix ending in `.`; a kind of one
- * type asks `AuditQuery.type`, and one of several `AuditQuery.types`.
+ * The kinds of event the view filters by. Each is a list of types and type prefixes: one goes to the store as
+ * `AuditQuery.type`, several as `types`, any of which matches.
  */
 export type AuditKind =
 	| "all"
@@ -37,12 +37,12 @@ export type AuditKind =
 	| "identity"
 	| "capability";
 
-export const KINDS: readonly { value: AuditKind; label: string; types?: readonly [string, ...string[]] }[] = [
+export const KINDS: readonly { value: AuditKind; label: string; types?: readonly string[] }[] = [
 	{ value: "all", label: "Everything" },
 	{ value: "credential-use", label: "Credential uses", types: ["vault.use."] },
 	{ value: "approval", label: "Approvals and denials", types: ["vault.decision."] },
 	{ value: "vault", label: "All vault events", types: ["vault."] },
-	// Who may use what: a credential's policies, and the capabilities granted to sessions.
+	// Standing vault policies, and the capability grants that say what an agent may call.
 	{ value: "policy", label: "Policy changes", types: ["vault.policy.", "capability.grant."] },
 	{ value: "sandbox", label: "Sandbox", types: ["sandbox."] },
 	{ value: "session", label: "Session lifecycle", types: ["session."] },
@@ -146,13 +146,14 @@ const set = (value: string | undefined): value is string => value !== undefined 
 
 /** The filters as the store's query, newest first. */
 export function toQuery(filters: AuditFilters, now: number): AuditViewQuery {
-	const types = KINDS.find((kind) => kind.value === filters.kind)?.types;
+	const types = KINDS.find((kind) => kind.value === filters.kind)?.types ?? [];
+	const [type] = types;
 	const actor = set(filters.actor) ? actorFromKey(filters.actor) : undefined;
 	const { from, to } = rangeBounds(filters.range, now);
 	return {
 		newestFirst: true,
 		...(set(filters.organisationId) ? { organisationId: filters.organisationId } : {}),
-		...(types === undefined ? {} : types.length === 1 ? { type: types[0] } : { types }),
+		...(types.length > 1 ? { types } : type === undefined ? {} : { type }),
 		...(actor === undefined ? {} : { actor }),
 		...(set(filters.projectId) ? { projectId: filters.projectId } : {}),
 		...(set(filters.agentId) ? { agentId: filters.agentId } : {}),

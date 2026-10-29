@@ -3,6 +3,8 @@
  * Node. It sits over the four runtime contracts, so it serves the in-memory runtime now and the persistent one later,
  * and takes the caller from an injected `Authenticator`. Routes are listed in `packages/runtime/HTTP.md`.
  */
+
+import { createRouter, sessionRoutes as publicRoutes } from "@harbour/api";
 import {
 	type AgentProfile,
 	type AgentProfiles,
@@ -12,19 +14,20 @@ import {
 	type CallContext,
 	type Clock,
 	callContextFor,
+	type EditSessionInput,
+	type ForkSessionInput,
 	HarbourError,
 	type HostToolBridge,
 	type HostToolDefinition,
 	isHarbourError,
 	type PageRequest,
 	type PromptInput,
+	type SessionBranching,
 	type SessionDirectory,
-	type SessionFilter,
 	type SessionHistory,
 	type SessionHistoryRequest,
 	type SessionModels,
 	type SessionRuntime,
-	type SessionStatus,
 	type Subscription,
 	systemClock,
 } from "@harbour/contracts";
@@ -33,8 +36,6 @@ import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
 import {
-	type AbortBody,
-	type CreateSessionBody,
 	DEFAULT_BASE_PATH,
 	errorResponse,
 	HEADERS,
@@ -63,6 +64,11 @@ export interface SessionApiOptions {
 	 * (what a new session would), for a client's model and thinking pickers: the runtime's `models`.
 	 */
 	readonly models?: SessionModels;
+	/**
+	 * Serves `POST /sessions/:id/fork` (a new session from an answer, 201 with its record) and `POST /sessions/:id/edit`
+	 * (rewind to a message and send it edited, 202 with the submission): the runtime's `branching`.
+	 */
+	readonly branching?: SessionBranching;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -113,8 +119,6 @@ interface Registration {
 	/** Names this registration, so a stale subscription cannot remove its replacement. */
 	readonly registration: string;
 }
-
-const SESSION_STATUSES = new Set<SessionStatus>(["idle", "running", "waiting", "done", "failed", "cancelled"]);
 
 function actorKey(ctx: CallContext): string {
 	const actor = ctx.actor;
@@ -167,6 +171,22 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 
 const THINKING_LEVELS = new Set<unknown>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+function forkInput(body: Partial<ForkSessionInput>): ForkSessionInput {
+	if (typeof body.itemId !== "string" || body.itemId === "")
+		throw new HarbourError("invalid", "Name the answer to fork");
+	if (body.title !== undefined && typeof body.title !== "string")
+		throw new HarbourError("invalid", "title must be a string");
+	return body.title === undefined ? { itemId: body.itemId } : { itemId: body.itemId, title: body.title };
+}
+
+function editInput(body: Partial<EditSessionInput>): EditSessionInput {
+	if (typeof body.itemId !== "string" || body.itemId === "")
+		throw new HarbourError("invalid", "Name the message to edit");
+	// The prompt's fields but its attachments: an edit reruns the words.
+	const { attachments: _attachments, ...prompt } = promptInput(body);
+	return { itemId: body.itemId, ...prompt };
+}
+
 function pageOf(params: URLSearchParams): PageRequest {
 	const limit = params.get("limit");
 	const cursor = params.get("cursor");
@@ -187,26 +207,6 @@ function historyRequestOf(params: URLSearchParams): SessionHistoryRequest {
 		...(cursor === null ? {} : { cursor }),
 		...(before === null ? {} : { before }),
 		...(limit === null ? {} : { limit: Number(limit) }),
-	};
-}
-
-/** `?projectId=&agentId=&status=&parentSessionId=&label.<key>=<value>` */
-function filterOf(params: URLSearchParams): SessionFilter {
-	const labels: { [key: string]: string } = {};
-	for (const [key, value] of params) if (key.startsWith("label.") && key.length > 6) labels[key.slice(6)] = value;
-	const status = params.get("status");
-	if (status !== null && !SESSION_STATUSES.has(status as SessionStatus)) {
-		throw new HarbourError("invalid", `Unknown status ${status}`);
-	}
-	const projectId = params.get("projectId");
-	const agentId = params.get("agentId");
-	const parentSessionId = params.get("parentSessionId");
-	return {
-		...(projectId === null ? {} : { projectId }),
-		...(agentId === null ? {} : { agentId }),
-		...(status === null ? {} : { status: status as SessionStatus }),
-		...(parentSessionId === null ? {} : { parentSessionId }),
-		...(Object.keys(labels).length === 0 ? {} : { labels }),
 	};
 }
 
@@ -296,8 +296,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	): Promise<Response> => {
 		const route = `${request.method} ${rest.join("/")}`;
 		switch (route) {
-			case "GET ":
-				return json(await directory.get(ctx, sessionId));
 			case "GET children":
 				return json({ items: await directory.children(ctx, sessionId) });
 			case "GET snapshot":
@@ -308,23 +306,18 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			case "GET models":
 				if (options.models === undefined) break;
 				return json(await options.models.modelState(ctx, sessionId));
+			case "POST fork":
+				if (options.branching === undefined) break;
+				return json(await options.branching.fork(ctx, sessionId, forkInput(await readJson(request))), 201);
+			case "POST edit":
+				if (options.branching === undefined) break;
+				return json(await options.branching.edit(ctx, sessionId, editInput(await readJson(request))), 202);
 			case "POST prompt":
 				return json(await runtime.prompt(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST steer":
 				return json(await runtime.steer(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST follow-up":
 				return json(await runtime.followUp(ctx, sessionId, promptInput(await readJson(request))), 202);
-			case "POST abort": {
-				const body = await readJson<AbortBody>(request);
-				if (body.reason !== undefined && typeof body.reason !== "string") {
-					throw new HarbourError("invalid", "reason must be a string");
-				}
-				await runtime.abort(ctx, sessionId, body.reason);
-				return new Response(null, { status: 204 });
-			}
-			case "POST close":
-				await runtime.close(ctx, sessionId);
-				return new Response(null, { status: 204 });
 			case "GET result":
 				return result(ctx, request, url, sessionId);
 			case "GET events":
@@ -598,19 +591,78 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		throw NOT_FOUND;
 	};
 
-	const route = async (ctx: CallContext, request: Request, url: URL, segments: readonly string[]) => {
-		const [area, id, ...rest] = segments;
-		if (area === "sessions") {
-			if (id === undefined) {
-				if (request.method === "POST")
-					return json(await runtime.create(ctx, await readJson<CreateSessionBody>(request)), 201);
-				if (request.method === "GET") {
-					return json(await directory.list(ctx, filterOf(url.searchParams), pageOf(url.searchParams)));
+	/**
+	 * The public API's routes (`@harbour/api`), each defined once there with its schemas: the router checks a request
+	 * against them before a handler sees it. The routes below it are the ones not yet in the public API.
+	 */
+	const publicApi = createRouter(
+		publicRoutes,
+		{
+			createSession: async (ctx: CallContext, { body }) => {
+				const { message, ...input } = body;
+				const session = await runtime.create(ctx, input);
+				if (message === undefined) return session;
+				try {
+					return { ...session, submission: await runtime.prompt(ctx, session.id, message) };
+				} catch (error) {
+					// A session whose first message was refused would sit idle with nothing to do: close it, then refuse.
+					await runtime.close(ctx, session.id).catch(() => undefined);
+					throw error;
 				}
-				throw NOT_FOUND;
-			}
-			return sessionRoutes(ctx, request, url, id, rest);
-		}
+			},
+			listSessions: (ctx: CallContext, { query }) => {
+				const { limit, cursor, label, ...filter } = query;
+				return directory.list(
+					ctx,
+					{ ...filter, ...(label === undefined || Object.keys(label).length === 0 ? {} : { labels: label }) },
+					{ ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }) },
+				);
+			},
+			getSession: (ctx: CallContext, { params }) => directory.get(ctx, params.sessionId),
+			closeSession: async (ctx: CallContext, { params }) => {
+				await runtime.close(ctx, params.sessionId);
+				return undefined;
+			},
+			abortSession: async (ctx: CallContext, { params, body }) => {
+				await runtime.abort(ctx, params.sessionId, body.reason);
+				return undefined;
+			},
+			sendMessage: async (ctx: CallContext, { params, body, idempotencyKey }) => {
+				const { via = "prompt", ...message } = body;
+				const input: PromptInput = {
+					...message,
+					...(idempotencyKey === undefined ? {} : { requestId: idempotencyKey }),
+				};
+				const submitted =
+					via === "steer"
+						? await runtime.steer(ctx, params.sessionId, input)
+						: via === "followUp"
+							? await runtime.followUp(ctx, params.sessionId, input)
+							: await runtime.prompt(ctx, params.sessionId, input);
+				// The runtime answers a key it has seen with that submission and submits nothing; a key reused for
+				// another kind of message is the caller's mistake, not a retry.
+				if (submitted.via !== via) {
+					throw new HarbourError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
+				}
+				return submitted;
+			},
+			streamSession: (ctx: CallContext, { params }, request) =>
+				events(ctx, request, new URL(request.url), params.sessionId),
+			getSessionHistory: async (ctx: CallContext, { params, query }) => {
+				if (options.history === undefined) {
+					throw new HarbourError("not_supported", "This server doesn't page through history");
+				}
+				return options.history.history(ctx, params.sessionId, query);
+			},
+		},
+		{ basePath },
+	);
+
+	const route = async (ctx: CallContext, request: Request, url: URL, segments: readonly string[]) => {
+		const answered = await publicApi(ctx, request);
+		if (answered !== undefined) return answered;
+		const [area, id, ...rest] = segments;
+		if (area === "sessions" && id !== undefined) return sessionRoutes(ctx, request, url, id, rest);
 		if (area === "profiles") return profileRoutes(ctx, request, url, id === undefined ? [] : [id, ...rest]);
 		if (area === "hosts" && id !== undefined) return hostRoutes(ctx, request, url, id, rest);
 		throw NOT_FOUND;

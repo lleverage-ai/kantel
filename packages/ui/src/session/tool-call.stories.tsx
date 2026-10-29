@@ -2,6 +2,7 @@ import type { ToolItem } from "@harbour/protocol";
 import { useEffect, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
+import { EXAMPLE_SCREENSHOT } from "./fixture-screenshot.ts";
 import { finishedTurn, tool } from "./fixtures.ts";
 import { ToolCallChip, ToolCallGroup } from "./tool-call.tsx";
 
@@ -301,6 +302,61 @@ export const Group: Story = () => (
 	</Sheet>
 );
 
+const shot = { mimeType: "image/png", data: EXAMPLE_SCREENSHOT } as const;
+
+const browsing: ToolItem[] = [
+	tool("b1", "browser_request", "Asking for a browser", {
+		args: { reason: "Look up what example.com says", sites: ["example.com"] },
+		output: "Granted: a browser for example.com.",
+		seconds: 9,
+	}),
+	{
+		...tool("b2", "browser_open", "Opening example.com", {
+			args: { url: "https://example.com" },
+			output: "URL: https://example.com/\nTitle: Example Domain",
+			seconds: 3.1,
+		}),
+		images: [shot],
+	},
+	{
+		...tool("b3", "browser_act", "Reading the page", {
+			args: { action: "look" },
+			output: "URL: https://example.com/\nTitle: Example Domain\n\nThis domain is for use in documentation examples.",
+			seconds: 0.8,
+		}),
+		images: [shot],
+	},
+];
+
+export const Browser: Story = () => (
+	<Sheet
+		title="Browser calls with screenshots"
+		intro="A browser call shows the page it left under its row, without opening it, so a person watches the browser move. Select a screenshot to open it full size. A folded group keeps the last one in view."
+	>
+		<Section title="Running">
+			<Column>
+				<ToolCallGroup
+					items={[
+						...browsing.slice(0, 2),
+						running(
+							tool("b4", "browser_act", "Clicking on the page", {
+								status: "running",
+								args: { action: "click", element: "3" },
+							}),
+							1,
+						),
+					]}
+				/>
+			</Column>
+		</Section>
+		<Section title="Collapsed">
+			<Column>
+				<ToolCallGroup items={browsing} />
+			</Column>
+		</Section>
+	</Sheet>
+);
+
 export const Mobile: Story = () => (
 	<Sheet title="Tool calls at 420px" intro="Rows, an open call and a collapsed group on a phone.">
 		<Column>
@@ -311,6 +367,7 @@ export const Mobile: Story = () => (
 			</div>
 			<ToolCallChip item={kinds[2] as ToolItem} defaultOpen />
 			<ToolCallGroup items={withFailure} />
+			<ToolCallGroup items={browsing} live />
 		</Column>
 	</Sheet>
 );

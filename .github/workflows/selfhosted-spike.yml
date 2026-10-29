@@ -1,33 +1,19 @@
 name: self-hosted (M0-SH1, M1-SH1)
 
+# Not a pull request check: two runners can't run this ~9-minute stack for every push to every pull request. main.yml
+# calls it for main's newest head and deploys only if it passes. A pull request that changes the stack, its images or
+# this workflow can run it on demand: `gh workflow run selfhosted-spike.yml --ref <branch>`.
 on:
-  pull_request:
-    paths:
-      - "apps/selfhosted/**"
-      - "apps/vault-proxy/**"
-      # The self-hosted image builds the console, and the M1 gateway mounts the packages' APIs.
-      - "apps/console/**"
-      - "images/**"
-      - "deploy/compose/**"
-      - "spike/**"
-      - "spikes/scenario/**"
-      - "packages/**"
-      # The self-hosted targets' suites run against the stack (bindings below).
-      - "targets/**"
-      - "fixtures/**"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/selfhosted-spike.yml"
-  push:
-    branches: [main]
+  workflow_call: {}
   workflow_dispatch: {}
 
-# One runner (sal-harbour-1) runs every workflow's jobs one at a time, so a re-push must not leave the older run's
-# ~6-minute job queued in front of everyone else's. "Tear down" runs on cancel too and removes the run's daemon. Runs
-# on main are never cancelled: each gets a group of its own, since a shared group would still cancel an older pending
-# run when a newer one queues.
+# Two runners (sal-harbour-1, sal-harbour-2) run every workflow's jobs one at a time each, so a second run by hand on
+# the same branch replaces the first rather than queueing behind it. "Tear down" runs on cancel too and removes the
+# run's daemon. Called from main.yml, each run gets a group of its own: main.yml does main's batching, and a group
+# shared with it would deadlock.
 concurrency:
-  group: selfhosted-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: selfhosted-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'self-hosted (M0-SH1, M1-SH1)' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   selfhosted:
@@ -73,6 +59,11 @@ jobs:
       # to it over TLS. The stack keeps compose.yaml's defaults inside it: nothing it publishes reaches the host's
       # ports, so it can't clash with the host's stacks or another run.
       #
+      # The daemon starts with an empty image store, so every run pulls each base image again, and the runners share one
+      # address: Docker Hub's unauthenticated pull limit stopped "Bring up the stack" with 429 toomanyrequests. The daemon
+      # pulls through Google's public Docker Hub mirror (mirror.gcr.io) first, and from Docker Hub only if the mirror
+      # fails.
+      #
       # compose.yaml bind-mounts two files from the checkout (the vault policy and the research site), which the
       # daemon resolves on its own filesystem: the checkout is mounted into it, read-only, at the same path.
       #
@@ -83,12 +74,12 @@ jobs:
           docker run --detach --privileged --name "$DIND_NAME" \
             --env DOCKER_TLS_CERTDIR=/certs --volume /var/lib/docker \
             --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
-            docker:29-dind
+            docker:29-dind --registry-mirror=https://mirror.gcr.io
           for _ in $(seq 1 60); do
             docker exec "$DIND_NAME" docker info >/dev/null 2>&1 && break
             sleep 1
           done
-          docker exec "$DIND_NAME" docker info --format 'daemon {{.ServerVersion}}, {{.Driver}}'
+          docker exec "$DIND_NAME" docker info --format 'daemon {{.ServerVersion}}, {{.Driver}}, mirrors {{.RegistryConfig.Mirrors}}'
           ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DIND_NAME")"
           test -n "$ip"
           certs="$RUNNER_TEMP/$DIND_NAME-certs"
@@ -146,6 +137,21 @@ jobs:
           --s3-endpoint "$S3_ENDPOINT"
           --smtp-url "smtp://$STACK:58125?starttls=off"
           --mailpit-url "http://$STACK:58025"
+
+      # The gateway runs on those bindings: restarted, it must keep its
+      # deployment (the bootstrap key still works), sessions and workspace.
+      - name: M1 gateway after a restart
+        run: |
+          compose="docker compose -f deploy/compose/compose.yaml"
+          before=$($compose exec -T gateway cat /var/lib/harbour/bootstrap.json)
+          $compose restart gateway
+          $compose up -d --wait --no-deps gateway
+          after=$($compose exec -T gateway cat /var/lib/harbour/bootstrap.json)
+          if [ "$before" != "$after" ]; then
+            echo "::error::the gateway set up a new deployment on restart instead of keeping its own"
+            exit 1
+          fi
+          bun apps/selfhosted/test/gateway/stack.ts --base-url "http://$STACK:58090" --mailpit-url "http://$STACK:58025"
 
       - name: Scripted task
         run: bun spike/scenario/run.ts --base "http://$STACK:58081"

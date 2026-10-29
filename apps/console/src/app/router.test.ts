@@ -3,16 +3,38 @@ import {
 	AUDIT_PATH,
 	filesPath,
 	KEYS_PATH,
+	memoryPath,
+	NEW_SCHEDULE_PATH,
 	newSessionPath,
 	parseRoute,
 	projectPath,
+	schedulesPath,
+	sessionLinkPath,
 	sessionPath,
 	sessionTurnPath,
+	skillsPath,
 	VAULT_PATH,
 	vaultRequestPath,
 } from "./router.ts";
 
 describe("routes", () => {
+	it("parses the skills and memory pages, with a skill or a concept open", () => {
+		expect(parseRoute(skillsPath())).toEqual({ name: "skills" });
+		expect(parseRoute(skillsPath("skl_1"))).toEqual({ name: "skills", skillId: "skl_1" });
+		expect(parseRoute(memoryPath())).toEqual({ name: "memory" });
+		// A concept's ID has slashes, and keeps them: Workers static assets redirect an encoded slash to a plain one.
+		expect(memoryPath("projects/harbour/placement")).toBe("/memory/projects/harbour/placement");
+		expect(parseRoute(memoryPath("projects/harbour/placement"))).toEqual({
+			name: "memory",
+			conceptId: "projects/harbour/placement",
+		});
+		expect(parseRoute("/memory/projects%2Fharbour%2Fplacement")).toEqual({
+			name: "memory",
+			conceptId: "projects/harbour/placement",
+		});
+		expect(parseRoute("/skills/a/b")).toMatchObject({ name: "not-found" });
+	});
+
 	it("parses the home page, a project and a session", () => {
 		expect(parseRoute("/")).toEqual({ name: "home" });
 		expect(parseRoute("/projects/sal")).toEqual({ name: "project", projectId: "sal" });
@@ -52,6 +74,19 @@ describe("routes", () => {
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
 		expect(parseRoute(KEYS_PATH)).toEqual({ name: "keys" });
 		expect(parseRoute("/keys/key_1")).toEqual({ name: "not-found", path: "/keys/key_1" });
+	});
+
+	it("parses the schedules page, a new schedule and one schedule", () => {
+		expect(parseRoute(schedulesPath())).toEqual({ name: "schedules" });
+		expect(parseRoute(NEW_SCHEDULE_PATH)).toEqual({ name: "schedules", creating: true });
+		expect(schedulesPath("sch_1/x")).toBe("/schedules/sch_1%2Fx");
+		expect(parseRoute(schedulesPath("sch_1/x"))).toEqual({ name: "schedules", scheduleId: "sch_1/x" });
+		expect(parseRoute("/schedules/sch_1/runs")).toMatchObject({ name: "not-found" });
+	});
+
+	it("parses a session link that doesn't know its project", () => {
+		expect(parseRoute(sessionLinkPath("s 1"))).toEqual({ name: "session-link", sessionId: "s 1" });
+		expect(parseRoute("/sessions")).toMatchObject({ name: "not-found" });
 	});
 
 	it("parses a session's files and one file in them, mounts included", () => {

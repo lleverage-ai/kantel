@@ -1,0 +1,3838 @@
+{
+	"openapi": "3.1.0",
+	"info": {
+		"title": "Harbour API",
+		"version": "1",
+		"description": "Harbour's public API for host apps, such as Lleverage, and for Harbour's own console, which uses it like any other client."
+	},
+	"servers": [
+		{
+			"url": "/v1"
+		}
+	],
+	"security": [
+		{
+			"bearer": []
+		}
+	],
+	"paths": {
+		"/sessions": {
+			"post": {
+				"operationId": "createSession",
+				"summary": "Create a session",
+				"description": "Starts a session of an agent profile in a project, and sends it `message` when there is one. Needs the operator role on the project. If the first message is refused, the session is closed and the refusal answered.",
+				"tags": ["sessions"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/CreatedSession"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "listSessions",
+				"summary": "List sessions",
+				"description": "The sessions the caller may see, newest first, a page at a time.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "agentId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/SessionStatus"
+						}
+					},
+					{
+						"name": "parentSessionId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "label",
+						"in": "query",
+						"required": false,
+						"description": "Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`.",
+						"schema": {
+							"type": "object",
+							"patternProperties": {
+								"^.*$": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1000
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of sessions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}": {
+			"get": {
+				"operationId": "getSession",
+				"summary": "Get a session",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionRecord"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/close": {
+			"post": {
+				"operationId": "closeSession",
+				"summary": "Close a session",
+				"description": "Ends the session for good: its sandbox leases, browser sessions and grants end. Closing a closed session does nothing.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Closed."
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/abort": {
+			"post": {
+				"operationId": "abortSession",
+				"summary": "Abort a session's run",
+				"description": "Stops what the session is doing now. The session stays open and takes new messages.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/AbortSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "Aborted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/messages": {
+			"post": {
+				"operationId": "sendMessage",
+				"summary": "Send a message",
+				"description": "Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+				"tags": ["messages"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MessageBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "The session accepted the message.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Submission"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/stream": {
+			"get": {
+				"operationId": "streamSession",
+				"summary": "Stream a session",
+				"description": "The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events.",
+				"tags": ["stream"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "after",
+						"in": "query",
+						"required": false,
+						"description": "Resume after this cursor (a snapshot's or a delta's): the stream sends the deltas after it, or a snapshot when it no longer holds them.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"101": {
+						"description": "Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/ServerFrame"
+									}
+								}
+							}
+						}
+					},
+					"200": {
+						"description": "The stream. Without an upgrade: server-sent events, each named after its frame's type with the frame as its JSON data, then one `ready` event once the client has caught up. Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+						"content": {
+							"text/event-stream": {
+								"schema": {
+									"$ref": "#/components/schemas/ServerFrame"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/history": {
+			"get": {
+				"operationId": "getSessionHistory",
+				"summary": "Page back through a session",
+				"description": "The session's transcript in pages, newest first, for scrolling back past a snapshot's items: start with `before` set to the snapshot's `items[0].id`, then follow `nextCursor`.",
+				"tags": ["stream"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "before",
+						"in": "query",
+						"required": false,
+						"description": "Items older than this item ID, such as a snapshot's `items[0].id`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"description": "At most this many items. Default 50, cut to 200.",
+						"schema": {
+							"type": "integer",
+							"minimum": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "One page of items.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionHistoryPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills": {
+			"get": {
+				"operationId": "listSkills",
+				"summary": "List skills",
+				"description": "The published skills the caller sees, by name: the platform's, the organisation's, the project's named by `projectId` and, for a person, their own. Never another project's or another person's.",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"description": "Also list this project's skills. Needs the viewer role on it.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of skills.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillListingPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}": {
+			"get": {
+				"operationId": "getSkill",
+				"summary": "Get a skill",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The skill's package: its owner, latest revision and source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillPackage"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}/revisions": {
+			"get": {
+				"operationId": "listSkillRevisions",
+				"summary": "List a skill's revisions",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of revisions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillRevisionPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}/revisions/{revision}": {
+			"get": {
+				"operationId": "getSkillRevision",
+				"summary": "Get a revision",
+				"description": "A published revision: its digest, its files' paths and sizes, who published it and where it came from.",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "revision",
+						"in": "path",
+						"required": true,
+						"description": "The revision number.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[1-9][0-9]{0,8}$"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The revision.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillRevision"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/{skillId}/revisions/{revision}/file": {
+			"get": {
+				"operationId": "readSkillFile",
+				"summary": "Read a file of a revision",
+				"description": "One file of a published revision, such as its `SKILL.md`, by its path in the package.",
+				"tags": ["skills"],
+				"parameters": [
+					{
+						"name": "skillId",
+						"in": "path",
+						"required": true,
+						"description": "The skill's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "revision",
+						"in": "path",
+						"required": true,
+						"description": "The revision number.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[1-9][0-9]{0,8}$"
+						}
+					},
+					{
+						"name": "path",
+						"in": "query",
+						"required": true,
+						"description": "The file's path in the package, such as `SKILL.md`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The file.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillFileContent"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/skills/import": {
+			"post": {
+				"operationId": "importSkill",
+				"summary": "Import a skill from a host's source",
+				"description": "A host adapter's publish path: creates the skill if needed and publishes the files as its next revision, once per `source` (`sourceId` and `ref`); files identical to the latest revision publish nothing. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role.",
+				"tags": ["skills"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ImportSkillBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The revision the files are now.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SkillRevision"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces": {
+			"get": {
+				"operationId": "listMemorySpaces",
+				"summary": "List memory spaces",
+				"description": "The spaces the caller may read, oldest first: the organisation's, a project's to those who may view it, and a person's own. A person never sees another person's space.",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of spaces.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySpacePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createMemorySpace",
+				"summary": "Create a memory space",
+				"description": "People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role.",
+				"tags": ["memory"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateMemorySpaceBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new space.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySpace"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces/{spaceId}/concepts": {
+			"get": {
+				"operationId": "listConcepts",
+				"summary": "List a space's concepts",
+				"description": "By ID, every status unless `status` names one.",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "spaceId",
+						"in": "path",
+						"required": true,
+						"description": "The space's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/ConceptStatus"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of concepts.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConceptPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces/{spaceId}/concepts/{conceptId}": {
+			"get": {
+				"operationId": "getConcept",
+				"summary": "Get a concept",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "spaceId",
+						"in": "path",
+						"required": true,
+						"description": "The space's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "conceptId",
+						"in": "path",
+						"required": true,
+						"description": "The concept's ID, its slashes encoded (`projects%2Fharbour%2Fregion`).",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The concept.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Concept"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/search": {
+			"post": {
+				"operationId": "searchMemory",
+				"summary": "Search memory",
+				"description": "Keyword search over the named spaces' concepts, best first, as a person browsing them would.",
+				"tags": ["memory"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MemorySearchBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The matches.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySearchResult"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/recall": {
+			"post": {
+				"operationId": "recallMemory",
+				"summary": "Recall memory for a task",
+				"description": "What a session would be given for this query: the profile, the best matches (BM25) and their exceptions, rendered, with a manifest of what was recalled and why.",
+				"tags": ["memory"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RecallBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The recall.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Recall"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/memory/spaces/{spaceId}/snapshot": {
+			"post": {
+				"operationId": "importMemorySnapshot",
+				"summary": "Load a snapshot into a space",
+				"description": "A host adapter's load path: the space's concepts become the snapshot's, recorded with its source and ref, so every recall names what it read. People and API keys only; a deployment may ask for more.",
+				"tags": ["memory"],
+				"parameters": [
+					{
+						"name": "spaceId",
+						"in": "path",
+						"required": true,
+						"description": "The space's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MemorySnapshot"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The space, with its snapshot.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MemorySpace"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	"components": {
+		"securitySchemes": {
+			"bearer": {
+				"type": "http",
+				"scheme": "bearer",
+				"description": "A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to the key's projects and role. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
+			}
+		},
+		"schemas": {
+			"AbortSessionBody": {
+				"type": "object",
+				"properties": {
+					"reason": {
+						"type": "string",
+						"description": "Recorded in the audit trail."
+					}
+				},
+				"title": "AbortSessionBody"
+			},
+			"Actor": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "human"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "serviceId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "service"
+							},
+							"serviceId": {
+								"type": "string"
+							},
+							"keyId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "agentId", "sessionId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "agent"
+							},
+							"agentId": {
+								"type": "string"
+							},
+							"sessionId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "component"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "system"
+							},
+							"component": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "Actor",
+				"description": "Who acted: a person, a host app's API key, an agent or Harbour itself."
+			},
+			"AssistantItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "text", "streaming"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "assistant"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"text": {
+						"type": "string"
+					},
+					"streaming": {
+						"type": "boolean",
+						"description": "True while tokens are still arriving."
+					},
+					"thinking": {
+						"type": "string"
+					}
+				},
+				"title": "AssistantItem"
+			},
+			"Attention": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "working"
+					},
+					{
+						"type": "string",
+						"const": "waiting"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					}
+				],
+				"title": "Attention",
+				"description": "How a session list groups the session: working, waiting on someone, or done."
+			},
+			"BrowserGrantCard": {
+				"type": "object",
+				"required": ["type", "requestId", "reason", "status"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "browser.grant"
+					},
+					"requestId": {
+						"type": "string"
+					},
+					"reason": {
+						"type": "string"
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "granted"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							}
+						]
+					}
+				},
+				"title": "BrowserGrantCard"
+			},
+			"Card": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/VaultApprovalCard"
+					},
+					{
+						"$ref": "#/components/schemas/QuestionCard"
+					},
+					{
+						"$ref": "#/components/schemas/BrowserGrantCard"
+					}
+				],
+				"title": "Card"
+			},
+			"CardItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "card"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "card"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"card": {
+						"$ref": "#/components/schemas/Card"
+					}
+				},
+				"title": "CardItem"
+			},
+			"Concept": {
+				"type": "object",
+				"required": [
+					"spaceId",
+					"id",
+					"title",
+					"statement",
+					"scope",
+					"sources",
+					"tags",
+					"setBy",
+					"version",
+					"status",
+					"updatedAt"
+				],
+				"properties": {
+					"spaceId": {
+						"type": "string"
+					},
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A stable path, such as `projects/harbour/vault-binding-codes`."
+					},
+					"title": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"statement": {
+						"type": "string",
+						"description": "The fact itself, short."
+					},
+					"scope": {
+						"$ref": "#/components/schemas/ConceptScope"
+					},
+					"sources": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs."
+					},
+					"staleAfter": {
+						"type": "integer",
+						"description": "After this, recall marks it stale (epoch milliseconds)."
+					},
+					"overrides": {
+						"type": "string",
+						"description": "A job exception's general concept."
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					},
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"setBy": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "owner"
+							},
+							{
+								"type": "string",
+								"const": "learned"
+							}
+						],
+						"description": "`owner`: set by the space's owner. `learned`: from an approved agent proposal."
+					},
+					"version": {
+						"type": "integer",
+						"description": "Increases with every change."
+					},
+					"status": {
+						"$ref": "#/components/schemas/ConceptStatus"
+					},
+					"supersededBy": {
+						"type": "string"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Concept"
+			},
+			"ConceptPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Concept"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ConceptPage"
+			},
+			"ConceptScope": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "global"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "project"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"project": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "job"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "job"
+							},
+							"job": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "ConceptScope",
+				"description": "Where a concept applies. A `job` concept is an exception for one job."
+			},
+			"ConceptStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "active"
+					},
+					{
+						"type": "string",
+						"const": "superseded"
+					},
+					{
+						"type": "string",
+						"const": "forgotten"
+					}
+				],
+				"title": "ConceptStatus"
+			},
+			"CreatedSession": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"projectId",
+					"agentId",
+					"status",
+					"labels",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string",
+						"description": "The agent profile the session runs."
+					},
+					"parentSessionId": {
+						"type": "string"
+					},
+					"workspaceId": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"submission": {
+						"$ref": "#/components/schemas/Submission"
+					}
+				},
+				"title": "CreatedSession",
+				"description": "A new session, with its first message's submission when it was sent one."
+			},
+			"CreateMemorySpaceBody": {
+				"type": "object",
+				"required": ["owner", "name"],
+				"properties": {
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"title": "CreateMemorySpaceBody"
+			},
+			"CreateSessionBody": {
+				"type": "object",
+				"required": ["projectId", "agentId"],
+				"properties": {
+					"projectId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The project the session runs in."
+					},
+					"agentId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The agent profile it runs."
+					},
+					"title": {
+						"type": "string"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"workspaceId": {
+						"type": "string",
+						"description": "An existing workspace to run in."
+					},
+					"parentSessionId": {
+						"type": "string",
+						"description": "Creates a child session owned by this parent; aborting the parent aborts it."
+					},
+					"message": {
+						"$ref": "#/components/schemas/FirstMessage"
+					}
+				},
+				"title": "CreateSessionBody",
+				"description": "Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: \"run-42\" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`."
+			},
+			"Cursor": {
+				"type": "string",
+				"title": "Cursor",
+				"description": "An opaque position in a session's stream."
+			},
+			"DeltaOp": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["op", "item"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "append"
+							},
+							"item": {
+								"$ref": "#/components/schemas/TranscriptItem"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "item"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "replace"
+							},
+							"item": {
+								"$ref": "#/components/schemas/TranscriptItem"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "itemId", "append"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "text"
+							},
+							"itemId": {
+								"type": "string"
+							},
+							"append": {
+								"type": "string"
+							},
+							"field": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "text"
+									},
+									{
+										"type": "string",
+										"const": "thinking"
+									}
+								]
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "status", "attention"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "status"
+							},
+							"status": {
+								"$ref": "#/components/schemas/SessionStatus"
+							},
+							"attention": {
+								"$ref": "#/components/schemas/Attention"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "title"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "title"
+							},
+							"title": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "usage"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "usage"
+							},
+							"usage": {
+								"$ref": "#/components/schemas/Usage"
+							}
+						}
+					}
+				],
+				"title": "DeltaOp",
+				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's."
+			},
+			"ErrorBody": {
+				"type": "object",
+				"required": ["error"],
+				"properties": {
+					"error": {
+						"type": "object",
+						"required": ["code", "message"],
+						"properties": {
+							"code": {
+								"$ref": "#/components/schemas/ErrorCode"
+							},
+							"message": {
+								"type": "string"
+							},
+							"details": {
+								"type": "object",
+								"patternProperties": {
+									"^.*$": {}
+								}
+							}
+						}
+					}
+				},
+				"title": "ErrorBody",
+				"description": "Every error: the HarbourError's code and message."
+			},
+			"ErrorCode": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "invalid"
+					},
+					{
+						"type": "string",
+						"const": "not_found"
+					},
+					{
+						"type": "string",
+						"const": "forbidden"
+					},
+					{
+						"type": "string",
+						"const": "conflict"
+					},
+					{
+						"type": "string",
+						"const": "expired"
+					},
+					{
+						"type": "string",
+						"const": "refused"
+					},
+					{
+						"type": "string",
+						"const": "exhausted"
+					},
+					{
+						"type": "string",
+						"const": "aborted"
+					},
+					{
+						"type": "string",
+						"const": "not_supported"
+					},
+					{
+						"type": "string",
+						"const": "unavailable"
+					},
+					{
+						"type": "string",
+						"const": "unauthenticated"
+					}
+				],
+				"title": "ErrorCode"
+			},
+			"FirstMessage": {
+				"type": "object",
+				"required": ["text"],
+				"properties": {
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The message's words."
+					},
+					"model": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "FirstMessage",
+				"description": "The session's first prompt, sent as soon as it exists."
+			},
+			"HistoryPage": {
+				"type": "object",
+				"required": ["sessionId", "items", "hasEarlier"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TranscriptItem"
+						},
+						"description": "Oldest first."
+					},
+					"hasEarlier": {
+						"type": "boolean"
+					}
+				},
+				"title": "HistoryPage"
+			},
+			"ImportSkillBody": {
+				"type": "object",
+				"required": ["owner", "name", "description", "files", "source"],
+				"properties": {
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1
+					},
+					"description": {
+						"type": "string",
+						"minLength": 1
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SkillFile"
+						},
+						"description": "Every file of the package, `SKILL.md` among them."
+					},
+					"source": {
+						"$ref": "#/components/schemas/SourceRef"
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					}
+				},
+				"title": "ImportSkillBody"
+			},
+			"JsonValue": {
+				"title": "JsonValue",
+				"description": "Any JSON value."
+			},
+			"Labels": {
+				"type": "object",
+				"patternProperties": {
+					"^.*$": {
+						"type": "string"
+					}
+				},
+				"title": "Labels",
+				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+			},
+			"MemorySearchBody": {
+				"type": "object",
+				"required": ["spaceIds", "query"],
+				"properties": {
+					"spaceIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"description": "The spaces to read."
+					},
+					"query": {
+						"type": "string"
+					},
+					"limit": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 10,
+						"description": "Default 5."
+					},
+					"includeInactive": {
+						"type": "boolean",
+						"description": "Also list superseded and forgotten concepts, scoring a quarter."
+					}
+				},
+				"title": "MemorySearchBody"
+			},
+			"MemorySearchHit": {
+				"type": "object",
+				"required": ["concept", "score", "stale", "snippet"],
+				"properties": {
+					"concept": {
+						"$ref": "#/components/schemas/Concept"
+					},
+					"score": {
+						"type": "number"
+					},
+					"stale": {
+						"type": "boolean"
+					},
+					"snippet": {
+						"type": "string",
+						"description": "The first statement line holding a term, cut to 160 characters."
+					}
+				},
+				"title": "MemorySearchHit"
+			},
+			"MemorySearchResult": {
+				"type": "object",
+				"required": ["hits"],
+				"properties": {
+					"hits": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/MemorySearchHit"
+						}
+					}
+				},
+				"title": "MemorySearchResult"
+			},
+			"MemorySnapshot": {
+				"type": "object",
+				"required": ["sourceId", "ref", "concepts"],
+				"properties": {
+					"sourceId": {
+						"type": "string",
+						"minLength": 1
+					},
+					"ref": {
+						"type": "string",
+						"minLength": 1
+					},
+					"concepts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SnapshotConcept"
+						}
+					}
+				},
+				"title": "MemorySnapshot",
+				"description": "A whole space's concepts at one ref of a source."
+			},
+			"MemorySnapshotRef": {
+				"type": "object",
+				"required": ["sourceId", "ref", "importedAt"],
+				"properties": {
+					"sourceId": {
+						"type": "string"
+					},
+					"ref": {
+						"type": "string"
+					},
+					"importedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "MemorySnapshotRef",
+				"description": "Where a space's snapshot came from, and when it was imported."
+			},
+			"MemorySpace": {
+				"type": "object",
+				"required": ["id", "owner", "name", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The space's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"snapshot": {
+						"$ref": "#/components/schemas/MemorySnapshotRef"
+					}
+				},
+				"title": "MemorySpace"
+			},
+			"MemorySpacePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/MemorySpace"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "MemorySpacePage"
+			},
+			"MessageBody": {
+				"type": "object",
+				"required": ["text"],
+				"properties": {
+					"via": {
+						"$ref": "#/components/schemas/MessageVia"
+					},
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The message's words."
+					},
+					"model": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "MessageBody",
+				"description": "A message to the session's agent. `via` defaults to `prompt`."
+			},
+			"MessageVia": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "prompt"
+					},
+					{
+						"type": "string",
+						"const": "steer"
+					},
+					{
+						"type": "string",
+						"const": "followUp"
+					}
+				],
+				"title": "MessageVia",
+				"description": "How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends."
+			},
+			"NoticeItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "level", "text"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "notice"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"level": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "info"
+							},
+							{
+								"type": "string",
+								"const": "warning"
+							},
+							{
+								"type": "string",
+								"const": "error"
+							}
+						]
+					},
+					"text": {
+						"type": "string"
+					},
+					"code": {
+						"type": "string"
+					}
+				},
+				"title": "NoticeItem"
+			},
+			"OwnerRef": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "platform"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "organisation"
+							},
+							"organisationId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId", "projectId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"organisationId": {
+								"type": "string"
+							},
+							"projectId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "user"
+							},
+							"organisationId": {
+								"type": "string"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "OwnerRef",
+				"description": "Who owns a record: an organisation, a project, a user, or the platform."
+			},
+			"QuestionCard": {
+				"type": "object",
+				"required": ["type", "questionId", "text", "status"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "question"
+					},
+					"questionId": {
+						"type": "string"
+					},
+					"text": {
+						"type": "string"
+					},
+					"options": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "open"
+							},
+							{
+								"type": "string",
+								"const": "answered"
+							},
+							{
+								"type": "string",
+								"const": "withdrawn"
+							}
+						]
+					},
+					"answer": {
+						"type": "string"
+					}
+				},
+				"title": "QuestionCard"
+			},
+			"Recall": {
+				"type": "object",
+				"required": ["concepts", "manifest", "text", "skipped", "profileOmitted", "truncated"],
+				"properties": {
+					"concepts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Concept"
+						}
+					},
+					"manifest": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/RecallManifestEntry"
+						},
+						"description": "What was recalled and why, in the same order."
+					},
+					"text": {
+						"type": "string",
+						"description": "The recall as a prompt shows it."
+					},
+					"skipped": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["conceptId", "reason"],
+							"properties": {
+								"conceptId": {
+									"type": "string"
+								},
+								"reason": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"profileOmitted": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"truncated": {
+						"type": "boolean"
+					}
+				},
+				"title": "Recall"
+			},
+			"RecallBody": {
+				"type": "object",
+				"required": ["spaceIds", "query"],
+				"properties": {
+					"spaceIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"description": "The spaces to read."
+					},
+					"query": {
+						"type": "string",
+						"description": "The task or message text to search by."
+					},
+					"scopes": {
+						"type": "object",
+						"properties": {
+							"projects": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							},
+							"jobs": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"profile": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Concept IDs recalled whatever the query, within their own limits."
+					},
+					"exclude": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Concept IDs never recalled."
+					},
+					"maxConcepts": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Default 5 search matches."
+					},
+					"maxBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Default 4096."
+					},
+					"maxProfileConcepts": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"maxProfileBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Default 24576."
+					}
+				},
+				"title": "RecallBody"
+			},
+			"RecallManifestEntry": {
+				"type": "object",
+				"required": ["spaceId", "conceptId", "version", "reason", "stale", "truncated"],
+				"properties": {
+					"spaceId": {
+						"type": "string"
+					},
+					"conceptId": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer"
+					},
+					"reason": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "profile"
+							},
+							{
+								"type": "string",
+								"const": "search"
+							},
+							{
+								"type": "string",
+								"const": "exception"
+							}
+						]
+					},
+					"score": {
+						"type": "number"
+					},
+					"matched": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"stale": {
+						"type": "boolean"
+					},
+					"truncated": {
+						"type": "boolean"
+					},
+					"snapshotRef": {
+						"type": "string"
+					}
+				},
+				"title": "RecallManifestEntry"
+			},
+			"ServerFrame": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["type", "v", "sessionId", "cursor", "resumed"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "hello"
+							},
+							"v": {
+								"type": "number",
+								"const": 1
+							},
+							"sessionId": {
+								"type": "string"
+							},
+							"cursor": {
+								"$ref": "#/components/schemas/Cursor"
+							},
+							"resumed": {
+								"type": "boolean",
+								"description": "True when deltas after the client's cursor follow, false for a snapshot."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "snapshot"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "snapshot"
+							},
+							"snapshot": {
+								"$ref": "#/components/schemas/SessionSnapshot"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "delta"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "delta"
+							},
+							"delta": {
+								"$ref": "#/components/schemas/SessionDelta"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "page"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "history"
+							},
+							"page": {
+								"$ref": "#/components/schemas/HistoryPage"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "code", "message"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "error"
+							},
+							"code": {
+								"type": "string"
+							},
+							"message": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "ServerFrame",
+				"description": "One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s."
+			},
+			"SessionDelta": {
+				"type": "object",
+				"required": ["sessionId", "cursor", "at", "ops"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"cursor": {
+						"$ref": "#/components/schemas/Cursor"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"ops": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DeltaOp"
+						}
+					}
+				},
+				"title": "SessionDelta"
+			},
+			"SessionHistoryPage": {
+				"type": "object",
+				"required": ["sessionId", "items"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TranscriptItem"
+						},
+						"description": "Newest first."
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when older items exist; pass it as `cursor`."
+					}
+				},
+				"title": "SessionHistoryPage"
+			},
+			"SessionPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SessionRecord"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SessionPage"
+			},
+			"SessionRecord": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"projectId",
+					"agentId",
+					"status",
+					"labels",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string",
+						"description": "The agent profile the session runs."
+					},
+					"parentSessionId": {
+						"type": "string"
+					},
+					"workspaceId": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SessionRecord"
+			},
+			"SessionSnapshot": {
+				"type": "object",
+				"required": ["v", "sessionId", "cursor", "status", "attention", "items", "hasEarlier", "updatedAt"],
+				"properties": {
+					"v": {
+						"type": "number",
+						"const": 1
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"cursor": {
+						"$ref": "#/components/schemas/Cursor"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"attention": {
+						"$ref": "#/components/schemas/Attention"
+					},
+					"title": {
+						"type": "string"
+					},
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TranscriptItem"
+						},
+						"description": "The latest page of items, oldest first."
+					},
+					"hasEarlier": {
+						"type": "boolean",
+						"description": "True when items before `items[0]` exist."
+					},
+					"usage": {
+						"$ref": "#/components/schemas/Usage"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SessionSnapshot"
+			},
+			"SessionStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "idle"
+					},
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "waiting"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "cancelled"
+					}
+				],
+				"title": "SessionStatus"
+			},
+			"SkillFile": {
+				"type": "object",
+				"required": ["path", "content"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "A relative path inside the package, such as `SKILL.md` or `scripts/run.sh`."
+					},
+					"content": {
+						"type": "string"
+					}
+				},
+				"title": "SkillFile"
+			},
+			"SkillFileContent": {
+				"type": "object",
+				"required": ["path", "content"],
+				"properties": {
+					"path": {
+						"type": "string"
+					},
+					"content": {
+						"type": "string"
+					}
+				},
+				"title": "SkillFileContent",
+				"description": "One file of a revision, as UTF-8 text."
+			},
+			"SkillListing": {
+				"type": "object",
+				"required": ["skillId", "name", "description", "revision", "path"],
+				"properties": {
+					"skillId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"revision": {
+						"type": "integer",
+						"description": "The latest published revision."
+					},
+					"path": {
+						"type": "string",
+						"description": "Where a session finds it, such as `/skills/pr-review/SKILL.md`."
+					}
+				},
+				"title": "SkillListing",
+				"description": "What a session is shown of a skill: enough to decide whether to read it."
+			},
+			"SkillListingPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SkillListing"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SkillListingPage"
+			},
+			"SkillPackage": {
+				"type": "object",
+				"required": ["id", "owner", "name", "description", "createdAt", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The skill's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"description": "Unique per owner: lowercase letters, digits and dashes."
+					},
+					"description": {
+						"type": "string"
+					},
+					"latestRevision": {
+						"type": "integer",
+						"description": "The newest published revision."
+					},
+					"draftDigest": {
+						"type": "string",
+						"description": "Present while a draft is open."
+					},
+					"source": {
+						"$ref": "#/components/schemas/SourceRef"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SkillPackage"
+			},
+			"SkillRevision": {
+				"type": "object",
+				"required": ["skillId", "revision", "digest", "name", "description", "files", "publishedBy", "publishedAt"],
+				"properties": {
+					"skillId": {
+						"type": "string"
+					},
+					"revision": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "1, 2, 3… per skill. A published revision never changes."
+					},
+					"digest": {
+						"type": "string",
+						"description": "Hex SHA-256 over the sorted paths and contents."
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["path", "size"],
+							"properties": {
+								"path": {
+									"type": "string"
+								},
+								"size": {
+									"type": "integer",
+									"description": "Bytes, UTF-8."
+								}
+							}
+						}
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					},
+					"publishedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"publishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"source": {
+						"$ref": "#/components/schemas/SourceRef"
+					}
+				},
+				"title": "SkillRevision"
+			},
+			"SkillRevisionPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SkillRevision"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SkillRevisionPage"
+			},
+			"SnapshotConcept": {
+				"type": "object",
+				"required": ["id", "title", "statement", "scope", "sources", "setBy", "status", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A stable path, such as `projects/harbour/vault-binding-codes`."
+					},
+					"title": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"statement": {
+						"type": "string",
+						"description": "The fact itself, short."
+					},
+					"scope": {
+						"$ref": "#/components/schemas/ConceptScope"
+					},
+					"sources": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs."
+					},
+					"staleAfter": {
+						"type": "integer",
+						"description": "After this, recall marks it stale (epoch milliseconds)."
+					},
+					"overrides": {
+						"type": "string",
+						"description": "A job exception's general concept."
+					},
+					"extensions": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+					},
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"setBy": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "owner"
+							},
+							{
+								"type": "string",
+								"const": "learned"
+							}
+						],
+						"description": "`owner`: set by the space's owner. `learned`: from an approved agent proposal."
+					},
+					"status": {
+						"$ref": "#/components/schemas/ConceptStatus"
+					},
+					"supersededBy": {
+						"type": "string"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SnapshotConcept",
+				"description": "One concept as a host's source holds it."
+			},
+			"SourceRef": {
+				"type": "object",
+				"required": ["sourceId", "ref"],
+				"properties": {
+					"sourceId": {
+						"type": "string",
+						"description": "The host's skill or memory source, such as `sal-skills`."
+					},
+					"ref": {
+						"type": "string",
+						"description": "Its ref: a commit or a version."
+					}
+				},
+				"title": "SourceRef",
+				"description": "Where a host's adapter imported something from."
+			},
+			"Submission": {
+				"type": "object",
+				"required": ["id", "sessionId", "via"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The submission's ID, which names the run the message started or joined."
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"via": {
+						"$ref": "#/components/schemas/MessageVia"
+					},
+					"requestId": {
+						"type": "string",
+						"description": "The `Idempotency-Key` it was sent with."
+					}
+				},
+				"title": "Submission",
+				"description": "A message the session accepted."
+			},
+			"ThinkingLevel": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "off"
+					},
+					{
+						"type": "string",
+						"const": "minimal"
+					},
+					{
+						"type": "string",
+						"const": "low"
+					},
+					{
+						"type": "string",
+						"const": "medium"
+					},
+					{
+						"type": "string",
+						"const": "high"
+					},
+					{
+						"type": "string",
+						"const": "xhigh"
+					},
+					{
+						"type": "string",
+						"const": "max"
+					}
+				],
+				"title": "ThinkingLevel"
+			},
+			"ToolItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "callId", "name", "label", "status"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "tool"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"callId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"label": {
+						"type": "string",
+						"description": "A plain-language label, such as \"Reading notes/x.md\"."
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "running"
+							},
+							{
+								"type": "string",
+								"const": "done"
+							},
+							{
+								"type": "string",
+								"const": "error"
+							},
+							{
+								"type": "string",
+								"const": "interrupted"
+							}
+						]
+					},
+					"args": {},
+					"output": {
+						"type": "string"
+					},
+					"tier": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "isolate"
+							},
+							{
+								"type": "string",
+								"const": "container"
+							}
+						]
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ToolItem"
+			},
+			"TranscriptItem": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/UserItem"
+					},
+					{
+						"$ref": "#/components/schemas/AssistantItem"
+					},
+					{
+						"$ref": "#/components/schemas/ToolItem"
+					},
+					{
+						"$ref": "#/components/schemas/CardItem"
+					},
+					{
+						"$ref": "#/components/schemas/NoticeItem"
+					}
+				],
+				"title": "TranscriptItem"
+			},
+			"Usage": {
+				"type": "object",
+				"required": ["inputTokens", "outputTokens"],
+				"properties": {
+					"inputTokens": {
+						"type": "integer"
+					},
+					"outputTokens": {
+						"type": "integer"
+					},
+					"cacheReadTokens": {
+						"type": "integer"
+					},
+					"costUsd": {
+						"type": "number"
+					}
+				},
+				"title": "Usage"
+			},
+			"UserItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "text", "via"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "user"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"text": {
+						"type": "string"
+					},
+					"via": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "prompt"
+							},
+							{
+								"type": "string",
+								"const": "steer"
+							},
+							{
+								"type": "string",
+								"const": "followUp"
+							}
+						]
+					},
+					"requestId": {
+						"type": "string"
+					}
+				},
+				"title": "UserItem"
+			},
+			"VaultApprovalCard": {
+				"type": "object",
+				"required": [
+					"type",
+					"proposalId",
+					"status",
+					"bindingCode",
+					"what",
+					"why",
+					"host",
+					"methods",
+					"pathPrefix",
+					"termsSource",
+					"expiresAt",
+					"link"
+				],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "vault.approval"
+					},
+					"proposalId": {
+						"type": "string"
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "approved"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							},
+							{
+								"type": "string",
+								"const": "expired"
+							},
+							{
+								"type": "string",
+								"const": "withdrawn"
+							}
+						]
+					},
+					"bindingCode": {
+						"type": "string"
+					},
+					"what": {
+						"type": "string"
+					},
+					"why": {
+						"type": "string"
+					},
+					"host": {
+						"type": "string"
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"pathPrefix": {
+						"type": "string"
+					},
+					"injectionTemplate": {
+						"type": "string"
+					},
+					"termsSource": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "agent-proposed"
+							},
+							{
+								"type": "string",
+								"const": "approved"
+							}
+						]
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"link": {
+						"type": "string"
+					}
+				},
+				"title": "VaultApprovalCard",
+				"description": "A vault proposal waiting on a person. The secret is never part of it."
+			}
+		}
+	}
+}

@@ -33,6 +33,10 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
   with `{ history: true }`: the latest page first and cursors back to the start without a repeat or a gap; pages
   behind a cursor unchanged while new turns arrive; `before` an item a client holds; `invalid` for a malformed
   request, `not_found` for an unknown item or session, and project access refusing an operator outside the project.
+- Proposed (open question 16 in docs/contracts.md): `SessionBranching`, served as `branching` on the runtime service,
+  `POST /sessions/:id/fork` (a new session with the history up to an answer) and `POST /sessions/:id/edit` (rewind
+  to a person's message and prompt new words in its place, kept across a restart). No suite case yet; the runtime's
+  `test/branching.test.ts` and `test/http.test.ts` cover it on the SQL and in-memory runtimes.
 
 ## Rules and the suite cases that enforce them
 
@@ -104,7 +108,7 @@ see.
 
 ## The runtime and its store
 
-`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, pageSize })`
+`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, environment, pageSize })`
 from `@harbour/runtime/core` is the runtime every target runs. A target gives it two things:
 
 - `store`, a `SessionStore` (`@harbour/runtime/store`): the directory of sessions (each with the profile it was created
@@ -135,12 +139,43 @@ before recovering sessions anyway. A child's
 leases are released when it ends: aborting or closing a parent runs the session-end hook, `sandbox` teardown included,
 for each child too.
 
+`environment(record)` gives a session its execution environment (Pi Durable's `ExecutionEnv`, which the `read`,
+`write`, `edit` and `bash` tools need), such as `createSandboxExecutionEnv` from `@harbour/sandbox` over the session's
+workspace: its file operations go to `Workspaces` directly and only its commands to `Sandboxes.run` (#196). It is built
+once when the session opens in a process and must acquire nothing: a sandbox is leased by the first command that needs
+one and released by the session-end hook, so a session that never runs a command never holds one. Abort and close call
+its `cleanup`, which stops waiting for commands still running. A session it gives none to has no environment, and a tool
+that needs one fails with an error result.
+
 A host registration made in this process (`hostTools.register` with a handler) offers its tools only while its handler
 lives. `hosts.register(ctx, hostId, tools, callback, owner)` stores the registration with its callback URL and HMAC
 secret, and any later runtime on the store serves it through `hostHandler` (`callbackHostHandlers()` from
 `@harbour/runtime/http`); only `owner` may remove it, and only while it is the host's current registration. The
 session API takes the runtime's `hosts` as its `hosts` option and then keeps every `PUT /hosts/:id` this way. The
 secret is stored with the registration, so the store is as sensitive as the secrets it holds.
+
+## Skills and memory
+
+`createSessionRuntime({ skills, memory })` gives sessions the read side of #12 (`src/context.ts`). Both are optional;
+without them a session gets neither.
+
+- `skills: { store, render?, mount?, visibility?, mountRoot? }`. On a session's first prompt the runtime calls
+  `store.pinForSession` as the session's agent, over `visibility` (default the session's project), so later revisions
+  reach only new sessions; calls `mount(session, pins)` once, for the host to mount the pins read-only at `/skills`
+  (the `skills` source of `@harbour/workspace/mounts`, `ref` the session ID); and passes the listings of the skills the
+  profile names (`profile.skills`, by skill ID or name) to the host's `render`, such as `renderSkillListings` from
+  `@harbour/skills/sources`. Without `render` nothing is listed.
+- `memory: { store, spaces?, recall?, now? }`. On the same first prompt it recalls over the profile's
+  `memoryScopes` (each a memory space ID, or `spaces(profile, session)`) with the prompt's text as the query; the
+  text is the memory implementation's `RecallRenderer`. A session with memory scopes gets `memory_search` and
+  `memory_read` (`memoryCapabilities` of `@harbour/memory`, `safe`, served as the session's agent and audited as
+  host `harbour.memory`); a host tool of the same name is not offered beside them.
+
+Harbour adds no prompt of its own: the listing and the recall are the host's and the deployment's text, joined by a
+blank line, placed once as a `harbour.context` entry before the first prompt, a user message for the model with the
+pinned revisions, listed skill IDs and recall manifest as its data. It stays in the transcript, so later turns, a
+retried prompt and a restarted runtime see what the session saw; it is not a protocol item. A pin, mount or recall
+that fails fails the prompt, and the next prompt tries again.
 
 ## The in-memory implementation
 
@@ -160,8 +195,7 @@ map, and exposes that check as `access` for components to share. It exposes its 
 `createMemoryCapabilityRegistry` and `createMemoryVault`. The older `sandboxes` option registers the sandbox's
 `releaseSession` as the `sandbox` teardown, so don't pass both.
 
-It leaves out: persistence across restarts, skills, memory
-scopes, workspaces and sandbox routing beyond `releaseSession`, usage totals in snapshots, history paging through
+It leaves out: persistence across restarts, workspaces and sandbox routing beyond `releaseSession`, usage totals in snapshots, history paging through
 `watch`, and session titles changing after creation.
 
 ## Over HTTP

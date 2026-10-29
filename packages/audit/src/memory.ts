@@ -5,7 +5,6 @@ import {
 	type AuditQuery,
 	type AuditSink,
 	type AuditStore,
-	assertAuditQueryTypes,
 	type CallContext,
 	type Clock,
 	HarbourError,
@@ -19,7 +18,7 @@ import {
 	systemClock,
 	systemContext,
 } from "@harbour/contracts";
-import { assertValidAuditEvent, matchesQuery } from "./index.ts";
+import { assertValidAuditEvent, assertValidAuditQuery, matchesQuery } from "./index.ts";
 
 export interface MemoryAuditStoreOptions {
 	readonly clock?: Clock;
@@ -99,7 +98,7 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 
 		async query(ctx: CallContext, query: AuditQuery, page?: PageRequest): Promise<Page<AuditEvent>> {
 			forbidAgent(ctx, "read the audit log");
-			assertAuditQueryTypes(query.types);
+			assertValidAuditQuery(query);
 			const limit = Math.max(1, Math.min(page?.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT));
 			const after = page?.cursor === undefined ? undefined : cursorSeq(page.cursor);
 			const scoped = query.projectId !== undefined || query.sessionId !== undefined;

@@ -415,6 +415,30 @@ export function createAuditConformance(options: {
 			assert.deepEqual(await queryIds(store, { type: "vault" }), [], "without a dot the type is exact");
 			assert.deepEqual(await queryIds(store, { type: "session.tool.started" }), ["e2"], "exact type");
 			assert.deepEqual(await queryIds(store, { type: "session.tool" }), [], "an exact type is not a prefix");
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.decision.", "identity.key.issued", "schedules."] }),
+				["e4", "e5", "e7"],
+				"types: any of a list of exact types and prefixes",
+			);
+			assert.deepEqual(await queryIds(store, { types: ["vault", "session.tool"] }), [], "types, exact without a dot");
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.", "identity."], type: "vault.decision.", newestFirst: true }),
+				["e4"],
+				"types narrows with type and the other fields",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["identity."], projectId: "proj-2" }),
+				["e5"],
+				"types with a project",
+			);
+			for (const types of [[], [""], ["vault.,identity."], Array.from({ length: 21 }, (_, index) => `t${index}.`)]) {
+				await assert.rejectsWithCode(store.query(admin, { types }), "invalid", `types ${JSON.stringify(types)}`);
+			}
+			assert.deepEqual(
+				await queryIds(store, { types: Array.from({ length: 19 }, (_, index) => `none.t${index}.`).concat("vault.") }),
+				["e3", "e4"],
+				"up to 20 types",
+			);
 			assert.deepEqual(await queryIds(store, { subject: proposal }), ["e3", "e4"], "subject");
 			assert.deepEqual(
 				await queryIds(store, { subject: { kind: "vault.grant", id: "proposal-1" } }),
@@ -433,7 +457,9 @@ export function createAuditConformance(options: {
 			);
 		}),
 
-		test("narrows by any of a list of types, exact or prefix, alongside type, and pages by them", async ({ store }) => {
+		test("narrows by any of a list of types: each row once, characters not bytes, caller's organisation, paged", async ({
+			store,
+		}) => {
 			const t = 1_500_000;
 			await store.append(WORKER, [
 				auditEvent("policy-1", t, { type: "vault.policy.created" }),
@@ -454,11 +480,6 @@ export function createAuditConformance(options: {
 				"any of two prefixes, in seq order",
 			);
 			assert.deepEqual(
-				await queryIds(store, { types: ["session.created", "vault.use.injected"] }),
-				["use-1", "session-1"],
-				"any of two exact types",
-			);
-			assert.deepEqual(
 				await queryIds(store, { types: ["vault.policy", "capability.call."] }),
 				["call-1", "near-1"],
 				"exact and prefix mixed; without a dot the type is exact",
@@ -472,11 +493,6 @@ export function createAuditConformance(options: {
 				await queryIds(store, { types: ["vault.policy.", "vault."] }),
 				["policy-1", "use-1", "policy-2", "near-1", "wide-1"],
 				"a row two types match comes once",
-			);
-			assert.deepEqual(
-				await queryIds(store, { types: policyChanges, type: "vault." }),
-				["policy-1", "policy-2"],
-				"with type as well, a row matches both",
 			);
 			assert.deepEqual(
 				await queryIds(store, { types: ["capability.grant."], type: "vault.policy.created" }),
@@ -495,13 +511,6 @@ export function createAuditConformance(options: {
 				"pages newest first",
 			);
 			assert.deepEqual(paged.pageSizes, [3, 1]);
-			await assert.rejectsWithCode(store.query(admin, { types: [] }), "invalid", "an empty list is refused");
-			await assert.rejectsWithCode(store.query(admin, { types: [""] }), "invalid", "an empty type is refused");
-			await assert.rejectsWithCode(
-				store.query(admin, { types: Array.from({ length: 21 }, (_, index) => `type.${index}.`) }),
-				"invalid",
-				"more than 20 types are refused",
-			);
 		}),
 
 		test("narrows by vault item and grant, by the record's subject or a string in data, and pages by them", async ({

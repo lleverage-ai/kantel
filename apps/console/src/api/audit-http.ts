@@ -3,10 +3,16 @@
 // a human; the server checks the caller belongs to it and answers `forbidden` if not.
 
 import { type AuditClientOptions, createAuditClient } from "@harbour/audit/http";
-import { ORGANISATION_HEADER } from "@harbour/contracts";
-import { type AuditDirectory, type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
+import {
+	type AgentProfile,
+	ORGANISATION_HEADER,
+	type Page,
+	type Project,
+	type SessionRecord,
+} from "@harbour/contracts";
+import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
 import { sessionTurnPath, vaultRequestPath } from "../app/router.ts";
-import type { AuditChoices, AuditLookups, ConsoleAudit } from "./oversight.ts";
+import type { AuditScope, ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
 	readonly baseUrl: string;
@@ -45,102 +51,64 @@ export function auditApiSource(options: AuditApiSourceOptions): AuditSource {
 	};
 }
 
-/** The most sessions the *Session* filter offers, the most recently active first; every session is still named. */
-export const SESSION_CHOICE_CAP = 200;
-
-/** The lists the filters are made from, as the gateway's APIs give them. Each is optional and read on its own. */
-export interface AuditListSources {
-	/** The caller's projects: identity's `GET /v1/projects`, every page. */
-	readonly projects?: () => Promise<readonly { readonly id: string; readonly name: string }[]>;
-	/** Every session the caller can see: the session API's `GET /v1/sessions`, every page. */
-	readonly sessions?: () => Promise<
-		readonly {
-			readonly id: string;
-			readonly projectId: string;
-			readonly agentId: string;
-			readonly title?: string;
-			readonly updatedAt: number;
-		}[]
-	>;
-	/** The agent profiles, to name the agents sessions ran: `GET /v1/profiles`, every page. */
-	readonly agents?: () => Promise<readonly { readonly id: string; readonly name: string }[]>;
-}
-
 const byLabel = (a: Choice, b: Choice) => a.label.localeCompare(b.label, "en-GB") || a.value.localeCompare(b.value);
 
 /**
- * The *Project*, *Agent* and *Session* choices, and names for rows, from the gateway's lists. Projects come by name;
- * agents are the ones the sessions ran, named by their profile; sessions are the most recently active
- * `SESSION_CHOICE_CAP`, by title. A list that can't be read leaves its filter hidden and the others as they are; the
- * call rejects only when every list it was given fails.
+ * The projects, agents and sessions to filter the log by, from the session API on the same origin: `GET /v1/projects`,
+ * `GET /v1/sessions` and `GET /v1/profiles`, every page. Agents are the ones the caller's sessions ran, named by their
+ * profile when the caller may read it; sessions come most recently active first, by title. Rejects when the projects
+ * or sessions can't be read.
  */
-export async function auditLookups(lists: AuditListSources): Promise<AuditLookups> {
-	const read = <T>(list: (() => Promise<T>) | undefined) => (list === undefined ? Promise.resolve(undefined) : list());
-	const [projects, sessions, agents] = await Promise.allSettled([
-		read(lists.projects),
-		read(lists.sessions),
-		read(lists.agents),
+export async function readAuditScope(options: Partial<AuditApiSourceOptions> = {}): Promise<AuditScope> {
+	const doFetch = options.fetch ?? globalThis.fetch;
+	const every = async <T>(route: string): Promise<T[]> => {
+		const items: T[] = [];
+		let cursor: string | undefined;
+		do {
+			const query = new URLSearchParams({ limit: "200" });
+			if (cursor !== undefined) query.set("cursor", cursor);
+			const response = await doFetch(`${options.baseUrl ?? ""}/v1/${route}?${query}`, {
+				headers: { accept: "application/json", ...((await options.headers?.()) ?? {}) },
+			});
+			if (!response.ok) throw new Error(`GET /v1/${route} answered ${response.status}`);
+			const page = (await response.json()) as Page<T>;
+			items.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return items;
+	};
+	const [projects, sessions, profiles] = await Promise.all([
+		every<Project>("projects"),
+		every<SessionRecord>("sessions"),
+		// Names only: a caller who may not list profiles still filters by agent, by ID.
+		every<AgentProfile>("profiles").catch((): AgentProfile[] => []),
 	]);
-	const asked = [lists.projects, lists.sessions, lists.agents].filter((list) => list !== undefined).length;
-	const failed = [projects, sessions, agents].filter((result) => result.status === "rejected");
-	if (asked > 0 && failed.length === asked) throw (failed[0] as PromiseRejectedResult).reason;
-
-	const choices: { -readonly [K in keyof AuditChoices]: AuditChoices[K] } = {};
-	const directory: { -readonly [K in keyof AuditDirectory]: AuditDirectory[K] } = {};
-
-	if (projects.status === "fulfilled" && projects.value !== undefined && projects.value.length > 0) {
-		const names = new Map(projects.value.map((project) => [project.id, project.name]));
-		choices.projects = [...names].map(([value, label]) => ({ value, label })).sort(byLabel);
-		directory.project = (projectId) => names.get(projectId);
-	}
-
-	const profiles = new Map(
-		agents.status === "fulfilled" && agents.value !== undefined
-			? agents.value.map((profile) => [profile.id, profile.name])
-			: [],
-	);
-	if (profiles.size > 0) directory.agent = (agentId) => profiles.get(agentId);
-
-	if (sessions.status === "fulfilled" && sessions.value !== undefined && sessions.value.length > 0) {
-		const recent = [...sessions.value].sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
-		const titles = new Map(
-			recent.flatMap((session) => (session.title === undefined ? [] : [[session.id, session.title]])),
-		);
-		if (titles.size > 0) directory.session = (sessionId) => titles.get(sessionId);
-		choices.sessions = recent.slice(0, SESSION_CHOICE_CAP).map((session) => ({
-			value: session.id,
-			// An untitled session by its ID too, so two of them can be told apart.
-			label: session.title ?? `Untitled session (${session.id})`,
-		}));
-		const ran = new Set(recent.map((session) => session.agentId));
-		choices.agents = [...ran]
-			.map((agentId) => ({ value: agentId, label: profiles.get(agentId) ?? agentId }))
-			.sort(byLabel);
-	}
-	return { choices, directory };
-}
-
-export interface ApiAuditOptions extends Partial<AuditApiSourceOptions>, AuditListSources {
-	/** Whether the console has its vault page, which vault rows link to. Default true; without it they stay unlinked. */
-	readonly vaultPage?: boolean;
+	const profileName = new Map(profiles.map((profile) => [profile.id, profile.name]));
+	const agents = new Map<string, string>();
+	for (const session of sessions) agents.set(session.agentId, profileName.get(session.agentId) ?? session.agentId);
+	return {
+		projects: projects.map((project) => ({ value: project.id, label: project.name })).sort(byLabel),
+		agents: [...agents].map(([value, label]) => ({ value, label })).sort(byLabel),
+		sessions: [...sessions]
+			.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+			.map((session) => ({ value: session.id, label: session.title ?? `Untitled session ${session.id}` })),
+	};
 }
 
 /**
  * The audit log on the gateway this console is served by (`source=api`). Same-origin, like the session API: behind
- * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. With no identity read of
- * organisations or members yet, the log is the caller's own organisation's and rows name people by ID. The credentials
- * to filter by, and their names, come from the log's own `vault.item.created` events; the projects, agents and
- * sessions from the lists the options give (`auditLookups`), read each time the log opens. Rows link to the session
- * they came from, at the turn when the event names one, and vault requests, approvals and denials to the vault page.
+ * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. With no identity API yet, there
+ * is no list of organisations or people: the log is the caller's own organisation's and rows name people by ID. The
+ * credentials to filter by, and their names, come from the log's own `vault.item.created` events; the projects, agents
+ * and sessions from the session API (`readAuditScope`). Rows link to the session they came from, at the turn when the
+ * event names one, and rows about a vault request (asked, approved, denied, withdrawn) to its page on the vault, when
+ * the console has one (`vaultRequests`).
  */
-export function apiAudit(options: ApiAuditOptions = {}): ConsoleAudit {
-	const { projects, sessions, agents, vaultPage = true, ...sourceOptions } = options;
+export function apiAudit(
+	options: Partial<AuditApiSourceOptions> & { readonly vaultRequests?: boolean } = {},
+): ConsoleAudit {
+	const { vaultRequests, ...sourceOptions } = options;
 	const source = auditApiSource({ baseUrl: "", ...sourceOptions });
-	const lists: AuditListSources = {
-		...(projects === undefined ? {} : { projects }),
-		...(sessions === undefined ? {} : { sessions }),
-		...(agents === undefined ? {} : { agents }),
-	};
 	return {
 		source,
 		directory: {},
@@ -148,14 +116,11 @@ export function apiAudit(options: ApiAuditOptions = {}): ConsoleAudit {
 			// Session pages sit under their project; an event that names none stays unlinked.
 			session: (sessionId, turn, projectId) =>
 				projectId === undefined ? undefined : sessionTurnPath(projectId, sessionId, turn),
-			// The console's own vault page opens any request the viewer may see, and says so when they may not.
-			...(vaultPage ? { proposal: (proposalId: string) => vaultRequestPath(proposalId) } : {}),
+			...(vaultRequests === true ? { proposal: vaultRequestPath } : {}),
 		},
 		choices: {},
 		credentials: () => credentialChoices(source),
-		...(projects === undefined && sessions === undefined && agents === undefined
-			? {}
-			: { lookups: () => auditLookups(lists) }),
+		scope: () => readAuditScope(sourceOptions),
 		pollMs: 10_000,
 	};
 }

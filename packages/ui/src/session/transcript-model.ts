@@ -79,3 +79,28 @@ export function groupTranscript(
 		return previous;
 	return rows;
 }
+
+/**
+ * The IDs of each turn's final answer: an assistant item with no other answer and no tool call after it before the
+ * person's next message (a notice or a card may follow it). These are the answers that get Copy and their time, as in
+ * T3 Code, which shows its message meta only on a turn's terminal answer; the words an agent says between its tool
+ * calls get none. One pass over the rows, from the end.
+ */
+export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<string> {
+	const ids = new Set<string>();
+	let workAfter = false;
+	for (let index = rows.length - 1; index >= 0; index--) {
+		const row = rows[index];
+		if (row === undefined) continue;
+		if (row.kind === "tools") {
+			workAfter = true;
+			continue;
+		}
+		if (row.item.kind === "user") workAfter = false;
+		else if (row.item.kind === "assistant") {
+			if (!workAfter) ids.add(row.id);
+			workAfter = true;
+		}
+	}
+	return ids;
+}

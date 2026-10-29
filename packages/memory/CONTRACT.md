@@ -14,7 +14,8 @@ only through proposals that a human or service applies. Learned facts never over
   (`active`, `superseded`, `forgotten`), `supersededBy`, `updatedAt`, an optional `staleAfter`, `overrides` (a job
   concept's exception to a general one) and `extensions` (namespaced data a host keeps and Harbour does not read).
 - **Proposal**: one write (`remember`, `correct`, `supersede`, `forget`), who proposed it, `pending`, `applied` or
-  `rejected`, and `duplicateOf` when a `remember` nearly repeats an active concept.
+  `rejected`, and `duplicateOf` with `duplicate` (`score` 0 to 1, and the `check` that found it) when a `remember`, a
+  `correct` or a `supersede`'s replacement nearly repeats or paraphrases another active concept.
 
 ## Key operations
 
@@ -47,9 +48,12 @@ statement) and an `index.md` of active concepts.
   applies it", "rejects a proposal without changing memory and never decides a proposal twice".
 - Agents never decide or create spaces: "refuses an agent applying or rejecting a proposal, even its own", "lets only
   humans and services create memory spaces".
-- Near-duplicates are flagged and cannot be applied while the original is active: "flags a near-duplicate remember
-  with duplicateOf and refuses to apply it while the original is active". A `remember` of an active ID is `conflict`:
-  "refuses a remember for a concept ID that is already active".
+- Near-duplicates and paraphrases are flagged and cannot be applied while the original is active: "flags a
+  near-duplicate remember with duplicateOf and refuses to apply it while the original is active", "flags a paraphrase
+  of an active concept, not only a near-identical statement, and refuses to apply it", "flags a correction or a
+  replacement that repeats another active concept, but never the concept it changes", "refuses to apply a proposal
+  that repeats a concept applied after it was proposed". A `remember` of an active ID is
+  `conflict`: "refuses a remember for a concept ID that is already active".
 - Owner-set facts are safe from agents: "refuses an agent correcting, superseding or forgetting an owner-set concept,
   but lets it propose a correction to a learned one".
 - Who proposed decides `setBy`: "marks a concept learned when an agent's proposal is applied and owner when a human's
@@ -87,9 +91,59 @@ project may read its space but not change it", "project access: an agent whose s
 refused, and nothing changed", "project access: an agent whose session was closed is refused" and "project access: an
 operator on the project and an agent in its own session still work on its space".
 
+## Write authority (M2-BE5)
+
+A memory takes a `MemoryAuthority`: the least role `createSpace`, `propose`, `decide` and `importSnapshot` each need
+(`DEFAULT_MEMORY_AUTHORITY`: `operator` for all four). Where the role is held depends on the space's owner: on the
+project for a project's space (as above); across the organisation, from a binding with no project, for an
+organisation's space; and for a user's space, the user always may, anyone else needs the role across the
+organisation. An agent acts through its own open session and counts as an operator, never an admin, so a write
+needing `admin` is never an agent's; agents still never create spaces, decide or import. Reads keep the rules above:
+the organisation's members read its spaces. The cases: "write authority: writing to an organisation's space needs a
+role across the organisation, not on one project", "write authority: a user writes to their own space without a
+role; anyone else needs one across the organisation", "write authority: an agent proposes to an organisation's space
+only through its own open session", and, with `writes: true`, "writes: a memory's authority sets the role each write
+needs, and an agent never holds more than operator" and "writes: an authority needing admin to propose shuts agents
+out, since an agent counts as an operator".
+
+## Duplicates and paraphrases (M2-BE5)
+
+`nearDuplicate` (`src/index.ts`) runs on every `remember`, `correct` and `supersede` replacement against the space's
+active concepts, leaving out the concepts the write changes: first `similarity` of the statements at 0.6, then
+`paraphraseScore` at `DEFAULT_PARAPHRASE_THRESHOLD` 0.5, the best of the Jaccard similarity of Porter-stemmed
+statements, of stemmed titles with statements, and of how much of the shorter statement the other holds (from 0.85).
+Statements of fewer than five stemmed words, or holding different numbers, are left to `similarity`: in them one
+word is the fact. No model and no embeddings; against Sal's 920 active concepts (422,740 pairs) none scores 0.4.
+
+A host adds a `ParaphraseCheck` (a model, embeddings) for what words miss: it runs only when Harbour's checks find
+nothing, is shown the five active concepts nearest by words (never the whole space), and its answer counts only when
+it names one of them with a score from 0 to 1. The case: "writes: a host's paraphrase check catches what words alone
+miss, shown only the nearest active concepts".
+
+## Publishing to a source (M2-BE5)
+
+`withBundlePublishing({ memory, sourceFor, render?, audit?, clock? })` (`@harbour/memory/publish`) wraps any `Memory`.
+After `decide` applies a write through the memory's own writer, it sends the space's whole bundle (every concept, any
+status, so nothing needs deleting) to the space's `MemorySource.publish` and waits for it; publishes run one at a
+time per space, and applies arriving during one share the next. A failed publish never fails or undoes the write: it
+is audited `memory.bundle.publish_failed` with the error's code only (a message may hold a remote's URL), and the next
+publish sends everything again. `publishBundle(ctx, spaceId)` publishes now, to retry (humans and services who can
+read the space; `not_supported` without a source). A success is audited `memory.bundle.published` with the ref.
+`render` replaces Harbour's own export with a host's files: Sal's (`examples/sal-worker/src/memory-source.ts`)
+commits OKF concept files and the directory indexes Sal rewrites to a sal-memory branch, keeping the bytes of every
+file that already says the same, so publishing an unchanged import commits nothing.
+
+## Write operations (M2-BE5)
+
+`@harbour/memory/writes` gives each write as a transport-neutral operation a later HTTP layer mounts:
+`memory.createSpace`, `memory.propose`, `memory.decide`, `memory.importSnapshot` and `memory.publishBundle`. Each parses
+untrusted JSON strictly (an unknown or missing field is `invalid` before the memory sees it), says whether agents may
+call it (only `propose`), and runs on any `Memory` as the caller, so the memory's own rules apply.
+`runMemoryWrite(memory, ctx, name, input)` does both; an unknown name is `not_found`.
+
 ## The in-memory implementation
 
-`createMemoryMemory({ clock?, audit?, access?, renderer? })` keeps spaces, concepts and proposals in maps, and the
+`createMemoryMemory({ clock?, audit?, access?, renderer?, authority?, paraphrase? })` keeps spaces, concepts and proposals in maps, and the
 recall index of the last set of spaces asked for, rebuilt when one of them changes. Applies on a space run through
 a promise chain; inside it the proposal and the concept's version are checked again, then changed without an await,
 so racing applies or an apply racing a reject settle once; `decide` checks the proposal is pending after the access
@@ -100,12 +154,12 @@ is audited too); importing the space's current snapshot again changes nothing, a
 unchanged keeps its version. A space remembers the highest version each ID has had, so a concept a snapshot drops
 and a later one brings back carries on from there and a proposal against its old version is `conflict`. Portable logic
 (`similarity` with `DEFAULT_SIMILARITY_THRESHOLD` 0.6, `renderConcept`, `validateConceptId` in `src/index.ts`; the
-index, terms and recall beside it) has no Node APIs. It leaves out durable storage, publishing to a `MemorySource`
-and embeddings; reading a source's bundle into a snapshot is the host's adapter.
+index, terms and recall beside it) has no Node APIs. It leaves out durable storage and embeddings; publishing
+is `withBundlePublishing` around any memory, and reading or writing a source's bundle is the host's adapter.
 
 ## The durable implementation (`@harbour/memory/sql`)
 
-`createSqlMemory({ driver, clock?, audit?, access?, renderer? })` runs on any `SqlDriver` from `@harbour/sql`
+`createSqlMemory({ driver, clock?, audit?, access?, renderer?, authority?, paraphrase? })` runs on any `SqlDriver` from `@harbour/sql`
 (Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare). It applies the same rules as the in-memory
 memory (`src/rules.ts`, shared by both) and passes the whole suite, with `projectAccess`, on PGlite, `node:sqlite`, D1
 in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres. `migrateMemory(driver)` creates the tables if
@@ -140,9 +194,12 @@ sources.
 - Concept IDs need at least two segments (`personal/x`). Is a single segment ever wanted?
 - A `remember` may reuse the ID of a superseded or forgotten concept; its version carries on from the old record. An
   agent may do this even when the owner set the old one. Should forgotten owner facts stay owner-only?
-- Duplicate detection compares statements only, against active concepts in the same space, and only at proposal time.
-- Settled (question 7) for project-owned spaces, which now check the project. User-owned spaces are still scoped
-  by organisation only, not by the owning user.
+- Duplicate detection runs against active concepts in the same space. Harbour's own checks run again when a proposal
+  is applied, so a concept applied in between counts; a host's `ParaphraseCheck` runs only at proposal time.
+- Settled (question 7) for project-owned spaces, which now check the project. Reads of user-owned spaces are still
+  scoped by organisation only, not by the owning user; writes need the user or an organisation-wide role (M2-BE5).
+- Publishing sends the whole bundle on every applied write. Fine for Sal's thousand concepts; a much larger space
+  would want the changed concepts only.
 - Proposals are not checked against `expectedVersion` until applied, so a stale proposal can sit pending.
 - An imported snapshot replaces the space; proposals applied since are lost on the next import unless the source has
   them. Sal publishes its memory from the source, so its spaces are read-only mirrors in practice.

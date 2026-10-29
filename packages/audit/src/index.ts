@@ -9,6 +9,7 @@ import {
 	type AuditSource,
 	HarbourError,
 	type JsonValue,
+	MAX_AUDIT_QUERY_TYPES,
 } from "@harbour/contracts";
 
 export const AUDIT_SOURCES: readonly AuditSource[] = [
@@ -92,6 +93,26 @@ export function actorMatches(actual: Actor, wanted: Actor): boolean {
 /** Whether `type` is `wanted`, or lies under it when `wanted` is a prefix ending in `.`. */
 export function typeMatches(type: string, wanted: string): boolean {
 	return wanted.endsWith(".") ? type.startsWith(wanted) : type === wanted;
+}
+
+/**
+ * Rejects with `invalid` unless the query's `types`, when set, lists 1 to `MAX_AUDIT_QUERY_TYPES` non-empty types
+ * without a comma. Stores check it before reading, so every target refuses the same queries.
+ */
+export function assertValidAuditQuery(query: AuditQuery): void {
+	const { types } = query;
+	if (types === undefined) return;
+	if (!Array.isArray(types) || types.length === 0) {
+		throw new HarbourError("invalid", "An audit query's types must list at least one type");
+	}
+	if (types.length > MAX_AUDIT_QUERY_TYPES) {
+		throw new HarbourError("invalid", `An audit query's types may list at most ${MAX_AUDIT_QUERY_TYPES} types`);
+	}
+	for (const type of types) {
+		if (!isNonEmptyString(type) || type.includes(",")) {
+			throw new HarbourError("invalid", "Each of an audit query's types must be a non-empty type without a comma");
+		}
+	}
 }
 
 /**

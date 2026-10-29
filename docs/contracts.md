@@ -53,7 +53,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
 | Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (22) | [skills](../packages/skills/CONTRACT.md) |
 | Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (24) | [memory](../packages/memory/CONTRACT.md) |
-| Schedules | `Schedules` | `@harbour/schedules/memory` | `registerSchedulesConformance` (29) | [schedules](../packages/schedules/CONTRACT.md) |
+| Schedules | `Schedules` | `@harbour/schedules/memory` (durable: `@harbour/schedules/sql`) | `registerSchedulesConformance` (33) | [schedules](../packages/schedules/CONTRACT.md) |
 | Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (22) | [audit](../packages/audit/CONTRACT.md) |
 
 Counts include the cases `projectAccess` adds. `ProjectAccess` and `createProjectAccess` are in `@harbour/contracts`
@@ -257,3 +257,15 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
     Opt-in suite cases: `registerRuntimeConformance(..., { history: true })`. Still open: whether the targets'
     runtimes (the SessionDO, the self-hosted gateway) serve it before it is settled, and whether it joins
     `SessionRuntime` or stays its own interface.
+16. **Branching a session. Proposed (28 Oct 2026), implemented in the in-memory and SQL runtimes, the session API
+    and both gateways (issue #6).** `SessionBranching.fork(ctx, sessionId, { itemId, title? })` starts a new idle
+    session in the same project, agent and workspace with the history up to the answer `itemId` (copied, with its
+    times), under a viewer check on the source and the operator check for creating a session; `POST
+    /sessions/:id/fork` answers 201 with its record. `SessionBranching.edit(ctx, sessionId, { itemId, text,
+    requestId?, model?, thinking? })` rewinds an idle session to the person's message `itemId` and prompts `text` in its place (operator;
+    `conflict` while a run is going or the session is closed); `POST /sessions/:id/edit` answers 202 with the
+    submission. An edit forks the session's Pi conversation from just before the message and records it as the
+    active one (`harbour.active-conversation`), so the rewound history stays in storage, unshown, and a reopened
+    session shows the edit; watchers get a new stream generation with a fresh snapshot. Still open: whether a fork
+    should get its own copy of the workspace rather than share the source's, whether the rewound branches should be
+    browsable, and whether it joins `SessionRuntime`.

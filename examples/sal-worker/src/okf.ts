@@ -15,7 +15,7 @@
  * the Sal renderer can print it as Sal does.
  */
 import { createHash } from "node:crypto";
-import type { JsonValue, MemorySnapshot, SnapshotConcept } from "@harbour/contracts";
+import type { Concept, JsonValue, MemorySnapshot, SnapshotConcept } from "@harbour/contracts";
 import { parse } from "yaml";
 
 /** Sal's concept IDs: two to four segments; `index` and `log` are the bundle's own files. */
@@ -245,4 +245,266 @@ export function okfSnapshot(
 /** The `sal` extension of a concept imported by `okfSnapshot`. */
 export function salExtension(concept: { readonly extensions?: { readonly [namespace: string]: JsonValue } }) {
 	return concept.extensions?.sal as unknown as SalConceptExtension | undefined;
+}
+
+// Writing: Harbour's concepts back as Sal's concept files and directory indexes (M2-BE5), as Sal's own writer
+// (tvdavies/sal `src/context/memory-writer.ts`) writes them, so Sal reads what Harbour publishes as its own.
+
+/** Sal writes frontmatter as one `key: <JSON>` line per field. */
+function renderConceptText(frontmatter: Record<string, unknown>, body: string): string {
+	const lines = Object.entries(frontmatter).map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`);
+	return `---\n${lines.join("")}---\n\n${body.trim()}\n`;
+}
+
+const SUPERSEDED_NOTE = /^> Superseded by .*\r?\n\r?\n/;
+
+/** What a concept states, without the note Sal puts above a superseded one. */
+function plainStatement(statement: string): string {
+	return statement.replace(SUPERSEDED_NOTE, "").trim();
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+/** The sources Harbour holds for a concept, without the stand-in `okfConcept` gives one that has none. */
+function realSources(concept: Pick<Concept, "id" | "sources">): string[] {
+	return concept.sources.filter((source) => source !== `okf:${concept.id}`);
+}
+
+/**
+ * Whether a concept file already says what `concept` says, as `okfConcept` reads it: then publishing leaves its bytes
+ * alone. Only Harbour's own fields count; when they were written (`generated.at`) does not.
+ */
+function alreadySays(concept: Concept, existing: string): boolean {
+	let parsed: SnapshotConcept;
+	try {
+		parsed = okfConcept(concept.id, existing).concept;
+	} catch {
+		return false;
+	}
+	if (parsed.status !== concept.status || parsed.setBy !== concept.setBy) return false;
+	if (concept.status === "forgotten") return true;
+	return (
+		parsed.title === concept.title &&
+		(parsed.description ?? "") === (concept.description ?? "") &&
+		plainStatement(parsed.statement) === plainStatement(concept.statement) &&
+		sameList(
+			parsed.tags ?? [],
+			(concept.tags ?? []).filter((tag) => tag.trim() !== ""),
+		) &&
+		JSON.stringify(parsed.scope) === JSON.stringify(concept.scope) &&
+		sameList(realSources(parsed), realSources(concept)) &&
+		parsed.supersededBy === concept.supersededBy &&
+		parsed.staleAfter === concept.staleAfter &&
+		parsed.overrides === concept.overrides
+	);
+}
+
+function frontmatterOf(text: string | undefined): Record<string, unknown> {
+	const match = text === undefined ? null : FRONTMATTER.exec(text);
+	if (match === null) return {};
+	try {
+		const parsed: unknown = parse(match[1] ?? "");
+		return isRecord(parsed) ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+function iso(at: number): string {
+	return new Date(at).toISOString();
+}
+
+export interface OkfWriteOptions {
+	/** Written as `generated.by`. Default `harbour`. */
+	readonly producer?: string;
+	/** Who asked to forget, as `sal.forgotten.by`. Default the producer. */
+	readonly forgottenBy?: string;
+}
+
+/**
+ * One concept as Sal's concept file. `existing` is the file the source holds now, if any: when it already says what the
+ * concept says it is returned as it is, byte for byte; otherwise its unknown fields, its `sal` fields and the details
+ * of sources it shares (title, author) are kept, as Sal's writer keeps them (OKF §4.1). `titleOf` names a superseding
+ * concept for the note Sal puts above a superseded one.
+ */
+export function okfConceptText(
+	concept: Concept,
+	existing: string | undefined,
+	titleOf: (conceptId: string) => string | undefined = () => undefined,
+	options: OkfWriteOptions = {},
+): string {
+	if (existing !== undefined && alreadySays(concept, existing)) return existing;
+	const producer = options.producer ?? "harbour";
+	const previous = frontmatterOf(existing);
+	const { verified: _verified, stale_after: _staleAfter, ...kept } = previous;
+	const previousSal = isRecord(previous.sal) ? previous.sal : {};
+	const extension = salExtension(concept);
+	const at = iso(concept.updatedAt);
+	const learnedFrom =
+		concept.setBy === "owner"
+			? "owner"
+			: extension !== undefined && extension.learnedFrom !== "owner"
+				? extension.learnedFrom
+				: "session";
+	const segments = concept.id.split("/");
+	const project = segments[0] === "projects" && segments.length >= 3 ? segments[1] : undefined;
+	const job = concept.scope.kind === "job" ? concept.scope.job : undefined;
+	const place = {
+		learned_from: learnedFrom,
+		scope: job !== undefined ? "exception" : concept.id.startsWith("personal/") ? "personal" : "project",
+		...(project === undefined ? {} : { project }),
+		...(job === undefined
+			? {}
+			: { applies_to: job, ...(concept.overrides === undefined ? {} : { overrides: concept.overrides }) }),
+	};
+	const type =
+		typeof previous.type === "string" && previous.type.trim() !== "" ? previous.type : (extension?.type ?? "Fact");
+	const oldSources = (Array.isArray(previous.sources) ? previous.sources : []).filter(isRecord);
+	const ids = new Set<string>();
+	const sources = realSources(concept).map((resource) => {
+		const entry = oldSources.find((source) => source.resource === resource) ?? { id: "harbour", resource };
+		const base = typeof entry.id === "string" && entry.id !== "" ? entry.id : "source";
+		let id = base;
+		for (let n = 2; ids.has(id); n++) id = `${base}-${n}`;
+		ids.add(id);
+		return { ...entry, id };
+	});
+
+	if (concept.status === "forgotten") {
+		const salKept = Object.fromEntries(
+			Object.entries(previousSal).filter(([key]) => ["scope", "project", "applies_to", "overrides"].includes(key)),
+		);
+		return renderConceptText(
+			{
+				type,
+				title: concept.title,
+				status: "deprecated",
+				generated: { by: producer, at },
+				sources,
+				sal: { ...salKept, ...place, forgotten: { at, by: options.forgottenBy ?? producer } },
+			},
+			`Forgotten on ${at.slice(0, 10)}. Earlier revisions remain in this repository's Git history, its remote and backups until those are rewritten or expire.`,
+		);
+	}
+
+	const {
+		forgotten: _forgotten,
+		superseded_by: _supersededBy,
+		applies_to: _job,
+		overrides: _overrides,
+		...salKept
+	} = previousSal;
+	const frontmatter: Record<string, unknown> = {
+		type,
+		title: concept.title,
+		...(concept.description === undefined || concept.description === "" ? {} : { description: concept.description }),
+		...(concept.tags === undefined || concept.tags.length === 0 ? {} : { tags: concept.tags }),
+		status: concept.status === "superseded" ? "deprecated" : "stable",
+		generated: { by: producer, at },
+		...(concept.staleAfter === undefined ? {} : { stale_after: iso(concept.staleAfter) }),
+		sources,
+		sal: {
+			...salKept,
+			...place,
+			...(concept.status === "superseded" && concept.supersededBy !== undefined
+				? { superseded_by: concept.supersededBy }
+				: {}),
+		},
+	};
+	for (const [key, value] of Object.entries(kept)) {
+		if (!(key in frontmatter) && key !== "description" && key !== "tags") frontmatter[key] = value;
+	}
+	const statement = plainStatement(concept.statement);
+	if (concept.status === "superseded" && concept.supersededBy !== undefined) {
+		const successor = concept.supersededBy;
+		return renderConceptText(
+			frontmatter,
+			`> Superseded by [${titleOf(successor) ?? successor}](/${successor}.md) on ${at.slice(0, 10)}.\n\n${statement}`,
+		);
+	}
+	return renderConceptText(frontmatter, statement);
+}
+
+/**
+ * Every concept as its file, `<id>.md`, keeping any file the source holds (`existing`, by path) that already says the
+ * same. Directory indexes are the source's to write (`okfIndexes`), from the whole tree.
+ */
+export function okfConceptFiles(
+	concepts: readonly Concept[],
+	existing: ReadonlyMap<string, string>,
+	options: OkfWriteOptions = {},
+): OkfFile[] {
+	const titles = new Map(concepts.map((concept) => [concept.id, concept.title]));
+	return concepts.map((concept) => {
+		const path = `${concept.id}.md`;
+		return { path, text: okfConceptText(concept, existing.get(path), (id) => titles.get(id), options) };
+	});
+}
+
+/** The heading Sal gives a new directory's index: its name, capitalised, dashes as spaces. */
+function headingFor(dir: string): string {
+	const name = dir.split("/").at(-1) ?? "Knowledge";
+	return `# ${name.charAt(0).toUpperCase()}${name.slice(1).replace(/-/g, " ")}`;
+}
+
+/**
+ * A directory's `index.md` as Sal renders it, from `tree` (every file of the bundle, by path): the existing heading, then
+ * its subdirectories and its active concepts, by name.
+ */
+export function okfIndex(dir: string, tree: ReadonlyMap<string, string>): string {
+	const prefix = dir === "" ? "" : `${dir}/`;
+	const heading = /^# .+$/m.exec(tree.get(`${prefix}index.md`) ?? "")?.[0] ?? headingFor(dir);
+	const entries = new Map<string, "dir" | "file">();
+	for (const path of tree.keys()) {
+		if (!path.startsWith(prefix)) continue;
+		const rest = path.slice(prefix.length);
+		const slash = rest.indexOf("/");
+		if (slash === -1) entries.set(rest, "file");
+		else entries.set(rest.slice(0, slash), "dir");
+	}
+	const lines: string[] = [];
+	for (const [name, kind] of [...entries].sort(([a], [b]) => a.localeCompare(b))) {
+		if (name.startsWith(".")) continue;
+		if (kind === "dir") {
+			const title = /^# (.+)$/m.exec(tree.get(`${prefix}${name}/index.md`) ?? "")?.[1] ?? name;
+			lines.push(`- [${title}](${name}/index.md)`);
+			continue;
+		}
+		if (!name.endsWith(".md") || name === "index.md" || name === "log.md") continue;
+		const id = `${prefix}${name.slice(0, -3)}`;
+		try {
+			const text = tree.get(`${prefix}${name}`) ?? "";
+			if (okfConcept(id, text).concept.status !== "active") continue;
+			const frontmatter = frontmatterOf(text);
+			const title = typeof frontmatter.title === "string" ? frontmatter.title : name.slice(0, -3);
+			const description = typeof frontmatter.description === "string" ? ` - ${frontmatter.description}` : "";
+			lines.push(`- [${title}](${name})${description}`);
+		} catch {
+			// An invalid concept is not advertised.
+		}
+	}
+	return `${heading}\n\n${lines.length === 0 ? "No concepts have been added yet." : lines.join("\n")}\n`;
+}
+
+/**
+ * The indexes Sal rewrites when the concepts at `changed` change: each one's directory and every directory above it,
+ * but never the bundle's root index, which Sal keeps by hand. Deepest first, so a parent lists its children's new
+ * headings. Returns each index's path and text, from `tree` as it will be.
+ */
+export function okfIndexes(changed: readonly string[], tree: ReadonlyMap<string, string>): OkfFile[] {
+	const dirs = new Set<string>();
+	for (const path of changed) {
+		const parts = path.split("/").slice(0, -1);
+		for (let index = 1; index <= parts.length; index++) dirs.add(parts.slice(0, index).join("/"));
+	}
+	const working = new Map(tree);
+	const out: OkfFile[] = [];
+	for (const dir of [...dirs].sort((a, b) => b.length - a.length || (a < b ? -1 : 1))) {
+		const text = okfIndex(dir, working);
+		working.set(`${dir}/index.md`, text);
+		out.push({ path: `${dir}/index.md`, text });
+	}
+	return out;
 }

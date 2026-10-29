@@ -14,6 +14,10 @@
 //   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
 // - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
+// - A session on a repository: New session lists its branches (`GET /v1/git/branches`), then creates the workspace
+//   from the repository at the branch (`POST /v1/workspaces`, a git seed) and the session on it (`workspaceId`).
+//   Seeding writes files and never acquires a sandbox; the repository's credentials, when it needs any, are the
+//   gateway's (the vault's egress), never the console's.
 
 import {
 	type AgentProfile,
@@ -32,6 +36,7 @@ import type {
 	ConsoleClient,
 	ModelChoices,
 	ProjectSummary,
+	RepositoryBranches,
 	SendOptions,
 	SessionControl,
 	StartAccess,
@@ -49,10 +54,9 @@ export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
 
 /** A session as the API lists it: the parts of `SessionRecord` (`@harbour/contracts`) the console reads. */
-export type SessionRecord = {
+type SessionRecord = {
 	readonly id: string;
 	readonly projectId: string;
-	readonly agentId: string;
 	readonly title?: string;
 	readonly status: SessionStatus;
 	readonly workspaceId?: string;
@@ -158,16 +162,7 @@ export function modelChoicesOf(state: SessionModelState): ModelChoices {
 const listStatus = (status: SessionStatus): SessionStatus => (status === "idle" ? "done" : status);
 const active = (status: SessionStatus) => status === "running" || status === "waiting";
 
-/**
- * The console client on the session API, plus the lists the audit log's filters read (audit-http.ts): every session
- * the caller can see, across projects, and every agent profile. Both follow the API's pages, as `projects` does.
- */
-export interface ApiConsoleClient extends ConsoleClient {
-	sessionRecords(): Promise<readonly SessionRecord[]>;
-	agentProfiles(): Promise<readonly AgentProfile[]>;
-}
-
-export function createApiClient(options: ApiClientOptions = {}): ApiConsoleClient {
+export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const base = (options.baseUrl ?? "/v1").replace(/\/+$/, "");
 	const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
 	const pollMs = options.listPollMs ?? LIST_POLL_MS;
@@ -303,7 +298,16 @@ export function createApiClient(options: ApiClientOptions = {}): ApiConsoleClien
 					const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
 					if (path !== "") query.set("path", path);
 					if (cursor !== undefined) query.set("cursor", cursor);
-					const page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					let page: Page<WorkspaceEntry>;
+					try {
+						page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					} catch (reason) {
+						// A session's own workspace exists once its first tool call makes it; until then it is empty.
+						if (path === "" && cursor === undefined && reason instanceof ApiError && reason.code === "not_found") {
+							return { entries: [], truncated: false };
+						}
+						throw reason;
+					}
 					entries.push(...page.items);
 					cursor = page.nextCursor;
 				} while (cursor !== undefined && entries.length < DIRECTORY_CAP);
@@ -340,9 +344,6 @@ export function createApiClient(options: ApiClientOptions = {}): ApiConsoleClien
 
 	return {
 		actor: options.actor ?? SIGNED_IN,
-
-		sessionRecords: () => listSessions(),
-		agentProfiles: () => listProfiles(),
 
 		async projects(): Promise<readonly ProjectSummary[]> {
 			const [projects, sessions] = await Promise.all([listProjects(), listSessions()]);
@@ -498,11 +499,33 @@ export function createApiClient(options: ApiClientOptions = {}): ApiConsoleClien
 			return { agentId: agent.id, agentName: agent.name };
 		},
 
-		async create(input) {
+		branches: (projectId, repo, signal) =>
+			getJson<RepositoryBranches>(`${base}/git/branches?${new URLSearchParams({ projectId, repo })}`, signal),
+
+		async create({ repository, ...input }) {
+			let workspaceId: string | undefined;
+			if (repository !== undefined) {
+				const seeded = await call(`${base}/workspaces`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						projectId: input.projectId,
+						seed: {
+							name: repository.repo,
+							sources: [{ kind: "git", repo: repository.repo, ref: repository.branch }],
+						},
+					}),
+				});
+				workspaceId = ((await seeded.json()) as { id: string }).id;
+			}
 			const response = await call(`${base}/sessions`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify(input),
+				body: JSON.stringify({
+					...input,
+					...(workspaceId === undefined ? {} : { workspaceId }),
+					...(repository === undefined ? {} : { labels: { repo: repository.repo, branch: repository.branch } }),
+				}),
 			});
 			const record = (await response.json()) as SessionRecord;
 			projectOfSession.set(record.id, record.projectId);
@@ -523,6 +546,31 @@ export function createApiClient(options: ApiClientOptions = {}): ApiConsoleClien
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
+		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
+
+		async fork(sessionId, itemId) {
+			const response = await call(sessionUrl(sessionId, "/fork"), {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ itemId }),
+			});
+			const record = (await response.json()) as SessionRecord;
+			projectOfSession.set(record.id, record.projectId);
+			return record.id;
+		},
+
+		edit: (sessionId, itemId, text, sendOptions) =>
+			post(
+				sessionUrl(sessionId, "/edit"),
+				{
+					itemId,
+					text,
+					...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
+					...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
+					...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+				},
+				sendOptions?.requestId,
+			),
 
 		markRead(sessionId) {
 			count(open, sessionId, 1);

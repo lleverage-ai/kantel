@@ -12,9 +12,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
 	type Conversation,
+	type ConversationId,
 	type ConversationView,
 	createRegistry,
 	defineExtension,
+	type EntryRecord,
 	type Extension,
 	Harness,
 	type Registry,
@@ -24,6 +26,7 @@ import {
 	type ToolRegistration,
 	type Wake,
 } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
 	type AccessCheck,
 	type Actor,
@@ -46,6 +49,7 @@ import {
 	type ProjectAccess,
 	type PromptInput,
 	type Sandboxes,
+	type SessionBranching,
 	type SessionDirectory,
 	type SessionEnd,
 	type SessionEndHook,
@@ -58,13 +62,26 @@ import {
 	type Submission,
 	systemClock,
 	systemContext,
+	type WorkspaceId,
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+import { ACTIVE_CONVERSATION, copyEntries, entryBefore } from "./branching.ts";
+import {
+	contextEntryOf,
+	MEMORY_TOOL_NAMES,
+	memorySpacesOf,
+	memoryToolDefinitions,
+	memoryToolHandler,
+	type SessionMemoryOptions,
+	type SessionSkillsOptions,
+	sessionContextEntry,
+} from "./context.ts";
 import { historyAnchor, historyLimit, readHistory } from "./history.ts";
 import {
 	ConversationProjector,
 	createSessionEndHook,
+	HARBOUR_USER_ENTRY,
 	harbourUserEntry,
 	hostToolAsPiTool,
 	joinPromptLayers,
@@ -83,6 +100,13 @@ import {
 	shownThinking,
 } from "./session-models.ts";
 import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
+
+export {
+	HARBOUR_CONTEXT_ENTRY,
+	type HarbourContextEntryData,
+	type SessionMemoryOptions,
+	type SessionSkillsOptions,
+} from "./context.ts";
 
 export interface SessionRuntimeOptions {
 	/** Directory, profiles, submissions and host registrations. */
@@ -126,6 +150,28 @@ export interface SessionRuntimeOptions {
 	 * and secret. Without it only handlers registered in this process serve tools.
 	 */
 	readonly hostHandler?: (host: StoredHost) => HostToolHandler | undefined;
+	/**
+	 * Tools this deployment serves in its own process, beside host tools: Harbour's components as Pi tools, such as the
+	 * browser's (`@harbour/browser`). Asked for each session as its tools install, bound to that session; the session
+	 * gets those its profile names in `tools`, before its host's. Their results may carry images, which the transcript
+	 * shows on the tool's item.
+	 */
+	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[];
+	/**
+	 * The execution environment a session's tools work in (Pi Durable's `ExecutionEnv`, which `read`, `write`, `edit`
+	 * and `bash` need), such as `createSandboxExecutionEnv` over the session's workspace. Built once when the session
+	 * opens in this process and given to its Harness; `undefined` for a session with none, whose tools that need one
+	 * then fail with an error result. Building it must acquire nothing: a sandbox is leased by the first command that
+	 * needs one, and released by the session-end hook. Abort and close call its `cleanup`, which stops waiting for
+	 * commands still running.
+	 */
+	readonly environment?: (session: SessionRecord) => ExecutionEnv | undefined;
+	/**
+	 * The workspace a session created without one gets, by the new session's ID, such as a keyed ID its environment
+	 * creates on first use. Giving an ID creates nothing. Without it (or when it answers `undefined`), such a session has
+	 * no workspace.
+	 */
+	readonly defaultWorkspaceId?: (sessionId: SessionId) => WorkspaceId | undefined;
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
 	/** Told of each session `resume()` could not open. Default: ignored. */
@@ -138,6 +184,16 @@ export interface SessionRuntimeOptions {
 	 * the runtime's own timers do this.
 	 */
 	readonly onWakeAt?: (at: number) => void;
+	/**
+	 * The skills sessions see (`./context.ts`): pinned on a session's first prompt, mounted by the host and listed through
+	 * the host's renderer. Without it sessions get no skills.
+	 */
+	readonly skills?: SessionSkillsOptions;
+	/**
+	 * The memory sessions read (`./context.ts`): recalled over the profile's memory scopes on the first prompt, and the
+	 * `memory_search` and `memory_read` tools. Without it sessions get no memory.
+	 */
+	readonly memory?: SessionMemoryOptions;
 }
 
 export interface SessionRuntimeService {
@@ -146,6 +202,8 @@ export interface SessionRuntimeService {
 	readonly history: SessionHistory;
 	/** The models each session may name and what it runs with now, for a client's model and thinking pickers. */
 	readonly models: SessionModels;
+	/** Forking a session from an answer, and editing a message to rerun from it (proposed, issue #6). */
+	readonly branching: SessionBranching;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -208,13 +266,22 @@ interface OpenSession {
 	readonly profile: AgentProfile;
 	readonly sequence: number;
 	readonly harness: Harness;
-	readonly conversation: Conversation;
+	/** The conversation the session shows and runs: the root, or the fork an edit made (`branching.ts`). */
+	conversation: Conversation;
 	/** The session's Pi models: what its prompts may name (`SessionModels`). */
 	readonly models: Models;
 	readonly registry: Registry;
-	readonly view: AttachedReplicatedState<ConversationView>;
-	readonly stream: MemorySessionStream;
-	readonly projector: ConversationProjector;
+	/** The session's execution environment (`SessionRuntimeOptions.environment`), if it has one. */
+	readonly env: ExecutionEnv | undefined;
+	view: AttachedReplicatedState<ConversationView>;
+	/** Stops following `view`. */
+	unsubscribeView: () => void;
+	stream: MemorySessionStream;
+	projector: ConversationProjector;
+	/** Every `watch` of the session, so an edit can move each onto the new stream. */
+	readonly watchers: Set<Watcher>;
+	/** An edit in progress: a second one is refused until it is in. */
+	editing: boolean;
 	/**
 	 * Stream publishes and directory writes, in order. Each step runs whether or not the one before it failed; a failure
 	 * reaches whoever awaited that step.
@@ -224,8 +291,8 @@ interface OpenSession {
 	unsaved: boolean;
 	/** The record last queued for writing. */
 	saved: SessionRecord;
-	/** Names this opening of the session's stream in the cursors it gives out. */
-	readonly generation: string;
+	/** Names this opening of the session's stream in the cursors it gives out; an edit starts a new one. */
+	generation: string;
 	/** Bumped on every reinstall of the session's host tools, so an older, slower one never installs over a newer one. */
 	toolsVersion: number;
 	/** The latest reinstall of the session's host tools. */
@@ -247,6 +314,21 @@ interface OpenSession {
 	/** The store records the session as closed. */
 	durablyClosed: boolean;
 	stopWatching(): void;
+	/** Placing the session's skills and recall before its first prompt; later inputs wait for it. */
+	givingContext?: Promise<void>;
+}
+
+/** How many of a transcript's first entries are read to tell whether the session has started. */
+const CONTEXT_SCAN = 16;
+/** The request ID of a session's context write, so it is admitted once. */
+const CONTEXT_REQUEST = "harbour.context";
+
+/** One `watch`: its connection to the session's current stream, which an edit replaces. */
+interface Watcher {
+	closed: boolean;
+	connection?: { close(): Promise<void> };
+	/** Connects to the session's current stream: after `resumeFrom`, or with a snapshot. */
+	connect(resumeFrom: string | undefined): Promise<void>;
 }
 
 /** Runs `step` after `queue` settles, whether it resolved or rejected. */
@@ -433,7 +515,25 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	};
 
 	const publish = (session: OpenSession, ops: readonly DeltaOp[]) => {
-		if (ops.length > 0) session.publishing = after(session.publishing, () => session.stream.publish(ops));
+		// The stream the ops were projected for: an edit may replace the session's stream before the step runs.
+		const stream = session.stream;
+		if (ops.length > 0) session.publishing = after(session.publishing, () => stream.publish(ops));
+	};
+
+	const newStream = (record: SessionRecord) =>
+		createMemorySessionStream({
+			sessionId: record.id,
+			...(options.pageSize === undefined ? {} : { pageSize: options.pageSize }),
+			...(record.title === undefined ? {} : { title: record.title }),
+			now: () => clock.now(),
+		});
+
+	const agentOf = (profile: AgentProfile) => {
+		const model = resolveModel(profile.model);
+		return {
+			model: { provider: model.provider, modelId: model.modelId },
+			...(profile.model.thinking === undefined ? {} : { thinkingLevel: profile.model.thinking }),
+		};
 	};
 
 	const applyStatus = (session: OpenSession) => {
@@ -455,63 +555,91 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const handlerOf = (host: StoredHost): HostToolHandler | undefined =>
 		localHandlers.get(host.registration) ?? (host.callback === undefined ? undefined : options.hostHandler?.(host));
 
+	/** The memory tools' host in tool calls and their audit events. */
+	const MEMORY_HOST = "harbour.memory";
+
 	const toolsFor = async (session: Pick<OpenSession, "profile" | "record">): Promise<ToolRegistration[]> => {
 		const { profile, record } = session;
+		// The runtime's own tools come first; a memory or host tool of the same name doesn't replace one.
+		const own = (options.tools?.(record) ?? []).filter((tool) => profile.tools.includes(tool.name));
+		const tools: ToolRegistration[] = [...own];
+		const taken = new Set(own.map((tool) => tool.name));
+		// Every session with memory scopes gets the memory tools, served from the runtime's memory as its agent.
+		const spaceIds = memorySpacesOf(options.memory, profile, record);
+		const memory = options.memory;
+		if (memory !== undefined && spaceIds.length > 0) {
+			const handler = memoryToolHandler(memory, spaceIds, () => clock.now());
+			for (const definition of memoryToolDefinitions)
+				if (!taken.has(definition.name)) tools.push(asPiTool(record, MEMORY_HOST, definition, () => handler));
+			for (const name of Object.values(MEMORY_TOOL_NAMES)) taken.add(name);
+		}
 		const hostId = profile.hostId;
-		if (hostId === undefined) return [];
+		if (hostId === undefined) return tools;
 		// A registration whose handler is gone (served by a process that has since stopped) offers nothing.
 		const host = await store.host(record.organisationId, hostId);
 		const served = host === undefined || handlerOf(host) === undefined ? [] : host.tools;
-		const agentActor = { kind: "agent", agentId: record.agentId, sessionId: record.id } as const;
-		return served
-			.filter((definition) => profile.tools.includes(definition.name))
-			.map((definition) =>
-				hostToolAsPiTool(definition, {
-					call: {
-						hostId,
-						sessionId: record.id,
-						organisationId: record.organisationId,
-						projectId: record.projectId,
-						agentId: record.agentId,
-					},
-					handler: async () => {
-						const host = await store.host(record.organisationId, hostId);
-						return host?.tools.some((tool) => tool.name === definition.name) ? handlerOf(host) : undefined;
-					},
-					onStarted: (call) =>
-						audit([
-							{
-								id: `session:${record.id}:tool:${call.callId}:started`,
-								at: clock.now(),
-								source: "session",
-								type: "session.tool.started",
-								actor: agentActor,
-								organisationId: record.organisationId,
-								projectId: record.projectId,
-								sessionId: record.id,
-								agentId: record.agentId,
-								subject: { kind: "session.tool", id: call.callId },
-								data: { hostId, tool: call.tool },
-							},
-						]),
-					onFinished: (call, outcome) =>
-						audit([
-							{
-								id: `session:${record.id}:tool:${call.callId}:finished`,
-								at: clock.now(),
-								source: "session",
-								type: "session.tool.finished",
-								actor: agentActor,
-								organisationId: record.organisationId,
-								projectId: record.projectId,
-								sessionId: record.id,
-								agentId: record.agentId,
-								subject: { kind: "session.tool", id: call.callId },
-								data: { hostId, tool: call.tool, outcome },
-							},
-						]),
+		for (const definition of served) {
+			if (!profile.tools.includes(definition.name) || taken.has(definition.name)) continue;
+			tools.push(
+				asPiTool(record, hostId, definition, async () => {
+					const host = await store.host(record.organisationId, hostId);
+					return host?.tools.some((tool) => tool.name === definition.name) ? handlerOf(host) : undefined;
 				}),
 			);
+		}
+		return tools;
+	};
+
+	/** A tool as a Pi tool of the session, audited as it starts and finishes. */
+	const asPiTool = (
+		record: SessionRecord,
+		hostId: string,
+		definition: HostToolDefinition,
+		handler: () => HostToolHandler | undefined | Promise<HostToolHandler | undefined>,
+	): ToolRegistration => {
+		const agentActor = { kind: "agent", agentId: record.agentId, sessionId: record.id } as const;
+		return hostToolAsPiTool(definition, {
+			call: {
+				hostId,
+				sessionId: record.id,
+				organisationId: record.organisationId,
+				projectId: record.projectId,
+				agentId: record.agentId,
+			},
+			handler,
+			onStarted: (call) =>
+				audit([
+					{
+						id: `session:${record.id}:tool:${call.callId}:started`,
+						at: clock.now(),
+						source: "session",
+						type: "session.tool.started",
+						actor: agentActor,
+						organisationId: record.organisationId,
+						projectId: record.projectId,
+						sessionId: record.id,
+						agentId: record.agentId,
+						subject: { kind: "session.tool", id: call.callId },
+						data: { hostId, tool: call.tool },
+					},
+				]),
+			onFinished: (call, outcome) =>
+				audit([
+					{
+						id: `session:${record.id}:tool:${call.callId}:finished`,
+						at: clock.now(),
+						source: "session",
+						type: "session.tool.finished",
+						actor: agentActor,
+						organisationId: record.organisationId,
+						projectId: record.projectId,
+						sessionId: record.id,
+						agentId: record.agentId,
+						subject: { kind: "session.tool", id: call.callId },
+						data: { hostId, tool: call.tool, outcome },
+					},
+				]),
+		});
 	};
 
 	const extensionFor = (session: Pick<OpenSession, "profile">, tools: ToolRegistration[]): Extension => {
@@ -552,8 +680,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		}
 	};
 
-	/** Opens the session's Harness on its storage, or returns it if it is open already. */
-	const ensureOpen = (stored: StoredSession): Promise<OpenSession> => {
+	/**
+	 * Opens the session's Harness on its storage, or returns it if it is open already. `seed` is the history a forked
+	 * session starts with, copied into its root conversation when the root is created.
+	 */
+	const ensureOpen = (stored: StoredSession, seed?: readonly EntryRecord[]): Promise<OpenSession> => {
 		const id = stored.record.id;
 		// A session is in `open` before it is ready (so registration changes reach it while its tools install); callers
 		// wait for the opening to finish.
@@ -562,36 +693,47 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const current = open.get(id);
 		if (current !== undefined) return Promise.resolve(current);
 		if (closed) return Promise.reject(new HarbourError("unavailable", "The session runtime is closed"));
-		const started = openSession(stored).finally(() => opening.delete(id));
+		const started = openSession(stored, seed).finally(() => opening.delete(id));
 		opening.set(id, started);
 		return started;
 	};
 
-	const openSession = async (stored: StoredSession): Promise<OpenSession> => {
+	const openSession = async (stored: StoredSession, seed?: readonly EntryRecord[]): Promise<OpenSession> => {
 		const { record, profile } = stored;
-		const model = resolveModel(profile.model);
+		const agent = agentOf(profile);
 		const registry = createRegistry();
 		// No tools yet: they are installed once the session is open, where a registration change also reaches it.
 		registry.install(extensionFor({ profile }, []));
 		const context = BACKGROUND_CONTEXT;
 		const sessionModels = typeof models === "function" ? await models(record) : models;
 		const storage = await options.storage(record);
+		// Built here, acquiring nothing: what its commands need is acquired by the first command that needs it.
+		const env = options.environment?.(record);
 		// Wakes go to the session once it exists; the first (from open) is read with `harness.wake()` below.
 		let onWake: (wake: Wake) => void = () => {};
 		const harness = await Harness.open(
 			storage,
-			{ models: sessionModels, registry, now: () => clock.now(), onWake: (wake) => onWake(wake) },
+			{
+				models: sessionModels,
+				registry,
+				now: () => clock.now(),
+				onWake: (wake) => onWake(wake),
+				...(env === undefined ? {} : { env: () => env }),
+			},
 			context,
 		);
 		let conversation: Conversation;
 		let view: AttachedReplicatedState<ConversationView>;
 		try {
 			conversation = await harness.root(context, {
-				agent: {
-					model: { provider: model.provider, modelId: model.modelId },
-					...(profile.model.thinking === undefined ? {} : { thinkingLevel: profile.model.thinking }),
-				},
+				agent,
+				...(seed === undefined ? {} : { init: (tx, conversationId) => copyEntries(tx, conversationId, seed) }),
 			});
+			// After an edit the session shows the fork the edit made, not the root.
+			const active = (await harness.snapshot(ACTIVE_CONVERSATION, context))?.conversationId;
+			if (active !== undefined && active !== conversation.id) {
+				conversation = (await harness.conversation(active as ConversationId, context)) ?? conversation;
+			}
 			view = await conversation.viewState(context);
 		} catch (error) {
 			await harness.close(context).catch(() => undefined);
@@ -605,14 +747,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			conversation,
 			models: sessionModels,
 			registry,
+			env,
 			view,
-			stream: createMemorySessionStream({
-				sessionId: record.id,
-				...(options.pageSize === undefined ? {} : { pageSize: options.pageSize }),
-				...(record.title === undefined ? {} : { title: record.title }),
-				now: () => clock.now(),
-			}),
+			unsubscribeView: () => {},
+			stream: newStream(record),
 			projector: new ConversationProjector({ now: () => clock.now() }),
+			watchers: new Set(),
+			editing: false,
 			publishing: Promise.resolve(),
 			unsaved: false,
 			saved: record,
@@ -630,7 +771,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		};
 		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
-		const unsubscribe = view.subscribe(() => sync(session));
+		session.unsubscribeView = view.subscribe(() => sync(session));
 		// The Harness closes itself after a failed storage call. Its timer goes with it; the session stays in `open`, so
 		// calls fail rather than racing a second opening against this one's queued writes and close.
 		const unsubscribeClose = harness.subscribeClose(() => {
@@ -639,9 +780,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			session.sleepTimer = undefined;
 		});
 		session.stopWatching = () => {
-			unsubscribe();
+			session.unsubscribeView();
 			unsubscribeClose();
-			view.dispose();
+			session.view.dispose();
 		};
 		try {
 			// A registration change may start a newer install meanwhile; opening finishes once the latest is in.
@@ -709,6 +850,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			}
 		}
 		await admitting(session, () => session.conversation.abort(piContext(ctx)));
+		// Stops waiting for commands still running; what the session holds is released by the session-end hook below.
+		await session.env?.cleanup(BACKGROUND_CONTEXT).catch(() => undefined);
 		await sync(session);
 		const run = session.aborts + 1;
 		session.aborts = run;
@@ -732,6 +875,43 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		]);
 	};
 
+	/**
+	 * Places the session's skills and recall (`./context.ts`) before its first prompt, once: a session whose transcript
+	 * already holds input or a context entry has been given it. The write's request ID makes a retry after a crash
+	 * between the write and the prompt land nothing twice.
+	 */
+	const giveContext = async (ctx: CallContext, session: OpenSession, query: string): Promise<void> => {
+		if (options.skills === undefined && options.memory === undefined) return;
+		session.givingContext ??= (async () => {
+			const first = await session.conversation.entries({ order: "ascending" }, CONTEXT_SCAN, undefined, piContext(ctx));
+			const started = first.next !== undefined || contextEntryOf(first.items) !== undefined;
+			if (started || first.items.some((entry) => entry.kind === "pi.user" || entry.kind === HARBOUR_USER_ENTRY)) {
+				return;
+			}
+			const entry = await sessionContextEntry({
+				record: session.record,
+				profile: session.profile,
+				query,
+				skills: options.skills,
+				memory: options.memory,
+				now: clock.now(),
+			});
+			if (entry === undefined) return;
+			const written = await admitting(session, () =>
+				session.conversation.submit({ type: "write", entry, requestId: CONTEXT_REQUEST }, piContext(ctx)),
+			);
+			await written.wait(piContext(ctx));
+		})();
+		const giving = session.givingContext;
+		try {
+			await giving;
+		} catch (error) {
+			// Recall or pinning failed: this prompt fails, and the next one tries again.
+			if (session.givingContext === giving) session.givingContext = undefined;
+			throw error;
+		}
+	};
+
 	const submit = async (
 		ctx: CallContext,
 		sessionId: SessionId,
@@ -747,6 +927,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
 		const chose = await applyChoice(ctx, session, input);
+		await giveContext(ctx, session, input.text);
 		const pi = await admitting(session, () =>
 			session.conversation.submit(
 				{
@@ -879,13 +1060,15 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			// Resolve first, so a profile whose route resolves nowhere creates nothing.
 			resolveModel(profile.model);
 			const now = clock.now();
+			const id = crypto.randomUUID();
+			const workspaceId = input.workspaceId ?? options.defaultWorkspaceId?.(id);
 			const record: SessionRecord = {
-				id: crypto.randomUUID(),
+				id,
 				organisationId: ctx.organisationId,
 				projectId: input.projectId,
 				agentId: profile.id,
 				...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
-				...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+				...(workspaceId === undefined ? {} : { workspaceId }),
 				...(input.title === undefined ? {} : { title: input.title }),
 				status: "idle",
 				labels: { ...input.labels },
@@ -950,7 +1133,26 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await sync(session);
 			const prefix = `${session.generation}.`;
 			const resumeFrom = watchOptions.after?.startsWith(prefix) ? watchOptions.after.slice(prefix.length) : undefined;
-			return session.stream.connect(resumeFrom, (frame) => onFrame(framesIn(session.generation, frame)));
+			// An edit replaces the session's stream; the watcher then connects to the new one, which starts it with a hello
+			// and a snapshot, as a client that reconnects gets.
+			const watcher: Watcher = {
+				closed: false,
+				async connect(after) {
+					const { stream, generation } = session;
+					const connection = await stream.connect(after, (frame) => onFrame(framesIn(generation, frame)));
+					if (watcher.closed) await connection.close();
+					else watcher.connection = connection;
+				},
+			};
+			session.watchers.add(watcher);
+			await watcher.connect(resumeFrom);
+			return {
+				async close() {
+					watcher.closed = true;
+					session.watchers.delete(watcher);
+					await watcher.connection?.close();
+				},
+			};
 		},
 		async snapshot(ctx, sessionId) {
 			await requireStored(ctx, sessionId);
@@ -1021,6 +1223,146 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				updatedAt: now,
 			};
 			return modelStateOf(await models(draft), profile, undefined);
+		},
+	};
+
+	/**
+	 * Makes `conversation` the one the session shows and runs: a new projection of it on a new stream, under a new
+	 * generation, and every watcher moved onto that stream with a snapshot. The old stream gets nothing more.
+	 */
+	const activate = async (session: OpenSession, conversation: Conversation): Promise<void> => {
+		const view = await conversation.viewState(BACKGROUND_CONTEXT);
+		// Everything the old view queued goes to the old stream first (`publish` holds the stream it projected for).
+		await session.publishing.catch(() => undefined);
+		session.unsubscribeView();
+		session.view.dispose();
+		session.conversation = conversation;
+		session.view = view;
+		session.projector = new ConversationProjector({ now: () => clock.now() });
+		session.stream = newStream(session.record);
+		session.generation = crypto.randomUUID().slice(0, 8);
+		session.unsubscribeView = view.subscribe(() => sync(session));
+		await sync(session);
+		for (const watcher of [...session.watchers]) {
+			const previous = watcher.connection;
+			watcher.connection = undefined;
+			await previous?.close();
+			if (!watcher.closed) await watcher.connect(undefined);
+		}
+	};
+
+	const branching: SessionBranching = {
+		async fork(ctx, sessionId, input) {
+			const stored = await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.fork");
+			const source = await ensureOpen(stored);
+			await sync(source);
+			const found = source.projector.entryOf(input.itemId);
+			if (found?.kind !== "assistant") {
+				throw new HarbourError("not_found", `No answer ${input.itemId} in session ${sessionId}`);
+			}
+			const from = source.record;
+			const { profile } = stored;
+			// A new session in the source's project, under the same check as creating one there.
+			await check(ctx, { projectId: from.projectId, needed: "operator", operation: "session.create" });
+			// Refuses before anything is written when the agent's model no longer resolves.
+			agentOf(profile);
+			// The history as of the answer, as Pi would start a fork of it: from the newest head through the answer.
+			const history = await source.conversation.context(piContext(ctx), { at: found.entry.id });
+			const now = clock.now();
+			const title = input.title ?? `${from.title ?? "Session"} (fork)`;
+			const record: SessionRecord = {
+				id: crypto.randomUUID(),
+				organisationId: from.organisationId,
+				projectId: from.projectId,
+				agentId: from.agentId,
+				...(from.workspaceId === undefined ? {} : { workspaceId: from.workspaceId }),
+				title,
+				status: "idle",
+				labels: { ...from.labels },
+				createdBy: ctx.actor,
+				createdAt: now,
+				updatedAt: now,
+			};
+			const created = await store.createSession({ record, profile, aborts: 0, closed: false });
+			await ensureOpen(created, history.entries);
+			await audit([
+				{
+					id: `session:${record.id}:created`,
+					at: now,
+					source: "session",
+					type: "session.created",
+					actor: ctx.actor,
+					organisationId: record.organisationId,
+					projectId: record.projectId,
+					sessionId: record.id,
+					agentId: record.agentId,
+					subject: { kind: "session", id: record.id },
+					data: { labels: record.labels, forkedFrom: { sessionId, itemId: input.itemId } },
+				},
+			]);
+			return record;
+		},
+		async edit(ctx, sessionId, input) {
+			const stored = await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "operator", "session.edit");
+			if (stored.closed || open.get(sessionId)?.closed === true) {
+				throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+			}
+			if (input.text.trim() === "") throw new HarbourError("invalid", "An edited message needs text");
+			const session = await ensureOpen(stored);
+			if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+			if (session.editing) throw new HarbourError("conflict", `Session ${sessionId} is already being edited`);
+			await sync(session);
+			if (session.projector.status === "running") {
+				throw new HarbourError("conflict", "Stop the run before editing a message");
+			}
+			const found = session.projector.entryOf(input.itemId);
+			if (found?.kind !== "user") {
+				throw new HarbourError("not_found", `No message ${input.itemId} in session ${sessionId}`);
+			}
+			session.editing = true;
+			try {
+				const previous = session.conversation;
+				const before = entryBefore(session.view.value.entries, found.entry.id);
+				const context = piContext(ctx);
+				// From just before the message: Pi's fork keeps everything up to there, and the agent's settings as they were.
+				// The first message has nothing before it, so the session starts a new conversation with its profile's agent.
+				const next =
+					before === undefined
+						? await session.harness.createConversation(
+								{ ownership: { kind: "ownerless" }, agent: agentOf(session.profile) },
+								context,
+							)
+						: await previous.fork(before.id, { ownership: { kind: "ownerless" } }, context);
+				await session.harness.commit(async (tx) => {
+					const active = await tx.doc(ACTIVE_CONVERSATION);
+					active.conversationId = next.id;
+				}, context);
+				await activate(session, next);
+				// Input that reached the old conversation meanwhile goes no further.
+				await admitting(session, () => previous.abort(context));
+				const { record } = session;
+				await audit([
+					{
+						id: `session:${sessionId}:edited:${next.id}`,
+						at: clock.now(),
+						source: "session",
+						type: "session.edited",
+						actor: ctx.actor,
+						organisationId: record.organisationId,
+						projectId: record.projectId,
+						sessionId,
+						agentId: record.agentId,
+						subject: { kind: "session", id: sessionId },
+						data: { itemId: input.itemId },
+					},
+				]);
+			} finally {
+				session.editing = false;
+			}
+			const { itemId: _itemId, ...prompt } = input;
+			return submit(ctx, sessionId, prompt, "prompt");
 		},
 	};
 
@@ -1326,6 +1668,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		runtime,
 		history,
 		models: sessionModelsService,
+		branching,
 		directory,
 		profiles,
 		hostTools,
@@ -1346,6 +1689,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				await session.waking.catch(() => undefined);
 				await session.publishing.catch(() => undefined);
 				await session.harness.close(BACKGROUND_CONTEXT);
+				await session.env?.cleanup(BACKGROUND_CONTEXT).catch(() => undefined);
 			}
 		},
 	};

@@ -26,9 +26,10 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | --- | --- | --- |
 | Identity directory | D1 `DB` | `@harbour/identity/sql` |
 | Audit store | D1 `DB` | `@harbour/audit/sql` |
-| Workspaces | R2 `WORKSPACES`, under `workspaces/` | `@harbour/cloudflare-workspace` |
+| Workspaces | R2 `WORKSPACES`, under `workspaces/`; each head also kept in `HarbourStack`'s storage, in front of R2 | `@harbour/cloudflare-workspace` (`src/workspace-heads.ts`) |
 | Session directory, profiles, host registrations, each session's Pi storage; the alarm that resumes a run an eviction cut off | `HarbourStack`'s own SQLite and alarm | `SessionRuntimeDurableObjectCore` (`@harbour/runtime-cloudflare`) |
 | The bootstrap's organisation, project and admin | `HarbourStack`'s storage | `src/stack.ts` |
+| Audit outbox: the stack's events queue here and drain to D1 after the answer (`ctx.waitUntil`, retried, and again on start and alarm); reads drain it first | `HarbourStack`'s own SQLite | `src/audit-outbox.ts` |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
 | Sandboxes: #94's tiers, leases, the TTL sweep and session-end release; the isolate on `HARBOUR_ISOLATE_BACKEND` | `HarbourStack`, leases in memory | `@harbour/sandbox` (`src/sandboxes.ts`) |
@@ -36,6 +37,41 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 Migrations run on every start of the object; each is idempotent. The bootstrap saves each step as it completes, so a
 restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
 `MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
+
+## Files and commands
+
+Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts`), on its workspace at `/workspace`.
+
+- **The workspace.** A session started from a repository runs on the workspace seeded from it. One started without
+  one gets its own, `session_<session ID>`, which is only an ID until a tool needs it: the session's first file tool
+  or command creates it, empty, in the session's project. A session that only talks stores nothing.
+- **The isolate only for commands.** `read`, `write`, `edit` and `ls` work on the workspace in R2 directly, as the
+  session's agent, and lease nothing. `bash` leases the session's isolate on its first command; closing or aborting
+  the session releases it.
+- **Confined.** Paths outside `/workspace` and its mounts are refused, mounts are read-only, a file over 16 MiB is
+  neither read nor written, and every write is a commit audited with the agent as its actor.
+
+## The browser
+
+With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the default agent has the browser's tools
+(`src/browser.ts`, over `@harbour/browser`): `browser_request`, `browser_open`, `browser_act` (with its `look`),
+`browser_screenshot` and `browser_close`. Without it sessions have none.
+
+- **A person decides.** `browser_request` waits while the console shows the agent's reason and sites with Allow and
+  Decline (`POST /v1/browser/decisions`, as the person signed in). Allowing grants those sites only, for 30 minutes,
+  in a brwsr context named `harbour` that is never written back. An agent can't grant itself one.
+- **The key stays here.** Only the brwsr provider holds it. Tool results, the transcript and the logs carry no key
+  and no CDP URL.
+- **Screenshots.** `browser_screenshot` returns its image to the model. After `browser_open` at a URL and each
+  `browser_act` but `look`, a screenshot goes to the transcript only, so the console shows the page moving.
+- **Released with the session.** Closing or aborting a session closes its browsers and ends its grants (the
+  runtime's session-end hook). Grants and open browsers are in memory: a restarted object forgets them, and brwsr
+  ends each browser at its timeout.
+
+Under `wrangler dev --env dev`, put `HARBOUR_BRWSR_API_KEY` in `apps/cloudflare/.dev.vars` (ignored by git). With no
+model gateway, a message `browse <url>` makes the dev model ask for a browser, open the URL once you allow it and
+take a screenshot (`src/dev-browser-model.ts`). If the console's dev server leaves a session on Connecting, open it
+with `?transport=sse`.
 
 ## Decisions
 
@@ -50,6 +86,14 @@ restart finds the same organisation rather than making another. Sessions run on 
   bound how many sessions run at once.
 - What replaces it: per-session objects taken from a pool of pre-created, idle objects (so a new session never pays
   creation), with a session directory in D1 so the gateway routes each session to its object. Not built yet.
+
+**Workspace heads are kept in the object, in front of R2** (29 Oct 2026). Every workspace call starts by reading the
+workspace's head, and a sandbox run makes two: about 55 ms each from the object to R2, most of a warm isolate-ready
+run's server time ([m1-cf1 measurements](../../docs/measurements/m1-cf1/README.md)). `HarbourStack` keeps each head's
+document and etag in its own storage (`ctx.storage.kv`, `src/workspace-heads.ts`), and the R2 store reads it from there.
+R2 stays the source of truth: a write drops the cached head before it starts and puts back only what it wrote, and a
+load that overlapped a write caches nothing. It relies on the decision above: every write to the workspaces goes
+through the one object. A write made anywhere else is seen once a write here fails its conditional put on it.
 
 **The isolate backend is a switch** (28 Oct 2026). `HARBOUR_ISOLATE_BACKEND` picks where the isolate tier runs, so
 the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
@@ -160,8 +204,14 @@ deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs 
 
 ## Deploy
 
-CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, on a push to main that touches the
-Worker, the console or a package, or a manual run from main. The account side (the token, the Access application, the
+CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, called by
+`.github/workflows/main.yml` on every push to main that changes more than Markdown (or a manual run of it from main).
+Pull requests are gated only on `CI`'s install, typecheck and lint, so they stay quick on Harbour's two self-hosted
+runners; main runs the heavy checks only on its newest head: `CI` with the tests, `self-hosted` and `Sandbox image`.
+A newer push cancels them, even while they run, and skips the older commit's deploy. The deploy runs only once all
+three have passed on that same commit, so a failing check on main means nothing deploys; a deploy already going is
+never cancelled, and a newer one waits for it. A pull request that changes the Worker can dry-run it on demand with
+`gh workflow run cloudflare-deploy.yml --ref <branch>`. The account side (the token, the Access application, the
 VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
 
 | Name | Kind | What it is |
@@ -173,19 +223,20 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_ACCESS_AUD` | variable | The AUD tag of the Access application on `HARBOUR_HOSTNAME` |
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
 | `HARBOUR_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
-| `HARBOUR_D1_DATABASE_NAME` with `HARBOUR_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour`, by name |
-| `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
+| `HARBOUR_D1_DATABASE_NAME` with `HARBOUR_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour-weur`, by name |
+| `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces-weur`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
 | `HARBOUR_LOCATION_HINT` | optional variable | The location hint the stack and vault objects are created with (`src/route.ts`). Unset: `weur`, from `wrangler.jsonc` |
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
+| `HARBOUR_BRWSR_API_KEY` | optional secret | brwsr's project key (see The browser above), set on the Worker when it exists. Without it sessions have no browser |
 
-Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
---dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
+Until the secret and every variable exist, and on any run other than main.yml's on main, the workflow only runs
+`wrangler deploy --dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:
 
 1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,
    and a base config that could serve on workers.dev or a preview URL);
-2. runs the dry run, then `wrangler deploy`, with `--secrets-file` for the vault secrets that are set. On the first deploy wrangler creates the D1 database `harbour` and the
-   R2 bucket `harbour-workspaces` (its automatic provisioning, by name); later deploys find them by name;
+2. runs the dry run, then `wrangler deploy`, with `--secrets-file` for the vault secrets that are set. Deploys find the D1 database `harbour-weur` and the R2 bucket
+   `harbour-workspaces-weur` by name; wrangler's automatic provisioning would create either if it were missing;
 3. checks that an anonymous request to the console, a deep link, `/v1/sessions` and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
 
@@ -214,8 +265,8 @@ dashboard), not something the deploy does.
 | Scope | Permission | Why |
 | --- | --- | --- |
 | Account | Workers Scripts: Edit | Deploy the Worker, its Durable Objects and its static assets |
-| Account | D1: Edit | Create the `harbour` database on the first deploy and look it up by name after |
-| Account | Workers R2 Storage: Edit | Create the `harbour-workspaces` bucket on the first deploy and look it up by name after |
+| Account | D1: Edit | Look up the `harbour-weur` database by name (and create it if it were missing) |
+| Account | Workers R2 Storage: Edit | Look up the `harbour-workspaces-weur` bucket by name (and create it if it were missing) |
 | Account | Connectivity Directory: Bind | Bind the existing Workers VPC service (`MODELS`) |
 | Zone (myslop.app) | Workers Routes: Edit | Add the zone route `HARBOUR_HOSTNAME/*` |
 
@@ -283,3 +334,20 @@ values refused, the dev environment dropped) and the Access sign-in check. `test
 core over SQLite, restarts it, and reads a connector's key over the egress decision API with the model gateway's
 shared key, with no value in its rows or the audit store; refuses callers without a key; won't start without a vault
 key; routes only the two vault paths to the vault object; and checks the vault's secrets in the deploy.
+
+`test/remote/deployed.test.ts` checks the deployed hostname from outside, through the contracts' own HTTP clients
+(session, workspace read, audit and identity). It checks that an anonymous request goes to Access sign-in, that a bad
+API key is refused even with an Access cookie, and that the key's projects, profiles, sessions, a workspace's files and
+the audit log can all be read. With `HARBOUR_REMOTE_SESSION=1` it also runs one labelled session to a real model
+answer, finds its audit events and closes it. Host apps aren't let through Access yet, so each call carries a
+signed-in browser's `CF_Authorization` cookie as well as a project API key. Without all three variables it is skipped,
+as it is in CI:
+
+```sh
+HARBOUR_URL=https://harbour.myslop.app HARBOUR_API_KEY=hbr_… HARBOUR_ACCESS_COOKIE='CF_Authorization=…' \
+  pnpm --filter @harbour/cloudflare exec vitest run test/remote/deployed.test.ts
+```
+
+The shared conformance suites in `@harbour/testing` take in-process implementations with fakes (a scripted model, a
+manual clock, failure injection), so they run on the Cloudflare implementations in `targets/cloudflare` (runtime,
+vault and workspace), not against the hostname.

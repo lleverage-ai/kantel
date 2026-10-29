@@ -118,6 +118,22 @@ export const FolderIcon = (props: IconProps) => (
 		<path d="M1.75 4.25A1.25 1.25 0 0 1 3 3h3.25l1.5 1.75H13a1.25 1.25 0 0 1 1.25 1.25v6A1.25 1.25 0 0 1 13 13.25H3A1.25 1.25 0 0 1 1.75 12z" />
 	</Svg>
 );
+/** A git repository: a book with a bookmark, as code hosts draw one. */
+export const RepoIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M3.25 12.5V3.25A1.5 1.5 0 0 1 4.75 1.75h8v9.5h-8a1.5 1.5 0 0 0-1.5 1.5 1.5 1.5 0 0 0 1.5 1.5h1.5" />
+		<path d="M8.25 12.75v2.25l1.25-.9 1.25.9v-2.25" />
+	</Svg>
+);
+/** A git branch: two commits on a line and one branching off. */
+export const BranchIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="4.5" cy="3.5" r="1.5" />
+		<circle cx="4.5" cy="12.5" r="1.5" />
+		<circle cx="11.5" cy="4.5" r="1.5" />
+		<path d="M4.5 5v6M11.5 6c0 3-3 3.5-7 5" />
+	</Svg>
+);
 export const EyeIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" />
@@ -206,6 +222,21 @@ export const SteerIcon = (props: IconProps) => (
 export const RetryIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.75v2.5h-2.5" />
+	</Svg>
+);
+/** Fork from this response: a branch splitting in two, after Lucide's git-fork, which T3 Code uses. */
+export const ForkIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="4.5" cy="3.5" r="1.75" />
+		<circle cx="11.5" cy="3.5" r="1.75" />
+		<circle cx="8" cy="12.5" r="1.75" />
+		<path d="M4.5 5.25v.75A1.5 1.5 0 0 0 6 7.5h4A1.5 1.5 0 0 0 11.5 6v-.75M8 7.5v3.25" />
+	</Svg>
+);
+/** Edit from here: an arrow turning back, after Lucide's undo-2, which T3 Code uses. */
+export const RewindIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M5.5 9.5 2.5 6.5l3-3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7.5" />
 	</Svg>
 );
 /** A model: a four-point spark. */

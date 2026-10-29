@@ -27,6 +27,7 @@ import {
 	type Page,
 	type PageRequest,
 	type ProjectAccess,
+	type SeedStatusSink,
 	type SessionId,
 	systemClock,
 	systemContext,
@@ -45,13 +46,14 @@ import {
 	sha256Hex,
 	toBytes,
 } from "./index.ts";
-import { resolveSeed, type Seeders } from "./seed.ts";
+import { dependencyStage, resolveSeed, type Seeders, sendSeedStatus } from "./seed.ts";
 import {
 	applyChanges,
 	checkExportPrefixes,
 	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
+	checkReadSize,
 	compare,
 	decodeCursor,
 	encodeCursor,
@@ -147,6 +149,8 @@ export interface StoredWorkspacesOptions {
 	readonly treeCacheEntries?: number;
 	/** How seed sources other than `files` are fetched. Without a git fetcher, git sources wait at `metadata`. */
 	readonly seeders?: Seeders;
+	/** Receives a `seed.status` event as each seed reaches a readiness stage, or fails. */
+	readonly onSeedStatus?: SeedStatusSink;
 }
 
 /** A commit with mode bits, and a guard for a caller whose right to commit can lapse meanwhile. */
@@ -273,7 +277,12 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		for (const request of requests.values()) mounts.push(await sources.resolve(ctx, request));
 		checkMountsDisjoint(mounts);
 
-		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock, mounts);
+		const seeded = await resolveSeed(ctx, seed, options.seeders ?? {}, clock, mounts, {
+			workspaceId: id,
+			organisationId: ctx.organisationId,
+			...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+			...(options.onSeedStatus === undefined ? {} : { onStatus: options.onSeedStatus }),
+		});
 		const prepared = await prepareChanges(
 			[...seeded.files].map(([path, file]) => ({
 				op: "put",
@@ -377,9 +386,13 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(head.record, path);
 				await checks.requireMountRead(ctx, head.record, mount);
-				return sources.read(ctx, mount, sourcePath, path);
+				const read = await sources.read(ctx, mount, sourcePath, path);
+				checkReadSize(path, read.content.byteLength, readOptions?.maxBytes);
+				return read;
 			}
 			const file = readTree(await treeAt(head, readOptions?.version), normalizeWorkspacePath(path));
+			// The tree holds the size, so a file over the limit is refused before its body is fetched.
+			checkReadSize(path, file.size, readOptions?.maxBytes);
 			const content = await readBlobObject(head.organisationId, file.digest);
 			return { path, content, version: file.version, digest: file.digest };
 		},
@@ -520,6 +533,21 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				const record: WorkspaceRecord = { ...head.record, mounts, updatedAt: clock.now() };
 				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) return record;
 				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the remount");
+				head = await load(ctx, id);
+			}
+		},
+
+		async recordDependencies(ctx, id, update) {
+			let head = await load(ctx, id);
+			await checks.requireWorkspace(ctx, head.record, "operator", "workspace.seed");
+			for (let attempt = 1; ; attempt++) {
+				// Checked against each head loaded: a racing stage that recorded first leaves this one in conflict.
+				const { record, event } = dependencyStage(head.record, head.organisationId, update, clock.now());
+				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) {
+					sendSeedStatus(options.onSeedStatus, event);
+					return record;
+				}
+				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the update");
 				head = await load(ctx, id);
 			}
 		},
