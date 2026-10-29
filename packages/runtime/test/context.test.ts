@@ -202,6 +202,56 @@ describe("a session's skills and memory", () => {
 		expect(mounted).toEqual([session.id]);
 	});
 
+	it("mounts a forked session's /skills once, at the revisions its source pinned (#210)", async () => {
+		const skills = createMemorySkills();
+		await publish(skills, "pr-review", "Review a PR", "a1");
+		const mounted: { sessionId: string; pins: readonly SessionSkillPin[] }[] = [];
+		const file = databaseFile();
+		const options: Partial<SessionRuntimeOptions> = {
+			skills: {
+				store: skills,
+				render: (listings) => renderSkillListings(listings),
+				mount: async (session, pins) => {
+					mounted.push({ sessionId: session.id, pins });
+				},
+			},
+		};
+		const first = await processOn(file, options);
+		await first.runtime.profiles.put(ctx, profile);
+		const parent = await first.runtime.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		first.script.reply({ text: "Reviewed" });
+		await ask(first.runtime, parent.id, "Review my PR");
+		const answer = (await first.runtime.runtime.snapshot(ctx, parent.id)).items.find(
+			(item) => item.kind === "assistant",
+		);
+		if (answer === undefined) throw new Error("No answer");
+
+		// A newer revision is published before the fork: the fork still mounts the one its source pinned.
+		await publish(skills, "pr-review", "Review a PR carefully", "b2");
+		const fork = await first.runtime.branching.fork(ctx, parent.id, { itemId: answer.id });
+		expect(mounted.map((mount) => mount.sessionId)).toEqual([parent.id]);
+		first.script.reply({ text: "Forked" });
+		await ask(first.runtime, fork.id, "And again");
+		expect(mounted.map((mount) => mount.sessionId)).toEqual([parent.id, fork.id]);
+		const parentPins = mounted[0]?.pins.map((pin) => ({ skillId: pin.skillId, revision: pin.revision }));
+		expect(parentPins).toEqual([{ skillId: expect.any(String), revision: 1 }]);
+		expect(mounted[1]?.pins.map((pin) => ({ skillId: pin.skillId, revision: pin.revision }))).toEqual(parentPins);
+		expect(mounted[1]?.pins.every((pin) => pin.sessionId === fork.id)).toBe(true);
+		// The fork's listing is its source's, once, and it never pinned the newer revision.
+		const forkRequest = first.script.requests.at(-1);
+		expect(forkRequest?.messages.filter((message) => message.text.includes("<available_skills>"))).toHaveLength(1);
+		expect(forkRequest?.messages[0]?.text).toContain("Review a PR</description>");
+
+		// Later prompts, and a restarted process, mount nothing again.
+		first.script.reply({ text: "Still forked" });
+		await ask(first.runtime, fork.id, "Once more");
+		await first.close();
+		const second = await processOn(file, options);
+		second.script.reply({ text: "After a restart" });
+		await ask(second.runtime, fork.id, "After a restart");
+		expect(mounted.map((mount) => mount.sessionId)).toEqual([parent.id, fork.id]);
+	});
+
 	it("pins and mounts without listing when the host gives no renderer", async () => {
 		const skills = createMemorySkills();
 		await publish(skills, "pr-review", "Review a PR", "a1");

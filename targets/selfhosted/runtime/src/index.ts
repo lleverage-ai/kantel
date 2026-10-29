@@ -6,7 +6,7 @@
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@harbour/runtime/core";
 import { type CallbackHandlerOptions, callbackHostHandlers } from "@harbour/runtime/http";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 
 export {
 	openPostgresSessionDatabase,
@@ -56,6 +56,8 @@ export async function createSelfhostedSessionRuntime(
 			}),
 		store,
 		storage: (session) => sqlPiStorage(database, session.id),
+		// A closed session's tables are archived and dropped, so the schema grows with open sessions only (#216).
+		archive: runtimeOptions.archive ?? ((session) => archiveSqlPiStorage(database, session.id)),
 	});
 	try {
 		await service.resume();
