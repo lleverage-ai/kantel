@@ -9,6 +9,7 @@
  * - everything else: the console (`apps/console`), as static assets with single-page-app fallback. Assets are served
  *   before the Worker runs, so only Access guards them; the APIs check the Access token (or an API key) themselves.
  */
+import { HarbourBrowserBase } from "./browser-object.ts";
 import { routeRequest } from "./route.ts";
 import { type Env, HarbourStackBase } from "./stack-object.ts";
 
@@ -16,6 +17,9 @@ export { routeRequest } from "./route.ts";
 export { HarbourVault } from "./vault-object.ts";
 
 export class HarbourStack extends HarbourStackBase {}
+
+/** One of Harbour's own browsers, with its Container (`src/browser-object.ts`). */
+export class HarbourBrowser extends HarbourBrowserBase {}
 
 export default {
 	fetch: routeRequest,

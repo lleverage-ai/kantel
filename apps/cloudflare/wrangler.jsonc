@@ -23,8 +23,9 @@
 		"directory": "../console/dist",
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
-		// The API and health check always reach the Worker; every other path is the console.
-		"run_worker_first": ["/v1/*", "/healthz"]
+		// The API, the health check and the browser viewer page (for its framing headers) always reach the Worker; every
+		// other path is the console.
+		"run_worker_first": ["/v1/*", "/healthz", "/browser/*"]
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
 	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so. Code mode loads one per session
@@ -35,12 +36,17 @@
 			{ "name": "STACK", "class_name": "HarbourStack" },
 			// The VaultDO (src/vault-object.ts): every vault record in its own SQLite. Its key and the components' shared
 			// keys are Worker secrets (src/vault.ts), never vars here.
-			{ "name": "VAULTS", "class_name": "HarbourVault" }
+			{ "name": "VAULTS", "class_name": "HarbourVault" },
+			// Harbour's own browsers (src/browser-object.ts), one object per browser, used only with
+			// HARBOUR_BROWSER_PROVIDER=harbour. Their container app is added by the deploy when HARBOUR_BROWSER_CONTAINERS is on
+			// (scripts/deploy-config.ts), held to WEUR; without it the objects exist but no browser starts.
+			{ "name": "BROWSERS", "class_name": "HarbourBrowser" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] },
-		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] }
+		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] },
+		{ "tag": "v3", "new_sqlite_classes": ["HarbourBrowser"] }
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
@@ -68,7 +74,11 @@
 		"HARBOUR_SESSION_WEBSOCKET": "on",
 		// The location hint the stack and vault objects are created with (src/route.ts): weur, the region Amsterdam is in.
 		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
-		"HARBOUR_LOCATION_HINT": "weur"
+		"HARBOUR_LOCATION_HINT": "weur",
+		// Which browser provider the broker uses (src/browser.ts): `brwsr` (brwsr.dev, with HARBOUR_BRWSR_API_KEY) or
+		// `harbour`, Harbour's own browsers (src/browser-object.ts; needs the HARBOUR_BROWSER_VIEW_KEY and
+		// HARBOUR_BROWSER_SEAL_KEY secrets, and the container app, HARBOUR_BROWSER_CONTAINERS=on at deploy).
+		"HARBOUR_BROWSER_PROVIDER": "brwsr"
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.
@@ -82,15 +92,25 @@
 				"directory": "../console/dist",
 				"binding": "ASSETS",
 				"not_found_handling": "single-page-application",
-				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*"]
+				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*", "/browser/*"]
 			},
 			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {
 				"bindings": [
 					{ "name": "STACK", "class_name": "HarbourStack" },
-					{ "name": "VAULTS", "class_name": "HarbourVault" }
+					{ "name": "VAULTS", "class_name": "HarbourVault" },
+					{ "name": "BROWSERS", "class_name": "HarbourBrowser" }
 				]
 			},
+			// Local only: wrangler dev builds images/browser and runs each browser's container in local Docker.
+			"containers": [
+				{
+					"class_name": "HarbourBrowser",
+					"image": "../../images/browser/Dockerfile",
+					"image_build_context": "../../images/browser",
+					"max_instances": 3
+				}
+			],
 			// Local only: wrangler dev simulates both.
 			"d1_databases": [{ "binding": "DB", "database_name": "harbour-dev" }],
 			"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-dev-workspaces" }],
@@ -105,7 +125,12 @@
 				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
 				// secrets; scripts/deploy-config.ts refuses them as vars.
 				"HARBOUR_VAULT_KEY": "aGFyYm91ci1sb2NhbC1kZXYtdmF1bHQta2V5LTAwMDE=",
-				"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN": "harbour-dev-model-gateway-token"
+				"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN": "harbour-dev-model-gateway-token",
+				// Harbour's own browsers in local Docker (src/browser-object.ts), with local-only, public keys for their view
+				// links and sealed blobs. The deployed Worker's are secrets.
+				"HARBOUR_BROWSER_PROVIDER": "harbour",
+				"HARBOUR_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
+				"HARBOUR_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001"
 			}
 		}
 	}

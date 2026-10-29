@@ -43,6 +43,12 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	"HARBOUR_D1_DATABASE_ID",
 	"HARBOUR_R2_BUCKET",
 	"HARBOUR_LOCATION_HINT",
+	// Harbour's own browsers (src/browser-object.ts): `on` adds their container app (images/browser, held to WEUR), and
+	// HARBOUR_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `harbour`).
+	"HARBOUR_BROWSER_CONTAINERS",
+	"HARBOUR_BROWSER_PROVIDER",
+	// The origins (such as a host app's) that may frame a browser's embed page, besides the console.
+	"HARBOUR_EMBED_ORIGINS",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -83,7 +89,29 @@ const OPTIONAL_CHECKS: Readonly<
 		test: (v) => (LOCATION_HINTS as readonly string[]).includes(v),
 		expect: `one of ${LOCATION_HINTS.join(", ")}`,
 	},
+	HARBOUR_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	HARBOUR_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
+	HARBOUR_EMBED_ORIGINS: {
+		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
+		expect: "https:// origins without a path or wildcard, separated by spaces or commas",
+	},
 };
+
+/**
+ * The browsers' container app: images/browser, one container per `HarbourBrowser`, held to WEUR beside the stack
+ * (a Durable Object's location hint doesn't place its container; only the app's regions do). 1 vCPU and 3 GiB, as
+ * brwsr's browsers, which a live view needs.
+ */
+export const BROWSER_CONTAINERS = [
+	{
+		class_name: "HarbourBrowser",
+		image: "../../images/browser/Dockerfile",
+		image_build_context: "../../images/browser",
+		instance_type: { vcpu: 1, memory_mib: 3072, disk_mb: 4000 },
+		constraints: { regions: ["WEUR"] },
+		max_instances: 3,
+	},
+] as const;
 export type DeployMode = "deploy" | "dry-run";
 
 /** The binding name the model gateway will use for CLIProxyAPI (step 2 of #17). */
@@ -162,6 +190,12 @@ export interface DeployValues {
 	readonly r2Bucket?: string;
 	/** The objects' location hint, when set. */
 	readonly locationHint?: string;
+	/** Whether the browsers' container app is deployed. */
+	readonly browserContainers?: boolean;
+	/** The browser provider, when set. */
+	readonly browserProvider?: string;
+	/** The origins that may frame a browser's embed page, when set. */
+	readonly embedOrigins?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -216,6 +250,11 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(d1Name === undefined || d1Id === undefined ? {} : { d1: { name: d1Name, id: d1Id.toLowerCase() } }),
 		...(r2Bucket === undefined ? {} : { r2Bucket }),
 		...(hint === undefined ? {} : { locationHint: hint }),
+		...(optional("HARBOUR_BROWSER_CONTAINERS") === "on" ? { browserContainers: true } : {}),
+		...(optional("HARBOUR_BROWSER_PROVIDER") === undefined
+			? {}
+			: { browserProvider: optional("HARBOUR_BROWSER_PROVIDER") }),
+		...(optional("HARBOUR_EMBED_ORIGINS") === undefined ? {} : { embedOrigins: optional("HARBOUR_EMBED_ORIGINS") }),
 		placeholders: missing,
 	};
 }
@@ -275,7 +314,10 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			HARBOUR_ACCESS_AUD: values.accessAud,
 			HARBOUR_ADMIN_EMAIL: values.adminEmail,
 			...(values.locationHint === undefined ? {} : { HARBOUR_LOCATION_HINT: values.locationHint }),
+			...(values.browserProvider === undefined ? {} : { HARBOUR_BROWSER_PROVIDER: values.browserProvider }),
+			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),
 		},
+		...(values.browserContainers === true ? { containers: BROWSER_CONTAINERS } : {}),
 		vpc_services: [{ binding: MODELS_BINDING, service_id: values.modelsVpcServiceId }],
 	};
 }
