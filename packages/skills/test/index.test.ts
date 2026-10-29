@@ -77,6 +77,22 @@ describe("parseSkillFrontmatter", () => {
 		expect(parseSkillFrontmatter("---\r\nname: 'it''s'\r\n---\r\n")).toEqual({ name: "it's" });
 	});
 
+	it("drops YAML comments, reads block scalars and ignores values that are not text", () => {
+		expect(parseSkillFrontmatter('---\nname: deploy # the package\ndescription: "Ship: it" # quoted\n---\n')).toEqual({
+			name: "deploy",
+			description: "Ship: it",
+		});
+		expect(
+			parseSkillFrontmatter("---\nname: deploy\ndescription: >-\n  Ship it\n  to prod.\nlicense: MIT\n---\n"),
+		).toEqual({
+			name: "deploy",
+			description: "Ship it to prod.",
+		});
+		expect(parseSkillFrontmatter("---\ndescription: |\n  One\n  Two\n---\n")).toEqual({ description: "One\nTwo" });
+		expect(parseSkillFrontmatter("---\nname: ~\ndescription: null\n---\n")).toEqual({});
+		expect(parseSkillFrontmatter("---\nname: [a]\ndescription: {}\n---\n")).toEqual({});
+	});
+
 	it("ignores text without frontmatter, unclosed frontmatter and keys after it", () => {
 		expect(parseSkillFrontmatter("# No frontmatter\nname: x\n")).toEqual({});
 		expect(parseSkillFrontmatter("---\nname: x\n")).toEqual({});
@@ -94,13 +110,32 @@ describe("validateSkillPackage", () => {
 				{ path: "./scripts/run.sh", content: "" },
 			]),
 		).toEqual([]);
-		expect(validateSkillPackage("deploy", [skillMd("---\ndescription: 'Ship it'\n---\n")])).toEqual([]);
+		expect(validateSkillPackage("deploy", [skillMd("---\nname: deploy\ndescription: >\n  Ship it\n---\n")])).toEqual(
+			[],
+		);
+	});
+
+	it("holds the package to the Agent Skills specification's name and description rules", () => {
+		const reasons = (name: string, content: string) =>
+			validateSkillPackage(name, [skillMd(content)]).map((problem) => problem.reason);
+		expect(reasons("deploy", "---\ndescription: 'Ship it'\n---\n")).toEqual(["The frontmatter needs a name"]);
+		for (const name of ["-deploy", "deploy-", "de--ploy", "a".repeat(65)]) {
+			expect(validateSkillPackage(name, [skillMd(`---\nname: ${name}\ndescription: x\n---\n`)]), name).toHaveLength(1);
+		}
+		expect(reasons("deploy", `---\nname: deploy\ndescription: ${"x".repeat(1025)}\n---\n`)).toEqual([
+			"The description is longer than 1024 characters",
+		]);
+		expect(reasons("deploy", `---\nname: deploy\ndescription: ${"x".repeat(1024)}\n---\n`)).toEqual([]);
+		expect(reasons("deploy", "---\nname: deploy\ndescription: null\n---\n")).toEqual([
+			"The frontmatter needs a description",
+		]);
 	});
 
 	it("reports each problem against its file instead of throwing", () => {
 		const misnamed = validateSkillPackage("deploy", [skillMd("---\nname: release\n---\n")]);
 		expect(misnamed.map((problem) => problem.path)).toEqual(["SKILL.md", "SKILL.md"]);
 		expect(validateSkillPackage("deploy", [skillMd("# No frontmatter\n")])).toMatchObject([
+			{ path: "SKILL.md", reason: "The frontmatter needs a name" },
 			{ path: "SKILL.md", reason: "The frontmatter needs a description" },
 		]);
 		expect(validateSkillPackage("deploy", [{ path: "docs/SKILL.md", content: "x" }])).toMatchObject([

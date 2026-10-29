@@ -8,6 +8,10 @@ import { HarbourError, isHarbourError, type SkillFile } from "@harbour/contracts
 export const SKILL_MD = "SKILL.md";
 
 const SKILL_NAME = /^[a-z0-9-]{1,64}$/;
+/** The Agent Skills specification's name rule (https://agentskills.io/specification), stricter than a store's. */
+const SPEC_NAME = /^(?=.{1,64}$)[a-z0-9]+(-[a-z0-9]+)*$/;
+/** The specification's longest description. */
+const MAX_DESCRIPTION = 1024;
 
 /**
  * A package path as stored: relative, `/`-separated, no `..`, no empty segments. `.` segments are dropped. A
@@ -44,23 +48,46 @@ export function validateSkillName(name: string): void {
 }
 
 /**
- * Reads `name` and `description` from `SKILL.md` frontmatter: a first line `---`, then `key: value` lines up to the
- * next `---`. Values may be single- or double-quoted. Anything else (nesting, block scalars) is ignored; no
- * frontmatter gives an empty result.
+ * Reads `name` and `description` from `SKILL.md` frontmatter: a first line `---`, then top-level `key: value` lines up
+ * to the next `---`. A value may be plain (a trailing ` # comment` dropped), single- or double-quoted, or a `|` or `>`
+ * block scalar. A value that is not text (`null`, `~`, a `[...]` or `{...}` collection) is ignored, as is anything
+ * else; no frontmatter gives an empty result.
  */
 export function parseSkillFrontmatter(skillMd: string): { readonly name?: string; readonly description?: string } {
 	const lines = skillMd.replace(/^\uFEFF/, "").split(/\r?\n/);
 	if (lines[0]?.trim() !== "---") return {};
 	const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
 	if (end === -1) return {};
+	const body = lines.slice(1, end);
 	const fields: { name?: string; description?: string } = {};
-	for (const line of lines.slice(1, end)) {
+	for (const [index, line] of body.entries()) {
 		const match = /^(name|description)\s*:\s*(.*)$/.exec(line);
 		if (match === null) continue;
-		const value = unquote(match[2]!.trim());
-		if (value !== "") fields[match[1] as "name" | "description"] = value;
+		const raw = match[2]!.trim();
+		const block = /^([|>])[-+]?(?:\s+#.*)?$/.exec(raw);
+		const value = block === null ? scalar(raw) : blockScalar(block[1] as "|" | ">", body.slice(index + 1));
+		if (value !== undefined && value !== "") fields[match[1] as "name" | "description"] = value;
 	}
 	return fields;
+}
+
+/** A one-line YAML value as text, or undefined when it is not text. */
+function scalar(raw: string): string | undefined {
+	const quoted = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')(?:\s+#.*)?$/.exec(raw);
+	if (quoted !== null) return unquote(quoted[1]!);
+	const plain = raw.replace(/(^|\s+)#.*$/, "").trim();
+	if (plain === "null" || plain === "~" || plain.startsWith("[") || plain.startsWith("{")) return undefined;
+	return plain;
+}
+
+/** A block scalar's text: its indented lines, joined by newlines (`|`) or folded to one line (`>`), trimmed. */
+function blockScalar(style: "|" | ">", following: readonly string[]): string {
+	const taken: string[] = [];
+	for (const line of following) {
+		if (line.trim() !== "" && !/^\s/.test(line)) break;
+		taken.push(line.trim());
+	}
+	return (style === "|" ? taken.join("\n") : taken.filter((line) => line !== "").join(" ")).trim();
 }
 
 /** Something `validateSkillPackage` found wrong: the file it is about (`""` for the package itself) and why. */
@@ -70,16 +97,21 @@ export interface SkillPackageProblem {
 }
 
 /**
- * Checks a package against the Agent Skills rules, without throwing: a valid name, text files at valid paths (as
+ * Checks a package against the Agent Skills specification (https://agentskills.io/specification), without throwing:
+ * a name of 1 to 64 lowercase letters, digits and single inner dashes, text files at valid paths (as
  * `normaliseSkillPath` reads them), each path once, and `SKILL.md` at the root with frontmatter (as
- * `parseSkillFrontmatter` reads it) holding a description and, if it names the skill, the package's name. Empty when
+ * `parseSkillFrontmatter` reads it) naming the package and holding a description of at most 1024 characters. Empty when
  * the package is valid. Stores accept more than this (they need only `SKILL.md` and valid paths), so a host runs it
  * before publishing to know a package will work in any Agent Skills client.
  */
 export function validateSkillPackage(name: string, files: readonly SkillFile[]): readonly SkillPackageProblem[] {
 	const problems: SkillPackageProblem[] = [];
-	if (typeof name !== "string" || !SKILL_NAME.test(name)) {
-		problems.push({ path: "", reason: "A skill name must be 1 to 64 lowercase letters, digits or dashes" });
+	if (typeof name !== "string" || !SPEC_NAME.test(name)) {
+		problems.push({
+			path: "",
+			reason:
+				"A skill name must be 1 to 64 lowercase letters, digits or dashes, not starting or ending with a dash or holding two in a row",
+		});
 	}
 	const seen = new Set<string>();
 	let skillMd: string | undefined;
@@ -112,7 +144,9 @@ export function validateSkillPackage(name: string, files: readonly SkillFile[]):
 		return problems;
 	}
 	const frontmatter = parseSkillFrontmatter(skillMd);
-	if (frontmatter.name !== undefined && frontmatter.name !== name) {
+	if (frontmatter.name === undefined) {
+		problems.push({ path: SKILL_MD, reason: "The frontmatter needs a name" });
+	} else if (frontmatter.name !== name) {
 		problems.push({
 			path: SKILL_MD,
 			reason: `The frontmatter names the skill ${JSON.stringify(frontmatter.name)}, not ${JSON.stringify(name)}`,
@@ -120,6 +154,8 @@ export function validateSkillPackage(name: string, files: readonly SkillFile[]):
 	}
 	if (frontmatter.description === undefined || frontmatter.description.trim() === "") {
 		problems.push({ path: SKILL_MD, reason: "The frontmatter needs a description" });
+	} else if (frontmatter.description.length > MAX_DESCRIPTION) {
+		problems.push({ path: SKILL_MD, reason: `The description is longer than ${MAX_DESCRIPTION} characters` });
 	}
 	return problems;
 }

@@ -102,20 +102,24 @@ on any `Skills` as the caller, so the store's rules apply. `skillsWriteOperation
 `SourcePublishingSkills` only, else `not_supported`). `skills.validate` reads the open draft and returns its digest
 (what `publish` takes) and `validateSkillPackage`'s problems, or one problem and no digest when there is no draft.
 
-`validateSkillPackage(name, files)` (package root) checks a package against the Agent Skills rules without throwing:
-a valid name, valid and unique paths, text content, `SKILL.md` at the root, a frontmatter description and, when the
-frontmatter names the skill, the package's name. Stores do not enforce it, so existing packages keep publishing.
+`validateSkillPackage(name, files)` (package root) checks a package against the Agent Skills specification
+(https://agentskills.io/specification) without throwing: a name of 1 to 64 lowercase letters, digits and single inner
+dashes, valid and unique paths, text content, `SKILL.md` at the root, and frontmatter naming the package and holding
+a description of 1 to 1024 characters. `parseSkillFrontmatter` reads plain, quoted and block-scalar values, drops
+comments and ignores values that are not text. Stores do not enforce it, so existing packages keep publishing.
 
 ## Writing back to a source (`@harbour/skills/publish`)
 
 `withSourcePublishing({ skills, sourceFor, audit?, clock? })` wraps any `Skills`. After a native `publish` that made
 a new revision, it reads the revision's files and calls the package's `SkillSource.publish`, one export at a time
-per skill, in order, and never over a newer revision it has already exported. A revision that came from a source and
-a publish that returned the latest revision unchanged are not exported. A failed export never fails or undoes the
-publish: it is audited `skills.revision.export_failed` with the error code only; success is audited
-`skills.revision.exported` with the source, ref, revision and digest. `exportRevision(ctx, skillId, revision)`
-retries (agents `forbidden`, the caller must be able to read the skill, `not_supported` without a writable source).
-Its `publish` reads the package first (as `get`) to tell a new revision from an unchanged one.
+per skill, in order, skipping a revision a newer one has replaced in the store. A revision that came from a source,
+and one this wrapper has exported already (an unchanged draft gives back the latest), are not exported. Nothing after
+the store's publish fails it: a failed export is audited `skills.revision.export_failed` with the error code only;
+success is audited `skills.revision.exported` with the source, ref, revision and digest.
+`exportRevision(ctx, skillId, revision)` retries the latest revision only (an older one is `conflict`, so the source
+never goes back; agents `forbidden`; the caller must be able to read the skill; `not_supported` without a writable
+source), and a failure reaches the caller as the source's error code with a message of Harbour's own. Ordering holds
+within one wrapper; processes sharing a store may still race, so a source that can should refuse an older revision.
 
 ## The in-memory implementation
 

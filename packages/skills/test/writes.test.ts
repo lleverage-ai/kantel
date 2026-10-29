@@ -177,10 +177,13 @@ describe("runSkillsWrite", () => {
 			source: { sourceId: "sal-git", ref: "abc" },
 		});
 		expect(imported).toMatchObject({ skillId: pkg.id, revision: 2, source: { sourceId: "sal-git", ref: "abc" } });
-		expect(await runSkillsWrite(skills, human, "skills.exportRevision", { skillId: pkg.id, revision: 1 })).toEqual({
+		expect(await runSkillsWrite(skills, human, "skills.exportRevision", { skillId: pkg.id, revision: 2 })).toEqual({
 			sourceId: "sal-git",
 			ref: "commit-1",
 		});
+		expect(
+			await rejectedCode(runSkillsWrite(skills, human, "skills.exportRevision", { skillId: pkg.id, revision: 1 })),
+		).toBe("conflict");
 		expect(Object.keys(skillsWriteOperations).sort()).toEqual([
 			"skills.create",
 			"skills.exportRevision",

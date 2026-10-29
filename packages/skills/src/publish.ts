@@ -42,9 +42,14 @@ export interface SourcePublishingOptions {
 
 export interface SourcePublishingSkills extends Skills {
 	/**
-	 * Exports a published revision to its package's source now, after any export of the skill already running, and
-	 * returns where it landed: to retry one that failed. `not_supported` when the package has no source or its source
-	 * cannot be written to. Agents may not export (`forbidden`); the caller must be able to read the skill.
+	 * Exports the skill's latest revision to its package's source now, after any export of the skill already running,
+	 * and returns where it landed: to retry one that failed. An older revision is `conflict`, so the source never goes
+	 * back. `not_supported` when the package has no source or its source cannot be written to. A failure is the source's
+	 * error code with a message of Harbour's own, never the source's. Agents may not export (`forbidden`); the caller
+	 * must be able to read the skill, and re-exporting the latest revision changes nothing a reader could not see.
+	 *
+	 * Exports are ordered within one wrapper. Processes sharing a store each skip a revision a newer one has replaced,
+	 * but two may still race; a source that can should refuse a revision older than the one it holds.
 	 */
 	exportRevision(ctx: CallContext, skillId: string, revision: number): Promise<SkillExport>;
 }
@@ -114,27 +119,38 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 		return { sourceId: source.id, ref };
 	}
 
+	/** Throws `conflict` unless `revision` is still the skill's latest, so an export never takes the source back. */
+	async function assertLatest(ctx: CallContext, skillId: string, revision: number): Promise<void> {
+		const latest = (await skills.get(ctx, skillId)).latestRevision ?? 0;
+		if (latest !== revision) {
+			throw new HarbourError("conflict", `Only the latest revision of skill ${skillId}, ${latest}, can be exported`);
+		}
+	}
+
+	/** Audits a failed export. Never throws: the publish it follows stands whatever happens here. */
 	async function failed(
 		ctx: CallContext,
 		skillId: string,
 		revision: number,
-		source: SkillSource,
+		sourceId: string | undefined,
 		error: unknown,
 	): Promise<void> {
 		// The error's message may hold a remote's URL or a host's details: only its code is recorded.
-		await options.audit?.append(AUDIT_CONTEXT, [
-			{
-				id: `skills:revision:${skillId}:${revision}:export_failed:${crypto.randomUUID()}`,
-				at: clock.now(),
-				source: "skills",
-				type: "skills.revision.export_failed",
-				actor: ctx.actor,
-				organisationId: ctx.organisationId,
-				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
-				subject: { kind: "skills.skill", id: skillId },
-				data: { sourceId: source.id, revision, error: isHarbourError(error) ? error.code : "error" },
-			},
-		]);
+		await options.audit
+			?.append(AUDIT_CONTEXT, [
+				{
+					id: `skills:revision:${skillId}:${revision}:export_failed:${crypto.randomUUID()}`,
+					at: clock.now(),
+					source: "skills",
+					type: "skills.revision.export_failed",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
+					subject: { kind: "skills.skill", id: skillId },
+					data: { sourceId: sourceId ?? null, revision, error: isHarbourError(error) ? error.code : "error" },
+				},
+			])
+			.catch(() => undefined);
 	}
 
 	return {
@@ -156,16 +172,21 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 			// An unchanged draft gives back the latest revision: exported already, unless this process has not seen it, and
 			// then the source finds its files unchanged.
 			if ((newest.get(skillId) ?? 0) >= revision.revision) return revision;
-			const source = options.sourceFor(await skills.get(ctx, skillId));
-			if (!writable(source)) return revision;
+			// From here on nothing fails the publish, which has happened: a failure is audited, and exportRevision retries.
+			let source: SkillSource | undefined;
 			try {
+				source = options.sourceFor(await skills.get(ctx, skillId));
+				const writing = source;
+				if (!writable(writing)) return revision;
 				await serialise(skillId, async () => {
-					// A later revision exported while this one waited stays; the source never goes back.
+					// A later revision exported while this one waited stays; the source never goes back. One published since,
+					// here or by another process sharing the store, exports itself.
 					if ((newest.get(skillId) ?? 0) >= revision.revision) return;
-					await exportNow(ctx, skillId, revision.revision, source);
+					if (((await skills.get(ctx, skillId)).latestRevision ?? 0) > revision.revision) return;
+					await exportNow(ctx, skillId, revision.revision, writing);
 				});
 			} catch (error) {
-				await failed(ctx, skillId, revision.revision, source, error);
+				await failed(ctx, skillId, revision.revision, source?.id, error);
 			}
 			return revision;
 		},
@@ -178,15 +199,30 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 			if (!writable(source)) {
 				throw new HarbourError("not_supported", `Skill ${skillId} has no source to write to`);
 			}
-			// A revision that does not exist is the caller's mistake, not a failed export.
+			// A revision that does not exist, or one a newer revision has replaced, is the caller's mistake, not a failed
+			// export: re-exporting the latest is the only retry, so the source never goes back.
 			await skills.getRevision(ctx, skillId, revision);
+			await assertLatest(ctx, skillId, revision);
+			let stale: unknown;
 			try {
-				return await serialise(skillId, () => exportNow(ctx, skillId, revision, source));
+				return await serialise(skillId, async () => {
+					try {
+						await assertLatest(ctx, skillId, revision);
+					} catch (error) {
+						stale = error;
+						throw error;
+					}
+					return exportNow(ctx, skillId, revision, source);
+				});
 			} catch (error) {
-				await failed(ctx, skillId, revision, source, error);
-				throw isHarbourError(error)
-					? error
-					: new HarbourError("unavailable", `Revision ${revision} of skill ${skillId} could not be exported`);
+				if (error === stale) throw error;
+				await failed(ctx, skillId, revision, source.id, error);
+				// The source's error may carry a remote's URL or credentials in its message or details: only its code goes
+				// back to the caller.
+				throw new HarbourError(
+					isHarbourError(error) ? error.code : "unavailable",
+					`Revision ${revision} of skill ${skillId} could not be exported to ${source.id}`,
+				);
 			}
 		},
 	};

@@ -211,6 +211,55 @@ describe("withSourcePublishing", () => {
 		expect(fake.calls).toHaveLength(3);
 	});
 
+	it("never takes the source back to an older revision, and tells a failed export's caller only the error code", async () => {
+		const { audit, fake, skills } = setup();
+		const pkg = await skills.create(human, { owner, name: "deploy", description: "Deploy" });
+		fake.state.fail = new HarbourError("unavailable", "https://token@git.example/secret.git refused the push", {
+			remote: "https://token@git.example/secret.git",
+		});
+		const one = await skills.saveDraft(human, pkg.id, { files: [skillMd("deploy", "One.")] });
+		await skills.publish(human, pkg.id, { expectedDigest: one.digest });
+		let thrown: unknown;
+		await skills.exportRevision(human, pkg.id, 1).catch((error: unknown) => {
+			thrown = error;
+		});
+		expect(isHarbourError(thrown, "unavailable")).toBe(true);
+		expect(
+			JSON.stringify({ message: (thrown as Error).message, details: (thrown as HarbourError).details }),
+		).not.toContain("secret");
+
+		fake.state.fail = undefined;
+		const two = await skills.saveDraft(human, pkg.id, { files: [skillMd("deploy", "Two.")] });
+		await skills.publish(human, pkg.id, { expectedDigest: two.digest });
+		const calls = fake.calls.length;
+		expect(await rejectedCode(skills.exportRevision(human, pkg.id, 1))).toBe("conflict");
+		expect(fake.calls).toHaveLength(calls);
+		expect(fake.calls.at(-1)?.revision.revision).toBe(2);
+		expect(audit.ofType("skills.revision.export_failed")).toHaveLength(2);
+	});
+
+	it("keeps a publish that succeeded even when looking up its source or auditing the failure throws", async () => {
+		const audit = new RecordingAuditSink();
+		const failingAudit = {
+			append: async (...args: Parameters<RecordingAuditSink["append"]>) => {
+				if (args[1].some((event) => event.type === "skills.revision.export_failed")) throw new Error("audit down");
+				return audit.append(...args);
+			},
+		} as unknown as RecordingAuditSink;
+		const inner = createMemorySkills();
+		const skills = withSourcePublishing({
+			skills: inner,
+			sourceFor: () => {
+				throw new Error("no source registry");
+			},
+			audit: failingAudit,
+		});
+		const pkg = await skills.create(human, { owner, name: "deploy", description: "Deploy" });
+		const { digest } = await skills.saveDraft(human, pkg.id, { files: [skillMd("deploy", "One.")] });
+		expect((await skills.publish(human, pkg.id, { expectedDigest: digest })).revision).toBe(1);
+		expect((await inner.get(human, pkg.id)).latestRevision).toBe(1);
+	});
+
 	it("refuses exportRevision as not_supported when the package has no writable source", async () => {
 		const readOnly: SkillSource = { id: "read-only", fetch: async () => [] };
 		const { skills } = setup((name) => (name === "notes" ? readOnly : undefined));
