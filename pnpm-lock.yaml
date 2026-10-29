@@ -205,6 +205,12 @@ importers:
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
+      "@harbour/selfhosted-workspace":
+        specifier: workspace:*
+        version: link:../../targets/selfhosted/workspace
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../../packages/sql
       "@harbour/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
@@ -214,6 +220,9 @@ importers:
       pg:
         specifier: 8.16.3
         version: 8.16.3
+      pg-connection-string:
+        specifier: 2.14.1
+        version: 2.14.1
     devDependencies:
       "@harbour/testing":
         specifier: workspace:*
