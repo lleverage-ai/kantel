@@ -13,6 +13,11 @@
  * - `required` says whether the person must use a passkey to approve: always (`approvals: "always"`), or once they
  *   have registered one (`"registered"`, the default, so a deployment's people are not locked out on the day passkeys
  *   arrive).
+ * - Changing passkeys needs one: a person's first is enrolled on their sign-in alone, but `register` for another and
+ *   `remove` take a `confirmation`, an assertion from one of their passkeys over a single-use `changeChallenge` bound
+ *   to exactly that change. A missing or failed one is refused and audited as `identity.passkey.refused`.
+ * - `reset` is an organisation admin's: it removes every passkey a member has, so they can enrol again with a sign-in,
+ *   audited as `identity.passkey.reset` with the admin as actor and the member as subject.
  */
 import {
 	type AuditSink,
@@ -27,6 +32,7 @@ import {
 	type PasskeyAttestation,
 	type PasskeyBinding,
 	type PasskeyChallenge,
+	type PasskeyChange,
 	type PasskeyDescriptor,
 	type PasskeyRefusal,
 	type PasskeyRegistrationOptions,
@@ -64,8 +70,8 @@ export interface StoredPasskey extends Passkey {
 	readonly signCount: number;
 }
 
-/** What a challenge is for. */
-export type ChallengePurpose = "registration" | "approval";
+/** What a challenge is for: registering a passkey, approving a proposal, or confirming a change to the passkeys. */
+export type ChallengePurpose = "registration" | "approval" | "change";
 
 export interface PasskeyChallengeRecord {
 	/** The challenge, base64url: what the client signs, and the record's key. */
@@ -76,6 +82,8 @@ export interface PasskeyChallengeRecord {
 	readonly origin: string;
 	/** For an approval: what the assertion approves. */
 	readonly binding?: PasskeyBinding;
+	/** For a change: what the assertion confirms. */
+	readonly change?: PasskeyChange;
 	readonly createdAt: Timestamp;
 	readonly expiresAt: Timestamp;
 }
@@ -156,10 +164,13 @@ export function createMemoryPasskeyStores(): {
 export interface PasskeysOptions {
 	readonly credentials: PasskeyCredentialStore;
 	readonly challenges: PasskeyChallengeStore;
-	/** For the name and display name a new passkey is saved under on the person's device. Default their user ID. */
-	readonly identity?: Pick<IdentityDirectory, "getUser">;
+	/**
+	 * For the name and display name a new passkey is saved under on the person's device (default their user ID), and for
+	 * `reset`: who is an admin, and who is a member. Without `authorize`, `reset` is `not_supported`.
+	 */
+	readonly identity?: Pick<IdentityDirectory, "getUser"> & Partial<Pick<IdentityDirectory, "authorize">>;
 	readonly clock?: Clock;
-	/** Where `identity.passkey.registered` and `identity.passkey.removed` go. */
+	/** Where `identity.passkey.registered`, `.removed`, `.refused` and `.reset` go. */
 	readonly audit?: AuditSink;
 	/**
 	 * When approving needs a passkey: `"registered"` (default) once the person has one, so nobody is locked out before
@@ -174,10 +185,28 @@ export interface Passkeys {
 	list(ctx: CallContext): Promise<readonly Passkey[]>;
 	/** A registration challenge for the person, as the options the browser's `create` takes. */
 	registrationOptions(ctx: CallContext, rp: RelyingParty): Promise<PasskeyRegistrationOptions>;
-	/** Verifies a new passkey against the registration challenge it signed, which it uses up, and stores it. */
-	register(ctx: CallContext, response: PasskeyAttestation, name?: string): Promise<Passkey>;
-	/** Removes one of the person's passkeys. `not_found` for anyone else's. */
-	remove(ctx: CallContext, passkeyId: string): Promise<void>;
+	/**
+	 * Verifies a new passkey against the registration challenge it signed, which it uses up, and stores it. Once the
+	 * person has a passkey, `confirmation` must be one of theirs over a `{ change: "register" }` challenge.
+	 */
+	register(
+		ctx: CallContext,
+		response: PasskeyAttestation,
+		name?: string,
+		confirmation?: PasskeyAssertion,
+	): Promise<Passkey>;
+	/**
+	 * Removes one of the person's passkeys, confirmed by one of theirs over a `{ change: "remove", passkeyId }`
+	 * challenge. `not_found` for anyone else's.
+	 */
+	remove(ctx: CallContext, passkeyId: string, confirmation?: PasskeyAssertion): Promise<void>;
+	/** A single-use challenge for confirming `change` with one of the person's passkeys. `invalid` when they have none. */
+	changeChallenge(ctx: CallContext, rp: RelyingParty, change: PasskeyChange): Promise<PasskeyChallenge>;
+	/**
+	 * An organisation admin removes every passkey a member has, so they can enrol again with a sign-in. Only a person may
+	 * (`forbidden` otherwise); `not_found` for someone outside the organisation. Resolves how many were removed.
+	 */
+	reset(ctx: CallContext, userId: UserId): Promise<number>;
 	/** Whether the person must confirm an approval with a passkey. */
 	required(ctx: CallContext): Promise<boolean>;
 	/** A single-use challenge for approving `binding`, as the options the browser's `get` takes. */
@@ -233,6 +262,12 @@ export function canonicalNarrowing(narrowing: Narrowing | undefined): string {
 	});
 }
 
+/** Whether two changes are the same change. */
+function sameChange(a: PasskeyChange, b: PasskeyChange): boolean {
+	if (a.change === "register" || b.change === "register") return a.change === b.change;
+	return a.passkeyId === b.passkeyId;
+}
+
 /** Whether two bindings name the same proposal, terms, action and narrowing. */
 export function sameBinding(a: PasskeyBinding, b: PasskeyBinding): boolean {
 	return (
@@ -262,7 +297,7 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 		userId: UserId,
 		purpose: ChallengePurpose,
 		rp: RelyingParty,
-		binding?: PasskeyBinding,
+		bound: { readonly binding?: PasskeyBinding; readonly change?: PasskeyChange } = {},
 	): Promise<PasskeyChallengeRecord> {
 		const now = clock.now();
 		const record: PasskeyChallengeRecord = {
@@ -271,7 +306,8 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			purpose,
 			rpId: rp.id,
 			origin: rp.origin,
-			...(binding === undefined ? {} : { binding }),
+			...(bound.binding === undefined ? {} : { binding: bound.binding }),
+			...(bound.change === undefined ? {} : { change: bound.change }),
 			createdAt: now,
 			expiresAt: now + PASSKEY_CHALLENGE_TTL_MILLISECONDS,
 		};
@@ -303,6 +339,75 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			throw passkeyRefusal("challenge", "The passkey challenge is unknown, used or expired");
 		}
 		return record;
+	}
+
+	/**
+	 * Checks an assertion signed over `record`'s challenge, already taken: from one of the person's passkeys for the
+	 * record's relying party, verified by the person, its counter moved on once. Resolves the passkey used.
+	 */
+	async function useAssertion(
+		userId: UserId,
+		record: PasskeyChallengeRecord,
+		assertion: PasskeyAssertion,
+	): Promise<Passkey> {
+		const stored = await credentials.findByCredentialId(canonicalId(assertion.rawId));
+		if (stored === undefined || stored.userId !== userId || stored.rpId !== record.rpId) {
+			throw passkeyRefusal("credential", "That passkey is not one of yours");
+		}
+		let verified: Awaited<ReturnType<typeof verifyAssertion>>;
+		try {
+			verified = await verifyAssertion(assertion, record.challenge, { id: record.rpId, origin: record.origin }, stored);
+		} catch (error) {
+			if (error instanceof WebAuthnError) throw passkeyRefusal(error.reason, error.message);
+			throw error;
+		}
+		const at = clock.now();
+		if (!(await credentials.recordUse(stored.id, { from: stored.signCount, to: verified.signCount, at }))) {
+			throw passkeyRefusal("counter", "The passkey was used twice at once");
+		}
+		return publicPasskey({ ...stored, signCount: verified.signCount, lastUsedAt: at });
+	}
+
+	/**
+	 * Confirms `change` with `confirmation`, an assertion over a change challenge issued to the person for exactly it.
+	 * A missing or failed one is audited as `identity.passkey.refused` and rejected `refused` with `details.passkey`.
+	 */
+	async function confirm(
+		ctx: CallContext,
+		userId: UserId,
+		change: PasskeyChange,
+		confirmation: PasskeyAssertion | undefined,
+	): Promise<void> {
+		try {
+			if (confirmation === undefined) {
+				throw passkeyRefusal("missing", "Changing your passkeys needs one of them to confirm it");
+			}
+			const record = await takeChallenge(userId, "change", confirmation?.response?.clientDataJSON, "webauthn.get");
+			if (record.change === undefined || !sameChange(record.change, change)) {
+				throw passkeyRefusal("binding", "The passkey confirmed another change than this one");
+			}
+			await useAssertion(userId, record, confirmation);
+		} catch (error) {
+			const reason = error instanceof HarbourError && error.code === "refused" ? error.details?.passkey : undefined;
+			if (typeof reason === "string") {
+				await audit?.append(PASSKEY_CONTEXT, [
+					{
+						id: `identity:identity.passkey.refused:${crypto.randomUUID()}`,
+						at: clock.now(),
+						source: "identity",
+						type: "identity.passkey.refused",
+						actor: ctx.actor,
+						organisationId: ctx.organisationId,
+						subject:
+							change.change === "remove"
+								? { kind: "identity.passkey", id: change.passkeyId }
+								: { kind: "identity.user", id: userId },
+						data: { change: change.change, reason },
+					},
+				]);
+			}
+			throw error;
+		}
 	}
 
 	async function emit(
@@ -356,9 +461,13 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			};
 		},
 
-		async register(ctx, response, name) {
+		async register(ctx, response, name, confirmation) {
 			const userId = personOf(ctx);
 			const label = passkeyName(name);
+			// Checked here, not when the challenge was issued: a challenge from before their first passkey is no way round it.
+			if ((await credentials.listByUser(userId)).length > 0) {
+				await confirm(ctx, userId, { change: "register" }, confirmation);
+			}
 			const record = await takeChallenge(userId, "registration", response?.response?.clientDataJSON, "webauthn.create");
 			let verified: Awaited<ReturnType<typeof verifyRegistration>>;
 			try {
@@ -390,11 +499,64 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			return passkey;
 		},
 
-		async remove(ctx, passkeyId) {
+		async remove(ctx, passkeyId, confirmation) {
 			const userId = personOf(ctx);
+			const owned = (await credentials.listByUser(userId)).some((passkey) => passkey.id === passkeyId);
+			if (!owned) throw new HarbourError("not_found", "No such passkey");
+			await confirm(ctx, userId, { change: "remove", passkeyId }, confirmation);
 			const removed = await credentials.remove(userId, passkeyId);
 			if (removed === undefined) throw new HarbourError("not_found", "No such passkey");
 			await emit(ctx, "identity.passkey.removed", publicPasskey(removed));
+		},
+
+		async changeChallenge(ctx, rp, change) {
+			const userId = personOf(ctx);
+			const mine = await credentials.listByUser(userId);
+			if (mine.length === 0) throw new HarbourError("invalid", "You have no passkey to confirm a change with");
+			if (change.change === "remove" && !mine.some((passkey) => passkey.id === change.passkeyId)) {
+				throw new HarbourError("not_found", "No such passkey");
+			}
+			const record = await issue(userId, "change", rp, {
+				change: change.change === "remove" ? { change: "remove", passkeyId: change.passkeyId } : { change: "register" },
+			});
+			return {
+				challenge: record.challenge,
+				rpId: rp.id,
+				allowCredentials: mine.filter((passkey) => passkey.rpId === rp.id).map(descriptorOf),
+				userVerification: "required",
+				timeout: PASSKEY_TIMEOUT_MILLISECONDS,
+				expiresAt: record.expiresAt,
+			};
+		},
+
+		async reset(ctx, userId) {
+			// A person, not a host app's key: an admin key must not be able to strip someone's passkeys.
+			if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "Only a person may reset passkeys");
+			const directory = options.identity;
+			if (directory?.authorize === undefined) {
+				throw new HarbourError("not_supported", "This deployment cannot reset passkeys");
+			}
+			// The organisation's admin, whatever project the call names; then a member of that organisation.
+			const { projectId: _project, ...inOrganisation } = ctx;
+			await directory.authorize(inOrganisation, "admin");
+			await directory.getUser(inOrganisation, userId);
+			const removed: string[] = [];
+			for (const passkey of await credentials.listByUser(userId)) {
+				if ((await credentials.remove(userId, passkey.id)) !== undefined) removed.push(passkey.id);
+			}
+			await audit?.append(PASSKEY_CONTEXT, [
+				{
+					id: `identity:identity.passkey.reset:${crypto.randomUUID()}`,
+					at: clock.now(),
+					source: "identity",
+					type: "identity.passkey.reset",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					subject: { kind: "identity.user", id: userId },
+					data: { removed: removed.length, passkeyIds: removed },
+				},
+			]);
+			return removed.length;
 		},
 
 		async required(ctx) {
@@ -407,10 +569,12 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			const userId = personOf(ctx);
 			const passkeys = (await credentials.listByUser(userId)).filter((passkey) => passkey.rpId === rp.id);
 			const record = await issue(userId, "approval", rp, {
-				proposalId: binding.proposalId,
-				termsHash: binding.termsHash,
-				action: binding.action,
-				...(binding.narrowing === undefined ? {} : { narrowing: binding.narrowing }),
+				binding: {
+					proposalId: binding.proposalId,
+					termsHash: binding.termsHash,
+					action: binding.action,
+					...(binding.narrowing === undefined ? {} : { narrowing: binding.narrowing }),
+				},
 			});
 			return {
 				challenge: record.challenge,
@@ -428,27 +592,7 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			if (record.binding === undefined || !sameBinding(record.binding, binding)) {
 				throw passkeyRefusal("binding", "The passkey confirmed other terms than the decision cites");
 			}
-			const stored = await credentials.findByCredentialId(canonicalId(assertion.rawId));
-			if (stored === undefined || stored.userId !== userId || stored.rpId !== record.rpId) {
-				throw passkeyRefusal("credential", "That passkey is not one of yours");
-			}
-			let verified: Awaited<ReturnType<typeof verifyAssertion>>;
-			try {
-				verified = await verifyAssertion(
-					assertion,
-					record.challenge,
-					{ id: record.rpId, origin: record.origin },
-					stored,
-				);
-			} catch (error) {
-				if (error instanceof WebAuthnError) throw passkeyRefusal(error.reason, error.message);
-				throw error;
-			}
-			const at = clock.now();
-			if (!(await credentials.recordUse(stored.id, { from: stored.signCount, to: verified.signCount, at }))) {
-				throw passkeyRefusal("counter", "The passkey was used twice at once");
-			}
-			return publicPasskey({ ...stored, signCount: verified.signCount, lastUsedAt: at });
+			return useAssertion(userId, record, assertion);
 		},
 	};
 }
