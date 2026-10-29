@@ -95,6 +95,8 @@ export class ConversationProjector {
 	readonly #seenEntries = new Set<string>();
 	/** Tool items by Pi tool call ID, while their result is outstanding. */
 	readonly #runningTools = new Map<string, ToolItem>();
+	/** The entry behind each user and settled assistant item, by item ID: where a fork or an edit starts. */
+	readonly #entries = new Map<string, EntryRecord>();
 	#streaming: AssistantItem | undefined;
 	#streamCount = 0;
 	#status: SessionStatus = "idle";
@@ -107,6 +109,16 @@ export class ConversationProjector {
 
 	get status(): SessionStatus {
 		return this.#status;
+	}
+
+	/**
+	 * The entry a user message or a settled answer was projected from, by its item ID. `undefined` for any other item, an
+	 * answer still streaming, and an ID this projection never gave out.
+	 */
+	entryOf(itemId: string): { readonly kind: "user" | "assistant"; readonly entry: EntryRecord } | undefined {
+		const entry = this.#entries.get(itemId);
+		if (entry === undefined) return undefined;
+		return { kind: entry.kind === "pi.assistant" ? "assistant" : "user", entry };
 	}
 
 	/** The ops that bring the projection from the previous view to `view`; empty when nothing shown changed. */
@@ -144,6 +156,7 @@ export class ConversationProjector {
 				text: textOf(message.content),
 				...userViaOf(entry),
 			};
+			this.#entries.set(item.id, entry);
 			ops.push({ op: "append", item });
 			return;
 		}
@@ -166,6 +179,7 @@ export class ConversationProjector {
 			const { thinking: _previous, ...rest } = streaming;
 			// A finished answer is timed by when it was generated, not when it started streaming.
 			const item: AssistantItem = { ...rest, at, text, streaming: false, ...(thinking === "" ? {} : { thinking }) };
+			this.#entries.set(item.id, entry);
 			ops.push({ op: "replace", item });
 		} else if (text !== "" || thinking !== "") {
 			const item: AssistantItem = {
@@ -176,6 +190,7 @@ export class ConversationProjector {
 				streaming: false,
 				...(thinking === "" ? {} : { thinking }),
 			};
+			this.#entries.set(item.id, entry);
 			ops.push({ op: "append", item });
 		}
 		for (const block of message.content) {

@@ -29,6 +29,10 @@ export type SessionActions = {
 		ComposerProps,
 		"models" | "model" | "onModelChange" | "thinking" | "defaultThinking" | "onThinkingChange"
 	>;
+	/** Forks a new session from an answer and opens it. Absent when the host can't. */
+	onFork?: (itemId: string) => Promise<void>;
+	/** Rewinds the session to a message and sends new words in its place. Absent when the host can't. */
+	onEdit?: (itemId: string, text: string) => Promise<void>;
 };
 
 /**
@@ -41,6 +45,16 @@ export function transcriptWorking(
 ): false | true | { readonly since: number } {
 	if (promptedAt !== undefined) return { since: promptedAt };
 	return status === "running";
+}
+
+/**
+ * Why Edit from here is off, or undefined when it is on: the session can't be controlled, or a run is going or a send
+ * on its way. Rewinding a run under way would lose what it is doing, so the person stops it first.
+ */
+export function editBlocked(control: SessionControl, status: SessionStatus, sending: boolean): string | undefined {
+	if (!control.live) return control.reason;
+	if (sending) return "Wait for the message to send";
+	return status === "running" || status === "waiting" ? "Stop the run to edit a message" : undefined;
 }
 
 /**

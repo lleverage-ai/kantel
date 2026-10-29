@@ -218,6 +218,8 @@ export function App({
 		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
 		[projectId, sessionId],
 	);
+	/** A fork is a session in the same project: it opens in place of the one it came from. */
+	const toFork = useCallback((forkId: string) => navigate(sessionPath(projectId ?? "", forkId)), [projectId]);
 
 	if (projectsError !== undefined)
 		return (
@@ -337,6 +339,7 @@ export function App({
 				project={project?.name}
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
+				onForked={toFork}
 				onOpen={onOpen}
 				onLive={setLive}
 			/>

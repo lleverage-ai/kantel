@@ -121,9 +121,13 @@ export { Markdown, splitBlocks } from "./session/markdown.tsx";
 export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
 export {
 	MessageAction,
+	type MessageActionHandlers,
 	type MessageActionProps,
 	MessageActions,
+	MessageActionsContext,
 	type MessageActionsProps,
+	MessageEditor,
+	type MessageEditorProps,
 } from "./session/message-actions.tsx";
 export {
 	type ComposerModelOption,
