@@ -1,6 +1,6 @@
 import { Button, Spinner } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { frameAt, type ReplayFrame, readFrames } from "./mkv.ts";
+import { frameAt, framePainter, type ReplayFrame, readFrames } from "./mkv.ts";
 import "./viewer.css";
 
 // The page a view link opens (`/browser/<browser>#<token>`): one of Harbour's own browsers, live or replayed, for
@@ -297,7 +297,24 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 	// Chunks loaded (or loading), by `<page>/<index>`.
 	const chunks = useRef(new Map<string, Promise<ReplayFrame[]>>());
 	const loaded = useRef(new Map<string, ReplayFrame[]>());
-	const drawn = useRef<ReplayFrame | undefined>(undefined);
+	const show = useMemo(
+		() =>
+			framePainter(
+				(frame: ReplayFrame) =>
+					createImageBitmap(new Blob([frame.jpeg as Uint8Array<ArrayBuffer>], { type: "image/jpeg" })),
+				(bitmap: ImageBitmap) => {
+					const target = canvas.current;
+					if (target === null) return;
+					if (target.width !== bitmap.width || target.height !== bitmap.height) {
+						target.width = bitmap.width;
+						target.height = bitmap.height;
+					}
+					target.getContext("2d")!.drawImage(bitmap, 0, 0);
+				},
+				(bitmap: ImageBitmap) => bitmap.close(),
+			),
+		[],
+	);
 
 	const load = useCallback(
 		(pageId: string, index: number) => {
@@ -350,27 +367,11 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 				.catch(() => setWaiting(false));
 			return;
 		}
+		// Not cancelled when the position moves on: while playing it moves every animation frame, often before a frame
+		// has decoded, and cancelling then would show nothing until playing stops.
 		const frame = frameAt(frames, where.pageMs);
-		if (frame === undefined || frame === drawn.current) return;
-		drawn.current = frame;
-		let cancelled = false;
-		createImageBitmap(new Blob([frame.jpeg as Uint8Array<ArrayBuffer>], { type: "image/jpeg" }))
-			.then((bitmap) => {
-				const target = canvas.current;
-				if (!cancelled && target !== null) {
-					if (target.width !== bitmap.width || target.height !== bitmap.height) {
-						target.width = bitmap.width;
-						target.height = bitmap.height;
-					}
-					target.getContext("2d")!.drawImage(bitmap, 0, 0);
-				}
-				bitmap.close();
-			})
-			.catch(() => undefined);
-		return () => {
-			cancelled = true;
-		};
-	}, [position, locate, load, waiting]);
+		if (frame !== undefined) show(frame);
+	}, [position, locate, load, waiting, show]);
 
 	// Play: move the position on with the clock, unless a chunk is still loading.
 	useEffect(() => {
