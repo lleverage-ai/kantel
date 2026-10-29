@@ -292,7 +292,8 @@ function findingValue(item: { readonly [key: string]: unknown }): number | undef
  * A check's report from its exit code and standard output, by Sal's contract: 0 is healthy (the output is not read),
  * 3 is findings, anything else a failed run. On 3 the output is JSON, a list of findings or an object with a
  * `findings` (or `items`) list; each is `{key, severity, summary}`, with `hint` and `title` read when `severity` and
- * `summary` are missing, and `value` (or `evidence.count`) to measure rising by. A finding with no severity is `low`.
+ * `summary` are missing, `value` (or `evidence.count`) to measure rising by, and `status` (or `change`), the command's
+ * own `new`, `escalated` or `unchanged`. A finding with no severity is `low`.
  * Output on 3 that breaks this (not JSON, no list, a finding without a string `key`) is a failed run, `BROKEN_RUN`.
  */
 export function parseCheckOutput(execution: CheckExecution): CheckReport {
@@ -322,7 +323,15 @@ export function parseCheckOutput(execution: CheckExecution): CheckReport {
 		const summary =
 			typeof item.summary === "string" ? item.summary : typeof item.title === "string" ? item.title : item.key;
 		const value = findingValue(item);
-		findings.push({ key: item.key, severity, summary, ...(value === undefined ? {} : { value }) });
+		const status =
+			typeof item.status === "string" ? item.status : typeof item.change === "string" ? item.change : undefined;
+		findings.push({
+			key: item.key,
+			severity,
+			summary,
+			...(value === undefined ? {} : { value }),
+			...(status === undefined ? {} : { status }),
+		});
 	}
 	return { exitCode: 3, findings };
 }

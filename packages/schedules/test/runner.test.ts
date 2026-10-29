@@ -565,7 +565,7 @@ describe("the scheduler loop", () => {
 		expect(statuses).toEqual(["succeeded", "succeeded", "failed", "failed", "succeeded"]);
 		expect(raised).toEqual([
 			[expect.objectContaining({ key: "disk:/", severity: "high", reason: "new", value: 91 })],
-			[expect.objectContaining({ key: `check-failed:${check.id}`, severity: "error", reason: "failures" })],
+			[expect.objectContaining({ key: `check-failed:${check.id}`, severity: "low", reason: "failures" })],
 		]);
 	});
 
@@ -629,14 +629,17 @@ describe("a check's output", () => {
 			parseCheckOutput({
 				exitCode: 3,
 				stdout: JSON.stringify({
-					items: [{ key: "a", hint: "medium", title: "A is late", evidence: { count: 4 } }, { key: "b" }],
+					items: [
+						{ key: "a", hint: "medium", title: "A is late", evidence: { count: 4 }, change: "escalated" },
+						{ key: "b", status: "unchanged" },
+					],
 				}),
 			}),
 		).toEqual({
 			exitCode: 3,
 			findings: [
-				{ key: "a", severity: "medium", summary: "A is late", value: 4 },
-				{ key: "b", severity: "low", summary: "b" },
+				{ key: "a", severity: "medium", summary: "A is late", value: 4, status: "escalated" },
+				{ key: "b", severity: "low", summary: "b", status: "unchanged" },
 			],
 		});
 	});
