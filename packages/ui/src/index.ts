@@ -216,6 +216,21 @@ export {
 	selectedModel,
 } from "./session/model-picker.tsx";
 export { NewSessionRow, type NewSessionRowProps } from "./session/new-session.tsx";
+// Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
+export {
+	PresentedFileCard,
+	type PresentedFileCardProps,
+	PresentedFiles,
+	type PresentedFilesProps,
+} from "./session/presented-file-card.tsx";
+export {
+	fileToOpen,
+	type PresentedKind,
+	presentedFiles,
+	presentedKey,
+	presentedKind,
+	presentedKindLabel,
+} from "./session/presented-file-model.ts";
 export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
 export {
 	ConnectionState,
@@ -340,9 +355,11 @@ export {
 	type VaultRequest,
 	type Viewer,
 } from "./vault/vault-page-model.ts";
+export { FilePanel, type FilePanelProps, type FilePanelState, saveFile } from "./workspace/file-panel.tsx";
 // Workspace components.
 export { FileTree, type FileTreeProps } from "./workspace/file-tree.tsx";
 export { FileViewer, type FileViewerProps, type FileViewState } from "./workspace/file-viewer.tsx";
+export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./workspace/html-frame.ts";
 export { NoteViewer, type NoteViewerProps, type NoteViewState } from "./workspace/note-viewer.tsx";
 export {
 	compareEntries,

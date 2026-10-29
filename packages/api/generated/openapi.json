@@ -3760,6 +3760,38 @@
 				"title": "OwnerRef",
 				"description": "Who owns a record: an organisation, a project, a user, or the platform."
 			},
+			"PresentedFile": {
+				"type": "object",
+				"required": ["workspaceId", "path", "name", "mimeType", "size"],
+				"properties": {
+					"workspaceId": {
+						"type": "string",
+						"description": "The session's workspace the file is in."
+					},
+					"path": {
+						"type": "string",
+						"description": "Its path in the workspace, for `GET /v1/workspaces/{workspaceId}/content?path=`: \"out/report.pdf\", or \"/project/README.md\" under a mount."
+					},
+					"name": {
+						"type": "string",
+						"description": "Its file name: \"report.pdf\"."
+					},
+					"mimeType": {
+						"type": "string",
+						"description": "Its media type, from its name: \"application/pdf\"."
+					},
+					"size": {
+						"type": "integer",
+						"description": "Its size in bytes when it was presented."
+					},
+					"preview": {
+						"type": "string",
+						"description": "The first lines of a text file, for a preview card."
+					}
+				},
+				"title": "PresentedFile",
+				"description": "A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials."
+			},
 			"QuestionCard": {
 				"type": "object",
 				"required": ["type", "questionId", "text", "status"],
@@ -4896,6 +4928,13 @@
 					"args": {},
 					"output": {
 						"type": "string"
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/PresentedFile"
+						},
+						"description": "The files the call presented to the person (`present_files`), the most relevant first."
 					},
 					"tier": {
 						"anyOf": [

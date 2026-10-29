@@ -1,6 +1,6 @@
-import type { SessionStatus, TranscriptItem } from "@harbour/protocol";
+import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
 import type { ComposerProps, ComposerState } from "@harbour/ui";
-import type { SessionControl } from "../api/client.ts";
+import type { SessionControl, WorkspaceFile } from "../api/client.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
 /**
@@ -32,6 +32,11 @@ export type SessionActions = {
 	onBrowserDecision?: (callId: string, allow: boolean) => void;
 	/** The live views of the session's browsers, when the client can have them. Absent, browser calls show screenshots. */
 	browserLive?: BrowserLiveStore;
+	/**
+	 * Reads a file the agent presented, through the workspace read API, for the viewer. Absent, presented files show as
+	 * cards with nothing to open. Rejects with an `ApiError` (`too_large` for a file larger than the API serves).
+	 */
+	readPresented?: (file: PresentedFile, signal: AbortSignal) => Promise<WorkspaceFile>;
 	/** The composer's model and thinking pickers, when the session offers a choice. */
 	pickers?: Pick<
 		ComposerProps,

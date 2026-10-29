@@ -1,4 +1,4 @@
-import type { Cursor } from "@harbour/protocol";
+import type { Cursor, PresentedFile } from "@harbour/protocol";
 import {
 	BrowserLiveView,
 	type BrowserViewSlot,
@@ -10,6 +10,7 @@ import {
 	FileIcon,
 	IconButton,
 	Notice,
+	presentedKey,
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
@@ -25,6 +26,8 @@ import {
 	transcriptWorking,
 } from "./actions.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
+import { createAutoOpen } from "./presented.ts";
+import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 
@@ -135,7 +138,20 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control, onFork, onEdit, browserLive } = actions;
+	const { control, onFork, onEdit, browserLive, readPresented } = actions;
+
+	// The presented file open in the viewer. A file a call presents for the first time while the screen is open opens
+	// on its own; any file opens from its card.
+	const [openFile, setOpenFile] = useState<PresentedFile>();
+	const [autoOpen] = useState(createAutoOpen);
+	const ready = state.freshness.state !== "loading";
+	useEffect(() => {
+		if (!ready || readPresented === undefined) return;
+		const next = autoOpen.next(state.items);
+		if (next !== undefined) setOpenFile(next);
+	}, [autoOpen, ready, state.items, readPresented]);
+	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
+	const closeFile = useCallback(() => setOpenFile(undefined), []);
 	const renderBrowserView = useMemo(
 		() =>
 			browserLive === undefined
@@ -217,84 +233,93 @@ export function SessionView({
 					</div>
 				}
 			/>
-			<div className="console-main">
-				<Profiled id="transcript-list">
-					<Transcript
-						items={state.items}
-						hasOlder={state.hasEarlier}
-						loadingOlder={state.loadingOlder}
-						olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
-						onLoadOlder={client.loadOlder}
-						loading={state.freshness.state === "loading"}
-						error={state.error}
-						working={working}
-						onRowRender={recordRow}
-						messageActions={messageActions}
-						{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
-						{...(turn === undefined ? {} : { turn })}
-						{...(focusBrowser === undefined ? {} : { focusBrowser })}
-						dock={
-							<Composer
-								state={composerState(control, state.status, actions.sending)}
-								disabledReason={control.live ? undefined : control.reason}
-								label="Message"
-								banner={
-									actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
-										<>
-											{turnMissing ? (
-												<Notice level="info">The turn this link names isn't in the session.</Notice>
-											) : null}
-											{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
-											{browserRequest === undefined ? null : (
-												<Notice
-													level="warning"
-													action={
-														onBrowserDecision === undefined || !control.live ? undefined : (
-															<span className="console-browser-actions">
-																<Button
-																	size="sm"
-																	disabled={actions.sending}
-																	onClick={() => onBrowserDecision(browserRequest.callId, true)}
-																>
-																	Allow
-																</Button>
-																<Button
-																	variant="ghost"
-																	size="sm"
-																	disabled={actions.sending}
-																	onClick={() => onBrowserDecision(browserRequest.callId, false)}
-																>
-																	Decline
-																</Button>
-															</span>
-														)
-													}
-												>
-													The agent asks for a browser
-													{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
-													{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
-												</Notice>
-											)}
-										</>
-									)
-								}
-								value={actions.draft}
-								onChange={actions.onDraft}
-								{...actions.pickers}
-								footer={
-									offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-										<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-											Send after this run
-										</Button>
-									) : undefined
-								}
-								onSend={actions.onSend}
-								onSteer={actions.onSteer}
-								onStop={actions.onStop}
-							/>
-						}
-					/>
-				</Profiled>
+			<div className={openFile === undefined ? "console-main" : "console-main console-main-split"}>
+				<div className="console-main-transcript">
+					<Profiled id="transcript-list">
+						<Transcript
+							items={state.items}
+							hasOlder={state.hasEarlier}
+							loadingOlder={state.loadingOlder}
+							olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
+							onLoadOlder={client.loadOlder}
+							loading={state.freshness.state === "loading"}
+							error={state.error}
+							working={working}
+							onRowRender={recordRow}
+							messageActions={messageActions}
+							{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
+							{...(turn === undefined ? {} : { turn })}
+							{...(focusBrowser === undefined ? {} : { focusBrowser })}
+							{...(readPresented === undefined ? {} : { onOpenFile })}
+							{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+							dock={
+								<Composer
+									state={composerState(control, state.status, actions.sending)}
+									disabledReason={control.live ? undefined : control.reason}
+									label="Message"
+									banner={
+										actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
+											<>
+												{turnMissing ? (
+													<Notice level="info">The turn this link names isn't in the session.</Notice>
+												) : null}
+												{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
+												{browserRequest === undefined ? null : (
+													<Notice
+														level="warning"
+														action={
+															onBrowserDecision === undefined || !control.live ? undefined : (
+																<span className="console-browser-actions">
+																	<Button
+																		size="sm"
+																		disabled={actions.sending}
+																		onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																	>
+																		Allow
+																	</Button>
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		disabled={actions.sending}
+																		onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																	>
+																		Decline
+																	</Button>
+																</span>
+															)
+														}
+													>
+														The agent asks for a browser
+														{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+														{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+													</Notice>
+												)}
+											</>
+										)
+									}
+									value={actions.draft}
+									onChange={actions.onDraft}
+									{...actions.pickers}
+									footer={
+										offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+											<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+												Send after this run
+											</Button>
+										) : undefined
+									}
+									onSend={actions.onSend}
+									onSteer={actions.onSteer}
+									onStop={actions.onStop}
+								/>
+							}
+						/>
+					</Profiled>
+				</div>
+				{openFile === undefined || readPresented === undefined ? null : (
+					<div className="console-file-panel">
+						<PresentedPanel key={presentedKey(openFile)} file={openFile} read={readPresented} onClose={closeFile} />
+					</div>
+				)}
 			</div>
 			{profiling ? <ProfilePanel client={client} /> : null}
 		</div>

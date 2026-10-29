@@ -199,4 +199,63 @@ describe("toolLabel", () => {
 		expect(toolLabel("browser_screenshot", {})).toBe("Taking a screenshot");
 		expect(toolLabel("lookup", { url: "https://example.com" })).toBe("Calling lookup");
 	});
+
+	it("names what present_files presents", () => {
+		expect(toolLabel("present_files", { filepaths: ["/workspace/out/report.pdf"] })).toBe("Presenting report.pdf");
+		expect(toolLabel("present_files", { filepaths: ["a.md", "b.md"] })).toBe("Presenting 2 files");
+		expect(toolLabel("present_files", {})).toBe("Presenting files");
+	});
+});
+
+describe("presented files", () => {
+	const file = { workspaceId: "ws-1", path: "out/report.md", name: "report.md", mimeType: "text/markdown", size: 12 };
+	const call = (id: number, name: string): Entry =>
+		assistant(id, [{ type: "toolCall", id: `c${id}`, name, arguments: { filepaths: [file.path] } }], "toolUse");
+	const result = (id: number, callId: string, details: unknown, isError = false): Entry => ({
+		id,
+		kind: "pi.tool-result",
+		model: [
+			{
+				role: "toolResult",
+				toolCallId: callId,
+				toolName: "present_files",
+				content: [{ type: "text", text: "Presented 1 file" }],
+				isError,
+				details,
+			},
+		],
+		data: { diagnostics: [] },
+	});
+
+	it("puts a present_files call's files on its tool item, checked and bounded", () => {
+		const bad = [{ ...file, size: -1 }, { path: "x" }, "nope", { ...file, path: "" }];
+		const long = { ...file, path: "out/long.md", preview: "x".repeat(5_000) };
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view([
+				user(1, "Go", "prompt"),
+				call(2, "present_files"),
+				result(3, "c2", { presentedFiles: [file, ...bad, long] }),
+			]),
+		]).items;
+		const tool = items.find((item) => item.kind === "tool");
+		expect(tool?.kind === "tool" ? tool.label : undefined).toBe("Presenting report.md");
+		const files = tool?.kind === "tool" ? tool.files : undefined;
+		expect(files?.map((presented) => presented.path)).toEqual(["out/report.md", "out/long.md"]);
+		expect(files?.[1]?.preview).toHaveLength(600);
+	});
+
+	it("ignores presented files from any other tool, and from a call that failed", () => {
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view([
+				user(1, "Go", "prompt"),
+				call(2, "bash"),
+				result(3, "c2", { presentedFiles: [file] }),
+				call(4, "present_files"),
+				result(5, "c4", { presentedFiles: [file] }, true),
+			]),
+		]).items;
+		const tools = items.flatMap((item) => (item.kind === "tool" ? [item] : []));
+		expect(tools).toHaveLength(2);
+		expect(tools.map((tool) => tool.files)).toEqual([undefined, undefined]);
+	});
 });

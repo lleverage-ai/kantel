@@ -154,8 +154,31 @@ body {
 
 .console-main {
 	position: relative;
+	display: flex;
 	flex: 1;
 	min-height: 0;
+}
+
+.console-main-transcript {
+	position: relative;
+	flex: 1 1 0;
+	min-width: 0;
+	min-height: 0;
+}
+
+/* A presented file's viewer: beside the transcript on a wide screen, over it on a narrow one. */
+.console-file-panel {
+	flex: 0 0 clamp(26rem, 48%, 56rem);
+	min-width: 0;
+	min-height: 0;
+}
+
+@media (max-width: 900px) {
+	.console-file-panel {
+		position: absolute;
+		inset: 0;
+		z-index: var(--hb-z-overlay);
+	}
 }
 
 .console-menu code {
