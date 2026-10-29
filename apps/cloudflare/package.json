@@ -35,6 +35,7 @@
 		"@harbour/vault": "workspace:*",
 		"@harbour/vault-cloudflare": "workspace:*",
 		"@harbour/workspace": "workspace:*",
+		"@jitl/quickjs-wasmfile-release-sync": "0.32.0",
 		"quickjs-wasi": "3.6.2"
 	},
 	"devDependencies": {

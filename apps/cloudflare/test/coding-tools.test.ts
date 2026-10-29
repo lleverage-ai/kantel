@@ -1,5 +1,7 @@
 // A session's coding tools on the stack (#196): the file tools work on its workspace directly, as its agent, and lease
 // nothing; `bash` leases the session's isolate on its first command; closing the session releases only that lease.
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import type { CallContext } from "@harbour/contracts";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,11 +20,18 @@ afterEach(async () => {
 	for (const stack of opened.splice(0)) await stack.close();
 });
 
+/** QuickJS, compiled from the package's file, as the Worker gets it from wrangler. */
+const nodeEngine = async () =>
+	WebAssembly.compile(
+		await readFile(createRequire(import.meta.url).resolve("@jitl/quickjs-wasmfile-release-sync/wasm")),
+	);
+
 async function setUp() {
 	const { models, script } = createScriptedModel();
 	const stack = await createStack({
 		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
+		nodeEngine,
 	});
 	opened.push(stack);
 	const admin: CallContext = stack.admin;
@@ -192,5 +201,34 @@ describe("a session's coding tools", () => {
 		const written = await stack.workspaces.read(admin, first.workspaceId ?? "", "a.txt");
 		expect(new TextDecoder().decode(written.content)).toBe("one\n");
 		await expect(stack.workspaces.get(admin, second.workspaceId ?? "")).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("writes a JavaScript file, runs it with node in the isolate, and keeps what it wrote", async () => {
+		const { stack, admin, script, session, run, live, toolResults } = await setUp();
+		const created = await session();
+		const primes = [
+			"const limit = Number(process.argv[2]);",
+			"const primes = [];",
+			"for (let n = 2; primes.length < limit; n++) if (primes.every((p) => n % p !== 0)) primes.push(n);",
+			"console.log('first ' + limit + ' primes:', primes.join(', '));",
+		].join("\n");
+		script.reply(
+			{ toolCalls: [{ name: "write", args: { path: "primes.js", content: primes } }] },
+			{ toolCalls: [{ name: "bash", args: { command: "node primes.js 10 | tee primes.txt" } }] },
+			{ text: "Ran" },
+		);
+		await run(created.id, "Write and run a script");
+		expect(toolResults().join("\n")).toContain("first 10 primes: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29");
+		expect(await live(created.id)).toHaveLength(1);
+		const saved = await stack.workspaces.read(admin, created.workspaceId ?? "", "primes.txt");
+		expect(new TextDecoder().decode(saved.content)).toContain("29");
+	});
+
+	it("refuses python, which needs the container tier", async () => {
+		const { script, session, run, toolResults } = await setUp();
+		const created = await session();
+		script.reply({ toolCalls: [{ name: "bash", args: { command: "python3 -c 'print(1)'" } }] }, { text: "Ran" });
+		await run(created.id, "Run");
+		expect(toolResults().join("\n")).toContain("container tier");
 	});
 });

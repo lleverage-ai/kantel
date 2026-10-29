@@ -14,15 +14,18 @@
 		"./pi-env": "./src/pi-env.ts",
 		"./dependencies": "./src/dependencies.ts",
 		"./coding-tools": "./src/coding-tools.ts",
-		"./isolate-git": "./src/isolate-git.ts"
+		"./isolate-git": "./src/isolate-git.ts",
+		"./isolate-node": "./src/isolate-node.ts"
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/workspace": "workspace:*",
+		"@jitl/quickjs-wasmfile-release-sync": "0.32.0",
 		"isomorphic-git": "1.44.8",
-		"just-bash": "3.6.0"
+		"just-bash": "3.6.0",
+		"quickjs-emscripten-core": "0.32.0"
 	},
 	"devDependencies": {
 		"@earendil-works/chord": "1.4.0",

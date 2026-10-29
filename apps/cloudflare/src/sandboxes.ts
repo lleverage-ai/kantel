@@ -8,8 +8,11 @@
  *   `dynamic-worker` runs the same shell in a Dynamic Worker per session (`src/dynamic-worker.ts`), when the Worker
  *   has the `LOADER` binding. Each backend gets its own sandboxes, so the isolate-ready measurement can run on any of
  *   them while sessions use the chosen one.
- * - **The container tier** is not on Cloudflare yet: a command routed to it (`git`, `node`, `python` and the rest of
+ * - **The container tier** is not on Cloudflare yet: a command routed to it (`git`, `python`, `npm` and the rest of
  *   `DEFAULT_TIER_ROUTES`) is refused `unavailable`.
+ * - **`node`**: with `nodeEngine` (the compiled QuickJS module), the in-process isolate has a `node` program that runs
+ *   plain JavaScript in QuickJS (`@harbour/sandbox/isolate-node`), and a command that starts with `node` runs there
+ *   instead of being refused. The Worker passes it; the tests may.
  * - **Leases** are kept in memory. An isolate lease holds no state outside its workspace, so one lost to an eviction
  *   costs nothing: the next command acquires another.
  */
@@ -25,6 +28,7 @@ import {
 	type SystemContext,
 } from "@harbour/contracts";
 import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
+import { createIsolateNodeCommand, ISOLATE_NODE_ROUTES } from "@harbour/sandbox/isolate-node";
 import {
 	type ContainerBackend,
 	createMemoryLeaseStore,
@@ -87,7 +91,12 @@ export interface StackSandboxesOptions {
 	/** The backend sessions run on. */
 	readonly backend: IsolateBackendName;
 	readonly extraBackends?: ExtraIsolateBackends;
+	/** The compiled QuickJS module: with it, the in-process isolate runs `node` (see above). */
+	readonly nodeEngine?: NodeEngine;
 }
+
+/** The compiled QuickJS module (`@jitl/quickjs-wasmfile-release-sync/wasm`), or how to get it. */
+export type NodeEngine = WebAssembly.Module | (() => Promise<WebAssembly.Module>);
 
 export interface StackSandboxes {
 	/** The backend sessions run on, and its sandboxes. */
@@ -103,7 +112,12 @@ export interface StackSandboxes {
 
 export function createStackSandboxes(options: StackSandboxesOptions): StackSandboxes {
 	const backends: Partial<Record<IsolateBackendName, IsolateBackend>> = {
-		"in-process": createInProcessIsolateBackend(options.workspaces),
+		"in-process": createInProcessIsolateBackend(
+			options.workspaces,
+			options.nodeEngine === undefined
+				? {}
+				: { commands: [createIsolateNodeCommand({ wasmModule: options.nodeEngine })] },
+		),
 		...options.extraBackends?.(options.workspaces),
 	};
 	const all = new Map<IsolateBackendName, TieredSandboxes>();
@@ -120,6 +134,7 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 				clock: options.clock,
 				audit: options.audit,
 				access: options.access,
+				...(name === "in-process" && options.nodeEngine !== undefined ? { routes: ISOLATE_NODE_ROUTES } : {}),
 			}),
 		);
 	}
