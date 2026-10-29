@@ -9,6 +9,10 @@ import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
 import { afterEach, describe, expect, it } from "vitest";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
+
+/** The namespace the model gateway sends tool names under on CPA's Messages API (`@harbour/models`, #227). */
+const TOOL_NAMESPACE = "mcp__harbour__";
+
 import { gatewayConfig } from "../src/config.ts";
 import {
 	CPA_CONNECTOR_ID,
@@ -147,8 +151,9 @@ describe("sessions on the model gateway", () => {
 		// user's to configure on their profile.
 		const { tools, ...body } = call.body as { tools?: { name: string }[] };
 		// Pi's Anthropic client adds a deferred placeholder the model never sees, to keep tool changes in the cached prefix.
+		// On CPA's Messages API the gateway sends each tool under `mcp__harbour__` (#227): a name, not text for the model.
 		const named = tools?.map((tool) => tool.name).filter((name) => name !== "__pi_deferred_placeholder__");
-		expect(named).toEqual([...CODING_TOOLS]);
+		expect(named).toEqual(CODING_TOOLS.map((name) => `${TOOL_NAMESPACE}${name}`));
 		expect(body).toEqual({
 			model: DEFAULT_MODEL,
 			messages: [
@@ -160,7 +165,8 @@ describe("sessions on the model gateway", () => {
 			thinking: { type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } },
 			output_config: { effort: "high" },
 		});
-		expect(JSON.stringify(call.body)).not.toMatch(/harbour/i);
+		expect(JSON.stringify(body)).not.toMatch(/harbour/i);
+		expect(JSON.stringify(tools?.map(({ name: _, ...rest }) => rest))).not.toMatch(/harbour/i);
 	});
 
 	it("sends the prompt the user set on the profile, as the system prompt and nothing more", async () => {
@@ -177,10 +183,11 @@ describe("sessions on the model gateway", () => {
 		});
 
 		await ask("Hi");
-		const body = upstream.calls().at(-1)!.body as { system?: unknown };
+		const { tools: _, ...body } = upstream.calls().at(-1)!.body as { system?: unknown; tools?: unknown };
 		expect(body.system).toEqual([
 			{ type: "text", text: "You work for Lleverage.\n\nAnswer in Dutch.", cache_control: { type: "ephemeral" } },
 		]);
+		// Tool names carry the gateway's namespace (#227); the rest is the user's and the model's.
 		expect(JSON.stringify(body)).not.toMatch(/harbour/i);
 	});
 
