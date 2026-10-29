@@ -14,6 +14,7 @@
  */
 import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
+import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
 import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
@@ -171,6 +172,12 @@ export async function routeRequest<StackId, VaultId>(
 		// And for importing a skill, loading a snapshot, a search or a recall: the stack refuses a stranger before it reads
 		// the JSON body, at most a skill's files or a space's concepts.
 		const forwarded = await buffered(request, skills ? SKILL_IMPORT_BODY_LIMIT : MEMORY_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	if (request.method === "POST" && isPasskeyPath(path)) {
+		// And for registering or removing a passkey: a stranger is refused before the small JSON body is read.
+		const forwarded = await buffered(request, PASSKEY_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

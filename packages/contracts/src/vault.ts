@@ -29,6 +29,7 @@ import type {
 	Timestamp,
 	UserId,
 } from "./common.ts";
+import type { PasskeyAssertion } from "./passkey.ts";
 import type { SessionEndReason } from "./session.ts";
 
 export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
@@ -187,6 +188,12 @@ export interface DecisionInput {
 	/** For a `secret` proposal: the pasted value. Never stored outside the item, never returned. */
 	readonly secretValue?: string;
 	readonly note?: string;
+	/**
+	 * The approver's passkey assertion over a challenge bound to this proposal, its terms hash and the narrowing (#132).
+	 * The approval API checks it before the decision reaches the vault, and refuses an approval without one when the
+	 * person must use a passkey; the vault itself never reads it.
+	 */
+	readonly passkeyAssertion?: PasskeyAssertion;
 }
 
 /** The terms in force after a decision: what the agent is told, never the proposed terms. */

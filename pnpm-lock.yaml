@@ -317,6 +317,28 @@ importers:
         specifier: 1.20261027.1
         version: 1.20261027.1
 
+  images/mirror:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../../packages/workspace
+    devDependencies:
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../../packages/testing
+      "@types/node":
+        specifier: 24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(yaml@2.9.1))
+
   packages/api:
     dependencies:
       "@harbour/contracts":
@@ -459,9 +481,15 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@harbour/memory":
+        specifier: workspace:*
+        version: link:../memory
       "@harbour/protocol":
         specifier: workspace:*
         version: link:../protocol
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../skills
     devDependencies:
       "@harbour/browser":
         specifier: workspace:*
@@ -516,6 +544,9 @@ importers:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
+      "@harbour/runtime":
+        specifier: workspace:*
+        version: link:../runtime
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing

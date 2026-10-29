@@ -106,9 +106,11 @@ These are worked around in the page and should be closed in lane 5's API:
 1. **No read for a past decision.** `Proposal.decisionId` names it, but there is no `getDecision`. A settled page
    shows who decided only when the host passes the decision in (`known.decisions`); otherwise it says "Approved" or
    "Denied" without naming who.
-2. **The passkey isn't part of the decision.** `DecisionInput` carries no assertion, so the vault can't check that a
-   passkey was used. The page asks for one first, but only the server can enforce it. The decision API should take
-   the WebAuthn assertion, bound to `proposalId` and `termsHash`, and verify it before deciding.
+2. ~~**The passkey isn't part of the decision.**~~ Closed by #132: `DecisionInput.passkeyAssertion` carries the
+   WebAuthn assertion over a challenge from `POST /v1/vault/proposals/:id/passkey-challenge`, bound to the person,
+   `proposalId`, `termsHash`, approve or paste, and the narrowing. The approval API verifies it before `decide` and
+   refuses (and audits as `vault.passkey.refused`) a missing or bad one once the person must use a passkey. So a
+   host's `verify` keeps the assertion for the decision rather than checking it on its own.
 
 ## Checking it
 

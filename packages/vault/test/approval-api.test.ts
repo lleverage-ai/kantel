@@ -2,6 +2,9 @@ import {
 	type CallContext,
 	HarbourError,
 	isHarbourError,
+	type PasskeyAssertion,
+	type PasskeyBinding,
+	type PasskeyChallenge,
 	type Proposal,
 	type ProposalTerms,
 	type VaultItem,
@@ -13,6 +16,7 @@ import {
 	approvalClientAsVault,
 	createVaultApprovalApi,
 	createVaultApprovalClient,
+	type VaultApprovalApiOptions,
 	type VaultApprovalClient,
 } from "@harbour/vault/approval-api";
 import type { HarbourVault } from "@harbour/vault/engine";
@@ -56,7 +60,7 @@ const shapes = [
 	{ name: "the vault checks project access", apiChecks: false },
 ] as const;
 
-async function setUp(apiChecks: boolean) {
+async function setUp(apiChecks: boolean, extra: Pick<VaultApprovalApiOptions, "passkeys"> = {}) {
 	const deps = createDeps();
 	const { tenancy } = deps;
 	tenancy.bind(callers.admin.actor, ORG, "admin");
@@ -94,6 +98,7 @@ async function setUp(apiChecks: boolean) {
 			project: "Default",
 			agent: found.requester.agentId ?? "",
 		}),
+		...(extra.passkeys === undefined ? {} : { passkeys: extra.passkeys, audit: deps.audit, clock: deps.clock }),
 	});
 	const fetchVia: typeof fetch = async (input, init) => handler(new Request(input, init));
 	const client = (who: Caller): VaultApprovalClient =>
@@ -306,6 +311,166 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks }) => {
 	});
 });
 
+/**
+ * Passkeys as the approval API sees them: a stand-in for `@harbour/identity/passkey` that issues single-use challenges
+ * bound to the person and the binding, and "verifies" an assertion whose signature is "ok". Identity's own tests prove
+ * the WebAuthn; the Cloudflare gateway's prove the two together.
+ */
+function fakePasskeys(options: { required?: boolean } = {}) {
+	const challenges = new Map<string, { userId: string; binding: PasskeyBinding }>();
+	const canonical = (binding: PasskeyBinding) =>
+		JSON.stringify({
+			...binding,
+			narrowing: binding.narrowing === undefined ? null : { ...binding.narrowing },
+		});
+	const refuse = (passkey: string) => new HarbourError("refused", `Passkey refused: ${passkey}`, { passkey });
+	const userOf = (ctx: CallContext) => (ctx.actor.kind === "human" ? ctx.actor.userId : "");
+	const issued: PasskeyBinding[] = [];
+	const passkeys = {
+		issued,
+		required: async (ctx: CallContext) => options.required ?? ctx.actor.kind === "human",
+		async approvalChallenge(ctx: CallContext, rp: { id: string }, binding: PasskeyBinding): Promise<PasskeyChallenge> {
+			const challenge = `challenge-${challenges.size + 1}`;
+			challenges.set(challenge, { userId: userOf(ctx), binding });
+			issued.push(binding);
+			return {
+				challenge,
+				rpId: rp.id,
+				allowCredentials: [],
+				userVerification: "required",
+				timeout: 120_000,
+				expiresAt: 0,
+			};
+		},
+		async verifyApproval(ctx: CallContext, binding: PasskeyBinding, assertion: PasskeyAssertion) {
+			const record = challenges.get(assertion.response.clientDataJSON);
+			challenges.delete(assertion.response.clientDataJSON);
+			if (record === undefined || record.userId !== userOf(ctx)) throw refuse("challenge");
+			if (canonical(record.binding) !== canonical(binding)) throw refuse("binding");
+			if (assertion.response.signature !== "ok") throw refuse("signature");
+			return {};
+		},
+	};
+	return passkeys;
+}
+
+const assertionFor = (challenge: PasskeyChallenge, signature = "ok"): PasskeyAssertion => ({
+	id: "cred",
+	rawId: "cred",
+	type: "public-key",
+	response: { clientDataJSON: challenge.challenge, authenticatorData: "AA", signature },
+});
+
+describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiChecks }) => {
+	async function withPasskeys(options: { required?: boolean } = {}) {
+		const passkeys = fakePasskeys(options);
+		const world = await setUp(apiChecks, { passkeys });
+		return { ...world, passkeys, audit: world.deps.audit };
+	}
+	const approval = (proposal: Proposal, extra: Record<string, unknown> = {}) => ({
+		proposalId: proposal.id,
+		outcome: "approve" as const,
+		termsHash: proposal.termsHash,
+		pickedCode: proposal.bindingCode,
+		...extra,
+	});
+
+	it("says the viewer needs a passkey, and approves with an assertion over the terms and narrowing shown", async () => {
+		const { client, proposal, passkeys, audit } = await withPasskeys();
+		const approver = client("approver");
+		expect(await approver.viewer()).toMatchObject({ passkeyRequired: true });
+		const narrowing = { methods: ["GET" as const], ttlMs: 600_000 };
+		const challenge = await approver.passkeyChallenge(proposal.id, { termsHash: proposal.termsHash, narrowing });
+		expect(challenge.rpId).toBe("harbour.test");
+		// The action comes from the proposal's kind, never the caller.
+		expect(passkeys.issued).toEqual([
+			{ proposalId: proposal.id, termsHash: proposal.termsHash, action: "approve", narrowing },
+		]);
+		const decision = await approver.decide(
+			approval(proposal, { narrowing, passkeyAssertion: assertionFor(challenge) }),
+		);
+		expect(decision.outcome).toBe("approved");
+		expect(audit.ofType("vault.passkey.refused")).toEqual([]);
+	});
+
+	it("refuses an approval without a passkey, audits it as vault.passkey.refused and leaves the request pending", async () => {
+		const { client, proposal, audit } = await withPasskeys();
+		const approver = client("approver");
+		const refused = await rejection(approver.decide(approval(proposal)));
+		expect(refused.code).toBe("refused");
+		expect(refused.details).toEqual({ passkey: "missing" });
+		const events = audit.ofType("vault.passkey.refused");
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({
+			source: "vault",
+			actor: callers.approver.actor,
+			organisationId: ORG,
+			projectId: PROJECT,
+			sessionId: "session-1",
+			agentId: "agent-1",
+			subject: { kind: "vault.proposal", id: proposal.id },
+			data: { kind: "route", reason: "missing" },
+		});
+		expect((await approver.getProposal(proposal.id)).status).toBe("pending");
+		// Nothing reached the vault: no binding-code check was made.
+		expect(audit.ofType("vault.binding_code.mismatch")).toEqual([]);
+	});
+
+	it.each([
+		["a bad signature", "signature", { signature: "forged" }],
+		["another narrowing", "binding", { narrowing: { methods: ["GET", "POST"] } }],
+		["no narrowing", "binding", { narrowing: undefined }],
+		["other terms", "binding", { termsHash: "stale" }],
+	] as const)("refuses and audits an assertion with %s", async (_, reason, change) => {
+		const { client, proposal, audit } = await withPasskeys();
+		const approver = client("approver");
+		const narrowing = { methods: ["GET" as const] };
+		const challenge = await approver.passkeyChallenge(proposal.id, { termsHash: proposal.termsHash, narrowing });
+		const { signature, ...decided } = { signature: "ok", narrowing, ...change } as Record<string, unknown>;
+		const refused = await rejection(
+			approver.decide(
+				approval(proposal, { ...decided, passkeyAssertion: assertionFor(challenge, signature as string) }),
+			),
+		);
+		expect(refused.details).toEqual({ passkey: reason });
+		expect(audit.ofType("vault.passkey.refused").map((event) => event.data?.reason)).toEqual([reason]);
+		expect((await approver.getProposal(proposal.id)).status).toBe("pending");
+	});
+
+	it("takes an assertion once: a replayed one is refused", async () => {
+		const { client, proposal, audit } = await withPasskeys();
+		const approver = client("approver");
+		const challenge = await approver.passkeyChallenge(proposal.id, { termsHash: proposal.termsHash });
+		// A wrong code after a good passkey: the vault refuses the code, and the challenge is spent.
+		const wrong = await rejection(
+			approver.decide(approval(proposal, { pickedCode: "AAA-AAA", passkeyAssertion: assertionFor(challenge) })),
+		);
+		expect(wrong.details).toBeUndefined();
+		expect(audit.ofType("vault.binding_code.mismatch")).toHaveLength(1);
+		const replay = await rejection(approver.decide(approval(proposal, { passkeyAssertion: assertionFor(challenge) })));
+		expect(replay.details).toEqual({ passkey: "challenge" });
+	});
+
+	it("refuses a challenge to someone who may not decide the request, and an agent", async () => {
+		const { client, proposal, passkeys } = await withPasskeys();
+		for (const who of ["forwarded", "outsider", "agent"] as const) {
+			const refused = await rejection(client(who).passkeyChallenge(proposal.id, { termsHash: proposal.termsHash }));
+			expect(refused.code, who).toMatch(/forbidden|not_found/);
+		}
+		expect(passkeys.issued).toEqual([]);
+	});
+
+	it("lets a denial through without a passkey, and an approval when the person needs none yet", async () => {
+		const denied = await withPasskeys();
+		const decision = await denied.client("approver").decide({ proposalId: denied.proposal.id, outcome: "deny" });
+		expect(decision.outcome).toBe("denied");
+		const optional = await withPasskeys({ required: false });
+		expect(await optional.client("approver").viewer()).toMatchObject({ passkeyRequired: false });
+		const approved = await optional.client("approver").decide(approval(optional.proposal));
+		expect(approved.outcome).toBe("approved");
+	});
+});
+
 describe("createVaultApprovalApi over HTTP", () => {
 	const request = (path: string, init: RequestInit & { caller?: Caller } = {}) => {
 		const headers = new Headers(init.headers);
@@ -377,6 +542,69 @@ describe("createVaultApprovalApi over HTTP", () => {
 		expect(widened.status).toBe(400);
 		const tooLarge = await decide(proposal.id, { outcome: "deny", note: "x".repeat(70 * 1024) });
 		expect(tooLarge.status).toBe(400);
+	});
+
+	it("has no passkeys without them: the challenge is 501, an assertion is refused unread, the viewer says nothing", async () => {
+		const { handler, proposal, client } = await setUp(true);
+		const post = (path: string, body: unknown) =>
+			handler(
+				request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/${path}`, {
+					method: "POST",
+					caller: "approver",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(body),
+				}),
+			);
+		expect((await post("passkey-challenge", { termsHash: proposal.termsHash })).status).toBe(501);
+		const assertion = {
+			id: "c",
+			rawId: "c",
+			type: "public-key",
+			response: { clientDataJSON: "a", authenticatorData: "b", signature: "c" },
+		};
+		const withAssertion = await post("decision", {
+			outcome: "approve",
+			termsHash: proposal.termsHash,
+			pickedCode: proposal.bindingCode,
+			passkeyAssertion: assertion,
+		});
+		expect(withAssertion.status).toBe(501);
+		expect(await client("approver").viewer()).not.toHaveProperty("passkeyRequired");
+	});
+
+	it("answers a passkey refusal 403 with its reason, and checks the challenge's and the assertion's shape", async () => {
+		const { handler, proposal } = await setUp(true, { passkeys: fakePasskeys() });
+		const post = (path: string, body: unknown) =>
+			handler(
+				request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/${path}`, {
+					method: "POST",
+					caller: "approver",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(body),
+				}),
+			);
+		const missing = await post("decision", { outcome: "approve", termsHash: proposal.termsHash });
+		expect(missing.status).toBe(403);
+		expect(await missing.json()).toEqual({
+			error: { code: "refused", message: "Approving needs your passkey", passkey: "missing" },
+		});
+		for (const body of [
+			{},
+			{ termsHash: "" },
+			{ termsHash: 1 },
+			{ termsHash: "h", action: "paste" },
+			{ termsHash: "h", narrowing: "x" },
+		]) {
+			expect((await post("passkey-challenge", body)).status, JSON.stringify(body)).toBe(400);
+		}
+		const getChallenge = await handler(
+			request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/passkey-challenge`, { caller: "approver" }),
+		);
+		expect(getChallenge.status).toBe(405);
+		for (const passkeyAssertion of ["x", {}, { id: "c", rawId: "c", type: "public-key", response: {} }]) {
+			const response = await post("decision", { outcome: "approve", termsHash: proposal.termsHash, passkeyAssertion });
+			expect(response.status, JSON.stringify(passkeyAssertion)).toBe(400);
+		}
 	});
 
 	it("checks list parameters", async () => {
