@@ -64,7 +64,8 @@ async function memoryCode(email: string, _since: number, timeoutMs: number): Pro
 }
 
 test("email one-time PIN sign-in starts a Harbour session every API accepts", async () => {
-	const checks = await runSignInE2e({ ...target, adminEmail: ADMIN_EMAIL.toLowerCase(), readCode: memoryCode });
+	// As configured, mixed case and all: sign-in and /v1/me both compare it normalised.
+	const checks = await runSignInE2e({ ...target, adminEmail: ADMIN_EMAIL, readCode: memoryCode });
 	expect(checks.filter((check) => !check.ok)).toEqual([]);
 	expect(checks.length).toBeGreaterThanOrEqual(12);
 });

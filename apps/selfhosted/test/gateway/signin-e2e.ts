@@ -3,7 +3,7 @@
 // the admin gets a code, a wrong code is refused, the right one starts a Harbour session that every mounted API
 // accepts, the code works only once, sign-in is audited, the person can see who they are and issue, use and revoke an
 // API key, and an ended session is refused.
-import { ORGANISATION_HEADER } from "@harbour/contracts";
+import { normaliseEmail, ORGANISATION_HEADER } from "@harbour/contracts";
 import type { E2eCheck, E2eTarget } from "./e2e.ts";
 
 export interface SignInTarget extends E2eTarget {
@@ -116,7 +116,8 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		"GET /v1/me names the person, signed in by session, as an organisation admin",
 		me.ok &&
 			meBody.actor?.kind === "human" &&
-			meBody.email === target.adminEmail &&
+			// The bootstrap stores the invited address normalised, whatever case HARBOUR_ADMIN_EMAIL was given in.
+			meBody.email === normaliseEmail(target.adminEmail) &&
 			(meBody.roles ?? []).some((held) => held.projectId === undefined && held.role === "admin"),
 		meBody,
 	);
