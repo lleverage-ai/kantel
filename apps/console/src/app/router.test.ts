@@ -4,6 +4,7 @@ import {
 	browserFromHash,
 	filesPath,
 	KEYS_PATH,
+	MEMBERS_PATH,
 	memoryPath,
 	NEW_SCHEDULE_PATH,
 	newSessionPath,
@@ -86,6 +87,8 @@ describe("routes", () => {
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
 		expect(parseRoute(KEYS_PATH)).toEqual({ name: "keys" });
 		expect(parseRoute("/keys/key_1")).toEqual({ name: "not-found", path: "/keys/key_1" });
+		expect(parseRoute(MEMBERS_PATH)).toEqual({ name: "members" });
+		expect(parseRoute("/members/usr_1")).toEqual({ name: "not-found", path: "/members/usr_1" });
 	});
 
 	it("parses the schedules page, a new schedule and one schedule", () => {

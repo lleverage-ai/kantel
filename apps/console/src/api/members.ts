@@ -1,0 +1,31 @@
+// The members page's seam on the gateway: `GET /v1/members` from the identity client, and an admin's passkey reset
+// (`POST /v1/members/:userId/passkeys/reset`, #132) from the passkey client. Only a person with the organisation's
+// admin role may reset, so the console lists the page only for them; the routes check again.
+
+import type { MeResponse } from "@harbour/contracts";
+import type { IdentityClient } from "@harbour/identity/http";
+import type { PasskeyClient } from "@harbour/identity/passkey/http";
+import type { MembersApi } from "@harbour/ui";
+
+export interface ConsoleMembers {
+	readonly api: MembersApi;
+	/** The signed-in person, marked as you in the list. */
+	readonly viewer: string;
+}
+
+/** The members seam for the signed-in person, or undefined unless they are a person with the organisation's admin role. */
+export function apiMembers(
+	identity: Pick<IdentityClient, "members">,
+	passkeys: Pick<PasskeyClient, "reset">,
+	me: Pick<MeResponse, "actor" | "roles">,
+): ConsoleMembers | undefined {
+	if (me.actor.kind !== "human") return undefined;
+	if (!me.roles.some((held) => held.projectId === undefined && held.role === "admin")) return undefined;
+	return {
+		viewer: me.actor.userId,
+		api: {
+			list: () => identity.members(),
+			resetPasskeys: (userId) => passkeys.reset(userId),
+		},
+	};
+}

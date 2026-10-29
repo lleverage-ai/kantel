@@ -1,3 +1,4 @@
+import { createPasskeyClient } from "@harbour/identity/passkey/http";
 import { Button, Notice, SignInScreen, Spinner } from "@harbour/ui";
 import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,6 +10,7 @@ import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
+import { apiMembers, type ConsoleMembers } from "./api/members.ts";
 import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
@@ -43,6 +45,7 @@ import "./ui/styles.css";
 // in-memory vault and audit store in the page (recorded/oversight.ts).
 //
 // On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
+// The members page, with an admin's passkey reset (`/v1/members`), is listed only for an organisation admin.
 //
 // The skills and memory pages follow the source too: on `api` the public API's skills and memory routes (`/v1/skills`,
 // `/v1/memory`), read-only; on `recorded` @harbour/ui's fixture stores in the page, with authoring and proposals.
@@ -115,6 +118,7 @@ type Oversight = {
 	readonly vault?: ConsoleVault;
 	readonly audit?: ConsoleAudit;
 	readonly keys?: ConsoleKeys;
+	readonly members?: ConsoleMembers;
 	readonly schedules?: ConsoleSchedules;
 	readonly agent?: ConsoleAgent;
 };
@@ -148,7 +152,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, schedules, agent } = oversight;
+	const { vault, audit, keys, members, schedules, agent } = oversight;
 	return (
 		<App
 			client={client}
@@ -156,6 +160,7 @@ function Console({
 			{...(vault === undefined ? {} : { vault })}
 			{...(audit === undefined ? {} : { audit })}
 			{...(keys === undefined ? {} : { keys })}
+			{...(members === undefined ? {} : { members })}
 			{...(schedules === undefined ? {} : { schedules })}
 			{...(agent === undefined ? {} : { agent })}
 			onOpen={onOpen}
@@ -236,6 +241,7 @@ function SignedInConsole({
 		// Rows about a vault request link to its page, when the console has the vault page to open it on.
 		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
+		const members = apiMembers(identity.client, createPasskeyClient({ headers: state.headers }), state.me);
 		const agent = {
 			...apiAgent({ headers: state.headers, onUnauthenticated }),
 			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
@@ -253,6 +259,7 @@ function SignedInConsole({
 			ready: {
 				agent,
 				...(keys === undefined ? {} : { keys }),
+				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: Promise.all([
@@ -271,6 +278,7 @@ function SignedInConsole({
 					agent,
 					schedules,
 					...(keys === undefined ? {} : { keys }),
+					...(members === undefined ? {} : { members }),
 				}),
 			),
 		};
