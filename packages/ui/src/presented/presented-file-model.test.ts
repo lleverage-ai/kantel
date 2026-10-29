@@ -1,6 +1,7 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
+import { columnName, safeHref } from "./office-view.tsx";
 import { fileToOpen, presentedFiles, presentedKey, presentedKind } from "./presented-file-model.ts";
 
 const file = (path: string, mimeType = "application/octet-stream"): PresentedFile => ({
@@ -48,6 +49,31 @@ describe("presentedFiles and fileToOpen", () => {
 		expect(fileToOpen(items, new Set([presentedKey(file("b.pdf"))]))?.file.path).toBe("c.html");
 		const seen = new Set(presentedFiles(items).map(({ file }) => presentedKey(file)));
 		expect(fileToOpen(items, seen)).toBeUndefined();
+	});
+});
+
+describe("the Office views' helpers", () => {
+	it("names columns as a spreadsheet does", () => {
+		expect([0, 1, 25, 26, 27, 51, 52, 701, 702].map(columnName)).toEqual([
+			"A",
+			"B",
+			"Z",
+			"AA",
+			"AB",
+			"AZ",
+			"BA",
+			"ZZ",
+			"AAA",
+		]);
+	});
+
+	it("keeps only web and mail links in a rendered document", () => {
+		expect(safeHref("https://example.com")).toBe(true);
+		expect(safeHref("mailto:a@example.com")).toBe(true);
+		expect(safeHref("javascript:alert(1)")).toBe(false);
+		expect(safeHref(" JavaScript:alert(1)")).toBe(false);
+		expect(safeHref("data:text/html,hi")).toBe(false);
+		expect(safeHref("file:///etc/passwd")).toBe(false);
 	});
 });
 
