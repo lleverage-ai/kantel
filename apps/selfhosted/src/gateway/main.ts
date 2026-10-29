@@ -41,7 +41,8 @@
 //                               the sessions' browser (browser.ts): Harbour's own, on the browser host, or brwsr's.
 //                               Unset, sessions have no browser
 //   HARBOUR_PUBLIC_URL          where people reach the console, such as https://harbour.example.com: an embed link is
-//                               made absolute against it. Default: the request's own origin
+//                               made absolute against it, and passkeys are made for it. Default: the request's own
+//                               origin, which is `http:`, so set it behind a TLS proxy
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";

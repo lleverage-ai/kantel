@@ -5,6 +5,7 @@
 //   audit       SQL audit store on Postgres (@harbour/audit/sql, #70)
 //   identity    SQL identity directory on Postgres (@harbour/identity/sql, #83)
 //   sign-in     email one-time PIN codes and Harbour sessions on Postgres (@harbour/identity/sql, #93)
+//   passkeys    people's passkeys and their single-use challenges on Postgres (@harbour/identity/sql, #132)
 //   runtime     SQL session store and each session's Pi Durable tables (@harbour/runtime/sql, #69), on one Postgres
 //               connection through PostgresSqliteDatabase; unfinished runs resume on start. Host registrations are
 //               kept in the store with their callback and served over it (callbackHostHandlers, #158), so a host
@@ -23,7 +24,8 @@
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import { type BrowserProvider, HarbourError } from "@harbour/contracts";
-import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
+import { createPasskeys } from "@harbour/identity/passkey";
+import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
 import { callbackHostHandlers } from "@harbour/runtime/http";
@@ -202,6 +204,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
+			passkeys: createPasskeys({ ...createSqlPasskeyStores(driver), identity, audit }),
 			...(vault === undefined ? {} : { vault }),
 			...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 			...(browser === undefined ? {} : { browser }),

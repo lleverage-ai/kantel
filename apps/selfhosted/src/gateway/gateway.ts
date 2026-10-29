@@ -7,12 +7,15 @@
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
 //   /v1/me, /v1/projects        who is signed in and their projects, and a host app's API keys (@harbour/identity/http);
 //   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
+//   /v1/me/passkeys...          the signed-in person's passkeys (@harbour/identity/passkey/http), which the approval API
+//                               asks for once they have one
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
 //   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
 //   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
-//   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault
+//   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault; an
+//                               approval needs the person's passkey once they have one, and a refusal is audited
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
 //   /v1/browser/decisions, /live, /replay   the console's browser routes, when there is a browser (browser.ts)
 //   /v1/sessions/:id/browsers/:browser/embed the embed API: a watch-only live or replay link for an outside app
@@ -29,12 +32,14 @@ import {
 	callContextFor,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
+	relyingPartyFor,
 	SESSION_END_PATH,
 } from "@harbour/contracts";
 import { createAuthenticator, withAuthentication } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
 import { createOtpHandler } from "@harbour/identity/otp/http";
+import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
 import { createSkillsApi } from "@harbour/skills/http";
@@ -76,7 +81,10 @@ export interface GatewayOptions {
 	readonly browserViews?: BrowserViews;
 	/** The origins that may frame the viewer page, besides the console (HARBOUR_EMBED_ORIGINS). */
 	readonly embedOrigins?: string;
-	/** Where the console is served, for an embed's absolute link (HARBOUR_PUBLIC_URL). Default: the request's origin. */
+	/**
+	 * Where the console is served (HARBOUR_PUBLIC_URL): an embed's absolute link, and the relying party passkeys are
+	 * made for and checked against. Default: the request's origin, which behind a TLS proxy is `http:`, so set it there.
+	 */
 	readonly publicOrigin?: string;
 }
 
@@ -162,6 +170,22 @@ export function createGateway(options: GatewayOptions): Gateway {
 		signIn: signIn === undefined ? [] : ["email_otp"],
 	});
 
+	// A passkey is made for, and checked against, the console's public origin: the HTTP adapter's request URL is always
+	// `http:`, which a browser behind a TLS proxy never signs.
+	const relyingParty =
+		options.publicOrigin === undefined
+			? (request: Request) => relyingPartyFor(request.url)
+			: (() => {
+					const rp = relyingPartyFor(options.publicOrigin);
+					return () => rp;
+				})();
+	const passkeys = createPasskeyHandler({
+		passkeys: components.passkeys,
+		authenticator,
+		relyingParty,
+		signIn: signIn === undefined ? [] : ["email_otp"],
+	});
+
 	// The read API takes a context per request; the authentication wrapper turns failures into 401 and 403 first.
 	const callers = new WeakMap<Request, CallContext>();
 	const readWorkspaces = createWorkspaceReadApi({
@@ -189,6 +213,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 							if (ctx === undefined) throw new Error("vault approval API reached without authentication");
 							return ctx;
 						},
+						// As on Cloudflare: an approval needs the person's passkey once they have one; a refusal is audited.
+						passkeys: components.passkeys,
+						relyingParty,
+						audit: components.audit,
 					});
 					return withAuthentication(authenticator, async (request, caller) => {
 						callers.set(request, callContextFor(caller));
@@ -295,6 +323,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					}
 					return await browser(request);
 				}
+				if (isPasskeyPath(path)) return await passkeys(request);
 				if (isIdentityPath(path)) return await identity(request);
 				if (path === "/v1" || path.startsWith("/v1/")) return await sessions.fetch(request);
 				if (consoleAssets !== undefined && VIEWER_PAGE.test(path)) {
