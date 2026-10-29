@@ -411,12 +411,16 @@ export interface Workspaces {
 		path: string,
 		options?: { readonly version?: WorkspaceVersion },
 	): Promise<FileEntry>;
-	/** Reads one file at `version` (head when absent), or from a mount for an absolute path. */
+	/**
+	 * Reads one file at `version` (head when absent), or from a mount for an absolute path. With `maxBytes`, a file larger
+	 * than that is rejected with `refused` (details `{ path, maxBytes, bytes }`), before its body is read where the
+	 * implementation knows the size beforehand.
+	 */
 	read(
 		ctx: CallContext,
 		id: WorkspaceId,
 		path: string,
-		options?: { readonly version?: WorkspaceVersion },
+		options?: { readonly version?: WorkspaceVersion; readonly maxBytes?: number },
 	): Promise<FileContent>;
 
 	/**

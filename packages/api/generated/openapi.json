@@ -1,0 +1,1960 @@
+{
+	"openapi": "3.1.0",
+	"info": {
+		"title": "Harbour API",
+		"version": "1",
+		"description": "Harbour's public API for host apps, such as Lleverage, and for Harbour's own console, which uses it like any other client."
+	},
+	"servers": [
+		{
+			"url": "/v1"
+		}
+	],
+	"security": [
+		{
+			"bearer": []
+		}
+	],
+	"paths": {
+		"/sessions": {
+			"post": {
+				"operationId": "createSession",
+				"summary": "Create a session",
+				"description": "Starts a session of an agent profile in a project, and sends it `message` when there is one. Needs the operator role on the project. If the first message is refused, the session is closed and the refusal answered.",
+				"tags": ["sessions"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/CreatedSession"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "listSessions",
+				"summary": "List sessions",
+				"description": "The sessions the caller may see, newest first, a page at a time.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "agentId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/SessionStatus"
+						}
+					},
+					{
+						"name": "parentSessionId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "label",
+						"in": "query",
+						"required": false,
+						"description": "Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`.",
+						"schema": {
+							"type": "object",
+							"patternProperties": {
+								"^.*$": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1000
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of sessions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}": {
+			"get": {
+				"operationId": "getSession",
+				"summary": "Get a session",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionRecord"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/close": {
+			"post": {
+				"operationId": "closeSession",
+				"summary": "Close a session",
+				"description": "Ends the session for good: its sandbox leases, browser sessions and grants end. Closing a closed session does nothing.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Closed."
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/abort": {
+			"post": {
+				"operationId": "abortSession",
+				"summary": "Abort a session's run",
+				"description": "Stops what the session is doing now. The session stays open and takes new messages.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/AbortSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "Aborted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/messages": {
+			"post": {
+				"operationId": "sendMessage",
+				"summary": "Send a message",
+				"description": "Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+				"tags": ["messages"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MessageBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "The session accepted the message.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Submission"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/stream": {
+			"get": {
+				"operationId": "streamSession",
+				"summary": "Stream a session",
+				"description": "The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events.",
+				"tags": ["stream"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "after",
+						"in": "query",
+						"required": false,
+						"description": "Resume after this cursor (a snapshot's or a delta's): the stream sends the deltas after it, or a snapshot when it no longer holds them.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"101": {
+						"description": "Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "array",
+									"items": {
+										"$ref": "#/components/schemas/ServerFrame"
+									}
+								}
+							}
+						}
+					},
+					"200": {
+						"description": "The stream. Without an upgrade: server-sent events, each named after its frame's type with the frame as its JSON data, then one `ready` event once the client has caught up. Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+						"content": {
+							"text/event-stream": {
+								"schema": {
+									"$ref": "#/components/schemas/ServerFrame"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/history": {
+			"get": {
+				"operationId": "getSessionHistory",
+				"summary": "Page back through a session",
+				"description": "The session's transcript in pages, newest first, for scrolling back past a snapshot's items: start with `before` set to the snapshot's `items[0].id`, then follow `nextCursor`.",
+				"tags": ["stream"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "before",
+						"in": "query",
+						"required": false,
+						"description": "Items older than this item ID, such as a snapshot's `items[0].id`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"description": "At most this many items. Default 50, cut to 200.",
+						"schema": {
+							"type": "integer",
+							"minimum": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "One page of items.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionHistoryPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	"components": {
+		"securitySchemes": {
+			"bearer": {
+				"type": "http",
+				"scheme": "bearer",
+				"description": "A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to the key's projects and role. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
+			}
+		},
+		"schemas": {
+			"AbortSessionBody": {
+				"type": "object",
+				"properties": {
+					"reason": {
+						"type": "string",
+						"description": "Recorded in the audit trail."
+					}
+				},
+				"title": "AbortSessionBody"
+			},
+			"Actor": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "human"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "serviceId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "service"
+							},
+							"serviceId": {
+								"type": "string"
+							},
+							"keyId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "agentId", "sessionId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "agent"
+							},
+							"agentId": {
+								"type": "string"
+							},
+							"sessionId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "component"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "system"
+							},
+							"component": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "Actor",
+				"description": "Who acted: a person, a host app's API key, an agent or Harbour itself."
+			},
+			"AssistantItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "text", "streaming"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "assistant"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"text": {
+						"type": "string"
+					},
+					"streaming": {
+						"type": "boolean",
+						"description": "True while tokens are still arriving."
+					},
+					"thinking": {
+						"type": "string"
+					}
+				},
+				"title": "AssistantItem"
+			},
+			"Attention": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "working"
+					},
+					{
+						"type": "string",
+						"const": "waiting"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					}
+				],
+				"title": "Attention",
+				"description": "How a session list groups the session: working, waiting on someone, or done."
+			},
+			"BrowserGrantCard": {
+				"type": "object",
+				"required": ["type", "requestId", "reason", "status"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "browser.grant"
+					},
+					"requestId": {
+						"type": "string"
+					},
+					"reason": {
+						"type": "string"
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "granted"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							}
+						]
+					}
+				},
+				"title": "BrowserGrantCard"
+			},
+			"Card": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/VaultApprovalCard"
+					},
+					{
+						"$ref": "#/components/schemas/QuestionCard"
+					},
+					{
+						"$ref": "#/components/schemas/BrowserGrantCard"
+					}
+				],
+				"title": "Card"
+			},
+			"CardItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "card"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "card"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"card": {
+						"$ref": "#/components/schemas/Card"
+					}
+				},
+				"title": "CardItem"
+			},
+			"CreatedSession": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"projectId",
+					"agentId",
+					"status",
+					"labels",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string",
+						"description": "The agent profile the session runs."
+					},
+					"parentSessionId": {
+						"type": "string"
+					},
+					"workspaceId": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"submission": {
+						"$ref": "#/components/schemas/Submission"
+					}
+				},
+				"title": "CreatedSession",
+				"description": "A new session, with its first message's submission when it was sent one."
+			},
+			"CreateSessionBody": {
+				"type": "object",
+				"required": ["projectId", "agentId"],
+				"properties": {
+					"projectId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The project the session runs in."
+					},
+					"agentId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The agent profile it runs."
+					},
+					"title": {
+						"type": "string"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"workspaceId": {
+						"type": "string",
+						"description": "An existing workspace to run in."
+					},
+					"parentSessionId": {
+						"type": "string",
+						"description": "Creates a child session owned by this parent; aborting the parent aborts it."
+					},
+					"message": {
+						"$ref": "#/components/schemas/FirstMessage"
+					}
+				},
+				"title": "CreateSessionBody",
+				"description": "Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: \"run-42\" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`."
+			},
+			"Cursor": {
+				"type": "string",
+				"title": "Cursor",
+				"description": "An opaque position in a session's stream."
+			},
+			"DeltaOp": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["op", "item"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "append"
+							},
+							"item": {
+								"$ref": "#/components/schemas/TranscriptItem"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "item"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "replace"
+							},
+							"item": {
+								"$ref": "#/components/schemas/TranscriptItem"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "itemId", "append"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "text"
+							},
+							"itemId": {
+								"type": "string"
+							},
+							"append": {
+								"type": "string"
+							},
+							"field": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "text"
+									},
+									{
+										"type": "string",
+										"const": "thinking"
+									}
+								]
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "status", "attention"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "status"
+							},
+							"status": {
+								"$ref": "#/components/schemas/SessionStatus"
+							},
+							"attention": {
+								"$ref": "#/components/schemas/Attention"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "title"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "title"
+							},
+							"title": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["op", "usage"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "usage"
+							},
+							"usage": {
+								"$ref": "#/components/schemas/Usage"
+							}
+						}
+					}
+				],
+				"title": "DeltaOp",
+				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's."
+			},
+			"ErrorBody": {
+				"type": "object",
+				"required": ["error"],
+				"properties": {
+					"error": {
+						"type": "object",
+						"required": ["code", "message"],
+						"properties": {
+							"code": {
+								"$ref": "#/components/schemas/ErrorCode"
+							},
+							"message": {
+								"type": "string"
+							},
+							"details": {
+								"type": "object",
+								"patternProperties": {
+									"^.*$": {}
+								}
+							}
+						}
+					}
+				},
+				"title": "ErrorBody",
+				"description": "Every error: the HarbourError's code and message."
+			},
+			"ErrorCode": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "invalid"
+					},
+					{
+						"type": "string",
+						"const": "not_found"
+					},
+					{
+						"type": "string",
+						"const": "forbidden"
+					},
+					{
+						"type": "string",
+						"const": "conflict"
+					},
+					{
+						"type": "string",
+						"const": "expired"
+					},
+					{
+						"type": "string",
+						"const": "refused"
+					},
+					{
+						"type": "string",
+						"const": "exhausted"
+					},
+					{
+						"type": "string",
+						"const": "aborted"
+					},
+					{
+						"type": "string",
+						"const": "not_supported"
+					},
+					{
+						"type": "string",
+						"const": "unavailable"
+					},
+					{
+						"type": "string",
+						"const": "unauthenticated"
+					}
+				],
+				"title": "ErrorCode"
+			},
+			"FirstMessage": {
+				"type": "object",
+				"required": ["text"],
+				"properties": {
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The message's words."
+					},
+					"model": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "FirstMessage",
+				"description": "The session's first prompt, sent as soon as it exists."
+			},
+			"HistoryPage": {
+				"type": "object",
+				"required": ["sessionId", "items", "hasEarlier"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TranscriptItem"
+						},
+						"description": "Oldest first."
+					},
+					"hasEarlier": {
+						"type": "boolean"
+					}
+				},
+				"title": "HistoryPage"
+			},
+			"Labels": {
+				"type": "object",
+				"patternProperties": {
+					"^.*$": {
+						"type": "string"
+					}
+				},
+				"title": "Labels",
+				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+			},
+			"MessageBody": {
+				"type": "object",
+				"required": ["text"],
+				"properties": {
+					"via": {
+						"$ref": "#/components/schemas/MessageVia"
+					},
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The message's words."
+					},
+					"model": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "MessageBody",
+				"description": "A message to the session's agent. `via` defaults to `prompt`."
+			},
+			"MessageVia": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "prompt"
+					},
+					{
+						"type": "string",
+						"const": "steer"
+					},
+					{
+						"type": "string",
+						"const": "followUp"
+					}
+				],
+				"title": "MessageVia",
+				"description": "How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends."
+			},
+			"NoticeItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "level", "text"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "notice"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"level": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "info"
+							},
+							{
+								"type": "string",
+								"const": "warning"
+							},
+							{
+								"type": "string",
+								"const": "error"
+							}
+						]
+					},
+					"text": {
+						"type": "string"
+					},
+					"code": {
+						"type": "string"
+					}
+				},
+				"title": "NoticeItem"
+			},
+			"QuestionCard": {
+				"type": "object",
+				"required": ["type", "questionId", "text", "status"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "question"
+					},
+					"questionId": {
+						"type": "string"
+					},
+					"text": {
+						"type": "string"
+					},
+					"options": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "open"
+							},
+							{
+								"type": "string",
+								"const": "answered"
+							},
+							{
+								"type": "string",
+								"const": "withdrawn"
+							}
+						]
+					},
+					"answer": {
+						"type": "string"
+					}
+				},
+				"title": "QuestionCard"
+			},
+			"ServerFrame": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["type", "v", "sessionId", "cursor", "resumed"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "hello"
+							},
+							"v": {
+								"type": "number",
+								"const": 1
+							},
+							"sessionId": {
+								"type": "string"
+							},
+							"cursor": {
+								"$ref": "#/components/schemas/Cursor"
+							},
+							"resumed": {
+								"type": "boolean",
+								"description": "True when deltas after the client's cursor follow, false for a snapshot."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "snapshot"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "snapshot"
+							},
+							"snapshot": {
+								"$ref": "#/components/schemas/SessionSnapshot"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "delta"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "delta"
+							},
+							"delta": {
+								"$ref": "#/components/schemas/SessionDelta"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "page"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "history"
+							},
+							"page": {
+								"$ref": "#/components/schemas/HistoryPage"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["type", "code", "message"],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "error"
+							},
+							"code": {
+								"type": "string"
+							},
+							"message": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "ServerFrame",
+				"description": "One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s."
+			},
+			"SessionDelta": {
+				"type": "object",
+				"required": ["sessionId", "cursor", "at", "ops"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"cursor": {
+						"$ref": "#/components/schemas/Cursor"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"ops": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DeltaOp"
+						}
+					}
+				},
+				"title": "SessionDelta"
+			},
+			"SessionHistoryPage": {
+				"type": "object",
+				"required": ["sessionId", "items"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TranscriptItem"
+						},
+						"description": "Newest first."
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when older items exist; pass it as `cursor`."
+					}
+				},
+				"title": "SessionHistoryPage"
+			},
+			"SessionPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SessionRecord"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SessionPage"
+			},
+			"SessionRecord": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"projectId",
+					"agentId",
+					"status",
+					"labels",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string",
+						"description": "The agent profile the session runs."
+					},
+					"parentSessionId": {
+						"type": "string"
+					},
+					"workspaceId": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SessionRecord"
+			},
+			"SessionSnapshot": {
+				"type": "object",
+				"required": ["v", "sessionId", "cursor", "status", "attention", "items", "hasEarlier", "updatedAt"],
+				"properties": {
+					"v": {
+						"type": "number",
+						"const": 1
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"cursor": {
+						"$ref": "#/components/schemas/Cursor"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"attention": {
+						"$ref": "#/components/schemas/Attention"
+					},
+					"title": {
+						"type": "string"
+					},
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TranscriptItem"
+						},
+						"description": "The latest page of items, oldest first."
+					},
+					"hasEarlier": {
+						"type": "boolean",
+						"description": "True when items before `items[0]` exist."
+					},
+					"usage": {
+						"$ref": "#/components/schemas/Usage"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SessionSnapshot"
+			},
+			"SessionStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "idle"
+					},
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "waiting"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "cancelled"
+					}
+				],
+				"title": "SessionStatus"
+			},
+			"Submission": {
+				"type": "object",
+				"required": ["id", "sessionId", "via"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The submission's ID, which names the run the message started or joined."
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"via": {
+						"$ref": "#/components/schemas/MessageVia"
+					},
+					"requestId": {
+						"type": "string",
+						"description": "The `Idempotency-Key` it was sent with."
+					}
+				},
+				"title": "Submission",
+				"description": "A message the session accepted."
+			},
+			"ThinkingLevel": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "off"
+					},
+					{
+						"type": "string",
+						"const": "minimal"
+					},
+					{
+						"type": "string",
+						"const": "low"
+					},
+					{
+						"type": "string",
+						"const": "medium"
+					},
+					{
+						"type": "string",
+						"const": "high"
+					},
+					{
+						"type": "string",
+						"const": "xhigh"
+					},
+					{
+						"type": "string",
+						"const": "max"
+					}
+				],
+				"title": "ThinkingLevel"
+			},
+			"ToolItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "callId", "name", "label", "status"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "tool"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"callId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"label": {
+						"type": "string",
+						"description": "A plain-language label, such as \"Reading notes/x.md\"."
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "running"
+							},
+							{
+								"type": "string",
+								"const": "done"
+							},
+							{
+								"type": "string",
+								"const": "error"
+							},
+							{
+								"type": "string",
+								"const": "interrupted"
+							}
+						]
+					},
+					"args": {},
+					"output": {
+						"type": "string"
+					},
+					"tier": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "isolate"
+							},
+							{
+								"type": "string",
+								"const": "container"
+							}
+						]
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ToolItem"
+			},
+			"TranscriptItem": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/UserItem"
+					},
+					{
+						"$ref": "#/components/schemas/AssistantItem"
+					},
+					{
+						"$ref": "#/components/schemas/ToolItem"
+					},
+					{
+						"$ref": "#/components/schemas/CardItem"
+					},
+					{
+						"$ref": "#/components/schemas/NoticeItem"
+					}
+				],
+				"title": "TranscriptItem"
+			},
+			"Usage": {
+				"type": "object",
+				"required": ["inputTokens", "outputTokens"],
+				"properties": {
+					"inputTokens": {
+						"type": "integer"
+					},
+					"outputTokens": {
+						"type": "integer"
+					},
+					"cacheReadTokens": {
+						"type": "integer"
+					},
+					"costUsd": {
+						"type": "number"
+					}
+				},
+				"title": "Usage"
+			},
+			"UserItem": {
+				"type": "object",
+				"required": ["kind", "id", "at", "text", "via"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "user"
+					},
+					"id": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"text": {
+						"type": "string"
+					},
+					"via": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "prompt"
+							},
+							{
+								"type": "string",
+								"const": "steer"
+							},
+							{
+								"type": "string",
+								"const": "followUp"
+							}
+						]
+					},
+					"requestId": {
+						"type": "string"
+					}
+				},
+				"title": "UserItem"
+			},
+			"VaultApprovalCard": {
+				"type": "object",
+				"required": [
+					"type",
+					"proposalId",
+					"status",
+					"bindingCode",
+					"what",
+					"why",
+					"host",
+					"methods",
+					"pathPrefix",
+					"termsSource",
+					"expiresAt",
+					"link"
+				],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "vault.approval"
+					},
+					"proposalId": {
+						"type": "string"
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "approved"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							},
+							{
+								"type": "string",
+								"const": "expired"
+							},
+							{
+								"type": "string",
+								"const": "withdrawn"
+							}
+						]
+					},
+					"bindingCode": {
+						"type": "string"
+					},
+					"what": {
+						"type": "string"
+					},
+					"why": {
+						"type": "string"
+					},
+					"host": {
+						"type": "string"
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"pathPrefix": {
+						"type": "string"
+					},
+					"injectionTemplate": {
+						"type": "string"
+					},
+					"termsSource": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "agent-proposed"
+							},
+							{
+								"type": "string",
+								"const": "approved"
+							}
+						]
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"link": {
+						"type": "string"
+					}
+				},
+				"title": "VaultApprovalCard",
+				"description": "A vault proposal waiting on a person. The secret is never part of it."
+			}
+		}
+	}
+}

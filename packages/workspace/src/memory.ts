@@ -44,6 +44,7 @@ import {
 	checkExportSize,
 	checkMountsDisjoint,
 	checkOwner,
+	checkReadSize,
 	compare,
 	decodeCursor,
 	encodeCursor,
@@ -267,9 +268,12 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			if (path.startsWith("/")) {
 				const { mount, sourcePath } = mountAt(state.record, path);
 				await checks.requireMountRead(ctx, state.record, mount);
-				return sources.read(ctx, mount, sourcePath, path);
+				const read = await sources.read(ctx, mount, sourcePath, path);
+				checkReadSize(path, read.content.byteLength, readOptions?.maxBytes);
+				return read;
 			}
 			const file = readTree(treeAt(state, readOptions?.version), normalizeWorkspacePath(path));
+			checkReadSize(path, file.content.byteLength, readOptions?.maxBytes);
 			return { path, content: new Uint8Array(file.content), version: file.version, digest: file.digest };
 		},
 

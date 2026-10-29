@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolImage, ToolItem } from "@harbour/protocol";
 import { memo, type ReactNode, useId, useState } from "react";
 import { Disclosure } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
@@ -113,6 +113,56 @@ function Detail({ item, id }: { item: ToolItem; id: string }) {
 	);
 }
 
+/** A tool image as a URL an `<img>` can show. Only the protocol's raster types reach here. */
+export function toolImageSrc(image: ToolImage): string {
+	return `data:${image.mimeType};base64,${image.data}`;
+}
+
+/** The page a browser call left, as words for a screen reader: "Screenshot after Opening en.wikipedia.org". */
+function imageAlt(item: ToolItem, index: number, count: number): string {
+	return count === 1 ? `Screenshot after ${item.label}` : `Screenshot ${index + 1} of ${count} after ${item.label}`;
+}
+
+export type ToolImagesProps = { item: ToolItem; images?: readonly ToolImage[] };
+
+/**
+ * The images a call returned, such as a browser's screenshot, shown under its row without opening it, so a person
+ * watches the browser move. Each opens full size on click, as a link to the image itself.
+ */
+export function ToolImages({ item, images = item.images ?? [] }: ToolImagesProps) {
+	if (images.length === 0) return null;
+	return (
+		<div className="hb-tool-images">
+			{images.map((image, index) => {
+				const src = toolImageSrc(image);
+				return (
+					<button
+						// biome-ignore lint/suspicious/noArrayIndexKey: a call's images never reorder.
+						key={index}
+						type="button"
+						className="hb-tool-image hb-focusable"
+						title="Open full size"
+						onClick={() => openImage(image)}
+					>
+						<img src={src} alt={imageAlt(item, index, images.length)} loading="lazy" decoding="async" />
+					</button>
+				);
+			})}
+		</div>
+	);
+}
+
+/**
+ * Opens an image full size in a new tab, as a blob URL: browsers refuse to open a data URL in a tab. The URL is freed
+ * once the tab has had time to load it.
+ */
+function openImage(image: ToolImage): void {
+	const bytes = Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0));
+	const url = URL.createObjectURL(new Blob([bytes], { type: image.mimeType }));
+	window.open(url, "_blank", "noopener");
+	setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export type ToolCallChipProps = { item: ToolItem; defaultOpen?: boolean };
 
 /**
@@ -140,6 +190,7 @@ export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = fal
 				<ClockTime at={item.at} className="hb-tool-stamp" />
 				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
 			</button>
+			<ToolImages item={item} />
 			{open ? <Detail item={item} id={id} /> : null}
 		</div>
 	);
@@ -178,6 +229,9 @@ export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false }
 		);
 	}
 	const failed = items.filter(isFailed);
+	// The last picture the work left (such as the page a browser ended on) stays in view under the folded group.
+	const lastWithImage = [...items].reverse().find((item) => (item.images?.length ?? 0) > 0);
+	const lastImage = lastWithImage?.images?.at(-1);
 	return (
 		<div className="hb-tool-group hb-tool-group-collapsible">
 			<Disclosure className="hb-tool-group-summary" summary={workSummary(items)} open={open} onOpenChange={setOpen}>
@@ -191,6 +245,9 @@ export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false }
 						<ToolCallChip key={item.id} item={item} />
 					))}
 				</div>
+			) : null}
+			{!open && lastWithImage !== undefined && lastImage !== undefined && !failed.includes(lastWithImage) ? (
+				<ToolImages item={lastWithImage} images={[lastImage]} />
 			) : null}
 		</div>
 	);

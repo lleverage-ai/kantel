@@ -1,0 +1,196 @@
+/* The schedule form: what runs, when, and the next runs it would have. One column at the content width; rows of
+   short fields wrap onto their own lines on a phone. */
+
+.hb-schedule-form {
+	width: 100%;
+	max-width: var(--hb-content-width);
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-schedule-form p {
+	margin: 0;
+}
+
+.hb-schedule-form-head {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-schedule-form-title {
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+	overflow-wrap: anywhere;
+}
+
+.hb-schedule-form-body,
+.hb-schedule-form-fields {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+.hb-schedule-form-choice {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-schedule-form-label {
+	padding: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-schedule-form-hint {
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-schedule-form-command .hb-input {
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+}
+
+.hb-schedule-form-when {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--hb-space-6);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.hb-schedule-form-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: var(--hb-space-6) var(--hb-space-7);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+/* Chromium focuses a time or date input's own fields and never matches :focus-visible on the input, so these show the
+   ring on any focus, the picker button inside them included. */
+.hb-schedule-form .hb-input[type="time"]:is(:focus, :focus-within),
+.hb-schedule-form .hb-input[type="datetime-local"]:is(:focus, :focus-within) {
+	outline: var(--hb-ring) solid var(--hb-focus);
+	outline-offset: var(--hb-hairline);
+}
+
+.hb-schedule-form-number {
+	width: 16ch;
+}
+
+.hb-schedule-form-time {
+	width: 18ch;
+}
+
+.hb-schedule-form-narrow {
+	width: 28ch;
+	max-width: 100%;
+}
+
+.hb-schedule-form-days {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-2);
+}
+
+.hb-schedule-form-day {
+	min-width: var(--hb-control-lg);
+	height: var(--hb-control-sm);
+	padding: 0 var(--hb-space-4);
+	border: var(--hb-hairline) solid var(--hb-border-input);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+	color: var(--hb-text-muted);
+	font: inherit;
+	font-size: var(--hb-text-xs);
+	cursor: pointer;
+	transition:
+		background var(--hb-duration-fast) var(--hb-ease),
+		color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-schedule-form-day:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-schedule-form-day[aria-pressed="true"] {
+	border-color: var(--hb-accent);
+	background: var(--hb-accent-soft);
+	color: var(--hb-text);
+}
+
+.hb-schedule-form-check .hb-disclosure-detail {
+	padding-top: var(--hb-space-5);
+}
+
+.hb-schedule-form-preview {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	padding: var(--hb-space-6) var(--hb-space-7);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-sunken);
+}
+
+.hb-schedule-form-preview-title {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-schedule-form-runs {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-schedule-form-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+}
+
+.hb-schedule-form-actions-main {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+}
+
+.hb-schedule-form-confirm {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	padding: var(--hb-space-6) var(--hb-space-7);
+	border: var(--hb-hairline) solid var(--hb-status-error-line);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-status-error-soft);
+}

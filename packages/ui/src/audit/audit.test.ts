@@ -51,6 +51,29 @@ describe("filters", () => {
 		});
 	});
 
+	it("read policy changes as vault policies and capability grants, in one query", async () => {
+		const query = toQuery({ range: "all", kind: "policy" }, FIXTURE_NOW);
+		expect(query).toEqual({ newestFirst: true, types: ["vault.policy.", "capability.grant."] });
+		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
+		const event = (id: string, type: string, source: "vault" | "capability", at: number) => ({
+			id,
+			at,
+			source,
+			type,
+			actor: { kind: "human" as const, userId: "usr_tom" },
+			organisationId: ORGANISATION,
+		});
+		await store.append(systemContext("fixture"), [
+			event("policy", "vault.policy.created", "vault", 1),
+			event("grant", "capability.grant.created", "capability", 2),
+			event("call", "capability.call.started", "capability", 3),
+			event("use", "vault.use.injected", "vault", 4),
+			event("revoked", "capability.grant.revoked", "capability", 5),
+		]);
+		const source = storeSource(store, { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION });
+		expect((await source.query(query)).items.map((row) => row.id)).toEqual(["revoked", "grant", "policy"]);
+	});
+
 	it("leave the credential to the store, so its first page is the credential's however far back it was used", async () => {
 		// The Linear key's events are all older than 6,000 others: more than the 25 pages the view used to read for it.
 		const events = generateEvents(8000).sort((a, b) => a.at - b.at);
