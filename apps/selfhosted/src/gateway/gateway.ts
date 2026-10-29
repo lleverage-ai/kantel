@@ -102,6 +102,8 @@ export function createGateway(options: GatewayOptions): Gateway {
 	const sessions: SessionApi = createSessionApi({
 		runtime: runtime.runtime,
 		models: runtime.models,
+		// The console's message actions: fork from an answer, edit a message and rerun from it.
+		branching: runtime.branching,
 		directory: runtime.directory,
 		profiles: runtime.profiles,
 		hostTools: runtime.hostTools,

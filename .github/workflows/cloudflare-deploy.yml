@@ -18,13 +18,13 @@ name: Cloudflare deploy (M1-CF1)
 #
 # The token's permissions (apps/cloudflare/README.md explains each):
 #   Account  Workers Scripts: Edit            deploy the Worker, its Durable Objects and static assets
-#   Account  D1: Edit                         create the `harbour` database on the first deploy, find it after
-#   Account  Workers R2 Storage: Edit         create the `harbour-workspaces` bucket on the first deploy, find it after
+#   Account  D1: Edit                         find the `harbour-weur` database by name (create it if missing)
+#   Account  Workers R2 Storage: Edit         find the `harbour-workspaces-weur` bucket by name (create it if missing)
 #   Account  Connectivity Directory: Bind     bind the Workers VPC service to CLIProxyAPI
 #   Zone     Workers Routes: Edit (myslop.app)  add the zone route HARBOUR_HOSTNAME/*
 #
-# The first real deploy creates the D1 database and R2 bucket if they're missing (wrangler's automatic provisioning,
-# by name); later deploys find them by name. A dry run creates nothing.
+# A deploy finds the D1 database and R2 bucket by name, and creates one that's missing (wrangler's automatic
+# provisioning). A dry run creates nothing.
 
 on:
   push:

@@ -171,8 +171,14 @@ describe("the isolate-ready measurement", () => {
 			exitCode: number;
 			listed: number;
 			timings: Record<string, number>;
+			clock: Record<string, number>;
 		};
 		expect(run).toMatchObject({ backend: "in-process", exitCode: 0 });
+		// The marks behind the timings, as Unix milliseconds, in order, so the script can check them against its own.
+		const marks = ["entered", "signedIn", "started", "created", "ran"].map((mark) => run.clock[mark]);
+		for (const mark of marks) expect(mark).toBeTypeOf("number");
+		expect(marks).toEqual([...marks].sort((a, b) => a! - b!));
+		expect(Math.abs(Date.now() - run.clock.ran!)).toBeLessThan(60_000);
 		// `ls -1R` prints every file, each directory's heading and its entries.
 		expect(run.listed).toBeGreaterThanOrEqual(MEASURE_FILES);
 		for (const phase of ["session", "isolate", "total"]) expect(run.timings[phase]).toBeTypeOf("number");
@@ -197,6 +203,7 @@ describe("the isolate-ready measurement", () => {
 			exitCode: number;
 			listed: number;
 			timings: Record<string, number>;
+			clock: Record<string, number>;
 		};
 		const warmup = (await (await measure({ keep: true })).json()) as Run;
 		expect(warmup).toMatchObject({ warm: false, open: true, exitCode: 0 });
@@ -218,6 +225,10 @@ describe("the isolate-ready measurement", () => {
 			});
 			for (const phase of ["lookup", "isolate", "total"]) expect(run.timings[phase]).toBeTypeOf("number");
 			expect(run.timings.session).toBeUndefined();
+			for (const mark of ["entered", "signedIn", "looking", "started", "ran"]) {
+				expect(run.clock[mark]).toBeTypeOf("number");
+			}
+			expect(run.clock.created).toBeUndefined();
 		}
 		// The same lease every time: the runs are on the warm session, not new ones.
 		const live = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId: warmup.sessionId, live: true });

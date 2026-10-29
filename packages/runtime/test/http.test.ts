@@ -58,6 +58,7 @@ function setUp(outbound?: typeof fetch) {
 	const memory = createMemoryRuntime({ models });
 	const api = createSessionApi({
 		runtime: memory.runtime,
+		branching: memory.branching,
 		directory: memory.directory,
 		profiles: memory.profiles,
 		hostTools: memory.hostTools,
@@ -251,6 +252,61 @@ describe("session API over HTTP", () => {
 		expect(await done.json()).toMatchObject({ status: "answered", answer: "Done" });
 		expect(seen).toHaveLength(1);
 		expect(seen[0]).toMatchObject({ hostId: "sal", sessionId, tool: "review", projectId: PROJECT });
+	});
+
+	it("forks a session from an answer and edits a message to rerun it, refusing malformed bodies", async () => {
+		const { request, script, memory } = setUp();
+		const sessionId = await createSession(request);
+		const ask = async (text: string, answer: string) => {
+			script.reply({ text: answer });
+			const response = await request("POST", `/sessions/${sessionId}/prompt`, { token: "supervisor", body: { text } });
+			const { id } = (await response.json()) as { id: string };
+			await memory.runtime.wait({ ...supervisor }, sessionId, id);
+		};
+		await ask("One", "Answer one");
+		await ask("Two", "Answer two");
+		const snapshot = (await (
+			await request("GET", `/sessions/${sessionId}/snapshot`, { token: "supervisor" })
+		).json()) as {
+			items: { id: string; kind: string; text?: string }[];
+		};
+		const idOf = (text: string) => snapshot.items.find((item) => item.text === text)!.id;
+
+		const forked = await request("POST", `/sessions/${sessionId}/fork`, {
+			token: "supervisor",
+			body: { itemId: idOf("Answer one") },
+		});
+		expect(forked.status).toBe(201);
+		const fork = (await forked.json()) as { id: string; projectId: string };
+		expect(fork.projectId).toBe(PROJECT);
+		const forkItems = (await (
+			await request("GET", `/sessions/${fork.id}/snapshot`, { token: "supervisor" })
+		).json()) as {
+			items: { text?: string }[];
+		};
+		expect(forkItems.items.map((item) => item.text)).toEqual(["One", "Answer one"]);
+
+		script.reply({ text: "Answer two, edited" });
+		const edited = await request("POST", `/sessions/${sessionId}/edit`, {
+			token: "supervisor",
+			body: { itemId: idOf("Two"), text: "Two, edited", requestId: "r1" },
+		});
+		expect(edited.status).toBe(202);
+		const submission = (await edited.json()) as { id: string; requestId: string };
+		expect(submission.requestId).toBe("r1");
+		await memory.runtime.wait({ ...supervisor }, sessionId, submission.id);
+		const after = (await (await request("GET", `/sessions/${sessionId}/snapshot`, { token: "supervisor" })).json()) as {
+			items: { text?: string }[];
+		};
+		expect(after.items.map((item) => item.text)).toEqual(["One", "Answer one", "Two, edited", "Answer two, edited"]);
+
+		const refused = async (path: string, body: unknown) =>
+			(await request("POST", `/sessions/${sessionId}/${path}`, { token: "supervisor", body })).status;
+		expect(await refused("fork", {})).toBe(400);
+		expect(await refused("fork", { itemId: "a1", title: 3 })).toBe(400);
+		expect(await refused("edit", { itemId: "u1" })).toBe(400);
+		expect(await refused("edit", { text: "x" })).toBe(400);
+		expect(await refused("fork", { itemId: "nope" })).toBe(404);
 	});
 
 	it("registers only https callbacks with a long enough secret, and generates one when none is given", async () => {
