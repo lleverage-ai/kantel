@@ -10,9 +10,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch: {}
-  # TEMPORARY, removed before merge: runs the whole pipeline once on its own pull request (the deploy dry-runs off main).
-  pull_request:
-    paths: [".github/workflows/main.yml"]
 
 # Batched: one group for main, never cancelled in progress. The running build always finishes, deploy included, and a
 # newer push only replaces the pending one, so a burst of merges is checked once, on the newest head, and there is at
