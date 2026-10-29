@@ -18,7 +18,8 @@
 		"./archive": "./src/archive.ts",
 		"./git-tarball": "./src/git-tarball.ts",
 		"./export": "./src/export.ts",
-		"./dependency-layers": "./src/dependency-layers.ts"
+		"./dependency-layers": "./src/dependency-layers.ts",
+		"./git-refs": "./src/git-refs.ts"
 	},
 	"dependencies": {
 		"@harbour/contracts": "workspace:*"
