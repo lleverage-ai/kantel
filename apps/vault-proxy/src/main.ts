@@ -17,7 +17,7 @@
 //   - `vault`: the M1 vault decides, through the gateway's egress decision
 //     API (HARBOUR_EGRESS_URL, with the shared key HARBOUR_EGRESS_KEY), once
 //     per request, for the session and the deployment's organisation and
-//     project (GET /v1/egress/scope). The vault injects only over https, so it
+//     project (GET /v1/egress/scope, asked again every 10 seconds). The vault injects only over https, so it
 //     decides requests to port 443; a denial carries the vault's reason and its
 //     fix. An allowed credential goes out only with the item values the gateway
 //     names in `redact`, which are redacted from every response from then on. The policy file's routes with no credential stay this proxy's own
@@ -294,7 +294,12 @@ interface VaultScope {
 	organisationId: string;
 	projectId: string;
 }
-let vaultScope: VaultScope | undefined;
+/**
+ * How long the proxy keeps the organisation and project before asking again: a gateway restarted onto a new deployment
+ * (a fresh database, or the in-memory gateway) has new ones, and the old ones hold no grants.
+ */
+const SCOPE_TTL_MS = 10_000;
+let vaultScope: { scope: VaultScope; until: number } | undefined;
 
 async function askVault(path: string, init: RequestInit = {}): Promise<unknown> {
 	const response = await fetch(`${egressUrl}${path}`, {
@@ -309,15 +314,16 @@ async function askVault(path: string, init: RequestInit = {}): Promise<unknown> 
 	return body;
 }
 
-/** The organisation and project every decision is for, asked once and kept. */
+/** The organisation and project every decision is for, kept for SCOPE_TTL_MS. */
 async function scopeOfVault(): Promise<VaultScope> {
-	if (vaultScope !== undefined) return vaultScope;
+	if (vaultScope !== undefined && Date.now() < vaultScope.until) return vaultScope.scope;
 	const scope = (await askVault("/v1/egress/scope")) as Partial<VaultScope> | undefined;
 	if (typeof scope?.organisationId !== "string" || typeof scope.projectId !== "string") {
 		throw new Error("the vault's scope has no organisation and project");
 	}
-	vaultScope = { organisationId: scope.organisationId, projectId: scope.projectId };
-	return vaultScope;
+	const fresh = { organisationId: scope.organisationId, projectId: scope.projectId };
+	vaultScope = { scope: fresh, until: Date.now() + SCOPE_TTL_MS };
+	return fresh;
 }
 
 function staticVerdict(method: string, target: URL, portNumber: number): Verdict {
