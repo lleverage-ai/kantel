@@ -1,5 +1,5 @@
 import type { Concept, MemoryProposal } from "@harbour/contracts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -7,6 +7,7 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Field, FieldList, Notice, Panel } from "../primitives/surface.tsx";
 import { ClockTime } from "../primitives/time.tsx";
+import { ConceptChange } from "./concept-change.tsx";
 import {
 	CONCEPT_STATUS,
 	conceptHistory,
@@ -31,13 +32,26 @@ export interface ConceptDetailProps {
 	readonly onOpen?: (conceptId: string) => void;
 	/** Shows a Back button, for the phone layout where the concept replaces the list. */
 	readonly onBack?: () => void;
+	/** Called after the viewer corrected or forgot it, or left a proposal pending, so the host reads its lists again. */
+	readonly onChanged?: () => void;
 }
 
 /**
  * One concept: its statement, where it applies, who set it, its sources and its freshness, and its history as the
- * proposals that changed it. Read-only; changes go through proposals.
+ * proposals that changed it. With a source that can propose, an active concept can be corrected or forgotten by the
+ * viewer (see `ConceptChange`).
  */
-export function ConceptDetail({ source, spaceId, conceptId, directory = {}, now, onOpen, onBack }: ConceptDetailProps) {
+export function ConceptDetail({
+	source,
+	spaceId,
+	conceptId,
+	directory = {},
+	now,
+	onOpen,
+	onBack,
+	onChanged,
+}: ConceptDetailProps) {
+	const [changing, setChanging] = useState<"correct" | "forget">();
 	const { state, reload } = useLoad(async () => {
 		const [concept, proposals] = await Promise.all([
 			source.getConcept(spaceId, conceptId),
@@ -93,9 +107,21 @@ export function ConceptDetail({ source, spaceId, conceptId, directory = {}, now,
 		<article className="hb-concept" aria-labelledby="hb-concept-title">
 			{back}
 			<header className="hb-concept-head">
-				<h2 id="hb-concept-title" className="hb-concept-title" ref={heading} tabIndex={-1}>
-					{concept.title}
-				</h2>
+				<div className="hb-concept-title-row">
+					<h2 id="hb-concept-title" className="hb-concept-title" ref={heading} tabIndex={-1}>
+						{concept.title}
+					</h2>
+					{source.propose === undefined || concept.status !== "active" || changing !== undefined ? null : (
+						<span className="hb-concept-actions">
+							<Button size="sm" onClick={() => setChanging("correct")}>
+								Correct
+							</Button>
+							<Button size="sm" variant="ghost" onClick={() => setChanging("forget")}>
+								Forget
+							</Button>
+						</span>
+					)}
+				</div>
 				<p className="hb-concept-id hb-mono">{concept.id}</p>
 				<div className="hb-concept-tags">
 					<Badge>{scopeText(concept.scope, directory.project)}</Badge>
@@ -130,6 +156,23 @@ export function ConceptDetail({ source, spaceId, conceptId, directory = {}, now,
 					Past its date for checking, so recall marks it stale and ranks it lower. Correct it or forget it.
 				</Notice>
 			) : null}
+
+			{changing === undefined ? null : (
+				<ConceptChange
+					key={`${changing}:${concept.version}`}
+					mode={changing}
+					concept={concept}
+					source={source}
+					now={now}
+					onCancel={() => setChanging(undefined)}
+					onDone={() => {
+						setChanging(undefined);
+						reload();
+						onChanged?.();
+					}}
+					{...(onChanged === undefined ? {} : { onProposed: onChanged })}
+				/>
+			)}
 
 			<Panel header={<h3 className="hb-memory-section">Statement</h3>}>
 				<p className="hb-concept-statement hb-selectable">{concept.statement}</p>

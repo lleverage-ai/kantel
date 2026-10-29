@@ -14,7 +14,7 @@ Each page takes a source: the package's contract calls with the viewer's `CallCo
 | --- | --- | --- | --- |
 | `SchedulesPage` | `bindSchedules(schedules, ctx, findings?)` | `list`, `get`, `preview`, `listOccurrences` | `pause`, `resume` |
 | `SkillsPage` | `bindSkills(skills, ctx)`, and `bindSkillsAuthor(skills, ctx)` to write | `list`, `get`, `listRevisions`, `getRevision`, `readFile` | `create`, `saveDraft`, `readDraft`, `publish` |
-| `MemoryPage` | `bindMemory(memory, ctx)` | `listConcepts`, `getConcept`, `search`, `recall`, `listProposals` | `decide` |
+| `MemoryPage` | `bindMemory(memory, ctx)` | `listConcepts`, `getConcept`, `search`, `recall`, `listProposals` | `propose`, `decide` |
 
 Every read goes through `useLoad` (`src/primitives/load.ts`): a skeleton the first time, the last value kept while a
 reload runs, an error notice with Try again, and a read that a newer one replaced never touches the state.
@@ -67,7 +67,13 @@ that lists a viewer's drafts, so such a draft has no row to open.
 - **Concepts**, by scope (everywhere, each project, each job's exceptions), with Active, Superseded and Forgotten
   filters and a search (`Memory.search`, best match first, with the snippet that matched). The open concept shows its
   statement, where it applies, who set it, its sources (web ones as links), its version and freshness (stale once
-  past `staleAfter`), the rule an exception overrides or the concept that replaced it, and its history.
+  past `staleAfter`), the rule an exception overrides or the concept that replaced it, and its history. An active
+  concept has **Correct** (title, statement and sources) and **Forget** (with a reason). `Memory` changes concepts
+  only through proposals, so each is proposed at the version on screen and applied by the same person at once: it is
+  audited and shows in the history like any other, and the concept becomes the owner's, which agents can't change.
+  A version that moved on meanwhile is refused and nothing changes; if applying fails after proposing, the proposal
+  waits in Proposals. Correcting drops a date for checking that has passed. Leave `propose` out of the source for a
+  read-only page.
 - **Recall**: what a session would be shown for a message, with the project and job scopes it names and the host's
   profile. Each recalled concept says why it came (profile, match with its score and terms, or a job's exception), and
   whether it is stale or was cut short; concepts that matched but were left out are listed, and the rendered text is a
@@ -82,4 +88,5 @@ proposals that named it. A change made outside proposals (a snapshot import) doe
 Spaces: `Memory` has no call that lists the spaces a viewer may read, so the host passes `spaces`; with more than
 one, a Space picker shows.
 
-**Not for** writing concepts directly: every change is a proposal a person decides.
+**Not for** remembering a new concept by hand, or superseding one with another: agents propose those, and a person
+decides them in Proposals.

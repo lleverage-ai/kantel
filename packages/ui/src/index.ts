@@ -59,8 +59,10 @@ export {
 } from "./identity/sign-in-model.ts";
 export { initials, SignedInAs, type SignedInAsProps } from "./identity/signed-in-as.tsx";
 // The memory page.
+export { ConceptChange, type ConceptChangeProps } from "./memory/concept-change.tsx";
 export { ConceptDetail, type ConceptDetailProps } from "./memory/concept-detail.tsx";
 export {
+	applyAsPerson,
 	bindMemory,
 	conceptHistory,
 	groupConcepts,
