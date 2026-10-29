@@ -1,0 +1,105 @@
+/*
+ * A subagent's card in the thread (after T3 Code's subagent timeline link): a quiet framed block, the width of the
+ * column. The head is one line on one centre: the status dot, the title, the status in words with its time, and the
+ * chevron when the card opens. The detail sits under the title, two lines at most.
+ */
+
+.hb-subagent-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	width: 100%;
+	min-width: 0;
+	margin: 0;
+	padding: var(--hb-space-5) var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+	color: var(--hb-text);
+	font: inherit;
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+	text-align: left;
+	text-decoration: none;
+}
+
+.hb-subagent-opens {
+	cursor: pointer;
+	transition:
+		background-color var(--hb-duration-fast) var(--hb-ease),
+		border-color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-subagent-opens:hover {
+	border-color: var(--hb-border-strong);
+	background: var(--hb-raised);
+}
+
+.hb-subagent-head {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+/*
+ * The words are trimmed to their capitals, as a Button's label is, so the head centres the letters rather than their
+ * line boxes: the dot, the title, the status and the chevron share one centre. The padding keeps descenders inside.
+ */
+.hb-subagent-title,
+.hb-subagent-words,
+.hb-subagent-status > .hb-time {
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
+}
+
+.hb-subagent-title {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	font-weight: var(--hb-weight-medium);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-subagent-status {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--hb-space-3);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.hb-subagent-status.hb-status-error {
+	color: var(--hb-status-error);
+}
+
+.hb-subagent-status > .hb-time {
+	color: var(--hb-text-faint);
+}
+
+.hb-subagent-chevron {
+	flex: none;
+	color: var(--hb-text-faint);
+	transition: color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-subagent-opens:hover .hb-subagent-chevron {
+	color: var(--hb-text);
+}
+
+/* Under the title: indented past the dot and the gap after it. */
+.hb-subagent-detail {
+	display: -webkit-box;
+	min-width: 0;
+	padding-left: calc(var(--hb-dot) + var(--hb-space-4));
+	overflow: hidden;
+	color: var(--hb-text-muted);
+	line-height: var(--hb-leading);
+	overflow-wrap: anywhere;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+}

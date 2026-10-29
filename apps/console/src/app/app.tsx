@@ -584,6 +584,7 @@ export function App({
 				onForked={toFork}
 				onOpen={onOpen}
 				onLive={setLive}
+				subagentHref={hrefFor}
 			/>
 		);
 	} else {

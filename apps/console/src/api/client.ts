@@ -160,6 +160,11 @@ export interface ConsoleClient {
 	 * have no parents (a recorded session).
 	 */
 	parentOf?(sessionId: string, signal?: AbortSignal): Promise<SessionParent | undefined>;
+	/**
+	 * The session a `subagent` call in this session started, by the call's ID: the session its card opens. Undefined
+	 * until the call has started it (or when it never did). Absent on a client with no subagents (a recorded session).
+	 */
+	subagentOf?(sessionId: string, callId: string, signal?: AbortSignal): Promise<string | undefined>;
 	/** Whether New session is offered in a project: the API refuses a viewer, so the console says so first. */
 	mayStart(projectId: string): StartAccess;
 	/** The agent a new session in the project runs. Rejects when no agent may run there. */

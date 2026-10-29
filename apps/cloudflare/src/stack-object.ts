@@ -43,6 +43,7 @@ import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./rou
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
+import { type SubagentVars, subagentsEnabled } from "./subagent.ts";
 import { approvalVaultOver, type VaultVars } from "./vault.ts";
 import type { HarbourVault } from "./vault-object.ts";
 import { durableHeadCache } from "./workspace-heads.ts";
@@ -57,6 +58,7 @@ export interface Env
 		PlacementVars,
 		BrowserVars,
 		CodemodeVars,
+		SubagentVars,
 		RecallVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
@@ -199,6 +201,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 							bundleId: CODEMODE_BUNDLE_ID,
 						},
 					}),
+			// Subagents, when HARBOUR_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
+			...(subagentsEnabled(env) ? { subagents: true } : {}),
 			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.
 			nodeEngine: QUICKJS_NODE,
 			vault: approvalVaultOver((method, ctx, args) =>

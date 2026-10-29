@@ -1,10 +1,12 @@
 import type { AssistantItem, ToolImage, ToolItem, TranscriptItem } from "@harbour/protocol";
+import { isSubagentCall } from "./subagent-model.ts";
 
 // The transcript's rows, derived from its items. Consecutive tool calls become one group row (T3 Code's work log
 // groups, MessagesTimeline.logic.ts:1758-1889); every other item is a row of its own. Any non-tool item ends a group.
 // A run of browser calls is one "browsing" row of its own, however many steps it takes: the words the agent says
 // between two of its calls fold into it (they narrate the steps), so a browsing turn is one quiet line, not a call, a
 // sentence and a screenshot per step. The browser itself is the host's to show, in one place (a panel), not per call.
+// A subagent's call (the `subagent` tool) is a row of its own too, a card that opens its session, and ends a group.
 //
 // Rows are memoised on their object, so this reuses the previous call's row objects wherever their items are
 // unchanged (by identity). While one answer streams, only its row is a new object; every earlier row is the same
@@ -31,7 +33,9 @@ export type TranscriptRow =
 			readonly items: readonly BrowsingStep[];
 			/** The run is the last row: the turn may still add steps to it. */
 			readonly live: boolean;
-	  };
+	  }
+	/** A subagent's call: a card of its own, keyed by the call's item. */
+	| { readonly kind: "subagent"; readonly id: string; readonly item: ToolItem };
 
 /** One step of a browsing row: a browser call, or what the agent said between two of them. */
 export type BrowsingStep = ToolItem | AssistantItem;
@@ -122,6 +126,16 @@ export function groupTranscript(
 			continue;
 		}
 		closeBrowsing(false);
+		if (item.kind === "tool" && isSubagentCall(item)) {
+			closeGroup(false);
+			const old = before.get(item.id);
+			rows.push(
+				old !== undefined && old.kind === "subagent" && old.item === item
+					? old
+					: { kind: "subagent", id: item.id, item },
+			);
+			continue;
+		}
 		if (item.kind === "tool") {
 			if (tools.length > 0 && starts(item.id)) closeGroup(false);
 			tools.push(item);
@@ -164,7 +178,7 @@ export function rowOfTurn(
 	turn: string,
 ): { readonly row: TranscriptRow; readonly item: TranscriptItem } | undefined {
 	for (const row of rows) {
-		if (row.kind === "item") {
+		if (row.kind === "item" || row.kind === "subagent") {
 			if (isTurn(row.item, turn)) return { row, item: row.item };
 			continue;
 		}
@@ -223,7 +237,7 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 	for (let index = rows.length - 1; index >= 0; index--) {
 		const row = rows[index];
 		if (row === undefined) continue;
-		if (row.kind === "tools" || row.kind === "browsing") {
+		if (row.kind === "tools" || row.kind === "browsing" || row.kind === "subagent") {
 			workAfter = true;
 			continue;
 		}
@@ -260,7 +274,7 @@ export function browserViewSlots(
 ): ReadonlyMap<string, readonly BrowserViewSlot[]> {
 	const newest = new Map<string, { rowId: string; item: ToolItem; screenshot?: ToolImage }>();
 	for (const row of rows) {
-		if (row.kind === "item") continue;
+		if (row.kind === "item" || row.kind === "subagent") continue;
 		for (const item of row.items) {
 			if (item.kind !== "tool") continue;
 			const id = item.browserSessionId;

@@ -18,7 +18,9 @@ const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
 		row.kind === "item"
 			? `item ${row.id}`
-			: `${row.kind} ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
+			: row.kind === "subagent"
+				? `subagent ${row.id}`
+				: `${row.kind} ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
 	);
 
 describe("groupTranscript", () => {
@@ -49,6 +51,22 @@ describe("groupTranscript", () => {
 			shape(groupTranscript([user("u1", "Go"), tool("x1", "bash", "Running make", { status: "running" })])),
 		).toEqual(["item u1", "tools x1 [x1] live"]);
 		expect(shape(groupTranscript(liveTurn))).toEqual(["item u2", "tools t5 [t5,t6]", "item a2"]);
+	});
+
+	it("gives a subagent's call a row of its own, ending any group, and keeps it while it is unchanged", () => {
+		const running = tool("s1", "subagent", "subagent", { status: "running", args: { task: "Count the tests" } });
+		const items: TranscriptItem[] = [tool("x1", "read", "Read a.md"), running, tool("x2", "bash", "Ran ls")];
+		const first = groupTranscript(items);
+		expect(shape(first)).toEqual(["tools x1 [x1]", "subagent s1", "tools x2 [x2] live"]);
+		const again = groupTranscript([...items, assistant("a1", "Done")], first);
+		expect(again[1]).toBe(first[1]);
+		const done = { ...running, status: "done" as const, output: "12 tests" };
+		const after = groupTranscript([items[0] as ToolItem, done, items[2] as ToolItem], first);
+		expect(after[1]).not.toBe(first[1]);
+		// A subagent's call is work: the answer before it isn't the turn's final answer.
+		const turn = groupTranscript([user("u1", "Go"), assistant("a1", "On it"), done]);
+		expect(finalAnswerIds(turn).size).toBe(0);
+		expect(rowOfTurn(turn, done.callId)?.item).toBe(done);
 	});
 
 	it("returns no rows for no items", () => {
