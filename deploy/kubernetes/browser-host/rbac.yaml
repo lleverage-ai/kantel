@@ -1,0 +1,30 @@
+# The browser host may manage Pods in its own namespace, and create and delete (never read) Secrets: each browser's
+# agent token is a Secret its Pod reads.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harbour-browser-host
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harbour-browser-host
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harbour-browser-host
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harbour-browser-host
+subjects:
+  - kind: ServiceAccount
+    name: harbour-browser-host

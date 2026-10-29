@@ -1,0 +1,47 @@
+# The browsers: only the host may reach their agent, and they may reach DNS and the internet but nothing private (the
+# cluster, its nodes, the cloud's metadata service). The agent's own domain guard narrows that to the sites a person
+# granted. Needs a CNI that enforces NetworkPolicy (Calico, Cilium and the like).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: harbour-browsers
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: harbour.dev/browser-host, operator: Exists }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: harbour-browser-host }
+      ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+      ports:
+        - { protocol: TCP, port: 80 }
+        - { protocol: TCP, port: 443 }
+---
+# The host: its API (the gateway's calls with its token, and viewers' calls with a view token) from inside the cluster.
+# Narrow `from` to the gateway's namespace where it runs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: harbour-browser-host
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: harbour-browser-host }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports: [{ protocol: TCP, port: 8790 }]
