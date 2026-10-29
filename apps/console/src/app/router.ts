@@ -11,6 +11,10 @@
 //   /vault/requests/:proposalId               the same, as earlier consoles linked it
 //   /audit                                    the audit log
 //   /keys                                     host apps' API keys
+//   /skills                                   the agent's skills
+//   /skills/:skillId                          one skill: its revisions and files
+//   /memory                                   the agent's memory: concepts by scope, search and recall
+//   /memory/:conceptId                        one concept, its ID (which has slashes) as one encoded segment
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
 //
@@ -28,6 +32,8 @@ export type Route =
 	| { readonly name: "vault-request"; readonly proposalId: string }
 	| { readonly name: "audit" }
 	| { readonly name: "keys" }
+	| { readonly name: "skills"; readonly skillId?: string }
+	| { readonly name: "memory"; readonly conceptId?: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
 
@@ -51,6 +57,13 @@ export function parseRoute(pathname: string): Route {
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
+	if (parts[0] === "skills" || parts[0] === "memory") {
+		const name = parts[0];
+		if (parts.length === 1) return { name };
+		const id = parts[1] === undefined ? undefined : segment(parts[1]);
+		if (id !== undefined && parts.length === 2)
+			return name === "skills" ? { name, skillId: id } : { name, conceptId: id };
+	}
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
@@ -79,6 +92,12 @@ export const VAULT_PATH = "/vault";
 export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
 export const AUDIT_PATH = "/audit";
 export const KEYS_PATH = "/keys";
+/** The skills page, or one skill on it. */
+export const skillsPath = (skillId?: string): string =>
+	skillId === undefined ? "/skills" : `/skills/${encodeURIComponent(skillId)}`;
+/** The memory page, or one concept on it; the concept's ID is one segment, its slashes encoded. */
+export const memoryPath = (conceptId?: string): string =>
+	conceptId === undefined ? "/memory" : `/memory/${encodeURIComponent(conceptId)}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
 export const filesPath = (projectId: string, sessionId: string, path?: string): string =>
 	`${sessionPath(projectId, sessionId)}/files${path === undefined ? "" : `/${encodeURIComponent(path)}`}`;

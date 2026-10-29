@@ -19,7 +19,7 @@ export type MemoryView = "concepts" | "recall" | "proposals";
 export interface MemoryPageProps {
 	/** `Memory`, bound to the viewer (see `bindMemory`). */
 	readonly source: MemoryPageSource;
-	/** The spaces the viewer may read, the current one first. `Memory` has no call that lists them; the host knows. */
+	/** The spaces the viewer may read, the current one first, as `Memory.listSpaces` gives them. */
 	readonly spaces: readonly MemorySpace[];
 	/** Concept IDs recalled whatever the query, as the host's sessions get them; the recall view uses them. */
 	readonly profile?: readonly string[];
@@ -81,10 +81,15 @@ export function MemoryPage({
 				: source.search({ spaceIds: [spaceId], query: term, limit: 10, includeInactive: status !== "active" }),
 		[source, spaceId, term, status],
 	);
+	// A read-only source serves no proposals: no Proposals view, and nothing to decide.
+	const { listProposals, decide: decideOn } = source;
+	const writable = listProposals !== undefined && decideOn !== undefined;
 	const proposals = useLoad(
-		() => readAll<MemoryProposal>((page) => source.listProposals(spaceId, undefined, page)),
-		[source, spaceId],
+		async () =>
+			listProposals === undefined ? [] : readAll<MemoryProposal>((page) => listProposals(spaceId, undefined, page)),
+		[listProposals, spaceId],
 	);
+	const shown: MemoryView = view === "proposals" && !writable ? "concepts" : view;
 	const pendingCount =
 		proposals.state.status === "ready"
 			? proposals.state.value.filter((proposal) => proposal.status === "pending").length
@@ -106,15 +111,16 @@ export function MemoryPage({
 	);
 	const decide = useCallback(
 		async (proposalId: string, outcome: "apply" | "reject") => {
-			await source.decide(proposalId, { outcome });
+			if (decideOn === undefined) return;
+			await decideOn(proposalId, { outcome });
 			proposals.reload();
 			concepts.reload();
 		},
-		[source, proposals.reload, concepts.reload],
+		[decideOn, proposals.reload, concepts.reload],
 	);
 
 	return (
-		<div className="hb-memory" data-view={view === "concepts" && selected !== undefined ? "detail" : "list"}>
+		<div className="hb-memory" data-view={shown === "concepts" && selected !== undefined ? "detail" : "list"}>
 			<header className="hb-memory-head">
 				<div className="hb-memory-heading">
 					<h1 className="hb-memory-title">Memory</h1>
@@ -140,21 +146,25 @@ export function MemoryPage({
 			<div className="hb-memory-views">
 				<SegmentedControl
 					label="View"
-					value={view}
+					value={shown}
 					onChange={setView}
 					options={[
 						{ value: "concepts", label: "Concepts" },
 						{ value: "recall", label: "Recall" },
-						{
-							value: "proposals",
-							label: "Proposals",
-							...(pendingCount === undefined || pendingCount === 0 ? {} : { count: pendingCount }),
-						},
+						...(writable
+							? [
+									{
+										value: "proposals" as const,
+										label: "Proposals",
+										...(pendingCount === undefined || pendingCount === 0 ? {} : { count: pendingCount }),
+									},
+								]
+							: []),
 					]}
 				/>
 			</div>
 
-			{view === "recall" ? (
+			{shown === "recall" ? (
 				<MemoryRecall
 					source={source}
 					spaceIds={[spaceId]}
@@ -168,7 +178,7 @@ export function MemoryPage({
 							})}
 					onOpen={openConcept}
 				/>
-			) : view === "proposals" ? (
+			) : shown === "proposals" ? (
 				proposals.state.status === "loading" ? (
 					<div className="hb-memory-loading">
 						<span className="hb-sr-only">Loading proposals</span>

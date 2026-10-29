@@ -3,7 +3,7 @@
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { Decision, DecisionInput, HeldRole } from "@harbour/contracts";
+import type { Decision, DecisionInput, HeldRole, MemorySpace } from "@harbour/contracts";
 import type {
 	ApiKeysApi,
 	AuditDirectory,
@@ -12,7 +12,11 @@ import type {
 	AuditViewProps,
 	Choice,
 	GrantSummary,
+	MemoryPageSource,
+	OwnerChoice,
 	PasskeyCheck,
+	SkillsAuthor,
+	SkillsSource,
 	VaultRequest,
 	Viewer,
 } from "@harbour/ui";
@@ -49,6 +53,28 @@ export interface AuditScope {
 	readonly projects: readonly Choice[];
 	readonly agents: readonly Choice[];
 	readonly sessions: readonly Choice[];
+}
+
+/**
+ * The agent's skills and memory as the signed-in person may read them: the skills page's and memory page's sources.
+ * On `source=api` they run over the public API's skills and memory routes (`agent-http.ts`), read-only; on
+ * `source=recorded`, over in-memory stores in the page, with authoring and proposals.
+ */
+export interface ConsoleAgent {
+	readonly skills: SkillsSource;
+	/** The signed-in person's user ID, so the skills page lists their own skills as theirs. */
+	readonly viewer?: string;
+	/** Skills' writes, where the host serves them; absent, the skills page is read-only. */
+	readonly author?: SkillsAuthor;
+	/** The owners a new skill may go under, with `author`. */
+	readonly owners?: readonly OwnerChoice[];
+	readonly memory: MemoryPageSource;
+	/** The memory spaces the person may read, oldest first. */
+	spaces(): Promise<readonly MemorySpace[]>;
+	/** The projects the pages name and switch between, where they aren't the console's own (recorded fixtures). */
+	readonly projects?: readonly { readonly id: string; readonly name: string }[];
+	/** Concept IDs recalled whatever the query, where the host names a profile. */
+	readonly profile?: readonly string[];
 }
 
 /** The audit log as the signed-in person may read it, with names and links for what it shows. */

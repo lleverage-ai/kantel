@@ -35,7 +35,7 @@ export const SAMPLE_QUERY = "rotate the vault binding codes for the Linear key";
 
 export interface MemoryScenario {
 	readonly memory: Memory;
-	readonly source: MemoryPageSource;
+	readonly source: Required<MemoryPageSource>;
 	readonly space: MemorySpace;
 	/** Concept IDs the profile names: recalled whatever the query. */
 	readonly profile: readonly string[];

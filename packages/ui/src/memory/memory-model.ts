@@ -22,7 +22,9 @@ import type { BadgeTone } from "../primitives/status.tsx";
 
 /**
  * What the page reads and decides: `Memory`'s calls with the viewer's call context already bound. `bindMemory` makes
- * one from any implementation, the in-memory one or the console's API client.
+ * one from any implementation, the in-memory one or the console's API client. A source without `listProposals` and
+ * `decide` is read-only: the page has no Proposals view and a concept no history, as on an API that serves no
+ * proposals yet.
  */
 export interface MemoryPageSource {
 	listConcepts(
@@ -33,12 +35,12 @@ export interface MemoryPageSource {
 	getConcept(spaceId: string, conceptId: string): Promise<Concept>;
 	search(request: MemorySearchRequest): Promise<readonly MemorySearchHit[]>;
 	recall(request: RecallRequest): Promise<Recall>;
-	listProposals(
+	listProposals?(
 		spaceId: string,
 		filter?: { readonly status?: MemoryProposal["status"] },
 		page?: PageRequest,
 	): Promise<Page<MemoryProposal>>;
-	decide(
+	decide?(
 		proposalId: string,
 		input: { readonly outcome: "apply" | "reject"; readonly note?: string },
 	): Promise<MemoryProposal>;
@@ -52,7 +54,7 @@ export type MemoryApi = Pick<
 >;
 
 /** The page's source over `Memory`, as the viewer `ctx`. */
-export function bindMemory(memory: MemoryApi, ctx: CallContext): MemoryPageSource {
+export function bindMemory(memory: MemoryApi, ctx: CallContext): Required<MemoryPageSource> {
 	return {
 		listConcepts: (spaceId, filter, page) => memory.listConcepts(ctx, spaceId, filter, page),
 		getConcept: (spaceId, conceptId) => memory.getConcept(ctx, spaceId, conceptId),
@@ -74,10 +76,11 @@ export async function applyAsPerson(
 	spaceId: string,
 	write: MemoryWrite,
 ): Promise<{ readonly proposal: MemoryProposal; readonly applied: boolean; readonly error?: unknown }> {
-	if (source.propose === undefined) throw new Error("This page can't propose changes");
-	const proposal = await source.propose(spaceId, write);
+	const { propose, decide } = source;
+	if (propose === undefined || decide === undefined) throw new Error("This page can't propose changes");
+	const proposal = await propose(spaceId, write);
 	try {
-		return { proposal: await source.decide(proposal.id, { outcome: "apply" }), applied: true };
+		return { proposal: await decide(proposal.id, { outcome: "apply" }), applied: true };
 	} catch (error) {
 		return { proposal, applied: false, error };
 	}
