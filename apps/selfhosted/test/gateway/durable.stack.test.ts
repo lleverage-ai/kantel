@@ -6,7 +6,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CallContext, HostToolCall } from "@harbour/contracts";
+import { type CallContext, type HostToolCall, systemContext } from "@harbour/contracts";
 import { bearer, createSessionApiClient } from "@harbour/runtime/http";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { AwsClient } from "aws4fetch";
@@ -294,6 +294,58 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		} finally {
 			await host.close();
 		}
+	});
+
+	test("a session's file tools work on the S3 workspace directly; bash leases an isolate on its first command", {
+		timeout: 60_000,
+	}, async () => {
+		const { models, script } = createScriptedModel();
+		await withComponents(
+			`${config.schema}_tools`,
+			async (components) => {
+				expect(components.bindings.sandboxes).toMatch(/leased on first bash/);
+				const deployment = await bootstrap(components, names);
+				const system = { ...systemContext("durable-test"), organisationId: deployment.organisationId };
+				const key = await components.identity.authenticateApiKey(system, deployment.apiKey);
+				const ctx: CallContext = {
+					actor: key.actor,
+					organisationId: deployment.organisationId,
+					projectId: deployment.projectId,
+				};
+				const { runtime } = components.runtime;
+				const session = await runtime.create(ctx, {
+					projectId: deployment.projectId,
+					agentId: "echo",
+					workspaceId: deployment.workspaceId,
+				});
+				const live = () => components.sandboxes.leases(system, { sessionId: session.id, live: true });
+				const run = async (text: string) => {
+					const prompt = await runtime.prompt(ctx, session.id, { text });
+					return runtime.wait(ctx, session.id, prompt.id);
+				};
+
+				script.reply(
+					{ toolCalls: [{ name: "write", args: { path: "notes/new.md", content: "from the file tool\n" } }] },
+					{ text: "Written" },
+				);
+				expect(await run("Write it")).toMatchObject({ status: "answered", answer: "Written" });
+				const read = await components.workspaces.read(ctx, deployment.workspaceId, "notes/new.md");
+				expect(new TextDecoder().decode(read.content)).toBe("from the file tool\n");
+				expect(await live()).toEqual([]);
+
+				script.reply({ toolCalls: [{ name: "bash", args: { command: "cat notes/new.md" } }] }, { text: "Ran" });
+				expect(await run("Show it")).toMatchObject({ status: "answered", answer: "Ran" });
+				expect(script.requests.at(-1)?.messages.at(-1)).toMatchObject({
+					role: "tool",
+					text: expect.stringContaining("from the file tool"),
+				});
+				expect((await live()).map((lease) => lease.tier)).toEqual(["isolate"]);
+
+				await runtime.close(ctx, session.id);
+				expect(await live()).toEqual([]);
+			},
+			{ models },
+		);
 	});
 
 	test("reads a database URL as node-postgres does, a socket URL with no host included", () => {

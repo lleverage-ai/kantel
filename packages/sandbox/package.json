@@ -13,9 +13,11 @@
 		"./sweeper": "./src/sweeper.ts",
 		"./pi-env": "./src/pi-env.ts",
 		"./dependencies": "./src/dependencies.ts",
+		"./coding-tools": "./src/coding-tools.ts",
 		"./isolate-git": "./src/isolate-git.ts"
 	},
 	"dependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/workspace": "workspace:*",
