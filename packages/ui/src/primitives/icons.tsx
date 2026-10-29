@@ -287,6 +287,14 @@ export const LayersIcon = (props: IconProps) => (
 		<path d="M1.75 8L8 11.25 14.25 8M1.75 11L8 14.25 14.25 11" />
 	</Svg>
 );
+/** People: two heads and shoulders, for the organisation's members. */
+export const PeopleIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="6" cy="5.5" r="2.5" />
+		<path d="M1.75 13.5a4.25 4.25 0 0 1 8.5 0" />
+		<path d="M10.5 3.25a2.25 2.25 0 0 1 0 4.5M12 9.75a4 4 0 0 1 2.25 3.75" />
+	</Svg>
+);
 /** A log: lines of entries, each with a mark, for the audit log. */
 export const ListIcon = (props: IconProps) => (
 	<Svg {...props}>

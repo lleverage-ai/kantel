@@ -40,6 +40,17 @@ export {
 	type KeyExpiry,
 	type KeyProject,
 } from "./identity/api-keys-model.ts";
+// Identity: the organisation's members, and an admin's passkey reset (#132).
+export { MembersPage, type MembersPageProps } from "./identity/members.tsx";
+export {
+	createMembersFlow,
+	type MemberRow,
+	type MembersApi,
+	type MembersFlow,
+	type MembersProblem,
+	type MembersState,
+	membersProblem,
+} from "./identity/members-model.ts";
 // Identity: who is signed in, and Harbour's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
 export {

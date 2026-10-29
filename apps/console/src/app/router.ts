@@ -11,6 +11,7 @@
 //   /vault/requests/:proposalId               the same, as earlier consoles linked it
 //   /audit                                    the audit log
 //   /keys                                     host apps' API keys
+//   /members                                  the organisation's members, and an admin's passkey reset
 //   /skills                                   the agent's skills
 //   /skills/:skillId                          one skill: its revisions and files
 //   /memory                                   the agent's memory: concepts by scope, search and recall
@@ -39,6 +40,7 @@ export type Route =
 	| { readonly name: "vault-request"; readonly proposalId: string }
 	| { readonly name: "audit" }
 	| { readonly name: "keys" }
+	| { readonly name: "members" }
 	| { readonly name: "skills"; readonly skillId?: string }
 	| { readonly name: "memory"; readonly conceptId?: string }
 	| { readonly name: "schedules"; readonly scheduleId?: string; readonly creating?: true }
@@ -66,6 +68,7 @@ export function parseRoute(pathname: string): Route {
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
+	if (parts[0] === "members" && parts.length === 1) return { name: "members" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
 		const skillId = parts[1] === undefined ? undefined : segment(parts[1]);
@@ -122,6 +125,7 @@ export const VAULT_PATH = "/vault";
 export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
 export const AUDIT_PATH = "/audit";
 export const KEYS_PATH = "/keys";
+export const MEMBERS_PATH = "/members";
 /** The skills page, or one skill on it. */
 export const skillsPath = (skillId?: string): string =>
 	skillId === undefined ? "/skills" : `/skills/${encodeURIComponent(skillId)}`;

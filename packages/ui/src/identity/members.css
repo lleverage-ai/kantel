@@ -1,0 +1,125 @@
+/* The members page: a heading, then the organisation's people, each with Reset passkeys. Reset is always visible
+   (not on hover), so it works the same with touch. */
+
+.hb-members {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-9);
+	width: 100%;
+	max-width: var(--hb-content-width);
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-members p {
+	margin: 0;
+}
+
+.hb-members-head {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	padding-bottom: var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-members-title {
+	margin: 0;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+}
+
+.hb-members-lede {
+	color: var(--hb-text-muted);
+}
+
+.hb-members-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	min-width: 0;
+}
+
+.hb-members-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+}
+
+.hb-members-rows {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius);
+	background: var(--hb-panel);
+}
+
+.hb-member-row {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	padding: var(--hb-space-5) var(--hb-space-6);
+}
+
+.hb-member-row + .hb-member-row {
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-member-row-main {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4) var(--hb-space-5);
+	min-width: 0;
+}
+
+.hb-member-row-title {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-member-row-name {
+	font-weight: var(--hb-weight-medium);
+	overflow-wrap: anywhere;
+}
+
+.hb-member-confirm {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	padding: var(--hb-space-5) var(--hb-space-6);
+	border: var(--hb-hairline) solid var(--hb-status-error-line);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-status-error-soft);
+}
+
+.hb-member-confirm-text {
+	overflow-wrap: anywhere;
+}
+
+.hb-members-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+}
+
+.hb-member-row-error {
+	color: var(--hb-status-error);
+	font-size: var(--hb-text-xs);
+}
+
+.hb-member-row-done {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}

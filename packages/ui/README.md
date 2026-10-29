@@ -85,5 +85,7 @@ The schedules, skills and memory pages (`SchedulesPage`, `SkillsPage` with its `
 `src/schedules/`, `src/skills/` and `src/memory/`, documented in
 [docs/schedules-skills-memory.md](docs/schedules-skills-memory.md); each takes its package's contract calls bound to
 the viewer.
+The identity pages are in `src/identity/`: `SignInScreen`, `ApiKeysPage` for a host app's keys, and `MembersPage`, the
+organisation's people with an admin's passkey reset. Each takes the identity client's calls; stories show their states.
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
 [docs/design-loop.md](docs/design-loop.md).

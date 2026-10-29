@@ -11,8 +11,10 @@ import {
 	LayersIcon,
 	ListIcon,
 	ListRow,
+	MembersPage,
 	NewSessionRow,
 	Notice,
+	PeopleIcon,
 	PlusIcon,
 	SessionList,
 	Sidebar,
@@ -27,6 +29,7 @@ import {
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
+import type { ConsoleMembers } from "../api/members.ts";
 import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
@@ -40,6 +43,7 @@ import {
 	filesPath,
 	interceptLinks,
 	KEYS_PATH,
+	MEMBERS_PATH,
 	memoryPath,
 	navigate,
 	newSessionPath,
@@ -219,14 +223,16 @@ function OrganisationNav({
 	vault,
 	audit,
 	keys,
+	members = false,
 }: {
 	route: Route;
 	schedules: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
+	members?: boolean;
 }) {
-	if (!schedules && !vault && !audit && !keys) return null;
+	if (!schedules && !vault && !audit && !keys && !members) return null;
 	return (
 		<SidebarSection label="Organisation">
 			{schedules ? (
@@ -250,6 +256,9 @@ function OrganisationNav({
 			) : null}
 			{keys ? (
 				<SidebarItem icon={<KeyIcon />} label="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
+			) : null}
+			{members ? (
+				<SidebarItem icon={<PeopleIcon />} label="Members" href={MEMBERS_PATH} selected={route.name === "members"} />
 			) : null}
 		</SidebarSection>
 	);
@@ -287,6 +296,7 @@ export function App({
 	vault,
 	audit,
 	keys,
+	members,
 	agent,
 	schedules,
 	oversightPending = false,
@@ -304,6 +314,8 @@ export function App({
 	audit?: ConsoleAudit;
 	/** The API keys page's seam; without it there's no API keys in the sidebar. */
 	keys?: ConsoleKeys;
+	/** The members page's seam, for an organisation admin; without it there's no Members in the sidebar. */
+	members?: ConsoleMembers;
 	/** The skills and memory pages' seam; without it there's no Agent section in the sidebar. */
 	agent?: ConsoleAgent;
 	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
@@ -394,14 +406,16 @@ export function App({
 	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
 	const keysRoute = keys !== undefined && route.name === "keys";
+	const membersRoute = members !== undefined && route.name === "members";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
-	const organisationPage = vaultRoute || auditRoute || keysRoute || schedulesRoute || agentRoute;
+	const organisationPage = vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || agentRoute;
 	const organisationRoute =
 		route.name === "vault" ||
 		route.name === "vault-request" ||
 		route.name === "audit" ||
 		route.name === "keys" ||
+		route.name === "members" ||
 		route.name === "schedules" ||
 		route.name === "skills" ||
 		route.name === "memory";
@@ -458,6 +472,13 @@ export function App({
 					roles={keys.roles}
 					projects={projectList.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
 				/>
+			</div>
+		);
+	} else if (membersRoute && members !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<MembersPage api={members.api} viewer={members.viewer} />
 			</div>
 		);
 	} else if (agentRoute && agent !== undefined && route.name === "skills") {
@@ -633,6 +654,7 @@ export function App({
 							vault={vault !== undefined}
 							audit={audit !== undefined}
 							keys={keys !== undefined}
+							members={members !== undefined}
 						/>
 						<div className="shell-actor">
 							<Actor actor={client.actor} />
