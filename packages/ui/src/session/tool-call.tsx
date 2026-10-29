@@ -1,5 +1,5 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
-import { memo, type ReactNode, useId, useState } from "react";
+import { memo, type ReactNode, useEffect, useId, useState } from "react";
 import { Disclosure } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
 import {
@@ -171,6 +171,8 @@ export type ToolCallChipProps = {
 	 * this is the newest call on it. The view shows the screenshot itself whenever it isn't live.
 	 */
 	browserView?: ReactNode;
+	/** The call a link names (`#turn=`): it stands out briefly. */
+	linked?: boolean;
 };
 
 /**
@@ -178,12 +180,20 @@ export type ToolCallChipProps = {
  * aria-expanded; the arguments and output render only while it is open. Memoised on `item`, so a transcript
  * re-renders only the call that changed, and nothing in it ticks.
  */
-export const ToolCallChip = memo(function ToolCallChip({ item, defaultOpen = false, browserView }: ToolCallChipProps) {
+export const ToolCallChip = memo(function ToolCallChip({
+	item,
+	defaultOpen = false,
+	browserView,
+	linked = false,
+}: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
 	const [open, setOpen] = useState(defaultOpen);
 	const id = useId();
 	return (
-		<div className={`hb-tool hb-tool-${item.status}${open ? " hb-tool-open" : ""}`}>
+		<div
+			className={`hb-tool hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}`}
+			data-call={item.callId}
+		>
 			<button
 				type="button"
 				className="hb-tool-row hb-focusable"
@@ -224,6 +234,11 @@ export type ToolCallGroupProps = {
 	 * keeps its newest one in view under its summary, in place of the last screenshot.
 	 */
 	browserViews?: ReadonlyMap<string, ReactNode>;
+	/**
+	 * The ID of the call a link names (`#turn=`): a folded group opens to show it, and it stands out briefly. The group
+	 * stays open once the call stops standing out.
+	 */
+	focus?: string;
 };
 
 /**
@@ -232,10 +247,20 @@ export type ToolCallGroupProps = {
  * calls carry no duration of their own, so the group's summary is the one place the time is told.
  * Failed and interrupted calls stay visible under the summary while it is collapsed, so a failure is never hidden.
  */
-export const ToolCallGroup = memo(function ToolCallGroup({ items, live = false, browserViews }: ToolCallGroupProps) {
-	const [open, setOpen] = useState(false);
+export const ToolCallGroup = memo(function ToolCallGroup({
+	items,
+	live = false,
+	browserViews,
+	focus,
+}: ToolCallGroupProps) {
+	const [open, setOpen] = useState(focus !== undefined);
+	useEffect(() => {
+		if (focus !== undefined) setOpen(true);
+	}, [focus]);
 	const running = items.some((item) => item.status === "running");
-	const chip = (item: ToolItem) => <ToolCallChip key={item.id} item={item} browserView={browserViews?.get(item.id)} />;
+	const chip = (item: ToolItem) => (
+		<ToolCallChip key={item.id} item={item} browserView={browserViews?.get(item.id)} linked={item.id === focus} />
+	);
 	if (live || running || items.length === 0) {
 		return <div className="hb-tool-group">{items.map(chip)}</div>;
 	}

@@ -28,7 +28,9 @@ import {
 	browserViewSlots,
 	finalAnswerIds,
 	groupTranscript,
+	rowOfTurn,
 	type TranscriptRow,
+	turnAnchor,
 } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
 import { WorkingIndicator } from "./working-indicator.tsx";
@@ -46,6 +48,8 @@ const AT_BOTTOM_PX = 48;
 const LOAD_OLDER_PX = 600;
 /** How far beyond the viewport rows stay mounted. */
 const BUFFER_PX = 600;
+/** How long a linked turn stays highlighted once the list has landed on it (ms); its fade is the CSS's. */
+const HIGHLIGHT_MS = 2400;
 
 // A fixed spacer always sits after the last row, so the bottom padding never belongs to a real row: if it did, the
 // row that was last would render again, to lose it, every time an item arrived.
@@ -120,6 +124,8 @@ type RowProps = {
 	browserSlots: readonly BrowserViewSlot[] | undefined;
 	renderBrowserView: ((slot: BrowserViewSlot) => ReactNode) | undefined;
 	report: (id: string, phase: RowRenderPhase) => void;
+	/** The linked turn is in this row: the row is highlighted, and a tool call in it opens its group and stands out. */
+	highlight: string | undefined;
 };
 
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
@@ -132,6 +138,7 @@ function rowBody(
 	renderCard: RowProps["renderCard"],
 	browserSlots: RowProps["browserSlots"],
 	renderBrowserView: RowProps["renderBrowserView"],
+	highlight: RowProps["highlight"],
 ): ReactNode {
 	if (row.kind === "tools") {
 		const views =
@@ -139,7 +146,12 @@ function rowBody(
 				? undefined
 				: new Map(browserSlots.map((slot) => [slot.item.id, renderBrowserView(slot)] as const));
 		return (
-			<ToolCallGroup items={row.items} live={row.live} {...(views === undefined ? {} : { browserViews: views })} />
+			<ToolCallGroup
+				items={row.items}
+				live={row.live}
+				{...(views === undefined ? {} : { browserViews: views })}
+				{...(highlight === undefined ? {} : { focus: highlight })}
+			/>
 		);
 	}
 	const { item } = row;
@@ -167,6 +179,7 @@ const Row = memo(function Row({
 	browserSlots,
 	renderBrowserView,
 	report,
+	highlight,
 }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
@@ -177,11 +190,12 @@ const Row = memo(function Row({
 	const kind = row.kind === "tools" ? "tools" : row.item.kind;
 	return (
 		<div
-			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}`}
+			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}`}
+			id={turnAnchor(row.id)}
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
-				{rowBody(row, turnStartedAt, finalAnswer, renderCard, browserSlots, renderBrowserView)}
+				{rowBody(row, turnStartedAt, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight)}
 			</div>
 		</div>
 	);
@@ -260,6 +274,13 @@ export type TranscriptProps = {
 	 * the end, and takes files dropped anywhere on the transcript.
 	 */
 	dock?: ReactNode;
+	/**
+	 * The turn a link names (a page's `#turn=<id>`): an item's ID, a tool call's `callId` or a message's `requestId`
+	 * (`isTurn`). Once its item is among `items`, the list scrolls it to the middle of the view, stops following the end
+	 * and highlights it briefly; a tool call in a folded group opens the group. It lands once per turn: set another to
+	 * land again. Paging back to a turn that isn't loaded yet is the host's (see `findTurn`).
+	 */
+	turn?: string;
 	className?: string;
 };
 
@@ -290,6 +311,7 @@ export function Transcript({
 	onRowRender,
 	messageActions,
 	dock,
+	turn,
 	className,
 }: TranscriptProps) {
 	const { fork, edit, editBlocked } = messageActions ?? {};
@@ -385,6 +407,33 @@ export function Transcript({
 		count.current = entries.length;
 		if (initial || (following.current && !prepended)) toBottom();
 	});
+
+	// A linked turn: once its item is loaded, the list lands on it, stops following and highlights it. This runs after
+	// the effect above, so a transcript opened at a turn lands there rather than at its end.
+	const landed = useRef<string | undefined>(undefined);
+	const [highlight, setHighlight] = useState<{ readonly row: string; readonly item: string }>();
+	useLayoutEffect(() => {
+		if (turn === undefined || turn === "") {
+			landed.current = undefined;
+			return;
+		}
+		if (landed.current === turn) return;
+		const found = rowOfTurn(rows, turn);
+		const handle = list.current;
+		if (found === undefined || handle === null) return;
+		const index = entries.indexOf(found.row);
+		if (index < 0) return;
+		landed.current = turn;
+		following.current = false;
+		setShowEnd(true);
+		handle.scrollToIndex(index, { align: "center" });
+		setHighlight({ row: found.row.id, item: found.item.id });
+	});
+	useEffect(() => {
+		if (highlight === undefined) return;
+		const timer = setTimeout(() => setHighlight(undefined), HIGHLIGHT_MS);
+		return () => clearTimeout(timer);
+	}, [highlight]);
 
 	// While following, keep the bottom in view as the last row grows (a streamed answer, a tool's output) and as the
 	// viewport itself changes size (a phone's keyboard opening, a window resized).
@@ -606,6 +655,7 @@ export function Transcript({
 								browserSlots={slots.get(entry.id)}
 								renderBrowserView={renderBrowserView}
 								report={report}
+								highlight={highlight?.row === entry.id ? highlight.item : undefined}
 							/>
 						)
 					}

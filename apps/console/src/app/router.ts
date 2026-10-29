@@ -158,6 +158,31 @@ export function navigate(path: string, { replace = false }: { replace?: boolean 
 	notify();
 }
 
+/** The turn a hash names: `#turn=<id>`, decoded; undefined for any other hash, or an empty or malformed ID. */
+export function turnOfHash(hash: string): string | undefined {
+	const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+	const turn = params.get("turn");
+	return turn === null || turn === "" ? undefined : turn;
+}
+
+function subscribeHash(listener: () => void): () => void {
+	const unsubscribe = subscribe(listener);
+	window.addEventListener("hashchange", listener);
+	return () => {
+		unsubscribe();
+		window.removeEventListener("hashchange", listener);
+	};
+}
+
+/** The current hash (`#turn=x`), re-rendering on navigation and when only the hash changes. */
+export function useHash(): string {
+	return useSyncExternalStore(
+		subscribeHash,
+		() => location.hash,
+		() => "",
+	);
+}
+
 /** The current pathname, re-rendering on navigation. */
 export function usePathname(): string {
 	return useSyncExternalStore(

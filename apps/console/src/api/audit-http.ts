@@ -51,6 +51,49 @@ export function auditApiSource(options: AuditApiSourceOptions): AuditSource {
 	};
 }
 
+/**
+ * Remembers the `requestId` each message's audit event names (`session.prompted`, `session.steered`), by its submission,
+ * as the source reads them. A transcript knows a message by its item and the request ID it was sent with, never by the
+ * runtime's submission ID (`<sessionId>/<n>`) an event's subject names, so a row's link at a message names the request
+ * ID instead (`Transcript`'s `turn` matches either).
+ */
+export function rememberRequests(source: AuditSource): {
+	readonly source: AuditSource;
+	readonly requestOf: (submissionId: string) => string | undefined;
+} {
+	const requests = new Map<string, string>();
+	return {
+		source: {
+			async query(query, page) {
+				const result = await source.query(query, page);
+				for (const event of result.items) {
+					const requestId = event.data?.requestId;
+					if (event.subject?.kind === "session.submission" && typeof requestId === "string" && requestId !== "") {
+						requests.set(event.subject.id, requestId);
+					}
+				}
+				return result;
+			},
+		},
+		requestOf: (submissionId) => requests.get(submissionId),
+	};
+}
+
+/**
+ * Where a row links in a session: at the turn when the transcript can find it. A tool call's turn is its call ID, which
+ * the transcript knows. A message's is its submission (`<sessionId>/<n>`), which it doesn't: the link names the request
+ * ID the message was sent with when the event gave one, and otherwise opens the session at its end.
+ */
+export function sessionLink(
+	requestOf: (submissionId: string) => string | undefined,
+): (sessionId: string, turn?: string, projectId?: string) => string | undefined {
+	return (sessionId, turn, projectId) => {
+		if (projectId === undefined) return undefined;
+		const submission = turn?.startsWith(`${sessionId}/`) === true;
+		return sessionTurnPath(projectId, sessionId, submission && turn !== undefined ? requestOf(turn) : turn);
+	};
+}
+
 const byLabel = (a: Choice, b: Choice) => a.label.localeCompare(b.label, "en-GB") || a.value.localeCompare(b.value);
 
 /**
@@ -108,14 +151,13 @@ export function apiAudit(
 	options: Partial<AuditApiSourceOptions> & { readonly vaultRequests?: boolean } = {},
 ): ConsoleAudit {
 	const { vaultRequests, ...sourceOptions } = options;
-	const source = auditApiSource({ baseUrl: "", ...sourceOptions });
+	const { source, requestOf } = rememberRequests(auditApiSource({ baseUrl: "", ...sourceOptions }));
 	return {
 		source,
 		directory: {},
 		links: {
 			// Session pages sit under their project; an event that names none stays unlinked.
-			session: (sessionId, turn, projectId) =>
-				projectId === undefined ? undefined : sessionTurnPath(projectId, sessionId, turn),
+			session: sessionLink(requestOf),
 			...(vaultRequests === true ? { proposal: vaultRequestPath } : {}),
 		},
 		choices: {},

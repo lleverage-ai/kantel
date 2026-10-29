@@ -81,6 +81,42 @@ export function groupTranscript(
 }
 
 /**
+ * Whether `item` is the turn a link names (`#turn=<id>`): its own ID, a tool call's `callId` (an audit event's
+ * `session.tool` subject) or a message's `requestId` (the one its client sent it with). An empty turn names nothing.
+ */
+export function isTurn(item: TranscriptItem, turn: string): boolean {
+	if (turn === "") return false;
+	if (item.id === turn) return true;
+	if (item.kind === "tool") return item.callId === turn;
+	if (item.kind === "user") return item.requestId === turn;
+	return false;
+}
+
+/** The item a turn names among `items`, or undefined when it isn't loaded (or isn't in the session). */
+export function findTurn(items: readonly TranscriptItem[], turn: string): TranscriptItem | undefined {
+	return items.find((item) => isTurn(item, turn));
+}
+
+/** The row a turn's item is in, and the item: for a group of tool calls, the call itself. */
+export function rowOfTurn(
+	rows: readonly TranscriptRow[],
+	turn: string,
+): { readonly row: TranscriptRow; readonly item: TranscriptItem } | undefined {
+	for (const row of rows) {
+		if (row.kind === "item") {
+			if (isTurn(row.item, turn)) return { row, item: row.item };
+			continue;
+		}
+		const item = row.items.find((candidate) => isTurn(candidate, turn));
+		if (item !== undefined) return { row, item };
+	}
+	return undefined;
+}
+
+/** The DOM ID of a row's anchor, from its item's ID: `turn-<id>`, so a page can link to a mounted row. */
+export const turnAnchor = (itemId: string): string => `turn-${itemId}`;
+
+/**
  * The IDs of each turn's final answer: an assistant item with no other answer and no tool call after it before the
  * person's next message (a notice or a card may follow it). These are the answers that get Copy and their time, as in
  * T3 Code, which shows its message meta only on a turn's terminal answer; the words an agent says between its tool

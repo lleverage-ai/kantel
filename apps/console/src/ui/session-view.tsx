@@ -14,6 +14,7 @@ import {
 	Transcript,
 } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { TurnSearch } from "../state/linked-turn.ts";
 import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
@@ -102,6 +103,8 @@ export function SessionView({
 	actions,
 	onBack,
 	onFiles,
+	turn,
+	turnSearch,
 }: {
 	client: SessionClient;
 	/** The project's name, shown with the session's facts. */
@@ -111,7 +114,12 @@ export function SessionView({
 	onBack?: () => void;
 	/** Shows Files, to browse the session's workspace. */
 	onFiles?: () => void;
+	/** The turn a `#turn=<id>` link names: the transcript lands on it and highlights it once it is loaded. */
+	turn?: string;
+	/** Where the search for `turn` stands; `missing` says so above the composer. */
+	turnSearch?: TurnSearch;
 }) {
+	const turnMissing = turn !== undefined && turnSearch === "missing";
 	const state = useSyncExternalStore(client.subscribe, client.getState);
 	const [menu, setMenu] = useState(false);
 	const menuRoot = useRef<HTMLDivElement>(null);
@@ -236,14 +244,18 @@ export function SessionView({
 						onRowRender={recordRow}
 						messageActions={messageActions}
 						{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
+						{...(turn === undefined ? {} : { turn })}
 						dock={
 							<Composer
 								state={composerState(control, state.status, actions.sending)}
 								disabledReason={control.live ? undefined : control.reason}
 								label="Message"
 								banner={
-									actions.failure === undefined && browserRequest === undefined ? undefined : (
+									actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
 										<>
+											{turnMissing ? (
+												<Notice level="info">The turn this link names isn't in the session.</Notice>
+											) : null}
 											{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
 											{browserRequest === undefined ? null : (
 												<Notice

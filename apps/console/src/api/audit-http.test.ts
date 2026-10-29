@@ -1,6 +1,7 @@
 import { createAuditQueryHandler } from "@harbour/audit/http";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import {
+	type AuditEvent,
 	type AuthenticatedCaller,
 	type Authenticator,
 	HarbourError,
@@ -10,7 +11,7 @@ import {
 } from "@harbour/contracts";
 import { readAll, toQuery } from "@harbour/ui";
 import { describe, expect, it } from "vitest";
-import { apiAudit, auditApiSource, readAuditScope } from "./audit-http.ts";
+import { apiAudit, auditApiSource, readAuditScope, rememberRequests, sessionLink } from "./audit-http.ts";
 
 const NOW = Date.UTC(2026, 9, 27, 12);
 
@@ -124,9 +125,11 @@ describe("the audit log over the audit query API", () => {
 			{ value: "itm_github", label: "GitHub token" },
 			{ value: "itm_linear", label: "Linear API key" },
 		]);
-		expect(audit.links.session?.("ses_1", "ses_1/4", "prj_billing")).toBe(
-			"/projects/prj_billing/sessions/ses_1#turn=ses_1%2F4",
+		// A tool call's row lands on the call; a message's, whose request isn't known, opens the session at its end.
+		expect(audit.links.session?.("ses_1", "call_7", "prj_billing")).toBe(
+			"/projects/prj_billing/sessions/ses_1#turn=call_7",
 		);
+		expect(audit.links.session?.("ses_1", "ses_1/4", "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
 		expect(audit.links.session?.("ses_1", undefined, "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
 		expect(audit.links.session?.("ses_1", "ses_1/4")).toBeUndefined();
 		// Without the vault page there is nowhere to open a vault request.
@@ -134,6 +137,31 @@ describe("the audit log over the audit query API", () => {
 		const page = await audit.source.query(toQuery({ range: "all", kind: "all" }, NOW), { limit: 5 });
 		expect(page.items).toHaveLength(5);
 		expect(page.nextCursor).toBeDefined();
+	});
+
+	it("links a message's row at the request it was sent with, which the transcript knows it by", async () => {
+		const event = (id: string, subject: string, requestId?: string): AuditEvent => ({
+			id,
+			seq: 1,
+			at: NOW,
+			recordedAt: NOW,
+			source: "session",
+			type: "session.prompted",
+			actor: { kind: "human", userId: "usr_tom" },
+			organisationId: "org_a",
+			sessionId: "ses_1",
+			subject: { kind: "session.submission", id: subject },
+			data: requestId === undefined ? { via: "prompt" } : { via: "prompt", requestId },
+		});
+		const { source, requestOf } = rememberRequests({
+			query: async () => ({ items: [event("e1", "ses_1/4", "req_4"), event("e2", "ses_1/5")] }),
+		});
+		await source.query(toQuery({ range: "all", kind: "all" }, NOW));
+		const link = sessionLink(requestOf);
+		expect(link("ses_1", "ses_1/4", "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1#turn=req_4");
+		expect(link("ses_1", "ses_1/5", "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
+		expect(link("ses_1", "call_7", "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1#turn=call_7");
+		expect(link("ses_1", "ses_1/4")).toBeUndefined();
 	});
 
 	it("links rows about a vault request to its page when the console has the vault page", () => {

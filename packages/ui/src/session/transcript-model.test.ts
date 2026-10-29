@@ -1,7 +1,16 @@
 import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
-import { browserViewSlots, finalAnswerIds, groupTranscript, type TranscriptRow } from "./transcript-model.ts";
+import {
+	browserViewSlots,
+	finalAnswerIds,
+	findTurn,
+	groupTranscript,
+	isTurn,
+	rowOfTurn,
+	type TranscriptRow,
+	turnAnchor,
+} from "./transcript-model.ts";
 
 const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
@@ -197,5 +206,35 @@ describe("browserViewSlots", () => {
 
 	it("has no slots for calls that name no browser", () => {
 		expect(browserViewSlots(groupTranscript(finishedTurn)).size).toBe(0);
+	});
+});
+
+describe("turn links", () => {
+	const sent = { ...user("u1", "Go"), requestId: "req-1" };
+	const items: TranscriptItem[] = [
+		sent,
+		tool("t1", "read", "Read a.md"),
+		tool("t2", "bash", "Ran ls"),
+		assistant("a1", "Done."),
+	];
+
+	it("names an item by its ID, a tool call by its call ID and a message by its request ID", () => {
+		expect(isTurn(sent, "u1")).toBe(true);
+		expect(isTurn(sent, "req-1")).toBe(true);
+		expect(findTurn(items, "call-t2")?.id).toBe("t2");
+		expect(findTurn(items, "a1")?.id).toBe("a1");
+		expect(findTurn(items, "")).toBeUndefined();
+		expect(findTurn(items, "nope")).toBeUndefined();
+	});
+
+	it("finds the row a turn is in, and the tool call within its group", () => {
+		const rows = groupTranscript(items);
+		expect(rowOfTurn(rows, "req-1")?.row.id).toBe("u1");
+		const call = rowOfTurn(rows, "call-t2");
+		expect(call?.row.kind).toBe("tools");
+		expect(call?.row.id).toBe("t1");
+		expect(call?.item.id).toBe("t2");
+		expect(rowOfTurn(rows, "nope")).toBeUndefined();
+		expect(turnAnchor("u:1")).toBe("turn-u:1");
 	});
 });
