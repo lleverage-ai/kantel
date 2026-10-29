@@ -69,6 +69,9 @@
 		"HARBOUR_ISOLATE_BACKEND": "in-process",
 		// `off` takes the `codemode` tool away (src/codemode.ts). Anything else offers it to sessions with tools.
 		"HARBOUR_CODEMODE": "on",
+		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Harbour's own, or sal,
+		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
+		"HARBOUR_RECALL_RENDERER": "default",
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
 		"HARBOUR_SESSION_WEBSOCKET": "on",

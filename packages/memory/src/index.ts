@@ -1,7 +1,7 @@
 /**
  * Portable memory logic shared by every target: near-duplicate similarity, concept ID checks and the Markdown
- * rendering of the canonical bundle here; the full-text index (`fts.ts`), Sal's query terms (`terms.ts`) and recall and
- * search (`recall.ts`) beside it. No storage and no clock.
+ * rendering of the canonical bundle here; the full-text index (`fts.ts`), Sal's query terms (`terms.ts`), recall and
+ * search (`recall.ts`) and Sal's recall rendering (`sal-recall.ts`) beside it. No storage and no clock.
  */
 import { type Concept, type ConceptScope, HarbourError } from "@harbour/contracts";
 import { porterStem } from "./fts.ts";
@@ -9,6 +9,7 @@ import { porterStem } from "./fts.ts";
 export * from "./capabilities.ts";
 export * from "./fts.ts";
 export * from "./recall.ts";
+export * from "./sal-recall.ts";
 export * from "./terms.ts";
 
 /** Statements at least this similar (Jaccard over token sets) are near-duplicates. */

@@ -1,8 +1,8 @@
+import { SAL_RECALL_PREAMBLE, salRecallRenderer } from "@harbour/memory";
 import { syncSkillSources } from "@harbour/skills/sources";
 import { createMemoryWorkspaces } from "@harbour/workspace/memory";
 import { afterEach, describe, expect, it } from "vitest";
 import { okfConcept } from "../src/okf.ts";
-import { SAL_RECALL_PREAMBLE, salRecallRenderer } from "../src/recall-renderer.ts";
 import { gitSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker, selectedConcepts, startSalWorkerSession } from "../src/worker.ts";
 import { conceptFile, source, tempRepo } from "./helpers.ts";

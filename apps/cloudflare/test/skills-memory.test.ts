@@ -2,13 +2,15 @@
 // (Pi's block), mounts them read-only at /skills on the session's workspace and recalls from the spaces on the first
 // prompt, through the runtime (#194); the system prompt is the same as without them.
 import { DatabaseSync } from "node:sqlite";
-import type { AgentProfile, CallContext, SnapshotConcept } from "@harbour/contracts";
+import type { AgentProfile, CallContext, RecallRenderer, SnapshotConcept } from "@harbour/contracts";
+import { defaultRecallRenderer, SAL_RECALL_PREAMBLE, salRecallRenderer } from "@harbour/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { createMemoryObjectBucket } from "@harbour/skills/sql";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
+import { recallRendererFrom } from "../src/recall-renderer.ts";
 import { sessionJobs } from "../src/session-memory.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack, type StackStorage } from "../src/stack.ts";
 
@@ -31,7 +33,7 @@ const concept = (input: Partial<SnapshotConcept> & Pick<SnapshotConcept, "id" | 
 });
 
 /** The stack over SQL skills and memory (D1 and R2 in Node), or in memory. */
-async function setUp(durable: boolean) {
+async function setUp(durable: boolean, recallRenderer?: RecallRenderer) {
 	const { models, script } = createScriptedModel();
 	const storage: StackStorage = durable
 		? {
@@ -44,6 +46,7 @@ async function setUp(durable: boolean) {
 		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		storage,
+		...(recallRenderer === undefined ? {} : { recallRenderer }),
 	});
 	opened.push(stack);
 	const admin: CallContext = stack.admin;
@@ -216,6 +219,39 @@ describe.each([
 		expect(text).toContain('<memory_concept id="projects/harbour/review-exception" recalled="exception"');
 	});
 
+	it("recalls in the renderer the stack is given, Sal's here, with the system prompt unchanged", async () => {
+		const layers = [{ name: "project", text: "Answer briefly." }];
+		const systems: (string | undefined)[] = [];
+		const texts: string[] = [];
+		for (const renderer of [undefined, salRecallRenderer()]) {
+			const { stack, admin, script, withContext, session, run } = await setUp(durable, renderer);
+			await stack.runtime.profiles.put(admin, { ...withContext, skills: [], memoryScopes: [], promptLayers: layers });
+			script.reply({ text: "Plain" });
+			await run((await session()).id, "Review the pull request diff");
+			systems.push(script.requests.at(-1)?.system);
+			await stack.runtime.profiles.put(admin, { ...withContext, promptLayers: layers });
+			script.reply({ text: "Ok" });
+			await run((await session()).id, "Review the pull request diff");
+			systems.push(script.requests.at(-1)?.system);
+			texts.push(script.requests.at(-1)?.messages[0]?.text ?? "");
+		}
+		// The renderer changes only the recall block: the system prompt is the user's layer alone, with or without it.
+		expect(systems).toEqual(["Answer briefly.", "Answer briefly.", "Answer briefly.", "Answer briefly."]);
+		const [harbour, sal] = texts;
+		expect(harbour).toContain(defaultRecallRenderer.open);
+		expect(harbour).toContain('<memory_concept id="personal/timezone" recalled="profile" version="1"');
+		// Sal's rendering: its preamble, a lean profile entry and a match as `match` with its scope and first source.
+		expect(sal).toContain(`<memory_recall>\n${SAL_RECALL_PREAMBLE}`);
+		expect(sal).toContain('<memory_concept id="personal/timezone" recalled="profile" learned_from="owner">');
+		expect(sal).toContain(
+			'<memory_concept id="projects/harbour/reviews" recalled="match" scope="project" learned_from="owner" source="tvdavies/harbour#12">',
+		);
+		expect(sal).not.toContain(defaultRecallRenderer.open);
+		// The listing is the same either way.
+		const listing = (text: string) => text.slice(0, text.indexOf("<memory_recall>"));
+		expect(listing(sal ?? "")).toBe(listing(harbour ?? ""));
+	});
+
 	it("serves memory_search and memory_read to a session with memory spaces", async () => {
 		const { stack, admin, script, withContext, session, run, toolResults } = await setUp(durable);
 		await stack.runtime.profiles.put(admin, withContext);
@@ -227,6 +263,15 @@ describe.each([
 		);
 		expect(await run(created.id, "What about calls?")).toMatchObject({ answer: "Found it" });
 		expect(toolResults().join("\n")).toContain("Voice calls greet first.");
+	});
+});
+
+describe("HARBOUR_RECALL_RENDERER", () => {
+	it("is Harbour's renderer unless it names Sal's, and refuses one it doesn't know", () => {
+		expect(recallRendererFrom({})).toBe(defaultRecallRenderer);
+		expect(recallRendererFrom({ HARBOUR_RECALL_RENDERER: " default " })).toBe(defaultRecallRenderer);
+		expect(recallRendererFrom({ HARBOUR_RECALL_RENDERER: "sal" }).open).toBe(`<memory_recall>\n${SAL_RECALL_PREAMBLE}`);
+		expect(() => recallRendererFrom({ HARBOUR_RECALL_RENDERER: "pi" })).toThrow(/HARBOUR_RECALL_RENDERER/);
 	});
 });
 

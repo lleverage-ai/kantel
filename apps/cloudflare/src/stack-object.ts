@@ -38,6 +38,7 @@ import { createGateway, type Gateway } from "./gateway.ts";
 import type { IsolatePort } from "./isolate/runner.ts";
 import type { Placement } from "./measure.ts";
 import { cpaKey, createGatewayModels, defaultModel, type ModelsVars } from "./models.ts";
+import { type RecallVars, recallRendererFrom } from "./recall-renderer.ts";
 import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
@@ -48,7 +49,15 @@ import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars, BrowserVars, CodemodeVars {
+export interface Env
+	extends GatewayVars,
+		VaultVars,
+		ModelsVars,
+		SandboxVars,
+		PlacementVars,
+		BrowserVars,
+		CodemodeVars,
+		RecallVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
@@ -136,11 +145,13 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 			config: gatewayConfig(this.env),
 			models: this.stackModels(),
 			isolateBackend: isolateBackendName(this.env),
+			recallRenderer: recallRendererFrom(this.env),
 		}),
-		start: async ({ config, models, isolateBackend }) => {
+		start: async ({ config, models, isolateBackend, recallRenderer }) => {
 			const stack = await createStack({
 				...(models === undefined ? {} : { models }),
 				isolateBackend,
+				recallRenderer,
 				...this.stackOptions(),
 				config,
 				storage: this.stackStorage(),

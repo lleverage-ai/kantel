@@ -3,6 +3,8 @@
  * sources published at pinned refs, and per session the pinned skill listing and the recall a Sal worker gets for its
  * brief. Uses the in-memory reference stores; a target passes its own `Memory` and `Skills`.
  */
+
+import { existsSync } from "node:fs";
 import type {
 	CallContext,
 	Memory,
@@ -15,13 +17,13 @@ import type {
 	SkillRevision,
 	Skills,
 } from "@harbour/contracts";
+import { salRecallRenderer } from "@harbour/memory";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createMemorySkills } from "@harbour/skills/memory";
 import { renderSkillListings, sessionSkillListings, syncSkillSources } from "@harbour/skills/sources";
 import { createSkillsMountSource } from "@harbour/workspace/mounts";
 import { readTree, resolveCommit } from "./git.ts";
 import { type OkfSnapshot, okfSnapshot, salExtension } from "./okf.ts";
-import { salRecallRenderer } from "./recall-renderer.ts";
 import { layerSalSources, type SalSkillSource, salSkillExtensions } from "./skill-sources.ts";
 
 /** The skills Sal leaves out of a worker's set (tvdavies/sal `src/worker/sandbox.ts`
@@ -90,7 +92,8 @@ const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 export async function prepareSalWorker(input: SalWorkerInput): Promise<SalWorkerHost> {
 	const now = input.now ?? Date.now;
 	const clock = { now };
-	const memory = input.stores?.memory ?? createMemoryMemory({ clock, renderer: salRecallRenderer() });
+	const memory =
+		input.stores?.memory ?? createMemoryMemory({ clock, renderer: salRecallRenderer({ exists: existsSync }) });
 	const skills =
 		input.stores?.skills ??
 		createMemorySkills({ clock, ...(input.mountRoot === undefined ? {} : { mountRoot: input.mountRoot }) });
