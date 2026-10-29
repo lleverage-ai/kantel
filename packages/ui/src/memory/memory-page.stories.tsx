@@ -27,6 +27,7 @@ function ScenarioPage({
 	recall,
 	empty,
 	brokenDecisions,
+	readOnly,
 }: {
 	view?: MemoryView;
 	open?: string;
@@ -35,6 +36,7 @@ function ScenarioPage({
 	recall?: { query: string; projects?: string; jobs?: string };
 	empty?: boolean;
 	brokenDecisions?: boolean;
+	readOnly?: boolean;
 }) {
 	const [scenario, setScenario] = useState<MemoryScenario>();
 	useEffect(() => {
@@ -51,7 +53,9 @@ function ScenarioPage({
 			? pendingSource
 			: brokenDecisions === true
 				? failingDecisions(scenario.source)
-				: scenario.source;
+				: readOnly === true
+					? { ...scenario.source, propose: undefined }
+					: scenario.source;
 	return (
 		<div className="memory-story">
 			<MemoryPage
@@ -77,7 +81,10 @@ export const Default: Story = () => <ScenarioPage />;
 /** A learned concept, corrected once: its sources, its version and the two proposals that made it. */
 export const ConceptWithHistory: Story = () => <ScenarioPage open="projects/harbour/vault-binding-codes" />;
 
-/** Past its date for checking: recall ranks it lower and says it is stale. */
+/** Read-only: a source without `propose` offers no Correct or Forget, only the record. */
+export const ReadOnlyConcept: Story = () => <ScenarioPage open="projects/harbour/vault-binding-codes" readOnly />;
+
+/** Past its date for checking: recall ranks it lower and says it is stale. Correcting it is the check. */
 export const StaleConcept: Story = () => <ScenarioPage open="projects/harbour/staging-jobs-retry" />;
 
 /** A job's exception, with the rule it overrides a click away. */

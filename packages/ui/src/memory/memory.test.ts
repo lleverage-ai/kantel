@@ -2,7 +2,12 @@ import type { Concept, MemoryProposal } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryScenario, FIXTURE_NOW, SAMPLE_QUERY } from "./fixtures.ts";
 import {
+	applyAsPerson,
+	changeError,
 	conceptHistory,
+	correctionProblems,
+	correctionWrite,
+	forgetWrite,
 	groupConcepts,
 	isStale,
 	manifestDetail,
@@ -158,6 +163,58 @@ describe("the fixture space", () => {
 		expect(unchanged.version).toBe(1);
 		const left = await source.listProposals(space.id, { status: "pending" });
 		expect(left.items).toHaveLength(1);
+	});
+
+	it("lets a person correct a learned concept: proposed and applied at once, theirs after, in its history", async () => {
+		const { source, space } = await createMemoryScenario();
+		const before = await source.getConcept(space.id, "projects/harbour/staging-jobs-retry");
+		const draft = {
+			title: before.title,
+			statement: "Retry stuck staging jobs from the admin console.",
+			sources: "TASK-1\n\n",
+		};
+		expect(correctionProblems(draft)).toEqual({});
+		const write = correctionWrite(before, draft, FIXTURE_NOW);
+		// Its date for checking had passed: correcting it is the check, so the date goes.
+		expect(write.op === "correct" ? write.concept.staleAfter : "not a correction").toBeUndefined();
+		const result = await applyAsPerson(source, space.id, write);
+		expect(result.applied).toBe(true);
+		const after = await source.getConcept(space.id, before.id);
+		expect([after.version, after.setBy, after.sources, isStale(after, FIXTURE_NOW)]).toEqual([
+			2,
+			"owner",
+			["TASK-1"],
+			false,
+		]);
+		const proposals = await readAll<MemoryProposal>((page) => source.listProposals(space.id, undefined, page));
+		expect(conceptHistory(proposals, before.id).map((proposal) => proposal.write.op)).toEqual(["correct", "remember"]);
+	});
+
+	it("lets a person forget a concept, with the reason", async () => {
+		const { source, space } = await createMemoryScenario();
+		const concept = await source.getConcept(space.id, "projects/billing/stripe-test-mode");
+		const result = await applyAsPerson(source, space.id, forgetWrite(concept, " Moved to the vault. "));
+		expect(result.applied).toBe(true);
+		expect((await source.getConcept(space.id, concept.id)).status).toBe("forgotten");
+	});
+
+	it("refuses a correction at an old version, and leaves the proposal pending", async () => {
+		const { source, space } = await createMemoryScenario();
+		const concept = await source.getConcept(space.id, "projects/billing/stripe-test-mode");
+		const draft = { title: "x", statement: "y", sources: "TASK-1" };
+		await applyAsPerson(source, space.id, correctionWrite(concept, draft, FIXTURE_NOW));
+		const stale = await applyAsPerson(source, space.id, correctionWrite(concept, draft, FIXTURE_NOW)).catch(
+			(error: unknown) => ({ applied: false, error, proposal: undefined }),
+		);
+		expect(stale.applied).toBe(false);
+		expect(changeError(stale.error, stale.proposal === undefined ? "propose" : "apply")).toMatch(
+			/changed since you opened it/,
+		);
+		expect(correctionProblems({ title: " ", statement: "", sources: "\n" })).toEqual({
+			title: "Give it a title.",
+			statement: "Say the fact itself.",
+			sources: "Name at least one source: a link, a commit or a ticket.",
+		});
 	});
 
 	it("refuses to approve a near repeat, and says which concept it repeats", async () => {

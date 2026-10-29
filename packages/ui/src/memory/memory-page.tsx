@@ -273,6 +273,11 @@ export function MemoryPage({
 								now={now}
 								onOpen={open}
 								onBack={() => open(undefined)}
+								onChanged={() => {
+									concepts.reload();
+									proposals.reload();
+									hits.reload();
+								}}
 							/>
 						)}
 					</section>
