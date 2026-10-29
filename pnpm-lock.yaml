@@ -513,6 +513,9 @@ importers:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
+      "@harbour/runtime":
+        specifier: workspace:*
+        version: link:../runtime
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
