@@ -54,6 +54,17 @@ export interface AssistantItem {
 
 export type ToolItemStatus = "running" | "done" | "error" | "interrupted";
 
+/** The image types a tool item may carry: raster only, never SVG. */
+export const TOOL_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export type ToolImageType = (typeof TOOL_IMAGE_TYPES)[number];
+
+/** An image a tool returned, such as a browser screenshot. */
+export interface ToolImage {
+	readonly mimeType: ToolImageType;
+	/** Base64. */
+	readonly data: string;
+}
+
 export interface ToolItem {
 	readonly kind: "tool";
 	readonly id: string;
@@ -65,6 +76,8 @@ export interface ToolItem {
 	readonly status: ToolItemStatus;
 	readonly args?: unknown;
 	readonly output?: string;
+	/** Images the call returned, in order, such as a browser's screenshot of the page it is on. */
+	readonly images?: readonly ToolImage[];
 	readonly tier?: SandboxTierName;
 	readonly endedAt?: Timestamp;
 }

@@ -167,6 +167,12 @@ export function SessionScreen({
 		onSteer: (text) => send("steer", text),
 		onFollowUp: (text) => send("followUp", text),
 		onStop: () => void run(() => client.cancel(sessionId)),
+		...(client.decideBrowser === undefined
+			? {}
+			: {
+					onBrowserDecision: (callId: string, allow: boolean) =>
+						void run(() => client.decideBrowser?.(sessionId, callId, allow) ?? Promise.resolve()),
+				}),
 		pickers: pickers.composer,
 	};
 

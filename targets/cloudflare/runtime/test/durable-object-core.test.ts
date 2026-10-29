@@ -1,8 +1,9 @@
-// The session object's core: a restart mid model call (two cores over one database, as an evicted object and its next
-// instance), the alarm armed for a sleeping session and `alarm()` resuming it, and the session API on `fetch`.
+// The session object's core: a restart mid model call and mid host tool call (two cores over one database, as an
+// evicted object and its next instance), the alarm armed for a sleeping session and `alarm()` resuming it, and the
+// session API on `fetch`.
 import { DatabaseSync } from "node:sqlite";
-import type { AgentProfile, Authentication } from "@harbour/contracts";
-import { staticTokenAuthenticator } from "@harbour/runtime/http";
+import type { AgentProfile, Authentication, HostToolCall, HostToolResult, ReplayPolicy } from "@harbour/contracts";
+import { createHostToolEndpoint, staticTokenAuthenticator } from "@harbour/runtime/http";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { ManualClock } from "@harbour/testing/harness";
 import { afterEach, describe, expect, it } from "vitest";
@@ -206,5 +207,123 @@ describe("SessionRuntimeDurableObjectCore", () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ id: session.id, status: "idle" });
 		expect((await core.fetch(new Request(url))).status).toBe(401);
+	});
+});
+
+describe("SessionRuntimeDurableObjectCore, evicted mid host tool call", () => {
+	const owner: Authentication = { actor: ctx.actor, organisationId: ORG };
+	const SECRET = "a-callback-secret-of-at-least-32-characters";
+	const lookup = (replay: ReplayPolicy) => ({
+		name: "lookup",
+		description: "Looks up",
+		inputSchema: { type: "object" },
+		replay,
+	});
+	const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "sal" };
+
+	/** The host's side of the callback, checking Harbour's signature, as each instance of the object reaches it. */
+	const hostAt =
+		(handler: (call: HostToolCall) => Promise<HostToolResult>): typeof fetch =>
+		async (input, init) =>
+			createHostToolEndpoint(handler, { secret: SECRET })(new Request(input, init));
+
+	const coreWith = (db: DatabaseSync, models: ReturnType<typeof createScriptedModel>["models"], host: typeof fetch) =>
+		coreOn(db, models, undefined, {
+			authenticator: staticTokenAuthenticator({ owner }),
+			api: { fetch: host },
+		});
+
+	/**
+	 * The first instance: a host registers over the session API, a prompt runs, and the instance is evicted while its
+	 * call to the host is out. That call fails only at cleanup, once the next instance has closed.
+	 */
+	async function evictedMidToolCall(db: DatabaseSync, replay: ReplayPolicy) {
+		const reached: string[] = [];
+		let fail: (error: Error) => void = () => {};
+		const hung = new Promise<never>((_resolve, reject) => {
+			fail = reject;
+		});
+		hung.catch(() => undefined);
+		const model = createScriptedModel();
+		const first = track(
+			coreWith(
+				db,
+				model.models,
+				hostAt(async (call) => {
+					reached.push(`first:${call.callId}`);
+					return hung;
+				}),
+			),
+			() => fail(new Error("the object is gone")),
+		);
+		const service = await first.ready;
+		await service.profiles.put(ctx, withTool);
+		const registered = await first.fetch(
+			new Request("https://session.internal/v1/hosts/sal", {
+				method: "PUT",
+				headers: { authorization: "Bearer owner", "content-type": "application/json" },
+				body: JSON.stringify({
+					tools: [lookup(replay)],
+					callback: { url: "https://sal.test/hosts/sal", secret: SECRET },
+				}),
+			}),
+		);
+		expect(registered.status).toBe(200);
+		const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		model.script.reply({ toolCalls: [{ name: "lookup", args: { key: "plan" } }] });
+		const prompt = await service.runtime.prompt(ctx, session.id, { text: "Find the plan" });
+		await until(() => reached.length === 1, "the first host call");
+		return { session, prompt, reached };
+	}
+
+	it("reruns a replay-safe host tool with the same call ID in the next instance, which nobody re-registered", async () => {
+		const db = database();
+		const { session, prompt, reached } = await evictedMidToolCall(db, "safe");
+
+		const model = createScriptedModel();
+		model.script.reply({ text: "Found it" });
+		const second = track(
+			coreWith(
+				db,
+				model.models,
+				hostAt(async (call) => {
+					reached.push(`second:${call.callId}`);
+					return { output: "the plan" };
+				}),
+			),
+		);
+		const resumed = await second.ready;
+		expect(await resumed.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({
+			status: "answered",
+			answer: "Found it",
+		});
+		const [firstCall, secondCall] = reached.map((entry) => entry.split(":")[1]);
+		expect(reached.map((entry) => entry.split(":")[0])).toEqual(["first", "second"]);
+		expect(secondCall).toBe(firstCall);
+		expect(model.script.requests[0]?.messages.at(-1)).toMatchObject({ role: "tool", text: "the plan" });
+		expect((await resumed.directory.get(ctx, session.id)).status).toBe("idle");
+	});
+
+	it("does not rerun a host tool that is not replay-safe; the model hears it was interrupted", async () => {
+		const db = database();
+		const { session, prompt, reached } = await evictedMidToolCall(db, "unsafe");
+
+		const model = createScriptedModel();
+		model.script.reply({ text: "It was interrupted; I will not retry" });
+		const second = track(
+			coreWith(
+				db,
+				model.models,
+				hostAt(async (call) => {
+					reached.push(`second:${call.callId}`);
+					return { output: "charged again" };
+				}),
+			),
+		);
+		const resumed = await second.ready;
+		expect(await resumed.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ status: "answered" });
+		expect(reached).toHaveLength(1);
+		const toolResult = model.script.requests[0]?.messages.find((message) => message.role === "tool");
+		expect(toolResult?.text).toMatch(/interrupt/i);
 	});
 });

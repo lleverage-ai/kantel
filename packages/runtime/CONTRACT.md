@@ -108,7 +108,7 @@ see.
 
 ## The runtime and its store
 
-`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, pageSize })`
+`createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, environment, pageSize })`
 from `@harbour/runtime/core` is the runtime every target runs. A target gives it two things:
 
 - `store`, a `SessionStore` (`@harbour/runtime/store`): the directory of sessions (each with the profile it was created
@@ -138,6 +138,14 @@ overlap: every caller shares the one in progress. `resume()` waits at most `swee
 before recovering sessions anyway. A child's
 leases are released when it ends: aborting or closing a parent runs the session-end hook, `sandbox` teardown included,
 for each child too.
+
+`environment(record)` gives a session its execution environment (Pi Durable's `ExecutionEnv`, which the `read`,
+`write`, `edit` and `bash` tools need), such as `createSandboxExecutionEnv` from `@harbour/sandbox` over the session's
+workspace: its file operations go to `Workspaces` directly and only its commands to `Sandboxes.run` (#196). It is built
+once when the session opens in a process and must acquire nothing: a sandbox is leased by the first command that needs
+one and released by the session-end hook, so a session that never runs a command never holds one. Abort and close call
+its `cleanup`, which stops waiting for commands still running. A session it gives none to has no environment, and a tool
+that needs one fails with an error result.
 
 A host registration made in this process (`hostTools.register` with a handler) offers its tools only while its handler
 lives. `hosts.register(ctx, hostId, tools, callback, owner)` stores the registration with its callback URL and HMAC

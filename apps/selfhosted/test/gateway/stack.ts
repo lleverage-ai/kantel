@@ -5,12 +5,14 @@
 // It reads the gateway's bootstrap (organisation, project, workspace and API key) from the running `gateway`
 // container with `docker compose exec`, so it follows COMPOSE_PROJECT_NAME like every other compose command, then
 // makes the same pass as the in-process test. Then it checks mail: the gateway reports its SMTP server, and a message
-// sent from inside the gateway container through its own HARBOUR_SMTP_URL is readable through Mailpit's API. Prints
-// one line per check and exits 1 if any failed.
+// sent from inside the gateway container through its own HARBOUR_SMTP_URL is readable through Mailpit's API. Last,
+// email one-time PIN sign-in as the gateway's HARBOUR_ADMIN_EMAIL, reading the code from Mailpit. Prints one line per
+// check and exits 1 if any failed.
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { type E2eCheck, type E2eTarget, runGatewayE2e } from "./e2e.ts";
 import { latestMessageTo } from "./mailpit.ts";
+import { runSignInE2e } from "./signin-e2e.ts";
 
 const { values } = parseArgs({
 	options: {
@@ -35,11 +37,27 @@ if (read.status !== 0) {
 	console.error(`could not read the gateway's bootstrap: ${read.stderr.trim()}`);
 	process.exit(2);
 }
-const seeded = JSON.parse(read.stdout) as Omit<E2eTarget, "baseUrl">;
+const seeded = JSON.parse(read.stdout) as Omit<E2eTarget, "baseUrl"> & { readonly organisationId: string };
+const adminEmail = inGateway("printenv", "HARBOUR_ADMIN_EMAIL").stdout.trim();
 
 const started = performance.now();
 const checks: E2eCheck[] = [...(await runGatewayE2e({ baseUrl, ...seeded }))];
 checks.push(...(await mailChecks(seeded.apiKey)));
+if (adminEmail === "") {
+	checks.push({ name: "the gateway invites HARBOUR_ADMIN_EMAIL", ok: false, detail: "HARBOUR_ADMIN_EMAIL is unset" });
+} else {
+	checks.push(
+		...(await runSignInE2e({
+			baseUrl,
+			...seeded,
+			adminEmail,
+			readCode: async (email, since, timeoutMs) => {
+				const message = await latestMessageTo(values["mailpit-url"], email, timeoutMs, since);
+				return message === undefined ? undefined : /\b(\d{6})\b/.exec(message.text)?.[1];
+			},
+		})),
+	);
+}
 for (const check of checks) {
 	console.log(
 		`${check.ok ? "ok  " : "FAIL"} ${check.name}${check.ok || check.detail === undefined ? "" : `: ${check.detail}`}`,

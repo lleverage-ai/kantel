@@ -15,6 +15,10 @@
 		"./otp/http": "./src/otp-http.ts",
 		"./http": "./src/http.ts",
 		"./smtp": "./src/smtp.ts",
+		"./passkey": "./src/passkey.ts",
+		"./passkey/http": "./src/passkey-http.ts",
+		"./passkey/testing": "./src/passkey-testing.ts",
+		"./webauthn": "./src/webauthn.ts",
 		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {
