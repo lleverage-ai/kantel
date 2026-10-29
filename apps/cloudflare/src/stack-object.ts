@@ -22,6 +22,7 @@ import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } f
 import type { AcceptWebSocket } from "@harbour/runtime/http";
 import { d1Driver } from "@harbour/sql/sqlite";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
+import { objectSqlDriver } from "./audit-outbox.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
@@ -268,6 +269,11 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
+			},
+			// Audit events queue in this object's SQLite and drain to D1 after the answer (src/audit-outbox.ts).
+			auditOutbox: {
+				driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
+				background: (work) => this.ctx.waitUntil(work),
 			},
 		};
 	}

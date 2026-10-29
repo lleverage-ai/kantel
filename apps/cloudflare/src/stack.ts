@@ -5,6 +5,8 @@
  * Each part is durable when its storage is given (`StackStorage`), and in memory otherwise:
  *
  * - `sql`: the identity directory and the audit store (D1 on Cloudflare);
+ * - `auditOutbox`: where components' audit events queue before a background drain takes them to that store (the stack
+ *   object's own SQLite, `src/audit-outbox.ts`), so no request waits on an audit write;
  * - `sessions`: the session runtime, as the runtime lane's `SessionRuntimeDurableObjectCore` over the stack Durable
  *   Object's SQLite and alarm: its directory, profiles, host registrations and each session's Pi storage, and the
  *   alarm that resumes a session an evicted object left mid-run or whose sleep has fallen due;
@@ -56,6 +58,7 @@ import {
 	type StoredWorkspaces,
 	type WorkspaceStore,
 } from "@harbour/workspace/stored";
+import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
@@ -145,6 +148,11 @@ export interface StackStorage {
 	readonly sessions?: SessionObjectStorage;
 	readonly workspaces?: WorkspaceStore;
 	readonly bootstrap?: BootstrapStore;
+	/**
+	 * With `sql`: components' audit events queue in this driver (the object's own SQLite, `objectSqlDriver`) and drain to
+	 * the store in the background, kept alive by `background` (`ctx.waitUntil`). Left out, they go straight to the store.
+	 */
+	readonly auditOutbox?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
 }
 
 export interface StackOptions {
@@ -225,10 +233,18 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		require: (ctx, check) => lateAccess().require(ctx, check),
 		allows: (ctx, check) => lateAccess().allows(ctx, check),
 	};
-	const audit: AuditStore =
+	const store: AuditStore =
 		driver === undefined
 			? createMemoryAuditStore({ clock, access: auditAccess })
 			: createSqlAuditStore({ driver, clock, access: auditAccess });
+	let outboxed: OutboxedAudit | undefined;
+	if (driver !== undefined && storage.auditOutbox !== undefined) {
+		await migrateObjectAuditOutbox(storage.auditOutbox.driver);
+		outboxed = outboxedAudit({ store, clock, ...storage.auditOutbox });
+		// Whatever an earlier instance of the object queued and didn't get to the store.
+		outboxed.kick();
+	}
+	const audit: AuditStore = outboxed ?? store;
 
 	const identity =
 		driver === undefined ? createMemoryIdentity({ clock, audit }) : createSqlIdentity({ driver, clock, audit });
@@ -347,10 +363,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			project,
 			admin,
 			alarm: async () => {
+				outboxed?.kick();
 				await core?.alarm();
 			},
 			close: async () => {
 				await (core === undefined ? runtime.close() : core.close());
+				// What's queued stays queued if this fails; the next start drains it.
+				await outboxed?.drain().catch(() => undefined);
 			},
 		};
 	} catch (error) {
