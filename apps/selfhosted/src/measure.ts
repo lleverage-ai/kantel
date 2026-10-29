@@ -26,8 +26,17 @@ const { values } = parseArgs({
 		runs: { type: "string", default: "50" },
 		files: { type: "string", default: "300" },
 		"file-bytes": { type: "string", default: "4096" },
+		// Leave out container.same: on a Docker daemon shared with an older stack, whose sandbox janitor removes any
+		// sandbox it doesn't own, the measured containers can be removed mid-run. Without the container start between
+		// runs (about 1 s), the isolate pool has less time to refill between new sessions.
+		"no-container": { type: "boolean", default: false },
+		// A pause after each run, standing in for that container start: the isolate pool refills only once no call has
+		// been in flight for a moment (images/isolate-host/src/pool.ts), as between a session's model calls.
+		"gap-ms": { type: "string", default: "0" },
 	},
 });
+const withContainers = !values["no-container"];
+const gapMs = Number(values["gap-ms"]);
 // stdout carries only the JSON result; host log lines go to stderr.
 const print = console.log.bind(console);
 console.log = (...items: unknown[]) => console.error(...items);
@@ -97,16 +106,18 @@ const rows: Record<string, { ms: number[]; detail?: Record<string, number>[] }> 
 	"isolate.ready": { ms: [] },
 	"isolate.first": { ms: [], detail: [] },
 	"isolate.warm": { ms: [] },
-	"container.same": { ms: [], detail: [] },
+	...(withContainers ? { "container.same": { ms: [], detail: [] } } : {}),
 	"session.open": { ms: [] },
 };
 
 // Warm-up, not recorded: first image use, first connections.
 await isolate.list(`${tag}-warmup`, workspaceId, seeded.version);
-await container.exec(
-	{ sessionId: `${tag}-warmup`, workspaceId, version: seeded.version, command: "true" },
-	seeded.manifest,
-);
+if (withContainers) {
+	await container.exec(
+		{ sessionId: `${tag}-warmup`, workspaceId, version: seeded.version, command: "true" },
+		seeded.manifest,
+	);
+}
 
 for (let i = 0; i < runs; i++) {
 	const sessionId = `${tag}-iso-${i}`;
@@ -131,6 +142,11 @@ for (let i = 0; i < runs; i++) {
 	);
 	rows["isolate.warm"]!.ms.push(warm.ms);
 
+	if (!withContainers) {
+		if (gapMs > 0) await new Promise((resolve) => setTimeout(resolve, gapMs));
+		process.stderr.write(".");
+		continue;
+	}
 	const started = await time(() =>
 		container.exec(
 			{ sessionId: `${tag}-ctr-${i}`, workspaceId, version: seeded.version, command: "true" },
@@ -182,9 +198,10 @@ print(
 			measuredAt: new Date().toISOString(),
 			target: "selfhosted",
 			host: app.cfg.hostId,
-			sandboxRuntime: app.cfg.container.runtime,
+			sandboxRuntime: withContainers ? app.cfg.container.runtime : "not measured (--no-container)",
 			isolateRuntime: process.env.HARBOUR_ISOLATE_RUNTIME ?? "runc (compose default)",
 			workspace: { files: fileCount, fileBytes, entries: Object.keys(seeded.manifest).length },
+			...(withContainers ? {} : { gapMs }),
 			summary,
 			raw: Object.fromEntries(Object.entries(rows).map(([name, row]) => [name, row.ms])),
 		},
