@@ -145,7 +145,10 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		seeded = { ...seeded, egressGrants: imported.digest };
 		console.log(
 			imported.result === undefined
-				? `[gateway] egress grants from ${cfg.egress.grantsFile} already imported`
+				? `[gateway] egress grants from ${cfg.egress.grantsFile} already imported on this deployment's first start` +
+						(imported.changed
+							? "; the file has changed since, and is not imported again: change grants on the vault page"
+							: "")
 				: `[gateway] imported egress grants from ${cfg.egress.grantsFile}: ` +
 						imported.result.imported.map((grant) => `${grant.name} (${grant.item})`).join(", ") +
 						`; left to the proxy: ${imported.leftToProxy.join(", ") || "none"}`,

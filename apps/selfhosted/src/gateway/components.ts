@@ -177,8 +177,8 @@ export interface Bootstrap {
 	 */
 	readonly invitedAdmin?: string;
 	/**
-	 * The fingerprint of the egress grants a start imported into this deployment's vault (egress.ts), so the next start
-	 * imports only when the policy file's routes changed, and a policy an admin revoked stays revoked.
+	 * The fingerprint of the egress grants the first start imported into this deployment's vault (egress.ts). Later starts
+	 * import nothing, so a policy an admin revoked or changed on the vault page stays as they left it.
 	 */
 	readonly egressGrants?: string;
 }

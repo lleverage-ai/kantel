@@ -104,27 +104,31 @@ describe("the gateway's egress decisions", () => {
 			}),
 		});
 
-	test("imports the policy file once, and again only when its routes change", async () => {
+	test("imports the policy file on the first start only, and reports a changed file without importing it", async () => {
 		const vault = components.vault;
 		if (vault === undefined) throw new Error("the in-memory components have no vault");
 		const scope = { organisationId: seeded.organisationId, projectId: seeded.projectId };
 		const first = await importPolicyFile(vault, scope, file, ENV);
 		expect(first.result?.imported.map((grant) => grant.name)).toEqual(["research-site", "echo"]);
 		expect(first.leftToProxy).toEqual(["example"]);
+		expect(first.changed).toBe(false);
 		const again = await importPolicyFile(vault, scope, file, ENV, first.digest);
+		expect(again).toMatchObject({ digest: first.digest, changed: false });
 		expect(again.result).toBeUndefined();
-		expect(again.digest).toBe(first.digest);
-		// A changed secret alone changes nothing: the grants are the same routes.
+		// A changed secret alone is the same routes.
 		const rotated = await importPolicyFile(vault, scope, file, { HARBOUR_CANARY_SECRET: "another-secret-1234" });
 		expect(rotated.digest).toBe(first.digest);
-		// A changed route does.
+		// A changed route is reported, and not imported: the first import's policies stay as the vault page left them.
 		const changedFile = join(scratch, "changed-policy.json");
 		const changed = structuredClone(POLICY);
 		changed.routes[2]!.pathPrefix = "/headers/";
 		await writeFile(changedFile, JSON.stringify(changed));
+		const ctx = { actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId } as const;
+		const policiesBefore = (await vault.listPolicies(ctx)).items.length;
 		const moved = await importPolicyFile(vault, scope, changedFile, ENV, first.digest);
-		expect(moved.digest).not.toBe(first.digest);
-		expect(moved.result?.imported.map((grant) => grant.name)).toEqual(["research-site", "echo"]);
+		expect(moved).toMatchObject({ digest: first.digest, changed: true });
+		expect(moved.result).toBeUndefined();
+		expect((await vault.listPolicies(ctx)).items.length).toBe(policiesBefore);
 	});
 
 	test("the proxy reads its organisation and project with its key", async () => {

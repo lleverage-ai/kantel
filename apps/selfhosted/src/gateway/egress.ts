@@ -96,24 +96,28 @@ export function policyGrants(
 	return { grants, leftToProxy };
 }
 
-/**
- * A fingerprint of the grants without their values, so a start imports again only when the routes changed. A changed
- * secret is not imported again either way: `importHostGrants` keeps a reused item's value.
- */
+/** A fingerprint of the grants without their values: which routes a deployment imported, so a later start can say
+ * whether the file has changed since. */
 export function grantsDigest(grants: readonly HostGrant[]): string {
 	const withoutValues = grants.map(({ value: _value, ...grant }) => grant);
 	return createHash("sha256").update(JSON.stringify(withoutValues)).digest("hex");
 }
 
 export interface PolicyImport {
+	/** What was imported: this file's fingerprint on the first start, the first import's after. */
 	readonly digest: string;
+	/** The import, on the first start only. */
 	readonly result?: HostGrantImport;
+	/** Whether the file's credentialed routes differ from what was imported (and were not imported again). */
+	readonly changed: boolean;
 	readonly leftToProxy: readonly string[];
 }
 
 /**
- * Imports `file`'s credentialed routes into `vault` for `scope`, unless `previousDigest` says this deployment already
- * imported the same grants: so a policy an admin revokes stays revoked across restarts. Refused grants are an error.
+ * Imports `file`'s credentialed routes into `vault` for `scope` on a deployment's first start only: once
+ * `previousDigest` says it imported, the vault page owns its items and policies. Importing again would be additive
+ * (`importHostGrants` never revokes), so a narrowed route would keep the old policy and a policy an admin revoked
+ * would come back. A changed file is reported (`changed`), not imported. Refused grants are an error.
  */
 export async function importPolicyFile(
 	vault: HarbourVault,
@@ -124,7 +128,7 @@ export async function importPolicyFile(
 ): Promise<PolicyImport> {
 	const { grants, leftToProxy } = policyGrants(JSON.parse(await readFile(file, "utf8")), scope, env);
 	const digest = grantsDigest(grants);
-	if (digest === previousDigest) return { digest, leftToProxy };
+	if (previousDigest !== undefined) return { digest: previousDigest, changed: digest !== previousDigest, leftToProxy };
 	const ctx: CallContext = {
 		actor: { kind: "system", component: "selfhosted-egress" },
 		organisationId: scope.organisationId,
@@ -135,7 +139,7 @@ export async function importPolicyFile(
 		const reasons = result.refused.map((refused) => `${refused.name}: ${refused.message}`).join("; ");
 		throw new Error(`the vault refused egress grants from ${file}: ${reasons}`);
 	}
-	return { digest, result, leftToProxy };
+	return { digest, result, changed: false, leftToProxy };
 }
 
 const json = (value: unknown, status = 200, headers: Record<string, string> = {}) =>

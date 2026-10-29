@@ -201,8 +201,10 @@ it. CI's `selfhosted` job runs this way.
   `/v1/vault`.
 - On its first start the gateway imports `vault-policy.json`'s routes that inject a credential (`research-site`,
   `echo`) as vault items and policies for its bootstrap organisation and project, reading the secrets they name from
-  its own environment. It records the import in its bootstrap file and imports again only when those routes change,
-  so a policy revoked on the vault page stays revoked. The M0 session hosts' sessions belong to no M1 organisation:
+  its own environment. It records the import in its bootstrap file and never imports again: from then on the vault
+  page owns those items and policies, so one revoked there stays revoked. A later change to the file is logged, not
+  imported (importing is additive, so a narrowed route would keep its old policy); change the grants on the vault
+  page, or start from an empty database. The M0 session hosts' sessions belong to no M1 organisation:
   the proxy decides for the bootstrap organisation and project and passes the session along, and the vault records
   each use against it.
 - Routes without a credential (`example`) stay the proxy's own and are allowed without asking: the vault has no
