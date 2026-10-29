@@ -162,6 +162,46 @@ export function measureAlignment(): Misalignment[] {
 		if (line === null) unmeasured("disclosure chevron", summary);
 		else compare("disclosure chevron", summary, centre(chevron), line.centre);
 	}
+	// Breadcrumbs: every crumb and slash on the current item's baseline.
+	for (const trail of root.querySelectorAll(".hb-breadcrumbs-list")) {
+		if (!visible(trail)) continue;
+		const current = trail.querySelector(".hb-breadcrumbs-current");
+		// A title still loading is a skeleton, with no line of text to measure against.
+		if (current?.querySelector(".hb-skeleton") !== null) continue;
+		const line = current === null ? null : textLine(current);
+		if (line === null) {
+			unmeasured("breadcrumb baseline", trail);
+			continue;
+		}
+		for (const item of trail.querySelectorAll(".hb-breadcrumbs-parent, .hb-breadcrumbs-separator")) {
+			// Short of room the outer parents are hidden; there's nothing to line up.
+			if (!visible(item)) continue;
+			const other = textLine(item);
+			if (other === null) unmeasured("breadcrumb baseline", item);
+			else compare("breadcrumb baseline", item, other.baseline, line.baseline);
+		}
+	}
+	// The session header: the trail's words on the centre of the icon buttons beside it.
+	for (const header of root.querySelectorAll(".hb-session-header")) {
+		if (!visible(header)) continue;
+		const current = header.querySelector(".hb-breadcrumbs-current");
+		if (current === null || current.querySelector(".hb-skeleton") !== null) continue;
+		const line = textLine(current);
+		if (line === null) {
+			unmeasured("header trail", header);
+			continue;
+		}
+		for (const button of header.querySelectorAll(".hb-session-header-actions .hb-icon-button, .hb-session-header-back"))
+			if (visible(button)) compare("header trail", button, line.centre, centre(button));
+		// The connection, when it says something: its words on the trail's line, its spinner on its words.
+		for (const words of header.querySelectorAll(".hb-connection > span:not(.hb-sr-only, .hb-spinner)")) {
+			const said = visible(words) ? textLine(words) : null;
+			if (said === null) continue;
+			compare("header connection", words, said.centre, line.centre);
+			const spinner = words.parentElement?.querySelector(":scope > .hb-spinner");
+			if (spinner != null && visible(spinner)) compare("header spinner", words, centre(spinner), said.centre);
+		}
+	}
 	// Notices: the icon on the first line of text.
 	for (const notice of root.querySelectorAll(".hb-notice")) {
 		const icon = notice.querySelector(":scope > .hb-icon");

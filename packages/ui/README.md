@@ -55,6 +55,7 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `Button`, `IconButton` | Actions | Navigation between pages (use a link) |
 | `StatusLabel`, `StatusDot` | A session's or task's state: working, waiting on an answer, approval, done, failed | Tags on a value (use `Badge`) |
 | `Badge` | A one or two word tag on a value: Proposed, Approved, Read only | Anything clickable |
+| `Breadcrumbs` | Where you are: project / session / subagent, parents muted links back, the current item emphasised | Tabs or switching between peers |
 | `ListRow` | Any row in a list: sessions, skills, schedules, memory, audit events, inbox items | Tables with many columns |
 | `Panel`, `FieldList`, `Field` | Framed content and label and value pairs | Wrapping the whole page |
 | `Notice` | One or two lines of information or warning in the flow | Decisions (use a card) |

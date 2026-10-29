@@ -1,21 +1,20 @@
-import type { Cursor, SessionStatus, TranscriptItem } from "@harbour/protocol";
+import type { Cursor } from "@harbour/protocol";
 import {
 	BrowserLiveView,
 	type BrowserViewSlot,
 	Button,
 	Composer,
 	type ConnectionStateValue,
+	type Crumb,
 	DotsIcon,
 	FileIcon,
 	IconButton,
 	Notice,
 	SessionHeader,
-	type Status,
 	Transcript,
 } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
-import { needsOf } from "../state/needs.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
 	browserRequestOf,
@@ -33,48 +32,35 @@ import { ProfilePanel } from "./profile-panel.tsx";
 // maps the session client's state onto their props. Anything that looks like a new component belongs in
 // packages/ui, not here (AGENTS.md).
 
-/** The protocol's run status in the library's words. A finished run reads Done; a stopped one is idle. */
-const statusOf: Record<SessionStatus, Status> = {
-	idle: "done",
-	running: "working",
-	waiting: "waiting",
-	done: "done",
-	failed: "error",
-	cancelled: "idle",
-};
-
-/** The header's status: a waiting session says whether it needs an approval or an answer, as the list does. */
-export function headerStatus(status: SessionStatus, items: readonly TranscriptItem[]): Status {
-	if (status === "waiting" && needsOf(items) === "approval") return "approval";
-	return statusOf[status];
-}
-
 function connectionOf(health: ConnectionHealth): ConnectionStateValue {
 	return health.status === "offline" ? { state: "offline", retryAt: health.retryAt } : { state: health.status };
 }
 
-/** Data freshness: is what's shown the host's latest? Separate from whether the link is up. */
+/**
+ * Data freshness: is what's shown the host's latest? Separate from whether the link is up. A stream fact for the options
+ * menu, never the top bar, which holds breadcrumbs only.
+ */
 function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cursor | undefined }) {
 	switch (freshness.state) {
 		case "loading":
-			return <span className="console-fresh">Loading</span>;
+			return <>Loading</>;
 		case "catching-up":
 			return (
-				<span className="console-fresh">
+				<>
 					Catching up to <code>{freshness.head}</code>
-				</span>
+				</>
 			);
 		case "stale":
 			return (
-				<span className="console-fresh console-fresh-stale">
+				<>
 					May be behind, showing <code>{cursor ?? "nothing"}</code>
-				</span>
+				</>
 			);
 		case "current":
 			return (
-				<span className="console-fresh">
+				<>
 					Up to date at <code>{cursor ?? "start"}</code>
-				</span>
+				</>
 			);
 	}
 }
@@ -99,7 +85,7 @@ function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserVi
 
 export function SessionView({
 	client,
-	project,
+	parents,
 	actions,
 	onBack,
 	onFiles,
@@ -108,8 +94,11 @@ export function SessionView({
 	focusBrowser,
 }: {
 	client: SessionClient;
-	/** The project's name, shown with the session's facts. */
-	project?: string;
+	/**
+	 * The top bar's trail above this session, outermost first: its project, then for a subagent's session the sessions
+	 * that started it. Each goes back to its level.
+	 */
+	parents?: readonly Crumb[];
 	actions: SessionActions;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
@@ -176,22 +165,14 @@ export function SessionView({
 		<div className="console">
 			<SessionHeader
 				title={state.title}
-				status={actions.promptedAt === undefined ? headerStatus(state.status, state.items) : "working"}
+				{...(parents === undefined ? {} : { parents })}
 				connection={connectionOf(state.connection)}
 				loading={state.freshness.state === "loading" && state.title === ""}
 				onBack={onBack}
-				meta={
-					<>
-						{project === undefined ? null : <span className="console-project">{project}</span>}
-						<FreshnessText freshness={state.freshness} cursor={state.cursor} />
-					</>
-				}
 				actions={
 					<div className="console-actions">
 						{onFiles === undefined ? null : (
-							<Button variant="ghost" size="sm" icon={<FileIcon />} onClick={onFiles}>
-								Files
-							</Button>
+							<IconButton variant="ghost" label="Files" icon={<FileIcon />} onClick={onFiles} />
 						)}
 						<div className="console-menu-root" ref={menuRoot}>
 							<IconButton
@@ -216,6 +197,9 @@ export function SessionView({
 									</Button>
 									<div className="console-menu-label">Stream</div>
 									<ul className="console-menu-facts">
+										<li>
+											<FreshnessText freshness={state.freshness} cursor={state.cursor} />
+										</li>
 										<li>
 											{loaded.toLocaleString("en-GB")} items loaded
 											{state.hasEarlier ? ", earlier ones on scroll" : ", the whole session"}

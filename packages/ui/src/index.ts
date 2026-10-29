@@ -73,6 +73,7 @@ export {
 export { MemoryPage, type MemoryPageProps, type MemoryView } from "./memory/memory-page.tsx";
 export { MemoryProposals, type MemoryProposalsProps } from "./memory/memory-proposals.tsx";
 export { MemoryRecall, type MemoryRecallProps } from "./memory/memory-recall.tsx";
+export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from "./primitives/breadcrumbs.tsx";
 export {
 	Button,
 	type ButtonProps,

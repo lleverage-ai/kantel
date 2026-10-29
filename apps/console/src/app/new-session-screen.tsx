@@ -5,7 +5,7 @@ import { titleFrom } from "../ui/actions.ts";
 import { type NewSessionState, NewSessionView } from "../ui/new-session-view.tsx";
 import { handOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
-import { navigate, newSessionPath, sessionPath } from "./router.ts";
+import { navigate, newSessionPath, projectPath, sessionPath } from "./router.ts";
 
 type Options = { readonly projectId: string } & (
 	| { readonly state: "loading" }
@@ -205,6 +205,7 @@ export function NewSessionScreen({
 			state={{
 				projectId,
 				projectName: project?.name ?? projectId,
+				projectHref: projectPath(projectId),
 				projects: projectOptions,
 				...(options === undefined ? {} : { agentName: options.agentName }),
 				draft,

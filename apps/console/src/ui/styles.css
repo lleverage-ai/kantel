@@ -152,31 +152,16 @@ body {
 	height: 100%;
 }
 
-.console-project {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
 .console-main {
 	position: relative;
 	flex: 1;
 	min-height: 0;
 }
 
-.console-fresh {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
-.console-fresh code,
 .console-menu code {
 	color: var(--hb-text-faint);
 	font-family: var(--hb-font-mono);
 	font-size: var(--hb-text-2xs);
-}
-
-.console-fresh-stale {
-	color: var(--hb-status-approval);
 }
 
 /* The session options menu: a floating panel under its button. */

@@ -1,3 +1,4 @@
+import type { Crumb } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient, SendOptions } from "../api/client.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
@@ -31,7 +32,7 @@ function useLinkedTurn(session: SessionClient): { turn: string | undefined; sear
 export function SessionScreen({
 	client,
 	sessionId,
-	project,
+	parents,
 	onBack,
 	onFiles,
 	onForked,
@@ -42,7 +43,8 @@ export function SessionScreen({
 	sessionId: string;
 	/** Told the session's live state as its stream changes it, and undefined when the screen closes, for the list. */
 	onLive?: (live: LiveSummary | undefined) => void;
-	project?: string;
+	/** The top bar's trail above the session: its project, then for a subagent's session the sessions above it. */
+	parents?: readonly Crumb[];
 	onBack?: () => void;
 	onFiles?: () => void;
 	/** Opens a session forked from this one. */
@@ -227,7 +229,7 @@ export function SessionScreen({
 	return (
 		<SessionView
 			client={session}
-			project={project}
+			{...(parents === undefined ? {} : { parents })}
 			actions={actions}
 			onBack={onBack}
 			onFiles={onFiles}
