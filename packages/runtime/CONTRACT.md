@@ -33,6 +33,10 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
   with `{ history: true }`: the latest page first and cursors back to the start without a repeat or a gap; pages
   behind a cursor unchanged while new turns arrive; `before` an item a client holds; `invalid` for a malformed
   request, `not_found` for an unknown item or session, and project access refusing an operator outside the project.
+- Proposed (open question 16 in docs/contracts.md): `SessionBranching`, served as `branching` on the runtime service,
+  `POST /sessions/:id/fork` (a new session with the history up to an answer) and `POST /sessions/:id/edit` (rewind
+  to a person's message and prompt new words in its place, kept across a restart). No suite case yet; the runtime's
+  `test/branching.test.ts` and `test/http.test.ts` cover it on the SQL and in-memory runtimes.
 
 ## Rules and the suite cases that enforce them
 

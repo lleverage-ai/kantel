@@ -12,12 +12,15 @@ import {
 	type CallContext,
 	type Clock,
 	callContextFor,
+	type EditSessionInput,
+	type ForkSessionInput,
 	HarbourError,
 	type HostToolBridge,
 	type HostToolDefinition,
 	isHarbourError,
 	type PageRequest,
 	type PromptInput,
+	type SessionBranching,
 	type SessionDirectory,
 	type SessionFilter,
 	type SessionHistory,
@@ -63,6 +66,11 @@ export interface SessionApiOptions {
 	 * (what a new session would), for a client's model and thinking pickers: the runtime's `models`.
 	 */
 	readonly models?: SessionModels;
+	/**
+	 * Serves `POST /sessions/:id/fork` (a new session from an answer, 201 with its record) and `POST /sessions/:id/edit`
+	 * (rewind to a message and send it edited, 202 with the submission): the runtime's `branching`.
+	 */
+	readonly branching?: SessionBranching;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -166,6 +174,22 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 }
 
 const THINKING_LEVELS = new Set<unknown>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function forkInput(body: Partial<ForkSessionInput>): ForkSessionInput {
+	if (typeof body.itemId !== "string" || body.itemId === "")
+		throw new HarbourError("invalid", "Name the answer to fork");
+	if (body.title !== undefined && typeof body.title !== "string")
+		throw new HarbourError("invalid", "title must be a string");
+	return body.title === undefined ? { itemId: body.itemId } : { itemId: body.itemId, title: body.title };
+}
+
+function editInput(body: Partial<EditSessionInput>): EditSessionInput {
+	if (typeof body.itemId !== "string" || body.itemId === "")
+		throw new HarbourError("invalid", "Name the message to edit");
+	// The prompt's fields but its attachments: an edit reruns the words.
+	const { attachments: _attachments, ...prompt } = promptInput(body);
+	return { itemId: body.itemId, ...prompt };
+}
 
 function pageOf(params: URLSearchParams): PageRequest {
 	const limit = params.get("limit");
@@ -308,6 +332,12 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			case "GET models":
 				if (options.models === undefined) break;
 				return json(await options.models.modelState(ctx, sessionId));
+			case "POST fork":
+				if (options.branching === undefined) break;
+				return json(await options.branching.fork(ctx, sessionId, forkInput(await readJson(request))), 201);
+			case "POST edit":
+				if (options.branching === undefined) break;
+				return json(await options.branching.edit(ctx, sessionId, editInput(await readJson(request))), 202);
 			case "POST prompt":
 				return json(await runtime.prompt(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST steer":

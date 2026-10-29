@@ -68,6 +68,8 @@ export type KnownAuditEventType =
 	| "browser.grant.refused"
 	| "browser.session.opened"
 	| "browser.session.closed"
+	| "browser.session.shared"
+	| "browser.site.refused"
 	| "identity.key.issued"
 	| "identity.key.revoked"
 	| "identity.role.granted"

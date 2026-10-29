@@ -103,6 +103,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		history: stack.runtime.history,
 		// The composer's model and thinking pickers: a session's models, and a new session's before it exists.
 		models: stack.runtime.models,
+		// The session view's message actions: fork from an answer, edit a message and rerun from it.
+		branching: stack.runtime.branching,
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,

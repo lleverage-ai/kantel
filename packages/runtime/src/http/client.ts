@@ -16,6 +16,7 @@ import {
 	type Page,
 	type PageRequest,
 	type RunResult,
+	type SessionBranching,
 	type SessionDirectory,
 	type SessionFilter,
 	type SessionHistory,
@@ -68,6 +69,8 @@ export interface SessionApiClient {
 	readonly history: SessionHistory;
 	/** `GET /sessions/:id/models` and `GET /profiles/:id/models?projectId=`: for model and thinking pickers. */
 	readonly models: SessionModels;
+	/** `POST /sessions/:id/fork` and `POST /sessions/:id/edit`. */
+	readonly branching: SessionBranching;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -157,6 +160,11 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 				"GET",
 				`/profiles/${segment(start.agentId)}/models?${new URLSearchParams({ projectId: start.projectId })}`,
 			),
+	};
+
+	const branching: SessionBranching = {
+		fork: (ctx, sessionId, input) => call<SessionRecord>(ctx, "POST", sessionPath(sessionId, "/fork"), input),
+		edit: (ctx, sessionId, input) => call<Submission>(ctx, "POST", sessionPath(sessionId, "/edit"), input),
 	};
 
 	const runtime: SessionRuntime = {
@@ -302,5 +310,5 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 		},
 	};
 
-	return { runtime, history, models, directory, profiles, hostTools };
+	return { runtime, history, models, branching, directory, profiles, hostTools };
 }
