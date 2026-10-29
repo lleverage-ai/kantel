@@ -18,6 +18,7 @@ import type {
 	Recurrence as ContractRecurrence,
 	Schedule as ContractSchedule,
 	ScheduleKind as ContractScheduleKind,
+	ScheduleUpdate as ContractScheduleUpdate,
 	SessionRecord as ContractSessionRecord,
 	SessionStatus as ContractSessionStatus,
 	SkillListing as ContractSkillListing,
@@ -30,6 +31,7 @@ import type {
 	Page,
 	PromptInput,
 	ScheduleInput,
+	Schedules,
 	SessionHistoryRequest,
 } from "@harbour/contracts";
 import type * as Protocol from "@harbour/protocol";
@@ -81,16 +83,14 @@ type Assignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : fal
 type SameKeys<A, B> = Assignable<keyof A, keyof B>;
 type Same<A, B> = Assignable<A, B> extends true ? SameKeys<A, B> : false;
 const same = <A, B>(proof: Same<A, B>) => proof;
-/** The wire's JSON values (`payload`, `result`) are `unknown`: the rest must match exactly. */
-type Opaque = "payload" | "result";
-type Typed<T> = Omit<T, Opaque>;
-
 /**
- * The wire's `extensions` are records of `unknown` (`JsonValue` in the contracts, which the read-only mapping can't
- * unfold): everything else must match exactly, and arrays of records are compared through their items.
+ * The wire's JSON values (a schedule's `payload`, an occurrence's `result`, a record's `extensions`) are `unknown`
+ * (`JsonValue` in the contracts, which the read-only mapping can't unfold): everything else must match exactly, and
+ * arrays of records are compared through their items.
  */
+type Opaque = "payload" | "result" | "extensions";
 type Typed<T> = T extends readonly (infer E)[] ? readonly Typed<E>[] : T extends object ? TypedObject<T> : T;
-type TypedObject<T> = { readonly [K in Exclude<keyof T, "extensions">]: Typed<T[K]> };
+type TypedObject<T> = { readonly [K in keyof T as K extends Opaque ? never : K]: Typed<T[K]> };
 
 type ImportInput = Parameters<ContractSkills["importRevision"]>[1];
 
@@ -132,12 +132,23 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof CheckSettings>, ContractCheckSettings>(true),
 			same<Typed<Wire<typeof Schedule>>, Typed<ContractSchedule>>(true),
 			same<Typed<Wire<typeof CreateScheduleBody>>, Typed<ScheduleInput>>(true),
-			same<Typed<Wire<typeof UpdateScheduleBody>>, Typed<Partial<Omit<ScheduleInput, "owner" | "kind">>>>(true),
+			same<Typed<Wire<typeof UpdateScheduleBody>>, Typed<ContractScheduleUpdate>>(true),
+			same<ContractScheduleUpdate, Parameters<Schedules["update"]>[2]>(true),
 			same<Typed<Wire<typeof Occurrence>>, Typed<ContractOccurrence>>(true),
 			same<Wire<typeof Frames.SessionHistoryPage>, ContractHistoryPage>(true),
 			same<Wire<typeof Frames.HistoryQuery>, SessionHistoryRequest>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
+	});
+
+	it("lets a schedule change clear at, repeat, until and count with null, and nothing else", () => {
+		const clears: Wire<typeof UpdateScheduleBody> = { at: null, repeat: null, until: null, count: null };
+		const contract: Typed<ContractScheduleUpdate> = clears;
+		// @ts-expect-error a title can't be cleared
+		const title: Wire<typeof UpdateScheduleBody> = { title: null };
+		// @ts-expect-error nor a time zone
+		const timezone: ContractScheduleUpdate = { timezone: null };
+		expect([contract, title, timezone]).toHaveLength(3);
 	});
 
 	it("matches @harbour/protocol's frames", () => {

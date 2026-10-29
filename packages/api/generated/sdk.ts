@@ -839,18 +839,19 @@ export interface ToolItem {
 
 export type TranscriptItem = UserItem | AssistantItem | ToolItem | CardItem | NoticeItem;
 
-/** The fields to change; the rest stay as they are. The owner and the kind are fixed at create. */
+/** The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create. */
 export interface UpdateScheduleBody {
 	readonly title?: string;
 	/** An IANA time zone, such as `Europe/London`. */
 	readonly timezone?: string;
-	/** A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`. */
-	readonly at?: number;
-	readonly repeat?: Recurrence;
-	/** No occurrence is due after this (epoch milliseconds). */
-	readonly until?: number;
-	/** At most this many occurrences. */
-	readonly count?: number;
+	/** A one-off at this instant (epoch milliseconds), or `null` to clear it, as when it becomes a recurrence. Exactly one of `at` and `repeat` is left set. */
+	readonly at?: number | null;
+	/** The recurrence, or `null` to clear it, as when it becomes a one-off. */
+	readonly repeat?: Recurrence | null;
+	/** No occurrence is due after this (epoch milliseconds), or `null` to drop the end date. */
+	readonly until?: number | null;
+	/** At most this many occurrences, or `null` to drop the run limit. */
+	readonly count?: number | null;
 	/** Any JSON value. */
 	readonly payload?: JsonValue;
 	readonly check?: CheckSettings;

@@ -3,7 +3,7 @@
  * `title` is a named type: a component in the OpenAPI document and a named type in the SDK. `test/types.test.ts`
  * checks at compile time that each schema's static type and its contract type match, so the two can't drift.
  */
-import Type from "typebox";
+import Type, { type TSchema } from "typebox";
 
 const id = (description: string) => Type.String({ minLength: 1, description });
 
@@ -282,20 +282,31 @@ export const CreateScheduleBody = Type.Object(
 	},
 );
 
+/** `null`, or one of these: on a schedule change, `null` clears the field. */
+const clearable = <T extends TSchema>(schema: T, description: string) =>
+	Type.Optional(Type.Union([schema, Type.Null()], { description }));
+
 export const UpdateScheduleBody = Type.Object(
 	{
 		title: Type.Optional(scheduleFields.title),
 		timezone: Type.Optional(scheduleFields.timezone),
-		at: scheduleFields.at,
-		repeat: scheduleFields.repeat,
-		until: scheduleFields.until,
-		count: scheduleFields.count,
+		at: clearable(
+			Type.Integer(),
+			"A one-off at this instant (epoch milliseconds), or `null` to clear it, as when it becomes a recurrence. Exactly one of `at` and `repeat` is left set.",
+		),
+		repeat: clearable(Recurrence, "The recurrence, or `null` to clear it, as when it becomes a one-off."),
+		until: clearable(
+			Type.Integer(),
+			"No occurrence is due after this (epoch milliseconds), or `null` to drop the end date.",
+		),
+		count: clearable(Type.Integer({ minimum: 1 }), "At most this many occurrences, or `null` to drop the run limit."),
 		payload: Type.Optional(JsonValue),
 		check: scheduleFields.check,
 	},
 	{
 		title: "UpdateScheduleBody",
-		description: "The fields to change; the rest stay as they are. The owner and the kind are fixed at create.",
+		description:
+			"The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create.",
 	},
 );
 

@@ -82,6 +82,49 @@ describe("the schedule routes", () => {
 		expect((await harbour.listSchedules({ status: "ended" })).items.map((s) => s.id)).toEqual([created.id]);
 	});
 
+	it("clears at, repeat, until and count sent as null, and keeps a field left out", async () => {
+		const { client, fetchApi } = setUp();
+		const harbour = client("person");
+		const until = START + 24 * 60 * MINUTE;
+		const created = await harbour.createSchedule({ ...everyTen, until, count: 5 });
+
+		const renamed = await harbour.updateSchedule(created.id, { title: "Weather again" });
+		expect(renamed).toMatchObject({ repeat: everyTen.repeat, until, count: 5 });
+
+		// Drop the run limit, then the end date: the recurrence stays.
+		const unlimited = await harbour.updateSchedule(created.id, { count: null });
+		expect(unlimited).not.toHaveProperty("count");
+		expect(unlimited).toMatchObject({ until, repeat: everyTen.repeat, status: "active" });
+		const endless = await harbour.updateSchedule(created.id, { until: null });
+		expect(endless).not.toHaveProperty("until");
+		expect(endless).toMatchObject({ repeat: everyTen.repeat, status: "active" });
+
+		// Repeating to one-off, and back.
+		const oneOff = await harbour.updateSchedule(created.id, { repeat: null, at: START + 30 * MINUTE });
+		expect(oneOff).not.toHaveProperty("repeat");
+		expect(oneOff).toMatchObject({ at: START + 30 * MINUTE, nextDueAt: START + 30 * MINUTE });
+		const repeating = await harbour.updateSchedule(created.id, { at: null, repeat: everyTen.repeat });
+		expect(repeating).not.toHaveProperty("at");
+		expect(repeating).toMatchObject({ repeat: everyTen.repeat, nextDueAt: START + 10 * MINUTE });
+		expect(await harbour.getSchedule(created.id)).toEqual(repeating);
+
+		// The raw JSON a client sends, as the SDK does.
+		const raw = await fetchApi(`https://harbour.test/v1/schedules/${created.id}`, {
+			method: "PATCH",
+			headers: { authorization: "Bearer person", "content-type": "application/json" },
+			body: JSON.stringify({ count: 2, until: null }),
+		});
+		expect(raw.status).toBe(200);
+		expect(await raw.json()).toMatchObject({ count: 2 });
+
+		// Clearing both of at and repeat, or a field that can't be cleared, is refused.
+		const neither = await failure(harbour.updateSchedule(created.id, { repeat: null }));
+		expect([neither.status, neither.code]).toEqual([400, "invalid"]);
+		const untitled = await failure(harbour.updateSchedule(created.id, { title: null } as never));
+		expect([untitled.status, untitled.code]).toEqual([400, "invalid"]);
+		expect(await harbour.getSchedule(created.id)).toMatchObject({ repeat: everyTen.repeat, count: 2 });
+	});
+
 	it("lists a schedule's runs, with what each run's result says", async () => {
 		const { client, schedules, now } = setUp();
 		const harbour = client("person");

@@ -9,7 +9,7 @@
  * | `GET /schedules` | `list` |
  * | `POST /schedules` | `create` |
  * | `GET /schedules/{id}` | `get` |
- * | `PATCH /schedules/{id}` | `update` |
+ * | `PATCH /schedules/{id}` | `update`: a field left out stays, `null` clears `at`, `repeat`, `until` or `count` |
  * | `POST /schedules/{id}/pause`, `/resume` | `pause`, `resume` |
  * | `DELETE /schedules/{id}` | `end`: the schedule stays listed, ended, with its run history |
  * | `GET /schedules/{id}/preview` | `preview` |
@@ -18,9 +18,13 @@
  * The scheduler's worker calls (`tick`, `claim`, `complete`, `reportCheck`) are Harbour's own and have no route.
  */
 import { createRouter, STATUS_BY_CODE, scheduleRoutes } from "@harbour/api";
-import { type CallContext, isHarbourError, type ScheduleInput, type Schedules } from "@harbour/contracts";
-
-type ScheduleUpdate = Parameters<Schedules["update"]>[2];
+import {
+	type CallContext,
+	isHarbourError,
+	type ScheduleInput,
+	type Schedules,
+	type ScheduleUpdate,
+} from "@harbour/contracts";
 
 /** How many due times a preview lists when the query names none. */
 export const DEFAULT_PREVIEW = 5;
@@ -84,6 +88,7 @@ export function createSchedulesApi(options: SchedulesApiOptions): SchedulesApi {
 			// The router has checked the body against the schema and dropped what it doesn't name.
 			createSchedule: (ctx: CallContext, { body }) => schedules.create(ctx, body as ScheduleInput),
 			getSchedule: (ctx: CallContext, { params }) => schedules.get(ctx, params.scheduleId),
+			// `null` on `at`, `repeat`, `until` or `count` passes through as is: it is how the contract clears them.
 			updateSchedule: (ctx: CallContext, { params, body }) =>
 				schedules.update(ctx, params.scheduleId, body as ScheduleUpdate),
 			pauseSchedule: (ctx: CallContext, { params }) => schedules.pause(ctx, params.scheduleId),

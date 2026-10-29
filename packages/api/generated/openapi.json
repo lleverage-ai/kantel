@@ -4778,20 +4778,49 @@
 						"description": "An IANA time zone, such as `Europe/London`."
 					},
 					"at": {
-						"type": "integer",
-						"description": "A one-off at this instant (epoch milliseconds). Exactly one of `at` and `repeat`."
+						"anyOf": [
+							{
+								"type": "integer"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "A one-off at this instant (epoch milliseconds), or `null` to clear it, as when it becomes a recurrence. Exactly one of `at` and `repeat` is left set."
 					},
 					"repeat": {
-						"$ref": "#/components/schemas/Recurrence"
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/Recurrence"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The recurrence, or `null` to clear it, as when it becomes a one-off."
 					},
 					"until": {
-						"type": "integer",
-						"description": "No occurrence is due after this (epoch milliseconds)."
+						"anyOf": [
+							{
+								"type": "integer"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "No occurrence is due after this (epoch milliseconds), or `null` to drop the end date."
 					},
 					"count": {
-						"type": "integer",
-						"minimum": 1,
-						"description": "At most this many occurrences."
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 1
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "At most this many occurrences, or `null` to drop the run limit."
 					},
 					"payload": {
 						"$ref": "#/components/schemas/JsonValue"
@@ -4801,7 +4830,7 @@
 					}
 				},
 				"title": "UpdateScheduleBody",
-				"description": "The fields to change; the rest stay as they are. The owner and the kind are fixed at create."
+				"description": "The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create."
 			},
 			"Usage": {
 				"type": "object",
