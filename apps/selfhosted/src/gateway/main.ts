@@ -55,7 +55,7 @@ import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts
 import { importPolicyFile } from "./egress.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
-import { cpaConfig, modelGatewaySource } from "./models.ts";
+import { cpaConfig, describeCpaProbe, modelGatewaySource, probeCpa } from "./models.ts";
 import { listen } from "./node-http.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -214,6 +214,9 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			`[gateway] sessions on the model gateway: CLIProxyAPI at ${cfg.cpa.baseUrl}, route ${modelGateway.route} ` +
 				`to ${cfg.cpa.modelId}, its key in vault item ${item.name}`,
 		);
+		// Not fatal: CPA may come up after the gateway. A wrong key otherwise shows only as `no_model` on every session.
+		const probe = await probeCpa(cfg.cpa);
+		(probe.result === "ok" ? console.log : console.warn)(describeCpaProbe(cfg.cpa, probe));
 	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
