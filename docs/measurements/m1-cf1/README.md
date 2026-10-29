@@ -19,7 +19,15 @@ then 50 runs on it ([Warm session](#warm-session-28-oct-2026-2031-utc), below). 
 time is 0 ms on both backends in all 50 runs: the Worker timers didn't advance at all. On that measure the target is
 met. The client sees 104 / 142 ms p50 / p95 for the whole request, which also covers the trip from the browser, sign-in
 and the session lookup** ([After the head cache and audit outbox](#after-the-head-cache-and-audit-outbox-29-oct-2026-0727-utc)).
-The cold runs' timing anomaly is the Workers clock itself, not a slow step: see that section. Everything above
+The cold runs' timing anomaly is the Workers clock itself, not a slow step: see that section.
+
+**Isolate on demand (#196): a session on a workspace gets file tools that work on R2 directly and lease nothing, and
+`bash` leases its isolate on the first command (0 leases before it in all 50 runs). Warm, `read` takes 72 ms p50 and
+`write` 899 ms (#218). Cold session create got slower, 788 to 1,715 ms p50, because it grows with every session held
+(#216), not because of this change**
+([Session ready, time to first token and first bash](#session-ready-time-to-first-token-and-first-bash-isolate-on-demand-196-29-oct-2026)).
+
+Everything above
 [After the move to weur](#after-the-move-to-weur-28-oct-2026-2236-utc) was measured with D1 in North America.
 
 ## Results
@@ -232,6 +240,142 @@ time. #206's `clock` marks let a stale mark be told from a slow step, and it's a
 In short, read cold latency from the client's wall time, and treat a server span as the I/O waits inside it, not as
 elapsed time. The warm figures are unaffected, because a warm run's steps are 0 ms whichever mark they start from.
 
+## Session ready, time to first token and first bash: isolate on demand (#196, 29 Oct 2026)
+
+From #196 on, the headline measurement isn't isolate-ready but three separate ones. Each is timed from the client, in a
+signed-in page on `/healthz` in brwsr, and is 50 runs after one warm-up:
+
+- **Session ready to take a prompt.** Cold is `POST /v1/sessions` until its 201. Warm is an open session's event
+  socket (`GET /v1/sessions/:id/events`, upgraded) until its snapshot frame.
+- **Time to first token (TTFT).** From sending `POST …/prompt` to the first streamed token on the socket (a `text` op,
+  thinking or text). Cold is a new session's first prompt. Warm is a second prompt on the same session, after
+  reopening its socket. The prompt is "Reply with the single word: ok", on the default `assistant` profile.
+- **First bash call.** `POST /v1/measurements/isolate-ready`, whose `isolate` step is a session's first `ls -1R`
+  through the tiered sandboxes, lease acquisition included. Cold is a new session each run; warm is 50 more commands
+  on one open session.
+
+The scripts are in [`harness/`](harness/). `session-ready.js` and `first-bash.js` run in the page through
+`run-in-page.mjs`, and each JSON file holds every run and the summary. As #213 explains above, the server's own
+spans stand still during synchronous work, so **cold latency here is the client's wall time**.
+
+**What #196 changed:**
+
+- **#197:** `SessionRuntimeOptions.environment`, built once when a session opens and cleaned up on abort and close.
+- **#199:** a size limit on direct file operations, enforced before the body is fetched.
+- **#202:** on Cloudflare, a session on a workspace now gets `read`, `write`, `edit`, `ls` and `bash`; before, it had
+  host tools only. The file tools work on the workspace in R2 directly, as the session's agent, and lease nothing.
+  `bash` leases the session's isolate on its first command, and abort and close release only that session's lease.
+  Nothing is acquired or prefetched when a session is created or opened.
+
+Before was main `39eae68`, on 28 Oct at 23:25 UTC. After was main `14f964b` (#202), Worker version `65881cd0`,
+deployed 07:35 UTC on 29 Oct and measured from 07:45. Placement both times: object `LHR`, D1 `WEUR` (primary, `LHR`);
+edge `CDG` or `LHR`. Every run answered (50 of 50 in each batch, exit code 0).
+
+| Measurement, ms p50 / p95 | Before (`39eae68`) | After (`14f964b`) |
+| --- | --- | --- |
+| Session ready, cold (create → 201) | 788 / 1,027 | 1,715 / 1,979 |
+| Session ready, warm (socket → snapshot) | 92 / 314 | 112 / 311 |
+| TTFT, cold | 1,337 / 1,912 | 1,468 / 5,619 |
+| TTFT, warm | 1,338 / 1,774 | 1,437 / 3,700 |
+| First bash, cold: client wall (create, command, close) | 912 / 1,058 | 1,639 / 1,864 |
+| First bash, warm: client wall | 179 / 236 | 117 / 154 |
+| First bash, warm: server `total` | 89 / 150 | 0 / 0 |
+
+Files:
+
+- Before: [`session-ready-…-before.json`](session-ready-2026-10-28T23-27-05Z-before.json) and
+  [`first-bash-…-before.json`](first-bash-2026-10-28T23-25-47Z-before.json).
+- After: [`session-ready-…-after.json`](session-ready-2026-10-29T07-49-59Z-after.json) and
+  [`first-bash-…-after.json`](first-bash-2026-10-29T07-48-22Z-after.json).
+
+**Verdict: the warm paths got faster, and the cold create got slower because of the number of sessions, not because
+of #196.**
+
+- **Warm first bash: 179 → 117 ms p50 in the client.** This is mostly #188's head cache and #198's audit outbox,
+  which landed between the batches.
+- **Warm readiness and TTFT p50 barely moved; TTFT p95 rose because of a tail.** Before, the slowest cold TTFT was
+  1,941 ms. After, 8 of 50 cold runs and 4 of 50 warm runs took over 3 s, the slowest 13.3 s.
+  - Harbour's own part, accepting the prompt, didn't slow: 145 / 176 ms against 150 / 216 ms before.
+  - The tail is between acceptance and the first token, which is the model gateway and the model.
+  - These sessions have no workspace, so #196's changes don't reach them. The tail isn't attributed here.
+- **Cold readiness doubled, and #196 isn't why.**
+  - The default project held 428 sessions at the before batch and 670 at the after batch
+    ([count](session-count-2026-10-29T07-57-59Z.json)). Each session adds its own Pi Durable schema to the object's
+    SQLite, and a create's migration rewrites the whole schema. So the create cost grows with every session ever
+    held (#216).
+  - The sessions in the readiness batch have no workspace, so #202 gives them no tools and no environment.
+  - Interleaved creates with and without a workspace cost the same, 1,979 / 2,233 ms against 2,043 / 2,163 ms
+    ([A/B](create-ab-2026-10-29T07-59-54Z.json), 15 + 15).
+  - Creates kept getting slower during the session (1.7 s at 07:50, 2.0 s at 08:00) as the batches added sessions.
+- **The first bash's cold wall time is the same create plus a command.**
+
+### The file tools on the workspace, and a lease only for bash
+
+[`first-bash-…-after-tools.json`](first-bash-2026-10-29T07-45-23Z-after-tools.json) runs `tools: true`. Each cold
+run creates a session, runs its file tools through the environment its tools get (read one file, list `src`, write
+`scratch/measure.txt`), checks its leases, then runs its first command.
+
+- **No lease before the first command: `leasedBeforeBash` was 0 in all 50 runs.** The command then leased one isolate
+  and exited 0. The smoke test below shows the release on close in the audit.
+- **The cold runs' file-tool spans aren't the tools' own time.** They measured read 989 / 1,921 ms, `ls` 0 / 0 and
+  write 1,107 / 1,666 ms. Read and write together came to 2,033 / 2,817 ms, about a cold create (1.7–2.0 s at the
+  time) plus a little, while the session's own span before them was 31 ms.
+  - The new session's harness opens synchronously, schema included, and a Worker's clock stands still through it, so
+    that time lands in whichever later span does I/O next.
+  - #214 adds `tools` to warm runs, on a session that's already open, as it is when a real session's tool runs.
+
+**On an open session, the tools' own times**
+([`first-bash-…-after-warm-tools.json`](first-bash-2026-10-29T08-47-39Z-after-warm-tools.json), main `57f2284`, Worker
+version `f1b7ab53`; 50 of 50, on one warmed-up session):
+
+| Tool, ms p50 / p95 (min–max) | Warm |
+| --- | --- |
+| `read` (one 19-byte file) | 72 / 146 (16–172) |
+| `ls` (`src`, 30 entries) | 0 / 0 (0–0) |
+| `write` (`scratch/measure.txt`) | 899 / 1,334 (451–1,470) |
+| The command after them (`isolate`) | 0 / 0 |
+
+- **`leasedBeforeBash` was 1 in every run.** That's the warm-up's lease: the file tools took none of their own.
+- **`read` is one R2 blob read.**
+- **`ls` shows 0 ms because no I/O moved the clock.** That fits the head and tree being served from the object's
+  cache (#188).
+- **A write is a workspace commit, and that's slow.** It makes four R2 writes, each after the one before: the blob,
+  the tree, the previous version's archive record, then the conditional head put. At about 225 ms each, from the
+  object in `LHR` to the weur bucket, that's the ~900 ms (from the code; the steps aren't timed separately). #218 has
+  the options. Writing the first three at the same time halves it, and the object's storage could become the commit
+  point.
+
+**Smoke test through the model** ([`tools-smoke-…json`](tools-smoke-2026-10-29T07-58-38Z.json)): a session on the
+measurement workspace was asked to read `src/file-00.txt` and then run `ls src | wc -l`.
+
+- The model called `read`, then `bash`, and answered "measurement file 0" and 30.
+- The session's audit shows no lease after its create, `sandbox.lease.acquired` by the agent during the run, and
+  `sandbox.lease.released` when it was closed.
+
+A deploy reached the measurement route about five minutes after `wrangler deploy` finished: the first probes after
+the `57f2284` deploy still got the old code's answer. Probe before measuring a new deploy.
+
+### Self-hosted
+
+Not measured in this change. The M0 self-hosted stack (`apps/selfhosted`) already acquires lazily:
+
+- `bash` calls the isolate host per command, and its `read` and `write` tools work on MinIO directly.
+- The isolate's `list` call is only in its measurement script.
+
+Wiring and measuring the comparable M1-SH1 stack is that lane's work. The runtime seam (#197) and the sandbox
+environment's size limit (#199) are target-neutral, in `packages/`.
+
+### Deferred
+
+- **#216: cold create grows with the number of sessions held.** This is the largest cold cost now, and it grows with
+  every measurement batch.
+- **#218: a workspace write takes ~900 ms**, four sequential R2 writes per commit. `write` and `edit` are now a
+  session's slowest tools.
+- **A session's directory row kept in the object instead of read from D1, and a cold session's D1 row written in the
+  background.** Neither is needed for the warm target, which is met (above), and the cold path is dominated by #216.
+- **A warm isolate pool.** None is added: a pooled isolate would have to be blank until bound and never reused across
+  sessions (#196).
+
 ## Where the time goes
 
 Round trips from the same signed-in page (15 calls each for the first three rows; 5, 3, 5 and 5 for the API rows), p50 in ms:
@@ -394,3 +538,16 @@ files hold `warmup`, `runs`, `after`, `closed` (the close's status) and `summary
 run's whole `timings`. A run answers 409 if the session is closed, and 400 if it isn't a measurement session on that
 backend. Right after a deploy, wait until the object has restarted on the new code: a warm-up answered by the old
 code closes its session, and the batch fails with 409s.
+
+The [isolate-on-demand batches](#session-ready-time-to-first-token-and-first-bash-isolate-on-demand-196-29-oct-2026)
+use the scripts in [`harness/`](harness/). Each `.js` file is the body of an async function that `run-in-page.mjs` runs
+in a signed-in page on `/healthz` through brwsr, writing what it returns to a JSON file:
+
+```sh
+node harness/run-in-page.mjs harness/session-ready.js session-ready.json '{"runs":50}'
+node harness/run-in-page.mjs harness/first-bash.js first-bash.json '{"runs":50}'                 # cold and warm
+node harness/run-in-page.mjs harness/first-bash.js first-bash-tools.json '{"runs":50,"tools":true}'
+node harness/run-in-page.mjs harness/first-bash.js first-bash-warm-tools.json '{"runs":50,"warmTools":true}'
+node harness/run-in-page.mjs harness/create-ab.js create-ab.json '{"runs":15,"workspaceId":"ws_…"}'
+node harness/run-in-page.mjs harness/probe-measure.js probe.json   # 404 (no session) once a deploy is live, not 400
+```

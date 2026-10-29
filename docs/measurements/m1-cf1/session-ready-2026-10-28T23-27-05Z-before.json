@@ -1,0 +1,1047 @@
+{
+	"brwsrSession": "fc945d47-f24f-495e-939e-e813d8c99049",
+	"startedAt": "2026-10-28T23:27:07.572Z",
+	"endedAt": "2026-10-28T23:30:37.013Z",
+	"from": "https://harbour.myslop.app/healthz",
+	"prompt": "Reply with the single word: ok",
+	"projectId": "prj_b8566943-a8e3-4fd6-8330-4a2282ccd610",
+	"agentId": "assistant",
+	"warmup": {
+		"status": 201,
+		"sessionId": "7a226ab9-5419-4687-b765-e42023358713",
+		"create": 749,
+		"streamCold": 271.3,
+		"cold": {
+			"accept": 161.8,
+			"ttft": 1633.8,
+			"firstText": 1633.8,
+			"done": 1633.8
+		},
+		"streamWarm": 283.2,
+		"warm": {
+			"accept": 150,
+			"ttft": 1435,
+			"firstText": 1435,
+			"done": 1435
+		}
+	},
+	"runs": [
+		{
+			"status": 201,
+			"sessionId": "21e34837-6e1b-476c-a4ac-2e57360ba1cf",
+			"create": 596.4,
+			"streamCold": 305.6,
+			"cold": {
+				"accept": 149.8,
+				"ttft": 1319.1,
+				"firstText": 1319.1,
+				"done": 1319.1
+			},
+			"streamWarm": 364,
+			"warm": {
+				"accept": 152.4,
+				"ttft": 1234,
+				"firstText": 1234,
+				"done": 1234
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "d683f65c-9d82-480f-bb5f-7356a8b4845e",
+			"create": 656,
+			"streamCold": 362.7,
+			"cold": {
+				"accept": 133.8,
+				"ttft": 1284.9,
+				"firstText": 1284.9,
+				"done": 1284.9
+			},
+			"streamWarm": 93.5,
+			"warm": {
+				"accept": 147,
+				"ttft": 1312.1,
+				"firstText": 1312.1,
+				"done": 1312.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "c33f6ac3-85a0-45d3-b9fe-7f60f262e2be",
+			"create": 675.9,
+			"streamCold": 311.2,
+			"cold": {
+				"accept": 158.1,
+				"ttft": 1221.7,
+				"firstText": 1221.7,
+				"done": 1221.7
+			},
+			"streamWarm": 87.7,
+			"warm": {
+				"accept": 170.5,
+				"ttft": 1334.4,
+				"firstText": 1334.4,
+				"done": 1334.4
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "b8677d66-9fed-4ee2-8470-28be0646dc49",
+			"create": 857.2,
+			"streamCold": 347.7,
+			"cold": {
+				"accept": 138.7,
+				"ttft": 1335.3,
+				"firstText": 1335.3,
+				"done": 1335.3
+			},
+			"streamWarm": 272,
+			"warm": {
+				"accept": 131.9,
+				"ttft": 1194.7,
+				"firstText": 1194.7,
+				"done": 1194.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "871154e4-64ae-4c60-af0c-7c9cdf010ab2",
+			"create": 720.3,
+			"streamCold": 888.5,
+			"cold": {
+				"accept": 181.5,
+				"ttft": 1464.3,
+				"firstText": 1464.3,
+				"done": 1464.3
+			},
+			"streamWarm": 112,
+			"warm": {
+				"accept": 135.7,
+				"ttft": 1401.4,
+				"firstText": 1401.4,
+				"done": 1401.4
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "776f3ead-93bf-4f1f-9bd7-d64787a88d4b",
+			"create": 855.2,
+			"streamCold": 400,
+			"cold": {
+				"accept": 190,
+				"ttft": 1569.2,
+				"firstText": 1569.2,
+				"done": 1569.2
+			},
+			"streamWarm": 89,
+			"warm": {
+				"accept": 142.1,
+				"ttft": 1350.1,
+				"firstText": 1350.1,
+				"done": 1350.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "d45b054d-50ef-4ad6-bc24-cc80d5b73322",
+			"create": 696.1,
+			"streamCold": 113.6,
+			"cold": {
+				"accept": 172.7,
+				"ttft": 1387.6,
+				"firstText": 1387.6,
+				"done": 1387.6
+			},
+			"streamWarm": 91.8,
+			"warm": {
+				"accept": 132.1,
+				"ttft": 1258.9,
+				"firstText": 1258.9,
+				"done": 1258.9
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "7510525e-0eed-46fe-9e2c-14b01d5a1994",
+			"create": 699.7,
+			"streamCold": 85.9,
+			"cold": {
+				"accept": 140.3,
+				"ttft": 1279.8,
+				"firstText": 1279.8,
+				"done": 1279.8
+			},
+			"streamWarm": 313.7,
+			"warm": {
+				"accept": 132.2,
+				"ttft": 1385.4,
+				"firstText": 1385.4,
+				"done": 1385.4
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "60cd5e0b-f077-4a98-99ee-36c905018fe6",
+			"create": 828,
+			"streamCold": 129.1,
+			"cold": {
+				"accept": 187.2,
+				"ttft": 1413.6,
+				"firstText": 1413.6,
+				"done": 1413.6
+			},
+			"streamWarm": 89.7,
+			"warm": {
+				"accept": 750.9,
+				"ttft": 3260.6,
+				"firstText": 3260.6,
+				"done": 3260.6
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "16a05533-902c-42c7-994a-a6df4c8123fe",
+			"create": 746,
+			"streamCold": 99,
+			"cold": {
+				"accept": 147.1,
+				"ttft": 1251.9,
+				"firstText": 1251.9,
+				"done": 1251.9
+			},
+			"streamWarm": 98.5,
+			"warm": {
+				"accept": 151.2,
+				"ttft": 1337.7,
+				"firstText": 1337.7,
+				"done": 1337.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "cf855edb-37ce-43c4-8fef-d00a8d29573c",
+			"create": 657.8,
+			"streamCold": 275,
+			"cold": {
+				"accept": 134.6,
+				"ttft": 1262.4,
+				"firstText": 1262.4,
+				"done": 1262.4
+			},
+			"streamWarm": 86.8,
+			"warm": {
+				"accept": 146.7,
+				"ttft": 1317.1,
+				"firstText": 1317.1,
+				"done": 1317.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "b435dfc7-af70-4daf-a81b-f8c8599adaff",
+			"create": 581.7,
+			"streamCold": 128.7,
+			"cold": {
+				"accept": 180.2,
+				"ttft": 1270.9,
+				"firstText": 1270.9,
+				"done": 1270.9
+			},
+			"streamWarm": 1155.9,
+			"warm": {
+				"accept": 208.7,
+				"ttft": 1333.7,
+				"firstText": 1333.7,
+				"done": 1333.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "9cf5ac2c-b91c-443e-8519-587540c11f03",
+			"create": 788.2,
+			"streamCold": 141.2,
+			"cold": {
+				"accept": 215.6,
+				"ttft": 1495.6,
+				"firstText": 1495.6,
+				"done": 1495.6
+			},
+			"streamWarm": 94.7,
+			"warm": {
+				"accept": 135,
+				"ttft": 1278.4,
+				"firstText": 1278.4,
+				"done": 1278.4
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "875d8230-5d42-4ec5-a5d3-b2ef7cd229f5",
+			"create": 931.7,
+			"streamCold": 121.5,
+			"cold": {
+				"accept": 132.2,
+				"ttft": 1452.6,
+				"firstText": 1452.6,
+				"done": 1452.6
+			},
+			"streamWarm": 89,
+			"warm": {
+				"accept": 139.3,
+				"ttft": 1522.5,
+				"firstText": 1522.5,
+				"done": 1522.5
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "bffe5191-3487-4459-9fc3-f4bc034458d3",
+			"create": 643.8,
+			"streamCold": 145.1,
+			"cold": {
+				"accept": 176.8,
+				"ttft": 1352.5,
+				"firstText": 1352.5,
+				"done": 1352.5
+			},
+			"streamWarm": 88.8,
+			"warm": {
+				"accept": 679.2,
+				"ttft": 1822.7,
+				"firstText": 1822.7,
+				"done": 1822.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "55814a61-e4b7-491b-9b71-fa654955527b",
+			"create": 771.3,
+			"streamCold": 142,
+			"cold": {
+				"accept": 191.4,
+				"ttft": 1516.6,
+				"firstText": 1516.6,
+				"done": 1516.6
+			},
+			"streamWarm": 97.2,
+			"warm": {
+				"accept": 156,
+				"ttft": 1468.2,
+				"firstText": 1468.2,
+				"done": 1468.2
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "ae686f2e-d6b2-4b03-9188-7c69abcdf547",
+			"create": 715.7,
+			"streamCold": 82.8,
+			"cold": {
+				"accept": 138.4,
+				"ttft": 1470.6,
+				"firstText": 1470.6,
+				"done": 1470.6
+			},
+			"streamWarm": 88.8,
+			"warm": {
+				"accept": 138.5,
+				"ttft": 1365,
+				"firstText": 1365,
+				"done": 1365
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "af5a7247-adad-432d-8993-06c245e44902",
+			"create": 913,
+			"streamCold": 110.7,
+			"cold": {
+				"accept": 195.8,
+				"ttft": 1338.9,
+				"firstText": 1338.9,
+				"done": 1338.9
+			},
+			"streamWarm": 143.9,
+			"warm": {
+				"accept": 178.9,
+				"ttft": 1290.1,
+				"firstText": 1290.1,
+				"done": 1290.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "68f52cc7-1b27-4d6c-92d9-5c4f4d0ae752",
+			"create": 669.6,
+			"streamCold": 725.2,
+			"cold": {
+				"accept": 147.9,
+				"ttft": 1303.8,
+				"firstText": 1303.8,
+				"done": 1303.8
+			},
+			"streamWarm": 86.4,
+			"warm": {
+				"accept": 196.3,
+				"ttft": 1325.4,
+				"firstText": 1325.4,
+				"done": 1325.4
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "98970a37-a71a-4d3c-9c2c-226db0735286",
+			"create": 653.6,
+			"streamCold": 98.6,
+			"cold": {
+				"accept": 134.9,
+				"ttft": 1310.9,
+				"firstText": 1310.9,
+				"done": 1310.9
+			},
+			"streamWarm": 174.9,
+			"warm": {
+				"accept": 147.7,
+				"ttft": 1319.6,
+				"firstText": 1319.6,
+				"done": 1319.6
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "f0e6482e-3859-4834-975a-9f2a240c117b",
+			"create": 710.8,
+			"streamCold": 85.5,
+			"cold": {
+				"accept": 142.8,
+				"ttft": 1274.1,
+				"firstText": 1274.1,
+				"done": 1274.1
+			},
+			"streamWarm": 92.1,
+			"warm": {
+				"accept": 153.1,
+				"ttft": 1329.9,
+				"firstText": 1329.9,
+				"done": 1329.9
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "a8d2314b-668f-4e0c-9905-fd9b9ecacb22",
+			"create": 869.9,
+			"streamCold": 333.7,
+			"cold": {
+				"accept": 143.3,
+				"ttft": 1327.9,
+				"firstText": 1327.9,
+				"done": 1327.9
+			},
+			"streamWarm": 91.1,
+			"warm": {
+				"accept": 147.6,
+				"ttft": 1210.7,
+				"firstText": 1210.7,
+				"done": 1210.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "75ab8675-32ca-47a9-8993-9a8ebac8a880",
+			"create": 710.3,
+			"streamCold": 82.4,
+			"cold": {
+				"accept": 134,
+				"ttft": 1253.6,
+				"firstText": 1253.6,
+				"done": 1253.6
+			},
+			"streamWarm": 110.9,
+			"warm": {
+				"accept": 169.7,
+				"ttft": 1254.3,
+				"firstText": 1254.3,
+				"done": 1254.3
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "4972bda5-b8b9-4dd3-8101-8e737722b638",
+			"create": 933.6,
+			"streamCold": 125.5,
+			"cold": {
+				"accept": 193.7,
+				"ttft": 1940.1,
+				"firstText": 1940.1,
+				"done": 1940.1
+			},
+			"streamWarm": 83.4,
+			"warm": {
+				"accept": 214.8,
+				"ttft": 1288.5,
+				"firstText": 1288.5,
+				"done": 1288.5
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "0acd9aa8-46dd-4ec2-b75f-50895aa0d7a4",
+			"create": 877.1,
+			"streamCold": 118.5,
+			"cold": {
+				"accept": 154.8,
+				"ttft": 1265.3,
+				"firstText": 1265.3,
+				"done": 1265.3
+			},
+			"streamWarm": 82.8,
+			"warm": {
+				"accept": 139.6,
+				"ttft": 1353.2,
+				"firstText": 1353.2,
+				"done": 1353.2
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "db447112-1bc0-4ed8-b731-4daf7a46cf52",
+			"create": 738.4,
+			"streamCold": 89.5,
+			"cold": {
+				"accept": 147.4,
+				"ttft": 1012,
+				"firstText": 1012,
+				"done": 1012
+			},
+			"streamWarm": 119.5,
+			"warm": {
+				"accept": 141.2,
+				"ttft": 1058.2,
+				"firstText": 1058.2,
+				"done": 1058.2
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "8952b6e7-1003-419f-97ee-d7aa31999322",
+			"create": 824.1,
+			"streamCold": 89.2,
+			"cold": {
+				"accept": 146.7,
+				"ttft": 1450.1,
+				"firstText": 1450.1,
+				"done": 1450.1
+			},
+			"streamWarm": 148.1,
+			"warm": {
+				"accept": 136,
+				"ttft": 1456.2,
+				"firstText": 1456.2,
+				"done": 1456.2
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "71dcc030-4d22-4eab-9dea-4d32ae1001b1",
+			"create": 766,
+			"streamCold": 413.9,
+			"cold": {
+				"accept": 243,
+				"ttft": 1471.1,
+				"firstText": 1471.1,
+				"done": 1471.1
+			},
+			"streamWarm": 82.8,
+			"warm": {
+				"accept": 235.2,
+				"ttft": 1359.2,
+				"firstText": 1359.2,
+				"done": 1359.2
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "838ae681-2256-4b8a-9ba7-11de7ec1ab93",
+			"create": 907.5,
+			"streamCold": 108.5,
+			"cold": {
+				"accept": 159,
+				"ttft": 1467.8,
+				"firstText": 1467.8,
+				"done": 1467.8
+			},
+			"streamWarm": 102.9,
+			"warm": {
+				"accept": 136.1,
+				"ttft": 1515.7,
+				"firstText": 1515.7,
+				"done": 1515.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "282e3a72-1b7b-4a94-a69a-ff4d27c162d8",
+			"create": 703.9,
+			"streamCold": 116.9,
+			"cold": {
+				"accept": 135.4,
+				"ttft": 1229.7,
+				"firstText": 1229.7,
+				"done": 1229.7
+			},
+			"streamWarm": 130.3,
+			"warm": {
+				"accept": 148.1,
+				"ttft": 1343.1,
+				"firstText": 1343.1,
+				"done": 1343.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "c70cf030-6f9b-4cba-a141-bdd141daf8e7",
+			"create": 1001.2,
+			"streamCold": 907.4,
+			"cold": {
+				"accept": 212.6,
+				"ttft": 1088.8,
+				"firstText": 1088.8,
+				"done": 1088.8
+			},
+			"streamWarm": 84.9,
+			"warm": {
+				"accept": 213.3,
+				"ttft": 1016.2,
+				"firstText": 1016.2,
+				"done": 1016.2
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "20bb5c78-2cf1-47cb-986b-5c91e5661b0b",
+			"create": 706.1,
+			"streamCold": 97.3,
+			"cold": {
+				"accept": 149.5,
+				"ttft": 1347.1,
+				"firstText": 1347.1,
+				"done": 1347.1
+			},
+			"streamWarm": 91.6,
+			"warm": {
+				"accept": 142.5,
+				"ttft": 1365.3,
+				"firstText": 1365.3,
+				"done": 1365.3
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "9f88b2cb-c6d6-4dbf-b60f-3ba8b34a25aa",
+			"create": 804,
+			"streamCold": 88.5,
+			"cold": {
+				"accept": 135.7,
+				"ttft": 1441.3,
+				"firstText": 1441.3,
+				"done": 1441.3
+			},
+			"streamWarm": 85.4,
+			"warm": {
+				"accept": 130.7,
+				"ttft": 1308.1,
+				"firstText": 1308.1,
+				"done": 1308.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "6a0ffb66-cf4d-469e-8ce6-00cf4000b27e",
+			"create": 896.5,
+			"streamCold": 127.1,
+			"cold": {
+				"accept": 163,
+				"ttft": 1297.4,
+				"firstText": 1297.4,
+				"done": 1297.4
+			},
+			"streamWarm": 94.5,
+			"warm": {
+				"accept": 152.1,
+				"ttft": 1616.1,
+				"firstText": 1616.1,
+				"done": 1616.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "0be117ff-42bc-4f3d-b68e-5ee4e85c62e6",
+			"create": 1026.5,
+			"streamCold": 160.7,
+			"cold": {
+				"accept": 142,
+				"ttft": 1941,
+				"firstText": 1941,
+				"done": 1941
+			},
+			"streamWarm": 86.5,
+			"warm": {
+				"accept": 135.7,
+				"ttft": 1433.8,
+				"firstText": 1433.8,
+				"done": 1433.8
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "37a1b28d-ff8e-4a19-b473-7444b5b7d973",
+			"create": 940.3,
+			"streamCold": 129.1,
+			"cold": {
+				"accept": 171.7,
+				"ttft": 1252.2,
+				"firstText": 1252.2,
+				"done": 1252.2
+			},
+			"streamWarm": 87.6,
+			"warm": {
+				"accept": 142.8,
+				"ttft": 1337.7,
+				"firstText": 1337.7,
+				"done": 1337.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "a0dcbcec-34a3-433b-9b00-be98e9195e45",
+			"create": 701.9,
+			"streamCold": 80.3,
+			"cold": {
+				"accept": 125.9,
+				"ttft": 1305.7,
+				"firstText": 1305.7,
+				"done": 1305.7
+			},
+			"streamWarm": 86.7,
+			"warm": {
+				"accept": 137.8,
+				"ttft": 1359.3,
+				"firstText": 1359.3,
+				"done": 1359.3
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "dd060162-38a1-4fb8-8f03-c41f1f3ff97a",
+			"create": 676.4,
+			"streamCold": 84.9,
+			"cold": {
+				"accept": 126,
+				"ttft": 1255.6,
+				"firstText": 1255.6,
+				"done": 1255.6
+			},
+			"streamWarm": 79.7,
+			"warm": {
+				"accept": 122.2,
+				"ttft": 1221,
+				"firstText": 1221,
+				"done": 1221
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "1a17c09f-a161-4428-bf6d-8fd0112e7565",
+			"create": 915.3,
+			"streamCold": 117.7,
+			"cold": {
+				"accept": 156.2,
+				"ttft": 1562.1,
+				"firstText": 1562.1,
+				"done": 1562.1
+			},
+			"streamWarm": 85,
+			"warm": {
+				"accept": 137.8,
+				"ttft": 1773.7,
+				"firstText": 1773.7,
+				"done": 1773.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "339dc2e9-a08f-462b-bca1-a7f1e7c356d6",
+			"create": 737.1,
+			"streamCold": 85.1,
+			"cold": {
+				"accept": 131.9,
+				"ttft": 1370.9,
+				"firstText": 1370.9,
+				"done": 1370.9
+			},
+			"streamWarm": 88.3,
+			"warm": {
+				"accept": 132.7,
+				"ttft": 1299.8,
+				"firstText": 1299.8,
+				"done": 1299.8
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "e3271d2f-b9fc-411f-8a97-8254acedabde",
+			"create": 812.9,
+			"streamCold": 121.8,
+			"cold": {
+				"accept": 161,
+				"ttft": 1302.9,
+				"firstText": 1302.9,
+				"done": 1302.9
+			},
+			"streamWarm": 95.1,
+			"warm": {
+				"accept": 139.6,
+				"ttft": 1231.5,
+				"firstText": 1231.5,
+				"done": 1231.5
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "410a2d9f-5219-4548-8b26-f9ba8191d58a",
+			"create": 903.5,
+			"streamCold": 87.7,
+			"cold": {
+				"accept": 145.7,
+				"ttft": 1336.8,
+				"firstText": 1336.8,
+				"done": 1336.8
+			},
+			"streamWarm": 95.8,
+			"warm": {
+				"accept": 157,
+				"ttft": 1283.3,
+				"firstText": 1283.3,
+				"done": 1283.3
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "af18acb7-64f0-42db-adf9-bc1a63a8becd",
+			"create": 1107.4,
+			"streamCold": 97,
+			"cold": {
+				"accept": 187.6,
+				"ttft": 1330.8,
+				"firstText": 1330.8,
+				"done": 1330.8
+			},
+			"streamWarm": 86.3,
+			"warm": {
+				"accept": 143.9,
+				"ttft": 1335.7,
+				"firstText": 1335.7,
+				"done": 1335.7
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "1e634df8-c3bc-4dad-b0ec-458dfda4e414",
+			"create": 745.4,
+			"streamCold": 135.5,
+			"cold": {
+				"accept": 144.2,
+				"ttft": 1480.9,
+				"firstText": 1480.9,
+				"done": 1480.9
+			},
+			"streamWarm": 132.3,
+			"warm": {
+				"accept": 223.7,
+				"ttft": 1548.4,
+				"firstText": 1548.4,
+				"done": 1548.4
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "27b93c2c-41ba-4c81-9359-8edf43cd807b",
+			"create": 894.3,
+			"streamCold": 96.6,
+			"cold": {
+				"accept": 154.3,
+				"ttft": 1499.9,
+				"firstText": 1499.9,
+				"done": 1499.9
+			},
+			"streamWarm": 102.2,
+			"warm": {
+				"accept": 148.6,
+				"ttft": 1389,
+				"firstText": 1389,
+				"done": 1389
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "5a054b48-7873-49e6-a22f-3df94df8d357",
+			"create": 819.6,
+			"streamCold": 93.1,
+			"cold": {
+				"accept": 126,
+				"ttft": 1438.6,
+				"firstText": 1438.6,
+				"done": 1438.6
+			},
+			"streamWarm": 163,
+			"warm": {
+				"accept": 162.8,
+				"ttft": 1399,
+				"firstText": 1399,
+				"done": 1399
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "77aef6b3-cb05-49d7-940d-aecdfa2739c2",
+			"create": 1169.4,
+			"streamCold": 95.5,
+			"cold": {
+				"accept": 152.1,
+				"ttft": 1320.2,
+				"firstText": 1320.2,
+				"done": 1320.2
+			},
+			"streamWarm": 92.1,
+			"warm": {
+				"accept": 151.9,
+				"ttft": 1314.3,
+				"firstText": 1314.3,
+				"done": 1314.3
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "570d6385-256a-44c9-ab48-7cc9fc0b161d",
+			"create": 987.6,
+			"streamCold": 87.2,
+			"cold": {
+				"accept": 146.2,
+				"ttft": 1468.7,
+				"firstText": 1468.7,
+				"done": 1468.7
+			},
+			"streamWarm": 100.7,
+			"warm": {
+				"accept": 132.4,
+				"ttft": 1761.9,
+				"firstText": 1761.9,
+				"done": 1761.9
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "c7bf5f6d-9c96-4ba6-8f95-81286f0904f5",
+			"create": 859.6,
+			"streamCold": 88.4,
+			"cold": {
+				"accept": 234.3,
+				"ttft": 1912.3,
+				"firstText": 1912.3,
+				"done": 1912.3
+			},
+			"streamWarm": 140.1,
+			"warm": {
+				"accept": 218.6,
+				"ttft": 1339.1,
+				"firstText": 1339.1,
+				"done": 1339.1
+			}
+		},
+		{
+			"status": 201,
+			"sessionId": "9940920c-d6b9-481c-85bb-a99f25748240",
+			"create": 789,
+			"streamCold": 139.9,
+			"cold": {
+				"accept": 189.7,
+				"ttft": 1595.7,
+				"firstText": 1595.7,
+				"done": 1595.7
+			},
+			"streamWarm": 100.4,
+			"warm": {
+				"accept": 157,
+				"ttft": 1433.6,
+				"firstText": 1433.6,
+				"done": 1433.6
+			}
+		}
+	],
+	"summary": {
+		"ok": 50,
+		"failed": 0,
+		"readyCold": {
+			"p50": 788.2,
+			"p95": 1026.5,
+			"min": 581.7,
+			"max": 1169.4,
+			"n": 50
+		},
+		"readyWarm": {
+			"p50": 92.1,
+			"p95": 313.7,
+			"min": 79.7,
+			"max": 1155.9,
+			"n": 50
+		},
+		"streamCold": {
+			"p50": 117.7,
+			"p95": 725.2,
+			"min": 80.3,
+			"max": 907.4,
+			"n": 50
+		},
+		"acceptCold": {
+			"p50": 149.5,
+			"p95": 215.6,
+			"min": 125.9,
+			"max": 243,
+			"n": 50
+		},
+		"acceptWarm": {
+			"p50": 147,
+			"p95": 235.2,
+			"min": 122.2,
+			"max": 750.9,
+			"n": 50
+		},
+		"ttftCold": {
+			"p50": 1336.8,
+			"p95": 1912.3,
+			"min": 1012,
+			"max": 1941,
+			"n": 50
+		},
+		"ttftWarm": {
+			"p50": 1337.7,
+			"p95": 1773.7,
+			"min": 1016.2,
+			"max": 3260.6,
+			"n": 50
+		},
+		"firstTextCold": {
+			"p50": 1336.8,
+			"p95": 1912.3,
+			"min": 1012,
+			"max": 1941,
+			"n": 50
+		},
+		"firstTextWarm": {
+			"p50": 1337.7,
+			"p95": 1773.7,
+			"min": 1016.2,
+			"max": 3260.6,
+			"n": 50
+		}
+	}
+}
