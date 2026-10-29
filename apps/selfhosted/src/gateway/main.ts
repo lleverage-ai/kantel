@@ -27,6 +27,10 @@
 //                               /v1/egress/scope for it (egress.ts). Needs a vault
 //   HARBOUR_EGRESS_GRANTS_FILE  the proxy's policy file, whose credentialed routes are imported into the vault for the
 //                               bootstrap project at start; the secrets they name are read from this environment
+//   HARBOUR_CPA_URL             CLIProxyAPI's API root with its /v1, such as http://127.0.0.1:8317/v1: sessions go to
+//   HARBOUR_CPA_API_KEY         it through the model gateway (models.ts), with its client key (16 characters or more)
+//                               kept in the vault, so it needs a vault. Both or neither; unset, the echo model
+//   HARBOUR_DEFAULT_MODEL       the CPA model the `default` route serves; default claude-sonnet-5-5
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -38,6 +42,7 @@ import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts
 import { importPolicyFile } from "./egress.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
+import { cpaConfig, modelGatewaySource } from "./models.ts";
 import { listen } from "./node-http.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -48,6 +53,11 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	if (egressKey !== "" && egressKey.length < 16) throw new Error("HARBOUR_EGRESS_KEY must be 16 characters or more");
 	const grantsFile = env.HARBOUR_EGRESS_GRANTS_FILE?.trim() ?? "";
 	if (grantsFile !== "" && egressKey === "") throw new Error("HARBOUR_EGRESS_GRANTS_FILE needs HARBOUR_EGRESS_KEY");
+	const cpa = cpaConfig(env);
+	const durable = durableConfig(env);
+	if (cpa !== undefined && durable !== undefined && durable.vaultCipherKey === undefined) {
+		throw new Error("HARBOUR_CPA_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
+	}
 	return {
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
@@ -58,7 +68,8 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		...(adminEmail === "" ? {} : { adminEmail }),
 		callbackOrigins: origins,
 		mail: mailConfig(env),
-		durable: durableConfig(env),
+		durable,
+		...(cpa === undefined ? {} : { cpa }),
 		...(egressKey === ""
 			? {}
 			: { egress: { key: egressKey, ...(grantsFile === "" ? {} : { grantsFile: resolve(grantsFile) }) } }),
@@ -121,8 +132,14 @@ async function readBootstrap(path: string): Promise<Bootstrap | undefined> {
 }
 
 export async function serveGateway(cfg = gatewayConfig()) {
+	const modelGateway = cfg.cpa === undefined ? undefined : modelGatewaySource(cfg.cpa);
 	const components =
-		cfg.durable === undefined ? createGatewayComponents() : await createDurableGatewayComponents(cfg.durable);
+		cfg.durable === undefined
+			? createGatewayComponents(modelGateway === undefined ? {} : { modelGateway })
+			: await createDurableGatewayComponents({
+					...cfg.durable,
+					...(modelGateway === undefined ? {} : { modelGateway }),
+				});
 	const previous = await readBootstrap(cfg.bootstrapFile);
 	let seeded = await bootstrap(
 		components,
@@ -152,6 +169,16 @@ export async function serveGateway(cfg = gatewayConfig()) {
 				: `[gateway] imported egress grants from ${cfg.egress.grantsFile}: ` +
 						imported.result.imported.map((grant) => `${grant.name} (${grant.item})`).join(", ") +
 						`; left to the proxy: ${imported.leftToProxy.join(", ") || "none"}`,
+		);
+	}
+	if (modelGateway !== undefined && cfg.cpa !== undefined) {
+		// The item an earlier start of this deployment made; a fresh database has none.
+		const made = previous?.organisationId === seeded.organisationId ? previous.cpaItem : undefined;
+		const item = await modelGateway.seed(components.vault, made);
+		seeded = { ...seeded, cpaItem: item };
+		console.log(
+			`[gateway] sessions on the model gateway: CLIProxyAPI at ${cfg.cpa.baseUrl}, route ${modelGateway.route} ` +
+				`to ${cfg.cpa.modelId}, its key in vault item ${item.name}`,
 		);
 	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);

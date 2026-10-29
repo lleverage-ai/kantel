@@ -238,6 +238,9 @@ importers:
       "@harbour/identity":
         specifier: workspace:*
         version: link:../../packages/identity
+      "@harbour/model-gateway":
+        specifier: workspace:*
+        version: link:../model-gateway
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime

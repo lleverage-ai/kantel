@@ -16,7 +16,7 @@
 //               (`<schema>_vault`), values sealed with HARBOUR_VAULT_CIPHER_KEY; no vault without that key
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too), `harbour_*` and `pi_<session>_*`, `workspace_heads` and
-// `workspace_versions`. The model is still the echo model until the model gateway (M1-BE9) lands.
+// `workspace_versions`. Sessions are on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
@@ -35,7 +35,7 @@ import { createPostgresVaultStore } from "@harbour/vault-selfhosted";
 import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
-import { createEchoModels, deferredAccess, type GatewayComponents } from "./components.ts";
+import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 
 export interface DurableConfig {
@@ -56,6 +56,8 @@ export interface DurableConfig {
 	readonly log?: (message: string) => void;
 	/** The sessions' models. Default the echo model. */
 	readonly models?: Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+	/** Sessions on the model gateway (`models.ts`), reading CPA's key through the vault; when `models` is unset. */
+	readonly modelGateway?: ModelGatewaySource;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -104,13 +106,18 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const db = await PostgresSqliteDatabase.open({ connectionString: config.databaseUrl, schema: config.schema });
 		closers.push(() => db.close());
 		const gatewaySandboxes = createGatewaySandboxes();
+		// The vault needs the runtime's access check; the model gateway reads it only at its first call.
+		let vault: HarbourVault | undefined;
+		const modelGateway = config.models === undefined ? config.modelGateway : undefined;
+		const models = config.models ??
+			modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
 		const runtime = createSessionRuntime({
 			...gatewaySandboxes.runtimeOptions,
 			store: await createSqlSessionStore(db),
 			storage: (session) => sqlPiStorage(db, session.id),
 			audit,
 			identity,
-			...(config.models ?? { models: createEchoModels() }),
+			...models,
 			// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
 			hostHandler: callbackHostHandlers(),
 			onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
@@ -134,7 +141,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		});
 		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 
-		let vault: HarbourVault | undefined;
 		if (config.vaultCipherKey !== undefined) {
 			const store = createPostgresVaultStore({ db: pool, schema: `${config.schema}_vault` });
 			await store.migrate();
@@ -153,11 +159,14 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
 			...(vault === undefined ? {} : { vault }),
+			...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 			bindings: {
 				vault: vault === undefined ? "off (no HARBOUR_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",
-				runtime: "postgres session store and Pi Durable tables (echo model)",
+				runtime: `postgres session store and Pi Durable tables (${
+					config.models !== undefined ? "given models" : modelGateway !== undefined ? "model gateway" : "echo model"
+				})`,
 				workspaces: "postgres + s3",
 				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",

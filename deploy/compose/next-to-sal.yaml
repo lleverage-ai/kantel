@@ -12,6 +12,17 @@
 # 127.0.0.1, and nothing else is published beyond what compose.yaml already publishes there.
 #
 # The gateway reaches Postgres, MinIO and Mailpit through the ports compose.yaml publishes on 127.0.0.1.
+#
+# Real models (#232): with HARBOUR_CPA_URL and HARBOUR_CPA_API_KEY set, sessions go to CLIProxyAPI through the model
+# gateway (apps/selfhosted/src/gateway/models.ts), its key kept in the vault, so HARBOUR_VAULT_CIPHER_KEY (a base64
+# 256-bit key, `openssl rand -base64 32`) is needed too. Keep the cipher key: the vault's items are sealed with it.
+# On Sal's host CPA listens on its tailnet address, not on 127.0.0.1:
+#
+#   HARBOUR_CPA_URL=http://100.92.85.97:8317/v1 HARBOUR_CPA_API_KEY=... HARBOUR_VAULT_CIPHER_KEY=... \
+#     docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
+#
+# Unset, sessions stay on the echo model. The bootstrap's `assistant` profile is on the `default` route, to
+# HARBOUR_DEFAULT_MODEL (default claude-sonnet-5-5); Sal's worker names that route itself.
 
 services:
   gateway:
@@ -25,6 +36,10 @@ services:
       HARBOUR_DATABASE_URL: postgres://harbour:harbour@127.0.0.1:${HARBOUR_PG_PORT:-55432}/harbour
       S3_ENDPOINT: http://127.0.0.1:${HARBOUR_S3_PORT:-59000}
       HARBOUR_SMTP_URL: ${HARBOUR_SMTP_URL:-smtp://127.0.0.1:${HARBOUR_SMTP_PORT:-58125}?starttls=off}
+      HARBOUR_CPA_URL: ${HARBOUR_CPA_URL:-}
+      HARBOUR_CPA_API_KEY: ${HARBOUR_CPA_API_KEY:-}
+      HARBOUR_DEFAULT_MODEL: ${HARBOUR_DEFAULT_MODEL:-}
+      HARBOUR_VAULT_CIPHER_KEY: ${HARBOUR_VAULT_CIPHER_KEY:-}
     healthcheck:
       test:
         [
