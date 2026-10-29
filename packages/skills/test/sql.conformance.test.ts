@@ -7,7 +7,7 @@ for (const kind of testDatabaseKinds()) {
 	registerSkillsConformance(
 		{ describe, expect, it },
 		`SQL skills on ${kind.name}`,
-		async (deps, use) => {
+		async (deps, use, settings) => {
 			const database = await kind.open();
 			try {
 				await migrateSkills(database.driver);
@@ -18,12 +18,13 @@ for (const kind of testDatabaseKinds()) {
 						clock: deps.clock,
 						audit: deps.audit,
 						access: deps.access,
+						...settings,
 					}),
 				});
 			} finally {
 				await database.close();
 			}
 		},
-		{ projectAccess: true },
+		{ projectAccess: true, writes: true },
 	);
 }

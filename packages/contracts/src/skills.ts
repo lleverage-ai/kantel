@@ -18,6 +18,7 @@ import type {
 	Timestamp,
 	UserId,
 } from "./common.ts";
+import type { Role } from "./identity.ts";
 
 export interface SkillFile {
 	/** Normalised relative path inside the package, such as `SKILL.md` or `scripts/run.sh`. */
@@ -140,6 +141,33 @@ export interface Skills {
 	): Promise<SkillRevision>;
 }
 
+/**
+ * Who may change skills, as the least role each change needs (M2-BE5). A store takes one; without it every change
+ * needs `operator`, as `DEFAULT_SKILLS_AUTHORITY` says. Where the role is held depends on the package's owner:
+ *
+ * - A project's skill: on that project (`ProjectAccess`); an agent through its own open session in the project.
+ * - An organisation's skill: across the organisation, from a binding with no project; an agent through its own open
+ *   session anywhere in the organisation.
+ * - A user's skill: that human user always may; anyone else needs the role across the organisation.
+ * - A platform skill: only a `system` actor, whatever the authority says.
+ *
+ * Agents may only save drafts, through their own open session, and count as an operator, never an admin, so an
+ * authority needing `admin` for `saveDraft` shuts them out. Agents never create, publish or import (`forbidden`).
+ */
+export interface SkillsAuthority {
+	readonly create: Role;
+	readonly saveDraft: Role;
+	readonly publish: Role;
+	readonly importRevision: Role;
+}
+
+export const DEFAULT_SKILLS_AUTHORITY: SkillsAuthority = Object.freeze({
+	create: "operator",
+	saveDraft: "operator",
+	publish: "operator",
+	importRevision: "operator",
+});
+
 /** A host's skill source, such as Sal's Git-backed skills or Lleverage's builder. Harbour pulls from it. */
 export interface SkillSource {
 	readonly id: string;
@@ -147,4 +175,15 @@ export interface SkillSource {
 	fetch(
 		ref: string,
 	): Promise<readonly { readonly name: string; readonly description: string; readonly files: readonly SkillFile[] }[]>;
+	/**
+	 * Writes a published revision's whole package back to the host's source (a Git commit, say) and returns the ref it
+	 * now stands at. Files equal to what the source holds are left alone. Optional: a source without it is read-only.
+	 * Harbour calls it after a native publish, one call at a time per skill.
+	 */
+	publish?(skill: {
+		readonly name: string;
+		readonly description: string;
+		readonly files: readonly SkillFile[];
+		readonly revision: { readonly skillId: string; readonly revision: number; readonly digest: string };
+	}): Promise<{ readonly ref: string }>;
 }

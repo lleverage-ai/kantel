@@ -1,8 +1,9 @@
 /**
  * Conformance suite for `Skills` (packages/contracts/src/skills.ts). Every target registers it with a provider that
- * builds a fresh skills store on the suite's clock, audit sink and project access, mounted at the default `/skills`.
+ * builds a fresh skills store on the suite's clock, audit sink and project access, mounted at the default `/skills`,
+ * with the case's `SkillsSettings`.
  */
-import type { CallContext, OwnerRef, SkillFile, SkillRevision, Skills } from "@harbour/contracts";
+import type { CallContext, OwnerRef, SkillFile, SkillRevision, Skills, SkillsAuthority } from "@harbour/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -21,10 +22,24 @@ export interface SkillsSubject {
 	readonly skills: Skills;
 }
 
+/**
+ * What a case asks the store to be built with, beyond the deps: only the `writes` cases set it, and a provider
+ * registered with `writes: true` must pass it on.
+ */
+export interface SkillsSettings {
+	readonly authority?: SkillsAuthority;
+}
+
 export type SkillsConformanceProvider = (
 	deps: ConformanceDeps,
 	use: (subject: SkillsSubject) => Promise<void>,
+	settings: SkillsSettings,
 ) => Promise<void>;
+
+export interface SkillsConformanceOptions extends ConformanceOptions {
+	/** Runs the M2-BE5 write cases that build the store with a stricter `SkillsAuthority`. Needs `projectAccess` too. */
+	readonly writes?: boolean;
+}
 
 const ORG = "org-a";
 const OTHER_ORG = "org-b";
@@ -47,15 +62,22 @@ const stranger = contextFor(actors.human("user-3"), ORG, OTHER_PROJECT);
 const viewer = contextFor(actors.human("user-4"), ORG, PROJECT);
 /** An agent whose session belongs to another project. */
 const otherProjectAgent = contextFor(actors.agent("agent-3", "session-other-project"), ORG, OTHER_PROJECT);
+/** An admin across the organisation. */
+const admin = contextFor(actors.human("admin-1"), ORG);
+/** A user of the organisation with no role anywhere, who owns skills of their own. */
+const solo = contextFor(actors.human("solo-1"), ORG);
 
 /** The role bindings and agent sessions every case acts with. */
 function seedTenancy(deps: ConformanceDeps): void {
 	const tenancy = deps.tenancy;
+	// Organisation-wide, so they may change the organisation's skills as well as the projects'.
+	tenancy.bind(human.actor, ORG, "operator");
+	tenancy.bind(service.actor, ORG, "operator");
+	tenancy.bind(admin.actor, ORG, "admin");
+	// On both projects only: changing the organisation's skills or another user's needs more.
 	for (const projectId of [PROJECT, OTHER_PROJECT]) {
-		tenancy.bind(human.actor, ORG, "operator", projectId);
 		tenancy.bind(otherHuman.actor, ORG, "operator", projectId);
 	}
-	tenancy.bind(service.actor, ORG, "operator", PROJECT);
 	tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
 	tenancy.bind(viewer.actor, ORG, "viewer", PROJECT);
 	tenancy.bind(outsider.actor, OTHER_ORG, "operator");
@@ -73,6 +95,7 @@ const project: OwnerRef = { kind: "project", organisationId: ORG, projectId: PRO
 const otherProject: OwnerRef = { kind: "project", organisationId: ORG, projectId: OTHER_PROJECT };
 const user: OwnerRef = { kind: "user", organisationId: ORG, userId: USER };
 const otherUser: OwnerRef = { kind: "user", organisationId: ORG, userId: OTHER_USER };
+const soloUser: OwnerRef = { kind: "user", organisationId: ORG, userId: "solo-1" };
 
 function skillFiles(name: string, body: string, extra: readonly SkillFile[] = []): SkillFile[] {
 	return [
@@ -109,14 +132,19 @@ export function createSkillsConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: SkillsConformanceProvider;
 	projectAccess?: boolean;
+	writes?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
-	const test = (name: string, body: (skills: Skills, deps: ConformanceDeps) => Promise<void>): ConformanceCase => ({
+	const test = (
+		name: string,
+		body: (skills: Skills, deps: ConformanceDeps) => Promise<void>,
+		settings: SkillsSettings = {},
+	): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
 			seedTenancy(deps);
-			await options.provider(deps, (subject) => body(subject.skills, deps));
+			await options.provider(deps, (subject) => body(subject.skills, deps), settings);
 		},
 	});
 
@@ -568,7 +596,7 @@ export function createSkillsConformance(options: {
 	];
 	if (options.projectAccess !== true) return cases;
 
-	return [
+	const withAccess: ConformanceCase[] = [
 		...cases,
 
 		test("project access: an operator outside the project is refused for every change and read of its skills, and nothing changed", async (skills, deps) => {
@@ -783,6 +811,189 @@ export function createSkillsConformance(options: {
 			assert.strictEqual(imported.revision, 2);
 			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
 		}),
+
+		test("write authority: changing an organisation's skill needs a role across the organisation, not on one project, and reading it does not", async (skills, deps) => {
+			const first = await publishNew(skills, human, organisation, "deploy", "One.");
+			const id = first.skillId;
+			const { digest } = await skills.saveDraft(human, id, { files: skillFiles("deploy", "Draft in review.") });
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			// The stranger is an operator, but only on another project.
+			await refused(
+				"skills.create",
+				skills.create(stranger, { owner: organisation, name: "planted", description: "No" }),
+			);
+			await refused(
+				"skills.saveDraft",
+				skills.saveDraft(stranger, id, { files: skillFiles("deploy", "Overwritten.") }),
+			);
+			await refused("skills.publish", skills.publish(stranger, id, { expectedDigest: digest }));
+			await refused(
+				"skills.importRevision",
+				skills.importRevision(stranger, {
+					owner: organisation,
+					name: "deploy",
+					description: "Imported",
+					files: skillFiles("deploy", "Imported."),
+					source: { sourceId: "git", ref: "abc" },
+				}),
+			);
+			const pkg = await skills.get(human, id);
+			assert.strictEqual(pkg.draftDigest, digest, "the draft is untouched");
+			assert.strictEqual(pkg.latestRevision, 1, "nothing was published or imported");
+			assert.strictEqual(deps.audit.ofType("skills.package.created").length, 1, "nothing was created");
+			assert.ok((await skills.readDraft(human, id)).some((file) => file.content.includes("Draft in review.")));
+
+			// Reading the organisation's skills is still open to its members.
+			assert.strictEqual((await skills.get(stranger, id)).latestRevision, 1);
+			assert.strictEqual((await skills.readDraft(stranger, id)).length, 2);
+			assert.strictEqual((await skills.getRevision(stranger, id, 1)).digest, first.digest);
+			assert.ok((await skills.readFile(stranger, id, 1, "SKILL.md")).includes("One."));
+			assert.strictEqual((await skills.listRevisions(stranger, id)).items.length, 1);
+			// An organisation-wide operator may change it.
+			assert.strictEqual((await skills.publish(human, id, { expectedDigest: digest })).revision, 2);
+		}),
+
+		test("write authority: a user changes their own skill without a role; anyone else needs one across the organisation", async (skills, deps) => {
+			const first = await publishNew(skills, solo, soloUser, "notes", "Mine.");
+			assert.strictEqual(first.revision, 1, "a user with no role publishes their own skill");
+			const id = first.skillId;
+			const { digest } = await skills.saveDraft(solo, id, { files: skillFiles("notes", "Second thoughts.") });
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			// The other human is an operator on both projects, but not across the organisation.
+			await refused(
+				"skills.create",
+				skills.create(otherHuman, { owner: soloUser, name: "planted", description: "No" }),
+			);
+			await refused(
+				"skills.saveDraft",
+				skills.saveDraft(otherHuman, id, { files: skillFiles("notes", "Overwritten.") }),
+			);
+			await refused("skills.publish", skills.publish(otherHuman, id, { expectedDigest: digest }));
+			await refused(
+				"skills.importRevision",
+				skills.importRevision(otherHuman, {
+					owner: soloUser,
+					name: "notes",
+					description: "Imported",
+					files: skillFiles("notes", "Imported."),
+					source: { sourceId: "git", ref: "abc" },
+				}),
+			);
+			// The user with no role may not change anyone else's skills either.
+			await refused("skills.create", skills.create(solo, { owner: user, name: "planted", description: "No" }));
+			const pkg = await skills.get(solo, id);
+			assert.strictEqual(pkg.draftDigest, digest, "the draft is untouched");
+			assert.strictEqual(pkg.latestRevision, 1, "nothing was published or imported");
+			assert.strictEqual(deps.audit.ofType("skills.package.created").length, 1, "nothing was created");
+
+			assert.strictEqual((await skills.publish(solo, id, { expectedDigest: digest })).revision, 2);
+			const imported = await skills.importRevision(solo, {
+				owner: soloUser,
+				name: "notes",
+				description: "Imported",
+				files: skillFiles("notes", "From my own repo."),
+				source: { sourceId: "git", ref: "def" },
+			});
+			assert.strictEqual(imported.revision, 3, "the user imports into their own skill");
+			// An organisation-wide operator may change it too.
+			const next = await skills.saveDraft(service, id, { files: skillFiles("notes", "Tidied by a service.") });
+			assert.strictEqual((await skills.publish(service, id, { expectedDigest: next.digest })).revision, 4);
+		}),
+
+		test("write authority: an agent saves a draft to an organisation's skill only through its own open session, and still may not publish", async (skills, deps) => {
+			const first = await publishNew(skills, human, organisation, "deploy", "One.");
+			const id = first.skillId;
+			// Any project's agent may propose a change to the organisation's skill.
+			const { digest } = await skills.saveDraft(otherProjectAgent, id, {
+				files: skillFiles("deploy", "Proposed by an agent."),
+			});
+			assert.strictEqual((await skills.get(human, id)).draftDigest, digest);
+			await assert.rejectsWithCode(skills.publish(otherProjectAgent, id, { expectedDigest: digest }), "forbidden");
+			deps.tenancy.close("session-other-project");
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused(
+				"skills.saveDraft",
+				skills.saveDraft(otherProjectAgent, id, { files: skillFiles("deploy", "After the close.") }),
+			);
+			const ghost = contextFor(actors.agent("agent-ghost", "session-unknown"), ORG);
+			await refused("skills.saveDraft", skills.saveDraft(ghost, id, { files: skillFiles("deploy", "From nowhere.") }));
+			const pkg = await skills.get(human, id);
+			assert.strictEqual(pkg.draftDigest, digest, "only the open session's draft was kept");
+			assert.strictEqual(pkg.latestRevision, 1, "nothing was published");
+			assert.strictEqual((await skills.publish(human, id, { expectedDigest: digest })).revision, 2);
+		}),
+	];
+	if (options.writes !== true) return withAccess;
+
+	const strict: SkillsSettings = {
+		authority: { create: "admin", saveDraft: "operator", publish: "admin", importRevision: "admin" },
+	};
+
+	return [
+		...withAccess,
+
+		test(
+			"writes: a store's authority sets the role each change needs, and a user's own skills need none",
+			async (skills, deps) => {
+				const refused = (operation: string, call: Promise<unknown>) =>
+					assertAccessDenied(assert, deps, call, { operation });
+				await refused(
+					"skills.create",
+					skills.create(human, { owner: organisation, name: "deploy", description: "Deploy" }),
+				);
+				const team = await skills.create(admin, { owner: organisation, name: "deploy", description: "Deploy" });
+				const { digest } = await skills.saveDraft(human, team.id, { files: skillFiles("deploy", "By an operator.") });
+				await refused("skills.publish", skills.publish(human, team.id, { expectedDigest: digest }));
+				await refused(
+					"skills.importRevision",
+					skills.importRevision(human, {
+						owner: organisation,
+						name: "deploy",
+						description: "Imported",
+						files: skillFiles("deploy", "Imported."),
+						source: { sourceId: "git", ref: "abc" },
+					}),
+				);
+				const before = await skills.get(admin, team.id);
+				assert.strictEqual(before.latestRevision, undefined, "nothing was published or imported");
+				assert.strictEqual(before.draftDigest, digest, "the draft is untouched");
+				assert.strictEqual((await skills.publish(admin, team.id, { expectedDigest: digest })).revision, 1);
+
+				// On a project's skill the role is on the project; an agent still saves as an operator.
+				const own = await skills.create(admin, { owner: project, name: "triage", description: "Triage issues" });
+				const proposed = await skills.saveDraft(agent, own.id, { files: skillFiles("triage", "Proposed.") });
+				await refused("skills.publish", skills.publish(service, own.id, { expectedDigest: proposed.digest }));
+				assert.strictEqual((await skills.get(admin, own.id)).latestRevision, undefined, "nothing was published");
+				assert.strictEqual((await skills.publish(admin, own.id, { expectedDigest: proposed.digest })).revision, 1);
+
+				// A user still changes their own skills without a role.
+				assert.strictEqual((await publishNew(skills, solo, soloUser, "notes", "Mine.")).revision, 1);
+			},
+			strict,
+		),
+
+		test(
+			"writes: an authority needing admin to save drafts shuts agents out, since an agent counts as an operator",
+			async (skills, deps) => {
+				const own = await skills.create(admin, { owner: project, name: "triage", description: "Triage issues" });
+				const team = await skills.create(admin, { owner: organisation, name: "deploy", description: "Deploy" });
+				for (const pkg of [own, team]) {
+					await assertAccessDenied(
+						assert,
+						deps,
+						skills.saveDraft(agent, pkg.id, { files: skillFiles(pkg.name, "Proposed.") }),
+						{ operation: "skills.saveDraft", message: `an agent saving a draft of ${pkg.name}` },
+					);
+					assert.strictEqual((await skills.get(admin, pkg.id)).draftDigest, undefined, "no draft was saved");
+				}
+				const { digest } = await skills.saveDraft(admin, own.id, { files: skillFiles("triage", "By an admin.") });
+				assert.strictEqual((await skills.get(admin, own.id)).draftDigest, digest);
+			},
+			{ authority: { create: "admin", saveDraft: "admin", publish: "admin", importRevision: "admin" } },
+		),
 	];
 }
 
@@ -790,7 +1001,7 @@ export function registerSkillsConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: SkillsConformanceProvider,
-	options?: ConformanceOptions,
+	options?: SkillsConformanceOptions,
 ): void {
 	registerCases(
 		runner,
@@ -799,6 +1010,7 @@ export function registerSkillsConformance(
 			assertions: createExpectAssertions(runner.expect),
 			provider,
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+			...(options?.writes === undefined ? {} : { writes: options.writes }),
 		}),
 	);
 }

@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { isHarbourError } from "@harbour/contracts";
-import { normaliseSkillPath, parseSkillFrontmatter, skillDigest, validateSkillName } from "@harbour/skills";
+import {
+	normaliseSkillPath,
+	parseSkillFrontmatter,
+	skillDigest,
+	validateSkillName,
+	validateSkillPackage,
+} from "@harbour/skills";
 import { createMemorySkills } from "@harbour/skills/memory";
 import { describe, expect, it } from "vitest";
 
@@ -78,8 +84,56 @@ describe("parseSkillFrontmatter", () => {
 	});
 });
 
+describe("validateSkillPackage", () => {
+	const skillMd = (content: string) => ({ path: "SKILL.md", content });
+
+	it("passes a package with SKILL.md whose frontmatter names it and describes it", () => {
+		expect(
+			validateSkillPackage("deploy", [
+				skillMd("---\nname: deploy\ndescription: Ship it\n---\n"),
+				{ path: "./scripts/run.sh", content: "" },
+			]),
+		).toEqual([]);
+		expect(validateSkillPackage("deploy", [skillMd("---\ndescription: 'Ship it'\n---\n")])).toEqual([]);
+	});
+
+	it("reports each problem against its file instead of throwing", () => {
+		const misnamed = validateSkillPackage("deploy", [skillMd("---\nname: release\n---\n")]);
+		expect(misnamed.map((problem) => problem.path)).toEqual(["SKILL.md", "SKILL.md"]);
+		expect(validateSkillPackage("deploy", [skillMd("# No frontmatter\n")])).toMatchObject([
+			{ path: "SKILL.md", reason: "The frontmatter needs a description" },
+		]);
+		expect(validateSkillPackage("deploy", [{ path: "docs/SKILL.md", content: "x" }])).toMatchObject([
+			{ path: "SKILL.md" },
+		]);
+		const problems = validateSkillPackage("Deploy", [
+			skillMd("---\nname: Deploy\ndescription: Ship it\n---\n"),
+			{ path: "./SKILL.md", content: "again" },
+			{ path: "../escape", content: "x" },
+		]);
+		expect(problems.map((problem) => problem.path)).toEqual(["", "SKILL.md", "../escape"]);
+	});
+});
+
 describe("createMemorySkills", () => {
 	const ctx = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
+
+	it("refuses an authority without a role for every change", () => {
+		expect(
+			codeOf(() =>
+				createMemorySkills({
+					authority: { create: "admin", saveDraft: "operator", publish: "owner", importRevision: "admin" } as never,
+				}),
+			),
+		).toBe("invalid");
+		expect(
+			codeOf(() =>
+				createMemorySkills({
+					authority: { create: "admin", saveDraft: "operator", publish: "admin", importRevision: "viewer" },
+				}),
+			),
+		).toBe(undefined);
+	});
 
 	it("takes a draft's description from SKILL.md when none is given, and mounts under mountRoot", async () => {
 		const skills = createMemorySkills({ mountRoot: "/mnt/skills/" });

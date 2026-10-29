@@ -1,8 +1,8 @@
 /**
- * Portable logic for skills: path normalisation, the package digest, name rules and a small `SKILL.md` frontmatter
- * reader. See CONTRACT.md.
+ * Portable logic for skills: path normalisation, the package digest, name rules, a small `SKILL.md` frontmatter
+ * reader and a package check against the Agent Skills rules. See CONTRACT.md.
  */
-import { HarbourError, type SkillFile } from "@harbour/contracts";
+import { HarbourError, isHarbourError, type SkillFile } from "@harbour/contracts";
 
 /** The file every skill package must hold at its root. */
 export const SKILL_MD = "SKILL.md";
@@ -61,6 +61,67 @@ export function parseSkillFrontmatter(skillMd: string): { readonly name?: string
 		if (value !== "") fields[match[1] as "name" | "description"] = value;
 	}
 	return fields;
+}
+
+/** Something `validateSkillPackage` found wrong: the file it is about (`""` for the package itself) and why. */
+export interface SkillPackageProblem {
+	readonly path: string;
+	readonly reason: string;
+}
+
+/**
+ * Checks a package against the Agent Skills rules, without throwing: a valid name, text files at valid paths (as
+ * `normaliseSkillPath` reads them), each path once, and `SKILL.md` at the root with frontmatter (as
+ * `parseSkillFrontmatter` reads it) holding a description and, if it names the skill, the package's name. Empty when
+ * the package is valid. Stores accept more than this (they need only `SKILL.md` and valid paths), so a host runs it
+ * before publishing to know a package will work in any Agent Skills client.
+ */
+export function validateSkillPackage(name: string, files: readonly SkillFile[]): readonly SkillPackageProblem[] {
+	const problems: SkillPackageProblem[] = [];
+	if (typeof name !== "string" || !SKILL_NAME.test(name)) {
+		problems.push({ path: "", reason: "A skill name must be 1 to 64 lowercase letters, digits or dashes" });
+	}
+	const seen = new Set<string>();
+	let skillMd: string | undefined;
+	for (const file of files) {
+		if (typeof file?.path !== "string") {
+			problems.push({ path: "", reason: "Every file needs a path" });
+			continue;
+		}
+		let path: string;
+		try {
+			path = normaliseSkillPath(file.path);
+		} catch (error) {
+			if (!isHarbourError(error)) throw error;
+			problems.push({ path: file.path, reason: error.message });
+			continue;
+		}
+		if (seen.has(path)) {
+			problems.push({ path, reason: `${path} appears twice` });
+			continue;
+		}
+		seen.add(path);
+		if (typeof file.content !== "string") {
+			problems.push({ path, reason: `${path} needs text content` });
+			continue;
+		}
+		if (path === SKILL_MD) skillMd = file.content;
+	}
+	if (skillMd === undefined) {
+		if (!seen.has(SKILL_MD)) problems.push({ path: SKILL_MD, reason: `A skill package needs ${SKILL_MD} at its root` });
+		return problems;
+	}
+	const frontmatter = parseSkillFrontmatter(skillMd);
+	if (frontmatter.name !== undefined && frontmatter.name !== name) {
+		problems.push({
+			path: SKILL_MD,
+			reason: `The frontmatter names the skill ${JSON.stringify(frontmatter.name)}, not ${JSON.stringify(name)}`,
+		});
+	}
+	if (frontmatter.description === undefined || frontmatter.description.trim() === "") {
+		problems.push({ path: SKILL_MD, reason: "The frontmatter needs a description" });
+	}
+	return problems;
 }
 
 function unquote(value: string): string {

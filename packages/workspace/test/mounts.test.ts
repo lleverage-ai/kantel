@@ -158,14 +158,19 @@ describe("the skills mount", () => {
 	let source: MountSource;
 	let reviewId: string;
 
-	async function publish(skillId: string, files: { path: string; content: string }[]) {
-		const { digest } = await skills.saveDraft(alice, skillId, { files });
-		return skills.publish(alice, skillId, { expectedDigest: digest });
+	/** An admin across the organisation, who looks after its own skills. */
+	const dana = contextFor(actors.human("dana"), ORG);
+
+	async function publish(skillId: string, files: { path: string; content: string }[], as = alice) {
+		const { digest } = await skills.saveDraft(as, skillId, { files });
+		return skills.publish(as, skillId, { expectedDigest: digest });
 	}
 
 	beforeEach(async () => {
 		deps = createDeps();
 		deps.tenancy.bind(alice.actor, ORG, "operator", PROJECT);
+		// Changing an organisation's skill needs a role across the organisation (M2-BE5).
+		deps.tenancy.bind(dana.actor, ORG, "admin");
 		deps.tenancy.bind(bob.actor, ORG, "operator", OTHER);
 		deps.tenancy.session({ id: SESSION, organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
 		skills = createMemorySkills({ clock: deps.clock, access: deps.access });
@@ -179,12 +184,12 @@ describe("the skills mount", () => {
 			{ path: "SKILL.md", content: "---\nname: pr-review\ndescription: Review a PR\n---\nSteps" },
 			{ path: "scripts/run.sh", content: "echo run" },
 		]);
-		const notes = await skills.create(alice, {
+		const notes = await skills.create(dana, {
 			owner: { kind: "organisation", organisationId: ORG },
 			name: "notes",
 			description: "Notes",
 		});
-		await publish(notes.id, [{ path: "SKILL.md", content: "---\nname: notes\ndescription: Take notes\n---\n" }]);
+		await publish(notes.id, [{ path: "SKILL.md", content: "---\nname: notes\ndescription: Take notes\n---\n" }], dana);
 		const hidden = await skills.create(bob, {
 			owner: { kind: "project", organisationId: ORG, projectId: OTHER },
 			name: "hidden",

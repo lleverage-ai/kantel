@@ -61,9 +61,10 @@ creates the package if needed and publishes, idempotent by source and ref.
 A package is project-scoped when its owner is a project. After the organisation lookup (another organisation's skill
 is still `not_found`) and after the agent rules above (which keep their `forbidden`), each call checks
 `ProjectAccess.require` with the package's project and subject `skills.skill`: `skills.create`, `skills.saveDraft`,
-`skills.publish` and `skills.importRevision` need `operator`; `skills.get`, `skills.readDraft`, `skills.getRevision`,
-`skills.readFile` and `skills.listRevisions` need `viewer`. Platform-, organisation- and user-owned packages keep their
-rules. `skills.list` needs `viewer` on `visibility.projectId` when it is set; without it no project's skills are
+`skills.publish` and `skills.importRevision` need the store's authority (below, `operator` by default);
+`skills.get`, `skills.readDraft`, `skills.getRevision`, `skills.readFile` and `skills.listRevisions` need `viewer`.
+Reads of platform-, organisation- and user-owned packages stay open to the organisation; changes to them follow the
+write authority below. `skills.list` needs `viewer` on `visibility.projectId` when it is set; without it no project's skills are
 listed. `skills.pinForSession` needs `operator` with the session and `visibility.projectId`, so the session must be in
 that project. In both, `visibility.userId` may name only the calling human; services and Harbour may name any user, an
 agent none. That is not a project check: it is `forbidden` without an `access.denied` audit. A refusal is `forbidden`
@@ -75,9 +76,50 @@ filter leave out another project's skills for an operator outside it", "project 
 the calling human's own user; services and Harbour may name any user, agents none" and "project access: an operator
 on the project and an agent in its own session still work on its skills".
 
+## Write authority (M2-BE5)
+
+A store takes a `SkillsAuthority` (`authority`): the least role `create`, `saveDraft`, `publish` and
+`importRevision` each need, `operator` for all by default (`DEFAULT_SKILLS_AUTHORITY`); one missing a role is
+`invalid` when the store is built. Where the role is held follows the owner: on the project for a project's skill;
+across the organisation (a binding with no project) for an organisation's; for a user's, that human user always may
+and anyone else needs the role across the organisation; platform skills stay Harbour's alone. An agent acts through
+its own open session (any project's, for an organisation's skill) and counts as an operator, never an admin, so an
+authority needing `admin` for `saveDraft` shuts agents out; agents still never create, publish or import. A refusal
+is `forbidden`, audited once as `access.denied`, and changes nothing. The cases: "write authority: changing an
+organisation's skill needs a role across the organisation, not on one project, and reading it does not", "write
+authority: a user changes their own skill without a role; anyone else needs one across the organisation", "write
+authority: an agent saves a draft to an organisation's skill only through its own open session, and still may not
+publish", and, with `writes`, "writes: a store's authority sets the role each change needs, and a user's own skills
+need none" and "writes: an authority needing admin to save drafts shuts agents out, since an agent counts as an
+operator".
+
+## Write operations (`@harbour/skills/writes`)
+
+Transport-neutral: each operation parses untrusted JSON strictly (an unknown or missing field is `invalid`) and runs
+on any `Skills` as the caller, so the store's rules apply. `skillsWriteOperations` holds them by name and
+`runSkillsWrite(skills, ctx, name, input)` runs one (an unknown name is `not_found`): `skills.create`,
+`skills.saveDraft`, `skills.validate`, `skills.publish`, `skills.importRevision` and `skills.exportRevision` (a
+`SourcePublishingSkills` only, else `not_supported`). `skills.validate` reads the open draft and returns its digest
+(what `publish` takes) and `validateSkillPackage`'s problems, or one problem and no digest when there is no draft.
+
+`validateSkillPackage(name, files)` (package root) checks a package against the Agent Skills rules without throwing:
+a valid name, valid and unique paths, text content, `SKILL.md` at the root, a frontmatter description and, when the
+frontmatter names the skill, the package's name. Stores do not enforce it, so existing packages keep publishing.
+
+## Writing back to a source (`@harbour/skills/publish`)
+
+`withSourcePublishing({ skills, sourceFor, audit?, clock? })` wraps any `Skills`. After a native `publish` that made
+a new revision, it reads the revision's files and calls the package's `SkillSource.publish`, one export at a time
+per skill, in order, and never over a newer revision it has already exported. A revision that came from a source and
+a publish that returned the latest revision unchanged are not exported. A failed export never fails or undoes the
+publish: it is audited `skills.revision.export_failed` with the error code only; success is audited
+`skills.revision.exported` with the source, ref, revision and digest. `exportRevision(ctx, skillId, revision)`
+retries (agents `forbidden`, the caller must be able to read the skill, `not_supported` without a writable source).
+Its `publish` reads the package first (as `get`) to tell a new revision from an unchanged one.
+
 ## The in-memory implementation
 
-`createMemorySkills({ clock?, audit?, access?, mountRoot? })` keeps packages, drafts, frozen revisions, file contents and pins
+`createMemorySkills({ clock?, audit?, access?, authority?, mountRoot? })` keeps packages, drafts, frozen revisions, file contents and pins
 in maps. `normaliseSkillPath`, `skillDigest` (hex SHA-256 over files sorted by path, each `path\0content\0`),
 `validateSkillName` and `parseSkillFrontmatter` are exported from the package root. A draft's description is the one
 given, else the `SKILL.md` frontmatter's, else the package's; publishing makes it the package's description. A
@@ -85,11 +127,11 @@ retried publish after success (no draft, digest equal to the latest) returns the
 `importRevision` every change follows the last await (the digest) and re-reads the package; `publish` re-reads it
 after the access check and changes everything before the audit. Without `access` it checks only the organisation
 (and the user rule is off); every target and conformance run passes one. It leaves out durable storage, file size
-limits and checking the frontmatter `name` against the package name.
+limits and checking the frontmatter `name` against the package name (`validateSkillPackage` reports it).
 
 ## The durable implementation (`@harbour/skills/sql`)
 
-`createSqlSkills({ driver, objects, prefix?, clock?, audit?, access?, mountRoot? })` runs on any `SqlDriver` from
+`createSqlSkills({ driver, objects, prefix?, clock?, audit?, access?, authority?, mountRoot? })` runs on any `SqlDriver` from
 `@harbour/sql` (Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare) with file bodies in an
 `ObjectBucket` (`r2ObjectBucket(env.BUCKET)` on Cloudflare, an S3 or MinIO adapter self-hosted,
 `createMemoryObjectBucket()` in tests). It applies the same rules as the in-memory store (`src/rules.ts`, shared by
@@ -134,7 +176,8 @@ The Sal worker example (`examples/sal-worker`) composes these for a Sal worker a
 ## Open questions
 
 - Settled (question 7): `list` and `pinForSession` now check `visibility`'s project and user against the caller.
-- Should the frontmatter `name` have to match the package name, as Agent Skills require?
+- Should the frontmatter `name` have to match the package name, as Agent Skills require? `validateSkillPackage` and
+  `skills.validate` report a mismatch; stores still accept it.
 - `get` and `readFile` let anyone in the organisation read a user's skill by ID (project skills are now checked);
   only `list` is narrowed for users. Is that intended?
 - An import with a new ref but unchanged files still makes a new revision, so each ref maps to exactly one revision.

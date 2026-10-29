@@ -30,6 +30,7 @@ import {
 	type SkillPackage,
 	type SkillRevision,
 	type Skills,
+	type SkillsAuthority,
 	type SkillVisibility,
 	systemClock,
 } from "@harbour/contracts";
@@ -38,6 +39,7 @@ import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, valid
 import {
 	assertDescription,
 	assertMayOwn,
+	authorityOf,
 	checkImport,
 	checkList,
 	checkPin,
@@ -50,6 +52,7 @@ import {
 	paginate,
 	prepareFiles,
 	requireOwner,
+	requireWrite,
 	type Source,
 	skillsAudit,
 	visibleOwner,
@@ -108,6 +111,8 @@ export interface SqlSkillsOptions {
 	readonly audit?: AuditSink;
 	/** As for the in-memory store; every target passes one. */
 	readonly access?: ProjectAccess;
+	/** The role each change needs, as for the in-memory store. Default `DEFAULT_SKILLS_AUTHORITY`. */
+	readonly authority?: SkillsAuthority;
 	/** Where skills are mounted in the sandbox; a listing's path is `<mountRoot>/<name>/SKILL.md`. Default `/skills`. */
 	readonly mountRoot?: string;
 }
@@ -327,6 +332,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 	const { driver, objects } = options;
 	const clock = options.clock ?? systemClock;
 	const access = options.access;
+	const authority = authorityOf(options.authority);
 	const audits = skillsAudit(options.audit, clock);
 	const mountRoot = (options.mountRoot ?? "/skills").replace(/\/+$/, "");
 	const prefix = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
@@ -529,7 +535,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 		async create(ctx, input) {
 			forbidAgent(ctx, "create skills");
 			assertMayOwn(ctx, input.owner);
-			await requireOwner(access, ctx, input.owner, "operator", "skills.create");
+			await requireWrite(access, ctx, input.owner, authority.create, "skills.create");
 			validateSkillName(input.name);
 			assertDescription(input.description);
 			const id = `skill_${crypto.randomUUID()}`;
@@ -550,7 +556,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 		async saveDraft(ctx, skillId, input) {
 			const before = await skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.owner);
-			await requireOwner(access, ctx, before.owner, "operator", "skills.saveDraft", skillId);
+			await requireWrite(access, ctx, before.owner, authority.saveDraft, "skills.saveDraft", skillId);
 			if (input.description !== undefined) assertDescription(input.description);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
@@ -591,7 +597,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			forbidAgent(ctx, "publish skills");
 			const before = await skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.owner);
-			await requireOwner(access, ctx, before.owner, "operator", "skills.publish", skillId);
+			await requireWrite(access, ctx, before.owner, authority.publish, "skills.publish", skillId);
 			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 				// Re-read after the access check, and again after losing a race.
 				const pkg = await skillFor(ctx, skillId);
@@ -713,7 +719,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 		},
 
 		async importRevision(ctx, input) {
-			await checkImport(access, ctx, input, validateSkillName);
+			await checkImport(access, authority, ctx, input, validateSkillName);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
 			const stored = await storeFiles(input.owner, files);
