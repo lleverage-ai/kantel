@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 // The browser's own writer (images/browser/agent/mkv.mjs): a replay reads what the recorder wrote, byte for byte.
 // @ts-expect-error: plain JavaScript, with no types
 import { mkvFrame, mkvHeader } from "../../../../images/browser/agent/mkv.mjs";
-import { frameAt, readFrames } from "./mkv.ts";
+import { frameAt, framePainter, readFrames } from "./mkv.ts";
 import { timeline, VIEW_END_MESSAGE, viewOf } from "./viewer.tsx";
 
 const jpeg = (n: number) => new Uint8Array([0xff, 0xd8, n, n, 0xff, 0xd9]);
@@ -47,6 +47,34 @@ describe("reading a recording chunk", () => {
 		expect(frameAt(frames, 100)?.ms).toBe(100);
 		expect(frameAt(frames, 9_999)?.ms).toBe(250);
 		expect(frameAt([], 5)).toBeUndefined();
+	});
+
+	it("paints a frame that decodes slower than playing asks again, and never an older one over a newer", async () => {
+		const decodes = new Map<string, () => void>();
+		const painted: string[] = [];
+		const closed: string[] = [];
+		const show = framePainter(
+			(frame: string) => new Promise<string>((resolve) => decodes.set(frame, () => resolve(frame))),
+			(bitmap) => painted.push(bitmap),
+			(bitmap) => closed.push(bitmap),
+		);
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+		// Playing asks for the same frame on every animation frame while it decodes: it decodes once, and paints.
+		show("a");
+		show("a");
+		show("a");
+		decodes.get("a")!();
+		await settle();
+		expect(painted).toEqual(["a"]);
+		// b is asked for, then c before b has decoded: b is dropped (and closed), c paints.
+		show("b");
+		show("c");
+		decodes.get("c")!();
+		await settle();
+		decodes.get("b")!();
+		await settle();
+		expect(painted).toEqual(["a", "c"]);
+		expect(closed).toEqual(["a", "c", "b"]);
 	});
 });
 
