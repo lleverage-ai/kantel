@@ -4,9 +4,11 @@
 //
 //   POST /v1/egress/decisions   the vault's egress decision API (@harbour/vault/egress-api), for the proxy alone: it
 //                               presents HARBOUR_EGRESS_KEY and the vault sees it as the `egress-gateway` component.
-//                               An allowed decision also carries `redact`: the item's own value, cut out of the
-//                               rendered header by its template, which the proxy must redact from the response (a
-//                               header such as `prefix-<key>` would not redact a bare `<key>` echoed back)
+//                               An allowed decision also carries `redact`: the value of the item it injected (found
+//                               through the decision's grant or policy), cut out of the rendered header by that
+//                               item's template, which the proxy must redact from the response (a header such as
+//                               `prefix-<key>` would not redact a bare `<key>` echoed back). Empty when it can't be
+//                               found, and the proxy then refuses the request
 //   GET  /v1/egress/scope       the organisation and project the proxy decides for: the deployment's bootstrap ones.
 //                               The M0 session hosts' sessions belong to no M1 organisation, so their sandboxes'
 //                               egress is the deployment's
@@ -150,44 +152,50 @@ export interface EgressHandler {
 /** An allowed decision, with the item values to redact from its response. */
 export type RedactingDecision = EgressDecision & { readonly redact?: readonly string[] };
 
-/** How many pages of items a decision reads to find the one it injected. */
-const MAX_ITEM_PAGES = 20;
+/** A bound on reading policies page by page, against a cursor that never ends. */
+const MAX_POLICY_PAGES = 1000;
+
+/** The item an allowed decision injected, through its grant or policy; undefined when it can't be found. */
+async function itemIdOf(vault: HarbourVault, ctx: CallContext, decision: EgressDecision): Promise<string | undefined> {
+	if (decision.grantId !== undefined) return (await vault.getGrant(ctx, decision.grantId)).itemId;
+	if (decision.policyId === undefined) return undefined;
+	let cursor: string | undefined;
+	for (let pages = 0; pages < MAX_POLICY_PAGES; pages += 1) {
+		const page = await vault.listPolicies(ctx, cursor === undefined ? undefined : { cursor });
+		const found = page.items.find((policy) => policy.id === decision.policyId);
+		if (found !== undefined) return found.itemId;
+		if (page.nextCursor === undefined) return undefined;
+		cursor = page.nextCursor;
+	}
+	return undefined;
+}
 
 /**
- * The item values inside `inject`: for each item of the organisation injecting that header whose template could have
- * rendered it, the part its `{key}` stands for. Each is a substring of the injected value, so one too many only redacts
- * more.
+ * The value of the item an allowed decision injected: the part of the injected header its template's `{key}` stands
+ * for (the engine fills in the first). None when the item can't be found or its template doesn't fit the header.
  */
 async function keysIn(
 	vault: HarbourVault,
 	ctx: SystemContext,
 	request: EgressRequest,
-	inject: { readonly header: string; readonly value: string },
+	decision: EgressDecision & { readonly inject: { readonly header: string; readonly value: string } },
 ): Promise<string[]> {
-	const list: CallContext = {
+	const read: CallContext = {
 		...ctx,
 		organisationId: request.organisationId,
 		...(request.projectId === undefined ? {} : { projectId: request.projectId }),
 	};
-	const keys = new Set<string>();
-	let cursor: string | undefined;
-	for (let pages = 0; pages < MAX_ITEM_PAGES; pages += 1) {
-		const page = await vault.listItems(list, cursor === undefined ? undefined : { cursor });
-		for (const item of page.items) {
-			if (item.injection.header.toLowerCase() !== inject.header.toLowerCase()) continue;
-			const at = item.injection.template.indexOf("{key}");
-			if (at < 0) continue;
-			const prefix = item.injection.template.slice(0, at);
-			const suffix = item.injection.template.slice(at + "{key}".length);
-			const { value } = inject;
-			if (value.length <= prefix.length + suffix.length) continue;
-			if (!value.startsWith(prefix) || !value.endsWith(suffix)) continue;
-			keys.add(value.slice(prefix.length, value.length - suffix.length));
-		}
-		if (page.nextCursor === undefined) break;
-		cursor = page.nextCursor;
-	}
-	return [...keys];
+	const itemId = await itemIdOf(vault, read, decision);
+	if (itemId === undefined) return [];
+	const { injection } = await vault.getItem(read, itemId);
+	const at = injection.template.indexOf("{key}");
+	if (at < 0) return [];
+	const prefix = injection.template.slice(0, at);
+	const suffix = injection.template.slice(at + "{key}".length);
+	const { value } = decision.inject;
+	if (injection.header.toLowerCase() !== decision.inject.header.toLowerCase()) return [];
+	if (value.length <= prefix.length + suffix.length || !value.startsWith(prefix) || !value.endsWith(suffix)) return [];
+	return [value.slice(prefix.length, value.length - suffix.length)];
 }
 
 /** The proxy's routes: the vault's decisions and the scope, both behind the proxy's shared key. */
@@ -202,10 +210,11 @@ export function createEgressHandler(options: {
 		vault: {
 			async decideEgress(ctx, request) {
 				const decision = await vault.decideEgress(ctx, request);
-				if (!decision.allow || decision.inject === undefined) return decision;
+				const { inject } = decision;
+				if (!decision.allow || inject === undefined) return decision;
 				const redacting: RedactingDecision = {
 					...decision,
-					redact: await keysIn(vault, ctx, request, decision.inject),
+					redact: await keysIn(vault, ctx, request, { ...decision, inject }),
 				};
 				return redacting;
 			},

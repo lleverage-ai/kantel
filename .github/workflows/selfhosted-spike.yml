@@ -129,13 +129,21 @@ jobs:
       - name: The proxy fails closed without the vault
         run: |
           docker compose cp apps/vault-proxy/test/connect-probe.mjs vault-proxy:/tmp/connect-probe.mjs
-          probe() { docker compose exec -T vault-proxy node /tmp/connect-probe.mjs "$@" | tee "$RUNNER_TEMP/probe.txt"; }
-          probe research-site / ci-probe && grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
-          probe api.github.com /zen ci-probe && grep -q '^403 .*No active grant or policy allows GET api.github.com/zen' "$RUNNER_TEMP/probe.txt"
+          # Each probe and each check on its own line, so either failing fails the step.
+          probe() {
+            docker compose exec -T vault-proxy node /tmp/connect-probe.mjs "$@" > "$RUNNER_TEMP/probe.txt"
+            cat "$RUNNER_TEMP/probe.txt"
+          }
+          probe research-site / ci-probe
+          grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
+          probe api.github.com /zen ci-probe
+          grep -q '^403 .*No active grant or policy allows GET api.github.com/zen' "$RUNNER_TEMP/probe.txt"
           docker compose stop gateway
-          probe research-site / ci-probe && grep -q '^403 .*the vault could not be asked' "$RUNNER_TEMP/probe.txt"
+          probe research-site / ci-probe
+          grep -q '^403 .*the vault could not be asked' "$RUNNER_TEMP/probe.txt"
           docker compose up -d --wait --no-deps gateway
-          probe research-site / ci-probe && grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
+          probe research-site / ci-probe
+          grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
 
       # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)

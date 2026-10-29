@@ -164,6 +164,15 @@ describe("the gateway's egress decisions", () => {
 				projectId: seeded.projectId,
 			},
 			[
+				// Another item with the same header and a template that would fit too: not the one injected, so not named.
+				{
+					name: "plain",
+					hosts: ["plain.example"],
+					injection: { header: "x-api", template: "{key}" },
+					value: "plain-secret-4567",
+					routes: [{ host: "plain.example", methods: ["GET"], pathPrefix: "/" }],
+					selector: { organisationId: seeded.organisationId, projectId: seeded.projectId },
+				},
 				{
 					name: "wrapped",
 					hosts: ["wrapped.example"],
