@@ -62,6 +62,7 @@ import {
 	type Submission,
 	systemClock,
 	systemContext,
+	type WorkspaceId,
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
@@ -165,6 +166,12 @@ export interface SessionRuntimeOptions {
 	 * commands still running.
 	 */
 	readonly environment?: (session: SessionRecord) => ExecutionEnv | undefined;
+	/**
+	 * The workspace a session created without one gets, by the new session's ID, such as a keyed ID its environment
+	 * creates on first use. Giving an ID creates nothing. Without it (or when it answers `undefined`), such a session has
+	 * no workspace.
+	 */
+	readonly defaultWorkspaceId?: (sessionId: SessionId) => WorkspaceId | undefined;
 	/** How many items a snapshot holds. Default 50. */
 	readonly pageSize?: number;
 	/** Told of each session `resume()` could not open. Default: ignored. */
@@ -1053,13 +1060,15 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			// Resolve first, so a profile whose route resolves nowhere creates nothing.
 			resolveModel(profile.model);
 			const now = clock.now();
+			const id = crypto.randomUUID();
+			const workspaceId = input.workspaceId ?? options.defaultWorkspaceId?.(id);
 			const record: SessionRecord = {
-				id: crypto.randomUUID(),
+				id,
 				organisationId: ctx.organisationId,
 				projectId: input.projectId,
 				agentId: profile.id,
 				...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
-				...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+				...(workspaceId === undefined ? {} : { workspaceId }),
 				...(input.title === undefined ? {} : { title: input.title }),
 				status: "idle",
 				labels: { ...input.labels },

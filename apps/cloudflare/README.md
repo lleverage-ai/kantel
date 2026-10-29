@@ -38,6 +38,19 @@ Migrations run on every start of the object; each is idempotent. The bootstrap s
 restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
 `MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
 
+## Files and commands
+
+Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts`), on its workspace at `/workspace`.
+
+- **The workspace.** A session started from a repository runs on the workspace seeded from it. One started without
+  one gets its own, `session_<session ID>`, which is only an ID until a tool needs it: the session's first file tool
+  or command creates it, empty, in the session's project. A session that only talks stores nothing.
+- **The isolate only for commands.** `read`, `write`, `edit` and `ls` work on the workspace in R2 directly, as the
+  session's agent, and lease nothing. `bash` leases the session's isolate on its first command; closing or aborting
+  the session releases it.
+- **Confined.** Paths outside `/workspace` and its mounts are refused, mounts are read-only, a file over 16 MiB is
+  neither read nor written, and every write is a commit audited with the agent as its actor.
+
 ## The browser
 
 With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the default agent has the browser's tools

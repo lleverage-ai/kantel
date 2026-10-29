@@ -10,19 +10,26 @@
  *   workspace refuses anything that is not a normalised relative path. Workspaces have no symbolic links.
  * - **Mounts** (skills, project files) are readable and never writable: `Workspaces.commit` refuses and audits a write.
  * - **Size.** A file over `MAX_TOOL_FILE_BYTES` is neither read (refused before its body is fetched) nor written.
+ * - **Time.** A command runs for at most the timeout `bash` names, `DEFAULT_COMMAND_TIMEOUT_MS` when it names none,
+ *   and never over `MAX_COMMAND_TIMEOUT_MS`; then it stops with exit code 124.
  * - **Audit.** Every write is one commit, `workspace.committed`, with the agent as its actor.
  *
  * Building the environment acquires nothing. The first `bash` call leases the session's isolate (`Sandboxes.run`), and
  * the session-end hook releases it on abort and close; a session that never runs a command never holds one.
- * Only sessions with a workspace get these tools, and only those their profile names.
+ *
+ * Every session has a workspace. One created without one (no repository) gets its own, `session_<session ID>`
+ * (`sessionWorkspaceId`, the runtime's `defaultWorkspaceId`), which exists only once a tool needs it: the session's
+ * first file tool or command creates it, empty, in the session's project (`Workspaces.ensure`, so two racing calls get
+ * the same one). A session that only talks creates nothing. Sessions get the tools their profile names.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { CallContext, Sandboxes, SessionRecord, Workspaces } from "@harbour/contracts";
+import type { CallContext, Sandboxes, SessionId, SessionRecord, WorkspaceId } from "@harbour/contracts";
 import { createSandboxExecutionEnv } from "@harbour/sandbox/pi-env";
+import type { KeyedWorkspaces } from "@harbour/workspace";
 
 /** The coding tools' names, for the default profile. */
 export const CODING_TOOLS = ["read", "write", "edit", "ls", "bash"] as const;
@@ -30,6 +37,10 @@ export const CODING_TOOLS = ["read", "write", "edit", "ls", "bash"] as const;
 export const MAX_TOOL_FILE_BYTES = 16 * 1024 * 1024;
 /** The most entries `ls` lists. */
 const LS_LIMIT = 500;
+/** How long a command runs when `bash` names no timeout. */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
+/** The longest a command may run, whatever timeout `bash` names. */
+export const MAX_COMMAND_TIMEOUT_MS = 10 * 60_000;
 
 const lsSchema = Type.Object({
 	path: Type.Optional(Type.String({ description: "Directory to list (default: the current directory)" })),
@@ -72,37 +83,124 @@ export function agentContext(record: SessionRecord): CallContext {
 	};
 }
 
+/** The prefix of a session's own workspace: one the session's tools create when they first need it. */
+export const SESSION_WORKSPACE_PREFIX = "session_";
+
+/** The workspace a session created without one runs in (the runtime's `defaultWorkspaceId`); it creates nothing. */
+export function sessionWorkspaceId(sessionId: SessionId): WorkspaceId {
+	return `${SESSION_WORKSPACE_PREFIX}${sessionId}`;
+}
+
+/** Whether a workspace ID names a session's own workspace, which its tools create on first use. */
+export function isSessionWorkspace(workspaceId: WorkspaceId): boolean {
+	return workspaceId.startsWith(SESSION_WORKSPACE_PREFIX);
+}
+
 export interface SessionEnvironmentOptions {
 	/** The sandboxes `bash` runs in; asked at each command, so they may be built after the runtime. */
 	readonly sandboxes: () => Sandboxes;
 	/** The workspaces the file tools use; asked at each call, likewise. */
-	readonly workspaces: () => Workspaces;
+	readonly workspaces: () => KeyedWorkspaces;
 	readonly maxFileBytes?: number;
+}
+
+/** A command's time limit: the one asked for, `DEFAULT_COMMAND_TIMEOUT_MS` when none, never over the maximum. */
+export function commandTimeoutMs(asked: number | undefined): number {
+	if (asked === undefined || !Number.isFinite(asked) || asked <= 0) return DEFAULT_COMMAND_TIMEOUT_MS;
+	return Math.min(asked, MAX_COMMAND_TIMEOUT_MS);
+}
+
+/** `sandboxes`, with every command's time bounded (`commandTimeoutMs`). */
+function bounded(sandboxes: Sandboxes): Sandboxes {
+	return new Proxy(sandboxes, {
+		get(inner, key) {
+			const value: unknown = Reflect.get(inner, key, inner);
+			if (key !== "run" || typeof value !== "function") return value;
+			const run = value as Sandboxes["run"];
+			return ((ctx, input) =>
+				run.call(inner, ctx, {
+					...input,
+					request: { ...input.request, timeoutMs: commandTimeoutMs(input.request.timeoutMs) },
+				})) satisfies Sandboxes["run"];
+		},
+	});
 }
 
 /**
  * Each session's environment for the runtime (`SessionRuntimeOptions.environment`): over its workspace, as its agent;
- * `undefined` for a session without a workspace.
+ * `undefined` for a session without a workspace. Over a session's own workspace (`isSessionWorkspace`), the first call
+ * that reaches the workspaces or the sandboxes creates it first, once.
  */
 export function sessionEnvironments(
 	options: SessionEnvironmentOptions,
 ): (record: SessionRecord) => ExecutionEnv | undefined {
-	const sandboxes = late(options.sandboxes);
+	const sandboxes = bounded(late(options.sandboxes));
 	const workspaces = late(options.workspaces);
-	return (record) =>
-		record.workspaceId === undefined
-			? undefined
-			: createSandboxExecutionEnv({
-					ctx: agentContext(record),
-					sessionId: record.id,
-					workspaceId: record.workspaceId,
-					sandboxes,
-					workspaces,
-					maxFileBytes: options.maxFileBytes ?? MAX_TOOL_FILE_BYTES,
-				});
+	return (record) => {
+		const workspaceId = record.workspaceId;
+		if (workspaceId === undefined) return undefined;
+		const ctx = agentContext(record);
+		const ensure = isSessionWorkspace(workspaceId) ? ensureOnce(workspaces, ctx, record, workspaceId) : undefined;
+		return createSandboxExecutionEnv({
+			ctx,
+			sessionId: record.id,
+			workspaceId,
+			sandboxes: ensure === undefined ? sandboxes : first(ensure, sandboxes),
+			workspaces: ensure === undefined ? workspaces : first(ensure, workspaces),
+			maxFileBytes: options.maxFileBytes ?? MAX_TOOL_FILE_BYTES,
+		});
+	};
 }
 
-/** The session's tools for the runtime (`SessionRuntimeOptions.tools`): the coding tools when it has a workspace. */
+/**
+ * Creates the session's own workspace, empty and in its project, the first time it is called, as the session's agent
+ * (who may create one only in its own session's project). Later calls wait for that one; a failure is not kept, so
+ * the next call tries again.
+ */
+function ensureOnce(
+	workspaces: KeyedWorkspaces,
+	ctx: CallContext,
+	record: SessionRecord,
+	workspaceId: WorkspaceId,
+): () => Promise<void> {
+	let ensured: Promise<void> | undefined;
+	return () => {
+		if (ensured === undefined) {
+			const ensuring = workspaces
+				.ensure(ctx, workspaceId, {
+					owner: { kind: "project", organisationId: record.organisationId, projectId: record.projectId },
+				})
+				.then(() => undefined);
+			ensured = ensuring;
+			ensuring.catch(() => {
+				if (ensured === ensuring) ensured = undefined;
+			});
+		}
+		return ensured;
+	};
+}
+
+/** Methods of `Sandboxes` and `Workspaces` that answer at once, not with a promise: `first` leaves them as they are. */
+const SYNCHRONOUS = new Set<PropertyKey>(["route"]);
+
+/** `target`, whose every method that returns a promise waits for `before` first. */
+function first<T extends object>(before: () => Promise<void>, target: T): T {
+	return new Proxy(target, {
+		get(inner, key) {
+			const value: unknown = Reflect.get(inner, key, inner);
+			if (typeof value !== "function" || SYNCHRONOUS.has(key)) return value;
+			return async (...args: unknown[]) => {
+				await before();
+				return (value as (...a: unknown[]) => unknown).apply(inner, args);
+			};
+		},
+	});
+}
+
+/**
+ * The session's tools for the runtime (`SessionRuntimeOptions.tools`): the coding tools when it has a workspace, which
+ * every session does when the runtime gives each its own (`sessionWorkspaceId`).
+ */
 export function sessionCodingTools(): (record: SessionRecord) => readonly ToolRegistration[] {
 	const tools = codingTools();
 	return (record) => (record.workspaceId === undefined ? [] : tools);

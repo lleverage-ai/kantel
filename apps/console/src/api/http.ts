@@ -298,7 +298,16 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 					const query = new URLSearchParams({ limit: String(LIST_LIMIT) });
 					if (path !== "") query.set("path", path);
 					if (cursor !== undefined) query.set("cursor", cursor);
-					const page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					let page: Page<WorkspaceEntry>;
+					try {
+						page = await getJson<Page<WorkspaceEntry>>(url("files", query), signal);
+					} catch (reason) {
+						// A session's own workspace exists once its first tool call makes it; until then it is empty.
+						if (path === "" && cursor === undefined && reason instanceof ApiError && reason.code === "not_found") {
+							return { entries: [], truncated: false };
+						}
+						throw reason;
+					}
 					entries.push(...page.items);
 					cursor = page.nextCursor;
 				} while (cursor !== undefined && entries.length < DIRECTORY_CAP);

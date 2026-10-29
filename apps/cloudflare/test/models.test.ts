@@ -8,6 +8,7 @@ import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/m
 import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
 import { afterEach, describe, expect, it } from "vitest";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
+import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
 import {
 	CPA_CONNECTOR_ID,
@@ -141,9 +142,14 @@ describe("sessions on the model gateway", () => {
 		await ask("Hi");
 		const call = upstream.calls().at(-1)!;
 		expect(call.kind).toBe("anthropic-messages");
-		// The whole body: the user's message and the model's settings. No system prompt, and no text Harbour wrote; what
-		// the model is told is the user's to configure on their profile.
-		expect(call.body).toEqual({
+		// The whole body: the user's message, the model's settings and the session's tools (every session has the coding
+		// tools, which describe themselves). No system prompt, and no text Harbour wrote; what the model is told is the
+		// user's to configure on their profile.
+		const { tools, ...body } = call.body as { tools?: { name: string }[] };
+		// Pi's Anthropic client adds a deferred placeholder the model never sees, to keep tool changes in the cached prefix.
+		const named = tools?.map((tool) => tool.name).filter((name) => name !== "__pi_deferred_placeholder__");
+		expect(named).toEqual([...CODING_TOOLS]);
+		expect(body).toEqual({
 			model: DEFAULT_MODEL,
 			messages: [
 				{ role: "user", content: [{ type: "text", text: "Hi", cache_control: { type: "ephemeral" } }] },
