@@ -8,21 +8,33 @@
  * - creates the memory space (`POST /v1/memory/spaces`) unless one of that name exists, and loads the bundle into it
  *   with `POST /v1/memory/spaces/{spaceId}/snapshot`.
  *
- * Both need a person with the organisation's admin role on Cloudflare. Run with Node 24:
+ * With `--profile <agent ID>` it then names them on that agent's profile (`PUT /v1/profiles/{agentId}`), so its new
+ * sessions list the skills and recall from the space: the skills a Sal worker's prompt lists (those whose
+ * `disable-model-invocation` is not set, as Pi leaves those out), and the space beside the profile's other memory scopes.
  *
- *   node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --url https://harbour.example \
- *     --header "Cf-Access-Jwt-Assertion: <token>"
+ * The Harbour and the credentials come from the environment, never the command line or the repository:
+ *
+ * - `HARBOUR_URL`: the Harbour's base URL, such as `https://harbour.example` (or `--url`);
+ * - `HARBOUR_API_KEY`: an `hbr_` key, sent as `Authorization: Bearer`;
+ * - `HARBOUR_ACCESS_TOKEN`: a signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion`.
+ *
+ * On Cloudflare, importing skills and snapshots needs the organisation's admin role, which only a person holds today:
+ * an API key's role is on its projects, so the gateway refuses it there (403), though it can set a profile. Run with
+ * Node 24:
+ *
+ *   HARBOUR_URL=https://harbour.example HARBOUR_ACCESS_TOKEN=<token> \
+ *     node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --profile assistant
  *
  * `--out <file>` writes the requests as JSON instead of sending them (`{ organisation, skills, space, snapshot }`, with
  * `<organisation>` standing in for the owner's organisation), to send from somewhere already signed in. `--space`
- * names the memory space (default "Sal memory"). Nothing it reads is written anywhere else: the content is the
- * owner's, so keep it out of the repository.
+ * names the memory space (default "Sal memory"). `--header "Name: value"` adds a header to every request. Nothing it
+ * reads is written anywhere else: the content is the owner's, so keep it out of the repository.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { createHarbourClient, type ImportSkillBody } from "@harbour/api/sdk";
-import type { MemorySnapshot, MeResponse, OwnerRef } from "@harbour/contracts";
+import type { AgentProfile, MemorySnapshot, MeResponse, OwnerRef } from "@harbour/contracts";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker } from "../src/worker.ts";
 
@@ -48,13 +60,14 @@ const { values } = parseArgs({
 		config: { type: "string" },
 		url: { type: "string" },
 		header: { type: "string", multiple: true },
-		token: { type: "string" },
 		space: { type: "string" },
+		profile: { type: "string" },
 		out: { type: "string" },
 	},
 });
 if (values.config === undefined) throw new Error("--config is required");
-if (values.url === undefined && values.out === undefined) throw new Error("--url or --out is required");
+const harbourUrl = values.url ?? process.env.HARBOUR_URL;
+if (harbourUrl === undefined && values.out === undefined) throw new Error("set HARBOUR_URL (or --url), or --out");
 const configPath = resolve(values.config);
 const base = dirname(configPath);
 const config = JSON.parse(readFileSync(configPath, "utf8")) as ImportConfig;
@@ -72,6 +85,12 @@ const host = await prepareSalWorker({
 	}),
 	...(config.exclude === undefined ? {} : { exclude: config.exclude }),
 });
+
+/** Whether Pi lists a skill in the prompt: not when its frontmatter sets `disable-model-invocation`. */
+function listedByPi(extensions: ImportSkillBody["extensions"]): boolean {
+	const sal = extensions?.sal as { readonly disableModelInvocation?: boolean } | undefined;
+	return sal?.disableModelInvocation !== true;
+}
 
 /** Every skill as published locally, ready to import under `owner`. */
 async function skillBodies(owner: OwnerRef): Promise<ImportSkillBody[]> {
@@ -115,14 +134,17 @@ if (values.out !== undefined) {
 	writeFileSync(values.out, JSON.stringify({ organisation: ORGANISATION, skills, space: spaceName, snapshot }));
 	console.log(JSON.stringify({ ...summary, skills: skills.length, out: values.out }));
 } else {
-	const url = (values.url ?? "").replace(/\/+$/, "");
+	const url = (harbourUrl ?? "").replace(/\/+$/, "");
 	const headers: Record<string, string> = {};
 	for (const header of values.header ?? []) {
 		const at = header.indexOf(":");
 		if (at < 1) throw new Error(`--header ${JSON.stringify(header)} is not "Name: value"`);
 		headers[header.slice(0, at).trim()] = header.slice(at + 1).trim();
 	}
-	if (values.token !== undefined) headers.authorization = `Bearer ${values.token}`;
+	const apiKey = process.env.HARBOUR_API_KEY;
+	if (apiKey !== undefined && apiKey !== "") headers.authorization = `Bearer ${apiKey}`;
+	const accessToken = process.env.HARBOUR_ACCESS_TOKEN;
+	if (accessToken !== undefined && accessToken !== "") headers["cf-access-jwt-assertion"] = accessToken;
 	const meResponse = await fetch(`${url}/v1/me`, { headers });
 	if (!meResponse.ok) throw new Error(`GET /v1/me answered ${meResponse.status}`);
 	const me = (await meResponse.json()) as MeResponse;
@@ -130,9 +152,11 @@ if (values.out !== undefined) {
 	const owner: OwnerRef = { kind: "organisation", organisationId: me.organisationId };
 
 	let published = 0;
+	const listed: string[] = [];
 	for (const body of await skillBodies(owner)) {
 		const revision = await harbour.importSkill(body);
 		published += 1;
+		if (listedByPi(body.extensions)) listed.push(body.name);
 		console.error(`skill ${body.name}: revision ${revision.revision}`);
 	}
 
@@ -141,5 +165,33 @@ if (values.out !== undefined) {
 		spaces.items.find((item) => item.name === spaceName && item.owner.kind === "organisation") ??
 		(await harbour.createMemorySpace({ owner, name: spaceName }));
 	const loaded = await harbour.importMemorySnapshot(space.id, snapshot);
-	console.log(JSON.stringify({ ...summary, skills: published, spaceId: loaded.id, snapshot: loaded.snapshot }));
+
+	let profile: { readonly agentId: string; readonly skills: number; readonly memoryScopes: number } | undefined;
+	if (values.profile !== undefined) {
+		const path = `${url}/v1/profiles/${encodeURIComponent(values.profile)}`;
+		const got = await fetch(path, { headers });
+		if (!got.ok) throw new Error(`GET /v1/profiles/${values.profile} answered ${got.status}`);
+		const current = (await got.json()) as AgentProfile;
+		const next: AgentProfile = {
+			...current,
+			skills: listed.sort(),
+			memoryScopes: [...new Set([...current.memoryScopes, loaded.id])],
+		};
+		const put = await fetch(path, {
+			method: "PUT",
+			headers: { ...headers, "content-type": "application/json" },
+			body: JSON.stringify(next),
+		});
+		if (!put.ok) throw new Error(`PUT /v1/profiles/${values.profile} answered ${put.status}: ${await put.text()}`);
+		profile = { agentId: next.id, skills: next.skills.length, memoryScopes: next.memoryScopes.length };
+	}
+	console.log(
+		JSON.stringify({
+			...summary,
+			skills: published,
+			spaceId: loaded.id,
+			snapshot: loaded.snapshot,
+			...(profile === undefined ? {} : { profile }),
+		}),
+	);
 }
