@@ -4,7 +4,7 @@
  * and takes the caller from an injected `Authenticator`. Routes are listed in `packages/runtime/HTTP.md`.
  */
 
-import { createRouter, routes as publicRoutes } from "@harbour/api";
+import { createRouter, sessionRoutes as publicRoutes } from "@harbour/api";
 import {
 	type AgentProfile,
 	type AgentProfiles,
