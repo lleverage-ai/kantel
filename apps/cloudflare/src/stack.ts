@@ -75,7 +75,7 @@ import {
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
-import { CODING_TOOLS, sessionCodingTools, sessionEnvironments } from "./coding-tools.ts";
+import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
 import type { StackModels } from "./models.ts";
@@ -363,6 +363,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		tools: (record: SessionRecord) =>
 			browser === undefined ? codingToolsFor(record) : [...codingToolsFor(record), ...browser.tools(record)],
 		environment,
+		// A session started without a workspace (no repository) gets its own, which its first file tool or command
+		// creates; until then it is only an ID, so a session that only talks costs no storage.
+		defaultWorkspaceId: sessionWorkspaceId,
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -436,8 +439,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			model: { route: "default" },
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
-			// The coding tools are offered only in a session that has a workspace; the browser's only when the stack has a
-			// provider. Tools describe themselves through their schemas; Harbour adds no prompt about them.
+			// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
+			// browser's only when the stack has a provider. Tools describe themselves through their schemas; Harbour adds no prompt about them.
 			tools: browser === undefined ? [...CODING_TOOLS] : [...CODING_TOOLS, ...BROWSER_TOOL_NAMES],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
