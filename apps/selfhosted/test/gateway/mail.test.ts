@@ -13,9 +13,15 @@ describe("mail configuration", () => {
 			transport: "smtp",
 			host: "mailpit",
 			port: 1025,
+			starttls: "required",
 			authenticated: false,
 			from: "harbour@example.com",
 		});
+		const clear = mailConfig({
+			HARBOUR_SMTP_URL: "smtp://mailpit:1025?starttls=off",
+			HARBOUR_MAIL_FROM: "harbour@example.com",
+		});
+		expect(clear && describeMail(clear)).toMatchObject({ transport: "smtp", port: 1025, starttls: "off" });
 		const tls = mailConfig({
 			HARBOUR_SMTP_URL: "smtps://user:secret-password@smtp.example.com",
 			HARBOUR_MAIL_FROM: "Harbour <harbour@example.com>",
@@ -33,6 +39,11 @@ describe("mail configuration", () => {
 		expect(() => mailConfig({ HARBOUR_SMTP_URL: "not a url", ...from })).toThrow(/not a URL/);
 		expect(() => mailConfig({ HARBOUR_SMTP_URL: "https://mail.example.com", ...from })).toThrow(/smtp/);
 		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025" })).toThrow(/HARBOUR_MAIL_FROM/);
+		// What the identity lane's mailer would refuse, refused at start.
+		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025?tls=no", ...from })).toThrow(/unknown parameter/);
+		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtps://relay.example.com?starttls=off", ...from })).toThrow(
+			/TLS already/,
+		);
 		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025", HARBOUR_MAIL_FROM: "Harbour" })).toThrow(
 			/address/,
 		);

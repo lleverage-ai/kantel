@@ -13,6 +13,36 @@ export interface HarbourClientOptions {
 	readonly headers?: () => { readonly [name: string]: string } | Promise<{ readonly [name: string]: string }>;
 	/** Default the global `fetch`. */
 	readonly fetch?: typeof fetch;
+	/**
+	 * Opens a stream's WebSocket. Default the global `WebSocket`; with a bearer it passes `{ headers }`, which Node's
+	 * (undici's) takes. A browser can't put a header on a socket, so in a browser the page must be signed in by cookie.
+	 */
+	readonly webSocket?: (url: string, headers: { readonly [name: string]: string }) => WebSocketLike;
+}
+
+/** The parts of a WHATWG WebSocket a stream uses. */
+export interface WebSocketLike {
+	onopen: ((event: unknown) => void) | null;
+	onmessage: ((event: { readonly data: unknown }) => void) | null;
+	onclose: ((event: { readonly code: number; readonly reason: string }) => void) | null;
+	onerror: ((event: unknown) => void) | null;
+	close(code?: number, reason?: string): void;
+}
+
+/** What a stream calls as frames arrive. */
+export interface StreamHandlers<Frame> {
+	/** The frames of one message, in order: `hello`, then a snapshot or the deltas after `after`, then live deltas. */
+	onFrames(frames: readonly Frame[]): void;
+	onOpen?(): void;
+	/** The socket closed, by either side. Reconnect with `{ after: handle.cursor }` to resume. */
+	onClose?(event: { readonly code: number; readonly reason: string }): void;
+}
+
+/** An open stream. */
+export interface StreamHandle {
+	/** The latest cursor the stream has sent (a hello's, a snapshot's or a delta's), to resume from. */
+	readonly cursor: string | undefined;
+	close(): void;
 }
 
 /** Per call. */
@@ -20,6 +50,11 @@ export interface CallOptions {
 	readonly signal?: AbortSignal;
 	/** Sent as `harbour-request-id`, which correlates the call in Harbour's audit trail. */
 	readonly requestId?: string;
+	/**
+	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
+	 * call's answer and does nothing again. Use a new key, such as a UUID, for each new call.
+	 */
+	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };
 }
 
@@ -90,6 +125,7 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
 	if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
 	const doFetch = options.fetch ?? fetch;
@@ -102,4 +138,86 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 	if (!response.ok) throw await errorOf(response);
 	if (response.status === 204) return undefined as T;
 	return (await response.json()) as T;
+}
+
+const cursorOf = (frame: unknown): string | undefined => {
+	const value = frame as {
+		type?: string;
+		cursor?: string;
+		snapshot?: { cursor?: string };
+		delta?: { cursor?: string };
+	};
+	if (value.type === "snapshot") return value.snapshot?.cursor;
+	if (value.type === "delta") return value.delta?.cursor;
+	if (value.type === "hello") return value.cursor;
+	return undefined;
+};
+
+function defaultWebSocket(url: string, headers: { readonly [name: string]: string }): WebSocketLike {
+	const Socket = (globalThis as { WebSocket?: unknown }).WebSocket as
+		| (new (
+				url: string,
+				init?: { headers: { readonly [name: string]: string } },
+		  ) => WebSocketLike)
+		| undefined;
+	if (Socket === undefined) throw new HarbourApiError(0, "not_supported", "This platform has no WebSocket");
+	return Object.keys(headers).length === 0 ? new Socket(url) : new Socket(url, { headers });
+}
+
+/** Opens a stream route's WebSocket and hands each message's frames to `handlers`. */
+export function openStream<Frame>(
+	options: HarbourClientOptions,
+	call: ApiCall,
+	handlers: StreamHandlers<Frame>,
+	callOptions: CallOptions = {},
+): StreamHandle {
+	const base = options.baseUrl.replace(/\/+$/, "");
+	const origin = (globalThis as { location?: { href?: string } }).location?.href;
+	const url = new URL(`${base}${call.path}${queryString(call.query)}`, origin);
+	url.protocol = url.protocol === "https:" ? "wss:" : url.protocol === "http:" ? "ws:" : url.protocol;
+	let cursor: string | undefined;
+	let socket: WebSocketLike | undefined;
+	let closed = false;
+	const handle: StreamHandle = {
+		get cursor() {
+			return cursor;
+		},
+		close() {
+			closed = true;
+			socket?.close(1000, "The client closed the stream");
+		},
+	};
+	void (async () => {
+		const headers: { [name: string]: string } = {};
+		Object.assign(headers, (await options.headers?.()) ?? {});
+		const token = typeof options.token === "function" ? await options.token() : options.token;
+		if (token !== undefined) headers.authorization = `Bearer ${token}`;
+		if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+		Object.assign(headers, callOptions.headers ?? {});
+		if (closed) return;
+		socket = (options.webSocket ?? defaultWebSocket)(url.href, headers);
+		socket.onopen = () => handlers.onOpen?.();
+		socket.onmessage = (event) => {
+			if (typeof event.data !== "string") return;
+			let frames: unknown;
+			try {
+				frames = JSON.parse(event.data);
+			} catch {
+				return;
+			}
+			if (!Array.isArray(frames) || frames.length === 0) return;
+			for (const frame of frames) cursor = cursorOf(frame) ?? cursor;
+			handlers.onFrames(frames as Frame[]);
+		};
+		socket.onerror = () => undefined;
+		socket.onclose = (event) => {
+			closed = true;
+			handlers.onClose?.({ code: event.code, reason: event.reason });
+		};
+		callOptions.signal?.addEventListener("abort", () => handle.close(), { once: true });
+	})().catch((error: unknown) => {
+		closed = true;
+		handlers.onClose?.({ code: 1006, reason: error instanceof Error ? error.message : "The stream failed to open" });
+	});
+	return handle;
 }

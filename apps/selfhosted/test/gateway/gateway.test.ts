@@ -4,26 +4,32 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, expect, test } from "vitest";
-import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
+import { EMAIL_OTP_ISSUER, systemContext } from "@harbour/contracts";
+import { MemoryOtpMailer } from "@harbour/identity/otp";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { type Bootstrap, bootstrap, createGatewayComponents, inviteAdmin } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { writePrivateFile } from "../../src/gateway/main.ts";
 import { type Listening, listen } from "../../src/gateway/node-http.ts";
 import { type E2eTarget, runGatewayE2e } from "./e2e.ts";
+import { runSignInE2e } from "./signin-e2e.ts";
 
 const REQUEST_TIMEOUT_MS = 1000;
+const ADMIN_EMAIL = "Admin@Harbour.localhost";
+const mailer = new MemoryOtpMailer();
+let components: ReturnType<typeof createGatewayComponents>;
 
 let server: Listening;
-let target: E2eTarget;
+let target: E2eTarget & Bootstrap;
 let scratch: string;
 let close: () => Promise<void>;
 
 beforeAll(async () => {
 	scratch = await mkdtemp(join(tmpdir(), "harbour-gateway-"));
 	await writeFile(join(scratch, "index.html"), '<!doctype html><div id="root"></div>');
-	const components = createGatewayComponents();
-	const seeded = await bootstrap(components, { organisation: "Test", project: "test" });
-	const gateway = createGateway({ components, consoleDir: scratch });
+	components = createGatewayComponents();
+	const seeded = await bootstrap(components, { organisation: "Test", project: "test", adminEmail: ADMIN_EMAIL });
+	const gateway = createGateway({ components, consoleDir: scratch, mailer });
 	server = await listen(gateway.fetch, 0, { host: "127.0.0.1", requestTimeoutMs: REQUEST_TIMEOUT_MS });
 	target = { baseUrl: server.url, ...seeded };
 	close = async () => {
@@ -44,6 +50,131 @@ test("the gateway serves every mounted API end to end", async () => {
 	const checks = await runGatewayE2e(target);
 	expect(checks.filter((check) => !check.ok)).toEqual([]);
 	expect(checks.length).toBeGreaterThan(15);
+});
+
+/** The newest code the memory mailer sent to `email`, waiting up to `timeoutMs` for one. */
+async function memoryCode(email: string, _since: number, timeoutMs: number): Promise<string | undefined> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const code = mailer.lastCodeFor(email);
+		if (code !== undefined) return code;
+		if (Date.now() >= deadline) return undefined;
+		await sleep(20);
+	}
+}
+
+test("email one-time PIN sign-in starts a Harbour session every API accepts", async () => {
+	const checks = await runSignInE2e({ ...target, adminEmail: ADMIN_EMAIL.toLowerCase(), readCode: memoryCode });
+	expect(checks.filter((check) => !check.ok)).toEqual([]);
+	expect(checks.length).toBeGreaterThanOrEqual(12);
+});
+
+describe("inviting the admin", () => {
+	const email = "invited@harbour.localhost";
+	const asOtp = { issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true } as const;
+	const names = { organisation: "Invite", project: "invite" };
+
+	/** A fresh deployment, and the admin bindings `email`'s user holds in its organisation. */
+	async function fresh() {
+		const parts = createGatewayComponents();
+		const seeded = await bootstrap(parts, names);
+		const inOrganisation = {
+			actor: { kind: "system", component: "test" },
+			organisationId: seeded.organisationId,
+		} as const;
+		const adminBindings = async () => {
+			if (!(await parts.identity.canSignIn(systemContext("test"), asOtp))) return [];
+			const { user } = await parts.identity.signIn(systemContext("test"), asOtp);
+			return (await parts.identity.listRoleBindings(inOrganisation)).filter(
+				(binding) => binding.principal.kind === "user" && binding.principal.userId === user.id,
+			);
+		};
+		return { parts, seeded, inOrganisation, adminBindings };
+	}
+
+	test("twice before anyone signs in creates one user, with one admin binding", async () => {
+		const { parts, seeded, adminBindings } = await fresh();
+		const createUser = vi.spyOn(parts.identity, "createUser");
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		expect(createUser).toHaveBeenCalledTimes(1);
+		expect((await adminBindings()).map((binding) => binding.role)).toEqual(["admin"]);
+		await parts.close();
+	});
+
+	test("after the person has signed in creates no user", async () => {
+		const { parts, seeded } = await fresh();
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		await parts.identity.signIn(systemContext("test"), asOtp);
+		const createUser = vi.spyOn(parts.identity, "createUser");
+		await inviteAdmin(parts.identity, seeded.organisationId, email);
+		expect(createUser).not.toHaveBeenCalled();
+		await parts.close();
+	});
+
+	test("an attempt that stopped before its grant is finished by the next, with no second user", async () => {
+		const { parts, seeded, adminBindings } = await fresh();
+		const createUser = vi.spyOn(parts.identity, "createUser");
+		vi.spyOn(parts.identity, "grantRole").mockRejectedValueOnce(new Error("the database went away"));
+		await expect(bootstrap(parts, { ...names, adminEmail: email }, seeded)).rejects.toThrow(/went away/);
+		expect(await adminBindings()).toEqual([]);
+		const retried = await bootstrap(parts, { ...names, adminEmail: email }, seeded);
+		expect(retried.invitedAdmin).toBe(email);
+		expect(createUser).toHaveBeenCalledTimes(1);
+		expect((await adminBindings()).map((binding) => binding.role)).toEqual(["admin"]);
+		await parts.close();
+	});
+
+	test("a finished invite is not repeated, so a role removed since stays removed", async () => {
+		const { parts, seeded, inOrganisation, adminBindings } = await fresh();
+		const invited = await bootstrap(parts, { ...names, adminEmail: email.toUpperCase() }, seeded);
+		expect(invited.invitedAdmin).toBe(email);
+		const [binding] = await adminBindings();
+		if (binding === undefined) throw new Error("the invite granted nothing");
+		await parts.identity.revokeRole(inOrganisation, { principal: binding.principal });
+		await bootstrap(parts, { ...names, adminEmail: email }, invited);
+		expect(await adminBindings()).toEqual([]);
+		await parts.close();
+	});
+});
+
+test("without a mailer the sign-in routes answer 503, and API keys still work", async () => {
+	const bare = createGateway({ components });
+	for (const path of ["/auth/otp/start", "/auth/otp/verify", "/auth/session/end"]) {
+		const response = await bare.fetch(new Request(`http://gateway${path}`, { method: "POST", body: "{}" }));
+		expect(response.status).toBe(503);
+	}
+	const deployment = await bare.fetch(
+		new Request("http://gateway/v1/deployment", { headers: { authorization: `Bearer ${target.apiKey}` } }),
+	);
+	expect(deployment.status).toBe(200);
+	await bare.close();
+});
+
+test("sign-in requests are limited per client address, and another address is unaffected", async () => {
+	const limited = createGateway({
+		components,
+		mailer: new MemoryOtpMailer(),
+		signInLimit: { requests: 3, windowMilliseconds: 60_000 },
+	});
+	const start = (address: string) =>
+		limited.fetch(
+			new Request("http://gateway/auth/otp/start", {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-forwarded-for": "10.0.0.9" },
+				body: JSON.stringify({ email: `someone-${crypto.randomUUID()}@example.com` }),
+			}),
+			{ address },
+		);
+	const statuses = [];
+	for (let i = 0; i < 4; i += 1) statuses.push((await start("192.0.2.1")).status);
+	expect(statuses).toEqual([202, 202, 202, 429]);
+	const refused = await start("192.0.2.1");
+	const retryAfter = Number(refused.headers.get("retry-after"));
+	expect(retryAfter).toBeGreaterThan(0);
+	expect(retryAfter).toBeLessThanOrEqual(60);
+	expect((await start("192.0.2.2")).status).toBe(202);
+	await limited.close();
 });
 
 test("static paths cannot leave the console directory", async () => {

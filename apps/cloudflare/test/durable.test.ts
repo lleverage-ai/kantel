@@ -12,6 +12,7 @@ import type { SqlValue } from "@harbour/runtime-cloudflare";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
+import { objectSqlDriver } from "../src/audit-outbox.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createEchoModels } from "../src/echo-model.ts";
 import { createGateway } from "../src/gateway.ts";
@@ -84,11 +85,31 @@ function objectStorage(db: DatabaseSync): SessionObjectStorage & { readonly alar
 }
 
 async function durableStorage(bootstrap: BootstrapStore = createMemoryBootstrapStore()): Promise<StackStorage> {
+	const objectDb = new DatabaseSync(":memory:");
+	const sessions = objectStorage(objectDb);
+	// `ctx.storage.transactionSync`: nested in an open transaction it runs as a savepoint, as the object's does.
+	const transactionSync = <T>(work: () => T): T => {
+		const nested = objectDb.isTransaction;
+		objectDb.exec(nested ? "SAVEPOINT sync" : "BEGIN");
+		try {
+			const result = work();
+			objectDb.exec(nested ? "RELEASE sync" : "COMMIT");
+			return result;
+		} catch (error) {
+			objectDb.exec(nested ? "ROLLBACK TO sync" : "ROLLBACK");
+			throw error;
+		}
+	};
 	return {
 		sql: syncSqliteDriver(new DatabaseSync(":memory:")),
-		sessions: objectStorage(new DatabaseSync(":memory:")),
+		sessions,
 		workspaces: createMemoryWorkspaceStore(),
 		bootstrap,
+		// Audit events queue in the object's SQLite, beside the sessions, as on Cloudflare.
+		auditOutbox: {
+			driver: objectSqlDriver(sessions.sql, transactionSync),
+			background: (work) => void work.catch(() => undefined),
+		},
 	};
 }
 
