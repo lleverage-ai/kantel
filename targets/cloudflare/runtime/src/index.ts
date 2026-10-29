@@ -6,7 +6,7 @@
 import { type Authenticator, type Clock, systemClock } from "@harbour/contracts";
 import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@harbour/runtime/core";
 import { callbackHostHandlers, createSessionApi, type SessionApi, type SessionApiOptions } from "@harbour/runtime/http";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import type { SessionStore } from "@harbour/runtime/store";
 import { DurableObjectSessionDatabase, type DurableObjectTransaction, type SqlStorageLike } from "./database.ts";
 
@@ -131,6 +131,8 @@ export class SessionRuntimeDurableObjectCore {
 				}),
 			store,
 			storage: (session) => sqlPiStorage(this.database, session.id),
+			// A closed session's tables are archived and dropped, so the object's schema grows with its open sessions (#216).
+			archive: runtimeOptions.archive ?? ((session) => archiveSqlPiStorage(this.database, session.id)),
 			onWakeAt: (at) => this.#arm(at),
 		});
 		this.#api = createSessionApi({

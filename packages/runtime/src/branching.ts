@@ -30,6 +30,23 @@ export const ACTIVE_CONVERSATION = defineDoc<{ conversationId?: number }>({
 });
 
 /**
+ * A forked session's skills (#210): the revisions its source pinned, as the source's `harbour.context` entry records
+ * them, which the fork mounts on its first prompt in place of pinning its own. The fork's transcript carries the source's
+ * listing, so its `/skills` must show the same revisions. `mounted` is set once the host has mounted them, so a fork
+ * mounts once, and a failed mount is tried again on the next prompt. Absent (the default) on every other session.
+ */
+export const FORK_SKILLS = defineDoc<{
+	skills?: { skillId: string; revision: number }[];
+	mounted?: boolean;
+}>({
+	kind: "harbour.fork-skills",
+	version: 1,
+	scope: "session",
+	initial: () => ({}),
+	checkpointWhen: () => true,
+});
+
+/**
  * Appends `entries` (one conversation's visible history, as `Conversation.context` gives it) to `conversationId`, in
  * the order they were written, inside the commit that creates it. Heads and context edits are pointed at the copies;
  * an edit of an entry not copied is left out. Tasks that wrote the originals don't exist here, so attribution goes.

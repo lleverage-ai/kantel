@@ -9,7 +9,7 @@
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/chord/sqlite";
 import { applySqliteMigrations, validateSqliteSchemaPrefix } from "@earendil-works/chord/sqlite";
 import type { Storage } from "@earendil-works/pi-durable";
-import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import type { AgentProfile, SessionRecord, Submission } from "@harbour/contracts";
 import type { SessionStore, StoredHost, StoredSession, StoredSessionFilter, StoredSubmission } from "./store.ts";
 
@@ -310,7 +310,258 @@ export function borrowDatabase(db: SqliteDatabase): SqliteDatabase {
 	};
 }
 
-/** Pi Durable storage for one session in a shared database, under the session's own table prefix. */
-export function sqlPiStorage(db: SqliteDatabase, sessionId: string): Promise<Storage> {
-	return SqliteStorage.open(borrowDatabase(db), { prefix: piPrefixFor(sessionId) });
+/** The Pi Durable schema version `piSchemaStatements` creates: Pi Durable 1.4.0's latest. */
+export const PI_SCHEMA_VERSION = 2;
+
+/**
+ * Pi Durable's SQLite schema at `PI_SCHEMA_VERSION`, for table prefix `p`, as its migrations leave it: version 1's
+ * tables, with version 2's `tasks` (which adds the `sleeping` status) in place of version 1's. The statements and
+ * their order are Pi Durable's own (`createSqliteMigrations` in `@earendil-works/pi-durable/storage/sqlite`), so the
+ * tables, columns, constraints and indexes are the same; `sql.conformance.test.ts` compares the two schemas.
+ *
+ * Replaying the migrations instead rebuilds `tasks` and renames it into place, and SQLite rewrites the whole
+ * database's schema for a rename. With every session's tables in one database, that made each new session's create
+ * slower than the last (#216).
+ */
+export function piSchemaStatements(p: string): string[] {
+	validateSqliteSchemaPrefix(p);
+	return [
+		`CREATE TABLE ${p}durable_metadata (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			next_id TEXT NOT NULL,
+			next_seq INTEGER NOT NULL
+		) STRICT`,
+		`INSERT INTO ${p}durable_metadata (singleton, next_id, next_seq) VALUES (1, '2', 1)`,
+		`CREATE TABLE ${p}record_ids (
+			id INTEGER PRIMARY KEY,
+			record_type TEXT NOT NULL CHECK (record_type IN ('conversation', 'entry', 'task', 'submission', 'document'))
+		) STRICT`,
+		`CREATE TABLE ${p}conversations (
+			id INTEGER PRIMARY KEY,
+			owner_conversation_id INTEGER,
+			owner_task_id INTEGER,
+			record TEXT NOT NULL CHECK (json_valid(record))
+		) STRICT`,
+		`CREATE INDEX ${p}conversations_by_owner_conversation ON ${p}conversations (owner_conversation_id, id)`,
+		`CREATE INDEX ${p}conversations_by_owner_task ON ${p}conversations (owner_task_id, id)`,
+		`CREATE TABLE ${p}entries (
+			id INTEGER PRIMARY KEY,
+			conversation_id INTEGER NOT NULL,
+			head INTEGER,
+			commit_seq INTEGER NOT NULL,
+			record TEXT NOT NULL CHECK (json_valid(record))
+		) STRICT`,
+		`CREATE INDEX ${p}entries_by_conversation ON ${p}entries (conversation_id, id DESC)`,
+		`CREATE INDEX ${p}entry_heads_by_conversation ON ${p}entries (conversation_id, id DESC) WHERE head IS NOT NULL`,
+		`CREATE TABLE ${p}tasks (
+			id INTEGER PRIMARY KEY,
+			conversation_id INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal')),
+			abort_requested INTEGER NOT NULL CHECK (abort_requested IN (0, 1)),
+			background INTEGER NOT NULL CHECK (background IN (0, 1)),
+			record TEXT NOT NULL CHECK (json_valid(record))
+		) STRICT`,
+		`CREATE INDEX ${p}tasks_by_status ON ${p}tasks (status, id)`,
+		`CREATE INDEX ${p}tasks_by_conversation ON ${p}tasks (conversation_id, id)`,
+		`CREATE INDEX ${p}tasks_by_kind ON ${p}tasks (kind, id)`,
+		`CREATE INDEX ${p}tasks_by_abort_requested ON ${p}tasks (abort_requested, id)`,
+		`CREATE INDEX ${p}tasks_by_background ON ${p}tasks (background, id)`,
+		`CREATE TABLE ${p}submissions (
+			id INTEGER PRIMARY KEY,
+			conversation_id INTEGER NOT NULL,
+			request_id TEXT,
+			status TEXT NOT NULL CHECK (status IN ('queued', 'placed', 'done', 'unanswered')),
+			record TEXT NOT NULL CHECK (json_valid(record))
+		) STRICT`,
+		`CREATE INDEX ${p}submissions_by_request ON ${p}submissions (conversation_id, request_id)`,
+		`CREATE INDEX ${p}submissions_by_conversation ON ${p}submissions (conversation_id, id)`,
+		`CREATE INDEX ${p}submissions_by_status ON ${p}submissions (status, id)`,
+		`CREATE TABLE ${p}documents (
+			id INTEGER PRIMARY KEY,
+			kind TEXT NOT NULL,
+			family INTEGER NOT NULL CHECK (family IN (0, 1)),
+			key_value TEXT NOT NULL,
+			scope_kind TEXT NOT NULL CHECK (scope_kind IN ('session', 'conversation', 'task')),
+			owner_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			retired_at INTEGER,
+			record TEXT NOT NULL CHECK (json_valid(record))
+		) STRICT`,
+		`CREATE INDEX ${p}documents_by_address
+			ON ${p}documents (kind, scope_kind, owner_id, family, key_value, created_at DESC, retired_at)`,
+		`CREATE INDEX ${p}documents_by_scope ON ${p}documents (scope_kind, owner_id, id)`,
+		`CREATE INDEX ${p}documents_by_scope_kind ON ${p}documents (scope_kind, owner_id, kind, id)`,
+		`CREATE TABLE ${p}document_revisions (
+			document_id INTEGER NOT NULL,
+			seq INTEGER NOT NULL,
+			kind TEXT NOT NULL CHECK (kind IN ('base', 'delta')),
+			version INTEGER NOT NULL,
+			content TEXT NOT NULL CHECK (json_valid(content)),
+			PRIMARY KEY (document_id, seq)
+		) STRICT`,
+		`CREATE INDEX ${p}document_revisions_by_kind ON ${p}document_revisions (document_id, kind, seq DESC)`,
+	];
+}
+
+/**
+ * Creates a new session's Pi tables at `PI_SCHEMA_VERSION` and records that version where Pi Durable's migrations look
+ * for it (the `durable_schema` table chord's `applySqliteMigrations` keeps), so `SqliteStorage.open` finds nothing to
+ * migrate. A session that already has its tables (version above 0) is left alone, as is every session while Pi
+ * Durable's own schema version is another one: its migrations then run as before.
+ */
+export async function createPiSchema(db: SqliteDatabase, prefix: string): Promise<void> {
+	if (CURRENT_SQLITE_SCHEMA_VERSION !== PI_SCHEMA_VERSION) return;
+	await db.transaction(async (tx) => {
+		if ((await schemaVersionRow(tx, prefix)) === 0) await createPiTables(tx, prefix);
+	});
+}
+
+/** Makes the session's `durable_schema` table and first row, as chord's `applySqliteMigrations` does; its version. */
+async function schemaVersionRow(tx: SqliteExecutor, prefix: string): Promise<number> {
+	const table = `${prefix}durable_schema`;
+	await tx.exec(`CREATE TABLE IF NOT EXISTS ${table} (
+		singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+		version INTEGER NOT NULL CHECK (version >= 0)
+	) STRICT`);
+	await tx.run(`INSERT OR IGNORE INTO ${table} (singleton, version) VALUES (1, 0)`);
+	const row = await tx.get<{ version: number }>(`SELECT version FROM ${table} WHERE singleton = 1`);
+	return Number(row?.version ?? 0);
+}
+
+/** Creates the session's tables at `PI_SCHEMA_VERSION` and records the version, in the caller's transaction. */
+async function createPiTables(tx: SqliteExecutor, prefix: string): Promise<void> {
+	for (const statement of piSchemaStatements(prefix)) await tx.exec(statement);
+	await tx.run(`UPDATE ${prefix}durable_schema SET version = ? WHERE singleton = 1`, PI_SCHEMA_VERSION);
+}
+
+/** A session's Pi tables, as `piSchemaStatements` creates them, without `durable_schema`. */
+const PI_TABLES = [
+	"durable_metadata",
+	"record_ids",
+	"conversations",
+	"entries",
+	"tasks",
+	"submissions",
+	"documents",
+	"document_revisions",
+] as const;
+
+/**
+ * Closed sessions' Pi records, once `archiveSqlPiStorage` has dropped their tables: one row per record, its columns as
+ * a JSON object, under the session and the table it came from. One table for every session, so archiving adds rows,
+ * not schema.
+ */
+export const PI_ARCHIVE_TABLE = "harbour_pi_archive";
+
+const archiveTables = new WeakMap<SqliteDatabase, Promise<void>>();
+
+/** Creates `PI_ARCHIVE_TABLE` once per database handle. */
+function ensureArchiveTable(db: SqliteDatabase): Promise<void> {
+	let made = archiveTables.get(db);
+	if (made === undefined) {
+		made = db.exec(`CREATE TABLE IF NOT EXISTS ${PI_ARCHIVE_TABLE} (
+			session_id TEXT NOT NULL,
+			table_name TEXT NOT NULL,
+			row_number INTEGER NOT NULL,
+			row TEXT NOT NULL,
+			PRIMARY KEY (session_id, table_name, row_number)
+		) STRICT`);
+		archiveTables.set(db, made);
+		made.catch(() => archiveTables.delete(db));
+	}
+	return made;
+}
+
+/**
+ * Archives a closed session's Pi storage and drops its tables (#216): every record of its `pi_<id>_` tables goes into
+ * `PI_ARCHIVE_TABLE`, in one transaction with the drops, so the database's schema grows with the sessions open, not
+ * with every session it has held. `sqlPiStorage` restores the tables when the session is opened again (to read its
+ * transcript, say). Call it once the session's Harness has closed, as the runtime's `archive` option does.
+ *
+ * Says whether it archived anything: a session already archived, one with no tables, and one whose tables are at
+ * another schema version than `PI_SCHEMA_VERSION` (which `sqlPiStorage` could not restore) are left as they are.
+ */
+export async function archiveSqlPiStorage(db: SqliteDatabase, sessionId: string): Promise<boolean> {
+	const prefix = piPrefixFor(sessionId);
+	if (CURRENT_SQLITE_SCHEMA_VERSION !== PI_SCHEMA_VERSION) return false;
+	await ensureArchiveTable(db);
+	let version: number | undefined;
+	try {
+		const row = await db.get<{ version: number }>(`SELECT version FROM ${prefix}durable_schema WHERE singleton = 1`);
+		version = row === undefined ? undefined : Number(row.version);
+	} catch {
+		// No tables: never opened, or archived already.
+		return false;
+	}
+	if (version !== PI_SCHEMA_VERSION) return false;
+	return db.transaction(async (tx) => {
+		for (const table of PI_TABLES) {
+			const rows = await tx.all<Record<string, unknown>>(`SELECT * FROM ${prefix}${table}`);
+			for (const [index, row] of rows.entries()) {
+				await tx.run(
+					`INSERT INTO ${PI_ARCHIVE_TABLE} (session_id, table_name, row_number, row) VALUES (?, ?, ?, ?)`,
+					sessionId,
+					table,
+					index,
+					JSON.stringify(row),
+				);
+			}
+		}
+		// Dropping a table drops its indexes with it.
+		for (const table of [...PI_TABLES, "durable_schema"]) await tx.exec(`DROP TABLE ${prefix}${table}`);
+		return true;
+	});
+}
+
+/**
+ * Puts an archived session's Pi tables back (`archiveSqlPiStorage`): the tables at `PI_SCHEMA_VERSION` with every
+ * archived record, and the archive's rows removed, in one transaction. Says whether the session had an archive.
+ */
+export async function restoreSqlPiStorage(db: SqliteDatabase, sessionId: string): Promise<boolean> {
+	const prefix = piPrefixFor(sessionId);
+	await ensureArchiveTable(db);
+	const archived = await db.get<{ found: number }>(
+		`SELECT 1 AS found FROM ${PI_ARCHIVE_TABLE} WHERE session_id = ? LIMIT 1`,
+		sessionId,
+	);
+	if (archived === undefined) return false;
+	return db.transaction(async (tx) => {
+		// Another opening restored it meanwhile.
+		if ((await schemaVersionRow(tx, prefix)) !== 0) return false;
+		await createPiTables(tx, prefix);
+		// The archive holds the session's own metadata row in place of a new session's.
+		await tx.run(`DELETE FROM ${prefix}durable_metadata`);
+		const rows = await tx.all<{ table_name: string; row: string }>(
+			`SELECT table_name, row FROM ${PI_ARCHIVE_TABLE} WHERE session_id = ? ORDER BY table_name, row_number`,
+			sessionId,
+		);
+		for (const { table_name: table, row } of rows) {
+			if (!(PI_TABLES as readonly string[]).includes(table)) {
+				throw new Error(`Session ${sessionId}'s archive names an unknown table ${table}`);
+			}
+			const record = JSON.parse(row) as Record<string, unknown>;
+			const columns = Object.keys(record);
+			for (const column of columns) {
+				if (!/^[a-z_]+$/.test(column)) throw new Error(`Session ${sessionId}'s archive names a bad column ${column}`);
+			}
+			await tx.run(
+				`INSERT INTO ${prefix}${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+				...(columns.map((column) => record[column]) as (string | number | null)[]),
+			);
+		}
+		await tx.run(`DELETE FROM ${PI_ARCHIVE_TABLE} WHERE session_id = ?`, sessionId);
+		return true;
+	});
+}
+
+/**
+ * Pi Durable storage for one session in a shared database, under the session's own table prefix. A new session's
+ * tables are created at the current schema version (`createPiSchema`), not by replaying Pi Durable's migrations; an
+ * archived session's are restored from the archive (`restoreSqlPiStorage`).
+ */
+export async function sqlPiStorage(db: SqliteDatabase, sessionId: string): Promise<Storage> {
+	const prefix = piPrefixFor(sessionId);
+	if (!(await restoreSqlPiStorage(db, sessionId))) await createPiSchema(db, prefix);
+	return SqliteStorage.open(borrowDatabase(db), { prefix });
 }
