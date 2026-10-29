@@ -7,9 +7,11 @@ import type {
 	Concept,
 	ConceptInput,
 	Memory,
+	MemoryAuthority,
 	MemoryProposal,
 	MemorySpace,
 	MemoryWrite,
+	ParaphraseCheck,
 } from "@harbour/contracts";
 import {
 	actors,
@@ -29,10 +31,28 @@ export interface MemorySubject {
 	readonly memory: Memory;
 }
 
+/**
+ * What a case asks the memory to be built with, beyond the deps: only the `writes` cases set either, and a provider
+ * registered with `writes: true` must pass both on.
+ */
+export interface MemorySettings {
+	readonly authority?: MemoryAuthority;
+	readonly paraphrase?: ParaphraseCheck;
+}
+
 export type MemoryConformanceProvider = (
 	deps: ConformanceDeps,
 	use: (subject: MemorySubject) => Promise<void>,
+	settings: MemorySettings,
 ) => Promise<void>;
+
+export interface MemoryConformanceOptions extends ConformanceOptions {
+	/**
+	 * Runs the M2-BE5 write cases that build the memory with `MemorySettings`: a stricter `MemoryAuthority` and a host's
+	 * `ParaphraseCheck`. Needs `projectAccess` too.
+	 */
+	readonly writes?: boolean;
+}
 
 const ORG = "org-a";
 const OTHER_ORG = "org-b";
@@ -50,12 +70,18 @@ const stranger = contextFor(actors.human("stranger-1"), ORG, OTHER_PROJECT);
 const viewer = contextFor(actors.human("viewer-1"), ORG, PROJECT);
 /** An agent whose session belongs to another project. */
 const otherProjectAgent = contextFor(actors.agent("agent-2", "session-other-project"), ORG, OTHER_PROJECT);
+/** An admin across the organisation. */
+const admin = contextFor(actors.human("admin-1"), ORG);
+/** A user of the organisation with no role anywhere, who owns a space of their own. */
+const solo = contextFor(actors.human("solo-1"), ORG);
 
 /** The role bindings and agent sessions every case acts with. */
 function seedTenancy(deps: ConformanceDeps): void {
 	const tenancy = deps.tenancy;
-	tenancy.bind(human.actor, ORG, "operator", PROJECT);
-	tenancy.bind(service.actor, ORG, "operator", PROJECT);
+	// Organisation-wide, so they may write to the organisation's spaces as well as the project's.
+	tenancy.bind(human.actor, ORG, "operator");
+	tenancy.bind(service.actor, ORG, "operator");
+	tenancy.bind(admin.actor, ORG, "admin");
 	tenancy.bind(stranger.actor, ORG, "operator", OTHER_PROJECT);
 	tenancy.bind(viewer.actor, ORG, "viewer", PROJECT);
 	tenancy.bind(outsider.actor, OTHER_ORG, "operator");
@@ -114,14 +140,19 @@ export function createMemoryConformance(options: {
 	assertions: ConformanceAssertions;
 	provider: MemoryConformanceProvider;
 	projectAccess?: boolean;
+	writes?: boolean;
 }): readonly ConformanceCase[] {
 	const assert = options.assertions;
-	const test = (name: string, body: (memory: Memory, deps: ConformanceDeps) => Promise<void>): ConformanceCase => ({
+	const test = (
+		name: string,
+		body: (memory: Memory, deps: ConformanceDeps) => Promise<void>,
+		settings: MemorySettings = {},
+	): ConformanceCase => ({
 		name,
 		run: async () => {
 			const deps = createDeps();
 			seedTenancy(deps);
-			await options.provider(deps, (subject) => body(subject.memory, deps));
+			await options.provider(deps, (subject) => body(subject.memory, deps), settings);
 		},
 	});
 
@@ -230,6 +261,115 @@ export function createMemoryConformance(options: {
 			});
 			const decided = await memory.decide(human, flagged.id, { outcome: "apply" });
 			assert.strictEqual(decided.status, "applied", "once the original is gone the duplicate may apply");
+		}),
+
+		test("flags a paraphrase of an active concept, not only a near-identical statement, and refuses to apply it", async (memory) => {
+			const space = await createSpace(memory);
+			const original = await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/deploy-window", "Deploy window", "Deploy harbour only on weekday mornings"),
+			);
+			const merges = await remember(
+				memory,
+				space.id,
+				conceptInput(
+					"projects/harbour/merge-authority",
+					"Merge authority",
+					"Tom said he doesn't need to merge Harbour PRs; workers merge them once CI is green.",
+				),
+			);
+			// Inflected and reordered: too few words in common for `similarity`, the same words once stemmed.
+			const reworded = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput(
+					"projects/harbour/deploy-days",
+					"Deploy days",
+					"Harbour deploys happen only on weekday mornings",
+				),
+			});
+			assert.strictEqual(reworded.duplicateOf, original.id, "a reworded statement is caught");
+			assert.strictEqual(reworded.duplicate?.check, "paraphrase");
+			assert.ok((reworded.duplicate?.score ?? 0) >= 0.5 && (reworded.duplicate?.score ?? 2) <= 1, "scored 0 to 1");
+			const restated = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput(
+					"projects/harbour/who-merges",
+					"Who merges Harbour PRs",
+					"Workers merge Harbour pull requests themselves once CI passes; Tom doesn't need to merge them.",
+				),
+			});
+			assert.strictEqual(restated.duplicateOf, merges.id, "a restatement is caught");
+			const related = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput("projects/brwsr/deploy-window", "brwsr deploys", "Deploy brwsr on weekday evenings"),
+			});
+			assert.strictEqual(related.duplicateOf, undefined, "a related but different fact is not flagged");
+			assert.strictEqual(related.duplicate, undefined);
+			const exact = await memory.propose(agent, space.id, {
+				op: "remember",
+				concept: conceptInput("projects/harbour/deploys", "Deploys", "Deploy harbour only on weekday mornings"),
+			});
+			assert.deepEqual(exact.duplicate, { score: 1, check: "similarity" }, "an exact repeat is a similarity match");
+
+			await assert.rejectsWithCode(memory.decide(human, reworded.id, { outcome: "apply" }), "conflict");
+			await assert.rejectsWithCode(memory.decide(human, restated.id, { outcome: "apply" }), "conflict");
+			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/harbour/deploy-days"), "not_found");
+			assert.strictEqual((await memory.decide(human, related.id, { outcome: "apply" })).status, "applied");
+		}),
+
+		test("flags a correction or a replacement that repeats another active concept, but never the concept it changes", async (memory) => {
+			const space = await createSpace(memory);
+			const ci = await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/ci", "CI runner", "CI runs biome, tsc and vitest on every push"),
+			);
+			const deploy = await remember(
+				memory,
+				space.id,
+				conceptInput("projects/harbour/deploy-window", "Deploy window", "Deploy harbour only on weekday mornings"),
+				agent,
+			);
+			const reworded = await memory.propose(agent, space.id, {
+				op: "correct",
+				concept: conceptInput(deploy.id, "Deploy window", "Deploy harbour only on weekday mornings, never Fridays"),
+				expectedVersion: deploy.version,
+			});
+			assert.strictEqual(reworded.duplicateOf, undefined, "correcting a concept is not a duplicate of itself");
+			const copied = await memory.propose(agent, space.id, {
+				op: "correct",
+				concept: conceptInput(deploy.id, "Deploy window", "CI runs biome, tsc and vitest on every push"),
+				expectedVersion: deploy.version,
+			});
+			assert.strictEqual(copied.duplicateOf, ci.id, "a correction repeating another concept is flagged");
+			const replaced = await memory.propose(agent, space.id, {
+				op: "supersede",
+				conceptId: deploy.id,
+				expectedVersion: deploy.version,
+				replacement: conceptInput(
+					"projects/harbour/ci-checks",
+					"CI checks",
+					"On every push CI runs tsc, vitest and biome",
+				),
+			});
+			assert.strictEqual(replaced.duplicateOf, ci.id, "a replacement repeating another concept is flagged");
+			const renamed = await memory.propose(agent, space.id, {
+				op: "supersede",
+				conceptId: deploy.id,
+				expectedVersion: deploy.version,
+				replacement: conceptInput(
+					"projects/harbour/deploy-days",
+					"Deploy days",
+					"Deploy harbour only on weekday mornings",
+				),
+			});
+			assert.strictEqual(renamed.duplicateOf, undefined, "a replacement may restate the concept it supersedes");
+
+			await assert.rejectsWithCode(memory.decide(human, copied.id, { outcome: "apply" }), "conflict");
+			await assert.rejectsWithCode(memory.decide(human, replaced.id, { outcome: "apply" }), "conflict");
+			assert.partialDeepEqual(await memory.getConcept(human, space.id, deploy.id), { version: 1, status: "active" });
+			assert.strictEqual((await memory.decide(human, renamed.id, { outcome: "apply" })).status, "applied");
 		}),
 
 		test("refuses a remember for a concept ID that is already active", async (memory) => {
@@ -1129,7 +1269,7 @@ export function createMemoryConformance(options: {
 		assert.strictEqual((await memory.listConcepts(human, space.id)).items.length, 1, "no concept was added");
 	};
 
-	return [
+	const withAccess: ConformanceCase[] = [
 		...cases,
 
 		test("project access: an operator outside the project is refused for every change and read of its space, and nothing changed", async (memory, deps) => {
@@ -1270,6 +1410,227 @@ export function createMemoryConformance(options: {
 			assert.strictEqual((await memory.decide(service, rejected.id, { outcome: "reject" })).status, "rejected");
 			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
 		}),
+
+		test("write authority: writing to an organisation's space needs a role across the organisation, not on one project", async (memory, deps) => {
+			const team = await createSpace(memory);
+			const concept = await remember(memory, team.id, conceptInput("org/ci", "CI", "CI runs on push."));
+			const pending = await memory.propose(human, team.id, {
+				op: "remember",
+				concept: conceptInput("org/lint", "Lint", "Biome lints the code."),
+			});
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			// The stranger is an operator, but only on another project.
+			await refused("memory.createSpace", createSpace(memory, stranger));
+			await refused(
+				"memory.propose",
+				memory.propose(stranger, team.id, {
+					op: "remember",
+					concept: conceptInput("org/planted", "Planted", "Planted by a project operator."),
+				}),
+			);
+			await refused("memory.decide", memory.decide(stranger, pending.id, { outcome: "apply" }));
+			await refused("memory.decide", memory.decide(viewer, pending.id, { outcome: "reject" }));
+			await refused("memory.importSnapshot", memory.importSnapshot(stranger, team.id, EMPTY_SNAPSHOT));
+			assert.strictEqual(deps.audit.ofType("memory.space.created").length, 1, "no space was created");
+			assert.strictEqual((await memory.listProposals(human, team.id, { status: "pending" })).items.length, 1);
+			assert.strictEqual((await memory.listConcepts(human, team.id)).items.length, 1, "nothing was applied");
+			// Reading the organisation's memory is still open to its members.
+			assert.strictEqual((await memory.getConcept(stranger, team.id, concept.id)).version, 1);
+			assert.deepEqual(recalledIds(await memory.recall(stranger, { spaceIds: [team.id], query: "ci" })), [concept.id]);
+			// An organisation-wide admin may do all of it.
+			assert.strictEqual((await memory.decide(admin, pending.id, { outcome: "apply" })).status, "applied");
+			assert.strictEqual((await createSpace(memory, admin)).name, "Team memory");
+		}),
+
+		test("write authority: a user writes to their own space without a role; anyone else needs one across the organisation", async (memory, deps) => {
+			const own = await memory.createSpace(solo, {
+				owner: { kind: "user", organisationId: ORG, userId: "solo-1" },
+				name: "My memory",
+			});
+			const mine = await memory.propose(solo, own.id, {
+				op: "remember",
+				concept: conceptInput("personal/editor", "Editor", "I use Helix as my editor."),
+			});
+			assert.strictEqual((await memory.decide(solo, mine.id, { outcome: "apply" })).status, "applied");
+			assert.strictEqual((await memory.getConcept(solo, own.id, "personal/editor")).setBy, "owner");
+			const refused = (operation: string, call: Promise<unknown>) =>
+				assertAccessDenied(assert, deps, call, { operation });
+			await refused(
+				"memory.createSpace",
+				memory.createSpace(solo, { owner: { kind: "user", organisationId: ORG, userId: "viewer-1" }, name: "Theirs" }),
+			);
+			const theirs = await memory.propose(agent, own.id, {
+				op: "remember",
+				concept: conceptInput("personal/shell", "Shell", "The user's shell is fish."),
+			});
+			await refused("memory.decide", memory.decide(stranger, theirs.id, { outcome: "apply" }));
+			await refused(
+				"memory.propose",
+				memory.propose(viewer, own.id, {
+					op: "remember",
+					concept: conceptInput("personal/planted", "Planted", "Planted by a viewer."),
+				}),
+			);
+			assert.strictEqual((await memory.decide(service, theirs.id, { outcome: "apply" })).status, "applied");
+			assert.strictEqual((await memory.getConcept(solo, own.id, "personal/shell")).setBy, "learned");
+		}),
+
+		test("write authority: an agent proposes to an organisation's space only through its own open session", async (memory, deps) => {
+			const team = await createSpace(memory);
+			const proposal = await memory.propose(otherProjectAgent, team.id, {
+				op: "remember",
+				concept: conceptInput("org/ci", "CI", "CI runs on push."),
+			});
+			assert.strictEqual(proposal.sessionId, "session-other-project", "any project's agent may propose");
+			deps.tenancy.close("session-other-project");
+			await assertAccessDenied(
+				assert,
+				deps,
+				memory.propose(otherProjectAgent, team.id, {
+					op: "remember",
+					concept: conceptInput("org/late", "Late", "Proposed after the session closed."),
+				}),
+				{ operation: "memory.propose" },
+			);
+			const ghost = contextFor(actors.agent("agent-ghost", "session-unknown"), ORG);
+			await assertAccessDenied(
+				assert,
+				deps,
+				memory.propose(ghost, team.id, {
+					op: "remember",
+					concept: conceptInput("org/ghost", "Ghost", "Proposed by an agent without a session."),
+				}),
+				{ operation: "memory.propose" },
+			);
+			assert.strictEqual((await memory.listProposals(human, team.id)).items.length, 1, "only the first was kept");
+		}),
+	];
+	if (options.writes !== true) return withAccess;
+
+	const strict: MemorySettings = {
+		authority: { createSpace: "admin", propose: "operator", decide: "admin", importSnapshot: "admin" },
+	};
+
+	return [
+		...withAccess,
+
+		test(
+			"writes: a memory's authority sets the role each write needs, and an agent never holds more than operator",
+			async (memory, deps) => {
+				const refused = (operation: string, call: Promise<unknown>) =>
+					assertAccessDenied(assert, deps, call, { operation });
+				await refused("memory.createSpace", createSpace(memory, human));
+				const team = await createSpace(memory, admin);
+				const project = await createProjectSpace(memory, admin);
+				const byOperator = await memory.propose(human, team.id, {
+					op: "remember",
+					concept: conceptInput("org/ci", "CI", "CI runs on push."),
+				});
+				const byAgent = await memory.propose(agent, project.id, {
+					op: "remember",
+					concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+				});
+				await refused("memory.decide", memory.decide(human, byOperator.id, { outcome: "apply" }));
+				await refused("memory.decide", memory.decide(service, byAgent.id, { outcome: "reject" }));
+				await refused("memory.importSnapshot", memory.importSnapshot(human, team.id, EMPTY_SNAPSHOT));
+				assert.strictEqual((await memory.listProposals(admin, team.id, { status: "pending" })).items.length, 1);
+				assert.strictEqual((await memory.decide(admin, byOperator.id, { outcome: "apply" })).status, "applied");
+				assert.strictEqual((await memory.decide(admin, byAgent.id, { outcome: "apply" })).status, "applied");
+				assert.strictEqual((await memory.getConcept(human, project.id, "projects/harbour/lint")).setBy, "learned");
+			},
+			strict,
+		),
+
+		test(
+			"writes: an authority needing admin to propose shuts agents out, since an agent counts as an operator",
+			async (memory, deps) => {
+				const team = await createSpace(memory, admin);
+				await assertAccessDenied(
+					assert,
+					deps,
+					memory.propose(agent, team.id, {
+						op: "remember",
+						concept: conceptInput("org/ci", "CI", "CI runs on push."),
+					}),
+					{ operation: "memory.propose" },
+				);
+				const proposal = await memory.propose(admin, team.id, {
+					op: "remember",
+					concept: conceptInput("org/ci", "CI", "CI runs on push."),
+				});
+				assert.strictEqual(proposal.status, "pending");
+			},
+			{ authority: { createSpace: "admin", propose: "admin", decide: "admin", importSnapshot: "admin" } },
+		),
+
+		(() => {
+			const shown: { candidate: string; nearest: string[] }[] = [];
+			const paraphrase: ParaphraseCheck = {
+				name: "host-judge",
+				async check(candidate, nearest) {
+					shown.push({ candidate: candidate.id, nearest: nearest.map((concept) => concept.id) });
+					if (candidate.id === "personal/heartbeat-messages") {
+						return { conceptId: "personal/heartbeat-silent", score: 0.9 };
+					}
+					// Naming a concept it was not shown is ignored.
+					if (candidate.id === "personal/stray") return { conceptId: "personal/elsewhere", score: 0.9 };
+					return undefined;
+				},
+			};
+			return test(
+				"writes: a host's paraphrase check catches what words alone miss, shown only the nearest active concepts",
+				async (memory) => {
+					const space = await createSpace(memory);
+					const silent = await remember(
+						memory,
+						space.id,
+						conceptInput("personal/heartbeat-silent", "Heartbeat", "Alex wants heartbeat check-ins to finish silently"),
+					);
+					await remember(memory, space.id, conceptInput("personal/editor", "Editor", "Alex uses Helix."));
+					const asked = () => shown.filter((entry) => entry.candidate !== "personal/editor");
+					const exact = await memory.propose(agent, space.id, {
+						op: "remember",
+						concept: conceptInput("personal/repeat", "Repeat", "Alex wants heartbeat check-ins to finish silently"),
+					});
+					assert.strictEqual(exact.duplicate?.check, "similarity", "Harbour's own check comes first");
+					assert.strictEqual(asked().length, 0, "the host is not asked when Harbour's checks find one");
+
+					const reworded = await memory.propose(agent, space.id, {
+						op: "remember",
+						concept: conceptInput(
+							"personal/heartbeat-messages",
+							"Heartbeat messages",
+							"Alex prefers not to receive heartbeat check-in messages",
+						),
+					});
+					assert.strictEqual(reworded.duplicateOf, silent.id);
+					assert.deepEqual(reworded.duplicate, { score: 0.9, check: "host-judge" });
+					const judged = asked()[0];
+					assert.strictEqual(judged?.candidate, "personal/heartbeat-messages");
+					assert.ok(!judged?.nearest.includes("personal/repeat"), "a pending proposal is not shown");
+					assert.strictEqual(judged?.nearest[0], silent.id, "the nearest concept comes first");
+					assert.ok(judged?.nearest.includes("personal/editor"), "any active concept sharing a word is shown");
+					await assert.rejectsWithCode(memory.decide(human, reworded.id, { outcome: "apply" }), "conflict");
+
+					const stray = await memory.propose(agent, space.id, {
+						op: "remember",
+						concept: conceptInput("personal/stray", "Stray", "Alex reviews heartbeat changes on Fridays"),
+					});
+					assert.strictEqual(stray.duplicateOf, undefined, "a host naming a concept it was not shown is ignored");
+					const unrelated = await memory.propose(agent, space.id, {
+						op: "remember",
+						concept: conceptInput("personal/coffee", "Coffee", "Bethan drinks oat flat whites"),
+					});
+					assert.strictEqual(unrelated.duplicateOf, undefined);
+					assert.ok(
+						!shown.some((entry) => entry.candidate === "personal/coffee"),
+						"the host is not asked when no concept shares a word",
+					);
+				},
+				{ paraphrase },
+			);
+		})(),
 	];
 }
 
@@ -1277,7 +1638,7 @@ export function registerMemoryConformance(
 	runner: ConformanceRunner,
 	name: string,
 	provider: MemoryConformanceProvider,
-	options?: ConformanceOptions,
+	options?: MemoryConformanceOptions,
 ): void {
 	registerCases(
 		runner,
@@ -1286,6 +1647,7 @@ export function registerMemoryConformance(
 			assertions: createExpectAssertions(runner.expect),
 			provider,
 			...(options?.projectAccess === undefined ? {} : { projectAccess: options.projectAccess }),
+			...(options?.writes === undefined ? {} : { writes: options.writes }),
 		}),
 	);
 }

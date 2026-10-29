@@ -52,7 +52,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (25) | [codemode](../packages/codemode/CONTRACT.md) |
 | Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
 | Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (22) | [skills](../packages/skills/CONTRACT.md) |
-| Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (24) | [memory](../packages/memory/CONTRACT.md) |
+| Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (38) | [memory](../packages/memory/CONTRACT.md) |
 | Schedules | `Schedules` | `@harbour/schedules/memory` | `registerSchedulesConformance` (29) | [schedules](../packages/schedules/CONTRACT.md) |
 | Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (22) | [audit](../packages/audit/CONTRACT.md) |
 

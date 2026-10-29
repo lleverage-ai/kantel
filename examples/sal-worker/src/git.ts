@@ -1,8 +1,12 @@
 /**
  * Reading a Git repository at one commit, for the Sal adapters: the files under a path, as bytes. Uses the `git`
  * binary; nothing is checked out or written, so a pinned commit reads the same whatever the working tree holds.
+ * Writing (`commitFiles`) makes a commit on a branch the same way, from objects alone, never through a checkout.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export interface GitFile {
 	/** Repository-relative, `/`-separated. */
@@ -223,6 +227,69 @@ export function readTree(
 		})),
 		problems: problems.sort(byPath),
 	};
+}
+
+export interface CommitFilesInput {
+	/** The branch to commit on, such as `main`; created when `parent` is undefined. */
+	readonly branch: string;
+	/**
+	 * The commit the branch must stand at, which the new commit follows; undefined for a branch that does not exist yet.
+	 * When the branch has moved on since, nothing is written and this throws, so a commit never loses another's work.
+	 */
+	readonly parent: string | undefined;
+	/** Files to add or replace, repository-relative and `/`-separated. Every other file stays as it is. */
+	readonly files: readonly { readonly path: string; readonly text: string }[];
+	readonly message: string;
+	readonly author: { readonly name: string; readonly email: string };
+}
+
+/**
+ * Commits `files` on top of `parent` and moves `branch` to the commit, only if it still stands at `parent`. Builds the
+ * tree in a throwaway index, so no working tree or the repository's own index is touched: point it at a bare clone, or
+ * at a branch no checkout has out. Returns the new commit, or `parent` when the files change nothing.
+ */
+export function commitFiles(repo: string, input: CommitFilesInput): string {
+	const scratch = mkdtempSync(join(tmpdir(), "harbour-git-index-"));
+	const env = {
+		...process.env,
+		GIT_INDEX_FILE: join(scratch, "index"),
+		GIT_AUTHOR_NAME: input.author.name,
+		GIT_AUTHOR_EMAIL: input.author.email,
+		GIT_COMMITTER_NAME: input.author.name,
+		GIT_COMMITTER_EMAIL: input.author.email,
+	};
+	const git = (args: readonly string[], stdin?: string) => {
+		const run = spawnSync("git", ["-C", repo, ...args], { env, input: stdin, maxBuffer: 256 * 1024 * 1024 });
+		if (run.status !== 0) throw new Error(`git ${args[0]} failed: ${run.stderr.toString("utf8").trim()}`);
+		return run.stdout.toString("utf8").trim();
+	};
+	try {
+		if (input.parent !== undefined) git(["read-tree", input.parent]);
+		const entries = input.files.map((file) => {
+			if (
+				file.path.startsWith("/") ||
+				file.path.split("/").some((part) => part === "" || part === "." || part === "..")
+			) {
+				throw new Error(`Not a repository path: ${file.path}`);
+			}
+			return `100644 ${git(["hash-object", "-w", "--stdin"], file.text)}\t${file.path}`;
+		});
+		if (entries.length > 0) git(["update-index", "--index-info"], `${entries.join("\n")}\n`);
+		const tree = git(["write-tree"]);
+		if (input.parent !== undefined && git(["rev-parse", `${input.parent}^{tree}`]) === tree) return input.parent;
+		const commit = git([
+			"commit-tree",
+			tree,
+			...(input.parent === undefined ? [] : ["-p", input.parent]),
+			"-m",
+			input.message,
+		]);
+		// Compare-and-swap: refused when the branch moved since `parent` was read (an empty old value: must not exist).
+		git(["update-ref", `refs/heads/${input.branch}`, commit, input.parent ?? ""]);
+		return commit;
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
+	}
 }
 
 /** The commit's time, for records that carry none of their own. */
