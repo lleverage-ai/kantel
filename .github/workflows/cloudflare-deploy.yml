@@ -119,8 +119,9 @@ jobs:
       - name: Build the console
         run: pnpm --filter @harbour/cloudflare build:console
 
-      # The dynamic-worker isolate's code, which the Worker imports as text for the Worker Loader (src/dynamic-worker.ts).
-      - name: Build the dynamic-worker isolate
+      # The isolates' code, which the Worker imports for the Worker Loader: the dynamic-worker isolate
+      # (src/dynamic-worker.ts) and code mode's, with QuickJS's WebAssembly (src/codemode.ts).
+      - name: Build the isolates
         run: pnpm --filter @harbour/cloudflare build:isolate
 
       # Placeholders stand in for unset variables in a dry run; deploy mode refuses to write a config without them.

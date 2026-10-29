@@ -24,9 +24,12 @@ import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } f
 import type { AcceptWebSocket } from "@harbour/runtime/http";
 import { r2ObjectBucket } from "@harbour/skills/sql";
 import { d1Driver } from "@harbour/sql/sqlite";
+import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
+import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
 import { objectSqlDriver } from "./audit-outbox.ts";
 import { type BrowserVars, brwsrProviderFrom } from "./browser.ts";
+import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
@@ -44,7 +47,7 @@ import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars, BrowserVars {
+export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars, BrowserVars, CodemodeVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
@@ -58,7 +61,7 @@ export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, Pl
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
 	readonly WORKSPACES: R2Bucket;
-	/** The Worker Loader, for the `dynamic-worker` isolate backend. */
+	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
 	readonly LOADER?: WorkerLoader;
 }
 
@@ -91,6 +94,8 @@ class IsolatePortTarget extends RpcTarget implements IsolatePort {
 
 /** The isolate code's digest, part of every isolate's loader ID. */
 const ISOLATE_BUNDLE_ID = bundleId(ISOLATE_BUNDLE);
+/** The code mode isolate's digest: its code and QuickJS's size, part of every code mode isolate's loader ID. */
+const CODEMODE_BUNDLE_ID = `${bundleId(CODEMODE_BUNDLE)}${QUICKJS_WASM.byteLength.toString(36)}`;
 /** `SELECT 1` queries (and R2 `head`s) the placement probe times. */
 const PLACEMENT_QUERIES = 5;
 /** The key the R2 probe heads: outside the workspace prefix, and never written. */
@@ -157,6 +162,16 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		if (browserProvider === undefined) console.warn("harbour: no HARBOUR_BRWSR_API_KEY; sessions have no browser");
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
+			// Code mode, when the Worker has the loader and HARBOUR_CODEMODE isn't `off`: each session's scripts run in its own
+			// isolate, with no bindings and no network, loaded by its first script (`src/codemode.ts`).
+			...(loader === undefined || !codemodeEnabled(env)
+				? {}
+				: {
+						codemode: {
+							load: workerLoaderCodemode(loader, CODEMODE_BUNDLE, QUICKJS_WASM),
+							bundleId: CODEMODE_BUNDLE_ID,
+						},
+					}),
 			vault: approvalVaultOver((method, ctx, args) =>
 				namedObject(env.VAULTS, VAULT_NAME, env).approvalCall(method, ctx, args),
 			),

@@ -75,6 +75,7 @@ import {
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
+import { CODEMODE_TOOL, type SessionCodemodeOptions, sessionCodemodeTool } from "./codemode.ts";
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import { createEchoModels } from "./echo-model.ts";
@@ -207,6 +208,11 @@ export interface StackOptions {
 	 * browser's tools; without it sessions have none.
 	 */
 	readonly browserProvider?: BrowserProvider;
+	/**
+	 * Code mode (`src/codemode.ts`): the isolates scripts run in, through the Worker Loader. With it the default profile
+	 * has the `codemode` tool, offered to every session that has other tools; without it sessions have none.
+	 */
+	readonly codemode?: SessionCodemodeOptions;
 }
 
 export interface Stack {
@@ -360,8 +366,14 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// A session on a workspace gets the coding tools its profile names (`src/coding-tools.ts`): the file tools work on
 		// the workspace directly, and `bash` leases an isolate on its first command, not before.
 		// With a browser provider, every session also gets the browser's tools, bound to it (`src/browser.ts`).
-		tools: (record: SessionRecord) =>
-			browser === undefined ? codingToolsFor(record) : [...codingToolsFor(record), ...browser.tools(record)],
+		// With code mode, a session that has any of those gets `codemode` too, whose scripts call them; its isolate is loaded
+		// by the first script, not before (`src/codemode.ts`).
+		tools: (record: SessionRecord) => {
+			const tools =
+				browser === undefined ? codingToolsFor(record) : [...codingToolsFor(record), ...browser.tools(record)];
+			const codemode = options.codemode;
+			return codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
+		},
 		environment,
 		// A session started without a workspace (no repository) gets its own, which its first file tool or command
 		// creates; until then it is only an ID, so a session that only talks costs no storage.
@@ -440,8 +452,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
 			// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
-			// browser's only when the stack has a provider. Tools describe themselves through their schemas; Harbour adds no prompt about them.
-			tools: browser === undefined ? [...CODING_TOOLS] : [...CODING_TOOLS, ...BROWSER_TOOL_NAMES],
+			// browser's only when the stack has a provider; `codemode` when the stack has code mode. Tools describe themselves
+			// through their schemas; Harbour adds no prompt about them.
+			tools: [
+				...CODING_TOOLS,
+				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
+				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
+			],
 			skills: [],
 			sandbox: { tiers: ["isolate"] },
 			memoryScopes: [],
