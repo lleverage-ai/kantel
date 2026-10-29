@@ -14,9 +14,15 @@
 //                               imports for the organisation's admin
 //   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
+//   /v1/browser/decisions, /live, /replay   the console's browser routes, when there is a browser (browser.ts)
+//   /v1/sessions/:id/browsers/:browser/embed the embed API: a watch-only live or replay link for an outside app
+//   /v1/browser/view/:browser/...  a viewer's requests to Harbour's own browsers, with the view link's token
+//   /browser/:browser           the console's viewer page, framed only by the console and HARBOUR_EMBED_ORIGINS
 //   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
 //   anything else               the console (apps/console's build), with index.html for its client-side routes
 import { createAuditQueryHandler } from "@harbour/audit/http";
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
+import { VIEWER_PAGE, viewerPageHeaders } from "@harbour/browser/runtime";
 import {
 	type Authenticator,
 	type CallContext,
@@ -35,6 +41,7 @@ import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
+import { type BrowserViews, isViewPath } from "./browser.ts";
 import type { GatewayComponents } from "./components.ts";
 import { createEgressHandler, type EgressScope } from "./egress.ts";
 import type { MailDescription } from "./mail.ts";
@@ -65,6 +72,12 @@ export interface GatewayOptions {
 	 * the components, `/v1/egress/...` is not mounted.
 	 */
 	readonly egress?: { readonly key: string; readonly scope: EgressScope };
+	/** A viewer's requests to Harbour's own browsers (`browser.ts`), when the browser is the harbour provider. */
+	readonly browserViews?: BrowserViews;
+	/** The origins that may frame the viewer page, besides the console (HARBOUR_EMBED_ORIGINS). */
+	readonly embedOrigins?: string;
+	/** Where the console is served, for an embed's absolute link (HARBOUR_PUBLIC_URL). Default: the request's origin. */
+	readonly publicOrigin?: string;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -84,6 +97,12 @@ const json = (value: unknown, status = 200) =>
 	});
 
 const AUDIT_PREFIX = "/v1/audit/";
+const BROWSER_ROUTES: ReadonlySet<string> = new Set([
+	`/v1${BROWSER_DECISIONS}`,
+	`/v1${BROWSER_LIVE}`,
+	`/v1${BROWSER_REPLAY}`,
+]);
+const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
 const MEMORY_BASE = "/v1/memory";
 
@@ -205,6 +224,25 @@ export function createGateway(options: GatewayOptions): Gateway {
 		return (await memoryApi.fetch(request)) ?? notFound();
 	});
 
+	const sessionBrowser = components.browser;
+	const browserApi =
+		sessionBrowser === undefined
+			? undefined
+			: createBrowserApi({
+					browser: sessionBrowser.broker,
+					session: sessionBrowser,
+					authenticate: signedIn,
+					basePath: "/v1",
+					...(options.publicOrigin === undefined ? {} : { publicOrigin: options.publicOrigin }),
+				});
+	const browser = withAuthentication(authenticator, async (request, caller) => {
+		if (browserApi === undefined) {
+			return json({ error: { code: "unavailable", message: "This deployment has no browser" } }, 503);
+		}
+		callers.set(request, callContextFor(caller, { signal: request.signal }));
+		return (await browserApi.fetch(request)) ?? notFound();
+	});
+
 	const egress =
 		vault === undefined || options.egress === undefined
 			? undefined
@@ -247,8 +285,25 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await approval(request);
 				}
 				if (egress?.matches(path)) return await egress.fetch(request);
+				if (isViewPath(path)) {
+					return options.browserViews === undefined ? notFound() : await options.browserViews.fetch(request);
+				}
+				if (BROWSER_ROUTES.has(path) || BROWSER_EMBED.test(path)) {
+					// A console route answers anything but a POST with 405 before it signs anyone in, as on Cloudflare.
+					if (request.method !== "POST" && BROWSER_ROUTES.has(path) && browserApi !== undefined) {
+						return (await browserApi.fetch(request)) ?? notFound();
+					}
+					return await browser(request);
+				}
 				if (isIdentityPath(path)) return await identity(request);
 				if (path === "/v1" || path.startsWith("/v1/")) return await sessions.fetch(request);
+				if (consoleAssets !== undefined && VIEWER_PAGE.test(path)) {
+					const page = await consoleAssets(request);
+					return new Response(page.body, {
+						status: page.status,
+						headers: viewerPageHeaders(page.headers, options.embedOrigins),
+					});
+				}
 				if (consoleAssets !== undefined) return await consoleAssets(request);
 				return json({ error: { code: "not_found", message: "No such route" } }, 404);
 			} catch (error) {

@@ -29,7 +29,7 @@
  * vault contract's project checks here with the runtime's `ProjectAccess` before each call reaches it.
  */
 import { createAuditQueryHandler } from "@harbour/audit/http";
-import { createBrowserApi } from "@harbour/browser/http";
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
@@ -63,17 +63,21 @@ import type { Stack } from "./stack.ts";
 const MEASURE_BODY_LIMIT = 1024;
 
 /** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
-export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
-const DECISION_BODY_LIMIT = 1024;
+export const BROWSER_DECISIONS_PATH = `/v1${BROWSER_DECISIONS}`;
 /**
  * A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` ->
  * `{ kind: "embed", url, endMessage?, expiresAt? }`, a provider-neutral live source: a page to embed, and what it posts
  * to its parent once its stream is over. Other kinds (frames over Harbour's own socket, replays) can join it later.
  */
-export const BROWSER_LIVE_PATH = "/v1/browser/live";
+export const BROWSER_LIVE_PATH = `/v1${BROWSER_LIVE}`;
 
 /** A person asks to replay one of a session's browsers: `{ "sessionId", "browserSessionId" }` -> `{ url, expiresAt }`. */
-export const BROWSER_REPLAY_PATH = "/v1/browser/replay";
+export const BROWSER_REPLAY_PATH = `/v1${BROWSER_REPLAY}`;
+const BROWSER_CONSOLE_PATHS: ReadonlySet<string> = new Set([
+	BROWSER_DECISIONS_PATH,
+	BROWSER_LIVE_PATH,
+	BROWSER_REPLAY_PATH,
+]);
 
 /**
  * The embed API (`@harbour/browser/http`): an outside app (its API key) or a person asks for a link to frame,
@@ -208,7 +212,12 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	const browsers =
 		stack.browser === undefined
 			? undefined
-			: createBrowserApi({ browser: stack.browser.broker, authenticate: callContext, basePath: API_BASE });
+			: createBrowserApi({
+					browser: stack.browser.broker,
+					session: stack.browser,
+					authenticate: callContext,
+					basePath: API_BASE,
+				});
 
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
@@ -332,139 +341,19 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
-	/** A browser route's JSON body, at most `DECISION_BODY_LIMIT` bytes, or `undefined` when it is too big or not JSON. */
-	const browserBody = async (request: Request): Promise<{ readonly [key: string]: unknown } | undefined> => {
-		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
-		try {
-			const body = bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
-			return typeof body === "object" && body !== null && !Array.isArray(body)
-				? (body as { readonly [key: string]: unknown })
-				: undefined;
-		} catch {
-			return undefined;
-		}
-	};
-
-	/** A browser view link for the console: its live view (`live`) or replay (`replay`). The body names the browser. */
-	const browserView = async (request: Request, kind: "live" | "replay"): Promise<Response> => {
-		const noStore = { "cache-control": "no-store" };
-		if (request.method !== "POST") {
-			return Response.json(
-				{ error: { code: "invalid", message: "POST only" } },
-				{ status: 405, headers: { allow: "POST", ...noStore } },
-			);
-		}
-		const caller = await authenticate(request);
-		if (caller instanceof Response) return caller;
-		const browser = stack.browser;
-		if (browser === undefined) {
-			return Response.json(
-				{ error: { code: "unavailable", message: "This deployment has no browser" } },
-				{ status: 503, headers: noStore },
-			);
-		}
-		const body = await browserBody(request);
-		const sessionId = body?.sessionId;
-		const browserSessionId = body?.browserSessionId;
-		if (
-			typeof sessionId !== "string" ||
-			sessionId === "" ||
-			typeof browserSessionId !== "string" ||
-			browserSessionId === ""
-		) {
-			return Response.json(
-				{ error: { code: "invalid", message: 'The body is { "sessionId": string, "browserSessionId": string }' } },
-				{ status: 400, headers: noStore },
-			);
-		}
-		try {
-			const ctx = callContextFor(caller, { signal: request.signal });
-			const target = { sessionId, browserSessionId };
-			const link = kind === "live" ? await browser.liveView(ctx, target) : await browser.replay(ctx, target);
-			const embed = link.embed ?? { url: link.url };
-			// The console's links stay relative: it is served on the same origin.
-			return Response.json(
-				{
-					kind: "embed",
-					mode: kind,
-					url: embed.url,
-					...(embed.endMessage === undefined ? {} : { endMessage: embed.endMessage }),
-					...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }),
-				},
-				{ headers: { ...noStore, "referrer-policy": "no-referrer" } },
-			);
-		} catch (error) {
-			return errorResponse(error);
-		}
-	};
-
-	const decideBrowser = async (request: Request): Promise<Response> => {
-		const noStore = { "cache-control": "no-store" };
-		if (request.method !== "POST") {
-			return Response.json(
-				{ error: { code: "invalid", message: "POST only" } },
-				{ status: 405, headers: { allow: "POST", ...noStore } },
-			);
-		}
-		const caller = await authenticate(request);
-		if (caller instanceof Response) return caller;
-		const browser = stack.browser;
-		if (browser === undefined) {
-			return Response.json(
-				{ error: { code: "unavailable", message: "This deployment has no browser" } },
-				{ status: 503, headers: noStore },
-			);
-		}
-		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
-		const body = (() => {
-			try {
-				return bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
-			} catch {
-				return undefined;
-			}
-		})() as { sessionId?: unknown; callId?: unknown; allow?: unknown } | undefined;
-		if (
-			typeof body !== "object" ||
-			body === null ||
-			typeof body.sessionId !== "string" ||
-			body.sessionId === "" ||
-			typeof body.callId !== "string" ||
-			body.callId === "" ||
-			typeof body.allow !== "boolean"
-		) {
-			return Response.json(
-				{
-					error: {
-						code: "invalid",
-						message: 'The body is { "sessionId": string, "callId": string, "allow": boolean }',
-					},
-				},
-				{ status: 400, headers: noStore },
-			);
-		}
-		try {
-			const ctx = callContextFor(caller, { signal: request.signal });
-			const result = await browser.decide(ctx, { sessionId: body.sessionId, callId: body.callId, allow: body.allow });
-			return Response.json(result, { headers: noStore });
-		} catch (error) {
-			return errorResponse(error);
-		}
-	};
-
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
-			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
-			if (path === BROWSER_LIVE_PATH) return browserView(request, "live");
-			if (path === BROWSER_REPLAY_PATH) return browserView(request, "replay");
-			if (BROWSER_EMBED_PATH.test(path)) {
+			if (BROWSER_CONSOLE_PATHS.has(path) || BROWSER_EMBED_PATH.test(path)) {
 				if (browsers === undefined) {
 					return Response.json(
 						{ error: { code: "unavailable", message: "This deployment has no browser" } },
 						{ status: 503, headers: { "cache-control": "no-store" } },
 					);
 				}
-				const refused = await signIn(request);
+				// A console route answers anything but a POST with 405 before it signs anyone in.
+				const refused =
+					request.method === "POST" || !BROWSER_CONSOLE_PATHS.has(path) ? await signIn(request) : undefined;
 				if (refused !== undefined) {
 					await request.body?.cancel().catch(() => undefined);
 					return refused;

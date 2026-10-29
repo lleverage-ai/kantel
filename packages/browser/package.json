@@ -11,9 +11,12 @@
 		"./brwsr": "./src/brwsr.ts",
 		"./capabilities": "./src/capabilities.ts",
 		"./http": "./src/http.ts",
-		"./runtime": "./src/runtime/index.ts"
+		"./runtime": "./src/runtime/index.ts",
+		"./session": "./src/session.ts"
 	},
 	"dependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
 		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*"
 	},

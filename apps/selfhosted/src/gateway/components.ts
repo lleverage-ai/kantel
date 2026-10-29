@@ -5,11 +5,13 @@
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@harbour/browser/session";
 import type { Sandboxes } from "@harbour/contracts";
 import {
 	type AuditSink,
 	type AuditStore,
 	type Authentication,
+	type BrowserProvider,
 	type CallContext,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
@@ -35,6 +37,7 @@ import { createMemorySkills } from "@harbour/skills/memory";
 import type { HarbourVault } from "@harbour/vault/engine";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
+import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
@@ -76,6 +79,11 @@ export interface GatewayComponents {
 	 * on the echo model, where the bootstrap makes only the `echo` profile.
 	 */
 	readonly assistantRoute?: string;
+	/**
+	 * The sessions' browser (`browser.ts`): its tools in every session, a person's decisions and the console's links.
+	 * Absent without a browser provider.
+	 */
+	readonly browser?: SessionBrowser;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -165,10 +173,22 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 
 export function createGatewayComponents(
-	options: { readonly models?: GatewayModels; readonly modelGateway?: ModelGatewaySource } = {},
+	options: {
+		readonly models?: GatewayModels;
+		readonly modelGateway?: ModelGatewaySource;
+		/** The sessions' browser provider (`browser.ts`). Without it, sessions have no browser. */
+		readonly browserProvider?: BrowserProvider;
+		/** What `/v1/deployment` says backs the browser. */
+		readonly browserBinding?: string;
+	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
 	const audit = createMemoryAuditStore({ access: auditAccess.access });
+	// Built before the runtime, so a session it resumes has the browser's tools; it reaches the access check per call.
+	const browser =
+		options.browserProvider === undefined
+			? undefined
+			: gatewaySessionBrowser({ provider: options.browserProvider, audit, access: auditAccess.access });
 	const identity = createMemoryIdentity({ audit });
 	const gatewaySandboxes = createGatewaySandboxes();
 	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
@@ -189,10 +209,13 @@ export function createGatewayComponents(
 			identity,
 			...models,
 			...gatewaySandboxes.runtimeOptions,
+			tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
 		}),
 		lateWorkspaces,
 	);
+	// A session's end closes its browsers and ends its grants.
+	if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 	// Given `identity`, the runtime always builds its check; the components share it.
 	const access = runtime.access;
 	if (access === undefined) throw new Error("the runtime built no project-access check");
@@ -217,7 +240,9 @@ export function createGatewayComponents(
 		otp: createMemoryOtpStores(),
 		vault,
 		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
+		...(browser === undefined ? {} : { browser }),
 		bindings: {
+			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
 			identity: "memory",
 			audit: "memory",
 			runtime:
@@ -427,7 +452,13 @@ export async function bootstrap(
 	};
 	// In a session on a workspace: the file tools on the workspace directly, and `bash` in an isolate leased on its
 	// first command (`sandboxes.ts`).
-	const coding = { tools: [...CODING_TOOLS], skills: [], sandbox: { tiers: ["isolate" as const] }, memoryScopes: [] };
+	// With a browser, its tools too (`browser.ts`): `browser_request` asks a person for sites first.
+	const coding = {
+		tools: [...CODING_TOOLS, ...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES)],
+		skills: [],
+		sandbox: { tiers: ["isolate" as const] },
+		memoryScopes: [],
+	};
 	await runtime.profiles.put(inProject, {
 		id: "echo",
 		organisationId,

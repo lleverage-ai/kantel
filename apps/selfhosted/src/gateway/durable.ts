@@ -22,7 +22,7 @@
 // `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import { HarbourError } from "@harbour/contracts";
+import { type BrowserProvider, HarbourError } from "@harbour/contracts";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
@@ -43,6 +43,7 @@ import type { StoredWorkspaces } from "@harbour/workspace/stored";
 import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
+import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
@@ -69,6 +70,10 @@ export interface DurableConfig {
 	readonly models?: Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 	/** Sessions on the model gateway (`models.ts`), reading CPA's key through the vault; when `models` is unset. */
 	readonly modelGateway?: ModelGatewaySource;
+	/** The sessions' browser provider (`browser.ts`). Without it, sessions have no browser. */
+	readonly browserProvider?: BrowserProvider;
+	/** What `/v1/deployment` says backs the browser. */
+	readonly browserBinding?: string;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -115,6 +120,11 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
+		// In memory, as the sandboxes' leases are; built before the runtime so a session it resumes has its tools.
+		const browser =
+			config.browserProvider === undefined
+				? undefined
+				: gatewaySessionBrowser({ provider: config.browserProvider, audit, access: auditAccess.access });
 
 		// Skills and memory check project access with the runtime's check, which they reach only when called. Skill files'
 		// bodies go in the workspaces' bucket under a prefix of their own.
@@ -139,6 +149,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const runtime = withOwnWorkspaces(
 			createSessionRuntime({
 				...gatewaySandboxes.runtimeOptions,
+				tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
 				store: await createSqlSessionStore(db),
 				storage: (session) => sqlPiStorage(db, session.id),
 				audit,
@@ -153,6 +164,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			lateWorkspaces,
 		);
 		closers.push(() => runtime.close());
+		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime built no project-access check");
 		auditAccess.set(access);
@@ -192,7 +204,9 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			otp: createSqlOtpStores(driver),
 			...(vault === undefined ? {} : { vault }),
 			...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
+			...(browser === undefined ? {} : { browser }),
 			bindings: {
+				browser: config.browserBinding ?? (browser === undefined ? "none" : "given"),
 				vault: vault === undefined ? "off (no HARBOUR_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",
