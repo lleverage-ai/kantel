@@ -4,26 +4,17 @@ name: Sandbox image
 # container tier's Docker tests against it on gVisor, and records the image digest for the commit. Base images and
 # downloads are pinned in the Dockerfile; nothing is pushed to a registry.
 
+# Not a pull request check: main.yml calls it for main's newest head and deploys only if it passes. A pull request
+# that changes the image or the container tier can run it on demand: `gh workflow run sandbox-image.yml --ref <branch>`.
 on:
-  pull_request:
-    paths:
-      - "images/sandbox/**"
-      - "targets/selfhosted/sandbox/**"
-      - "packages/sandbox/**"
-      - "packages/workspace/**"
-      - "packages/contracts/**"
-      - "packages/testing/**"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/sandbox-image.yml"
-  push:
-    branches: [main]
+  workflow_call: {}
   workflow_dispatch: {}
 
-# A re-push cancels the pull request's older run ("Clean up" still runs). Runs on main are never cancelled: each gets a
-# group of its own, since a shared group would still cancel an older pending run when a newer one queues.
+# A second run by hand on the same branch replaces the first ("Clean up" still runs). Called from main.yml, each run
+# gets a group of its own: main.yml does main's batching, and a group shared with it would deadlock.
 concurrency:
-  group: sandbox-image-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: sandbox-image-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Sandbox image' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
