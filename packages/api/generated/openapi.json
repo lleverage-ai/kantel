@@ -1,0 +1,721 @@
+{
+	"openapi": "3.1.0",
+	"info": {
+		"title": "Harbour API",
+		"version": "1",
+		"description": "Harbour's public API for host apps, such as Lleverage, and for Harbour's own console, which uses it like any other client."
+	},
+	"servers": [
+		{
+			"url": "/v1"
+		}
+	],
+	"security": [
+		{
+			"bearer": []
+		}
+	],
+	"paths": {
+		"/sessions": {
+			"post": {
+				"operationId": "createSession",
+				"summary": "Create a session",
+				"description": "Starts a session of an agent profile in a project. Needs the operator role on the project.",
+				"tags": ["sessions"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionRecord"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "listSessions",
+				"summary": "List sessions",
+				"description": "The sessions the caller may see, newest first, a page at a time.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "agentId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/SessionStatus"
+						}
+					},
+					{
+						"name": "parentSessionId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "label",
+						"in": "query",
+						"required": false,
+						"description": "Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`.",
+						"schema": {
+							"type": "object",
+							"patternProperties": {
+								"^.*$": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1000
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of sessions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}": {
+			"get": {
+				"operationId": "getSession",
+				"summary": "Get a session",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionRecord"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/close": {
+			"post": {
+				"operationId": "closeSession",
+				"summary": "Close a session",
+				"description": "Ends the session for good: its sandbox leases, browser sessions and grants end. Closing a closed session does nothing.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Closed."
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/abort": {
+			"post": {
+				"operationId": "abortSession",
+				"summary": "Abort a session's run",
+				"description": "Stops what the session is doing now. The session stays open and takes new messages.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/AbortSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "Aborted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	"components": {
+		"securitySchemes": {
+			"bearer": {
+				"type": "http",
+				"scheme": "bearer",
+				"description": "A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to the key's projects and role. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
+			}
+		},
+		"schemas": {
+			"AbortSessionBody": {
+				"type": "object",
+				"properties": {
+					"reason": {
+						"type": "string",
+						"description": "Recorded in the audit trail."
+					}
+				},
+				"title": "AbortSessionBody"
+			},
+			"Actor": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "human"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "serviceId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "service"
+							},
+							"serviceId": {
+								"type": "string"
+							},
+							"keyId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "agentId", "sessionId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "agent"
+							},
+							"agentId": {
+								"type": "string"
+							},
+							"sessionId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "component"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "system"
+							},
+							"component": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "Actor",
+				"description": "Who acted: a person, a host app's API key, an agent or Harbour itself."
+			},
+			"CreateSessionBody": {
+				"type": "object",
+				"required": ["projectId", "agentId"],
+				"properties": {
+					"projectId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The project the session runs in."
+					},
+					"agentId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The agent profile it runs."
+					},
+					"title": {
+						"type": "string"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"workspaceId": {
+						"type": "string",
+						"description": "An existing workspace to run in."
+					},
+					"parentSessionId": {
+						"type": "string",
+						"description": "Creates a child session owned by this parent; aborting the parent aborts it."
+					}
+				},
+				"title": "CreateSessionBody"
+			},
+			"ErrorBody": {
+				"type": "object",
+				"required": ["error"],
+				"properties": {
+					"error": {
+						"type": "object",
+						"required": ["code", "message"],
+						"properties": {
+							"code": {
+								"$ref": "#/components/schemas/ErrorCode"
+							},
+							"message": {
+								"type": "string"
+							},
+							"details": {
+								"type": "object",
+								"patternProperties": {
+									"^.*$": {}
+								}
+							}
+						}
+					}
+				},
+				"title": "ErrorBody",
+				"description": "Every error: the HarbourError's code and message."
+			},
+			"ErrorCode": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "invalid"
+					},
+					{
+						"type": "string",
+						"const": "not_found"
+					},
+					{
+						"type": "string",
+						"const": "forbidden"
+					},
+					{
+						"type": "string",
+						"const": "conflict"
+					},
+					{
+						"type": "string",
+						"const": "expired"
+					},
+					{
+						"type": "string",
+						"const": "refused"
+					},
+					{
+						"type": "string",
+						"const": "exhausted"
+					},
+					{
+						"type": "string",
+						"const": "aborted"
+					},
+					{
+						"type": "string",
+						"const": "not_supported"
+					},
+					{
+						"type": "string",
+						"const": "unavailable"
+					},
+					{
+						"type": "string",
+						"const": "unauthenticated"
+					}
+				],
+				"title": "ErrorCode"
+			},
+			"Labels": {
+				"type": "object",
+				"patternProperties": {
+					"^.*$": {
+						"type": "string"
+					}
+				},
+				"title": "Labels",
+				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+			},
+			"SessionPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SessionRecord"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "SessionPage"
+			},
+			"SessionRecord": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"projectId",
+					"agentId",
+					"status",
+					"labels",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string",
+						"description": "The agent profile the session runs."
+					},
+					"parentSessionId": {
+						"type": "string"
+					},
+					"workspaceId": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SessionRecord"
+			},
+			"SessionStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "idle"
+					},
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "waiting"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "cancelled"
+					}
+				],
+				"title": "SessionStatus"
+			}
+		}
+	}
+}

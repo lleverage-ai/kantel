@@ -33,7 +33,8 @@ import "./ui/styles.css";
 //
 // The vault page and audit log follow the source. On `api` the vault page runs on the vault approval API and the audit
 // log on the audit query API (M1-BE8), both served by the gateway on this origin; the vault page is listed once the
-// approval API has said who is signed in, and not at all on a gateway without one. On `recorded` both run on the
+// approval API has said who is signed in, and not at all on a gateway without one. The audit log's vault rows link to
+// the vault page only when it is there, and its project, agent and session filters come from the session API. On `recorded` both run on the
 // in-memory vault and audit store in the page (recorded/oversight.ts).
 //
 // On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
@@ -188,7 +189,8 @@ function SignedInConsole({
 			identity.forget();
 			onSignedOut();
 		};
-		const audit = apiAudit({ headers: state.headers });
+		// Rows about a vault request link to its page, when the console has the vault page to open it on.
+		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
 		return {
 			client: createApiClient({
@@ -201,10 +203,10 @@ function SignedInConsole({
 			}),
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: apiVault({ headers: state.headers }).then(
-				(vault): Oversight => ({ vault, audit, ...(keys === undefined ? {} : { keys }) }),
+				(vault): Oversight => ({ vault, audit: audit(true), ...(keys === undefined ? {} : { keys }) }),
 				(error: unknown): Oversight => {
 					console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
-					return { audit, ...(keys === undefined ? {} : { keys }) };
+					return { audit: audit(false), ...(keys === undefined ? {} : { keys }) };
 				},
 			),
 		};

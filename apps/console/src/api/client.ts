@@ -145,6 +145,16 @@ export interface ConsoleClient {
 	/** Stops the running turn; the session stays usable. */
 	cancel(sessionId: string): Promise<void>;
 	/**
+	 * Starts a new idle session in the same project with the history up to the answer `itemId`, and resolves with its
+	 * id. Undefined when the host can't branch a session.
+	 */
+	readonly fork?: (sessionId: string, itemId: string) => Promise<string>;
+	/**
+	 * Rewinds the session to the person's message `itemId` and sends `text` in its place; what came after it leaves the
+	 * session. The session must be idle. Undefined when the host can't branch a session.
+	 */
+	readonly edit?: (sessionId: string, itemId: string, text: string, options?: SendOptions) => Promise<void>;
+	/**
 	 * The session is on screen: it is no longer unread, and doesn't become unread while it stays shown. Call the
 	 * returned function when it leaves the screen.
 	 */

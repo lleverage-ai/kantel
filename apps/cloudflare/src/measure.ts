@@ -26,6 +26,11 @@
  * measures the session and the isolate, not seeding. After a restart it is found again through the last measurement
  * session's `workspaceId` (sessions are labelled `measurement: isolate-ready`), so restarts don't add workspaces. The caller needs operator access to the project,
  * as for any session. Server times leave out the round trip to the caller; the script times that too.
+ *
+ * Beside `timings`, `clock` answers each mark as Unix milliseconds (`entered` and `signedIn` from the gateway, then the
+ * run's own). Deployed, `Date.now()` and `performance.now()` only move on I/O (and workerd may hold them at a timer's
+ * deadline), so a mark can be older than the request: the script checks each mark against its own send and receive
+ * times rather than trusting a server step that came out longer than the whole call.
  */
 import { type CallContext, HarbourError, isHarbourError, type WorkspaceId } from "@harbour/contracts";
 import type { TieredSandboxes } from "@harbour/sandbox/tiered";
@@ -50,6 +55,12 @@ export interface IsolateReady {
 	readonly listed: number;
 	/** Milliseconds: `session` (create), `isolate` (acquire and run), `total`, then the sandbox's own phases. */
 	readonly timings: Record<string, number>;
+	/**
+	 * The marks `timings` is worked out from, as Unix milliseconds (`Date.now()`): `started`, `created` and `ran` on a
+	 * cold run, `looking`, `started` and `ran` on a warm one. Deployed, the Worker clock only moves on I/O, so the
+	 * script compares these with its own send and receive times to tell a stale mark from a slow step.
+	 */
+	readonly clock: Record<string, number>;
 }
 
 /** Where the stack runs, from inside its Durable Object (`placement: true`). Each field is left out when unknown. */
@@ -156,6 +167,7 @@ export async function measureIsolateReady(
 	const workspaceId = await workspace(ctx);
 
 	const started = performance.now();
+	const startedAt = Date.now();
 	const session = await stack.runtime.runtime.create(ctx, {
 		projectId: stack.project.id,
 		agentId: DEFAULT_AGENT_ID,
@@ -164,6 +176,7 @@ export async function measureIsolateReady(
 		workspaceId,
 	});
 	const created = performance.now();
+	const createdAt = Date.now();
 	let kept = false;
 	try {
 		const result = await sandboxes.run(ctx, {
@@ -173,6 +186,7 @@ export async function measureIsolateReady(
 			request: { command: MEASURE_COMMAND },
 		});
 		const ran = performance.now();
+		const ranAt = Date.now();
 		// Kept open only when the run answered: a failed warm-up's session is closed like any other.
 		kept = input.keep === true;
 		return {
@@ -189,6 +203,7 @@ export async function measureIsolateReady(
 				total: round(ran - started),
 				...result.timings,
 			},
+			clock: { started: startedAt, created: createdAt, ran: ranAt },
 		};
 	} finally {
 		// Ends the session's lease through the runtime's sandbox teardown; the session stays listed, as done.
@@ -205,6 +220,7 @@ async function warmRun(
 	sessionId: string,
 ): Promise<IsolateReady> {
 	const looking = performance.now();
+	const lookingAt = Date.now();
 	const session = await stack.runtime.directory.get(ctx, sessionId);
 	const workspaceId = session.workspaceId;
 	if (
@@ -217,6 +233,7 @@ async function warmRun(
 	}
 	if (session.status === "done") throw new HarbourError("conflict", `Session ${sessionId} is closed`);
 	const started = performance.now();
+	const startedAt = Date.now();
 	const result = await sandboxes.run(ctx, {
 		sessionId: session.id,
 		workspaceId,
@@ -224,6 +241,7 @@ async function warmRun(
 		request: { command: MEASURE_COMMAND },
 	});
 	const ran = performance.now();
+	const ranAt = Date.now();
 	return {
 		backend,
 		sessionId: session.id,
@@ -238,5 +256,6 @@ async function warmRun(
 			total: round(ran - started),
 			...result.timings,
 		},
+		clock: { looking: lookingAt, started: startedAt, ran: ranAt },
 	};
 }
