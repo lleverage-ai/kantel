@@ -115,7 +115,14 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		...(query === undefined ? [] : [query]),
 		...(body === undefined ? [] : [body]),
 	].join(", ");
-	const summary = [route.summary, route.description].filter((part) => part !== undefined).join(". ");
+	const summary = [
+		route.summary,
+		route.description,
+		route.idempotent === true ? "Idempotent with `options.idempotencyKey`" : undefined,
+	]
+		.filter((part) => part !== undefined)
+		.map((part) => part.replace(/\.$/, ""))
+		.join(". ");
 	return {
 		signature: `${doc(`${summary.replace(/\.?$/, ".")} \`${route.method} ${route.path}\``, "\t")}\t${route.operationId}(${args.join(", ")}): Promise<${output}>;`,
 		implementation: `\t\t${route.operationId}: (${params.join(", ")}) => send(options, { ${call} }, callOptions),`,

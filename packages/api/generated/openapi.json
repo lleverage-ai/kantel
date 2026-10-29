@@ -20,7 +20,7 @@
 			"post": {
 				"operationId": "createSession",
 				"summary": "Create a session",
-				"description": "Starts a session of an agent profile in a project. Needs the operator role on the project.",
+				"description": "Starts a session of an agent profile in a project, and sends it `message` when there is one. Needs the operator role on the project. If the first message is refused, the session is closed and the refusal answered.",
 				"tags": ["sessions"],
 				"requestBody": {
 					"required": true,
@@ -38,7 +38,7 @@
 						"content": {
 							"application/json": {
 								"schema": {
-									"$ref": "#/components/schemas/SessionRecord"
+									"$ref": "#/components/schemas/CreatedSession"
 								}
 							}
 						}
@@ -411,6 +411,119 @@
 					}
 				}
 			}
+		},
+		"/sessions/{sessionId}/messages": {
+			"post": {
+				"operationId": "sendMessage",
+				"summary": "Send a message",
+				"description": "Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+				"tags": ["messages"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MessageBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "The session accepted the message.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Submission"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -496,6 +609,68 @@
 				"title": "Actor",
 				"description": "Who acted: a person, a host app's API key, an agent or Harbour itself."
 			},
+			"CreatedSession": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"projectId",
+					"agentId",
+					"status",
+					"labels",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string",
+						"description": "The agent profile the session runs."
+					},
+					"parentSessionId": {
+						"type": "string"
+					},
+					"workspaceId": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/SessionStatus"
+					},
+					"labels": {
+						"$ref": "#/components/schemas/Labels"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"submission": {
+						"$ref": "#/components/schemas/Submission"
+					}
+				},
+				"title": "CreatedSession",
+				"description": "A new session, with its first message's submission when it was sent one."
+			},
 			"CreateSessionBody": {
 				"type": "object",
 				"required": ["projectId", "agentId"],
@@ -523,9 +698,13 @@
 					"parentSessionId": {
 						"type": "string",
 						"description": "Creates a child session owned by this parent; aborting the parent aborts it."
+					},
+					"message": {
+						"$ref": "#/components/schemas/FirstMessage"
 					}
 				},
-				"title": "CreateSessionBody"
+				"title": "CreateSessionBody",
+				"description": "Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: \"run-42\" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`."
 			},
 			"ErrorBody": {
 				"type": "object",
@@ -602,6 +781,27 @@
 				],
 				"title": "ErrorCode"
 			},
+			"FirstMessage": {
+				"type": "object",
+				"required": ["text"],
+				"properties": {
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The message's words."
+					},
+					"model": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "FirstMessage",
+				"description": "The session's first prompt, sent as soon as it exists."
+			},
 			"Labels": {
 				"type": "object",
 				"patternProperties": {
@@ -611,6 +811,48 @@
 				},
 				"title": "Labels",
 				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+			},
+			"MessageBody": {
+				"type": "object",
+				"required": ["text"],
+				"properties": {
+					"via": {
+						"$ref": "#/components/schemas/MessageVia"
+					},
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The message's words."
+					},
+					"model": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "MessageBody",
+				"description": "A message to the session's agent. `via` defaults to `prompt`."
+			},
+			"MessageVia": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "prompt"
+					},
+					{
+						"type": "string",
+						"const": "steer"
+					},
+					{
+						"type": "string",
+						"const": "followUp"
+					}
+				],
+				"title": "MessageVia",
+				"description": "How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends."
 			},
 			"SessionPage": {
 				"type": "object",
@@ -715,6 +957,61 @@
 					}
 				],
 				"title": "SessionStatus"
+			},
+			"Submission": {
+				"type": "object",
+				"required": ["id", "sessionId", "via"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The submission's ID, which names the run the message started or joined."
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"via": {
+						"$ref": "#/components/schemas/MessageVia"
+					},
+					"requestId": {
+						"type": "string",
+						"description": "The `Idempotency-Key` it was sent with."
+					}
+				},
+				"title": "Submission",
+				"description": "A message the session accepted."
+			},
+			"ThinkingLevel": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "off"
+					},
+					{
+						"type": "string",
+						"const": "minimal"
+					},
+					{
+						"type": "string",
+						"const": "low"
+					},
+					{
+						"type": "string",
+						"const": "medium"
+					},
+					{
+						"type": "string",
+						"const": "high"
+					},
+					{
+						"type": "string",
+						"const": "xhigh"
+					},
+					{
+						"type": "string",
+						"const": "max"
+					}
+				],
+				"title": "ThinkingLevel"
 			}
 		}
 	}
