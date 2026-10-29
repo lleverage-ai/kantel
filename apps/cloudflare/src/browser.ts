@@ -37,6 +37,13 @@ import {
 } from "@harbour/browser/capabilities";
 import { createMemoryBrowser } from "@harbour/browser/memory";
 import {
+	type BrowserHostClient,
+	browserProviderName,
+	createBrowserViewSigner,
+	createHarbourBrowserProvider,
+	httpBrowserHost,
+} from "@harbour/browser/runtime";
+import {
 	type AuditSink,
 	type Browser,
 	type BrowserProvider,
@@ -59,7 +66,30 @@ export interface BrowserVars {
 	readonly HARBOUR_BRWSR_API_KEY?: string;
 	/** brwsr's API. Default `https://api.brwsr.dev`. */
 	readonly HARBOUR_BRWSR_API_URL?: string;
+	/**
+	 * Which provider the broker uses: `brwsr` (the default: brwsr.dev, with the key above) or `harbour`, Harbour's own
+	 * browsers (docs/design/browser-runtime.md): a `HarbourBrowser` object with a Container per browser, or the
+	 * self-hosted browser host at `HARBOUR_BROWSER_HOST_URL` when that is set.
+	 */
+	readonly HARBOUR_BROWSER_PROVIDER?: string;
+	/** Signs live-view, replay and embed links (harbour provider). A Worker secret. */
+	readonly HARBOUR_BROWSER_VIEW_KEY?: string;
+	/** A self-hosted browser host, instead of the `HarbourBrowser` objects, and its bearer token (a secret). */
+	readonly HARBOUR_BROWSER_HOST_URL?: string;
+	readonly HARBOUR_BROWSER_HOST_TOKEN?: string;
 }
+
+/** The `HarbourBrowser` objects, typed without workers-types so the Node tests can stand them in. */
+export interface BrowserObjects<Id = unknown> {
+	idFromName(name: string): Id;
+	get(id: Id, options?: { locationHint?: string }): { fetch(input: string, init?: RequestInit): Promise<Response> };
+}
+
+/**
+ * Where Harbour's own browsers' view links point: the console's `/browser/<browser>#<token>` page, on whatever host
+ * served it. The token is in the fragment, which no server receives.
+ */
+export const BROWSER_VIEW_BASE = "/browser";
 
 /** The name of the brwsr context sessions browse in: a profile of this deployment's own, never written back. */
 export const BROWSER_CONTEXT_NAME = "harbour";
@@ -92,6 +122,49 @@ export function brwsrProviderFrom(
 		userMetadata: { agent: "harbour" },
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 	});
+}
+
+/**
+ * The harbour provider, over the `HarbourBrowser` objects (created in `locationHint`, beside their containers) or a
+ * self-hosted browser host, or `undefined` when the Worker lacks what it needs (the view key, and the objects or a
+ * host). Its links are relative (`/browser/<browser>#<token>`): the gateway makes an embed's absolute for the app
+ * asking.
+ */
+export function harbourProviderFrom(
+	vars: BrowserVars,
+	options: { readonly browsers?: BrowserObjects; readonly locationHint?: string } = {},
+): BrowserProvider | undefined {
+	const viewKey = (vars.HARBOUR_BROWSER_VIEW_KEY ?? "").trim();
+	if (viewKey.length < 32) return undefined;
+	const hostUrl = (vars.HARBOUR_BROWSER_HOST_URL ?? "").trim();
+	let host: BrowserHostClient;
+	if (hostUrl !== "") {
+		host = httpBrowserHost({ url: hostUrl, token: (vars.HARBOUR_BROWSER_HOST_TOKEN ?? "").trim() });
+	} else if (options.browsers !== undefined) {
+		const browsers = options.browsers;
+		host = {
+			fetch: (browserId, path, init) =>
+				browsers
+					.get(
+						browsers.idFromName(browserId),
+						options.locationHint === undefined ? undefined : { locationHint: options.locationHint },
+					)
+					.fetch(`https://browser/browsers/${encodeURIComponent(browserId)}${path}`, init),
+		};
+	} else {
+		return undefined;
+	}
+	return createHarbourBrowserProvider({ host, views: createBrowserViewSigner(viewKey), viewBase: BROWSER_VIEW_BASE });
+}
+
+/** The provider `HARBOUR_BROWSER_PROVIDER` names, or `undefined` when the Worker lacks what that one needs. */
+export function browserProviderFrom(
+	vars: BrowserVars,
+	options: { readonly browsers?: BrowserObjects; readonly locationHint?: string } = {},
+): BrowserProvider | undefined {
+	return browserProviderName(vars.HARBOUR_BROWSER_PROVIDER) === "harbour"
+		? harbourProviderFrom(vars, options)
+		: brwsrProviderFrom(vars);
 }
 
 /** A provider that can find (or make) a context by name, as brwsr's can; any other uses the name as the ID. */
@@ -139,6 +212,11 @@ export interface StackBrowser {
 	 * The same person asking again for the same browser gets the same link while it has a while left.
 	 */
 	liveView(ctx: CallContext, input: BrowserLiveViewInput): Promise<BrowserShareLink>;
+	/**
+	 * A replay link to one of a session's browsers, open or closed, for the person asking (viewer on the session). A
+	 * provider without recordings is `unavailable`; a browser without one `not_found`, past its retention `expired`.
+	 */
+	replay(ctx: CallContext, input: BrowserLiveViewInput): Promise<BrowserShareLink>;
 	/** The runtime's `browser` teardown: closes the session's browsers and ends its grants. */
 	readonly teardown: SessionTeardown;
 }
@@ -388,6 +466,13 @@ export function createStackBrowser(options: StackBrowserOptions): StackBrowser {
 			// A link with no expiry said is never handed out twice.
 			if (link.expiresAt !== undefined) liveViews.set(key, link);
 			return link;
+		},
+		async replay(ctx, input) {
+			const session = await broker.get(ctx, input.browserSessionId);
+			if (session.sessionId !== input.sessionId) {
+				throw new HarbourError("not_found", "No such browser in this session");
+			}
+			return broker.replay(ctx, session.id, { minutes: LIVE_VIEW_MINUTES });
 		},
 		teardown: browserTeardown(broker),
 	};

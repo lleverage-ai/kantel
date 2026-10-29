@@ -231,6 +231,11 @@ export type TranscriptProps = {
 	 * call shows its screenshots only.
 	 */
 	renderBrowserView?: (slot: BrowserViewSlot) => ReactNode;
+	/**
+	 * A browser session to show (an audit link's `#browser=<id>`): once its view is in the loaded transcript, the list
+	 * scrolls to it, once per ID, and stops following the end.
+	 */
+	focusBrowser?: string;
 	/** The first page is loading: shows skeleton rows while there are no items. */
 	loading?: boolean;
 	/** What an empty transcript says. Defaults to "No messages yet". */
@@ -283,6 +288,7 @@ export function Transcript({
 	olderError,
 	renderCard,
 	renderBrowserView,
+	focusBrowser,
 	loading = false,
 	empty,
 	error,
@@ -385,6 +391,23 @@ export function Transcript({
 		count.current = entries.length;
 		if (initial || (following.current && !prepended)) toBottom();
 	});
+
+	// The browser an audit link names: scroll to the row holding its view, once, after the jump to the end above.
+	const focused = useRef<string | undefined>(undefined);
+	useLayoutEffect(() => {
+		if (focusBrowser === undefined || focused.current === focusBrowser) return;
+		let rowId: string | undefined;
+		for (const [id, held] of slots) {
+			if (held.some((slot) => slot.browserSessionId === focusBrowser)) rowId = id;
+		}
+		if (rowId === undefined) return;
+		const index = entries.findIndex((entry) => entryKey(entry) === rowId);
+		if (index === -1 || list.current === null) return;
+		focused.current = focusBrowser;
+		following.current = false;
+		setShowEnd(true);
+		list.current.scrollToIndex(index, { align: "center" });
+	}, [focusBrowser, slots, entries]);
 
 	// While following, keep the bottom in view as the last row grows (a streamed answer, a tool's output) and as the
 	// viewport itself changes size (a phone's keyboard opening, a window resized).

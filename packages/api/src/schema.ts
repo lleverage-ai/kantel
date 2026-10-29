@@ -721,3 +721,37 @@ export const Recall = Type.Object(
 	},
 	{ title: "Recall" },
 );
+
+// Browsers (the embed API, docs/design/browser-runtime.md).
+
+export const BrowserSessionPath = Type.Object({
+	sessionId: id("The session's ID."),
+	browserSessionId: id("The browser session's ID, as the session's browser tool items name it."),
+});
+
+export const EmbedBrowserBody = Type.Object(
+	{
+		mode: Type.Union([Type.Literal("live"), Type.Literal("replay")], {
+			description: "`live`: the open browser as it is now, watch-only. `replay`: its recording.",
+		}),
+		minutes: Type.Optional(
+			Type.Integer({ minimum: 5, maximum: 60, description: "How long the link lasts. Default 15." }),
+		),
+	},
+	{ title: "EmbedBrowserBody" },
+);
+
+export const BrowserEmbed = Type.Object(
+	{
+		url: Type.String({
+			description:
+				"The page to frame. It holds its token after `#`, so the token reaches no server; treat the URL as a secret.",
+		}),
+		mode: Type.Union([Type.Literal("live"), Type.Literal("replay")]),
+		expiresAt: Type.Optional(Timestamp),
+		endMessage: Type.Optional(
+			Type.String({ description: "What the page posts to its parent once its stream is over." }),
+		),
+	},
+	{ title: "BrowserEmbed" },
+);

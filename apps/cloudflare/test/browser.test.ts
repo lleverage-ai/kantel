@@ -206,13 +206,23 @@ describe("the browser on the stack", () => {
 		expect(request.args).toMatchObject({ sites: ["example.com"] });
 		await decide({ sessionId: session.id, callId: request.callId, allow: true });
 		const result = await runtime.wait(stack.admin, session.id, prompt.id);
-		expect(result).toMatchObject({ answer: expect.stringMatching(/^Done: Screenshot of https:\/\/example\.com\//) });
+		// It scrolls after the screenshot, so a replay shows the page move.
+		expect(result).toMatchObject({ answer: expect.stringMatching(/^Done: URL: https:\/\/example\.com\//) });
 		expect((await tools()).map((item) => [item.name, item.status])).toEqual([
 			["browser_request", "done"],
 			["browser_open", "done"],
 			["browser_screenshot", "done"],
+			["browser_act", "done"],
 		]);
 		expect(fake.live()).toHaveLength(1);
+
+		// `close` closes the browser it opened, so its replay can show.
+		const close = await runtime.prompt(stack.admin, session.id, { text: "close" });
+		expect(await runtime.wait(stack.admin, session.id, close.id)).toMatchObject({
+			answer: expect.stringMatching(/^Closed: /),
+		});
+		expect((await tools()).at(-1)).toMatchObject({ name: "browser_close", status: "done" });
+		expect(fake.live()).toEqual([]);
 		await stack.close();
 	});
 

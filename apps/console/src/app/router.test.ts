@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	AUDIT_PATH,
+	browserFromHash,
 	filesPath,
 	KEYS_PATH,
 	memoryPath,
@@ -9,6 +10,7 @@ import {
 	parseRoute,
 	projectPath,
 	schedulesPath,
+	sessionBrowserPath,
 	sessionLinkPath,
 	sessionPath,
 	sessionTurnPath,
@@ -62,6 +64,16 @@ describe("routes", () => {
 		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
 		expect(decodeURIComponent(url.hash.slice("#turn=".length))).toBe("s-1/7");
 		expect(sessionTurnPath("sal", "s-1")).toBe(sessionPath("sal", "s-1"));
+	});
+
+	it("puts a session's browser in the hash, as the audit log links one, and reads it back", () => {
+		const path = sessionBrowserPath("sal", "s-1", "brs 1");
+		expect(path).toBe("/projects/sal/sessions/s-1#browser=brs%201");
+		const url = new URL(path, "https://harbour.test");
+		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
+		expect(browserFromHash(url.hash)).toBe("brs 1");
+		expect(browserFromHash("#turn=s-1%2F7")).toBeUndefined();
+		expect(browserFromHash("")).toBeUndefined();
 	});
 
 	it("parses the vault page, a vault request and the audit log", () => {
