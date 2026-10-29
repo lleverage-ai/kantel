@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient } from "../api/client.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
@@ -18,6 +18,7 @@ export function SessionScreen({
 	project,
 	onBack,
 	onFiles,
+	onForked,
 	onOpen,
 	onLive,
 }: {
@@ -28,6 +29,8 @@ export function SessionScreen({
 	project?: string;
 	onBack?: () => void;
 	onFiles?: () => void;
+	/** Opens a session forked from this one. */
+	onForked?: (sessionId: string) => void;
 	/** Told about each session client as it starts; the evidence script reads it from the page. */
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
@@ -118,7 +121,42 @@ export function SessionScreen({
 		}, text);
 	};
 
+	// Fork and Edit from here, when the host can branch a session. Stable, so the messages don't render again.
+	const { fork, edit } = client;
+	const onFork = useMemo(
+		() =>
+			fork === undefined
+				? undefined
+				: async (itemId: string) => {
+						const forkId = await fork(sessionId, itemId);
+						onForked?.(forkId);
+					},
+		[fork, sessionId, onForked],
+	);
+	// An edit reruns on the model and thinking the composer shows, read when it is sent, so a new choice doesn't render
+	// every message again. It shows the turn working at once, as a prompt does.
+	const pickerSend = useRef(pickers.send);
+	pickerSend.current = pickers.send;
+	const onEdit = useMemo(
+		() =>
+			edit === undefined
+				? undefined
+				: async (itemId: string, text: string) => {
+						const at = Date.now();
+						setPromptedAt(at);
+						try {
+							await edit(sessionId, itemId, text, { requestId: crypto.randomUUID(), ...pickerSend.current });
+						} catch (reason) {
+							setPromptedAt((current) => (current === at ? undefined : current));
+							throw reason;
+						}
+					},
+		[edit, sessionId],
+	);
+
 	const actions: SessionActions = {
+		...(onFork === undefined ? {} : { onFork }),
+		...(onEdit === undefined ? {} : { onEdit }),
 		control: client.control(sessionId),
 		sending,
 		...(promptedAt === undefined ? {} : { promptedAt }),
@@ -129,6 +167,12 @@ export function SessionScreen({
 		onSteer: (text) => send("steer", text),
 		onFollowUp: (text) => send("followUp", text),
 		onStop: () => void run(() => client.cancel(sessionId)),
+		...(client.decideBrowser === undefined
+			? {}
+			: {
+					onBrowserDecision: (callId: string, allow: boolean) =>
+						void run(() => client.decideBrowser?.(sessionId, callId, allow) ?? Promise.resolve()),
+				}),
 		pickers: pickers.composer,
 	};
 

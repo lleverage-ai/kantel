@@ -14,6 +14,7 @@
  */
 import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
+import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
@@ -161,6 +162,12 @@ export async function routeRequest<StackId, VaultId>(
 	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
 		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
 		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	if (request.method === "POST" && isPasskeyPath(path)) {
+		// And for registering or removing a passkey: a stranger is refused before the small JSON body is read.
+		const forwarded = await buffered(request, PASSKEY_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

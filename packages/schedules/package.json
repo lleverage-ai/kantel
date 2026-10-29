@@ -3,16 +3,23 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Schedules: recurrence, occurrences, claims and check findings",
+	"description": "Schedules: recurrence, occurrences, claims and check findings, in memory or on SQL",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
-		"./memory": "./src/memory.ts"
+		"./memory": "./src/memory.ts",
+		"./sql": "./src/sql.ts",
+		"./runner": "./src/runner.ts",
+		"./handlers": "./src/handlers.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*"
+		"@electric-sql/pglite": "0.5.12",
+		"@harbour/runtime": "workspace:*",
+		"@harbour/testing": "workspace:*",
+		"miniflare": "5.20261023.0-beta"
 	}
 }

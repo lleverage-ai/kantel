@@ -7,6 +7,7 @@
 	"include": [
 		"packages/*/src/**/*.ts",
 		"packages/*/test/**/*.ts",
+		"packages/*/generated/**/*.ts",
 		"images/isolate-host/src/pool.ts",
 		"images/isolate-host/test/**/*.ts",
 		"vitest.config.ts"

@@ -58,6 +58,21 @@ export {
 	signInProblem,
 } from "./identity/sign-in-model.ts";
 export { initials, SignedInAs, type SignedInAsProps } from "./identity/signed-in-as.tsx";
+// The memory page.
+export { ConceptChange, type ConceptChangeProps } from "./memory/concept-change.tsx";
+export { ConceptDetail, type ConceptDetailProps } from "./memory/concept-detail.tsx";
+export {
+	applyAsPerson,
+	bindMemory,
+	conceptHistory,
+	groupConcepts,
+	type MemoryApi,
+	type MemoryPageSource,
+	writeSentence,
+} from "./memory/memory-model.ts";
+export { MemoryPage, type MemoryPageProps, type MemoryView } from "./memory/memory-page.tsx";
+export { MemoryProposals, type MemoryProposalsProps } from "./memory/memory-proposals.tsx";
+export { MemoryRecall, type MemoryRecallProps } from "./memory/memory-recall.tsx";
 export {
 	Button,
 	type ButtonProps,
@@ -74,6 +89,7 @@ export {
 	type SegmentOption,
 	SelectField,
 	type SelectOption,
+	TextAreaField,
 	TextField,
 } from "./primitives/controls.tsx";
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
@@ -91,6 +107,49 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
+// The schedule create and edit form, used by the page and on its own.
+export { ScheduleForm, type ScheduleFormProps } from "./schedules/form/schedule-form.tsx";
+export {
+	createScheduleFormFlow,
+	type DraftErrors,
+	draftFromSchedule,
+	emptyDraft,
+	previewDraft,
+	readDraft,
+	type ScheduleAgent,
+	type ScheduleDraft,
+	type ScheduleFormFlow,
+	type ScheduleFormProblem,
+	type ScheduleFormState,
+} from "./schedules/form/schedule-form-model.ts";
+export {
+	type CheckPayload,
+	type FormKind,
+	isFormKind,
+	readCheckPayload,
+	readTaskPayload,
+	type ScheduleWrites,
+	type TaskPayload,
+	taskPayload,
+} from "./schedules/form/schedule-writes.ts";
+// The schedules page, and the one client it reads and writes through.
+export {
+	bindSchedules,
+	recurrenceText,
+	runSession,
+	type SchedulesApi,
+	type SchedulesSource,
+	type ScheduleUpdate,
+	timingText,
+} from "./schedules/schedules-model.ts";
+export {
+	ScheduleDetail,
+	type ScheduleDetailProps,
+	type ScheduleFormSettings,
+	type ScheduleLinks,
+	SchedulesPage,
+	type SchedulesPageProps,
+} from "./schedules/schedules-page.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
@@ -119,6 +178,16 @@ export {
 export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
 export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
+export {
+	MessageAction,
+	type MessageActionHandlers,
+	type MessageActionProps,
+	MessageActions,
+	MessageActionsContext,
+	type MessageActionsProps,
+	MessageEditor,
+	type MessageEditorProps,
+} from "./session/message-actions.tsx";
 export {
 	type ComposerModelOption,
 	filterModels,
@@ -167,7 +236,10 @@ export {
 	type ToolCallChipProps,
 	ToolCallGroup,
 	type ToolCallGroupProps,
+	ToolImages,
+	type ToolImagesProps,
 	toolIcon,
+	toolImageSrc,
 } from "./session/tool-call.tsx";
 export {
 	type RowRenderPhase,
@@ -175,7 +247,7 @@ export {
 	type TranscriptProps,
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
-export { groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
+export { finalAnswerIds, groupTranscript, type TranscriptRow } from "./session/transcript-model.ts";
 export {
 	BindingCodePicker,
 	type BindingCodePickerProps,
@@ -185,6 +257,18 @@ export {
 } from "./session/vault-approval-card.tsx";
 export { isRouteGrant, methodText, mustPickCode, vaultHost } from "./session/vault-model.ts";
 export { WorkingIndicator, type WorkingIndicatorProps } from "./session/working-indicator.tsx";
+// The skills page.
+export { SkillEditor, type SkillEditorProps, type SkillEditorTarget } from "./skills/skill-editor.tsx";
+export {
+	bindSkills,
+	bindSkillsAuthor,
+	type OwnerChoice,
+	type SkillsApi,
+	type SkillsAuthor,
+	type SkillsAuthorApi,
+	type SkillsSource,
+} from "./skills/skills-model.ts";
+export { SkillDetail, type SkillDetailProps, SkillsPage, type SkillsPageProps } from "./skills/skills-page.tsx";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";

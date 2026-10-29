@@ -3,6 +3,9 @@
 // code once the identity lane's flow lands (#15, Sign-in).
 import { connect } from "node:net";
 
+/** How long before its deadline `latestMessageTo` starts its last search. */
+const SEARCH_MARGIN_MS = 500;
+
 /** Sends one plain-text message with the bare SMTP dialogue. For tests against Mailpit only: no TLS, no auth. */
 export async function sendPlainSmtp(options: {
 	readonly host: string;
@@ -84,11 +87,15 @@ export interface MailpitMessage {
 	readonly text: string;
 }
 
-/** The newest message to `to` in Mailpit, waiting up to `timeoutMs` in all (requests included) for one to arrive. */
+/**
+ * The newest message to `to` in Mailpit, waiting up to `timeoutMs` in all (requests included) for one to arrive; with
+ * `newerThan` (epoch ms), only one Mailpit received from a second before then on, so an older message never counts.
+ */
 export async function latestMessageTo(
 	mailpitUrl: string,
 	to: string,
 	timeoutMs = 10_000,
+	newerThan?: number,
 ): Promise<MailpitMessage | undefined> {
 	const deadline = Date.now() + timeoutMs;
 	const signal = AbortSignal.timeout(timeoutMs);
@@ -97,8 +104,10 @@ export async function latestMessageTo(
 			signal,
 		});
 		if (!search.ok) throw new Error(`Mailpit search answered ${search.status}`);
-		const found = (await search.json()) as { messages?: { ID: string }[] };
-		const id = found.messages?.[0]?.ID;
+		const found = (await search.json()) as { messages?: { ID: string; Created?: string }[] };
+		const newest = found.messages?.[0];
+		const fresh = newerThan === undefined || Date.parse(newest?.Created ?? "") >= newerThan - 1000;
+		const id = fresh ? newest?.ID : undefined;
 		if (id !== undefined) {
 			const response = await fetch(`${mailpitUrl}/api/v1/message/${encodeURIComponent(id)}`, { signal });
 			if (!response.ok) throw new Error(`Mailpit message answered ${response.status}`);
@@ -117,8 +126,9 @@ export async function latestMessageTo(
 				text: message.Text,
 			};
 		}
-		// Leave time for one more search to answer; a search that starts after the deadline would only abort.
-		const left = deadline - Date.now() - 200;
+		// Leave time for one more search to answer, even on a busy machine; a search that starts too close to the
+		// deadline would only abort, and a stalled Mailpit is an error, not "no message".
+		const left = deadline - Date.now() - SEARCH_MARGIN_MS;
 		if (left <= 0) return undefined;
 		await new Promise((resolve) => setTimeout(resolve, Math.min(200, left)));
 	}

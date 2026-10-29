@@ -44,6 +44,10 @@ export interface BrowserSubject {
 	failReleases(times: number): void;
 	/** Makes the provider's next `open` wait until the returned function is called. */
 	holdNextOpen(): () => void;
+	/** Makes the provider's next `click` step land on `url`, as a link would. */
+	nextClickLandsOn(url: string): void;
+	/** The URL each browser still live at the provider is on. */
+	providerUrls(): readonly string[];
 }
 
 export type BrowserConformanceProvider = (
@@ -418,6 +422,9 @@ export function createBrowserConformance(options: {
 					"browser.checkSite",
 					"checking a site",
 				);
+				await denied(browser.act(otherOperator, held.opened.id, { kind: "look" }), "browser.act", "a step");
+				await denied(browser.screenshot(otherOperator, held.opened.id), "browser.screenshot", "a screenshot");
+				await denied(browser.share(otherOperator, held.opened.id), "browser.share", "a share link");
 				await denied(browser.close(otherOperator, held.opened.id), "browser.close", "closing a browser");
 				await assertProjectUnchanged(subject, deps, held);
 			}),
@@ -1114,6 +1121,112 @@ export function createBrowserConformance(options: {
 			const closedView = await browser.get(agent, session.id);
 			assert.strictEqual(closedView.endReason, "closed");
 			assert.strictEqual(subject.providerLive().length, 0, "close releases at the provider");
+		}),
+
+		test("steps and screenshots on the grant's sites, refusing a goto off them before the browser moves and blanking a page a step lands on off them", async (subject, deps) => {
+			const { browser } = subject;
+			const { grant } = await grantFresh(browser);
+			const session = await browser.open(agent, { grantId: grant.id });
+			const page = await browser.act(agent, session.id, { kind: "goto", url: "https://docs.github.com/en" });
+			assert.strictEqual(page.url, "https://docs.github.com/en", "a goto on the grant's sites goes there");
+			assert.ok(page.elements.length > 0, "the page names elements for the next step");
+			const shot = await browser.screenshot(agent, session.id);
+			assert.strictEqual(shot.url, "https://docs.github.com/en");
+			assert.ok(shot.data.length > 0, "the screenshot has data");
+
+			await assert.rejectsWithCode(
+				browser.act(agent, session.id, { kind: "goto", url: "https://github.com.evil.example/" }),
+				"refused",
+				"a goto to a lookalike host",
+			);
+			assert.deepEqual(subject.providerUrls(), ["https://docs.github.com/en"], "the browser did not move");
+
+			subject.nextClickLandsOn("https://evil.example/login?token=never-audited");
+			await assert.rejectsWithCode(
+				browser.act(agent, session.id, { kind: "click", element: page.elements[0]!.id }),
+				"refused",
+				"a click that leaves the grant's sites",
+			);
+			assert.deepEqual(subject.providerUrls(), ["about:blank"], "the browser was sent to a blank page");
+			const blank = await browser.act(agent, session.id, { kind: "look" });
+			assert.strictEqual(blank.url, "about:blank", "a blank page may be read");
+
+			const refusals = deps.audit.ofType("browser.site.refused");
+			assert.deepEqual(
+				refusals.map((event) => event.data),
+				[
+					{ step: "goto", host: "github.com.evil.example", why: "asked" },
+					{ step: "click", host: "evil.example", why: "landed" },
+				],
+				"each refusal is audited with the host only",
+			);
+			for (const event of refusals) {
+				assert.deepEqual(event.actor, agent.actor);
+				assert.strictEqual(event.sessionId, SESSION);
+				assert.strictEqual(event.subject?.id, session.id);
+			}
+			await assert.rejectsWithCode(
+				browser.act(agent, session.id, { kind: "press", key: "Enter; drop" }),
+				"invalid",
+				"a malformed key",
+			);
+			await assert.rejectsWithCode(
+				browser.act(agent, session.id, { kind: "click", element: "" }),
+				"invalid",
+				"a click without an element",
+			);
+		}),
+
+		test("refuses steps, screenshots and share links on a closed browser session as expired", async (subject) => {
+			const { browser } = subject;
+			const { grant } = await grantFresh(browser);
+			const session = await browser.open(agent, { grantId: grant.id });
+			await browser.close(agent, session.id);
+			await assert.rejectsWithCode(browser.act(agent, session.id, { kind: "look" }), "expired", "a step");
+			await assert.rejectsWithCode(browser.screenshot(agent, session.id), "expired", "a screenshot");
+			await assert.rejectsWithCode(browser.share(human, session.id), "expired", "a share link");
+			const revoked = await browser.open(agent, {
+				grantId: (await browser.grant(human, grantInput(grant.contextId))).id,
+			});
+			await browser.revokeGrant(human, revoked.grantId);
+			await assert.rejectsWithCode(
+				browser.act(agent, revoked.id, { kind: "look" }),
+				"expired",
+				"a step after its grant was revoked",
+			);
+		}),
+
+		test("hides another session's browser from an agent stepping, screenshotting or asking for a share link", async (subject) => {
+			const { browser } = subject;
+			const { grant } = await grantFresh(browser);
+			const session = await browser.open(agent, { grantId: grant.id });
+			await assert.rejectsWithCode(browser.act(unrelatedAgent, session.id, { kind: "look" }), "not_found");
+			await assert.rejectsWithCode(browser.screenshot(parentAgent, session.id), "not_found");
+			await assert.rejectsWithCode(browser.act(outsider, session.id, { kind: "look" }), "not_found");
+			await assert.rejectsWithCode(
+				browser.share(agent, session.id),
+				"forbidden",
+				"an agent never gets a share link, even for its own browser",
+			);
+		}),
+
+		test("gives a supervisor a share link with control for 15 or 60 minutes, audited without the link", async (subject, deps) => {
+			const { browser } = subject;
+			const { grant } = await grantFresh(browser, { persist: true });
+			const session = await browser.open(agent, { grantId: grant.id });
+			const link = await browser.share(human, session.id);
+			assert.ok(link.url.startsWith("https://"), "the link is an https URL");
+			await browser.share(service, session.id, { minutes: 60 });
+			await assert.rejectsWithCode(browser.share(human, session.id, { minutes: 5 }), "invalid", "5 minutes");
+			const shared = deps.audit.ofType("browser.session.shared");
+			assert.deepEqual(
+				shared.map((event) => [event.actor, event.data]),
+				[
+					[human.actor, { minutes: 15 }],
+					[service.actor, { minutes: 60 }],
+				],
+			);
+			assert.ok(!JSON.stringify(shared).includes(link.url), "the audit never holds the link");
 		}),
 
 		test("session end: closes the session's browsers, ends its grants and those passed on, declines its requests, once", async (subject, deps) => {

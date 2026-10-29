@@ -190,6 +190,12 @@ body {
 	position: relative;
 }
 
+/* Allow and Decline on an agent's request for a browser, in the composer's banner. */
+.console-browser-actions {
+	display: flex;
+	gap: var(--hb-space-2);
+}
+
 .console-menu {
 	position: absolute;
 	z-index: var(--hb-z-float);
