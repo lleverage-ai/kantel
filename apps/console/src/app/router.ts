@@ -11,6 +11,11 @@
 //   /vault/requests/:proposalId               the same, as earlier consoles linked it
 //   /audit                                    the audit log
 //   /keys                                     host apps' API keys
+//   /schedules                                the organisation's schedules
+//   /schedules/new                            the schedules page with the form for a new one open
+//   /schedules/:scheduleId                    one schedule: its timing, what it runs and its run history
+//   /sessions/:sessionId                      a session whose project the link doesn't know (a schedule's run):
+//                                             replaced by its /projects/... path once the session's project is read
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
 //
@@ -28,6 +33,8 @@ export type Route =
 	| { readonly name: "vault-request"; readonly proposalId: string }
 	| { readonly name: "audit" }
 	| { readonly name: "keys" }
+	| { readonly name: "schedules"; readonly scheduleId?: string; readonly creating?: true }
+	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
 
@@ -51,6 +58,16 @@ export function parseRoute(pathname: string): Route {
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
+	if (parts[0] === "schedules") {
+		if (parts.length === 1) return { name: "schedules" };
+		if (parts[1] === "new" && parts.length === 2) return { name: "schedules", creating: true };
+		const scheduleId = parts[1] === undefined ? undefined : segment(parts[1]);
+		if (scheduleId !== undefined && parts.length === 2) return { name: "schedules", scheduleId };
+	}
+	if (parts[0] === "sessions") {
+		const sessionId = parts[1] === undefined ? undefined : segment(parts[1]);
+		if (sessionId !== undefined && parts.length === 2) return { name: "session-link", sessionId };
+	}
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
@@ -79,6 +96,12 @@ export const VAULT_PATH = "/vault";
 export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
 export const AUDIT_PATH = "/audit";
 export const KEYS_PATH = "/keys";
+/** The schedules page, or one schedule on it. A schedule's ID may be `new` only as `/schedules/new`'s. */
+export const schedulesPath = (scheduleId?: string): string =>
+	scheduleId === undefined ? "/schedules" : `/schedules/${encodeURIComponent(scheduleId)}`;
+export const NEW_SCHEDULE_PATH = "/schedules/new";
+/** A session by its ID alone, for a link that doesn't know its project; the console finds the project and goes there. */
+export const sessionLinkPath = (sessionId: string): string => `/sessions/${encodeURIComponent(sessionId)}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
 export const filesPath = (projectId: string, sessionId: string, path?: string): string =>
 	`${sessionPath(projectId, sessionId)}/files${path === undefined ? "" : `/${encodeURIComponent(path)}`}`;

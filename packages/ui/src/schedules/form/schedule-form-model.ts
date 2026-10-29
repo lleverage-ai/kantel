@@ -18,12 +18,12 @@ import {
 	type Weekday,
 } from "@harbour/contracts";
 import { assertValidTimeZone, previewDue, utcToZoned, zonedToUtc } from "@harbour/schedules";
+import type { ScheduleUpdate } from "../schedules-model.ts";
 import {
 	type FormKind,
 	joinCommand,
 	readCheckPayload,
 	readTaskPayload,
-	type ScheduleUpdate,
 	type ScheduleWrites,
 	splitCommand,
 	taskPayload,

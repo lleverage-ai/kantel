@@ -227,7 +227,17 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 			if (oldest === undefined) return undefined;
 			const taken = claimed(oldest, runner, leaseMs, now);
 			occurrences.set(taken.id, taken);
-			return taken;
+			return { ...taken, schedule: schedules.get(taken.scheduleId)!.schedule };
+		},
+
+		async renew(ctx, occurrenceId, runner, leaseMs) {
+			await requireWorker(ctx, "schedules.renew");
+			assertClaimInput(runner, leaseMs);
+			const now = clock.now();
+			const occurrence = heldBy(occurrences.get(occurrenceId), occurrenceId, runner, now);
+			const renewed: Occurrence = { ...occurrence, leaseUntil: now + leaseMs };
+			occurrences.set(renewed.id, renewed);
+			return renewed;
 		},
 
 		async complete(ctx, occurrenceId, runner, outcome) {

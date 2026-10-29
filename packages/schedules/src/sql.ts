@@ -537,11 +537,32 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 					RETURNING ${OCCURRENCE_COLUMNS}`,
 					[runner, now + leaseMs, now, now],
 				);
-				if (row !== undefined) return occurrenceFrom(row);
+				if (row !== undefined) {
+					const taken = occurrenceFrom(row);
+					const stored = await scheduleRow(taken.scheduleId);
+					if (stored === undefined) throw new HarbourError("not_found", `No schedule ${taken.scheduleId}`);
+					return { ...taken, schedule: stored.schedule };
+				}
 				const left = await driver.query(`SELECT 1 FROM schedule_occurrences WHERE ${CLAIMABLE} LIMIT 1`, [now]);
 				if (left.length === 0) return undefined;
 			}
 			return undefined;
+		},
+
+		async renew(ctx, occurrenceId, runner, leaseMs) {
+			await requireWorker(ctx, "schedules.renew");
+			assertClaimInput(runner, leaseMs);
+			const now = clock.now();
+			const [row] = await driver.query<OccurrenceRow>(
+				`UPDATE schedule_occurrences SET lease_until = ?
+				WHERE id = ? AND status = 'running' AND claimed_by = ? AND lease_until > ?
+				RETURNING ${OCCURRENCE_COLUMNS}`,
+				[now + leaseMs, occurrenceId, runner, now],
+			);
+			if (row !== undefined) return occurrenceFrom(row);
+			const current = await occurrenceRow(occurrenceId);
+			heldBy(current === undefined ? undefined : occurrenceFrom(current), occurrenceId, runner, now);
+			throw new HarbourError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
 		},
 
 		async complete(ctx, occurrenceId, runner, outcome) {

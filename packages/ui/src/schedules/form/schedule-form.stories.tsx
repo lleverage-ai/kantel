@@ -3,12 +3,13 @@ import { type ComponentProps, useEffect, useState } from "react";
 import { Notice } from "../../primitives/surface.tsx";
 import type { Story, StoryDefault } from "../../workbench/ladle.ts";
 import {
-	createFixtureScheduleWrites,
+	createSchedulesScenario,
 	FIXTURE_AGENTS,
 	FIXTURE_NOW,
 	FIXTURE_OWNER,
-	type FixtureScheduleWrites,
-} from "./fixtures.ts";
+	type FixtureName,
+	slowSource,
+} from "../fixtures.ts";
 import { ScheduleForm } from "./schedule-form.tsx";
 import type { ScheduleWrites } from "./schedule-writes.ts";
 import "./stories.css";
@@ -18,29 +19,36 @@ export default { title: "Schedules/Form" } satisfies StoryDefault;
 type FormProps = Omit<ComponentProps<typeof ScheduleForm>, "writes" | "agents" | "owner" | "schedule" | "now">;
 
 /**
- * The form on the fixtures: an in-memory store at a fixed time, so the preview reads the same in every screenshot.
- * `edit` opens one of the fixture schedules by index; `wrap` changes the store's calls, to show a refusal.
+ * The form on the schedules page's fixtures: the same in-memory store the page reads, at a fixed time, so the preview
+ * reads the same in every screenshot. `edit` opens one of the fixture schedules; `wrap` changes the store's calls, to
+ * show a refusal.
  */
 function FormStory({
 	edit,
 	wrap,
 	delayMs = 400,
 	...props
-}: FormProps & { edit?: number; wrap?: (writes: ScheduleWrites) => ScheduleWrites; delayMs?: number }) {
-	const [ready, setReady] = useState<{ writes: ScheduleWrites; schedules: readonly Schedule[] }>();
+}: FormProps & { edit?: FixtureName; wrap?: (writes: ScheduleWrites) => ScheduleWrites; delayMs?: number }) {
+	const [ready, setReady] = useState<{ writes: ScheduleWrites; schedule?: Schedule }>();
 	const [saved, setSaved] = useState<{ schedule: Schedule; how: "saved" | "ended" }>();
 	const [key, setKey] = useState(0);
 	useEffect(() => {
 		let live = true;
-		void createFixtureScheduleWrites({ delayMs }).then(({ writes, schedules }) => {
-			if (live) setReady({ writes: wrap === undefined ? writes : wrap(writes as FixtureScheduleWrites), schedules });
+		void createSchedulesScenario(edit === undefined ? { empty: true } : {}).then(async ({ source, ids }) => {
+			const schedule = edit === undefined ? undefined : await source.get(ids[edit]);
+			const writes = delayMs > 0 ? slowSource(source, delayMs) : source;
+			if (live)
+				setReady({
+					writes: wrap === undefined ? writes : wrap(writes),
+					...(schedule === undefined ? {} : { schedule }),
+				});
 		});
 		return () => {
 			live = false;
 		};
-	}, [wrap, delayMs]);
+	}, [edit, wrap, delayMs]);
 	if (ready === undefined) return null;
-	const schedule = edit === undefined ? undefined : ready.schedules[edit];
+	const { schedule } = ready;
 	return (
 		<div className="hb-story-schedule-form">
 			{saved === undefined ? null : (
@@ -143,16 +151,16 @@ export const Invalid: Story = () => (
 );
 Invalid.storyName = "Error: fields to fix";
 
-export const EditTask: Story = () => <FormStory edit={0} />;
+export const EditTask: Story = () => <FormStory edit="triage" />;
 EditTask.storyName = "Edit task";
 
-export const EditCheck: Story = () => <FormStory edit={1} />;
+export const EditCheck: Story = () => <FormStory edit="disk" />;
 EditCheck.storyName = "Edit check";
 
-export const EditAtLimit: Story = () => <FormStory edit={2} />;
-EditAtLimit.storyName = "Edit weekly, with a limit";
+export const EditWeekly: Story = () => <FormStory edit="release" />;
+EditWeekly.storyName = "Edit weekly";
 
-export const EndConfirm: Story = () => <FormStory edit={0} initial={{ confirmingEnd: true }} />;
+export const EndConfirm: Story = () => <FormStory edit="triage" initial={{ confirmingEnd: true }} />;
 EndConfirm.storyName = "End confirm";
 
 export const Saving: Story = () => <FormStory draft={ASK_TRIAGE} initial={{ saving: true }} />;
