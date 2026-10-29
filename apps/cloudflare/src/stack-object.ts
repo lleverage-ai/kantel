@@ -29,7 +29,7 @@ import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
 import QUICKJS_NODE from "../generated/quickjs-node.wasm";
 import { objectSqlDriver } from "./audit-outbox.ts";
-import { type BrowserVars, brwsrProviderFrom } from "./browser.ts";
+import { type BrowserObjects, type BrowserVars, browserProviderFrom } from "./browser.ts";
 import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
@@ -38,7 +38,7 @@ import { createGateway, type Gateway } from "./gateway.ts";
 import type { IsolatePort } from "./isolate/runner.ts";
 import type { Placement } from "./measure.ts";
 import { cpaKey, createGatewayModels, defaultModel, type ModelsVars } from "./models.ts";
-import { namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
+import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
@@ -62,6 +62,10 @@ export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, Pl
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
 	readonly WORKSPACES: R2Bucket;
+	/** Harbour's own browsers (`HarbourBrowser`, `src/browser-object.ts`), for `HARBOUR_BROWSER_PROVIDER=harbour`. */
+	readonly BROWSERS?: DurableObjectNamespace;
+	readonly HARBOUR_BROWSER_SEAL_KEY?: string;
+	readonly HARBOUR_BROWSER_RECORDING_DAYS?: string;
 	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
 	readonly LOADER?: WorkerLoader;
 }
@@ -159,8 +163,13 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		// The approval API's vault: each call goes to the one VaultDO over RPC, as the person the gateway signed in.
 		const env = this.env;
 		const loader = this.env.LOADER;
-		const browserProvider = brwsrProviderFrom(env);
-		if (browserProvider === undefined) console.warn("harbour: no HARBOUR_BRWSR_API_KEY; sessions have no browser");
+		const browserProvider = browserProviderFrom(env, {
+			...(env.BROWSERS === undefined ? {} : { browsers: env.BROWSERS as unknown as BrowserObjects }),
+			locationHint: locationHint(env),
+		});
+		if (browserProvider === undefined) {
+			console.warn("harbour: the browser provider has no key (HARBOUR_BROWSER_PROVIDER); sessions have no browser");
+		}
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
 			// Code mode, when the Worker has the loader and HARBOUR_CODEMODE isn't `off`: each session's scripts run in its own

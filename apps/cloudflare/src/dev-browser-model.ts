@@ -1,9 +1,10 @@
 /**
- * `wrangler dev` only (src/dev.ts): the echo model, plus two scripted errands so the browser and code mode can be tried
+ * `wrangler dev` only (src/dev.ts): the echo model, plus scripted errands so the browser and code mode can be tried
  * end to end without a model gateway. A message `browse <url>` makes it ask for a browser on the URL's host, open the
- * URL once a person allows it, take a screenshot and say what it saw. A message `codemode <script>` makes it run the
- * script with the `codemode` tool and say what it answered. Anything else is echoed. The tool calls are real: the
- * broker, brwsr, the console's Allow and the code mode isolate are what a deployed session uses.
+ * URL once a person allows it, take a screenshot, scroll the page and say what it saw; `close` closes the browser it
+ * opened last (so its replay shows). A message `codemode <script>` makes it run the script with the `codemode` tool
+ * and say what it answered. Anything else is echoed. The tool calls are real: the broker, the browser provider (brwsr,
+ * or Harbour's own browsers), the console's Allow and the code mode isolate are what a deployed session uses.
  */
 import type { Message } from "@earendil-works/pi-ai";
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
@@ -30,6 +31,7 @@ export function nextStep(messages: readonly Message[]) {
 	let start = messages.length - 1;
 	while (start >= 0 && messages[start]?.role !== "user") start -= 1;
 	const said = start < 0 ? "" : textOf((messages[start] as { content: Parameters<typeof textOf>[0] }).content).trim();
+	if (/^close$/i.test(said)) return closeStep(messages, start);
 	const script = /^codemode\s+([\s\S]+)$/i.exec(said)?.[1];
 	if (script !== undefined) {
 		const answered = messages.slice(start + 1).find((message) => message.role === "toolResult");
@@ -62,7 +64,27 @@ export function nextStep(messages: readonly Message[]) {
 	if (last.name === "browser_open" && browserSessionId !== undefined) {
 		return call("browser_screenshot", { browserSessionId });
 	}
+	if (last.name === "browser_screenshot" && browserSessionId !== undefined) {
+		return call("browser_act", { browserSessionId, action: "scroll" });
+	}
 	return fauxAssistantMessage(fauxText(`Done: ${last.text.split("\n")[0] ?? ""}`));
+}
+
+/** `close`: closes the browser the conversation opened last. */
+function closeStep(messages: readonly Message[], start: number) {
+	const after = messages.slice(start + 1).filter((message) => message.role === "toolResult");
+	if (after.length > 0) {
+		const result = after.at(-1) as { content: Parameters<typeof textOf>[0] };
+		return fauxAssistantMessage(fauxText(`Closed: ${textOf(result.content).split("\n")[0] ?? ""}`));
+	}
+	const said = messages
+		.filter((message) => message.role === "toolResult")
+		.map((message) => textOf((message as { content: Parameters<typeof textOf>[0] }).content))
+		.join("\n");
+	const ids = said.match(/bsession_[\w-]+/g);
+	const browserSessionId = ids?.at(-1);
+	if (browserSessionId === undefined) return fauxAssistantMessage(fauxText("No browser to close."));
+	return fauxAssistantMessage([fauxToolCall("browser_close", { browserSessionId })], { stopReason: "toolUse" });
 }
 
 export function createDevBrowserModels(): MutableModels {

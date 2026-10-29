@@ -10,8 +10,16 @@
  *   (`src/gateway.ts`, `src/vault.ts`). Never the VaultDO directly: it has no project roles of its own.
  * - Every other `/v1/…`: the session, workspace (read, and `POST /v1/workspaces` to create a seeded one) and audit
  *   APIs, served by the `HarbourStack` Durable Object.
+ * - A browser view (`/v1/browser/view/{browser}/…`: a live view, replay or embed of one of Harbour's own browsers): its
+ *   token (a bearer header, or the live socket's subprotocol, never in the URL) is its auth, checked here with
+ *   `HARBOUR_BROWSER_VIEW_KEY` for the browser the path names, then the browser's `HarbourBrowser` object answers
+ *   (and checks it again). Never the stack: a viewer is nobody the stack knows.
+ * - The browser viewer page (`/browser/{browser}`, the console's own viewer): the console's assets, sent `no-store` and
+ *   `no-referrer` and framed only by the console itself and the origins in `HARBOUR_EMBED_ORIGINS`
+ *   (`frame-ancestors`), since an outside app frames it through the embed API.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
+import { BROWSER_VIEW_API, createBrowserViewSigner, viewClaims } from "@harbour/browser/runtime";
 import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
@@ -135,6 +143,90 @@ export interface RouteEnv<StackId = unknown, VaultId = unknown> extends Placemen
 	readonly STACK: NamedObjects<StackId>;
 	readonly VAULTS: NamedObjects<VaultId>;
 	readonly ASSETS: Answers;
+	/** Harbour's own browsers (`HarbourBrowser`), one object per browser by its ID, and the key their links are signed with. */
+	readonly BROWSERS?: NamedObjects<unknown>;
+	readonly HARBOUR_BROWSER_VIEW_KEY?: string;
+	/** A self-hosted browser host serving the browsers instead (its own `/v1/browser/view/…`). */
+	readonly HARBOUR_BROWSER_HOST_URL?: string;
+	/** The origins that may frame the browser viewer page, besides the console: space- or comma-separated. */
+	readonly HARBOUR_EMBED_ORIGINS?: string;
+}
+
+/** The viewer page's path: `/browser/<browser>`, its token after `#`. */
+export const VIEWER_PAGE = /^\/browser\/[A-Za-z0-9-]{1,64}\/?$/;
+
+/**
+ * The origins in `HARBOUR_EMBED_ORIGINS` that may frame the viewer: each an `https://` origin (or `http://localhost`
+ * and `127.0.0.1` with any port, for development). Anything else, a path or a wildcard included, is dropped.
+ */
+export function embedOrigins(value: string | undefined): readonly string[] {
+	const origins: string[] = [];
+	for (const each of (value ?? "").split(/[\s,]+/)) {
+		if (each === "") continue;
+		let url: URL;
+		try {
+			url = new URL(each);
+		} catch {
+			continue;
+		}
+		const local = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+		if ((url.protocol !== "https:" && !local) || url.origin !== each.replace(/\/$/, "")) continue;
+		// A plain host name only: no wildcard, which `URL` lets through.
+		if (!/^[a-z0-9.-]+$/.test(url.hostname)) continue;
+		if (!origins.includes(url.origin)) origins.push(url.origin);
+	}
+	return origins;
+}
+
+/** The viewer page as the assets answer it, never cached or leaking a referrer, framed only where allowed. */
+async function viewerPage(request: Request, env: RouteEnv): Promise<Response> {
+	const answer = await env.ASSETS.fetch(request);
+	const headers = new Headers(answer.headers);
+	headers.set("cache-control", "no-store");
+	headers.set("referrer-policy", "no-referrer");
+	headers.set(
+		"content-security-policy",
+		`frame-ancestors ${["'self'", ...embedOrigins(env.HARBOUR_EMBED_ORIGINS)].join(" ")}`,
+	);
+	headers.delete("x-frame-options");
+	headers.delete("etag");
+	return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers });
+}
+
+const viewRefused = () =>
+	Response.json(
+		{ error: { code: "expired", message: "This view link has expired or is not valid" } },
+		{ status: 401, headers: { "cache-control": "no-store", "referrer-policy": "no-referrer" } },
+	);
+
+/** A view request, sent to its browser's object once its token checks out. */
+async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Promise<Response> {
+	const viewKey = (env.HARBOUR_BROWSER_VIEW_KEY ?? "").trim();
+	const hostUrl = (env.HARBOUR_BROWSER_HOST_URL ?? "").trim().replace(/\/+$/, "");
+	if ((env.BROWSERS === undefined && hostUrl === "") || viewKey.length < 32) return viewRefused();
+	const checked = await viewClaims(request, createBrowserViewSigner(viewKey), Date.now());
+	if (checked === undefined) return viewRefused();
+	const { claims } = checked;
+	const forwarded = new Request(request.url, { method: request.method, headers: request.headers });
+	if (hostUrl !== "") {
+		// The self-hosted host checks the token too (it holds the same key). The path, query and token go; no cookie does.
+		const url = new URL(request.url);
+		const headers = new Headers();
+		for (const name of [
+			"authorization",
+			"upgrade",
+			"connection",
+			"sec-websocket-key",
+			"sec-websocket-version",
+			"sec-websocket-protocol",
+		]) {
+			const value = request.headers.get(name);
+			if (value !== null) headers.set(name, value);
+		}
+		return fetch(`${hostUrl}${url.pathname}${url.search}`, { method: request.method, headers });
+	}
+	if (env.BROWSERS === undefined) return viewRefused();
+	return namedObject(env.BROWSERS, claims.browser, env).fetch(forwarded);
 }
 
 export async function routeRequest<StackId, VaultId>(
@@ -181,6 +273,8 @@ export async function routeRequest<StackId, VaultId>(
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}
+	if (path.startsWith(BROWSER_VIEW_API)) return routeView(request, env as RouteEnv<unknown, unknown>);
+	if (VIEWER_PAGE.test(path)) return viewerPage(request, env as RouteEnv<unknown, unknown>);
 	if (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`)) return stack().fetch(request);
 	if (path === "/v1" || path.startsWith("/v1/")) return stack().fetch(request);
 	return env.ASSETS.fetch(request);
