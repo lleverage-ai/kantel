@@ -190,13 +190,16 @@ describe("code mode", () => {
 		expect(thrown).toContain("Error: broken on purpose");
 	});
 
-	it("is not offered to a session with no other tools", async () => {
+	it("works in a session started without a repository, on the workspace its first tool call makes", async () => {
 		const { script, fake, session, run, toolResults } = await setUp();
 		const created = await session();
-		script.reply({ toolCalls: [{ name: CODEMODE_TOOL, args: { code: "return 1;" } }] }, { text: "None" });
+		const code =
+			'await tools.write({ path: "hello.txt", content: "hi" }); return await tools.read({ path: "hello.txt" });';
+		script.reply({ toolCalls: [{ name: CODEMODE_TOOL, args: { code } }] }, { text: "Wrote" });
 		await run(created.id, "Try");
-		expect(toolResults()[0]).toMatch(/Tool codemode is not available/);
-		expect(fake.loaded).toEqual([]);
+		expect(toolResults().at(-1)).toMatch(/^Script completed/);
+		expect(toolResults().at(-1)).toContain("hi");
+		expect(fake.loaded).toHaveLength(1);
 	});
 
 	it("describes where a script's tools are without pointing at a system prompt section", async () => {
