@@ -38,6 +38,28 @@ Migrations run on every start of the object; each is idempotent. The bootstrap s
 restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
 `MODELS` and `HARBOUR_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
 
+## The browser
+
+With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the default agent has the browser's tools
+(`src/browser.ts`, over `@harbour/browser`): `browser_request`, `browser_open`, `browser_act` (with its `look`),
+`browser_screenshot` and `browser_close`. Without it sessions have none.
+
+- **A person decides.** `browser_request` waits while the console shows the agent's reason and sites with Allow and
+  Decline (`POST /v1/browser/decisions`, as the person signed in). Allowing grants those sites only, for 30 minutes,
+  in a brwsr context named `harbour` that is never written back. An agent can't grant itself one.
+- **The key stays here.** Only the brwsr provider holds it. Tool results, the transcript and the logs carry no key
+  and no CDP URL.
+- **Screenshots.** `browser_screenshot` returns its image to the model. After `browser_open` at a URL and each
+  `browser_act` but `look`, a screenshot goes to the transcript only, so the console shows the page moving.
+- **Released with the session.** Closing or aborting a session closes its browsers and ends its grants (the
+  runtime's session-end hook). Grants and open browsers are in memory: a restarted object forgets them, and brwsr
+  ends each browser at its timeout.
+
+Under `wrangler dev --env dev`, put `HARBOUR_BRWSR_API_KEY` in `apps/cloudflare/.dev.vars` (ignored by git). With no
+model gateway, a message `browse <url>` makes the dev model ask for a browser, open the URL once you allow it and
+take a screenshot (`src/dev-browser-model.ts`). If the console's dev server leaves a session on Connecting, open it
+with `?transport=sse`.
+
 ## Decisions
 
 **One Durable Object for every session in M1** (28 Oct 2026). `HarbourStack` is M1's SessionDO: the runtime lane's
@@ -186,6 +208,7 @@ VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI
 | `HARBOUR_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces-weur`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
 | `HARBOUR_LOCATION_HINT` | optional variable | The location hint the stack and vault objects are created with (`src/route.ts`). Unset: `weur`, from `wrangler.jsonc` |
 | `HARBOUR_VAULT_KEY`, `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN` | optional secrets | The vault's key and the components' shared keys (see The vault above); each is set on the Worker when it exists, and the deploy goes ahead without them |
+| `HARBOUR_BRWSR_API_KEY` | optional secret | brwsr's project key (see The browser above), set on the Worker when it exists. Without it sessions have no browser |
 
 Until the secret and every variable exist, and on every pull request, the workflow only runs `wrangler deploy
 --dry-run`, with placeholders for what's unset; that never contacts Cloudflare. Once they all exist, a run on main:

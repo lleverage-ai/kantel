@@ -11,7 +11,9 @@
  * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `HARBOUR_ISOLATE_BACKEND` names: `in-process`
  *   in this object, or `dynamic-worker` (`src/dynamic-worker.ts`) through the `LOADER` binding, whose isolates read
  *   the workspace through a port this object passes them as an RPC target;
- * - the vault approval API's vault: the VaultDO (`HarbourVault`), over RPC.
+ * - the vault approval API's vault: the VaultDO (`HarbourVault`), over RPC;
+ * - the browser (`src/browser.ts`): the broker over brwsr, with the `HARBOUR_BRWSR_API_KEY` Worker secret, when the
+ *   Worker has it; sessions have no browser tools otherwise.
  *
  * One object serves every session in M1: see the README's "Decisions".
  */
@@ -24,6 +26,7 @@ import { r2ObjectBucket } from "@harbour/skills/sql";
 import { d1Driver } from "@harbour/sql/sqlite";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import { objectSqlDriver } from "./audit-outbox.ts";
+import { type BrowserVars, brwsrProviderFrom } from "./browser.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
@@ -41,7 +44,7 @@ import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars {
+export interface Env extends GatewayVars, VaultVars, ModelsVars, SandboxVars, PlacementVars, BrowserVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
@@ -150,7 +153,10 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		// The approval API's vault: each call goes to the one VaultDO over RPC, as the person the gateway signed in.
 		const env = this.env;
 		const loader = this.env.LOADER;
+		const browserProvider = brwsrProviderFrom(env);
+		if (browserProvider === undefined) console.warn("harbour: no HARBOUR_BRWSR_API_KEY; sessions have no browser");
 		return {
+			...(browserProvider === undefined ? {} : { browserProvider }),
 			vault: approvalVaultOver((method, ctx, args) =>
 				namedObject(env.VAULTS, VAULT_NAME, env).approvalCall(method, ctx, args),
 			),

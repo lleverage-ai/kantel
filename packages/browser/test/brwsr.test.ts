@@ -38,11 +38,17 @@ function fakeCdp(pages: readonly { targetId: string; url: string; title: string 
 	let closed = false;
 	const factory = (url: string): WebSocket => {
 		expect(url).toBe(CONNECT_URL);
+		const listeners = new Map<string, Set<(event: { data?: string }) => void>>();
+		const dispatch = (type: string, event: { data?: string } = {}) => {
+			for (const listener of listeners.get(type) ?? []) listener(event);
+		};
 		const socket = {
-			onopen: null as null | (() => void),
-			onerror: null as null | (() => void),
-			onclose: null as null | (() => void),
-			onmessage: null as null | ((event: { data: string }) => void),
+			addEventListener(type: string, listener: (event: { data?: string }) => void) {
+				listeners.set(type, (listeners.get(type) ?? new Set()).add(listener));
+			},
+			removeEventListener(type: string, listener: (event: { data?: string }) => void) {
+				listeners.get(type)?.delete(listener);
+			},
 			send(data: string) {
 				const message = JSON.parse(data) as { id: number; method: string; sessionId?: string };
 				sent.push({
@@ -57,13 +63,13 @@ function fakeCdp(pages: readonly { targetId: string; url: string; title: string 
 							: message.method === "Page.captureScreenshot"
 								? { data: "SlBFRw==" }
 								: {};
-				queueMicrotask(() => socket.onmessage?.({ data: JSON.stringify({ id: message.id, result }) }));
+				queueMicrotask(() => dispatch("message", { data: JSON.stringify({ id: message.id, result }) }));
 			},
 			close() {
 				closed = true;
 			},
 		};
-		queueMicrotask(() => socket.onopen?.());
+		queueMicrotask(() => dispatch("open"));
 		return socket as unknown as WebSocket;
 	};
 	return { factory, sent, closed: () => closed };

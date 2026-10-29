@@ -11,11 +11,16 @@
  *   `viewer@harbour.test` as a viewer on the default project, to open a forwarded request without the operator role.
  *   Each call adds a new set.
  *
+ * Without the model gateway, sessions run on the echo model with one errand (`src/dev-browser-model.ts`): `browse <url>`
+ * asks for a browser, opens the URL once someone allows it in the console, and takes a screenshot. With
+ * `HARBOUR_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser.
+ *
  * This file is never the deployed entry point (wrangler.jsonc's top-level `main` is src/index.ts), so none of these
  * routes nor the mock issuer is in the deployed bundle; the deploy workflow checks that.
  */
 import { type CallContext, HarbourError, type SessionRecord } from "@harbour/contracts";
 import { createMockAccess, type MockAccess } from "@harbour/identity/testing";
+import { createDevBrowserModels } from "./dev-browser-model.ts";
 import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
 import { namedObject, VAULT_NAME } from "./route.ts";
@@ -50,6 +55,10 @@ export class HarbourStack extends HarbourStackBase {
 
 	protected override stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		return { ...super.stackOptions(), accessFetch: this.#mockAccess().fetch };
+	}
+
+	protected override stackModels(): StackOptions["models"] {
+		return super.stackModels() ?? (() => ({ models: createDevBrowserModels() }));
 	}
 
 	async #seedVault(): Promise<Response> {
