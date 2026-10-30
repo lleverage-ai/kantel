@@ -20,6 +20,10 @@
  * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
+ * | `/v1/sharing/…` | the sharing API (`@harbour/sharing/http`): resource shares, access requests, bindings, policy, uses |
+ * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
+ * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
+ * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -29,13 +33,14 @@
  * vault contract's project checks here with the runtime's `ProjectAccess` before each call reaches it.
  */
 import { createAuditQueryHandler } from "@harbour/audit/http";
-import { createBrowserApi } from "@harbour/browser/http";
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
 	type AuthenticatedCaller,
 	type CallContext,
 	callContextFor,
+	isHarbourError,
 	type Proposal,
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
@@ -44,11 +49,21 @@ import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/h
 import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createSchedulesApi } from "@harbour/schedules/http";
+import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
+import {
+	createSharedLinkHandler,
+	createSharesApi,
+	isSharesPath,
+	SHARED_LINK_BASE,
+} from "@harbour/workspace/shares-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
+import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
+import { sessionWorkspaceId } from "./coding-tools.ts";
+import { createConnectorsApi, isConnectorsPath } from "./connectors.ts";
 import { mayImport } from "./import-access.ts";
 import {
 	MEASURE_PATH,
@@ -58,23 +73,28 @@ import {
 	type PlacementProbe,
 } from "./measure.ts";
 import { readLimited } from "./route.ts";
+import { renderMissingShare, renderSharedPage } from "./shared-page.ts";
 import type { Stack } from "./stack.ts";
 
 /** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"?, "tools"? }`: a few bytes. */
 const MEASURE_BODY_LIMIT = 1024;
 
 /** A person allows or declines an agent's waiting browser request: `{ "sessionId", "callId", "allow" }`. */
-export const BROWSER_DECISIONS_PATH = "/v1/browser/decisions";
-const DECISION_BODY_LIMIT = 1024;
+export const BROWSER_DECISIONS_PATH = `/v1${BROWSER_DECISIONS}`;
 /**
  * A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` ->
  * `{ kind: "embed", url, endMessage?, expiresAt? }`, a provider-neutral live source: a page to embed, and what it posts
  * to its parent once its stream is over. Other kinds (frames over Harbour's own socket, replays) can join it later.
  */
-export const BROWSER_LIVE_PATH = "/v1/browser/live";
+export const BROWSER_LIVE_PATH = `/v1${BROWSER_LIVE}`;
 
 /** A person asks to replay one of a session's browsers: `{ "sessionId", "browserSessionId" }` -> `{ url, expiresAt }`. */
-export const BROWSER_REPLAY_PATH = "/v1/browser/replay";
+export const BROWSER_REPLAY_PATH = `/v1${BROWSER_REPLAY}`;
+const BROWSER_CONSOLE_PATHS: ReadonlySet<string> = new Set([
+	BROWSER_DECISIONS_PATH,
+	BROWSER_LIVE_PATH,
+	BROWSER_REPLAY_PATH,
+]);
 
 /**
  * The embed API (`@harbour/browser/http`): an outside app (its API key) or a person asks for a link to frame,
@@ -141,6 +161,22 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		models: stack.runtime.models,
 		// The session view's message actions: fork from an answer, edit a message and rerun from it.
 		branching: stack.runtime.branching,
+		// The composer's warm-up hint (and a host's): the session's sandbox gets ready for its next command.
+		warm: {
+			async warm(ctx, session) {
+				const workspaceId = session.workspaceId ?? sessionWorkspaceId(session.id);
+				try {
+					const warmed = await stack.sandboxes.warm(ctx, { sessionId: session.id, workspaceId });
+					return { container: warmed.container };
+				} catch (error) {
+					// A session whose own workspace its tools haven't made yet has nothing to warm.
+					if (isHarbourError(error, "not_found")) return { container: "unavailable" };
+					throw error;
+				}
+			},
+		},
+		// The console's session menu: rename, pin, archive, mark unread and delete a session.
+		organising: stack.runtime.organising,
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,
@@ -209,10 +245,30 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
+	// Every check is the sharing store's, through the stack's project access.
+	const sharing = createSharingApi({ sharing: stack.sharing, authenticate: callContext, basePath: API_BASE });
+	const shares =
+		stack.shares === undefined
+			? undefined
+			: createSharesApi({ shares: stack.shares, authenticate: callContext, basePath: API_BASE });
+	const sharedLinks =
+		stack.shares === undefined
+			? undefined
+			: createSharedLinkHandler({
+					shares: stack.shares,
+					workspaces: stack.workspaces,
+					renderPage: renderSharedPage,
+					renderMissing: renderMissingShare,
+				});
 	const browsers =
 		stack.browser === undefined
 			? undefined
-			: createBrowserApi({ browser: stack.browser.broker, authenticate: callContext, basePath: API_BASE });
+			: createBrowserApi({
+					browser: stack.browser.broker,
+					session: stack.browser,
+					authenticate: callContext,
+					basePath: API_BASE,
+				});
 
 	const { vault } = stack;
 	// The VaultDO checks only the organisation; the project checks here use the runtime's roles (`stack.access`).
@@ -250,6 +306,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		callers.set(request, caller);
 		return undefined;
 	};
+
+	// The composer's uploads: a file for a prompt, stored under the project before the message is sent.
+	const attachments = createAttachmentsApi({
+		store: stack.attachments,
+		access: stack.access,
+		authenticate: callContext,
+	});
+
+	// The console's connectors page: what each connector offers, and a test image (`src/connectors.ts`).
+	const connectors = createConnectorsApi({ gateway: stack.modelGateway, authenticate: callContext });
 
 	const workspace = measurementWorkspace(stack);
 	const measure = async (request: Request): Promise<Response> => {
@@ -336,139 +402,32 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		}
 	};
 
-	/** A browser route's JSON body, at most `DECISION_BODY_LIMIT` bytes, or `undefined` when it is too big or not JSON. */
-	const browserBody = async (request: Request): Promise<{ readonly [key: string]: unknown } | undefined> => {
-		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
-		try {
-			const body = bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
-			return typeof body === "object" && body !== null && !Array.isArray(body)
-				? (body as { readonly [key: string]: unknown })
-				: undefined;
-		} catch {
-			return undefined;
-		}
-	};
-
-	/** A browser view link for the console: its live view (`live`) or replay (`replay`). The body names the browser. */
-	const browserView = async (request: Request, kind: "live" | "replay"): Promise<Response> => {
-		const noStore = { "cache-control": "no-store" };
-		if (request.method !== "POST") {
-			return Response.json(
-				{ error: { code: "invalid", message: "POST only" } },
-				{ status: 405, headers: { allow: "POST", ...noStore } },
-			);
-		}
-		const caller = await authenticate(request);
-		if (caller instanceof Response) return caller;
-		const browser = stack.browser;
-		if (browser === undefined) {
-			return Response.json(
-				{ error: { code: "unavailable", message: "This deployment has no browser" } },
-				{ status: 503, headers: noStore },
-			);
-		}
-		const body = await browserBody(request);
-		const sessionId = body?.sessionId;
-		const browserSessionId = body?.browserSessionId;
-		if (
-			typeof sessionId !== "string" ||
-			sessionId === "" ||
-			typeof browserSessionId !== "string" ||
-			browserSessionId === ""
-		) {
-			return Response.json(
-				{ error: { code: "invalid", message: 'The body is { "sessionId": string, "browserSessionId": string }' } },
-				{ status: 400, headers: noStore },
-			);
-		}
-		try {
-			const ctx = callContextFor(caller, { signal: request.signal });
-			const target = { sessionId, browserSessionId };
-			const link = kind === "live" ? await browser.liveView(ctx, target) : await browser.replay(ctx, target);
-			const embed = link.embed ?? { url: link.url };
-			// The console's links stay relative: it is served on the same origin.
-			return Response.json(
-				{
-					kind: "embed",
-					mode: kind,
-					url: embed.url,
-					...(embed.endMessage === undefined ? {} : { endMessage: embed.endMessage }),
-					...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }),
-				},
-				{ headers: { ...noStore, "referrer-policy": "no-referrer" } },
-			);
-		} catch (error) {
-			return errorResponse(error);
-		}
-	};
-
-	const decideBrowser = async (request: Request): Promise<Response> => {
-		const noStore = { "cache-control": "no-store" };
-		if (request.method !== "POST") {
-			return Response.json(
-				{ error: { code: "invalid", message: "POST only" } },
-				{ status: 405, headers: { allow: "POST", ...noStore } },
-			);
-		}
-		const caller = await authenticate(request);
-		if (caller instanceof Response) return caller;
-		const browser = stack.browser;
-		if (browser === undefined) {
-			return Response.json(
-				{ error: { code: "unavailable", message: "This deployment has no browser" } },
-				{ status: 503, headers: noStore },
-			);
-		}
-		const bytes = await readLimited(request, DECISION_BODY_LIMIT).catch(() => undefined);
-		const body = (() => {
-			try {
-				return bytes === undefined ? undefined : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
-			} catch {
-				return undefined;
-			}
-		})() as { sessionId?: unknown; callId?: unknown; allow?: unknown } | undefined;
-		if (
-			typeof body !== "object" ||
-			body === null ||
-			typeof body.sessionId !== "string" ||
-			body.sessionId === "" ||
-			typeof body.callId !== "string" ||
-			body.callId === "" ||
-			typeof body.allow !== "boolean"
-		) {
-			return Response.json(
-				{
-					error: {
-						code: "invalid",
-						message: 'The body is { "sessionId": string, "callId": string, "allow": boolean }',
-					},
-				},
-				{ status: 400, headers: noStore },
-			);
-		}
-		try {
-			const ctx = callContextFor(caller, { signal: request.signal });
-			const result = await browser.decide(ctx, { sessionId: body.sessionId, callId: body.callId, allow: body.allow });
-			return Response.json(result, { headers: noStore });
-		} catch (error) {
-			return errorResponse(error);
-		}
-	};
-
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
-			if (path === BROWSER_DECISIONS_PATH) return decideBrowser(request);
-			if (path === BROWSER_LIVE_PATH) return browserView(request, "live");
-			if (path === BROWSER_REPLAY_PATH) return browserView(request, "replay");
-			if (BROWSER_EMBED_PATH.test(path)) {
+			if (sharedLinks !== undefined && under(path, SHARED_LINK_BASE)) {
+				// No sign-in: the link's token is its only credential, and it opens one file read-only.
+				return (await sharedLinks(request)) ?? renderMissingShare();
+			}
+			if (isSharesPath(path, API_BASE)) {
+				if (shares === undefined) return notFound();
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await shares(request)) ?? notFound();
+			}
+			if (BROWSER_CONSOLE_PATHS.has(path) || BROWSER_EMBED_PATH.test(path)) {
 				if (browsers === undefined) {
 					return Response.json(
 						{ error: { code: "unavailable", message: "This deployment has no browser" } },
 						{ status: 503, headers: { "cache-control": "no-store" } },
 					);
 				}
-				const refused = await signIn(request);
+				// A console route answers anything but a POST with 405 before it signs anyone in.
+				const refused =
+					request.method === "POST" || !BROWSER_CONSOLE_PATHS.has(path) ? await signIn(request) : undefined;
 				if (refused !== undefined) {
 					await request.body?.cancel().catch(() => undefined);
 					return refused;
@@ -491,6 +450,22 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				return (await gitBranches(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
+			if (path === ATTACHMENTS_PATH) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return attachments(request);
+			}
+			if (isConnectorsPath(path)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return connectors(request);
+			}
 			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
 				const refused = await signIn(request);
 				if (refused !== undefined) return refused;
@@ -516,6 +491,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return (await schedules.fetch(request)) ?? notFound();
+			}
+			if (isSharingPath(path, API_BASE)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await sharing.fetch(request)) ?? notFound();
 			}
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();

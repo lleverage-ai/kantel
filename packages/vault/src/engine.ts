@@ -40,8 +40,13 @@ import {
 	type ProposalTerms,
 	type RouteScope,
 	requireSystem,
+	type SessionAccess,
+	type SessionEgressUsage,
 	type SessionEndHook,
 	type SessionId,
+	type SessionPlaceholder,
+	type SessionPlaceholderRequest,
+	type SessionPlaceholders,
 	systemClock,
 	systemContext,
 	type Vault,
@@ -65,7 +70,7 @@ import {
 import type { VaultRow, VaultStore, VaultTable, VaultWrite } from "./store.ts";
 
 /** The vault every target builds: the `Vault` contract and the connector credential read the model gateway makes. */
-export type HarbourVault = Vault & ConnectorCredentials;
+export type HarbourVault = Vault & Required<ConnectorCredentials>;
 
 export interface VaultOptions {
 	/** Where every record is kept. Two vaults over one store behave as one. */
@@ -123,6 +128,27 @@ interface StoredUse {
 	readonly use: VaultUse;
 	readonly projectId?: ProjectId;
 }
+
+/**
+ * What the vault knows of one session (row ID `<organisation>:<session>`): the placeholders of its current start,
+ * whether an operator has blocked it, and whether it has ended for good. Only what the session is issued, and blocking
+ * or ending it, writes one; a session with no row is open and has no placeholders.
+ */
+interface StoredSession {
+	readonly sessionId: SessionId;
+	readonly organisationId: OrganisationId;
+	readonly projectId?: ProjectId;
+	readonly generation: number;
+	readonly issuedAt?: number;
+	readonly placeholders: readonly { readonly itemId: string; readonly placeholder: string }[];
+	readonly blocked?: { readonly at: number; readonly by: Actor; readonly reason?: string };
+	readonly endedAt?: number;
+}
+
+const sessionRowId = (organisationId: OrganisationId, sessionId: SessionId) => `${organisationId}:${sessionId}`;
+
+/** The longest reason a block keeps. */
+const MAX_BLOCK_REASON = 500;
 
 /** A record as read, with the row it came from (for its revision). */
 interface Read<T> {
@@ -315,6 +341,28 @@ export function createVault(options: VaultOptions): HarbourVault {
 			if (await store.commit([update(table, current.row, changed)])) return { value: changed, changed: true };
 		}
 		throw new HarbourError("unavailable", `The vault could not update ${id}: too many concurrent changes`);
+	}
+
+	/**
+	 * Whether a grant may use `item` for `request`: always for an item of the request's own project or of no project;
+	 * for another project's item, only while an active share covers the request's session. Without `access`, as before.
+	 */
+	async function stillShared(request: EgressRequest, item: VaultItem): Promise<boolean> {
+		if (access === undefined || item.owner.kind !== "project" || item.owner.projectId === request.projectId)
+			return true;
+		if (request.agentId === undefined || request.sessionId === undefined) return false;
+		const ctx: CallContext = {
+			actor: { kind: "agent", agentId: request.agentId, sessionId: request.sessionId },
+			organisationId: request.organisationId,
+			...(request.projectId === undefined ? {} : { projectId: request.projectId }),
+		};
+		const allowed = await access.allowsResource(ctx, {
+			resource: { kind: "vault.item", id: item.id },
+			owner: item.owner,
+			permission: "use",
+			needed: "operator",
+		});
+		return allowed !== undefined;
 	}
 
 	/** Keeps the records the caller may view: an organisation's own records always, the rest as `access` allows. */
@@ -630,6 +678,70 @@ export function createVault(options: VaultOptions): HarbourVault {
 		return { grant: grantView(value), revoked: changed };
 	}
 
+	async function sessionOf(organisationId: OrganisationId, sessionId: SessionId): Promise<StoredSession | undefined> {
+		const found = await read<StoredSession>("sessions", sessionRowId(organisationId, sessionId));
+		return found !== undefined && found.row.organisationId === organisationId ? found.value : undefined;
+	}
+
+	/**
+	 * Writes a session's next state, inserting its row the first time: `next` gets the stored session (undefined when
+	 * there is none yet) and returns the new one, or undefined to leave it. Conditional on the row read, read again after
+	 * a lost race. Resolves the session as stored afterwards and whether this call changed it.
+	 */
+	async function writeSession(
+		organisationId: OrganisationId,
+		sessionId: SessionId,
+		next: (current: StoredSession | undefined) => StoredSession | undefined,
+	): Promise<{ readonly session: StoredSession | undefined; readonly changed: boolean }> {
+		const id = sessionRowId(organisationId, sessionId);
+		for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+			const current = await read<StoredSession>("sessions", id);
+			if (current !== undefined && current.row.organisationId !== organisationId) {
+				throw new HarbourError("conflict", `Session ${sessionId} is recorded for another organisation`);
+			}
+			const changed = next(current?.value);
+			if (changed === undefined) return { session: current?.value, changed: false };
+			const write =
+				current === undefined
+					? insert("sessions", id, organisationId, changed)
+					: update("sessions", current.row, changed);
+			if (await store.commit([write])) return { session: changed, changed: true };
+		}
+		throw new HarbourError(
+			"unavailable",
+			`The vault could not update session ${sessionId}: too many concurrent changes`,
+		);
+	}
+
+	function emptySession(organisationId: OrganisationId, sessionId: SessionId): StoredSession {
+		return { sessionId, organisationId, generation: 0, placeholders: [] };
+	}
+
+	function sessionAccessView(sessionId: SessionId, stored: StoredSession | undefined): SessionAccess {
+		const blocked = stored?.blocked;
+		return {
+			sessionId,
+			blocked: blocked !== undefined,
+			...(blocked === undefined ? {} : { blockedAt: blocked.at, blockedBy: blocked.by }),
+			...(blocked?.reason === undefined ? {} : { reason: blocked.reason }),
+			...(stored?.endedAt === undefined ? {} : { endedAt: stored.endedAt }),
+			generation: stored?.generation ?? 0,
+		};
+	}
+
+	/** Why nothing the session holds works now, if that is so: it has ended, or an operator blocked it. */
+	function sessionClosed(stored: StoredSession | undefined): string | undefined {
+		if (stored === undefined) return undefined;
+		if (stored.endedAt !== undefined) return `Session ${stored.sessionId} has ended`;
+		if (stored.blocked !== undefined) return `Session ${stored.sessionId} is blocked`;
+		return undefined;
+	}
+
+	/** A new placeholder: random, never derived from a value or an earlier placeholder. */
+	function newPlaceholder(): string {
+		return `harbour-ph-${randomHex(16)}`;
+	}
+
 	const vault: HarbourVault = {
 		async putItem(ctx, input) {
 			forbidAgent(ctx, "create vault items");
@@ -808,13 +920,36 @@ export function createVault(options: VaultOptions): HarbourVault {
 					...(actor.kind === "agent" ? { sessionId: actor.sessionId } : {}),
 				};
 				const subject = named === undefined ? {} : { subject: { kind: "vault.item", id: named.id } };
-				const resolved = await access.require(ctx, {
-					...scope,
-					needed: "operator",
-					operation: "vault.propose",
-					...subject,
-				});
-				projectId = resolved.projectId;
+				if (
+					named !== undefined &&
+					named.owner.kind === "project" &&
+					!(await access.allows(ctx, { ...scope, needed: "operator" }))
+				) {
+					// Another project's item, shared into where the caller acts (docs/design/sharing.md): the proposal is in the
+					// caller's project and decided there, with its route, binding code and the ceiling as for any other.
+					const resolved = await access.resource(ctx, {
+						resource: { kind: "vault.item", id: named.id },
+						owner: named.owner,
+						permission: "use",
+						needed: "operator",
+						...(actor.kind !== "agent" && ctx.projectId !== undefined ? { projectId: ctx.projectId } : {}),
+						operation: "vault.propose",
+					});
+					if (resolved.via !== "share" || resolved.projectId === undefined) {
+						throw new HarbourError("forbidden", "The caller may not do this in this project", {
+							operation: "vault.propose",
+						});
+					}
+					projectId = resolved.projectId;
+				} else {
+					const resolved = await access.require(ctx, {
+						...scope,
+						needed: "operator",
+						operation: "vault.propose",
+						...subject,
+					});
+					projectId = resolved.projectId;
+				}
 			}
 			if (named !== undefined) {
 				const existing = await itemFor(ctx.organisationId, named.id);
@@ -1302,7 +1437,187 @@ export function createVault(options: VaultOptions): HarbourVault {
 					data: { reason },
 				});
 			}
+			if (reason === "session_ended") {
+				// Closed for good: its placeholders stop working and nothing it sends gets a credential again, whatever policy
+				// would match. Not audited on its own: the session's end is.
+				await writeSession(ctx.organisationId, sessionId, (current) =>
+					current?.endedAt !== undefined
+						? undefined
+						: { ...(current ?? emptySession(ctx.organisationId, sessionId)), placeholders: [], endedAt: now },
+				);
+			}
 			for (const event of afterwards) await emit(event);
+		},
+
+		async issueSessionPlaceholders(ctx, request) {
+			const named: unknown = typeof request === "object" && request !== null ? request.organisationId : undefined;
+			await requireSystem(ctx, "vault.issueSessionPlaceholders", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				...(typeof named === "string" ? { organisationId: named } : {}),
+			});
+			const candidate = request as Partial<SessionPlaceholderRequest> | undefined;
+			if (
+				!isString(candidate?.organisationId) ||
+				!isString(candidate?.sessionId) ||
+				(candidate.projectId !== undefined && !isString(candidate.projectId)) ||
+				(candidate.agentId !== undefined && !isString(candidate.agentId))
+			) {
+				throw new HarbourError("invalid", "Placeholders are issued for an organisation's session");
+			}
+			const { organisationId, sessionId, projectId } = request;
+			// Every item with a value the session could be granted: its organisation's own, and its project's. Never a
+			// person's own item or another project's, whose names the sandbox has no business seeing.
+			const items = (await readAll<StoredItem>("items", organisationId))
+				.map((found) => found.value.item)
+				.filter(
+					(item) =>
+						item.hasValue &&
+						(item.owner.kind === "organisation" ||
+							(item.owner.kind === "project" && item.owner.projectId === projectId)),
+				);
+			const issuedAt = clock.now();
+			const issued = items.map((item) => ({ item, placeholder: newPlaceholder() }));
+			const { session } = await writeSession(organisationId, sessionId, (current) => {
+				if (current?.endedAt !== undefined) {
+					throw new HarbourError("refused", `Session ${sessionId} has ended: it gets no placeholders`);
+				}
+				const base = current ?? emptySession(organisationId, sessionId);
+				return {
+					...base,
+					...(projectId === undefined ? {} : { projectId }),
+					generation: base.generation + 1,
+					issuedAt,
+					placeholders: issued.map(({ item, placeholder }) => ({ itemId: item.id, placeholder })),
+				};
+			});
+			const generation = session?.generation ?? 1;
+			await emit({
+				type: "vault.session.placeholders_issued",
+				actor: ctx.actor,
+				organisationId,
+				...(projectId === undefined ? {} : { projectId }),
+				sessionId,
+				...(request.agentId === undefined ? {} : { agentId: request.agentId }),
+				subject: { kind: "vault.session", id: sessionId },
+				// The items only: a placeholder is a credential of a kind, and the audit trail never holds one.
+				data: { generation, itemIds: issued.map(({ item }) => item.id) },
+			});
+			const placeholders: SessionPlaceholder[] = issued.map(({ item, placeholder }) => ({
+				itemId: item.id,
+				name: item.name,
+				hosts: [...item.hosts],
+				header: item.injection.header,
+				placeholder,
+			}));
+			const result: SessionPlaceholders = { sessionId, generation, issuedAt, placeholders };
+			return result;
+		},
+
+		async setSessionAccess(ctx, sessionId, input) {
+			forbidAgent(ctx, "block or unblock sessions");
+			const blocked: unknown = (input as { blocked?: unknown } | undefined)?.blocked;
+			const reason: unknown = (input as { reason?: unknown } | undefined)?.reason;
+			if (typeof blocked !== "boolean" || (reason !== undefined && typeof reason !== "string")) {
+				throw new HarbourError("invalid", "Session access is { blocked, reason? }: a boolean and a string");
+			}
+			if (!isString(sessionId)) throw new HarbourError("invalid", "Name the session to block or unblock");
+			let projectId: ProjectId | undefined;
+			if (access !== undefined) {
+				const operation = "vault.setSessionAccess";
+				const subject = { kind: "vault.session", id: sessionId };
+				projectId = (await access.require(ctx, { sessionId, needed: "operator", operation, subject })).projectId;
+			}
+			const at = clock.now();
+			const kept = reason === undefined ? undefined : reason.trim().slice(0, MAX_BLOCK_REASON);
+			const { session, changed } = await writeSession(ctx.organisationId, sessionId, (current) => {
+				if (blocked === (current?.blocked !== undefined)) return undefined;
+				const base = current ?? {
+					...emptySession(ctx.organisationId, sessionId),
+					...(projectId === undefined ? {} : { projectId }),
+				};
+				if (!blocked) {
+					const { blocked: _unblocked, ...open } = base;
+					return open;
+				}
+				return {
+					...base,
+					blocked: { at, by: ctx.actor, ...(kept === undefined || kept === "" ? {} : { reason: kept }) },
+				};
+			});
+			if (changed) {
+				await emit({
+					type: blocked ? "vault.session.blocked" : "vault.session.unblocked",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...contextFields(ctx),
+					...(session?.projectId === undefined ? {} : { projectId: session.projectId }),
+					sessionId,
+					subject: { kind: "vault.session", id: sessionId },
+					...(blocked && kept !== undefined && kept !== "" ? { data: { reason: kept } } : {}),
+				});
+			}
+			return sessionAccessView(sessionId, session);
+		},
+
+		async getSessionAccess(ctx, sessionId) {
+			if (!isString(sessionId)) throw new HarbourError("invalid", "Name the session");
+			if (access !== undefined) {
+				const subject = { kind: "vault.session", id: sessionId };
+				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.getSessionAccess", subject });
+			}
+			return sessionAccessView(sessionId, await sessionOf(ctx.organisationId, sessionId));
+		},
+
+		async getSessionUsage(ctx, sessionId) {
+			if (!isString(sessionId)) throw new HarbourError("invalid", "Name the session");
+			if (access !== undefined) {
+				const subject = { kind: "vault.session", id: sessionId };
+				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.getSessionUsage", subject });
+			}
+			const uses = (await readAll<StoredUse>("uses", ctx.organisationId))
+				.map((found) => found.value.use)
+				.filter((use) => use.sessionId === sessionId);
+			const hosts = new Map<string, { host: string; injected: number; denied: number }>();
+			let injected = 0;
+			let firstAt: number | undefined;
+			let lastAt: number | undefined;
+			for (const use of uses) {
+				const entry = hosts.get(use.host) ?? { host: use.host, injected: 0, denied: 0 };
+				if (use.outcome === "injected") {
+					injected += 1;
+					entry.injected += 1;
+				} else {
+					entry.denied += 1;
+				}
+				hosts.set(use.host, entry);
+				firstAt = firstAt === undefined ? use.at : Math.min(firstAt, use.at);
+				lastAt = lastAt === undefined ? use.at : Math.max(lastAt, use.at);
+			}
+			const usage: SessionEgressUsage = {
+				sessionId,
+				requests: uses.length,
+				injected,
+				denied: uses.length - injected,
+				hosts: [...hosts.values()].sort((a, b) => a.host.localeCompare(b.host)),
+				...(firstAt === undefined ? {} : { firstAt }),
+				...(lastAt === undefined ? {} : { lastAt }),
+			};
+			return usage;
+		},
+
+		async assertSessionOpen(ctx, scope) {
+			const named: unknown = typeof scope === "object" && scope !== null ? scope.organisationId : undefined;
+			await requireSystem(ctx, "vault.assertSessionOpen", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				...(typeof named === "string" ? { organisationId: named } : {}),
+			});
+			if (!isString(scope?.organisationId) || !isString(scope?.sessionId)) {
+				throw new HarbourError("invalid", "Name the session's organisation and session");
+			}
+			const closed = sessionClosed(await sessionOf(scope.organisationId, scope.sessionId));
+			if (closed !== undefined) throw new HarbourError("refused", `${closed}: its model calls are refused`);
 		},
 
 		async decideEgress(ctx, request) {
@@ -1326,6 +1641,19 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const host = url.hostname.toLowerCase();
 			const path = url.pathname.length === 0 ? "/" : url.pathname;
 			const target = { host, path };
+			// A blocked or ended session gets nothing, whatever grant or policy would match.
+			const session =
+				request.sessionId === undefined ? undefined : await sessionOf(request.organisationId, request.sessionId);
+			const closed = sessionClosed(session);
+			if (closed !== undefined) {
+				return denyEgress(request, target, closed, {
+					action: "none",
+					message:
+						session?.endedAt !== undefined
+							? "Nothing a session holds works once it has ended."
+							: "An operator has blocked this session's credentials; nothing it sends gets one until it is unblocked.",
+				});
+			}
 			if (url.protocol !== "https:") {
 				return denyEgress(request, target, "Credentials are only injected over https", {
 					action: "none",
@@ -1346,6 +1674,37 @@ export function createVault(options: VaultOptions): HarbourVault {
 				const found = items.find((candidate) => candidate.value.item.id === itemId)?.value;
 				return found?.item.hosts.includes(host) ? found : undefined;
 			};
+			// A placeholder the proxy found in the auth header names the one item this request may get, and only while it is
+			// one of the session's current placeholders and its item is bound to this host. Anything else is refused rather
+			// than injected: a stale or copied placeholder, or a key sent towards another host.
+			let placeholderItem: string | undefined;
+			if (request.placeholder !== undefined) {
+				const entry =
+					typeof request.placeholder === "string"
+						? session?.placeholders.find((issued) => issued.placeholder === request.placeholder)
+						: undefined;
+				if (entry === undefined) {
+					return denyEgress(request, target, "The placeholder is not one of this session's current placeholders", {
+						action: "none",
+						message:
+							"A placeholder works only in the session and sandbox start it was issued for: use the one in this sandbox's environment.",
+					});
+				}
+				const named = items.find((candidate) => candidate.value.item.id === entry.itemId)?.value.item;
+				if (named === undefined || !named.hosts.includes(host)) {
+					const what = named === undefined ? "an item that no longer exists" : named.name;
+					return denyEgress(
+						request,
+						{ ...target, ...(named === undefined ? {} : { itemId: named.id }) },
+						`The placeholder is for ${what}, which is not bound to ${host}`,
+						{
+							action: "none",
+							message: `A credential goes only to its own hosts${named === undefined ? "" : ` (${named.hosts.join(", ")})`}.`,
+						},
+					);
+				}
+				placeholderItem = named.id;
+			}
 			let valueless: VaultItem | undefined;
 			const candidates = [
 				...(await readAll<StoredGrant>("grants", request.organisationId)).map(({ value }) => ({
@@ -1360,6 +1719,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				})),
 			];
 			for (const candidate of candidates) {
+				if (placeholderItem !== undefined && candidate.itemId !== placeholderItem) continue;
 				const active = candidate.grant
 					? grantView(candidate.grant).status === "active"
 					: policyActive(candidate.policy!);
@@ -1368,6 +1728,9 @@ export function createVault(options: VaultOptions): HarbourVault {
 				if (!active || !selectorMatches(selector, request) || !routeAllows(route, method, host, path)) continue;
 				const stored = itemOf(candidate.itemId);
 				if (stored === undefined) continue;
+				// A grant on another project's item is used only while the item is still shared into the session
+				// (docs/design/sharing.md). A policy is that item's project admin's own, so it stands as set.
+				if (candidate.grant !== undefined && !(await stillShared(request, stored.item))) continue;
 				const { item, sealed } = stored;
 				if (sealed === undefined) {
 					valueless ??= item;
@@ -1482,6 +1845,8 @@ export function createVault(options: VaultOptions): HarbourVault {
 			if (!item.hosts.includes(target.host)) {
 				return refuse("refused", `Item ${item.name} is not bound to ${target.host}`, item.id);
 			}
+			const closed = sessionClosed(await sessionOf(scope.organisationId, scope.sessionId));
+			if (closed !== undefined) return refuse("refused", closed, item.id);
 			const sealed = found!.value.sealed;
 			if (sealed === undefined) return refuse("refused", `Item ${item.name} has no value yet`, item.id);
 			const value = await cipher.open(sealed, { itemId: item.id, valueVersion: item.valueVersion });

@@ -7,14 +7,27 @@
  * | --- | --- |
  * | `POST /sessions/{sessionId}/browsers/{browserSessionId}/embed` | `embed`, once `get` has shown the browser is the session's |
  *
+ * And, given the deployment's `SessionBrowser` (`./session.ts`), the console's own routes, beside the public one:
+ *
+ * | Route | Body | Answer |
+ * | --- | --- | --- |
+ * | `POST /browser/decisions` | `{ sessionId, callId, allow }` | a person's answer to an agent's waiting `browser_request` |
+ * | `POST /browser/live` | `{ sessionId, browserSessionId }` | `{ kind: "embed", mode, url, endMessage?, expiresAt? }`, watch-only |
+ * | `POST /browser/replay` | `{ sessionId, browserSessionId }` | the same, for the browser's recording |
+ *
+ * The console's links stay relative: it is served on the same origin.
+ *
  * Harbour's own browsers answer a link relative to the console (`/browser/<id>#<token>`), so an outside app gets it
  * made absolute against `publicOrigin`, or the request's origin when none is set.
  */
 import { browserRoutes, createRouter, STATUS_BY_CODE } from "@harbour/api";
 import { type Browser, type CallContext, HarbourError, isHarbourError } from "@harbour/contracts";
+import type { SessionBrowser } from "./session.ts";
 
 export interface BrowserApiOptions {
 	readonly browser: Browser;
+	/** The deployment's session browser: with it, the console's routes too. */
+	readonly session?: Pick<SessionBrowser, "decide" | "liveView" | "replay">;
 	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** The prefix before every route. Default `/v1`. */
@@ -43,8 +56,84 @@ export function browserErrorResponse(error: unknown): Response {
 	return json({ error: { code: "unavailable", message: "The browser API failed" } }, 500);
 }
 
-/** `/v1/sessions/{sessionId}/browsers/...`: the only paths this API answers. */
+/** `/v1/sessions/{sessionId}/browsers/...`: the public API's paths. */
 const BROWSER_PATH = /^\/sessions\/[^/]+\/browsers\//;
+/** The console's routes, under the base path. */
+export const BROWSER_DECISIONS = "/browser/decisions";
+export const BROWSER_LIVE = "/browser/live";
+export const BROWSER_REPLAY = "/browser/replay";
+const CONSOLE_PATHS: ReadonlySet<string> = new Set([BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY]);
+/** A console route's JSON body is a few IDs. */
+export const BROWSER_BODY_LIMIT = 1024;
+
+/** The request's JSON object body, at most `BROWSER_BODY_LIMIT` bytes, or `undefined`. */
+async function smallJson(request: Request): Promise<{ readonly [key: string]: unknown } | undefined> {
+	const reader = request.body?.getReader();
+	if (reader === undefined) return undefined;
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > BROWSER_BODY_LIMIT) {
+			await reader.cancel().catch(() => undefined);
+			return undefined;
+		}
+		chunks.push(value);
+	}
+	const bytes = new Uint8Array(size);
+	let at = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, at);
+		at += chunk.byteLength;
+	}
+	try {
+		const body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+		return typeof body === "object" && body !== null && !Array.isArray(body)
+			? (body as { readonly [key: string]: unknown })
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+const nonEmpty = (value: unknown): value is string => typeof value === "string" && value !== "";
+
+/** One of the console's routes, for a signed-in caller. */
+async function consoleRoute(
+	session: NonNullable<BrowserApiOptions["session"]>,
+	route: string,
+	ctx: CallContext,
+	request: Request,
+): Promise<Response> {
+	const body = await smallJson(request);
+	if (route === BROWSER_DECISIONS) {
+		if (body === undefined || !nonEmpty(body.sessionId) || !nonEmpty(body.callId) || typeof body.allow !== "boolean") {
+			throw new HarbourError("invalid", 'The body is { "sessionId": string, "callId": string, "allow": boolean }');
+		}
+		return json(await session.decide(ctx, { sessionId: body.sessionId, callId: body.callId, allow: body.allow }), 200);
+	}
+	if (body === undefined || !nonEmpty(body.sessionId) || !nonEmpty(body.browserSessionId)) {
+		throw new HarbourError("invalid", 'The body is { "sessionId": string, "browserSessionId": string }');
+	}
+	const target = { sessionId: body.sessionId, browserSessionId: body.browserSessionId };
+	const mode = route === BROWSER_LIVE ? "live" : "replay";
+	const link = mode === "live" ? await session.liveView(ctx, target) : await session.replay(ctx, target);
+	const embed = link.embed ?? { url: link.url };
+	const answer = json(
+		{
+			kind: "embed",
+			mode,
+			url: embed.url,
+			...(embed.endMessage === undefined ? {} : { endMessage: embed.endMessage }),
+			...(link.expiresAt === undefined ? {} : { expiresAt: link.expiresAt }),
+		},
+		200,
+	);
+	answer.headers.set("referrer-policy", "no-referrer");
+	return answer;
+}
 
 export function createBrowserApi(options: BrowserApiOptions): BrowserApi {
 	const { browser } = options;
@@ -77,7 +166,23 @@ export function createBrowserApi(options: BrowserApiOptions): BrowserApi {
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
-			if (!path.startsWith(basePath) || !BROWSER_PATH.test(path.slice(basePath.length))) return undefined;
+			if (!path.startsWith(basePath)) return undefined;
+			const route = path.slice(basePath.length);
+			const session = options.session;
+			if (session !== undefined && CONSOLE_PATHS.has(route)) {
+				if (request.method !== "POST") {
+					const refused = json({ error: { code: "invalid", message: "POST only" } }, 405);
+					refused.headers.set("allow", "POST");
+					return refused;
+				}
+				try {
+					const ctx = await options.authenticate(request);
+					return await consoleRoute(session, route, ctx, request);
+				} catch (error) {
+					return browserErrorResponse(error);
+				}
+			}
+			if (!BROWSER_PATH.test(route)) return undefined;
 			try {
 				const ctx = await options.authenticate(request);
 				const answered = await router(ctx, request);

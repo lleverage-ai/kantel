@@ -2,6 +2,7 @@ import {
 	type BranchOption,
 	BranchPicker,
 	Composer,
+	type ComposerAttachment,
 	type ComposerProps,
 	type ComposerState,
 	EmptyState,
@@ -12,6 +13,7 @@ import {
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
+import { COMPOSER_ACCESS } from "./composer-access.ts";
 
 // A new session before it exists, after T3 Code's new thread: the session header with nothing in it yet, an empty
 // transcript saying where it starts, and the composer with the project picker in its footer. As with
@@ -21,6 +23,8 @@ export type NewSessionState = {
 	/** The project it starts in. */
 	projectId: string;
 	projectName: string;
+	/** Where the project's crumb in the top bar goes: its sessions. */
+	projectHref?: string;
 	/** Every project, the ones the person can't start a session in dimmed with the reason. */
 	projects: readonly ProjectOption[];
 	/** The agent that will answer, once known. */
@@ -51,6 +55,11 @@ export type NewSessionState = {
 		ComposerProps,
 		"models" | "model" | "onModelChange" | "thinking" | "defaultThinking" | "onThinkingChange"
 	>;
+	/** The composer's files: the attached ones and their handlers, or why it takes none. */
+	files?: Pick<
+		ComposerProps,
+		"attachments" | "onAttach" | "onRemoveAttachment" | "onRetryAttachment" | "attachmentLimits" | "attachUnavailable"
+	>;
 };
 
 export type NewSessionHandlers = {
@@ -58,7 +67,7 @@ export type NewSessionHandlers = {
 	onProject: (id: string) => void;
 	onRepository?: (repo: string) => void;
 	onBranch?: (branch: string) => void;
-	onSend: (text: string) => void;
+	onSend: (text: string, attachments?: readonly ComposerAttachment[]) => void;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
 };
@@ -114,49 +123,58 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 		<div className="console">
 			<SessionHeader
 				title=""
-				status="idle"
+				parents={[
+					{
+						label: state.projectName,
+						...(state.projectHref === undefined ? {} : { href: state.projectHref }),
+					},
+				]}
 				// Nothing is connected until the session exists, and nothing has failed.
 				connection={{ state: "open" }}
 				onBack={on.onBack}
-				meta={<span className="console-project">{state.projectName}</span>}
 			/>
+			{/* console-main is a flex row (#272): the transcript's own column keeps it, and the composer, full width. */}
 			<div className="console-main">
-				<Transcript
-					items={[]}
-					empty={
-						<EmptyState title={`Start a session in ${state.projectName}`}>
-							{repo === ""
-								? `Write the first message. ${who} answers it.`
-								: `Write the first message. ${who} answers it, with ${repo} in its workspace.`}
-						</EmptyState>
-					}
-					dock={
-						<Composer
-							state={composerStateFor(state)}
-							{...(state.blocked === undefined ? {} : { disabledReason: state.blocked })}
-							label="First message"
-							placeholder="What should this session do?"
-							banner={bannerFor(state)}
-							value={state.draft}
-							onChange={on.onDraft}
-							{...state.pickers}
-							onSend={(text) => on.onSend(text)}
-							footer={
-								<>
-									<ProjectPicker
-										projects={state.projects}
-										value={state.projectId}
-										onChange={on.onProject}
-										disabled={state.sending}
-									/>
-									<RepositoryPickers state={state} on={on} />
-								</>
-							}
-							autoFocus
-							captureTyping
-						/>
-					}
-				/>
+				<div className="console-main-transcript">
+					<Transcript
+						items={[]}
+						empty={
+							<EmptyState title={`Start a session in ${state.projectName}`}>
+								{repo === ""
+									? `Write the first message. ${who} answers it.`
+									: `Write the first message. ${who} answers it, with ${repo} in its workspace.`}
+							</EmptyState>
+						}
+						dock={
+							<Composer
+								state={composerStateFor(state)}
+								{...(state.blocked === undefined ? {} : { disabledReason: state.blocked })}
+								label="First message"
+								placeholder="What should this session do?"
+								banner={bannerFor(state)}
+								value={state.draft}
+								onChange={on.onDraft}
+								{...state.pickers}
+								{...COMPOSER_ACCESS}
+								{...(state.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+								onSend={(text, attachments) => on.onSend(text, attachments)}
+								footer={
+									<>
+										<ProjectPicker
+											projects={state.projects}
+											value={state.projectId}
+											onChange={on.onProject}
+											disabled={state.sending}
+										/>
+										<RepositoryPickers state={state} on={on} />
+									</>
+								}
+								autoFocus
+								captureTyping
+							/>
+						}
+					/>
+				</div>
 			</div>
 		</div>
 	);

@@ -7,34 +7,49 @@
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
 //   /v1/me, /v1/projects        who is signed in and their projects, and a host app's API keys (@harbour/identity/http);
 //   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
+//   /v1/me/passkeys...          the signed-in person's passkeys (@harbour/identity/passkey/http), which the approval API
+//                               asks for once they have one
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
 //   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
 //   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
-//   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault
+//   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
+//                               policy and a session's uses; the store checks every call
+//   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault; an
+//                               approval needs the person's passkey once they have one, and a refusal is audited
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
+//   /v1/browser/decisions, /live, /replay   the console's browser routes, when there is a browser (browser.ts)
+//   /v1/sessions/:id/browsers/:browser/embed the embed API: a watch-only live or replay link for an outside app
+//   /v1/browser/view/:browser/...  a viewer's requests to Harbour's own browsers, with the view link's token
+//   /browser/:browser           the console's viewer page, framed only by the console and HARBOUR_EMBED_ORIGINS
 //   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
 //   anything else               the console (apps/console's build), with index.html for its client-side routes
 import { createAuditQueryHandler } from "@harbour/audit/http";
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
+import { VIEWER_PAGE, viewerPageHeaders } from "@harbour/browser/runtime";
 import {
 	type Authenticator,
 	type CallContext,
 	callContextFor,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
+	relyingPartyFor,
 	SESSION_END_PATH,
 } from "@harbour/contracts";
 import { createAuthenticator, withAuthentication } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
 import { createOtpHandler } from "@harbour/identity/otp/http";
+import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
+import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
+import { type BrowserViews, isViewPath } from "./browser.ts";
 import type { GatewayComponents } from "./components.ts";
 import { createEgressHandler, type EgressScope } from "./egress.ts";
 import type { MailDescription } from "./mail.ts";
@@ -65,6 +80,15 @@ export interface GatewayOptions {
 	 * the components, `/v1/egress/...` is not mounted.
 	 */
 	readonly egress?: { readonly key: string; readonly scope: EgressScope };
+	/** A viewer's requests to Harbour's own browsers (`browser.ts`), when the browser is the harbour provider. */
+	readonly browserViews?: BrowserViews;
+	/** The origins that may frame the viewer page, besides the console (HARBOUR_EMBED_ORIGINS). */
+	readonly embedOrigins?: string;
+	/**
+	 * Where the console is served (HARBOUR_PUBLIC_URL): an embed's absolute link, and the relying party passkeys are
+	 * made for and checked against. Default: the request's origin, which behind a TLS proxy is `http:`, so set it there.
+	 */
+	readonly publicOrigin?: string;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -84,6 +108,12 @@ const json = (value: unknown, status = 200) =>
 	});
 
 const AUDIT_PREFIX = "/v1/audit/";
+const BROWSER_ROUTES: ReadonlySet<string> = new Set([
+	`/v1${BROWSER_DECISIONS}`,
+	`/v1${BROWSER_LIVE}`,
+	`/v1${BROWSER_REPLAY}`,
+]);
+const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
 const MEMORY_BASE = "/v1/memory";
 
@@ -126,6 +156,8 @@ export function createGateway(options: GatewayOptions): Gateway {
 		models: runtime.models,
 		// The console's message actions: fork from an answer, edit a message and rerun from it.
 		branching: runtime.branching,
+		// The console's session menu: rename, pin, archive, mark unread and delete a session.
+		organising: runtime.organising,
 		directory: runtime.directory,
 		profiles: runtime.profiles,
 		hostTools: runtime.hostTools,
@@ -140,6 +172,22 @@ export function createGateway(options: GatewayOptions): Gateway {
 	const identity = createIdentityHandler({
 		identity: components.identity,
 		authenticator,
+		signIn: signIn === undefined ? [] : ["email_otp"],
+	});
+
+	// A passkey is made for, and checked against, the console's public origin: the HTTP adapter's request URL is always
+	// `http:`, which a browser behind a TLS proxy never signs.
+	const relyingParty =
+		options.publicOrigin === undefined
+			? (request: Request) => relyingPartyFor(request.url)
+			: (() => {
+					const rp = relyingPartyFor(options.publicOrigin);
+					return () => rp;
+				})();
+	const passkeys = createPasskeyHandler({
+		passkeys: components.passkeys,
+		authenticator,
+		relyingParty,
 		signIn: signIn === undefined ? [] : ["email_otp"],
 	});
 
@@ -170,6 +218,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 							if (ctx === undefined) throw new Error("vault approval API reached without authentication");
 							return ctx;
 						},
+						// As on Cloudflare: an approval needs the person's passkey once they have one; a refusal is audited.
+						passkeys: components.passkeys,
+						relyingParty,
+						audit: components.audit,
 					});
 					return withAuthentication(authenticator, async (request, caller) => {
 						callers.set(request, callContextFor(caller));
@@ -182,7 +234,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 	const organisationAdmin = (ctx: CallContext) => components.identity.authorize(ctx, "admin");
 	const signedIn = async (request: Request): Promise<CallContext> => {
 		const ctx = callers.get(request);
-		if (ctx === undefined) throw new Error("skills or memory API reached without authentication");
+		if (ctx === undefined) throw new Error("skills, memory or sharing API reached without authentication");
 		return ctx;
 	};
 	const skillsApi = createSkillsApi({
@@ -203,6 +255,30 @@ export function createGateway(options: GatewayOptions): Gateway {
 	const memory = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await memoryApi.fetch(request)) ?? notFound();
+	});
+	const sharingApi = createSharingApi({ sharing: components.sharing, authenticate: signedIn });
+	const sharing = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await sharingApi.fetch(request)) ?? notFound();
+	});
+
+	const sessionBrowser = components.browser;
+	const browserApi =
+		sessionBrowser === undefined
+			? undefined
+			: createBrowserApi({
+					browser: sessionBrowser.broker,
+					session: sessionBrowser,
+					authenticate: signedIn,
+					basePath: "/v1",
+					...(options.publicOrigin === undefined ? {} : { publicOrigin: options.publicOrigin }),
+				});
+	const browser = withAuthentication(authenticator, async (request, caller) => {
+		if (browserApi === undefined) {
+			return json({ error: { code: "unavailable", message: "This deployment has no browser" } }, 503);
+		}
+		callers.set(request, callContextFor(caller, { signal: request.signal }));
+		return (await browserApi.fetch(request)) ?? notFound();
 	});
 
 	const egress =
@@ -243,12 +319,31 @@ export function createGateway(options: GatewayOptions): Gateway {
 				if (path.startsWith(AUDIT_PREFIX)) return await audit(request);
 				if (under(path, SKILLS_BASE)) return await skills(request);
 				if (under(path, MEMORY_BASE)) return await memory(request);
+				if (isSharingPath(path)) return await sharing(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);
 				}
 				if (egress?.matches(path)) return await egress.fetch(request);
+				if (isViewPath(path)) {
+					return options.browserViews === undefined ? notFound() : await options.browserViews.fetch(request);
+				}
+				if (BROWSER_ROUTES.has(path) || BROWSER_EMBED.test(path)) {
+					// A console route answers anything but a POST with 405 before it signs anyone in, as on Cloudflare.
+					if (request.method !== "POST" && BROWSER_ROUTES.has(path) && browserApi !== undefined) {
+						return (await browserApi.fetch(request)) ?? notFound();
+					}
+					return await browser(request);
+				}
+				if (isPasskeyPath(path)) return await passkeys(request);
 				if (isIdentityPath(path)) return await identity(request);
 				if (path === "/v1" || path.startsWith("/v1/")) return await sessions.fetch(request);
+				if (consoleAssets !== undefined && VIEWER_PAGE.test(path)) {
+					const page = await consoleAssets(request);
+					return new Response(page.body, {
+						status: page.status,
+						headers: viewerPageHeaders(page.headers, options.embedOrigins),
+					});
+				}
 				if (consoleAssets !== undefined) return await consoleAssets(request);
 				return json({ error: { code: "not_found", message: "No such route" } }, 404);
 			} catch (error) {

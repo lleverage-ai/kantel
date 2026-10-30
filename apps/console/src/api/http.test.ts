@@ -208,6 +208,51 @@ describe("the console on the session API", () => {
 		expect(await client.projectOf(away)).toBe("proj-a");
 	});
 
+	it("renames, pins, archives and marks a session unread from its menu, and the list shows each at once", async () => {
+		const { client, create, memory } = await setUp();
+		const id = await create("proj-a", "Before");
+		const states: SessionListState[] = [];
+		const stop = client.watchSessions("proj-a", (state) => states.push(state));
+		cleanups.push(stop);
+		await eventually(() => states.length > 0, "the first list");
+		const row = () => states.at(-1)?.sessions.find((session) => session.id === id);
+
+		await client.updateSession?.(id, { title: "After", pinned: true, archived: true, unread: true });
+		expect(row()).toMatchObject({ title: "After", pinned: true, archived: true, unread: true });
+		const stored = await memory.directory.get(ctx, id);
+		expect(stored?.title).toBe("After");
+		expect(stored?.pinnedAt).toBeTypeOf("number");
+
+		await client.updateSession?.(id, { pinned: false, archived: false, unread: false });
+		expect(row()?.pinned).toBeUndefined();
+		expect(row()?.archived).toBeUndefined();
+		expect(row()?.unread).toBeUndefined();
+
+		// Marked unread, it stays so until it is next opened, which clears the mark on the host.
+		await client.updateSession?.(id, { unread: true });
+		client.markRead(id)();
+		await eventually(() => row()?.unread === undefined, "opened and read");
+		const cleared = await memory.directory.get(ctx, id);
+		expect(cleared?.markedUnreadAt).toBeUndefined();
+
+		await expect(client.updateSession?.(id, { title: "  " })).rejects.toMatchObject({ code: "invalid" });
+	});
+
+	it("deletes a session from its menu: it leaves the list at once, and isn't found again", async () => {
+		const { client, create } = await setUp();
+		const gone = await create("proj-a", "Gone");
+		const kept = await create("proj-a", "Kept");
+		const states: SessionListState[] = [];
+		const stop = client.watchSessions("proj-a", (state) => states.push(state));
+		cleanups.push(stop);
+		await eventually(() => states.at(-1)?.sessions.length === 2, "both listed");
+		await client.deleteSession?.(gone);
+		expect(states.at(-1)?.sessions.map((session) => session.id)).toEqual([kept]);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(states.at(-1)?.sessions.map((session) => session.id)).toEqual([kept]);
+		await expect(client.deleteSession?.(gone)).rejects.toMatchObject({ code: "not_found" });
+	});
+
 	it("marks a session unread when a whole run happens between two looks at the list", async () => {
 		const { client, create, script, memory } = await setUp();
 		const id = await create("proj-a", "Quick");
@@ -282,7 +327,7 @@ describe("the console on the session API", () => {
 		await eventually(() => latest()?.unread === true, "unread once the lookup is in");
 	});
 
-	it("lists every page of sessions, and finds a linked session the list hasn't shown", async () => {
+	it("shows the first page of sessions at once, then every page, and finds a linked session the list hasn't shown", async () => {
 		const { apiFetch, client, create } = await setUp();
 		const first = await create("proj-old");
 		for (let index = 0; index < 120; index++) await create("proj-a");
@@ -290,8 +335,9 @@ describe("the console on the session API", () => {
 		expect((await client.projects()).map((project) => project.id).sort()).toEqual(["proj-a", "proj-old"]);
 		const states: { sessions: readonly unknown[] }[] = [];
 		cleanups.push(client.watchSessions("proj-a", (state) => states.push(state)));
-		await eventually(() => states.length > 0, "the list");
-		expect(states[0]?.sessions).toHaveLength(120);
+		await eventually(() => states.length > 1, "the list");
+		expect(states[0]?.sessions).toHaveLength(100);
+		expect(states[1]?.sessions).toHaveLength(120);
 
 		const fresh = createApiClient({
 			baseUrl: BASE,
@@ -300,6 +346,68 @@ describe("the console on the session API", () => {
 		});
 		expect(await fresh.projectOf(first)).toBe("proj-old");
 		expect(await fresh.projectOf("s-nobody")).toBeUndefined();
+	});
+
+	it("polls only the first page between full listings, and a new session still shows", async () => {
+		const { apiFetch, create } = await setUp();
+		for (let index = 0; index < 120; index++) await create("proj-a");
+		const asked: string[] = [];
+		const counting = createApiClient({
+			baseUrl: BASE,
+			headers: () => ({ authorization: "Bearer tom" }),
+			fetch: (input, init) => {
+				const request = new Request(input, init);
+				const url = new URL(request.url);
+				if (url.href.startsWith(`${BASE}/sessions?`)) asked.push(url.searchParams.get("cursor") ?? "first");
+				return apiFetch(request);
+			},
+			listPollMs: 20,
+		});
+		const states: { sessions: readonly { id: string }[] }[] = [];
+		cleanups.push(counting.watchSessions("proj-a", (state) => states.push(state)));
+		await eventually(() => states.at(-1)?.sessions.length === 120, "every page");
+		const newest = await create("proj-a");
+		await eventually(() => states.at(-1)?.sessions[0]?.id === newest, "the new session");
+		expect(states.at(-1)?.sessions).toHaveLength(121);
+		// The first listing read the rest once; the polls since asked for the first page only.
+		expect(asked.filter((cursor) => cursor !== "first")).toHaveLength(1);
+	});
+
+	it("says which session a subagent's session was started from, for the breadcrumbs", async () => {
+		const { client, create, memory } = await setUp();
+		const parent = await create("proj-a", "Fix the billing worker");
+		const child = await memory.runtime.create(ctx, {
+			projectId: "proj-a",
+			agentId: "worker",
+			title: "Write the refund tests",
+			parentSessionId: parent,
+		});
+		expect(await client.parentOf?.(child.id)).toEqual({ id: parent, title: "Fix the billing worker" });
+		expect(await client.parentOf?.(parent)).toBeUndefined();
+		expect(await client.parentOf?.("s-nobody")).toBeUndefined();
+	});
+
+	it("finds the session a subagent call started, and leaves subagents' sessions out of the list", async () => {
+		const { client, create, memory } = await setUp();
+		const parent = await create("proj-a", "Fix the billing worker");
+		const child = await memory.runtime.create(ctx, {
+			projectId: "proj-a",
+			agentId: "worker",
+			title: "Write the refund tests",
+			parentSessionId: parent,
+			labels: { subagentCall: "call-7" },
+		});
+		expect(await client.subagentOf?.(parent, "call-7")).toBe(child.id);
+		expect(await client.subagentOf?.(parent, "call-8")).toBeUndefined();
+		expect(await client.subagentOf?.(child.id, "call-7")).toBeUndefined();
+		const listed = await new Promise<readonly string[]>((resolve) => {
+			const stop = client.watchSessions("proj-a", (list) => {
+				if (list.loading) return;
+				stop();
+				resolve(list.sessions.map((session) => session.id));
+			});
+		});
+		expect(listed).toEqual([parent]);
 	});
 
 	it("streams a session: a snapshot, then the run's answer as it happens", async () => {

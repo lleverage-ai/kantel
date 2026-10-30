@@ -1,13 +1,13 @@
 /**
- * A repository's branches over git's smart HTTP protocol (protocol v2 `ls-refs`), with `fetch` alone, so it runs in a
- * Worker as well as on a node. It is what a new session's branch picker lists, and it needs no REST API (and so none of
- * its rate limits): one `POST <repo>.git/git-upload-pack`, the request `git ls-remote --symref <repo> HEAD
- * 'refs/heads/*'` makes.
+ * A repository's branches, and the commit a ref names, over git's smart HTTP protocol (protocol v2 `ls-refs`), with
+ * `fetch` alone, so it runs in a Worker as well as on a node. It is what a new session's branch picker lists and how a
+ * git seed resolves its ref, and it needs no REST API (and so none of its rate limits, which Workers share by egress
+ * IP): one `POST <repo>.git/git-upload-pack`, the request `git ls-remote --symref <repo> HEAD 'refs/heads/*'` makes.
  *
  * Pass the vault's egress `fetch` for a private repository, which adds the credentials; the caller never holds them.
  */
 import { type CallContext, HarbourError, isHarbourError, type ProjectAccess } from "@harbour/contracts";
-import { gitHubRepo } from "./git-tarball.ts";
+import { gitHubRepo } from "./github-repo.ts";
 import { errorStatus } from "./read-api.ts";
 
 export interface GitBranch {
@@ -41,6 +41,12 @@ export interface GitRefListerOptions {
 export interface GitRefLister {
 	/** The repository's branches. `not_found` when there is no such repository (or it is private and unreachable). */
 	branches(repo: string, options?: { readonly signal?: AbortSignal }): Promise<GitBranches>;
+	/**
+	 * The commit `ref` names: a full ref (`refs/heads/main`), `HEAD`, or a short name, looked up as git does, a tag
+	 * (peeled to its commit) before a branch. `undefined` when the repository has no such ref; `not_found` when there is
+	 * no such repository (or it is private and unreachable).
+	 */
+	resolve(repo: string, ref: string, options?: { readonly signal?: AbortSignal }): Promise<string | undefined>;
 }
 
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
@@ -52,17 +58,42 @@ function pktLine(text: string): string {
 	return `${(encoder.encode(text).length + 4).toString(16).padStart(4, "0")}${text}`;
 }
 
-/** The protocol v2 `ls-refs` request for HEAD and every branch, with HEAD's target. */
-export function lsRefsRequest(): string {
+/**
+ * The protocol v2 `ls-refs` request for the refs under `prefixes`: by default HEAD and every branch, with HEAD's
+ * target; with `peel`, each annotated tag's commit too.
+ */
+export function lsRefsRequest(
+	prefixes: readonly string[] = ["HEAD", "refs/heads/"],
+	options: { readonly peel?: boolean } = {},
+): string {
 	return [
 		pktLine("command=ls-refs\n"),
 		pktLine("agent=harbour\n"),
 		"0001",
+		...(options.peel === true ? [pktLine("peel\n")] : []),
 		pktLine("symrefs\n"),
-		pktLine("ref-prefix HEAD\n"),
-		pktLine("ref-prefix refs/heads/\n"),
+		...prefixes.map((prefix) => pktLine(`ref-prefix ${prefix}\n`)),
 		"0000",
 	].join("");
+}
+
+/** Where a short ref name may live, in the order git looks (`git rev-parse`'s rules, less `refs/remotes`). */
+export function refCandidates(ref: string): string[] {
+	if (ref === "HEAD" || ref.startsWith("refs/")) return [ref];
+	return [`refs/${ref}`, `refs/tags/${ref}`, `refs/heads/${ref}`];
+}
+
+/** The commit each ref of an `ls-refs` reply names, an annotated tag's peeled to its commit. */
+export function parseRefCommits(lines: readonly string[]): Map<string, string> {
+	const commits = new Map<string, string>();
+	for (const line of lines) {
+		if (line.startsWith("ERR ")) throw new HarbourError("unavailable", `the git server refused: ${line.slice(4)}`);
+		const [commit, ref, ...attributes] = line.split(" ");
+		if (commit === undefined || ref === undefined || !COMMIT.test(commit)) continue;
+		const peeled = attributes.find((attribute) => attribute.startsWith("peeled:"))?.slice("peeled:".length);
+		commits.set(ref, peeled !== undefined && COMMIT.test(peeled) ? peeled : commit);
+	}
+	return commits;
 }
 
 /** The payloads of a pkt-line stream up to its first flush; malformed framing is `unavailable`. */
@@ -112,35 +143,53 @@ export function createGitRefLister(options: GitRefListerOptions = {}): GitRefLis
 	const base = (options.gitBase ?? "https://github.com").replace(/\/+$/, "");
 	const maxBranches = options.maxBranches ?? 1_000;
 	const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
+
+	/** The `ls-refs` reply's lines for `request`. */
+	async function lsRefs(owner: string, name: string, request: string, what: string, signal?: AbortSignal) {
+		const response = await send(`${base}/${owner}/${name}.git/git-upload-pack`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-git-upload-pack-request",
+				accept: "application/x-git-upload-pack-result",
+				"git-protocol": "version=2",
+				"user-agent": "harbour-workspace",
+			},
+			body: request,
+			...(signal === undefined ? {} : { signal }),
+		});
+		// GitHub answers 401 for a repository that doesn't exist or that the caller can't see: it never says which.
+		if (response.status === 401 || response.status === 403 || response.status === 404) {
+			await response.body?.cancel();
+			throw new HarbourError("not_found", `no repository ${owner}/${name} that Harbour can read`, {
+				repo: `${owner}/${name}`,
+			});
+		}
+		if (!response.ok || response.body === null) {
+			await response.body?.cancel();
+			throw new HarbourError("unavailable", `${what} in ${owner}/${name} failed with ${response.status}`);
+		}
+		return parsePktLines(await readAll(response.body, maxBytes));
+	}
+
 	return {
+		async resolve(repo, ref, call = {}) {
+			const [owner, name] = gitHubRepo(repo);
+			if (ref === "" || /[\s\\]|\.\.|^-/.test(ref)) throw new HarbourError("invalid", `bad ref ${JSON.stringify(ref)}`);
+			const candidates = refCandidates(ref);
+			const commits = parseRefCommits(
+				await lsRefs(owner, name, lsRefsRequest(candidates, { peel: true }), `resolving ${ref}`, call.signal),
+			);
+			// A ref-prefix also matches longer names (`refs/heads/main` matches `refs/heads/main-old`): only an exact name counts.
+			for (const candidate of candidates) {
+				const commit = commits.get(candidate);
+				if (commit !== undefined) return commit;
+			}
+			return undefined;
+		},
 		async branches(repo, call = {}) {
 			const [owner, name] = gitHubRepo(repo);
-			const response = await send(`${base}/${owner}/${name}.git/git-upload-pack`, {
-				method: "POST",
-				headers: {
-					"content-type": "application/x-git-upload-pack-request",
-					accept: "application/x-git-upload-pack-result",
-					"git-protocol": "version=2",
-					"user-agent": "harbour-workspace",
-				},
-				body: lsRefsRequest(),
-				...(call.signal === undefined ? {} : { signal: call.signal }),
-			});
-			// GitHub answers 401 for a repository that doesn't exist or that the caller can't see: it never says which.
-			if (response.status === 401 || response.status === 403 || response.status === 404) {
-				await response.body?.cancel();
-				throw new HarbourError("not_found", `no repository ${owner}/${name} that Harbour can read`, {
-					repo: `${owner}/${name}`,
-				});
-			}
-			if (!response.ok || response.body === null) {
-				await response.body?.cancel();
-				throw new HarbourError(
-					"unavailable",
-					`listing the branches of ${owner}/${name} failed with ${response.status}`,
-				);
-			}
-			const { defaultBranch, branches } = parseLsRefs(parsePktLines(await readAll(response.body, maxBytes)));
+			const lines = await lsRefs(owner, name, lsRefsRequest(), "listing the branches", call.signal);
+			const { defaultBranch, branches } = parseLsRefs(lines);
 			branches.sort((left, right) => {
 				if (left.name === defaultBranch) return -1;
 				if (right.name === defaultBranch) return 1;

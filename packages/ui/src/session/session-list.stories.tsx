@@ -1,10 +1,11 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { FIXTURE_NOW, sessions as fixtureSessions } from "./fixtures.ts";
 import { SessionList, SessionListItem } from "./session-list.tsx";
-import type { SessionSummary } from "./session-model.ts";
+import { SessionFilterMenu, type SessionMenuActions, SessionRowMenu } from "./session-menu.tsx";
+import { defaultSessionListView, type SessionListView, type SessionSummary } from "./session-model.ts";
 
 export default { title: "Session/Session list" } satisfies StoryDefault;
 
@@ -30,7 +31,7 @@ function Selectable({ list, grouped = true }: { list: SessionSummary[]; grouped?
 export const Default: Story = () => (
 	<Sheet
 		title="Session list"
-		intro="Grouped by what each session needs from you: Needs you, Working, Done. Sessions that need you or are working get three lines; settled ones are one quiet line with their time. An unseen completion shows an emerald Done."
+		intro="Grouped by what each session needs from you: Needs you, Working, Done. Sessions that need you or are working get two lines, a working one with its spinner and Working 3m 20s; settled ones are one quiet line with their time. An unseen completion shows an emerald Done."
 	>
 		<Section title="Grouped, one selected">
 			<Sidebar>
@@ -178,6 +179,86 @@ export const Mobile: Story = () => (
 	</Sheet>
 );
 Mobile.meta = { width: 420 };
+
+/** A list whose menu works on its own copy of the fixtures, as the console's does on the host. */
+function Organised({ initial }: { initial?: SessionListView }) {
+	const [list, setList] = useState<SessionSummary[]>(() =>
+		sessions.map((session, index) =>
+			index === 1
+				? { ...session, pinned: true }
+				: index === sessions.length - 1
+					? { ...session, archived: true }
+					: session,
+		),
+	);
+	const [view, setView] = useState(initial ?? defaultSessionListView);
+	const [selected, setSelected] = useState("s3");
+	const actions = useMemo((): SessionMenuActions => {
+		const change = (id: string, patch: Partial<SessionSummary>) =>
+			setList((was) => was.map((session) => (session.id === id ? { ...session, ...patch } : session)));
+		return {
+			setUnread: async (id, unread) => change(id, { unread }),
+			setPinned: async (id, pinned) => change(id, { pinned }),
+			setArchived: async (id, archived) => change(id, { archived }),
+			rename: async (id, title) => change(id, { title }),
+			remove: async (id) => setList((was) => was.filter((session) => session.id !== id)),
+		};
+	}, []);
+	return (
+		<SessionList
+			sessions={list}
+			selectedId={selected}
+			onSelect={setSelected}
+			view={view}
+			onViewChange={setView}
+			menuActions={actions}
+		/>
+	);
+}
+
+export const FilterAndMenu: Story = () => (
+	<Sheet
+		title="Session list: filter and menu"
+		intro="After Claude.ai's sidebar. Recents has a filter button (Status, Last activity, Group by, Sort by), and each row has a … menu on hover: Mark as unread, Pin, Rename, Archive and Delete, with U, P, R, A and D while it is open. Pinned sessions come first; archived ones leave the Active view."
+	>
+		<Section title="Recents, one pinned, one archived out of view">
+			<Sidebar>
+				<Organised />
+			</Sidebar>
+		</Section>
+		<Section title="All sessions, by date, by title">
+			<Sidebar>
+				<Organised initial={{ status: "all", activity: "all", groupBy: "date", sortBy: "title" }} />
+			</Sidebar>
+		</Section>
+	</Sheet>
+);
+
+export const FilterOpen: Story = () => {
+	const [view, setView] = useState(defaultSessionListView);
+	return (
+		<Sheet title="Session filter, open" intro="The filter's menu: each setting opens its choices to the side.">
+			<div style={{ display: "flex", justifyContent: "flex-end", width: "var(--hb-sidebar-width)" }}>
+				<SessionFilterMenu view={view} onViewChange={setView} defaultOpen />
+			</div>
+		</Sheet>
+	);
+};
+
+export const RowMenuOpen: Story = () => (
+	<Sheet title="Session row menu, open" intro="A row's … menu, with each action's key.">
+		<RowMenuDemo />
+	</Sheet>
+);
+
+function RowMenuDemo() {
+	const session = sessions[2] as SessionSummary;
+	return (
+		<div style={{ width: "var(--hb-sidebar-width)" }}>
+			<SessionRowMenu session={session} onAction={() => {}} defaultOpen />
+		</div>
+	);
+}
 
 export const Ungrouped: Story = () => (
 	<Sheet

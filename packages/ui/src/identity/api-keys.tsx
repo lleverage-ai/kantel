@@ -2,6 +2,7 @@ import type { ApiKey, HeldRole, IssuedApiKey, Role } from "@harbour/contracts";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
+import { FormActions, FormField, FormGrid, FormLayout, PageHeader } from "../primitives/form-layout.tsx";
 import { KeyIcon, PlusIcon } from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
@@ -124,19 +125,19 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 
 	return (
 		<div className="hb-api-keys">
-			<header className="hb-api-keys-head">
-				<div className="hb-api-keys-heading">
-					<h1 className="hb-api-keys-title">API keys</h1>
-					<p className="hb-api-keys-lede">
-						Host apps call Harbour with these keys. Each key acts only in its project, with its role.
-					</p>
-				</div>
-				{state.draft === undefined && canCreate ? (
-					<Button variant="primary" size="sm" icon={<PlusIcon size="sm" />} onClick={() => flow.openCreate()}>
-						New key
-					</Button>
-				) : null}
-			</header>
+			<PageHeader
+				title="API keys"
+				lede="Host apps call Harbour with these keys. Each key acts only in its project, with its role."
+				{...(state.draft === undefined && canCreate
+					? {
+							actions: (
+								<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => flow.openCreate()}>
+									New key
+								</Button>
+							),
+						}
+					: {})}
+			/>
 
 			{state.issued === undefined ? null : (
 				<IssuedSecret issued={state.issued} project={projectName} onDone={() => flow.dismissSecret()} />
@@ -236,13 +237,6 @@ function IssuedSecret({
 					Copy the key for {keyName(issued.key)} now
 				</h2>
 			}
-			footer={
-				<div className="hb-api-keys-actions">
-					<Button variant="primary" size="sm" onClick={onDone}>
-						I've stored it
-					</Button>
-				</div>
-			}
 		>
 			<div className="hb-api-keys-issued-body">
 				<div className="hb-api-keys-secret">
@@ -261,6 +255,11 @@ function IssuedSecret({
 				<p className="hb-api-keys-issued-meta">
 					Host apps send it as <code className="hb-mono">Authorization: Bearer &lt;key&gt;</code>
 				</p>
+				<FormActions>
+					<Button variant="primary" size="sm" onClick={onDone}>
+						I've stored it
+					</Button>
+				</FormActions>
 			</div>
 		</Panel>
 	);
@@ -291,61 +290,58 @@ function NewKeyForm({
 				</h2>
 			}
 		>
-			<form className="hb-api-keys-fields" onSubmit={submit} noValidate>
-				<TextField
-					label="Name"
-					name="name"
-					autoComplete="off"
-					spellCheck={false}
-					// The form opened because the person asked for a key; the name is the first thing it needs.
-					autoFocus
-					value={draft.name}
-					disabled={draft.busy}
-					onChange={(event) => flow.editDraft({ name: event.target.value })}
-					{...(draft.nameError === undefined
-						? { hint: "Say what will use it, such as Sal's supervisor." }
-						: { error: draft.nameError })}
-				/>
-				<SelectField
-					label="Project"
-					name="project"
-					options={projects.map((project) => ({ value: project.id, label: project.name }))}
-					value={draft.projectId}
-					disabled={draft.busy}
-					onChange={(event) => flow.editDraft({ projectId: event.target.value })}
-				/>
-				<div className="hb-api-keys-choice">
-					<span className="hb-api-keys-choice-label" aria-hidden="true">
-						Role
-					</span>
-					<SegmentedControl
-						label="Role"
-						options={ROLE_OPTIONS}
-						value={draft.role}
-						onChange={(role) => flow.editDraft({ role })}
-					/>
-					<p className="hb-api-keys-choice-hint">{ROLE_HINT[draft.role]}</p>
-				</div>
-				<div className="hb-api-keys-choice">
-					<span className="hb-api-keys-choice-label" aria-hidden="true">
-						Expires
-					</span>
-					<SegmentedControl
-						label="Expires"
-						options={EXPIRY_OPTIONS}
-						value={draft.expiry}
-						onChange={(expiry) => flow.editDraft({ expiry })}
-					/>
-				</div>
-				{draft.problem === undefined ? null : <Notice level="error">{problemText(draft.problem, "create")}</Notice>}
-				<div className="hb-api-keys-actions">
-					<Button variant="primary" size="sm" type="submit" busy={draft.busy}>
-						Issue key
-					</Button>
-					<Button variant="ghost" size="sm" disabled={draft.busy} onClick={() => flow.cancelCreate()}>
-						Cancel
-					</Button>
-				</div>
+			<form onSubmit={submit} noValidate>
+				<FormLayout>
+					<FormGrid columns={2}>
+						<TextField
+							label="Name"
+							name="name"
+							autoComplete="off"
+							spellCheck={false}
+							// The form opened because the person asked for a key; the name is the first thing it needs.
+							autoFocus
+							value={draft.name}
+							disabled={draft.busy}
+							onChange={(event) => flow.editDraft({ name: event.target.value })}
+							{...(draft.nameError === undefined
+								? { hint: "Say what will use it, such as Sal's supervisor." }
+								: { error: draft.nameError })}
+						/>
+						<SelectField
+							label="Project"
+							name="project"
+							options={projects.map((project) => ({ value: project.id, label: project.name }))}
+							value={draft.projectId}
+							disabled={draft.busy}
+							onChange={(event) => flow.editDraft({ projectId: event.target.value })}
+						/>
+					</FormGrid>
+					<FormField id="hb-api-keys-role" label="Role" hint={ROLE_HINT[draft.role]}>
+						<SegmentedControl
+							label="Role"
+							options={ROLE_OPTIONS}
+							value={draft.role}
+							onChange={(role) => flow.editDraft({ role })}
+						/>
+					</FormField>
+					<FormField id="hb-api-keys-expiry" label="Expires">
+						<SegmentedControl
+							label="Expires"
+							options={EXPIRY_OPTIONS}
+							value={draft.expiry}
+							onChange={(expiry) => flow.editDraft({ expiry })}
+						/>
+					</FormField>
+					{draft.problem === undefined ? null : <Notice level="error">{problemText(draft.problem, "create")}</Notice>}
+					<FormActions>
+						<Button variant="primary" size="sm" type="submit" busy={draft.busy}>
+							Issue key
+						</Button>
+						<Button variant="ghost" size="sm" disabled={draft.busy} onClick={() => flow.cancelCreate()}>
+							Cancel
+						</Button>
+					</FormActions>
+				</FormLayout>
 			</form>
 		</Panel>
 	);
@@ -423,7 +419,7 @@ function KeyRow({
 					<p className="hb-api-key-confirm-text">
 						Revoke {name}? Anything that calls Harbour with it is refused from its next call. This can't be undone.
 					</p>
-					<div className="hb-api-keys-actions">
+					<div className="hb-api-key-confirm-actions">
 						<Button size="xs" variant="danger" busy={revoking} onClick={() => void flow.revoke()}>
 							Revoke key
 						</Button>

@@ -5,6 +5,25 @@
 	min-width: 0;
 }
 
+/* The list's heading with the filter button at its end, after Claude.ai's Recents. */
+.hb-session-list-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-sm);
+	margin-bottom: calc(var(--hb-space-7) * -1 + var(--hb-space-2));
+	padding: 0 var(--hb-space-2) 0 var(--hb-space-5);
+}
+
+.hb-session-list-title {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+}
+
 .hb-session-group {
 	display: flex;
 	flex-direction: column;
@@ -97,7 +116,8 @@
 }
 
 .hb-list-row-has-actions:not(.hb-list-row-static):hover .hb-session-status,
-.hb-list-row-has-actions:not(.hb-list-row-static):focus-within .hb-session-status {
+.hb-list-row-has-actions:not(.hb-list-row-static):focus-within .hb-session-status,
+.hb-list-row-has-actions:not(.hb-list-row-static):has([aria-expanded="true"]) .hb-session-status {
 	visibility: hidden;
 }
 
@@ -106,6 +126,30 @@
 	.hb-list-row-has-actions:not(.hb-list-row-static) .hb-session-status {
 		visibility: hidden;
 	}
+}
+
+/* A working session's status, after T3 Code's (text-info-foreground, a 16px spinner, gap 1): the spinner, "Working"
+   and its time in the accent's blue, medium weight, with tabular numbers so the row doesn't shift as it counts. The
+   spinner's moving arc takes the same blue, and sits on the middle of the words' capitals. */
+.hb-session-working {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-2);
+	color: var(--hb-accent-text);
+	font-size: var(--hb-text-xs);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.hb-session-working > .hb-spinner {
+	border-top-color: currentcolor;
+}
+
+.hb-session-working-text {
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
 }
 
 .hb-session-project,

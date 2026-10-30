@@ -39,10 +39,12 @@ import {
 	type BrowserProvider,
 	type CallContext,
 	type Clock,
+	type FileShares,
 	type IdentityDirectory,
 	isHarbourError,
 	type LeaseEndReason,
 	type Memory,
+	type ModelGateway,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
@@ -55,6 +57,7 @@ import {
 	type Skills,
 	type SystemContext,
 	systemClock,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { createAuthenticator } from "@harbour/identity/authenticator";
 import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity/jwt";
@@ -71,29 +74,38 @@ import {
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
+import { CREATE_DOCUMENT_TOOL, createDocumentTool } from "@harbour/sandbox/documents";
+import { createPresentFilesTool, PRESENT_FILES_TOOL } from "@harbour/sandbox/present-files";
 import type { CheckExecutor } from "@harbour/schedules/handlers";
 import { createMemorySchedules } from "@harbour/schedules/memory";
 import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
+import type { SharingStore } from "@harbour/sharing";
+import { createMemorySharing } from "@harbour/sharing/memory";
+import { componentResolvers } from "@harbour/sharing/resolvers";
+import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
 import { createMemorySkills } from "@harbour/skills/memory";
 import { renderSkillListings } from "@harbour/skills/sources";
-import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
+import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
 import { createSkillsMountSource, sessionSkillVisibility } from "@harbour/workspace/mounts";
+import { createSqlFileShares, migrateFileShares } from "@harbour/workspace/shares";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
 	type StoredWorkspaces,
 	type WorkspaceStore,
 } from "@harbour/workspace/stored";
+import { type AttachmentStore, createAttachmentStore } from "./attachments.ts";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
 import { CODEMODE_TOOL, type SessionCodemodeOptions, sessionCodemodeTool } from "./codemode.ts";
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
+import type { SandboxContainers } from "./container-backend.ts";
 import { createEchoModels } from "./echo-model.ts";
 import { withKeyImports } from "./import-access.ts";
 import type { StackModels } from "./models.ts";
@@ -110,6 +122,8 @@ import { isolateCheckExecutor } from "./schedule-checks.ts";
 import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules.ts";
 import { sessionMemory } from "./session-memory.ts";
 import { SKILLS_MOUNT_ROOT, sessionSkillsMount } from "./skills-mount.ts";
+import { SUBAGENT_TOOL, sessionSubagentTool } from "./subagent.ts";
+import { objectUsage } from "./usage.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -188,6 +202,8 @@ export interface StackStorage {
 	readonly sql?: SqlDriver;
 	/** Skill files' bodies, by their SHA-256 (`skills/org/<organisation>/<sha256>`). Needs `sql`. */
 	readonly skillObjects?: ObjectBucket;
+	/** Files people attach to prompts (`attachments/<organisation>/<project>/<id>`, `src/attachments.ts`). */
+	readonly attachmentObjects?: ObjectBucket;
 	/** The session runtime's store, each session's Pi storage and the alarm that resumes them. */
 	readonly sessions?: SessionObjectStorage;
 	readonly workspaces?: WorkspaceStore;
@@ -197,6 +213,11 @@ export interface StackStorage {
 	 * the store in the background, kept alive by `background` (`ctx.waitUntil`). Left out, they go straight to the store.
 	 */
 	readonly auditOutbox?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
+	/**
+	 * With `sql`: the model gateway's usage ledger, one row per model call, in this driver (the object's own SQLite),
+	 * shipped to `usage_calls` in `sql` in the background (`src/usage.ts`). Left out, no usage rows are written.
+	 */
+	readonly usageLedger?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
 }
 
 export interface StackOptions {
@@ -220,13 +241,20 @@ export interface StackOptions {
 	 * The models sessions run on, given the stack's audit store for `model.call` events: the model gateway
 	 * (`createGatewayModels`) when the Worker can reach CPA. Default the echo model.
 	 */
-	readonly models?: (deps: { readonly audit: AuditSink; readonly clock: Clock }) => StackModels;
+	readonly models?: (deps: {
+		readonly audit: AuditSink;
+		readonly clock: Clock;
+		/** The usage ledger's writer, with `storage.usageLedger`. */
+		readonly usage?: UsageWriter;
+	}) => StackModels;
 	/** The isolate backend sessions run on. Default `in-process`. */
 	readonly isolateBackend?: IsolateBackendName;
 	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
 	readonly extraIsolateBackends?: ExtraIsolateBackends;
 	/** The compiled QuickJS module: with it, `node` runs plain JavaScript in the in-process isolate (`src/sandboxes.ts`). */
 	readonly nodeEngine?: NodeEngine;
+	/** The sessions' container objects (`src/sandbox-object.ts`), when the deploy runs sandbox containers. */
+	readonly sandboxContainers?: SandboxContainers;
 	/**
 	 * The browser provider (brwsr, `src/browser.ts`), when the Worker has its key. With it the default profile has the
 	 * browser's tools; without it sessions have none.
@@ -237,6 +265,18 @@ export interface StackOptions {
 	 * has the `codemode` tool, offered to every session that has other tools; without it sessions have none.
 	 */
 	readonly codemode?: SessionCodemodeOptions;
+	/**
+	 * Offers the experimental `present_files` tool (`@harbour/sandbox/present-files`) to every session with a workspace:
+	 * the files it presents show in the transcript as cards that open a viewer. With it comes `create_document`
+	 * (`@harbour/sandbox/documents`), a document the person edits, presented the same way. Default off; the Worker turns
+	 * them on unless HARBOUR_PRESENT_FILES is `off`.
+	 */
+	readonly presentFiles?: boolean;
+	/**
+	 * Subagents (`src/subagent.ts`, experimental): with it the default profile has the `subagent` tool, offered to every
+	 * top-level session, which hands a task to a child session of the same agent. Default off.
+	 */
+	readonly subagents?: boolean;
 	/** Runs check schedules' commands. Default the isolate tier (`src/schedule-checks.ts`). */
 	readonly checks?: CheckExecutor;
 	/**
@@ -254,6 +294,10 @@ export interface Stack {
 	readonly gitRefs: GitRefLister;
 	/** The runtime's project access: who may do what in which project. */
 	readonly access: ProjectAccess;
+	/** Files people attach to prompts, which the runtime reads into the prompt's message (`src/attachments.ts`). */
+	readonly attachments: AttachmentStore;
+	/** The model gateway, for the console's connectors (`src/connectors.ts`); absent on the echo model. */
+	readonly modelGateway?: () => Promise<ModelGateway>;
 	readonly sandboxes: StackSandboxes;
 	/**
 	 * A session's execution environment, as its tools get it (`src/coding-tools.ts`): its workspace, as its agent, and
@@ -267,6 +311,11 @@ export interface Stack {
 	readonly skills: Skills;
 	/** Memory spaces and their concepts (#12). */
 	readonly memory: Memory;
+	/**
+	 * Sharing resources across projects (docs/design/sharing.md): shares, access requests, bindings and policies, read by
+	 * `access` for every resource check.
+	 */
+	readonly sharing: SharingStore;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -284,6 +333,8 @@ export interface Stack {
 	 * when that is sooner than the alarm already set.
 	 */
 	readonly schedules: Schedules;
+	/** The shares of workspace files (a document, a PDF), with SQL storage only; absent in memory. */
+	readonly shares?: FileShares;
 	/** Runs due schedules; the alarm wakes it. */
 	readonly scheduler: CloudflareScheduler;
 	readonly organisation: Organisation;
@@ -313,6 +364,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateSkills(driver);
 		await migrateMemory(driver);
 		await migrateSchedules(driver);
+		await migrateFileShares(driver);
+		await migrateSharing(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -326,6 +379,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const auditAccess: ProjectAccess = {
 		require: (ctx, check) => lateAccess().require(ctx, check),
 		allows: (ctx, check) => lateAccess().allows(ctx, check),
+		resource: (ctx, check) => lateAccess().resource(ctx, check),
+		allowsResource: (ctx, check) => lateAccess().allowsResource(ctx, check),
 	};
 	const store: AuditStore =
 		driver === undefined
@@ -358,7 +413,19 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const passkeyStores = driver === undefined ? createMemoryPasskeyStores() : createSqlPasskeyStores(driver);
 	const passkeys = createPasskeys({ ...passkeyStores, identity, clock, audit });
 
-	const models: StackModels = options.models?.({ audit, clock }) ?? { models: createEchoModels() };
+	const usage =
+		driver !== undefined && storage.usageLedger !== undefined
+			? await objectUsage({
+					ledger: storage.usageLedger.driver,
+					store: driver,
+					background: storage.usageLedger.background,
+				})
+			: undefined;
+	const { gateway: modelGateway, ...models }: StackModels = options.models?.({
+		audit,
+		clock,
+		...(usage === undefined ? {} : { usage: usage.writer }),
+	}) ?? { models: createEchoModels() };
 	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
 	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
 	let built: StackSandboxes | undefined;
@@ -410,6 +477,20 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					access: storeAccess,
 					mountRoot: SKILLS_MOUNT_ROOT,
 				});
+	// Shares across projects, read by the runtime's access for every resource check; their own checks are that access.
+	// The vault lives in its own object here, so its items resolve there, not through this store (a follow-up).
+	const sharingOptions = {
+		clock,
+		audit,
+		access: lateAccess,
+		resolvers: componentResolvers(() => ({
+			skills,
+			memory,
+			...(builtWorkspaces === undefined ? {} : { workspaces: builtWorkspaces }),
+		})),
+	};
+	const sharing =
+		driver === undefined ? createMemorySharing(sharingOptions) : createSqlSharing({ driver, ...sharingOptions });
 	const renderer = options.recallRenderer ?? defaultRecallRenderer;
 	const memory =
 		driver === undefined
@@ -418,14 +499,27 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
+	let builtProfiles: SessionRuntimeService["profiles"] | undefined;
+	// The `subagent` tool creates and waits on sessions through the runtime, which is built after the tools are.
+	let builtRuntime: SessionRuntimeService["runtime"] | undefined;
+	const lateRuntime = (): SessionRuntimeService["runtime"] => {
+		if (builtRuntime === undefined) throw new Error("the session runtime is not ready");
+		return builtRuntime;
+	};
 	const skillsSource = createSkillsMountSource({
 		skills,
 		visibility: (ctx, sessionId) => {
-			if (builtDirectory === undefined) throw new Error("the session directory is not ready");
-			return sessionSkillVisibility(builtDirectory)(ctx, sessionId);
+			if (builtDirectory === undefined || builtProfiles === undefined) {
+				throw new Error("the session directory is not ready");
+			}
+			return sessionSkillVisibility(builtDirectory, builtProfiles)(ctx, sessionId);
 		},
 	});
 	const workspaceStore = storage.workspaces ?? createMemoryWorkspaceStore();
+	const attachments = createAttachmentStore({
+		objects: storage.attachmentObjects ?? createMemoryObjectBucket(),
+		clock,
+	});
 	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,
@@ -433,6 +527,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// The runtime's project access (and so the workspaces', sandboxes' and audit reads') asks for a role per item;
 		// one lookup per request is enough (`src/role-memo.ts`).
 		identity: memoiseRoleOf(identity, { clock }),
+		sharing,
 		...models,
 		sandboxes: {
 			releaseSession: (ctx: CallContext, sessionId: string, reason?: LeaseEndReason) =>
@@ -445,11 +540,20 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// With a browser provider, every session also gets the browser's tools, bound to it (`src/browser.ts`).
 		// With code mode, a session that has any of those gets `codemode` too, whose scripts call them; its isolate is loaded
 		// by the first script, not before (`src/codemode.ts`).
+		// With `presentFiles`, a session on a workspace gets `present_files` and `create_document` for it too.
 		tools: (record: SessionRecord) => {
-			const tools =
-				browser === undefined ? codingToolsFor(record) : [...codingToolsFor(record), ...browser.tools(record)];
+			const coding = codingToolsFor(record);
+			const present =
+				options.presentFiles === true && record.workspaceId !== undefined
+					? [createPresentFilesTool(record.workspaceId), createDocumentTool(record.workspaceId)]
+					: [];
+			const tools = browser === undefined ? [...coding, ...present] : [...coding, ...present, ...browser.tools(record)];
 			const codemode = options.codemode;
-			return codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
+			const withCodemode =
+				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
+			// With subagents on, a top-level session also gets `subagent` (`src/subagent.ts`); a subagent's session doesn't.
+			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
+			return subagent === undefined ? withCodemode : [...withCodemode, subagent];
 		},
 		environment,
 		// A session started without a workspace (no repository) gets its own, which its first file tool or command
@@ -471,6 +575,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 		// A session whose profile names memory spaces is given their recall on its first prompt, and the memory tools.
 		memory: sessionMemory(memory),
+		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
+		attachments: attachments.reader,
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -491,10 +597,23 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
 		builtDirectory = runtime.directory;
+		builtProfiles = runtime.profiles;
+		builtRuntime = runtime.runtime;
 		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
-		const seeders = { git: createGitHubTarballFetcher({ fetch: gitFetch }) };
+		// A git seed writes the last 50 commits, without blobs, as a shallow `.git` next to the tree, for the isolate's `git`
+		// (src/sandboxes.ts), with the blobs of recent diffs. Best effort: a failed fetch seeds what it can (the tree alone,
+		// or history without those blobs), and says why in the Worker's logs.
+		const seeders = {
+			git: createGitHubTarballFetcher({
+				fetch: gitFetch,
+				history: {
+					onError: (error, source) =>
+						console.warn(`harbour: the git history of ${source.repo}@${source.ref} was seeded only in part`, error),
+				},
+			}),
+		};
 		const gitRefs = createGitRefLister({ fetch: gitFetch });
 		const workspaces = createStoredWorkspaces({
 			store: workspaceStore,
@@ -513,6 +632,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			backend: options.isolateBackend ?? DEFAULT_ISOLATE_BACKEND,
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
 			...(options.nodeEngine === undefined ? {} : { nodeEngine: options.nodeEngine }),
+			...(options.sandboxContainers === undefined ? {} : { containers: options.sandboxContainers }),
 		});
 		const sandboxes = built;
 
@@ -534,6 +654,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			projectId: project.id,
 			name: "Assistant",
 			model: { route: "default" },
+			// The image model is the user's choice (the console's Models page), kept across starts: none until they pick one.
+			...(stored?.imageModel === undefined ? {} : { imageModel: stored.imageModel }),
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
 			// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
@@ -541,8 +663,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			// through their schemas; Harbour adds no prompt about them.
 			tools: [
 				...CODING_TOOLS,
+				...(options.presentFiles === true ? [PRESENT_FILES_TOOL, CREATE_DOCUMENT_TOOL] : []),
 				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
 				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
+				...(options.subagents === true ? [SUBAGENT_TOOL] : []),
 			],
 			// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
 			// until they set some.
@@ -621,18 +745,22 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			workspaces,
 			gitRefs,
 			access,
+			attachments,
+			...(modelGateway === undefined ? {} : { modelGateway }),
 			sandboxes,
 			environment,
 			...(browser === undefined ? {} : { browser }),
 			audit,
 			skills,
 			memory,
+			sharing,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			passkeys,
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
 			...(options.vault === undefined ? {} : { vault: options.vault }),
 			schedules,
+			...(driver === undefined ? {} : { shares: createSqlFileShares({ driver, workspaces, access, audit, clock }) }),
 			scheduler,
 			organisation,
 			project,

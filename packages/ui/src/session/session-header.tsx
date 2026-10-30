@@ -1,24 +1,24 @@
 import type { ReactNode } from "react";
+import { Breadcrumbs, type Crumb } from "../primitives/breadcrumbs.tsx";
 import { IconButton } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { ChevronRightIcon } from "../primitives/icons.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
-import { StatusLabel } from "../primitives/status.tsx";
-import type { Status } from "../tokens/tokens.ts";
 import "./session-header.css";
 
 /** The link to the session host: up, coming up, or down with a retry scheduled at `retryAt` (epoch ms). */
 export type ConnectionStateValue = { state: "open" } | { state: "connecting" } | { state: "offline"; retryAt: number };
 
 export type SessionHeaderProps = {
-	/** The session's title. Empty or missing shows "New session". */
+	/** The session's title, the trail's current item. Empty or missing shows "New session". */
 	title?: string;
-	status: Status;
+	/**
+	 * The levels above the session, outermost first: its project, then for a subagent the sessions that started it.
+	 * Each is muted and goes back to its level. None shows the title alone.
+	 */
+	parents?: readonly Crumb[];
 	connection: ConnectionStateValue;
-	/** Facts about the session: project, branch, a DiffStat, "Working for" an Elapsed. Inline on desktop, a second
-	 * line on mobile. Separate facts go in separate elements, never a middle-dot string. */
-	meta?: ReactNode;
-	/** Buttons at the right end: session options, open the diff. */
+	/** Icon buttons at the right end, kept few, as T3 Code's: the session's files, its options. */
 	actions?: ReactNode;
 	/** Shows a Back button at the left, for a session opened from a list on mobile. */
 	onBack?: () => void;
@@ -66,15 +66,15 @@ function OfflineText({ seconds }: { seconds: number }) {
 }
 
 /**
- * The bar at the top of a session: Back (when given), the status in words, the title, the session's facts, the
- * connection when it isn't healthy, and the session's actions. One compact row with a hairline under it; on a
- * phone the facts move to a second line so the title keeps its room.
+ * The bar at the top of a session, as T3 Code's: breadcrumbs only (`Default / Fix the billing worker`, and a subagent's
+ * session one level deeper), the connection when it isn't healthy, and a few icon buttons at the right end. No status,
+ * no facts: whether the agent is working shows in the thread, the composer and the sidebar, never here. One compact
+ * row with a hairline under it.
  */
 export function SessionHeader({
 	title,
-	status,
+	parents = [],
 	connection,
-	meta,
 	actions,
 	onBack,
 	loading = false,
@@ -91,22 +91,24 @@ export function SessionHeader({
 					onClick={onBack}
 				/>
 			)}
-			<span className="hb-session-header-status">
-				<StatusLabel status={status} />
-			</span>
-			<h1 className="hb-session-header-title" title={loading ? undefined : shown}>
-				{loading ? (
-					<>
-						<span className="hb-session-header-skeleton">
-							<Skeleton width="100%" />
-						</span>
-						<span className="hb-sr-only">Loading the session</span>
-					</>
-				) : (
-					shown
-				)}
-			</h1>
-			{meta === undefined || meta === null ? null : <div className="hb-session-header-meta">{meta}</div>}
+			<Breadcrumbs
+				label="Session"
+				parents={parents}
+				current={
+					<h1 className="hb-session-header-title" title={loading ? undefined : shown}>
+						{loading ? (
+							<>
+								<span className="hb-session-header-skeleton">
+									<Skeleton width="100%" />
+								</span>
+								<span className="hb-sr-only">Loading the session</span>
+							</>
+						) : (
+							shown
+						)}
+					</h1>
+				}
+			/>
 			<ConnectionState connection={connection} />
 			{actions === undefined || actions === null ? null : <div className="hb-session-header-actions">{actions}</div>}
 		</header>

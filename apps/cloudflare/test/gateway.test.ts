@@ -20,13 +20,22 @@ const BASE = "https://harbour.test";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
-/** Stands in for GitHub: every ref is COMMIT, and its tarball is an empty archive. Records what was asked. */
+/** One pkt-line, as git's smart HTTP protocol frames it. */
+const pkt = (text: string) => `${(new TextEncoder().encode(text).length + 4).toString(16).padStart(4, "0")}${text}`;
+
+/**
+ * Stands in for GitHub: every ref `ls-refs` is asked about is COMMIT, and its tarball is an empty archive. Records
+ * what was asked.
+ */
 function fakeGitHub() {
 	const calls: string[] = [];
-	const fetch = (async (input: string | URL | Request) => {
+	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		calls.push(url);
-		if (url.startsWith("https://api.github.com/repos/")) return new Response(COMMIT);
+		if (url.endsWith(".git/git-upload-pack")) {
+			const prefixes = [...String(init?.body ?? "").matchAll(/ref-prefix (\S+)\n/g)].map((match) => match[1]!);
+			return new Response(`${prefixes.map((ref) => pkt(`${COMMIT} ${ref}\n`)).join("")}0000`);
+		}
 		const empty = new Blob([new Uint8Array(1024)]).stream().pipeThrough(new CompressionStream("gzip"));
 		return new Response(empty);
 	}) as typeof globalThis.fetch;
@@ -233,8 +242,10 @@ describe("the gateway", () => {
 		const workspace = (await created.json()) as { id: string; seedReadiness: string; seedReport?: unknown };
 		expect(workspace.seedReadiness).toBe("files");
 		expect(workspace.seedReport).toMatchObject({ sources: [{ kind: "git", commit: COMMIT }, { kind: "files" }] });
+		// Resolving the ref, then the history (a fetch, and which branch the ref is) alongside the tarball. This GitHub
+		// sends no pack, so the workspace is seeded without `.git`.
 		expect(github.calls).toEqual([
-			"https://api.github.com/repos/octocat/Hello-World/commits/master",
+			...Array(4).fill("https://github.com/octocat/Hello-World.git/git-upload-pack"),
 			`https://codeload.github.com/octocat/Hello-World/tar.gz/${COMMIT}`,
 		]);
 
@@ -300,6 +311,28 @@ describe("the gateway", () => {
 		const anonymous = await call("/v1/skills");
 		expect(anonymous.status).toBe(401);
 		expect(anonymous.headers.get("www-authenticate")).toContain("Bearer");
+	});
+
+	it("mounts the sharing API: the admin registers and shares a resource, and a host's key reads but can't share", async () => {
+		const { call, signedIn, withKey, stack } = await setup();
+		const admin = { ...(await signedIn()), "content-type": "application/json" };
+		const resource = { kind: "brand.guideline", id: "guide-1" };
+		const owner = { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id };
+		const registered = await call("/v1/sharing/resources", admin, {
+			method: "POST",
+			body: JSON.stringify({ resource, owner }),
+		});
+		expect(registered.status).toBe(200);
+		const share = JSON.stringify({ resource, grantee: { kind: "agent", agentId: "reviewer" }, permission: "use" });
+		const created = await call("/v1/sharing/shares", admin, { method: "POST", body: share });
+		expect(created.status).toBe(201);
+
+		const listed = await call(`/v1/sharing/shares?resourceKind=${resource.kind}&resourceId=${resource.id}`, withKey);
+		expect(listed.status).toBe(200);
+		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(1);
+		const json = { ...withKey, "content-type": "application/json" };
+		expect((await call("/v1/sharing/shares", json, { method: "POST", body: share })).status).toBe(403);
+		expect((await call("/v1/sharing/shares")).status).toBe(401);
 	});
 
 	it("mounts the memory API: the admin loads a snapshot, then a host's key lists, searches and recalls it", async () => {

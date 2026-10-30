@@ -9,9 +9,9 @@ body,
 	margin: 0;
 }
 
+/* The theme on <html> sets color-scheme, so the browser's own scrollbars and controls follow it. */
 body {
 	background: var(--hb-canvas);
-	color-scheme: dark;
 }
 
 /* Before the session client exists. */
@@ -22,69 +22,38 @@ body {
 	color: var(--hb-text-muted);
 }
 
-/* The shell: a sidebar with the projects and the current project's sessions, and the open session beside it. The
-   dynamic viewport height, so a phone's browser bars and keyboard never cover the composer. */
+/* The shell: the sidebar (@harbour/ui's Sidebar), and the open session or page beside it, as wide as the window.
+   Collapsed, the sidebar is a rail. The dynamic viewport height, so a phone's browser bars and keyboard never cover
+   the composer. */
 .shell {
 	display: grid;
 	grid-template-columns: var(--hb-sidebar-width) minmax(0, 1fr);
 	height: 100dvh;
 }
 
+.shell[data-sidebar="collapsed"] {
+	grid-template-columns: var(--hb-rail-width) minmax(0, 1fr);
+}
+
 .shell-sidebar {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-7);
 	min-height: 0;
-	padding: var(--hb-space-5) var(--hb-space-3) 0;
-	border-right: var(--hb-hairline) solid var(--hb-border);
-	background: var(--hb-panel);
-	overflow-y: auto;
 }
 
-.shell-brand {
-	padding: 0 var(--hb-space-5);
-}
-
-.shell-wordmark {
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-/* Small and muted, like the session list's group headings. */
-.shell-heading {
-	margin: 0 0 var(--hb-space-2);
-	padding: 0 var(--hb-space-5);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	font-weight: var(--hb-weight-medium);
-	line-height: var(--hb-leading-tight);
-}
-
-.shell-rows {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-1);
-	margin: 0;
-	padding: 0;
-	list-style: none;
-}
-
-.shell-sessions {
-	flex: 1;
-}
-
-/* Who the console acts as, at the foot of the sidebar. */
+/* Who the console acts as, at the foot of the sidebar, under the pages. */
 .shell-actor {
-	position: sticky;
-	bottom: 0;
 	display: flex;
 	align-items: center;
 	gap: var(--hb-space-3);
-	padding: var(--hb-space-4) var(--hb-space-5);
+	padding: var(--hb-space-4) var(--hb-space-5) 0;
 	border-top: var(--hb-hairline) solid var(--hb-border);
-	background: var(--hb-panel);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-xs);
+}
+
+.shell[data-sidebar="collapsed"] .shell-actor {
+	justify-content: center;
+	padding-right: 0;
+	padding-left: 0;
 }
 
 .shell-actor-name {
@@ -100,12 +69,12 @@ body {
 	min-height: 0;
 }
 
-/* The organisation's pages, the vault and the audit log: one scrolling column, as wide as the page reads well. */
+/* The pages outside projects (skills, memory, schedules, the vault, the audit log, API keys): one scrolling column
+   across the whole main area. Each page keeps its own reading measure where it has prose or a form. */
 .shell-page {
 	box-sizing: border-box;
 	height: 100%;
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11) * 2);
-	padding: var(--hb-space-9);
+	padding: var(--hb-space-9) var(--hb-space-10);
 	overflow-y: auto;
 }
 
@@ -131,10 +100,6 @@ body {
 		background: var(--hb-canvas);
 	}
 
-	.shell-actor {
-		background: var(--hb-canvas);
-	}
-
 	.shell-page {
 		padding: var(--hb-space-7) var(--hb-space-5);
 	}
@@ -152,31 +117,76 @@ body {
 	height: 100%;
 }
 
-.console-project {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
 .console-main {
+	container: console-main / inline-size;
 	position: relative;
+	display: flex;
 	flex: 1;
 	min-height: 0;
 }
 
-.console-fresh {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
+.console-main-transcript {
+	position: relative;
+	flex: 1 1 0;
+	min-width: 0;
+	min-height: 0;
 }
 
-.console-fresh code,
+/* A presented file's viewer: beside the transcript in a wide main area, over it in a narrow one. Narrow goes by the
+   main area, not the screen: beside the sidebar a 1024px screen leaves 724px, and a 560px viewer beside the
+   transcript squeezed the transcript and its composer to about 140px. */
+.console-file-panel {
+	flex: 0 0 clamp(var(--hb-card-width), 48%, var(--hb-content-width));
+	min-width: 0;
+	min-height: 0;
+}
+
+@container console-main (max-width: 60rem) {
+	.console-file-panel {
+		position: absolute;
+		inset: 0;
+		z-index: var(--hb-z-overlay);
+	}
+}
+
+/* The session's browser, in the same place at the right as a presented file's viewer (which takes it while a file is
+   open): the full height, so the agent's one browser stays in view while the transcript scrolls. At most 38% of the
+   width, so the transcript keeps a composer wider than its narrow (resting) layout's 640px. The candidate token for
+   its width: --hb-browser-panel-width. */
+.console-browser {
+	flex: 0 0 clamp(calc(var(--hb-content-width) * 0.5), 38%, var(--hb-content-width));
+	min-width: 0;
+	min-height: 0;
+	border-left: var(--hb-hairline) solid var(--hb-border);
+}
+
+/* Narrower: the browser above the transcript rather than over it (a person watches both), at most a little over a
+   third of the height, so the composer and the newest messages still have room. Beside the sidebar, side by side
+   needs about 1340px. */
+@media (max-width: 1340px) {
+	.console-main-browser {
+		flex-direction: column;
+	}
+
+	.console-browser {
+		order: -1;
+		flex: 0 0 auto;
+		max-height: 38dvh;
+		border-bottom: var(--hb-hairline) solid var(--hb-border);
+		border-left: 0;
+	}
+
+	/* Its view (live, the last page or the replay) keeps the browser's shape at the height it has, centred. */
+	.console-browser .hb-browser-panel-body {
+		width: min(100%, calc((38dvh - var(--hb-space-11) * 2) * 16 / 9));
+		margin-inline: auto;
+	}
+}
+
 .console-menu code {
 	color: var(--hb-text-faint);
 	font-family: var(--hb-font-mono);
 	font-size: var(--hb-text-2xs);
-}
-
-.console-fresh-stale {
-	color: var(--hb-status-approval);
 }
 
 /* The session options menu: a floating panel under its button. */

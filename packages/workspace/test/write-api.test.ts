@@ -269,3 +269,118 @@ describe("createWorkspaceWriteClient", () => {
 		}
 	});
 });
+
+describe("PUT /v1/workspaces/:id/content", () => {
+	async function workspace(): Promise<WorkspaceRecord> {
+		const response = await post({
+			projectId: PROJECT,
+			seed: { name: "doc", sources: [{ kind: "files", files: { "documents/plan.md": "# Plan\n" } }] },
+		});
+		return (await response!.json()) as WorkspaceRecord;
+	}
+	const put = (id: string, path: string, body: string, user = "olive", headers: Record<string, string> = {}) =>
+		fixture.api(
+			new Request(`${BASE}/${id}/content?${new URLSearchParams({ path })}`, {
+				method: "PUT",
+				headers: { "x-user": user, ...headers },
+				body,
+			}),
+		);
+	const text = async (id: string, path: string) =>
+		new TextDecoder().decode((await fixture.read.read(id, path)).content);
+
+	it("writes a file as a new version, only while it's what the writer read", async () => {
+		const record = await workspace();
+		const read = await fixture.read.read(record.id, "documents/plan.md");
+		const saved = await put(record.id, "documents/plan.md", "# Plan\n\nEdited.\n", "olive", {
+			"if-match": `"${read.digest}"`,
+		});
+		expect(saved!.status).toBe(200);
+		const body = (await saved!.json()) as { version: number; digest: string };
+		expect(body.version).toBeGreaterThan(record.head);
+		expect(await text(record.id, "documents/plan.md")).toBe("# Plan\n\nEdited.\n");
+		// The same digest again is stale now: the file changed since.
+		const stale = await put(record.id, "documents/plan.md", "# Lost\n", "olive", { "if-match": `"${read.digest}"` });
+		expect(await errorOf(stale)).toEqual({ status: 409, code: "conflict" });
+		expect(await text(record.id, "documents/plan.md")).toBe("# Plan\n\nEdited.\n");
+		// The new digest goes on.
+		const again = await put(record.id, "documents/plan.md", "# Plan\n\nAgain.\n", "olive", {
+			"if-match": `"${body.digest}"`,
+		});
+		expect(again!.status).toBe(200);
+	});
+
+	it("isn't stale when the agent changed another file meanwhile", async () => {
+		const record = await workspace();
+		const read = await fixture.read.read(record.id, "documents/plan.md");
+		expect((await put(record.id, "notes/other.md", "# Other\n"))!.status).toBe(200);
+		const saved = await put(record.id, "documents/plan.md", "# Mine\n", "olive", { "if-match": `"${read.digest}"` });
+		expect(saved!.status).toBe(200);
+	});
+
+	it("refuses a viewer, a mount path and a new file that already exists", async () => {
+		const record = await workspace();
+		expect(await errorOf(await put(record.id, "documents/plan.md", "# No", "vera"))).toMatchObject({ status: 403 });
+		expect(await errorOf(await put(record.id, "/project/a.md", "# No"))).toEqual({ status: 400, code: "invalid" });
+		expect(await errorOf(await put(record.id, "documents/plan.md", "# No", "olive", { "if-none-match": "*" }))).toEqual(
+			{ status: 409, code: "conflict" },
+		);
+		expect(await text(record.id, "documents/plan.md")).toBe("# Plan\n");
+	});
+
+	it("leaves other methods and paths to the read API", async () => {
+		const record = await workspace();
+		expect(
+			await fixture.api(new Request(`${BASE}/${record.id}/content?path=a.md`, { headers: { "x-user": "olive" } })),
+		).toBeNull();
+		expect(
+			await fixture.api(new Request(`${BASE}/${record.id}/files`, { method: "PUT", headers: { "x-user": "olive" } })),
+		).toBeNull();
+	});
+});
+
+describe("POST /v1/workspaces/:id/fork", () => {
+	const fork = (id: string, body: unknown, user = "olive") =>
+		fixture.api(
+			new Request(`${BASE}/${encodeURIComponent(id)}/fork`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-user": user },
+				body: JSON.stringify(body),
+			}),
+		);
+
+	it("forks a workspace into the project, sharing its files, and the client does the same", async () => {
+		const source = (await (await post({ projectId: PROJECT, seed }))!.json()) as WorkspaceRecord;
+		const response = await fork(source.id, { projectId: PROJECT });
+		expect(response!.status).toBe(201);
+		const record = (await response!.json()) as WorkspaceRecord;
+		expect(response!.headers.get("location")).toBe(`/v1/workspaces/${record.id}`);
+		expect(record.forkedFrom).toEqual({ workspaceId: source.id, version: source.head });
+		expect(new TextDecoder().decode((await fixture.read.read(record.id, "notes/plan.md")).content)).toContain("Retry");
+		// The seed was fetched once, for the source.
+		expect(fixture.fetched).toEqual(["acme/billing-sync@main"]);
+
+		const client = createWorkspaceWriteClient({
+			baseUrl: BASE,
+			headers: { "x-user": "olive" },
+			fetch: async (input, init) => (await fixture.api(new Request(input, init)))!,
+		});
+		const older = await client.fork(source.id, { projectId: PROJECT, version: 0 });
+		expect(older.head).toBe(0);
+	});
+
+	it("refuses a viewer, a caller outside the project and a bad version, and forks nothing", async () => {
+		const source = (await (await post({ projectId: PROJECT, seed }))!.json()) as WorkspaceRecord;
+		expect(await errorOf(await fork(source.id, { projectId: PROJECT }, "vera"))).toEqual({
+			status: 403,
+			code: "forbidden",
+		});
+		expect(await errorOf(await fork(source.id, { projectId: "proj-other" }, "oscar"))).toMatchObject({ status: 403 });
+		expect(await errorOf(await fork(source.id, { projectId: PROJECT, version: -1 }))).toEqual({
+			status: 400,
+			code: "invalid",
+		});
+		expect(await errorOf(await fork("ws_missing", { projectId: PROJECT }))).toEqual({ status: 404, code: "not_found" });
+		expect(fixture.deps.audit.ofType("workspace.forked")).toEqual([]);
+	});
+});

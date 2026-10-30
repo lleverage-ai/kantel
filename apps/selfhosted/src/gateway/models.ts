@@ -30,6 +30,7 @@ import {
 	type ModelChoice,
 	PLATFORM_ORGANISATION,
 	systemContext,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
 import { harbourModels, harbourResolveModel } from "@harbour/runtime/models";
@@ -153,6 +154,73 @@ export function cpaOnly(cpa: CpaConfig, upstream: typeof fetch = fetch): typeof 
 	};
 }
 
+/** What CPA said to the start's check of its key and the `default` route's model (`probeCpa`). */
+export type CpaProbe =
+	| { readonly result: "ok"; readonly models: number }
+	| { readonly result: "model_missing"; readonly models: number }
+	| { readonly result: "key_refused"; readonly status: number }
+	| { readonly result: "failed"; readonly detail: string };
+
+const CPA_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Asks CPA for its model list with the configured key, as the model gateway's catalogue does at a session's first
+ * model call. A key CPA doesn't know, or a `default` model it doesn't list, leaves the route out of every session's
+ * catalogue, so sessions fail with `no_model` and nothing else says why: the start logs this instead. Never throws, and
+ * the result carries no part of the key.
+ */
+export async function probeCpa(cpa: CpaConfig, upstream: typeof fetch = fetch): Promise<CpaProbe> {
+	try {
+		const response = await cpaOnly(cpa, upstream)(`${cpa.baseUrl}/models`, {
+			headers: { accept: "application/json", authorization: `Bearer ${cpa.apiKey}` },
+			signal: AbortSignal.timeout(CPA_PROBE_TIMEOUT_MS),
+		});
+		if (response.status === 401 || response.status === 403) {
+			await response.body?.cancel();
+			return { result: "key_refused", status: response.status };
+		}
+		if (!response.ok) {
+			await response.body?.cancel();
+			return { result: "failed", detail: `HTTP ${response.status}` };
+		}
+		const body = (await response.json()) as { data?: unknown };
+		const ids = Array.isArray(body.data)
+			? body.data.flatMap((model) =>
+					typeof model === "object" && model !== null && typeof (model as { id?: unknown }).id === "string"
+						? [(model as { id: string }).id]
+						: [],
+				)
+			: [];
+		return { result: ids.includes(cpa.modelId) ? "ok" : "model_missing", models: ids.length };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { result: "failed", detail: message.split(cpa.apiKey).join("[redacted]") };
+	}
+}
+
+/** The start's log line for `probeCpa`'s result: what is wrong and what to change, never the key. */
+export function describeCpaProbe(cpa: CpaConfig, probe: CpaProbe): string {
+	switch (probe.result) {
+		case "ok":
+			return `[gateway] CLIProxyAPI accepted the key and lists ${cpa.modelId} (${probe.models} models)`;
+		case "model_missing":
+			return (
+				`[gateway] warning: CLIProxyAPI lists ${probe.models} models but not ${cpa.modelId}, so sessions on route ` +
+				`default fail with no_model: set HARBOUR_DEFAULT_MODEL to a model it lists`
+			);
+		case "key_refused":
+			return (
+				`[gateway] warning: CLIProxyAPI refused HARBOUR_CPA_API_KEY (HTTP ${probe.status}), so sessions on route ` +
+				`default fail with no_model: use one of the api-keys in CLIProxyAPI's config`
+			);
+		case "failed":
+			return (
+				`[gateway] warning: could not check CLIProxyAPI at ${cpa.baseUrl} (${probe.detail}); sessions on route ` +
+				`default fail with no_model until it answers`
+			);
+	}
+}
+
 export interface GatewayModelsOptions {
 	readonly cpa: CpaConfig;
 	/** CPA's platform item, once the start has seeded it (`seedCpaItem`). The first model call waits for it. */
@@ -164,6 +232,8 @@ export interface GatewayModelsOptions {
 	/** CPA's fetch; default the global one. Tests pass a fake upstream's. */
 	readonly upstream?: typeof fetch;
 	readonly clock?: Clock;
+	/** Where each call's usage row goes: the Postgres usage ledger (`usage.ts`). */
+	readonly usage?: UsageWriter;
 }
 
 /** `ModelGatewaySource`, and the seeding the start does once the components and the bootstrap are ready. */
@@ -186,7 +256,8 @@ export function modelGatewaySource(
 	});
 	return {
 		route: DEFAULT_ROUTE,
-		build: ({ vault, audit }) => createGatewayModels({ ...options, cpa, item, vault, audit }),
+		build: ({ vault, audit, usage }) =>
+			createGatewayModels({ ...options, cpa, item, vault, audit, ...(usage === undefined ? {} : { usage }) }),
 		async seed(vault, previous) {
 			if (vault === undefined)
 				throw new Error("HARBOUR_CPA_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
@@ -220,10 +291,14 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 				createModelGatewayApp({
 					config: modelGatewayConfig(options.cpa, await options.item),
 					tokenKey,
-					credentials: { readConnectorCredential: (ctx, request) => vault().readConnectorCredential(ctx, request) },
+					credentials: {
+						readConnectorCredential: (ctx, request) => vault().readConnectorCredential(ctx, request),
+						assertSessionOpen: (ctx, scope) => vault().assertSessionOpen(ctx, scope),
+					},
 					audit: options.audit,
 					fetch: cpaOnly(options.cpa, options.upstream),
 					...(options.clock === undefined ? {} : { clock: options.clock }),
+					...(options.usage === undefined ? {} : { usage: options.usage }),
 				}))();
 			app = building;
 			building.catch(() => {

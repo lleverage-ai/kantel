@@ -63,8 +63,39 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts
   compiled to WebAssembly (`@harbour/sandbox/isolate-node`): plain JavaScript (ES2023) with `console`, `process.argv`,
   `process.env` and `process.exit`, but no `require`, `fs`, network or timers. Each run gets its own engine instance in
   a 32 MiB WebAssembly memory (24 MiB of heap), up to 1 MiB of script and of output, and a budget of interrupt checks
-  (a few seconds of busy CPU), because the clock stands still while a Worker runs code. `python`, `npm`, `git` writes
-  and the other real binaries need the container tier, which isn't on Cloudflare yet, and are refused.
+  (a few seconds of busy CPU), because the clock stands still while a Worker runs code. `git` reads (`status`, `log`,
+  `diff`, `show`, ...) run in the isolate too, with isomorphic-git (`@harbour/sandbox/isolate-git`).
+- **Everything else in a container, when the deploy runs them.** `python`, `npm`, `git` writes, and any command
+  that starts a program the isolate doesn't have (`make`, `unzip`, `wget`, `./run.sh`, anywhere in a list, pipeline,
+  `$(...)` or `bash -c`), run in the session's container (see [The container tier](#the-container-tier)). Without
+  `HARBOUR_SANDBOX_CONTAINERS=on` they are refused `unavailable`, as before.
+
+## The container tier
+
+With `HARBOUR_SANDBOX_CONTAINERS=on` the deploy adds a container app (`images/sandbox`, 1 vCPU, 3 GiB, 8 GB disk, at most 10, held to WEUR)
+and each session gets a `HarbourSandbox` Durable Object with its own container (`src/sandbox-object.ts`), started
+by the session's first command that needs one. `src/container-backend.ts` is the stack's side.
+
+- **Routing is decided before a command runs** (`escalatingRouter`, `@harbour/sandbox/isolate`): a command goes to
+  the container whole if any program in it is one the isolate lacks. Nothing is retried after a `command not found`,
+  so nothing runs twice.
+- **One working copy, synced.** The container holds no credentials and reads no storage: the stack object reads the
+  workspace with the caller's context and sends the files that changed since the version the container holds, in
+  batches of about 8 MiB. After an eviction on either side it asks the container what it holds first, and sends
+  only the difference.
+- **Checkpointed after every command**, so the file tools, which read the workspace itself, see what a command
+  wrote, and a container that stops (10 minutes without calls) loses nothing. `node_modules`, `.venv` and caches
+  stay in the container.
+- **No network**: the container starts with `enableInternet: false`, as the isolate has none. `pip install` and
+  `npm install` from the registry need egress through the vault, a later step.
+- **Warm-up**: `POST /v1/sessions/{id}/warm` (the console sends it when someone focuses the composer or types, at
+  most every 30 s) reads the head's listing for the isolate and, for a session that has used a container before,
+  starts it and re-bases it, so the next command waits for neither. A session that never needed one is skipped.
+- **Locally**: `wrangler dev --env dev` builds `images/sandbox` and runs each session's container in Docker, beside
+  workerd's egress interceptor (`cloudflare/proxy-everything`), which needs iptables' nf_tables `socket` match in the
+  host kernel; where that is missing the interceptor exits and every container fails to start. The dev model's
+  `bash <command>` runs a command with the agent's `bash` tool. The agent alone runs in plain Docker:
+  `docker run -p 8080:8080 --entrypoint bun <image> /opt/harbour/agent.ts`.
 
 ## The browser
 
@@ -89,8 +120,7 @@ With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the defaul
 
 Under `wrangler dev --env dev`, put `HARBOUR_BRWSR_API_KEY` in `apps/cloudflare/.dev.vars` (ignored by git). With no
 model gateway, a message `browse <url>` makes the dev model ask for a browser, open the URL once you allow it and
-take a screenshot (`src/dev-browser-model.ts`). If the console's dev server leaves a session on Connecting, open it
-with `?transport=sse`.
+take a screenshot (`src/dev-browser-model.ts`).
 
 ## Code mode
 
@@ -145,9 +175,9 @@ through the one object. A write made anywhere else is seen once a write here fai
 the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
 runs #94's just-bash shell inside `HarbourStack`. `dynamic-worker`, the plan's isolate, runs the same shell in a
 Dynamic Worker per session through the `LOADER` (`worker_loaders`) binding, as the M0 spike ran it
-(`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. The container tier is not on
-Cloudflare yet: a command routed to it is refused `unavailable`. Only `in-process` has `node` so far: on
-`dynamic-worker`, `node` goes to the container tier and is refused.
+(`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. A command routed to the
+container tier runs there when the deploy has it, and is refused `unavailable` otherwise. Only `in-process` has `node`
+and `git` reads so far: on `dynamic-worker` they go to the container tier.
 
 How `dynamic-worker` works:
 
@@ -228,6 +258,12 @@ The team domain and AUD come as a pair; one without the other is refused (503) r
 Project access asks identity for the caller's role on every item a list returns, and each answer is two or three D1
 queries, so the runtime's directory looks a role up once per request (`src/role-memo.ts`): memoised per signed-in
 actor object, which the authenticator makes afresh for each request, and for at most 1 s.
+
+Share links are the exception: `/shared/<token>` (a shared file's read-only page) and `/shared/<token>/raw` (its bytes)
+ask for no sign-in. The token, made when the file is first shared, is their only credential and opens that one file,
+only while its share's general access is `link` (`@harbour/workspace/shares-api`, `src/shared-page.ts`). Behind
+Access they open only for someone Access lets through; for anyone with the link to open them, the Access application
+needs a Bypass policy on `<hostname>/shared/*`. That is a deployment setting for Tom; nothing here changes it.
 
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
@@ -354,8 +390,9 @@ What would move it:
 - **A SessionDO per session.** Then each session with an open stream is its own active object, and duration adds up
   per object: each one held open all month is about 324,000 GB-s, or about $4 at $12.50 per million GB-s once past
   the allowance.
-- **The container tier**, when it lands: Containers bill per instance-second, so it will dominate. It gets its own
-  line here with that step.
+- **The container tier** (`HARBOUR_SANDBOX_CONTAINERS=on`): Containers bill per instance-second while running, so it
+  will dominate. A session's container runs from its first command that needs one until 10 minutes after its last
+  call, and a warm-up starts one only for a session that has used one.
 - **Workers VPC** pricing after its beta.
 - **Sessions on `dynamic-worker`.** Cloudflare counts a Dynamic Worker per loader ID and code version per day
   (https://developers.cloudflare.com/dynamic-workers/pricing/), and Harbour's loader ID is per session and workspace,

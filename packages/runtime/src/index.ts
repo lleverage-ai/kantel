@@ -27,7 +27,9 @@ import {
 } from "@harbour/contracts";
 import type { Usage } from "@harbour/protocol";
 
+export * from "./attachments.ts";
 export * from "./history.ts";
+export * from "./images.ts";
 export * from "./project.ts";
 export * from "./session-end.ts";
 
@@ -167,6 +169,7 @@ export function usageOf(message: AssistantMessage): Usage {
 		inputTokens: message.usage.input,
 		outputTokens: message.usage.output,
 		cacheReadTokens: message.usage.cacheRead,
+		cacheWriteTokens: message.usage.cacheWrite,
 		costUsd: message.usage.cost.total,
 	};
 }

@@ -65,7 +65,10 @@ export interface SessionSkillsOptions {
 	 * reaches the prompt: the skills are still pinned and mounted.
 	 */
 	readonly render?: (listings: readonly SkillListing[], session: SessionRecord) => string | undefined;
-	/** Which skills a session may see. Default: its own project's (and its organisation's and the platform's). */
+	/**
+	 * Which skills a session may see. Default: its own project's (and its organisation's and the platform's), and the
+	 * skills its profile names that are shared into it (`SkillVisibility.shared`).
+	 */
 	readonly visibility?: (session: SessionRecord) => SkillVisibility | Promise<SkillVisibility>;
 	/**
 	 * Mounts the pinned skills where the listings point, such as `workspaces.remount` of the session's workspace at
@@ -200,7 +203,10 @@ export async function sessionContextEntry(options: {
 	let pins: readonly SessionSkillPin[] = [];
 	let listed: readonly SkillListing[] = [];
 	if (skills !== undefined && profile.skills.length > 0) {
-		const visibility = (await skills.visibility?.(record)) ?? { projectId: record.projectId };
+		const visibility = (await skills.visibility?.(record)) ?? {
+			projectId: record.projectId,
+			shared: profile.skills,
+		};
 		const pinned = await sessionSkillListings(
 			skills.store as Skills,
 			ctx,

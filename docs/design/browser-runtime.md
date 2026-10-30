@@ -49,8 +49,9 @@ Hosts provide two things: a way to run the image (`BrowserMachine`: start with e
 - **Self-hosted**: `apps/selfhosted` gains a browser host service. It runs one container per browser through the Docker
   API (labels and a janitor like the sandbox's; runc by default, runsc where configured), publishes nothing but the
   agent port to the host network it shares with the gateway, and keeps blobs in S3/MinIO like workspaces (a directory
-  when there's no S3). On Kubernetes the same service creates a Pod per browser instead of a container (the
-  `m1-sh1/kubernetes` manifests gain a `browser-host` Deployment with a Role for Pods). A gateway that isn't
+  when there's no S3). On Kubernetes the same service creates a Pod per browser instead of a container
+  (`HARBOUR_BROWSER_DRIVER=kubernetes`; `deploy/kubernetes/browser-host` has its Deployment, a Role for Pods and
+  Secrets, and NetworkPolicies). A gateway that isn't
   self-hosted (the Cloudflare app under `wrangler dev`) can use it too, over `HARBOUR_BROWSER_HOST_URL` with a bearer
   token, which is how the console runs against local Docker browsers.
 
@@ -82,7 +83,9 @@ whatever link the provider gives, so it works for brwsr and harbour alike, and t
 brwsr's decided approach (Browserbase's): the recorder in the container screencasts each page and keeps a frame only
 when Chrome draws something new, appending JPEGs with their real timestamps to Matroska chunks; nothing is encoded in
 the browser container. The coordinator moves each closed chunk to the blob store under
-`recordings/<browserSessionId>/<page>/<chunk>.mkv` with a small manifest.
+`recordings/<browserSessionId>/<page>/<chunk>.mkv` with a small manifest. Each page in the manifest also keeps its
+navigations (`{ atMs, url, title }` by the page's own clock, from `Target.targetInfoChanged`, at most 200), so the
+replay's address bar and tabs follow the page as it plays; recordings made before this have none and show no address.
 
 Replay in the session plays those frames directly: the viewer reads the chunks (`/v1/browser/view/<browserSessionId>/…`,
 with the token as a bearer header) and draws each JPEG at its time on

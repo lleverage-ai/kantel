@@ -11,6 +11,7 @@
 //   /vault/requests/:proposalId               the same, as earlier consoles linked it
 //   /audit                                    the audit log
 //   /keys                                     host apps' API keys
+//   /members                                  the organisation's members, and an admin's passkey reset
 //   /skills                                   the agent's skills
 //   /skills/:skillId                          one skill: its revisions and files
 //   /memory                                   the agent's memory: concepts by scope, search and recall
@@ -20,6 +21,7 @@
 //   /schedules                                the organisation's schedules
 //   /schedules/new                            the schedules page with the form for a new one open
 //   /schedules/:scheduleId                    one schedule: its timing, what it runs and its run history
+//   /sharing                                  what a project shares and is shared, and the requests waiting on you
 //   /sessions/:sessionId                      a session whose project the link doesn't know (a schedule's run):
 //                                             replaced by its /projects/... path once the session's project is read
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
@@ -39,9 +41,12 @@ export type Route =
 	| { readonly name: "vault-request"; readonly proposalId: string }
 	| { readonly name: "audit" }
 	| { readonly name: "keys" }
+	| { readonly name: "members" }
+	| { readonly name: "models"; readonly projectId: string }
 	| { readonly name: "skills"; readonly skillId?: string }
 	| { readonly name: "memory"; readonly conceptId?: string }
 	| { readonly name: "schedules"; readonly scheduleId?: string; readonly creating?: true }
+	| { readonly name: "sharing" }
 	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
@@ -66,6 +71,8 @@ export function parseRoute(pathname: string): Route {
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
+	if (parts[0] === "members" && parts.length === 1) return { name: "members" };
+	if (parts[0] === "sharing" && parts.length === 1) return { name: "sharing" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
 		const skillId = parts[1] === undefined ? undefined : segment(parts[1]);
@@ -90,6 +97,7 @@ export function parseRoute(pathname: string): Route {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
 		if (projectId !== undefined && parts[2] === "new" && parts.length === 3) return { name: "new-session", projectId };
+		if (projectId !== undefined && parts[2] === "models" && parts.length === 3) return { name: "models", projectId };
 		const sessionId = parts[3] === undefined ? undefined : segment(parts[3]);
 		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined) {
 			if (parts.length === 4) return { name: "session", projectId, sessionId };
@@ -104,6 +112,8 @@ export function parseRoute(pathname: string): Route {
 
 export const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
 export const newSessionPath = (projectId: string): string => `${projectPath(projectId)}/new`;
+/** A project's Models page: its connectors' models, and the agent's image model. */
+export const modelsPath = (projectId: string): string => `${projectPath(projectId)}/models`;
 export const sessionPath = (projectId: string, sessionId: string): string =>
 	`${projectPath(projectId)}/sessions/${encodeURIComponent(sessionId)}`;
 /** A session at one turn: the submission or tool call an audit event names, as the session's `#turn=<id>`. */
@@ -122,6 +132,7 @@ export const VAULT_PATH = "/vault";
 export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
 export const AUDIT_PATH = "/audit";
 export const KEYS_PATH = "/keys";
+export const MEMBERS_PATH = "/members";
 /** The skills page, or one skill on it. */
 export const skillsPath = (skillId?: string): string =>
 	skillId === undefined ? "/skills" : `/skills/${encodeURIComponent(skillId)}`;
@@ -132,6 +143,8 @@ export const memoryPath = (conceptId?: string): string =>
 export const schedulesPath = (scheduleId?: string): string =>
 	scheduleId === undefined ? "/schedules" : `/schedules/${encodeURIComponent(scheduleId)}`;
 export const NEW_SCHEDULE_PATH = "/schedules/new";
+/** The sharing page. */
+export const SHARING_PATH = "/sharing";
 /** A session by its ID alone, for a link that doesn't know its project; the console finds the project and goes there. */
 export const sessionLinkPath = (sessionId: string): string => `/sessions/${encodeURIComponent(sessionId)}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */

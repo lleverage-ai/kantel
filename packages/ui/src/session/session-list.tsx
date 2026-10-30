@@ -1,12 +1,28 @@
-import { memo, type ReactNode, useCallback, useMemo } from "react";
+import { memo, type ReactNode, useCallback, useMemo, useState } from "react";
+import { useNow } from "../primitives/clock.ts";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
-import { Skeleton } from "../primitives/spinner.tsx";
+import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { Elapsed, RelativeTime } from "../primitives/time.tsx";
 import type { Status } from "../tokens/tokens.ts";
-import { attentionGroup, groupSessions, type SessionSummary, sessionStatus } from "./session-model.ts";
+import {
+	DeleteSessionDialog,
+	RenameSessionDialog,
+	type SessionAction,
+	SessionFilterMenu,
+	type SessionMenuActions,
+	SessionRowMenu,
+} from "./session-menu.tsx";
+import {
+	arrangeSessions,
+	attentionGroup,
+	defaultSessionListView,
+	type SessionListView,
+	type SessionSummary,
+	sessionStatus,
+} from "./session-model.ts";
 import "./session-list.css";
 
 export type SessionListItemProps = {
@@ -18,14 +34,50 @@ export type SessionListItemProps = {
 	onSelect?: (id: string) => void;
 	/** Shown in place of the status or time while the row is hovered or focused: "Settle", a menu. */
 	actions?: ReactNode;
+	/**
+	 * Gives the row Claude.ai's "…" menu (Mark as unread, Pin, Rename, Archive, Delete) in place of `actions`, calling
+	 * this with the choice. Pass a stable function: rows are memoised on it.
+	 */
+	onAction?: (session: SessionSummary, action: SessionAction) => void;
 };
+
+/**
+ * A working session's status, after T3 Code's sidebar (SidebarThreadRow.tsx:723-728 and 1478-1494): a spinner,
+ * "Working" and how long the turn has run ("Working 12s") in the accent's blue, ticking on the shared clock, in place
+ * of the session's age. The time is hidden from screen readers, as T3 Code's is: the list is no live region, and the
+ * open session's transcript says how long it has worked.
+ */
+function WorkingStatus({ since }: { since: number }) {
+	return (
+		<span className="hb-session-working">
+			<Spinner size="sm" />
+			<span className="hb-session-working-text">
+				Working{" "}
+				<span aria-hidden="true">
+					<Elapsed since={since} />
+				</span>
+			</span>
+		</span>
+	);
+}
 
 /**
  * The line above the title: the project and the branch as separate facts (no dot between them, a gap), and the
  * status at the right end. The status lives on this line rather than in a column beside the title so the title gets
- * the row's full width; the project and branch truncate before the status does.
+ * the row's full width; the project and branch truncate before the status does. A working session's status is its
+ * spinner and running time (`WorkingStatus`), given as `since`.
  */
-function Overline({ project, branch, status }: { project?: string; branch?: string; status?: Status }) {
+function Overline({
+	project,
+	branch,
+	status,
+	since,
+}: {
+	project?: string;
+	branch?: string;
+	status?: Status;
+	since?: number;
+}) {
 	return (
 		<span className="hb-session-overline">
 			{project === undefined && branch === undefined ? null : (
@@ -36,7 +88,11 @@ function Overline({ project, branch, status }: { project?: string; branch?: stri
 			)}
 			{status === undefined ? null : (
 				<span className="hb-session-status">
-					<StatusLabel status={status} />
+					{status === "working" && since !== undefined ? (
+						<WorkingStatus since={since} />
+					) : (
+						<StatusLabel status={status} />
+					)}
 				</span>
 			)}
 		</span>
@@ -45,8 +101,8 @@ function Overline({ project, branch, status }: { project?: string; branch?: stri
 
 /**
  * One session in the list, after T3 Code's sidebar cards and slim rows. Sessions that need you or are working get
- * three lines: project and branch with the status at the right end, the title across the full width, and the elapsed
- * time. Settled ones are one quiet line with their time, unless they finished unseen (an emerald Done) or failed.
+ * two lines: project and branch with the status at the right end (a working one's spinner and "Working 12s", ticking),
+ * then the title across the full width. Settled ones are one quiet line with their time, unless they finished unseen (an emerald Done) or failed.
  * Memoised on its props.
  */
 export const SessionListItem = memo(function SessionListItem({
@@ -55,20 +111,26 @@ export const SessionListItem = memo(function SessionListItem({
 	href,
 	onSelect,
 	actions,
+	onAction,
 }: SessionListItemProps) {
 	const { id } = session;
 	useRenderProbe("SessionListItem", id);
 	const select = useCallback(() => onSelect?.(id), [onSelect, id]);
 	const status = sessionStatus(session);
 	const group = attentionGroup(session);
-	const main = { selected, href, onSelect: onSelect === undefined ? undefined : select, actions };
+	const main = {
+		selected,
+		href,
+		onSelect: onSelect === undefined ? undefined : select,
+		actions: onAction === undefined ? actions : <SessionRowMenu session={session} onAction={onAction} />,
+	};
 
 	if (group === "done") {
 		return (
 			<ListRow
 				{...main}
 				density="compact"
-				quiet={status === undefined}
+				quiet={status === undefined || session.archived === true}
 				title={session.title}
 				trailing={status === undefined ? <RelativeTime at={session.updatedAt} /> : <StatusLabel status={status} />}
 			/>
@@ -77,18 +139,15 @@ export const SessionListItem = memo(function SessionListItem({
 
 	const overline =
 		session.project === undefined && session.branch === undefined && status === undefined ? undefined : (
-			<Overline project={session.project} branch={session.branch} status={status} />
+			<Overline
+				project={session.project}
+				branch={session.branch}
+				status={status}
+				{...(session.status === "running" ? { since: session.workingSince ?? session.startedAt } : {})}
+			/>
 		);
 	// No trailing column: the status is in the overline, so nothing sits beside the title.
-	return (
-		<ListRow
-			{...main}
-			density="comfortable"
-			overline={overline}
-			title={session.title}
-			meta={session.status === "running" ? <Elapsed since={session.startedAt} /> : undefined}
-		/>
-	);
+	return <ListRow {...main} density="comfortable" overline={overline} title={session.title} />;
 });
 
 export type SessionListProps = {
@@ -104,8 +163,31 @@ export type SessionListProps = {
 	error?: ReactNode;
 	/** Replaces the default empty state. */
 	empty?: ReactNode;
-	/** Groups as Needs you, Working and Done (the default). Ungrouped keeps the order given. */
+	/** Groups as Needs you, Working and Done (the default). Ungrouped keeps the order given. Ignored with `view`. */
 	grouped?: boolean;
+	/**
+	 * How the list is filtered, grouped and sorted (`arrangeSessions`), with Pinned first. Without it every session is
+	 * shown, grouped as `grouped` says.
+	 */
+	view?: SessionListView;
+	/** Shows the list's heading (Recents, Archived or All sessions) with Claude.ai's filter button, which calls this. */
+	onViewChange?: (view: SessionListView) => void;
+	/** Gives each row its "…" menu, which calls these. Pass a stable object. */
+	menuActions?: SessionMenuActions;
+};
+
+/** The list's heading for each status filter. */
+const headings: Record<SessionListView["status"], string> = {
+	active: "Recents",
+	archived: "Archived",
+	all: "All sessions",
+};
+
+/** What the list says when the filter leaves nothing to show. */
+const filteredEmpty: Record<SessionListView["status"], string> = {
+	active: "No active sessions match",
+	archived: "No archived sessions",
+	all: "No sessions match",
 };
 
 const skeletonWidths = ["72%", "56%", "64%", "48%", "60%"];
@@ -115,7 +197,11 @@ function Rows({
 	selectedId,
 	onSelect,
 	hrefFor,
-}: Pick<SessionListProps, "selectedId" | "onSelect" | "hrefFor"> & { sessions: readonly SessionSummary[] }) {
+	onAction,
+}: Pick<SessionListProps, "selectedId" | "onSelect" | "hrefFor"> & {
+	sessions: readonly SessionSummary[];
+	onAction?: (session: SessionSummary, action: SessionAction) => void;
+}) {
 	return (
 		<ul className="hb-session-rows">
 			{sessions.map((session) => (
@@ -125,6 +211,7 @@ function Rows({
 						selected={session.id === selectedId}
 						href={hrefFor?.(session.id)}
 						onSelect={onSelect}
+						{...(onAction === undefined ? {} : { onAction })}
 					/>
 				</li>
 			))}
@@ -136,6 +223,10 @@ function Rows({
  * The list of sessions: a navigation landmark labelled "Sessions", grouped by what each session needs from you.
  * Loading shows placeholder rows, an empty list says how to start one, and an error is a notice. Rows are memoised,
  * so a streaming update re-renders only the session that changed.
+ *
+ * After Claude.ai's sidebar, with `view` and `onViewChange` it has a heading (Recents) and a filter button, and with
+ * `menuActions` each row has a "…" menu to mark it unread, pin, rename, archive or delete it. Pinned sessions come
+ * first; archived ones only show when the filter asks for them.
  */
 export function SessionList({
 	sessions,
@@ -146,11 +237,42 @@ export function SessionList({
 	error,
 	empty,
 	grouped = true,
+	view,
+	onViewChange,
+	menuActions,
 }: SessionListProps) {
-	const groups = useMemo(() => (grouped ? groupSessions(sessions) : []), [grouped, sessions]);
+	const arrangement = view ?? legacyView;
+	// Last activity and date groups move on with the day; a minute is close enough.
+	const now = useNow(60_000, view !== undefined && (view.activity !== "all" || view.groupBy === "date"));
+	const sections = useMemo(
+		() =>
+			view === undefined && !grouped
+				? [{ key: "sessions", sessions: [...sessions] }]
+				: arrangeSessions(sessions, arrangement, now),
+		[view, grouped, sessions, arrangement, now],
+	);
+	const [renaming, setRenaming] = useState<SessionSummary>();
+	const [deleting, setDeleting] = useState<SessionSummary>();
+	const [actionError, setActionError] = useState<string>();
+	const onAction = useMemo(() => {
+		if (menuActions === undefined) return undefined;
+		const run = (work: Promise<void>) =>
+			work.then(
+				() => setActionError(undefined),
+				(reason: unknown) => setActionError(reason instanceof Error ? reason.message : String(reason)),
+			);
+		return (session: SessionSummary, action: SessionAction) => {
+			if (action === "unread") void run(menuActions.setUnread(session.id, session.unread !== true));
+			else if (action === "pin") void run(menuActions.setPinned(session.id, session.pinned !== true));
+			else if (action === "archive") void run(menuActions.setArchived(session.id, session.archived !== true));
+			else if (action === "rename") setRenaming(session);
+			else setDeleting(session);
+		};
+	}, [menuActions]);
 	const nothing = sessions.length === 0;
 	const showSkeleton = loading && nothing;
 	const hasError = error !== undefined && error !== null && error !== false;
+	const filteredOut = !nothing && sections.length === 0;
 
 	let content: ReactNode;
 	if (showSkeleton) {
@@ -168,23 +290,70 @@ export function SessionList({
 		) : (
 			<EmptyState title="No sessions yet">Start one from the composer or a schedule.</EmptyState>
 		);
-	} else if (grouped) {
-		content = groups.map(({ group, label, sessions: members }) => (
-			<div key={group} className="hb-session-group">
-				<h3 className="hb-session-group-heading">
-					<span>{label}</span> <span className="hb-session-group-count">{members.length}</span>
-				</h3>
-				<Rows sessions={members} selectedId={selectedId} onSelect={onSelect} hrefFor={hrefFor} />
-			</div>
-		));
+	} else if (filteredOut) {
+		content = (
+			<EmptyState title={filteredEmpty[arrangement.status]}>
+				{arrangement.status === "archived"
+					? "Sessions you archive show up here."
+					: "Change the filter to see more sessions."}
+			</EmptyState>
+		);
 	} else {
-		content = <Rows sessions={sessions} selectedId={selectedId} onSelect={onSelect} hrefFor={hrefFor} />;
+		content = sections.map(({ key, label, sessions: members }) =>
+			label === undefined ? (
+				<Rows
+					key={key}
+					sessions={members}
+					selectedId={selectedId}
+					onSelect={onSelect}
+					hrefFor={hrefFor}
+					{...(onAction === undefined ? {} : { onAction })}
+				/>
+			) : (
+				<div key={key} className="hb-session-group">
+					<h3 className="hb-session-group-heading">
+						<span>{label}</span> <span className="hb-session-group-count">{members.length}</span>
+					</h3>
+					<Rows
+						sessions={members}
+						selectedId={selectedId}
+						onSelect={onSelect}
+						hrefFor={hrefFor}
+						{...(onAction === undefined ? {} : { onAction })}
+					/>
+				</div>
+			),
+		);
 	}
 
 	return (
 		<nav className="hb-session-list" aria-label="Sessions" aria-busy={showSkeleton || undefined}>
+			{onViewChange === undefined ? null : (
+				<div className="hb-session-list-head">
+					<h3 className="hb-session-list-title">{headings[arrangement.status]}</h3>
+					<SessionFilterMenu view={arrangement} onViewChange={onViewChange} />
+				</div>
+			)}
 			{hasError ? <Notice level="error">{error}</Notice> : null}
+			{actionError === undefined ? null : <Notice level="error">{actionError}</Notice>}
 			{content}
+			{menuActions === undefined ? null : (
+				<>
+					<RenameSessionDialog
+						session={renaming}
+						onRename={menuActions.rename}
+						onClose={() => setRenaming(undefined)}
+					/>
+					<DeleteSessionDialog
+						session={deleting}
+						onDelete={menuActions.remove}
+						onClose={() => setDeleting(undefined)}
+					/>
+				</>
+			)}
 		</nav>
 	);
 }
+
+/** Without a view: every session, grouped as Needs you, Working and Done (or, ungrouped, in the order given). */
+const legacyView: SessionListView = { ...defaultSessionListView, status: "all" };

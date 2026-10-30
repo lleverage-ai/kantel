@@ -128,6 +128,32 @@ It holds no `Sandboxes`: seeding writes files and never runs a command. `createW
 headers? })` posts the body and rethrows error bodies as `HarbourError`. Creating isn't audited yet; the audit log
 shows a refusal, not a creation.
 
+## Sharing a file (`@harbour/workspace/shares`, `shares-api`)
+
+A file an agent made (a document, a PDF, any file) is shared after Claude's Share popover. `FileShares` (in
+`@harbour/contracts`' `shares.ts`) holds one live share a file: its general access (`restricted`, only those who can
+see the workspace; `link`, anyone with the link), its invites by email, and a link token. A share always shows the
+file's newest version. `createSqlFileShares({ driver, workspaces, access?, audit?, clock? })` stores them in one
+`file_shares` table (`migrateFileShares`); a change is a compare-and-set on its revision.
+
+| Case | Answer |
+| --- | --- |
+| Reading a share or listing a workspace's | viewer on the workspace, as reading its files |
+| Sharing, setting access, inviting, revoking | operator on the workspace's project, and a person: an agent or an API key is `forbidden` |
+| Sharing a file that has a live share | that share, unchanged |
+| A share of a file deleted since | still listed and revocable |
+| Changing a revoked share | `conflict` |
+| Each change | audited as `workspace.share.created`, `.changed`, `.invited`, `.uninvited` or `.revoked`, without the token or an email |
+
+Invites are stored and listed only: Harbour sends no email, and an invite grants no access of its own.
+
+`createSharesApi({ shares, authenticate, basePath? })` serves `@harbour/api`'s `shareRoutes`.
+`createSharedLinkHandler({ shares, workspaces, renderPage, renderMissing })` serves `/shared/<token>` and
+`/shared/<token>/raw` without sign-in: `open` (a worker call) finds a live `link` share by its token, and the file is
+read as Harbour in the share's organisation. A link that doesn't open (unknown, restricted, revoked, its file gone or
+larger than the read API serves) is the same `renderMissing` page. The raw bytes are served `no-store`, `nosniff` and,
+but for a PDF, under a sandboxing CSP.
+
 ## Seeding v0 (M1-BE3)
 
 `create` resolves the seed's sources in order, later sources winning on a path, after the caller's create and mount

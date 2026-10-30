@@ -6,7 +6,6 @@
 	flex-direction: column;
 	gap: var(--hb-space-8);
 	width: 100%;
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11));
 	min-width: 0;
 	color: var(--hb-text);
 	font-size: var(--hb-text-sm);
@@ -17,31 +16,9 @@
 	margin: 0;
 }
 
-.hb-memory-head {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-end;
-	justify-content: space-between;
-	gap: var(--hb-space-6);
-	padding-bottom: var(--hb-space-6);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-memory-heading {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	min-width: 0;
-}
-
-.hb-memory-title {
-	margin: 0;
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-.hb-memory-lede {
-	color: var(--hb-text-muted);
+.hb-memory-space {
+	width: calc(var(--hb-sidebar-width) * 0.75);
+	max-width: 100%;
 }
 
 .hb-memory-views {
@@ -62,7 +39,6 @@
 .hb-memory-group,
 .hb-memory-proposals,
 .hb-memory-recall,
-.hb-memory-recall-form,
 .hb-memory-recall-result {
 	display: flex;
 	flex-direction: column;
@@ -70,15 +46,22 @@
 }
 
 .hb-memory-list,
+.hb-memory-controls,
 .hb-memory-proposals,
 .hb-memory-recall,
 .hb-memory-recall-result {
 	gap: var(--hb-space-7);
 }
 
+/* The status filter keeps its own width above the search, as a segmented control does in a form. */
+.hb-memory-controls > .hb-segmented {
+	align-self: flex-start;
+	max-width: 100%;
+}
+
 .hb-memory-controls,
 .hb-memory-recall-form {
-	gap: var(--hb-space-5);
+	max-width: var(--hb-content-width);
 }
 
 .hb-memory-groups {
@@ -218,7 +201,7 @@
 .hb-memory-proposal-actions {
 	display: flex;
 	flex-wrap: wrap;
-	gap: var(--hb-space-3);
+	gap: var(--hb-space-4);
 }
 
 .hb-memory-proposals .hb-notice {
@@ -226,12 +209,6 @@
 }
 
 /* Recall. */
-
-.hb-memory-recall-scopes {
-	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: var(--hb-space-5);
-}
 
 .hb-memory-skipped li {
 	display: flex;
@@ -308,28 +285,6 @@
 	display: inline-flex;
 	flex-wrap: wrap;
 	gap: var(--hb-space-3);
-}
-
-.hb-concept-change-fields {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-6);
-}
-
-.hb-concept-change-fields ~ .hb-notice {
-	margin-top: var(--hb-space-6);
-}
-
-.hb-concept-change-text {
-	height: auto;
-	padding: var(--hb-space-4) var(--hb-space-5);
-	line-height: var(--hb-leading);
-	resize: vertical;
-}
-
-.hb-concept-change-mono {
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
 }
 
 .hb-concept-id {
@@ -415,9 +370,5 @@
 	.hb-memory-back {
 		display: flex;
 		margin-left: calc(var(--hb-space-5) * -1);
-	}
-
-	.hb-memory-recall-scopes {
-		grid-template-columns: minmax(0, 1fr);
 	}
 }

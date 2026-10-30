@@ -36,19 +36,28 @@
 //   HARBOUR_CPA_API_KEY         it through the model gateway (models.ts), with its client key (16 characters or more)
 //                               kept in the vault, so it needs a vault. Both or neither; unset, the echo model
 //   HARBOUR_DEFAULT_MODEL       the CPA model the `default` route serves; default claude-sonnet-5-5
+//   HARBOUR_BROWSER_PROVIDER, HARBOUR_BROWSER_HOST_URL, HARBOUR_BROWSER_HOST_TOKEN, HARBOUR_BROWSER_VIEW_KEY,
+//   HARBOUR_EMBED_ORIGINS, HARBOUR_BRWSR_API_KEY, HARBOUR_BRWSR_API_URL
+//                               the sessions' browser (browser.ts): Harbour's own, on the browser host, or brwsr's.
+//                               Unset, sessions have no browser
+//   HARBOUR_PUBLIC_URL          where people reach the console, such as https://harbour.example.com: an embed link is
+//                               made absolute against it, and passkeys are made for it. Default: the request's own
+//                               origin, which is `http:`, so set it behind a TLS proxy
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
-import { cpaConfig, modelGatewaySource } from "./models.ts";
+import { cpaConfig, describeCpaProbe, modelGatewaySource, probeCpa } from "./models.ts";
 import { listen } from "./node-http.ts";
+import { usageConfig } from "./usage.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const origins = parseCallbackOrigins(env.HARBOUR_CALLBACK_ORIGINS);
@@ -63,7 +72,14 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	if (cpa !== undefined && durable !== undefined && durable.vaultCipherKey === undefined) {
 		throw new Error("HARBOUR_CPA_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
 	}
+	const browser = browserConfig(env);
+	const publicUrl = env.HARBOUR_PUBLIC_URL?.trim() ?? "";
+	if (publicUrl !== "" && !/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
+		throw new Error("HARBOUR_PUBLIC_URL must be an origin, such as https://harbour.example.com");
+	}
 	return {
+		...(browser === undefined ? {} : { browser }),
+		...(publicUrl === "" ? {} : { publicOrigin: new URL(publicUrl).origin }),
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
 		consoleDir: env.HARBOUR_CONSOLE_DIR ?? fileURLToPath(new URL("../../../console/dist", import.meta.url)),
@@ -116,8 +132,10 @@ export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConf
 	};
 	const region = env.S3_REGION?.trim();
 	const vaultCipherKey = env.HARBOUR_VAULT_CIPHER_KEY?.trim() ?? "";
+	const usage = usageConfig(env);
 	return {
 		...(vaultCipherKey === "" ? {} : { vaultCipherKey }),
+		...(usage === undefined ? {} : { usage }),
 		databaseUrl,
 		schema: env.HARBOUR_GATEWAY_SCHEMA?.trim() || "harbour_m1",
 		s3: {
@@ -145,13 +163,19 @@ async function readBootstrap(path: string): Promise<Bootstrap | undefined> {
 
 export async function serveGateway(cfg = gatewayConfig()) {
 	const modelGateway = cfg.cpa === undefined ? undefined : modelGatewaySource(cfg.cpa);
+	const browser =
+		cfg.browser === undefined
+			? {}
+			: { browserProvider: gatewayBrowserProvider(cfg.browser), browserBinding: browserBinding(cfg.browser) };
 	const components =
 		cfg.durable === undefined
-			? createGatewayComponents(modelGateway === undefined ? {} : { modelGateway })
+			? createGatewayComponents({ ...(modelGateway === undefined ? {} : { modelGateway }), ...browser })
 			: await createDurableGatewayComponents({
 					...cfg.durable,
 					...(modelGateway === undefined ? {} : { modelGateway }),
+					...browser,
 				});
+	const browserViews = cfg.browser?.provider === "harbour" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);
 	let seeded = await bootstrap(
 		components,
@@ -193,6 +217,9 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			`[gateway] sessions on the model gateway: CLIProxyAPI at ${cfg.cpa.baseUrl}, route ${modelGateway.route} ` +
 				`to ${cfg.cpa.modelId}, its key in vault item ${item.name}`,
 		);
+		// Not fatal: CPA may come up after the gateway. A wrong key otherwise shows only as `no_model` on every session.
+		const probe = await probeCpa(cfg.cpa);
+		(probe.result === "ok" ? console.log : console.warn)(describeCpaProbe(cfg.cpa, probe));
 	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
@@ -202,8 +229,18 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
 		...(cfg.egress === undefined ? {} : { egress: { key: cfg.egress.key, scope } }),
+		...(browserViews === undefined ? {} : { browserViews }),
+		...(cfg.browser?.provider === "harbour" && cfg.browser.embedOrigins !== undefined
+			? { embedOrigins: cfg.browser.embedOrigins }
+			: {}),
+		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
 	});
-	const server = await listen(gateway.fetch, cfg.port, { host: cfg.host });
+	const server = await listen(gateway.fetch, cfg.port, {
+		host: cfg.host,
+		...(browserViews === undefined
+			? {}
+			: { onUpgrade: (incoming, socket, head) => browserViews.upgrade(incoming, socket, head) }),
+	});
 	console.log(
 		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}` +
 			`${seeded.projects === undefined ? "" : `, projects ${JSON.stringify(seeded.projects)}`}; ` +

@@ -6,8 +6,9 @@
  * tarball through the vault's egress (`./git-tarball.ts`) or off a warm mirror (`@harbour/mirror`), an archive over
  * `fetch` (`./archive.ts`). A source without a seeder is recorded at `metadata` readiness and not fetched.
  *
- * The tree arrives as workspace files without `.git`: the report says `refreshed`, because a tier that needs git status
- * initialises the repository over the files and refreshes the index once. Dependency steps are keyed here (equal keys
+ * The tree arrives as workspace files, without `.git` unless the fetcher adds one (the tarball fetcher's `history`: a
+ * shallow, blobless clone's): the report says `refreshed`, because a tier that needs git status initialises the
+ * repository over the files, or hashes them against the seeded index, once. Dependency steps are keyed here (equal keys
  * share a layer, so a changed lockfile changes only its step's key); running them, or restoring their layer, is the
  * sandbox tier's, which reports `dependencies` readiness.
  */

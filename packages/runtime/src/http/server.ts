@@ -27,11 +27,15 @@ import {
 	type SessionHistory,
 	type SessionHistoryRequest,
 	type SessionModels,
+	type SessionOrganising,
+	type SessionRecord,
 	type SessionRuntime,
+	type SessionUpdate,
 	type Subscription,
 	systemClock,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
+import { parseAttachments } from "../attachments.ts";
 import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
@@ -69,6 +73,17 @@ export interface SessionApiOptions {
 	 * (rewind to a message and send it edited, 202 with the submission): the runtime's `branching`.
 	 */
 	readonly branching?: SessionBranching;
+	/**
+	 * Serves `POST /sessions/:id/warm`, a hint that a message is coming: gets the session's sandbox ready for its next
+	 * command. Without it the route checks the session and answers `unavailable` for the container.
+	 */
+	readonly warm?: SessionWarmer;
+	/**
+	 * Serves `PATCH /sessions/:id` (body `{ title?, pinned?, archived?, unread? }`, 200 with the record as now stored) and
+	 * `DELETE /sessions/:id` (closes and deletes the session, 204), for the console's session menu: the runtime's
+	 * `organising`.
+	 */
+	readonly organising?: SessionOrganising;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -103,6 +118,14 @@ export interface SessionApiOptions {
 	 * can accept one. Without it an upgrade gets the event stream, which a WebSocket client takes as a failed handshake.
 	 */
 	readonly acceptWebSocket?: AcceptWebSocket;
+}
+
+/** What `POST /sessions/:id/warm` calls, once the caller may see the session. */
+export interface SessionWarmer {
+	warm(
+		ctx: CallContext,
+		session: SessionRecord,
+	): Promise<{ readonly container: "started" | "running" | "skipped" | "unavailable" }>;
 }
 
 export interface SessionApi {
@@ -161,8 +184,10 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 	if (body.thinking !== undefined && !THINKING_LEVELS.has(body.thinking)) {
 		throw new HarbourError("invalid", "thinking must be a thinking level");
 	}
+	const attachments = parseAttachments(body.attachments);
 	return {
 		text: body.text,
+		...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
 		...(body.requestId === undefined ? {} : { requestId: body.requestId }),
 		...(body.model === undefined ? {} : { model: body.model }),
 		...(body.thinking === undefined ? {} : { thinking: body.thinking }),
@@ -177,6 +202,25 @@ function forkInput(body: Partial<ForkSessionInput>): ForkSessionInput {
 	if (body.title !== undefined && typeof body.title !== "string")
 		throw new HarbourError("invalid", "title must be a string");
 	return body.title === undefined ? { itemId: body.itemId } : { itemId: body.itemId, title: body.title };
+}
+
+/** A session update's fields, each checked when given; any other field is ignored. */
+function updateInput(body: { readonly [key in keyof SessionUpdate]?: unknown }): SessionUpdate {
+	if (body.title !== undefined && typeof body.title !== "string") {
+		throw new HarbourError("invalid", "title must be a string");
+	}
+	for (const flag of ["pinned", "archived", "unread"] as const) {
+		if (body[flag] !== undefined && typeof body[flag] !== "boolean") {
+			throw new HarbourError("invalid", `${flag} must be true or false`);
+		}
+	}
+	const { title, pinned, archived, unread } = body as SessionUpdate;
+	return {
+		...(title === undefined ? {} : { title }),
+		...(pinned === undefined ? {} : { pinned }),
+		...(archived === undefined ? {} : { archived }),
+		...(unread === undefined ? {} : { unread }),
+	};
 }
 
 function editInput(body: Partial<EditSessionInput>): EditSessionInput {
@@ -248,6 +292,17 @@ function validProfile(profile: Partial<AgentProfile>): AgentProfile {
 	) {
 		problems.push("model");
 	}
+	const { imageModel } = profile;
+	if (
+		imageModel !== undefined &&
+		(typeof imageModel !== "object" ||
+			imageModel === null ||
+			typeof imageModel.route !== "string" ||
+			imageModel.route === "" ||
+			!isOptionalString(imageModel.modelId))
+	) {
+		problems.push("imageModel");
+	}
 	if (
 		!Array.isArray(promptLayers) ||
 		!promptLayers.every(
@@ -296,6 +351,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	): Promise<Response> => {
 		const route = `${request.method} ${rest.join("/")}`;
 		switch (route) {
+			case "PATCH ":
+				if (options.organising === undefined) break;
+				return json(await options.organising.update(ctx, sessionId, updateInput(await readJson(request))));
+			case "DELETE ":
+				if (options.organising === undefined) break;
+				await options.organising.remove(ctx, sessionId);
+				return new Response(null, { status: 204 });
 			case "GET children":
 				return json({ items: await directory.children(ctx, sessionId) });
 			case "GET snapshot":
@@ -645,6 +707,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					throw new HarbourError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
 				}
 				return submitted;
+			},
+			warmSession: async (ctx: CallContext, { params }) => {
+				// The session first, so a session the caller can't see is `not_found` whether or not this server warms.
+				const session = await directory.get(ctx, params.sessionId);
+				if (options.warm === undefined) return { container: "unavailable" as const };
+				const { container } = await options.warm.warm(ctx, session);
+				return { container };
 			},
 			streamSession: (ctx: CallContext, { params }, request) =>
 				events(ctx, request, new URL(request.url), params.sessionId),

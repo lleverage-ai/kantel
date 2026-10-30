@@ -144,6 +144,13 @@ function fixtureAccess(): ProjectAccess {
 		async allows(ctx, check) {
 			return passes(ctx, check) !== false;
 		},
+		// The vault page's fixtures share nothing across projects.
+		async resource() {
+			throw new HarbourError("forbidden", "The caller may not do this with this resource");
+		},
+		async allowsResource() {
+			return undefined;
+		},
 	};
 }
 

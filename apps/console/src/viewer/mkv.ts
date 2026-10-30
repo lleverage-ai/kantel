@@ -77,6 +77,29 @@ export function readFrames(bytes: Uint8Array): ReplayFrame[] {
 	return frames;
 }
 
+/**
+ * Shows frames on a canvas as playing reaches them: each is decoded, then painted unless a newer one was asked for in
+ * the meantime (that one paints instead). A decode that takes longer than the time between two asks still paints, so a
+ * slow machine shows every frame it can rather than none until playing stops.
+ */
+export function framePainter<F, B>(
+	decode: (frame: F) => Promise<B>,
+	paint: (bitmap: B) => void,
+	close: (bitmap: B) => void,
+) {
+	let newest: F | undefined;
+	return (frame: F) => {
+		if (frame === newest) return;
+		newest = frame;
+		decode(frame)
+			.then((bitmap) => {
+				if (frame === newest) paint(bitmap);
+				close(bitmap);
+			})
+			.catch(() => undefined);
+	};
+}
+
 /** The newest frame at or before `ms` in frames sorted by time, or the first when none is. */
 export function frameAt<T extends { readonly ms: number }>(frames: readonly T[], ms: number): T | undefined {
 	let low = 0;

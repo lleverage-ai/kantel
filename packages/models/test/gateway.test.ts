@@ -160,6 +160,28 @@ describe("createModelGateway", () => {
 		);
 	});
 
+	it("refuses a blocked session's next call though its key is cached, recorded as an errored model.call", async () => {
+		const { gateway, deps, upstream, vault } = await setup();
+		const scope = scopeFor();
+		deps.tenancy.session({
+			id: scope.sessionId,
+			organisationId: ORG,
+			projectId: PROJECT,
+			agentId: scope.agentId,
+		});
+		expect((await collect(await gateway.messages(scope, request("default")))).at(-1)?.type).toBe("done");
+		const calls = upstream.calls().length;
+		await vault.setSessionAccess(operator, scope.sessionId, { blocked: true, reason: "Too many calls" });
+		const refused = await collect(await gateway.messages(scope, request("default")));
+		expect(refused.at(-1)).toMatchObject({ type: "error", reason: "error" });
+		expect(JSON.stringify(refused.at(-1))).toContain("blocked");
+		expect(upstream.calls()).toHaveLength(calls);
+		// The refusal goes through the gateway's own model.call record (and its usage row), not a second count.
+		expect(deps.audit.ofType("model.call")).toHaveLength(2);
+		await vault.setSessionAccess(operator, scope.sessionId, { blocked: false });
+		expect((await collect(await gateway.messages(scope, request("default")))).at(-1)?.type).toBe("done");
+	});
+
 	it("rejects a malformed request or an unknown route before streaming, recording nothing", async () => {
 		const { gateway, deps } = await setup();
 		const scope = scopeFor();
@@ -620,6 +642,34 @@ describe("createCredentialCache", () => {
 		expect(cache.entries).toBe(1);
 		clock.advance(1000);
 		expect(cache.entries).toBe(0);
+	});
+
+	it("asks the vault on every cache hit whether the session is still open, so a block stops a cached key at once", async () => {
+		const clock = new ManualClock();
+		const blocked = new Set<string>();
+		const asked: string[] = [];
+		let reads = 0;
+		const credentials: ConnectorCredentials = {
+			async readConnectorCredential(_ctx, request) {
+				reads += 1;
+				return { itemId: request.vaultItemId, valueVersion: 1, value: "sk-cached", useId: `use-${reads}` };
+			},
+			async assertSessionOpen(_ctx, scope) {
+				asked.push(scope.sessionId);
+				if (blocked.has(scope.sessionId)) throw new HarbourError("refused", `Session ${scope.sessionId} is blocked`);
+			},
+		};
+		const cache = createCredentialCache(credentials, clock, 60_000);
+		const scope = scopeFor();
+		expect(await cache.key(connector("a"), scope)).toBe("sk-cached");
+		expect(asked).toEqual([]);
+		expect(await cache.key(connector("a"), scope)).toBe("sk-cached");
+		expect(asked).toEqual([scope.sessionId]);
+		blocked.add(scope.sessionId);
+		await expect(cache.key(connector("a"), scope)).rejects.toMatchObject({ code: "refused" });
+		expect(reads).toBe(1);
+		const other = { ...scope, sessionId: "session-other" };
+		expect(await cache.key(connector("a"), other)).toBe("sk-cached");
 	});
 
 	it("returns the key uncached when no timer can be set, rather than caching it with no expiry", async () => {

@@ -1,11 +1,15 @@
-import type { ProjectOption } from "@harbour/ui";
+import type { ComposerAttachment, ProjectOption } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ConsoleClient, ProjectSummary, StartOptions } from "../api/client.ts";
 import { titleFrom } from "../ui/actions.ts";
 import { type NewSessionState, NewSessionView } from "../ui/new-session-view.tsx";
+import { useMessageAttachments } from "./attachments.ts";
 import { handOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
-import { navigate, newSessionPath, sessionPath } from "./router.ts";
+import { navigate, newSessionPath, projectPath, sessionPath } from "./router.ts";
+
+/** A first message: its words, and the composer's files sent with it. */
+type Pending = { readonly text: string; readonly sent: readonly ComposerAttachment[] };
 
 type Options = { readonly projectId: string } & (
 	| { readonly state: "loading" }
@@ -146,14 +150,17 @@ export function NewSessionScreen({
 		[chosenModel, chosenThinking],
 	);
 
+	// The composer's files, uploaded to the project as they are attached; they go with the first message.
+	const attached = useMessageAttachments(client, projectId);
+
 	/** A message sent before the agent was known, sent once it is. */
-	const [pending, setPending] = useState<string>();
+	const [pending, setPending] = useState<Pending>();
 
 	const send = useCallback(
-		async (text: string) => {
+		async ({ text, sent }: Pending) => {
 			if (sending && pending === undefined) return;
 			if (options === undefined) {
-				setPending(text);
+				setPending({ text, sent });
 				setSending(true);
 				return;
 			}
@@ -175,14 +182,15 @@ export function NewSessionScreen({
 					...(repository === undefined ? {} : { repository }),
 				});
 				if (repository !== undefined) setRecent(rememberRepo(repository.repo));
-				handOver(sessionId, { text, choice });
+				const attachments = attached.referencesOf(sent);
+				handOver(sessionId, { text, choice, ...(attachments.length === 0 ? {} : { attachments }) });
 				navigate(sessionPath(projectId, sessionId));
 			} catch (reason) {
 				setFailure(`The session couldn't be created. ${messageOf(reason)}`);
 				setSending(false);
 			}
 		},
-		[client, options, sending, pending, projectId, choice, repository, repoNotReady],
+		[client, options, sending, pending, projectId, choice, repository, repoNotReady, attached.referencesOf],
 	);
 
 	// Once the agent is known, a message that was waiting for it goes; if it can't be known, the message stays a draft.
@@ -205,11 +213,13 @@ export function NewSessionScreen({
 			state={{
 				projectId,
 				projectName: project?.name ?? projectId,
+				projectHref: projectPath(projectId),
 				projects: projectOptions,
 				...(options === undefined ? {} : { agentName: options.agentName }),
 				draft,
 				sending,
 				pickers: pickers.composer,
+				files: attached.composer,
 				...(blocked === undefined ? {} : { blocked }),
 				...(failure === undefined ? {} : { failure }),
 				...(seeds
@@ -237,7 +247,7 @@ export function NewSessionScreen({
 				onProject: (id) => {
 					if (id !== projectId) navigate(newSessionPath(id), { replace: true });
 				},
-				onSend: (text) => void send(text),
+				onSend: (text, sent) => void send({ text, sent: sent ?? [] }),
 				...(onBack === undefined ? {} : { onBack }),
 			}}
 		/>

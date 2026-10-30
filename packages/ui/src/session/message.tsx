@@ -1,12 +1,15 @@
-import type { AssistantItem, NoticeItem, UserItem } from "@harbour/protocol";
+import type { AssistantItem, NoticeItem, UserAttachment, UserItem } from "@harbour/protocol";
 import { memo, useContext, useState } from "react";
+import { DraftDocumentCard } from "../presented/presented-file-card.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
-import { ForkIcon, RewindIcon } from "../primitives/icons.tsx";
+import { fileTypeIcon, fileTypeKind, fileTypeLabel } from "../primitives/file-icons.ts";
+import { ForkIcon, PencilIcon, RetryIcon, RewindIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
+import { formatBytes } from "../workspace/workspace-model.ts";
 import { Markdown } from "./markdown.tsx";
 import { MessageAction, MessageActions, MessageActionsContext, MessageEditor } from "./message-actions.tsx";
-import { WorkingIndicator } from "./working-indicator.tsx";
+import { LiveActivity } from "./working-indicator.tsx";
 import "./message.css";
 
 // The transcript's messages, after T3 Code (TimelineUserMessageRow.tsx:432-459, TimelineAssistantRows.tsx:26-72):
@@ -16,21 +19,41 @@ import "./message.css";
 const viaCaption = { prompt: undefined, steer: "Steered", followUp: "Follow-up" } as const;
 
 /**
+ * A message the host shows before its session has it (an optimistic send). `sending`: on its way, shown as if sent,
+ * without Edit from here (the session has no such message yet). `failed`: it didn't go; the line under the bubble says
+ * so, with Try again and Edit, which puts the words back in the composer.
+ */
+export type MessageDelivery =
+	| { readonly state: "sending" }
+	| {
+			readonly state: "failed";
+			/** Why, as the host has it. */
+			readonly reason?: string;
+			readonly onRetry: () => void;
+			/** Takes the message back to the composer. Without it, only Try again. */
+			readonly onEdit?: () => void;
+	  };
+
+/**
  * What the person sent: a right-aligned bubble, at most 80% of the column wide, with the time it was sent, Edit from
  * here (when the host gives `MessageActionsContext` an `edit`) and Copy under it on hover or focus (`MessageActions`).
  * Edit from here turns the bubble into a `MessageEditor`; sending rewinds the session to this message. `actions: false`
- * leaves that line out, for a preview.
+ * leaves that line out, for a preview. A message on its way (`delivery`) looks sent; one that failed says so on that
+ * line, with Try again and Edit.
  */
 export const UserMessage = memo(function UserMessage({
 	item,
 	actions = true,
 	showActions = false,
+	delivery,
 }: {
 	item: UserItem;
 	/** The time and Copy under the bubble. Default on. */
 	actions?: boolean;
 	/** Shows them without a hover, for stories and screenshots. */
 	showActions?: boolean;
+	/** The message is the host's own copy, not yet the session's: on its way, or failed. */
+	delivery?: MessageDelivery;
 }) {
 	useRenderProbe("UserMessage", item.id);
 	const { edit, editBlocked } = useContext(MessageActionsContext);
@@ -53,10 +76,34 @@ export const UserMessage = memo(function UserMessage({
 	return (
 		<div className="hb-user-message">
 			{caption === undefined ? null : <span className="hb-user-message-via">{caption}</span>}
-			<div className="hb-user-message-bubble">{item.text}</div>
-			{actions ? (
+			{item.attachments === undefined || item.attachments.length === 0 ? null : (
+				<SentAttachments attachments={item.attachments} />
+			)}
+			{item.text === "" && (item.attachments?.length ?? 0) > 0 ? null : (
+				<div className="hb-user-message-bubble">{item.text}</div>
+			)}
+			{actions && delivery?.state === "failed" ? (
+				<MessageActions
+					at={item.at}
+					text={item.text}
+					align="end"
+					visible
+					after={
+						<span className="hb-message-actions-error" role="status">
+							{delivery.reason === undefined || delivery.reason === ""
+								? "Couldn't send"
+								: `Couldn't send: ${delivery.reason}`}
+						</span>
+					}
+				>
+					<MessageAction label="Try again" icon={<RetryIcon size="sm" />} onClick={delivery.onRetry} />
+					{delivery.onEdit === undefined ? null : (
+						<MessageAction label="Edit in the composer" icon={<PencilIcon size="sm" />} onClick={delivery.onEdit} />
+					)}
+				</MessageActions>
+			) : actions ? (
 				<MessageActions at={item.at} text={item.text} align="end" visible={showActions}>
-					{edit === undefined ? null : (
+					{edit === undefined || delivery !== undefined ? null : (
 						<MessageAction
 							label={editBlocked ?? "Edit from here"}
 							icon={<RewindIcon size="sm" />}
@@ -70,16 +117,41 @@ export const UserMessage = memo(function UserMessage({
 	);
 });
 
+/** The files sent with a message, above its bubble: each a small card with its file type's icon, name, type and size. */
+function SentAttachments({ attachments }: { attachments: readonly UserAttachment[] }) {
+	return (
+		<ul className="hb-user-attachments" aria-label="Attached files">
+			{attachments.map((attachment) => {
+				const Icon = fileTypeIcon(attachment);
+				return (
+					<li key={attachment.id} className="hb-user-attachment" title={attachment.name}>
+						<span className="hb-user-attachment-tile hb-file-tile" data-kind={fileTypeKind(attachment)}>
+							<Icon />
+						</span>
+						<span className="hb-user-attachment-text">
+							<span className="hb-user-attachment-name">{attachment.name}</span>
+							<span className="hb-user-attachment-facts">
+								<span>{attachment.kind === "text" ? "Pasted" : fileTypeLabel(attachment)}</span>
+								<span>{formatBytes(attachment.size)}</span>
+							</span>
+						</span>
+					</li>
+				);
+			})}
+		</ul>
+	);
+}
+
 /**
  * A thought as it streams, before the answer's first word, after T3 Code's live reasoning preview
- * (TimelineWorkGroupRows.tsx:503-581): "Thinking", then the newest lines of the thought, muted and clamped to four, so
- * the reader sees the agent think without the transcript jumping as the thought grows. The whole thought is behind
- * the "Thought it through" disclosure once the answer starts.
+ * (TimelineWorkGroupRows.tsx:503-581): the live activity row, a brain and "Thinking", then the newest lines of the
+ * thought, muted and clamped to four, so the reader sees the agent think without the transcript jumping as the thought
+ * grows. The whole thought is behind the "Thought it through" disclosure once the answer starts.
  */
 function ThinkingPreview({ thinking }: { thinking: string }) {
 	return (
 		<div className="hb-assistant-message-thinking-live">
-			<span className="hb-assistant-message-thinking-label">Thinking</span>
+			<LiveActivity />
 			<div className="hb-assistant-message-thought-window">
 				<p className="hb-assistant-message-thought">{thinking}</p>
 			</div>
@@ -89,20 +161,22 @@ function ThinkingPreview({ thinking }: { thinking: string }) {
 
 /**
  * The agent's answer, on the canvas: an optional thought behind a disclosure, then Markdown. While it streams, a quiet
- * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview;
- * before any text or thought arrives, "Working for 12s" says it is working, timed from `turnStartedAt` (when the turn
- * started), or "Working" without it. With `actions`, a finished answer with text has Copy, Fork from this response
+ * caret sits at the end of the text; while it thinks before its first word, the thought streams in a clamped preview
+ * under the live activity row (a brain and "Thinking"); before any text or thought arrives, that row alone says the
+ * agent is thinking. With `actions`, a finished answer with text has Copy, Fork from this response
  * (when the host gives `MessageActionsContext` a `fork`) and the time it was
  * generated under it, on hover or focus (`MessageActions`).
  */
 export const AssistantMessage = memo(function AssistantMessage({
 	item,
-	turnStartedAt,
 	actions = false,
 	showActions = false,
 }: {
 	item: AssistantItem;
-	/** When the turn this answer belongs to started, for the working row's timer. */
+	/**
+	 * When the turn this answer belongs to started. Kept for hosts that pass it; the turn's timer is the transcript's
+	 * working header now, so the answer doesn't show it.
+	 */
 	turnStartedAt?: number | undefined;
 	/**
 	 * Copy and the time under the answer, once it has finished. The transcript turns it on for a turn's final answer
@@ -142,8 +216,15 @@ export const AssistantMessage = memo(function AssistantMessage({
 			) : null}
 			{text !== "" ? (
 				<Markdown text={text} />
-			) : streaming && !thinking ? (
-				<WorkingIndicator since={turnStartedAt} />
+			) : streaming && !thinking && item.document === undefined ? (
+				<LiveActivity />
+			) : null}
+			{streaming && item.document !== undefined ? (
+				<div className="hb-presented-files">
+					<div className="hb-presented-files-item">
+						<DraftDocumentCard title={item.document.title} />
+					</div>
+				</div>
 			) : null}
 			{actions && !streaming && text !== "" ? (
 				<MessageActions

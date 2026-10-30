@@ -1,23 +1,45 @@
 /**
  * A `GitFetcher` for GitHub repositories over `fetch` alone, so it runs in a Worker as well as on a node: it resolves
- * the ref to a commit with the REST API, then reads the commit's tarball. Pass the vault's egress `fetch`, which adds
- * the credentials; the spec never carries them.
+ * the ref to a commit over git's smart HTTP protocol (`ls-refs`, see `git-refs.ts`), then reads the commit's tarball.
+ * Pass the vault's egress `fetch`, which adds the credentials; the spec never carries them.
+ *
+ * The REST API is asked only for an abbreviated commit ID, which `ls-refs` can't resolve: unauthenticated, it allows
+ * 60 requests an hour per IP, and a Worker shares its egress IPs, so resolving every ref through it fails with 403
+ * long before Harbour's own traffic would justify it.
  *
  * The tarball holds the tree without history or `.git`. Symlinks and submodules are left out (`skipped` counts them).
+ * With `history`, the source's last `history` commits (default 50) are fetched alongside it, without blobs, and added
+ * as a shallow `.git` (`./git-history.ts`), so git reads work on the seeded files. History is best effort: when its
+ * fetch fails, the tree is seeded without `.git` and `history.onError` hears why.
  */
 import { type GitFetcher, type GitSeedSource, type GitTree, HarbourError, type SeedFile } from "@harbour/contracts";
+import { DEFAULT_HISTORY, fetchGitHistory, type GitHistoryOptions } from "./git-history.ts";
+import { createGitRefLister, type GitRefLister } from "./git-refs.ts";
+import { gitHubRepo } from "./github-repo.ts";
+
+export { gitHubRepo };
 
 export interface GitHubTarballFetcherOptions {
 	/** The egress `fetch`; the global one when absent. */
 	readonly fetch?: typeof fetch;
-	/** Default `https://api.github.com`. */
+	/** Default `https://api.github.com`; asked only for an abbreviated commit ID. */
 	readonly apiBase?: string;
+	/** Resolves refs; by default `ls-refs` against `https://github.com` over `fetch`. */
+	readonly refs?: GitRefLister;
 	/** Default `https://codeload.github.com`. */
 	readonly codeloadBase?: string;
 	/** The largest tarball read, uncompressed. Default 512 MiB. */
 	readonly maxBytes?: number;
 	/** The most files a tree may have. Default 100,000. */
 	readonly maxFiles?: number;
+	/**
+	 * Seeds a shallow, blobless `.git` with the tree, over the same `fetch` (and `refs`) unless these options say
+	 * otherwise. Absent: no `.git`. A source with `sparse` paths or `history: 0` gets none either.
+	 */
+	readonly history?: GitHistoryOptions & {
+		/** Hears why a source's history could not be fetched; the tree is seeded without it. */
+		readonly onError?: (error: unknown, source: GitSeedSource) => void;
+	};
 }
 
 /** Entries the last fetch left out, by kind; for tests and reports. */
@@ -26,17 +48,7 @@ export interface GitHubTarballFetcher extends GitFetcher {
 }
 
 const COMMIT = /^[0-9a-f]{40}$/;
-
-/** `owner/name`, or a github.com URL, as `[owner, name]`; anything else is not this fetcher's. */
-export function gitHubRepo(repo: string): [string, string] {
-	const match =
-		/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repo) ??
-		/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(repo);
-	if (match === null || /^\.+$/.test(match[1]!) || /^\.+$/.test(match[2]!)) {
-		throw new HarbourError("not_supported", `the GitHub fetcher cannot fetch ${repo}`, { repo });
-	}
-	return [match[1]!, match[2]!];
-}
+const ABBREVIATED = /^[0-9a-f]{4,39}$/;
 
 export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions = {}): GitHubTarballFetcher {
 	const send = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -45,6 +57,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 	const maxBytes = options.maxBytes ?? 512 * 1024 * 1024;
 	const maxFiles = options.maxFiles ?? 100_000;
 	const skipped = { symlinks: 0, other: 0 };
+	const refs = options.refs ?? createGitRefLister({ fetch: send });
 
 	async function resolve(owner: string, name: string, source: GitSeedSource): Promise<string> {
 		if (source.commit !== undefined) {
@@ -52,6 +65,11 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 			return source.commit;
 		}
 		if (COMMIT.test(source.ref)) return source.ref;
+		const named = await refs.resolve(`${owner}/${name}`, source.ref);
+		if (named !== undefined) return named;
+		if (!ABBREVIATED.test(source.ref)) {
+			throw new HarbourError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
+		}
 		const response = await send(`${api}/repos/${owner}/${name}/commits/${encodeURIComponent(source.ref)}`, {
 			headers: { accept: "application/vnd.github.sha", "user-agent": "harbour-workspace" },
 		});
@@ -68,6 +86,25 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 		return commit;
 	}
 
+	/** Starts fetching the source's `.git`, alongside the tarball; resolves `[]` when there is none to seed. */
+	function readHistory(source: GitSeedSource, commit: string): Promise<SeedFile[]> {
+		const history = options.history;
+		const depth = source.history ?? DEFAULT_HISTORY;
+		if (history === undefined || source.sparse !== undefined || depth < 1) return Promise.resolve([]);
+		return fetchGitHistory(
+			{
+				fetch: send,
+				refs,
+				...history,
+				blobs: history.blobs ?? { onError: (error: unknown) => history.onError?.(error, source) },
+			},
+			{ repo: source.repo, ref: source.ref, commit, depth },
+		).catch((error: unknown) => {
+			history.onError?.(error, source);
+			return [];
+		});
+	}
+
 	return {
 		skipped,
 		method: "clone",
@@ -78,6 +115,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 		async fetch(_ctx, source): Promise<GitTree> {
 			const [owner, name] = gitHubRepo(source.repo);
 			const commit = await resolve(owner, name, source);
+			const history = readHistory(source, commit);
 			const response = await send(`${codeload}/${owner}/${name}/tar.gz/${commit}`, {
 				headers: { "user-agent": "harbour-workspace" },
 			});
@@ -97,6 +135,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 				}
 				files.push({ ...file, path });
 			}
+			files.push(...(await history));
 			return { commit, files };
 		},
 	};

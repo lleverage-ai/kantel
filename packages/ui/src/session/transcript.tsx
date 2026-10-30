@@ -1,6 +1,7 @@
-import type { Card, CardItem, TranscriptItem } from "@harbour/protocol";
+import type { Card, CardItem, PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
 import {
 	type DragEvent,
+	Fragment,
 	memo,
 	type ReactNode,
 	useCallback,
@@ -11,65 +12,106 @@ import {
 	useState,
 } from "react";
 import { VList, type VListHandle } from "virtua";
+import { PresentedFiles } from "../presented/presented-file-card.tsx";
+import { presentedKey } from "../presented/presented-file-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import type { BrowserEntryState } from "./browser-entry.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
+import { BrowsingGroup, browsingBrowser } from "./browsing-group.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
-import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
+import { AssistantMessage, type MessageDelivery, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
+import { SubagentCard } from "./subagent-card.tsx";
+import { subagentOf } from "./subagent-model.ts";
 import { ToolCallGroup } from "./tool-call.tsx";
 import {
+	FOLLOWING,
+	type Follow,
+	type FollowEvent,
+	isAtEnd,
+	type Navigation,
+	nextFollow,
+	releases,
+	scrollKey,
+	upwardScrollDetector,
+} from "./transcript-follow.ts";
+import {
+	activeBrowsingRow,
 	type BrowserViewSlot,
+	browserEntrySlots,
 	browserViewSlots,
 	finalAnswerIds,
 	groupTranscript,
+	messageKeys,
 	rowOfTurn,
 	type TranscriptRow,
 	turnAnchor,
+	workingPlacement,
 } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
-import { WorkingIndicator } from "./working-indicator.tsx";
+import { LiveActivity, WorkingIndicator } from "./working-indicator.tsx";
 import "./transcript.css";
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
-// new output only while the reader is at the bottom (T3 Code's useTimelineFollow.ts:162-196): scrolling up stops
-// following, and returning to the bottom, or the "Scroll to end" button, starts it again. Near the top it asks for
-// the previous history page, and keeps the reader's place when that page is put in front. Once there is nothing
-// older, a paged transcript starts with a quiet "Start of the session" divider, so the reader knows they have it all.
+// new output only while the reader is at the end, as T3 Code's thread does (transcript-follow.ts has the rules):
+// the reader's own input up lets go at once, content changing height never does, and coming back to the end, or the
+// "Scroll to end" button, follows again. Following pins the list to its end directly, never through the virtualiser's
+// scrollToIndex, which keeps scrolling to its target each time a row is measured and so, while an answer streams,
+// would take the reader back to the end after they had scrolled away. Near the top it asks for the previous history
+// page, and keeps the reader's place when that page is put in front.
 
-/** How close to the bottom still counts as at the bottom, in CSS pixels. */
-const AT_BOTTOM_PX = 48;
 /** How close to the top asks for the previous page. */
 const LOAD_OLDER_PX = 600;
 /** How far beyond the viewport rows stay mounted. */
 const BUFFER_PX = 600;
 /** How long a linked turn stays highlighted once the list has landed on it (ms); its fade is the CSS's. */
 const HIGHLIGHT_MS = 2400;
+/** The most frames a landing on a linked turn keeps correcting itself while the rows around it are measured. */
+const LANDING_FRAMES = 60;
+
+/**
+ * Whether a wheel over `target` scrolls something inside the list rather than the list: a code block or a tool's
+ * output that can still scroll that way, or one that keeps its scrolling to itself (T3 Code's timelineScrollTarget.ts).
+ */
+function innerScrollerTakes(target: EventTarget | null, list: HTMLElement, deltaY: number): boolean {
+	for (
+		let element = target instanceof Element ? target : null;
+		element && element !== list;
+		element = element.parentElement
+	) {
+		const style = getComputedStyle(element);
+		if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+		const canScroll =
+			deltaY < 0 ? element.scrollTop > 0 : element.scrollTop < element.scrollHeight - element.clientHeight;
+		if (canScroll || style.overscrollBehaviorY === "contain" || style.overscrollBehaviorY === "none") return true;
+	}
+	return false;
+}
 
 // A fixed spacer always sits after the last row, so the bottom padding never belongs to a real row: if it did, the
 // row that was last would render again, to lose it, every time an item arrived.
 const END = { end: true } as const;
-// The top of a paged transcript once there is nothing older. It is an entry of the list, not an overlay, so it
-// scrolls with the rows; it is put in front as an older page would be, keeping the reader's place.
-const START = { start: true } as const;
-// The turn's working row, after the last row while the session works on a turn (the `working` prop).
+// While the session works on a turn (the `working` prop), the turn's "Working for 12s" header, under the person's
+// message, and its live activity row ("Thinking") at the end, after T3 Code's (see `workingPlacement`).
 const WORKING = { working: true } as const;
-type Entry = TranscriptRow | typeof END | typeof START | typeof WORKING;
+const ACTIVITY = { activity: true } as const;
+type Entry = TranscriptRow | typeof END | typeof WORKING | typeof ACTIVITY;
 
 const entryKey = (entry: Entry | undefined): string | undefined =>
 	entry === undefined
 		? undefined
 		: "end" in entry
 			? "end"
-			: "start" in entry
-				? "start"
-				: "working" in entry
-					? "working"
+			: "working" in entry
+				? "working"
+				: "activity" in entry
+					? "activity"
 					: entry.id;
 
 /** The session is working on a turn: what the transcript's working row says, and when the turn started. */
@@ -82,18 +124,6 @@ export type TranscriptWorking = {
 	/** Default "Working". */
 	readonly label?: string;
 };
-
-/** An answer that streams with nothing in it yet shows its own working row; the turn's row then waits behind it. */
-function showsOwnWorkingRow(row: TranscriptRow | undefined): boolean {
-	return (
-		row !== undefined &&
-		row.kind === "item" &&
-		row.item.kind === "assistant" &&
-		row.item.streaming &&
-		row.item.text === "" &&
-		!row.item.thinking
-	);
-}
 
 /**
  * Without a renderCard, a card shows read-only: everything it says (a vault request's terms and binding code, a
@@ -115,51 +145,140 @@ type RowProps = {
 	row: TranscriptRow;
 	first: boolean;
 	turnStart: boolean;
-	/** For an answer that is streaming: when its turn started, for the working row's timer. */
-	turnStartedAt: number | undefined;
 	/** The row is its turn's final answer, which gets Copy and its time on hover. */
 	finalAnswer: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
+	renderSubagent: ((item: ToolItem) => ReactNode) | undefined;
 	/** The browsers whose live view goes in this row, under their newest call. */
 	browserSlots: readonly BrowserViewSlot[] | undefined;
 	renderBrowserView: ((slot: BrowserViewSlot) => ReactNode) | undefined;
+	onShowBrowser: ((browserSessionId: string) => void) | undefined;
+	/** The browser the host's panel shows; given to browsing rows only, so other rows never re-render for it. */
+	shownBrowser: string | undefined;
+	/** Where a browsing row's browser is, as the host knows; given to browsing rows only. */
+	browserState: BrowserEntryState | undefined;
+	/** A browsing row's browser card: the browser it opened, or `null` when another row has the card. */
+	browserEntry: BrowserViewSlot | null | undefined;
+	/** A browsing row that may still take steps: its turn is working and only the agent's words follow it. */
+	browsingActive: boolean;
 	report: (id: string, phase: RowRenderPhase) => void;
 	/** The linked turn is in this row: the row is highlighted, and a tool call in it opens its group and stands out. */
 	highlight: string | undefined;
+	/** Opens a presented file's viewer; without it the cards only show what the files are. */
+	onOpenFile: ((file: PresentedFile, item: ToolItem) => void) | undefined;
+	/** The key of the file open in the viewer, when it is one this row presented. */
+	openFile: string | undefined;
+	/** A person's message the host sent and the session doesn't have yet: on its way, or failed. */
+	delivery: MessageDelivery | undefined;
 };
+
+/** Whether a row of tool calls presented the file with this key. */
+function presents(row: TranscriptRow, key: string): boolean {
+	return row.kind === "tools" && row.items.some((item) => item.files?.some((file) => presentedKey(file) === key));
+}
+
+/** A subagent's card with nothing to open: what the call says, from the call alone. */
+function ReadOnlySubagent({ item }: { item: ToolItem }) {
+	return (
+		<SubagentCard
+			{...subagentOf(item)}
+			status={item.status}
+			startedAt={item.at}
+			{...(item.endedAt === undefined ? {} : { endedAt: item.endedAt })}
+		/>
+	);
+}
+
+/** Where a browsing row's browser is, from the host's states: `undefined` for other rows and unknown browsers. */
+function rowBrowserState(
+	row: TranscriptRow,
+	states: ReadonlyMap<string, BrowserEntryState> | undefined,
+	entry: BrowserViewSlot | null | undefined,
+): BrowserEntryState | undefined {
+	if (states === undefined || row.kind !== "browsing" || entry === null) return undefined;
+	const browser =
+		entry?.browserSessionId ?? browsingBrowser(row.items.filter((step): step is ToolItem => step.kind === "tool"));
+	return browser === undefined ? undefined : states.get(browser);
+}
+
+/** A browsing row's card for a host with a panel: its browser's slot where it opened one, else `null`. */
+function rowBrowserEntry(
+	row: TranscriptRow,
+	entries: ReadonlyMap<string, BrowserViewSlot>,
+	panel: boolean,
+): BrowserViewSlot | null | undefined {
+	if (!panel || row.kind !== "browsing") return undefined;
+	return entries.get(row.id) ?? null;
+}
 
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
 export type RowRenderPhase = "mount" | "update";
 
 function rowBody(
 	row: TranscriptRow,
-	turnStartedAt: number | undefined,
 	finalAnswer: boolean,
 	renderCard: RowProps["renderCard"],
+	renderSubagent: RowProps["renderSubagent"],
 	browserSlots: RowProps["browserSlots"],
 	renderBrowserView: RowProps["renderBrowserView"],
+	onShowBrowser: RowProps["onShowBrowser"],
+	shownBrowser: RowProps["shownBrowser"],
+	browserState: RowProps["browserState"],
+	browserEntry: RowProps["browserEntry"],
+	browsingActive: RowProps["browsingActive"],
 	highlight: RowProps["highlight"],
+	onOpenFile: RowProps["onOpenFile"],
+	openFile: RowProps["openFile"],
+	delivery: RowProps["delivery"],
 ): ReactNode {
+	if (row.kind === "subagent") {
+		return renderSubagent === undefined ? <ReadOnlySubagent item={row.item} /> : renderSubagent(row.item);
+	}
+	if (row.kind === "browsing") {
+		const views =
+			browserSlots === undefined || renderBrowserView === undefined
+				? undefined
+				: browserSlots.map((slot) => <Fragment key={slot.browserSessionId}>{renderBrowserView(slot)}</Fragment>);
+		return (
+			<BrowsingGroup
+				items={row.items}
+				{...(views === undefined ? {} : { browserView: views })}
+				{...(onShowBrowser === undefined ? {} : { onShowBrowser })}
+				{...(shownBrowser === undefined ? {} : { shownBrowser })}
+				{...(browserState === undefined ? {} : { browserState })}
+				{...(browserEntry === undefined ? {} : { browserEntry })}
+				{...(highlight === undefined ? {} : { focus: highlight })}
+				active={browsingActive}
+			/>
+		);
+	}
 	if (row.kind === "tools") {
 		const views =
 			browserSlots === undefined || renderBrowserView === undefined
 				? undefined
 				: new Map(browserSlots.map((slot) => [slot.item.id, renderBrowserView(slot)] as const));
+		// The files the calls presented stay in view under the group, folded or not.
+		const presenting = row.items.filter((item) => item.status === "done" && (item.files?.length ?? 0) > 0);
 		return (
-			<ToolCallGroup
-				items={row.items}
-				live={row.live}
-				{...(views === undefined ? {} : { browserViews: views })}
-				{...(highlight === undefined ? {} : { focus: highlight })}
-			/>
+			<>
+				<ToolCallGroup
+					items={row.items}
+					live={row.live}
+					{...(views === undefined ? {} : { browserViews: views })}
+					{...(highlight === undefined ? {} : { focus: highlight })}
+				/>
+				{presenting.map((item) => (
+					<PresentedFiles key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+				))}
+			</>
 		);
 	}
 	const { item } = row;
 	switch (item.kind) {
 		case "user":
-			return <UserMessage item={item} />;
+			return delivery === undefined ? <UserMessage item={item} /> : <UserMessage item={item} delivery={delivery} />;
 		case "assistant":
-			return <AssistantMessage item={item} turnStartedAt={turnStartedAt} actions={finalAnswer} />;
+			return <AssistantMessage item={item} actions={finalAnswer} />;
 		case "notice":
 			return <NoticeRow item={item} />;
 		case "card":
@@ -173,13 +292,21 @@ const Row = memo(function Row({
 	row,
 	first,
 	turnStart,
-	turnStartedAt,
 	finalAnswer,
 	renderCard,
+	renderSubagent,
 	browserSlots,
 	renderBrowserView,
+	onShowBrowser,
+	shownBrowser,
+	browserState,
+	browserEntry,
+	browsingActive,
 	report,
 	highlight,
+	onOpenFile,
+	openFile,
+	delivery,
 }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
@@ -187,7 +314,7 @@ const Row = memo(function Row({
 	useEffect(() => {
 		mounted.current = true;
 	}, []);
-	const kind = row.kind === "tools" ? "tools" : row.item.kind;
+	const kind = row.kind === "item" ? row.item.kind : row.kind;
 	return (
 		<div
 			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}`}
@@ -195,7 +322,23 @@ const Row = memo(function Row({
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
-				{rowBody(row, turnStartedAt, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight)}
+				{rowBody(
+					row,
+					finalAnswer,
+					renderCard,
+					renderSubagent,
+					browserSlots,
+					renderBrowserView,
+					onShowBrowser,
+					shownBrowser,
+					browserState,
+					browserEntry,
+					browsingActive,
+					highlight,
+					onOpenFile,
+					openFile,
+					delivery,
+				)}
 			</div>
 		</div>
 	);
@@ -240,16 +383,39 @@ export type TranscriptProps = {
 	 */
 	renderCard?: (item: CardItem) => ReactNode;
 	/**
-	 * Renders a browser's live view (usually a `BrowserLiveView` with the host's link), under the newest call on each
-	 * browser the calls name. Keep it stable: every row with a browser re-renders when it changes. Without it a browser
-	 * call shows its screenshots only.
+	 * Renders a subagent's call (the `subagent` tool), usually a `SubagentCard` that links to the subagent's session.
+	 * Keep it stable: every subagent's row re-renders when it changes. Without it the card shows what the call says,
+	 * with nothing to open.
+	 */
+	renderSubagent?: (item: ToolItem) => ReactNode;
+	/**
+	 * Renders a browser's live view (usually a `BrowserLiveView` with the host's link) in the transcript, under the
+	 * browsing run that used the browser last. Keep it stable: every row with a browser re-renders when it changes. A
+	 * host that shows the browser in a panel of its own leaves it out and passes `onShowBrowser`; without either, a
+	 * browsing run is its one line, with each step's screenshots in the step's detail.
 	 */
 	renderBrowserView?: (slot: BrowserViewSlot) => ReactNode;
+	/** Shows a browser in the host's panel: a browsing run's "Show browser" calls it with the browser the run used. */
+	onShowBrowser?: (browserSessionId: string) => void;
+	/** The browser the host's panel shows now: a browsing run on it says it is showing. */
+	shownBrowser?: string;
+	/**
+	 * Where each browser is, by its id, as the host knows (live, or closed with a replay): what a browsing run's card
+	 * says and offers. Browsers not in it go by their calls.
+	 */
+	browserStates?: ReadonlyMap<string, BrowserEntryState>;
 	/**
 	 * A browser session to show (an audit link's `#browser=<id>`): once its view is in the loaded transcript, the list
 	 * scrolls to it, once per ID, and stops following the end.
 	 */
 	focusBrowser?: string;
+	/**
+	 * Opens a file a call presented (`present_files`) in the host's viewer, from its card under the call's group. Keep it
+	 * stable: every row with a presented file re-renders when it changes. Without it the cards show read-only.
+	 */
+	onOpenFile?: (file: PresentedFile, item: ToolItem) => void;
+	/** The key (`presentedKey`) of the presented file open in the host's viewer: its card shows it is open. */
+	openFile?: string;
 	/** The first page is loading: shows skeleton rows while there are no items. */
 	loading?: boolean;
 	/** What an empty transcript says. Defaults to "No messages yet". */
@@ -257,9 +423,11 @@ export type TranscriptProps = {
 	/** An error shown above the list, in an error notice. */
 	error?: ReactNode;
 	/**
-	 * The session is working on a turn: from the moment a message is sent until the run settles, the transcript ends
-	 * with a live "Working for 12s" row (`WorkingIndicator`), after T3 Code's. `true` times it from the person's last
-	 * message; pass `{ since }` to time it from when the host knows the turn started (an optimistic send, say).
+	 * The session is working on a turn: from the moment a message is sent until the run settles, a live "Working for
+	 * 12s" header with a divider sits under the person's message (`WorkingIndicator`), and the turn ends with a live
+	 * activity row, a brain and "Thinking" (`LiveActivity`), unless a call is running or an answer is streaming, which
+	 * show the activity themselves; after T3 Code's. `true` times it from the person's last message; pass `{ since }` to
+	 * time it from when the host knows the turn started (an optimistic send, say).
 	 */
 	working?: boolean | TranscriptWorking;
 	/**
@@ -273,6 +441,14 @@ export type TranscriptProps = {
 	 * goes, so keep the functions stable.
 	 */
 	messageActions?: MessageActionHandlers;
+	/**
+	 * Messages the host shows before the session has them, by item ID: an optimistic send puts the person's message in
+	 * `items` at once, under an ID of its own with the send's `requestId`, and says here that it is on its way or failed
+	 * (`MessageDelivery`). When the session's copy arrives with the same `requestId`, the host drops its own and the row
+	 * updates in place. Keep the map and its values stable while nothing changes: a message's row renders again when
+	 * its value does.
+	 */
+	delivery?: ReadonlyMap<string, MessageDelivery>;
 	/**
 	 * Docked over the transcript's foot, usually a Composer, as T3 Code's thread: the list scrolls under it and its
 	 * end makes room for it. A Composer here rests (folds to one line) while the reader scrolls back, comes back at
@@ -308,14 +484,21 @@ export function Transcript({
 	onLoadOlder,
 	olderError,
 	renderCard,
+	renderSubagent,
 	renderBrowserView,
+	onShowBrowser,
+	shownBrowser,
+	browserStates,
 	focusBrowser,
+	onOpenFile,
+	openFile,
 	loading = false,
 	empty,
 	error,
 	working,
 	onRowRender,
 	messageActions,
+	delivery,
 	dock,
 	turn,
 	className,
@@ -336,6 +519,8 @@ export function Transcript({
 		previousRows.current = next;
 		return next;
 	}, [items]);
+	// A message's row is keyed by its requestId, so a message sent optimistically and the session's copy are one row.
+	const keys = useMemo(() => messageKeys(rows), [rows]);
 	// Each browser's live view, under its newest call. Rows keep their slots' identity while they don't change.
 	const previousSlots = useRef<ReadonlyMap<string, readonly BrowserViewSlot[]> | undefined>(undefined);
 	const slots = useMemo(() => {
@@ -343,29 +528,34 @@ export function Transcript({
 		previousSlots.current = next;
 		return next;
 	}, [rows]);
-	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
-	const paged = onLoadOlder !== undefined;
-	const atStart = paged && !hasOlder && rows.length > 0;
-	const showWorking = working !== undefined && working !== false && !showsOwnWorkingRow(rows.at(-1));
-	const entries = useMemo<Entry[]>(() => {
-		const tail: Entry[] = showWorking ? [WORKING, END] : [END];
-		return atStart ? [START, ...rows, ...tail] : [...rows, ...tail];
-	}, [rows, atStart, showWorking]);
-
-	// When each streaming answer's turn started, by row id: the time of the last message the person sent before it,
-	// other than a steer (a steer joins the turn under way). The working row times the turn from it. A number, so the
-	// streaming row's props stay equal as its text grows. An answer whose prompt is in an unloaded page has none.
-	const { turnStarts, lastTurnStart } = useMemo(() => {
-		const starts = new Map<string, number>();
-		let start: number | undefined;
-		for (const row of rows) {
-			if (row.kind !== "item") continue;
-			const { item } = row;
-			if (item.kind === "user" && item.via !== "steer") start = item.at;
-			else if (item.kind === "assistant" && item.streaming && start !== undefined) starts.set(row.id, start);
-		}
-		return { turnStarts: starts, lastTurnStart: start };
+	// Each browser's timeline card, on the browsing row that opened it.
+	const previousEntries = useRef<ReadonlyMap<string, BrowserViewSlot> | undefined>(undefined);
+	const browserEntries = useMemo(() => {
+		const next = browserEntrySlots(rows, previousEntries.current);
+		previousEntries.current = next;
+		return next;
 	}, [rows]);
+	const showWorking = working !== undefined && working !== false;
+	const placement = useMemo(() => workingPlacement(rows), [rows]);
+	const activeBrowsing = useMemo(() => (showWorking ? activeBrowsingRow(rows) : undefined), [rows, showWorking]);
+	const { headerAfter, activity } = placement;
+	const entries = useMemo<Entry[]>(() => {
+		if (!showWorking) return [...rows, END];
+		const foot: Entry[] = activity ? [ACTIVITY, END] : [END];
+		// The header under the turn's message goes in that message's own entry (headerRow, below); with the message in an
+		// older page, at the end, before the activity. Never an entry of its own in the middle: virtua keeps its sizes by
+		// index, so taking one out when the turn settles would give every row after it its neighbour's size, and its
+		// correction for that would throw a reader who had scrolled up back to the end.
+		return headerAfter < 0 ? [...rows, WORKING, ...foot] : [...rows, ...foot];
+	}, [rows, showWorking, headerAfter, activity]);
+	const headerRow = showWorking && headerAfter >= 0 ? rows[headerAfter]?.id : undefined;
+
+	// The working header times the turn from the last message the person sent, other than a steer (a steer joins the
+	// turn under way), unless the host says when it started. With that message in an unloaded page it says "Working".
+	const lastTurnStart = useMemo(() => {
+		const row = headerAfter < 0 ? undefined : rows[headerAfter];
+		return row?.kind === "item" && row.item.kind === "user" ? row.item.at : undefined;
+	}, [rows, headerAfter]);
 	const workingSince = typeof working === "object" ? (working.since ?? lastTurnStart) : lastTurnStart;
 	const workingLabel = typeof working === "object" ? working.label : undefined;
 
@@ -380,7 +570,9 @@ export function Transcript({
 
 	const list = useRef<VListHandle>(null);
 	const frame = useRef<HTMLElement>(null);
-	const following = useRef(true);
+	// Following lives in a ref the list's listeners read as events arrive; a render reads only whether Scroll to end
+	// shows, so scrolling re-renders nothing unless that changes.
+	const follow = useRef<Follow>(FOLLOWING);
 	const [showEnd, setShowEnd] = useState(false);
 	// A docked composer rests while the reader is away from the end; see the dock below.
 	const [resting, setResting] = useState(false);
@@ -389,29 +581,109 @@ export function Transcript({
 	// The working row alone is a list too: a message just sent, before its turn's first item arrives.
 	const showList = rows.length > 0 || showWorking;
 
-	// Prepending older rows, or the start divider: tell the virtualiser to keep the visible content still (virtua's
-	// `shift`). Compared on the list's entries, so a page that arrives with the divider is one shift, not two.
-	const firstKey = entryKey(entries[0]);
+	// Prepending older rows: tell the virtualiser to keep the visible content still (virtua's `shift`). Compared on the
+	// list's keys, so a first message the session takes over from the host's own copy is not taken for an older page.
+	const head = entryKey(entries[0]);
+	const firstKey = head === undefined ? undefined : (keys.get(head) ?? head);
 	const prepended =
 		first.current !== undefined &&
 		firstKey !== first.current &&
 		firstKey !== "end" &&
 		first.current !== "working" &&
+		first.current !== "activity" &&
 		entries.length > count.current &&
 		count.current > 1;
 
-	const toBottom = useCallback(() => {
-		const handle = list.current;
-		if (handle === null || entries.length <= 1) return;
-		handle.scrollToIndex(entries.length - 1, { align: "end" });
-	}, [entries.length]);
+	const viewportOf = useCallback((): HTMLElement | null => {
+		const viewport = frame.current?.firstElementChild;
+		return viewport instanceof HTMLElement ? viewport : null;
+	}, []);
+
+	// The end, at once: one write of the list's own scroll offset, which the virtualiser takes as any scroll. Rows it
+	// then measures change the content's height, and the observer below pins again while following.
+	const pin = useCallback(() => {
+		const viewport = viewportOf();
+		if (viewport === null) return;
+		const end = viewport.scrollHeight - viewport.clientHeight;
+		if (viewport.scrollTop < end - 0.5) viewport.scrollTop = end;
+	}, [viewportOf]);
+
+	// Landing on a linked turn or a browser's view: the transcript's own scroll, which may go up, so the scroll events
+	// it causes are held from being taken for the reader's while it lands. The reader's input stops it.
+	const holds = useRef(0);
+	const landing = useRef<(() => void) | undefined>(undefined);
+	const stopLanding = useCallback(() => landing.current?.(), []);
+	const land = useCallback(
+		(index: number) => {
+			stopLanding();
+			holds.current += 1;
+			let frameId = 0;
+			let frames = 0;
+			let still = 0;
+			const stop = () => {
+				cancelAnimationFrame(frameId);
+				landing.current = undefined;
+				// After the frame, so the scroll event of the last write is still held.
+				requestAnimationFrame(() => {
+					holds.current -= 1;
+				});
+			};
+			landing.current = stop;
+			// Rows around the turn are measured as they mount, which moves it, so the landing corrects itself until the
+			// turn has stayed put for a few frames.
+			const step = () => {
+				const handle = list.current;
+				const viewport = viewportOf();
+				if (handle === null || viewport === null) return stop();
+				const end = viewport.scrollHeight - viewport.clientHeight;
+				const centre = handle.getItemOffset(index) + (handle.getItemSize(index) - viewport.clientHeight) / 2;
+				const target = Math.max(0, Math.min(end, centre));
+				if (Math.abs(viewport.scrollTop - target) > 1) {
+					viewport.scrollTop = target;
+					still = 0;
+				} else still += 1;
+				frames += 1;
+				if (still >= 3 || frames >= LANDING_FRAMES) return stop();
+				frameId = requestAnimationFrame(step);
+			};
+			step();
+		},
+		[stopLanding, viewportOf],
+	);
+	useEffect(() => stopLanding, [stopLanding]);
+
+	// One change of following, from the list's events or the transcript's own moves. Coming back to following pins the
+	// list to its very end.
+	const moveFollow = useCallback(
+		(event: FollowEvent) => {
+			const before = follow.current;
+			const after = nextFollow(before, event);
+			if (after === before) return;
+			follow.current = after;
+			setShowEnd(after.mode === "released" && !after.atEnd);
+			if (after.mode === "following") {
+				setResting(false);
+				pin();
+			}
+		},
+		[pin],
+	);
 
 	useLayoutEffect(() => {
 		const initial =
-			(first.current === undefined || first.current === "end" || first.current === "working") && rows.length > 0;
+			(first.current === undefined ||
+				first.current === "end" ||
+				first.current === "working" ||
+				first.current === "activity") &&
+			rows.length > 0;
 		first.current = firstKey;
 		count.current = entries.length;
-		if (initial || (following.current && !prepended)) toBottom();
+		// Opening a quiet session, the virtualiser lands on the last row itself, settling a few frames sooner than a raw
+		// write it takes for the reader's scroll. Only then: its scroll stays under way until rows stop being measured
+		// for 150 ms, which a running turn never lets happen, and it can't be cancelled.
+		if (initial && !showWorking && entries.length > 1)
+			list.current?.scrollToIndex(entries.length - 1, { align: "end" });
+		else if (initial || (follow.current.mode === "following" && !prepended)) pin();
 	});
 
 	// A linked turn: once its item is loaded, the list lands on it, stops following and highlights it. This runs after
@@ -430,9 +702,8 @@ export function Transcript({
 		const index = entries.indexOf(found.row);
 		if (index < 0) return;
 		landed.current = turn;
-		following.current = false;
-		setShowEnd(true);
-		handle.scrollToIndex(index, { align: "center" });
+		moveFollow({ type: "jumped" });
+		land(index);
 		setHighlight({ row: found.row.id, item: found.item.id });
 	});
 	useEffect(() => {
@@ -452,54 +723,95 @@ export function Transcript({
 		const index = entries.findIndex((entry) => entryKey(entry) === rowId);
 		if (index === -1 || list.current === null) return;
 		focused.current = focusBrowser;
-		following.current = false;
-		setShowEnd(true);
-		list.current.scrollToIndex(index, { align: "center" });
-	}, [focusBrowser, slots, entries]);
+		moveFollow({ type: "jumped" });
+		land(index);
+	}, [focusBrowser, slots, entries, moveFollow, land]);
 
-	// While following, keep the bottom in view as the last row grows (a streamed answer, a tool's output) and as the
-	// viewport itself changes size (a phone's keyboard opening, a window resized).
+	// The list's events. The reader's input that can take the list from its end lets go of it (transcript-follow.ts);
+	// a scroll then says whether the list is in the end band, which follows again once the reader has left it and come
+	// back. While following, the observer keeps the end in view as the content grows (a streamed answer, thinking, a
+	// tool's output, a card, the working row) and as the viewport changes size (a phone's keyboard, a window resized);
+	// while not, a change of height only says whether the list is still at its end, and never moves it.
 	useEffect(() => {
 		if (!showList) return;
-		const viewport = frame.current?.firstElementChild;
+		const viewport = viewportOf();
 		const content = viewport?.firstElementChild;
-		if (!(viewport instanceof HTMLElement) || !(content instanceof HTMLElement)) return;
-		const observer = new ResizeObserver(() => {
-			if (following.current) viewport.scrollTop = viewport.scrollHeight;
-		});
+		if (viewport === null || !(content instanceof HTMLElement)) return;
+		const metrics = () => ({ top: viewport.scrollTop, height: viewport.scrollHeight, client: viewport.clientHeight });
+		const band = () => moveFollow({ type: isAtEnd(metrics()) ? "reachedEnd" : "leftEnd" });
+		const navigate = (navigation: Navigation) => {
+			if (!releases(navigation, metrics())) return;
+			stopLanding();
+			moveFollow({ type: "navigated" });
+		};
+		const onWheel = (event: WheelEvent) => {
+			if (event.ctrlKey || event.deltaY === 0 || innerScrollerTakes(event.target, viewport, event.deltaY)) return;
+			navigate({ source: "wheel", up: event.deltaY < 0 });
+		};
+		const onKey = (event: KeyboardEvent) => {
+			const key = scrollKey(event.key);
+			if (key === undefined || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+			if (event.isComposing) return;
+			const target = event.target instanceof Element ? event.target : null;
+			if (target?.closest("input, textarea, select, [contenteditable]")) return;
+			navigate({ source: "key", up: key.up });
+		};
+		const onPointer = (event: PointerEvent) => navigate({ source: "pointer", onScrollbar: event.target === viewport });
+		const onTouch = () => navigate({ source: "touch" });
+		const scrolledUp = upwardScrollDetector({ top: viewport.scrollTop, height: viewport.scrollHeight });
+		const onScroll = () => {
+			const scroll = metrics();
+			// An upward scroll with no input seen (an embedded frame's scroll chaining out) is the reader's too.
+			if (scrolledUp({ ...scroll, programmatic: holds.current > 0 }) && !isAtEnd(scroll)) {
+				navigate({ source: "scroll" });
+			}
+			band();
+			if (isAtEnd(scroll)) setResting(false);
+		};
+		const resized = () => {
+			if (follow.current.mode === "following") pin();
+			else band();
+		};
+		const observer = new ResizeObserver(resized);
+		// virtua measures its rows in its own ResizeObserver and grows its content at once, inside that callback. A
+		// ResizeObserver only hears of an element shallower than the ones it has just reported in the next frame, so the
+		// end would show a streamed batch's last lines missing for a frame. The content's style changing (its height,
+		// written by virtua) is heard before that frame is painted.
+		const restyled = new MutationObserver(resized);
+		viewport.addEventListener("wheel", onWheel, { passive: true });
+		viewport.addEventListener("keydown", onKey);
+		viewport.addEventListener("pointerdown", onPointer, { passive: true });
+		viewport.addEventListener("touchmove", onTouch, { passive: true });
+		viewport.addEventListener("scroll", onScroll, { passive: true });
 		observer.observe(content);
 		observer.observe(viewport);
-		return () => observer.disconnect();
-	}, [showList]);
+		restyled.observe(content, { attributes: true, attributeFilter: ["style"] });
+		return () => {
+			viewport.removeEventListener("wheel", onWheel);
+			viewport.removeEventListener("keydown", onKey);
+			viewport.removeEventListener("pointerdown", onPointer);
+			viewport.removeEventListener("touchmove", onTouch);
+			viewport.removeEventListener("scroll", onScroll);
+			observer.disconnect();
+			restyled.disconnect();
+		};
+	}, [showList, viewportOf, moveFollow, pin, stopLanding]);
 
-	// Following stops only when the reader moves up (the offset falls while away from the bottom), never because rows
-	// were measured taller after a jump to the end: that scroll event is not the reader's, and the observer above
-	// brings the end back into view. Reaching the bottom by any means starts following again.
-	const lastOffset = useRef(0);
+	// The virtualiser's offset, for paging only. After a failed page only "Try again" asks again, or every scroll
+	// event would.
 	const onScroll = useCallback(
 		(offset: number) => {
-			const handle = list.current;
-			if (handle === null) return;
-			const distance = handle.scrollSize - (offset + handle.viewportSize);
-			const atBottom = distance <= AT_BOTTOM_PX;
-			if (atBottom) {
-				following.current = true;
-				setResting(false);
-			} else if (offset < lastOffset.current) following.current = false;
-			lastOffset.current = offset;
-			setShowEnd(!following.current);
-			// After a failed page only "Try again" asks again, or every scroll event would.
 			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
 		},
 		[hasOlder, loadingOlder, olderError, onLoadOlder],
 	);
 
 	const scrollToEnd = useCallback(() => {
-		following.current = true;
-		setShowEnd(false);
+		stopLanding();
+		moveFollow({ type: "followEnd" });
 		setResting(false);
-		toBottom();
-	}, [toBottom]);
+		pin();
+	}, [moveFollow, pin, stopLanding]);
 
 	// The dock. Its height becomes the room at the list's end, measured as it changes. While the composer rests the
 	// room stays as it was, so folding it doesn't move what the reader is looking at (T3 Code keeps the expanded
@@ -528,7 +840,9 @@ export function Transcript({
 	}, [docked]);
 
 	// Resting: a wheel gesture of 24px or more, a Page Up or Home, or a finger dragging the list, while it can scroll
-	// that way (T3 Code's composerScrollGesture.ts). Scrolling down at the end never rests it; reaching the end wakes it.
+	// that way (T3 Code's composerScrollGesture.ts). Scrolling down in the end band never rests it, so the composer
+	// doesn't fold and unfold on every notch down to the end; reaching the end wakes it. Following is the list's events'
+	// business above, not this.
 	useEffect(() => {
 		if (!docked || !showList) return;
 		const viewport = frame.current?.firstElementChild;
@@ -547,22 +861,16 @@ export function Transcript({
 				now,
 				pixels,
 				canScroll: up ? scroll.top > 0 : !atEnd,
-				downAtEnd: !up && atEnd,
+				downAtEnd: !up && isAtEnd(scroll),
 			});
-			if (!rests) return;
-			// The reader is leaving the end: stop following now, before the scroll event says so, or the re-render
-			// that rests the composer would pin the list back to its end.
-			if (up) following.current = false;
-			setResting(true);
+			if (rests) setResting(true);
 		};
 		const onWheel = (event: WheelEvent) => {
 			if (event.ctrlKey || event.deltaY === 0) return;
 			record(event.timeStamp, event.deltaY, wheelPixels(event.deltaY, event.deltaMode, viewport.clientHeight));
 		};
 		const onKey = (event: KeyboardEvent) => {
-			if (!restsForKey(event.key, position())) return;
-			if (event.key === "PageUp" || event.key === "Home") following.current = false;
-			setResting(true);
+			if (restsForKey(event.key, position())) setResting(true);
 		};
 		let lastY: number | undefined;
 		const onTouchStart = (event: TouchEvent) => {
@@ -636,6 +944,14 @@ export function Transcript({
 			}
 		: {};
 
+	const workingHeader = (
+		<div className="hb-transcript-row hb-transcript-row-working">
+			<div className="hb-transcript-column">
+				<WorkingIndicator since={workingSince} {...(workingLabel === undefined ? {} : { label: workingLabel })} />
+			</div>
+		</div>
+	);
+
 	let body: ReactNode;
 	if (showList) {
 		body = (
@@ -653,32 +969,41 @@ export function Transcript({
 						"end" in entry ? (
 							<div key="end" className="hb-transcript-end" aria-hidden="true" />
 						) : "working" in entry ? (
-							<div key="working" className="hb-transcript-row hb-transcript-row-working">
+							<Fragment key="working">{workingHeader}</Fragment>
+						) : "activity" in entry ? (
+							<div key="activity" className="hb-transcript-row hb-transcript-row-activity">
 								<div className="hb-transcript-column">
-									<WorkingIndicator
-										since={workingSince}
-										{...(workingLabel === undefined ? {} : { label: workingLabel })}
-									/>
+									<LiveActivity />
 								</div>
 							</div>
-						) : "start" in entry ? (
-							<div key="start" className="hb-transcript-start">
-								<div className="hb-transcript-column hb-transcript-start-rule">Start of the session</div>
-							</div>
 						) : (
-							<Row
-								key={entry.id}
-								row={entry}
-								first={index === 0 && !hasOlder}
-								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
-								turnStartedAt={turnStarts.get(entry.id)}
-								finalAnswer={finalAnswers.has(entry.id)}
-								renderCard={renderCard}
-								browserSlots={slots.get(entry.id)}
-								renderBrowserView={renderBrowserView}
-								report={report}
-								highlight={highlight?.row === entry.id ? highlight.item : undefined}
-							/>
+							<Fragment key={keys.get(entry.id) ?? entry.id}>
+								<Row
+									row={entry}
+									first={index === 0 && !hasOlder}
+									turnStart={index > 0 && entry.kind === "item" && entry.item.kind === "user"}
+									finalAnswer={finalAnswers.has(entry.id)}
+									renderCard={renderCard}
+									renderSubagent={renderSubagent}
+									browserSlots={slots.get(entry.id)}
+									renderBrowserView={renderBrowserView}
+									onShowBrowser={onShowBrowser}
+									shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
+									browserState={rowBrowserState(
+										entry,
+										browserStates,
+										rowBrowserEntry(entry, browserEntries, onShowBrowser !== undefined),
+									)}
+									browserEntry={rowBrowserEntry(entry, browserEntries, onShowBrowser !== undefined)}
+									browsingActive={entry.id === activeBrowsing}
+									report={report}
+									highlight={highlight?.row === entry.id ? highlight.item : undefined}
+									onOpenFile={onOpenFile}
+									openFile={openFile !== undefined && presents(entry, openFile) ? openFile : undefined}
+									delivery={entry.kind === "item" ? delivery?.get(entry.id) : undefined}
+								/>
+								{entry.id === headerRow ? workingHeader : null}
+							</Fragment>
 						)
 					}
 				</VList>

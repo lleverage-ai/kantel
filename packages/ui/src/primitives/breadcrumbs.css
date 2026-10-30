@@ -1,0 +1,100 @@
+/* A trail of where you are: muted parents that go back, the current item emphasised. One line, no wrapping. */
+
+.hb-breadcrumbs {
+	flex: 1 1 0;
+	min-width: 0;
+	container-type: inline-size;
+}
+
+/* Every item sits on one baseline, so the slashes and the words line up whatever their boxes. */
+.hb-breadcrumbs-list {
+	display: flex;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-breadcrumbs-item {
+	display: flex;
+	align-items: baseline;
+	min-width: 0;
+}
+
+/*
+ * Short of room, the current item gives way first (it shrinks a thousand times faster) down to a usable few words,
+ * so a short parent such as the project keeps its whole name; only then do the parents shrink, each in proportion to
+ * its length, so a long one goes to an ellipsis before a short one loses a letter. (No minimum width: one would pad a
+ * name shorter than it, opening a gap before the slash; on a phone the outer parents are hidden instead, below.) A
+ * long parent is capped, as T3 Code caps a parent thread's title in its header.
+ */
+.hb-breadcrumbs-parent {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 14em;
+	color: var(--hb-text-muted);
+}
+
+.hb-breadcrumbs-current {
+	flex: 1 1000 auto;
+	min-width: min(8em, 100%);
+	color: var(--hb-text);
+}
+
+.hb-breadcrumbs-separator {
+	flex: none;
+	color: var(--hb-text-faint);
+	font-weight: var(--hb-weight-regular);
+}
+
+/*
+ * Each piece of text is trimmed to its capitals (with room kept for descenders), as button labels are, so a row that
+ * centres the trail centres its letters, not its line box: the words then sit on the middle of the icon buttons.
+ */
+.hb-breadcrumbs-text,
+.hb-breadcrumbs-separator,
+.hb-breadcrumbs-current > * {
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
+}
+
+.hb-breadcrumbs-text {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-breadcrumbs-link {
+	display: flex;
+	align-items: baseline;
+	min-width: 0;
+	max-width: 100%;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	border-radius: var(--hb-radius-xs);
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-decoration: none;
+	cursor: pointer;
+	transition: color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-breadcrumbs-link:hover {
+	color: var(--hb-text);
+}
+
+/* Short of room (a phone), only the nearest parent stays: the one a step back goes to. */
+@container (max-width: 26em) {
+	.hb-breadcrumbs-list > li:not(:nth-last-child(-n + 3)) {
+		display: none;
+	}
+}

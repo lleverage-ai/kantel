@@ -10,7 +10,10 @@
  * - the attribution and session-affinity headers built from the call's scope, and any body changes (`onPayload`);
  * - where cost comes from: the upstream's report, pi's `calculateCost` from catalogue rates, or none (tokens only);
  * - any namespace tool names travel under, for an upstream that would otherwise rename them (tool-names.ts);
- * - how its catalogue refreshes.
+ * - how its catalogue refreshes;
+ * - the image APIs it generates images over, if any, which one an image-only model takes, what a chat image call may
+ *   send, where an image call's cost comes from, and whether a model's image output is read off its name (for an
+ *   upstream whose catalogue lists IDs only).
  *
  * A connector's `baseUrl` is the upstream's OpenAI-style API root, such as `http://cliproxyapi.internal:8317/v1`. The
  * OpenAI APIs post under it (`/chat/completions`, `/responses`); `anthropic-messages` posts to `<root>/v1/messages`,
@@ -18,7 +21,14 @@
  * may be given either way.
  */
 import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
-import type { ConnectorPreset, ModelCallScope, ModelConnector, ModelWireApi } from "@harbour/contracts";
+import type {
+	ConnectorPreset,
+	ModelCallScope,
+	ModelConnector,
+	ModelImageApi,
+	ModelModality,
+	ModelWireApi,
+} from "@harbour/contracts";
 import { HARBOUR_TOOL_NAMESPACE } from "./tool-names.ts";
 
 /** Where reported cost comes from: the upstream (`usage.cost`), pi's `calculateCost`, or nowhere (tokens only). */
@@ -55,6 +65,46 @@ export interface ConnectorPresetSpec {
 	readonly cataloguePath: "/v1/models" | "/model/info";
 	/** Extra headers the catalogue request needs, besides the key. */
 	readonly catalogueHeaders?: { readonly [name: string]: string };
+	/**
+	 * The image APIs the upstream generates images over; the first is the default, which a model's `imageApi` override
+	 * may change. Empty: no model on it makes images (Anthropic), whatever an override says.
+	 */
+	readonly imageApis: readonly ModelImageApi[];
+	/**
+	 * The image API an image-only model (no `text` in its output) uses when its override names none, if not the first
+	 * of `imageApis`: Vercel documents its image-only models (gpt-image, Flux, Imagen) on `/images/generations`, where
+	 * they take `n`, `size` and `quality`, rather than on chat completions.
+	 */
+	readonly imageOnlyApi?: ModelImageApi;
+	/** Whether a `chat-modalities` call takes `image_config` (OpenRouter's `aspect_ratio`). Vercel documents none. */
+	readonly chatImageConfig?: boolean;
+	/**
+	 * Where an image call's cost comes from, when not as `cost` says. Vercel answers `usage.cost` on chat completions
+	 * (outside its documented schema, so a call without it is computed).
+	 */
+	readonly imageCost?: PresetCostSource;
+	/**
+	 * Whether a model's image output is read off its ID (`outputByName`) when neither an override nor the catalogue
+	 * says: for upstreams whose catalogue lists IDs only (OpenAI, CLIProxyAPI, the compatible presets).
+	 */
+	readonly imageOutputByName: boolean;
+	/**
+	 * Adds attribution to an image request's JSON body (`openai-images` generations); returns undefined to leave it as it
+	 * is. An edit's multipart body carries only the headers.
+	 */
+	imagePayload?(body: { readonly [key: string]: unknown }, scope: ModelCallScope): { readonly [key: string]: unknown };
+}
+
+/**
+ * What a model gives back, read off its ID, for an upstream whose catalogue doesn't say: `gpt-image-*`, `dall-e-*` and
+ * `imagen*` make images only; another `*-image*` model (`gemini-2.5-flash-image`, `gpt-5-image`) text and images.
+ * Undefined when the name says nothing.
+ */
+export function outputByName(modelId: string): readonly ModelModality[] | undefined {
+	const id = modelId.toLowerCase();
+	if (/(^|[/:])(gpt-image|dall-e|imagen)/.test(id)) return ["image"];
+	if (/-image(?:$|[-.:@/])/.test(id)) return ["text", "image"];
+	return undefined;
 }
 
 const ALL_APIS: readonly ModelWireApi[] = ["openai-completions", "anthropic-messages", "openai-responses"];
@@ -102,6 +152,24 @@ export function litellmTags(scope: ModelCallScope): readonly string[] {
 	];
 }
 
+/** LiteLLM's `metadata` on a JSON body: the tags, the session and the scope's IDs. */
+function withLitellmMetadata(
+	body: { readonly [key: string]: unknown },
+	scope: ModelCallScope,
+): { readonly [key: string]: unknown } {
+	return {
+		...body,
+		metadata: {
+			...asRecord(body.metadata),
+			tags: litellmTags(scope),
+			session_id: scope.sessionId,
+			harbour_organisation_id: scope.organisationId,
+			harbour_project_id: scope.projectId,
+			harbour_agent_id: scope.agentId,
+		},
+	};
+}
+
 const sessionIdHeader = (scope: ModelCallScope) => ({ "x-session-id": scope.sessionId });
 
 export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: ConnectorPresetSpec } = {
@@ -115,21 +183,13 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		onPayload(payload, scope, api) {
 			if (api === "anthropic-messages") return withAnthropicUserId(payload, scope);
 			const body = asRecord(payload);
-			if (body === undefined) return undefined;
-			return {
-				...body,
-				metadata: {
-					...asRecord(body.metadata),
-					tags: litellmTags(scope),
-					session_id: scope.sessionId,
-					harbour_organisation_id: scope.organisationId,
-					harbour_project_id: scope.projectId,
-					harbour_agent_id: scope.agentId,
-				},
-			};
+			return body === undefined ? undefined : withLitellmMetadata(body, scope);
 		},
 		cost: "reported",
 		cataloguePath: "/model/info",
+		imageApis: ["openai-images"],
+		imageOutputByName: false,
+		imagePayload: withLitellmMetadata,
 	},
 	"vercel-ai-gateway": {
 		preset: "vercel-ai-gateway",
@@ -152,6 +212,13 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		},
 		cost: "computed",
 		cataloguePath: "/v1/models",
+		// Language models with the `image-generation` tag make images over chat completions; image-only models (its
+		// listing's `type: "image"`) over the Images API.
+		imageApis: ["chat-modalities", "openai-images"],
+		imageOnlyApi: "openai-images",
+		chatImageConfig: false,
+		imageCost: "reported",
+		imageOutputByName: false,
 	},
 	openrouter: {
 		preset: "openrouter",
@@ -163,6 +230,9 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		headers: sessionIdHeader,
 		cost: "reported",
 		cataloguePath: "/v1/models",
+		imageApis: ["chat-modalities"],
+		chatImageConfig: true,
+		imageOutputByName: false,
 	},
 	anthropic: {
 		preset: "anthropic",
@@ -175,6 +245,8 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		cost: "computed",
 		cataloguePath: "/v1/models",
 		catalogueHeaders: { "anthropic-version": "2023-06-01" },
+		imageApis: [],
+		imageOutputByName: false,
 	},
 	openai: {
 		preset: "openai",
@@ -198,6 +270,10 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		},
 		cost: "computed",
 		cataloguePath: "/v1/models",
+		imageApis: ["openai-images"],
+		imageOutputByName: true,
+		// The Images API takes `user` for attribution, but not `prompt_cache_key`.
+		imagePayload: (body, scope) => ({ ...body, user: attributionUserId(scope) }),
 	},
 	cliproxyapi: {
 		preset: "cliproxyapi",
@@ -218,6 +294,9 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		toolNamespace: (api) => (api === "anthropic-messages" ? HARBOUR_TOOL_NAMESPACE : undefined),
 		cost: "none",
 		cataloguePath: "/v1/models",
+		// CPA serves gpt-image models at /v1/images/generations on a Codex login.
+		imageApis: ["openai-images"],
+		imageOutputByName: true,
 	},
 	"openai-compatible": {
 		preset: "openai-compatible",
@@ -228,6 +307,8 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		headers: () => ({}),
 		cost: "computed",
 		cataloguePath: "/v1/models",
+		imageApis: ["openai-images"],
+		imageOutputByName: true,
 	},
 	"anthropic-compatible": {
 		preset: "anthropic-compatible",
@@ -240,6 +321,8 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		cost: "computed",
 		cataloguePath: "/v1/models",
 		catalogueHeaders: { "anthropic-version": "2023-06-01" },
+		imageApis: [],
+		imageOutputByName: false,
 	},
 };
 
@@ -257,6 +340,16 @@ export function connectorRoot(baseUrl: string): string {
 /** The base URL pi's adapter for `api` takes: the API root for OpenAI APIs, the root without `/v1` for Messages. */
 export function upstreamBaseUrl(baseUrl: string, api: ModelWireApi): string {
 	return api === "anthropic-messages" ? connectorRoot(baseUrl) : trimSlashes(baseUrl);
+}
+
+/** Where an `openai-images` call posts: `<API root>/images/generations`, or `/images/edits` with reference images. */
+export function imagesUrl(baseUrl: string, edit: boolean): string {
+	return `${trimSlashes(baseUrl)}/images/${edit ? "edits" : "generations"}`;
+}
+
+/** Where a `chat-modalities` call posts: `<API root>/chat/completions`. */
+export function chatCompletionsUrl(baseUrl: string): string {
+	return `${trimSlashes(baseUrl)}/chat/completions`;
 }
 
 /** Where the connector's catalogue is read. */

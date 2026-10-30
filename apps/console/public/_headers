@@ -1,0 +1,5 @@
+# Cloudflare static assets (apps/cloudflare/wrangler.jsonc serves this directory). Vite names every built asset after
+# its content, so a browser may keep them for good and never ask again on a reload; index.html is not under /assets
+# and is still checked every time.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

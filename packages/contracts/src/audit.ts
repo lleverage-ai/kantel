@@ -33,7 +33,8 @@ export type AuditSource =
 	| "skills"
 	| "memory"
 	| "access"
-	| "control";
+	| "control"
+	| "sharing";
 
 /**
  * Well-known event types. Components may add their own `<source>.<noun>.<verb>` types; these are the ones other
@@ -54,6 +55,8 @@ export type KnownAuditEventType =
 	| "sandbox.escalated"
 	| "workspace.committed"
 	| "workspace.write.refused"
+	| "workspace.forked"
+	| "workspace.hydrated"
 	| "vault.item.created"
 	| "vault.policy.created"
 	| "vault.policy.revoked"
@@ -80,6 +83,8 @@ export type KnownAuditEventType =
 	| "identity.session.ended"
 	| "identity.passkey.registered"
 	| "identity.passkey.removed"
+	| "identity.passkey.refused"
+	| "identity.passkey.reset"
 	| "capability.registered"
 	| "capability.grant.created"
 	| "capability.grant.revoked"

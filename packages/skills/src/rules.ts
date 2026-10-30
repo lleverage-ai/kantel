@@ -5,8 +5,10 @@
  */
 import {
 	type AuditSink,
+	authorKey,
 	type CallContext,
 	type Clock,
+	DEFAULT_RESOURCE_POLICY,
 	DEFAULT_SKILLS_AUTHORITY,
 	HarbourError,
 	type JsonValue,
@@ -14,9 +16,11 @@ import {
 	type Page,
 	type PageRequest,
 	type ProjectAccess,
+	type ResourcePolicy,
 	type Role,
 	type SessionId,
 	type SessionSkillPin,
+	type SharePermission,
 	type SkillFile,
 	type SkillRevision,
 	type SkillsAuthority,
@@ -175,22 +179,145 @@ export async function requireWrite(
 	});
 }
 
-/** Checks project access on a project-owned skill for a read; other owners' skills are open to their organisation. */
-export async function requireOwner(
+/** A skill's resource kind (docs/design/sharing.md). */
+export const SKILL_KIND = "skills.skill";
+
+/**
+ * Checks a read of a project's skill (`ProjectAccess.resource`, `use`): viewer on its project, or an active share
+ * covering where the caller acts, at `revision` when given. Other owners' skills are open to their organisation.
+ */
+export async function requireUse(
 	access: ProjectAccess | undefined,
 	ctx: CallContext,
 	owner: OwnerRef,
-	needed: Role,
 	operation: string,
-	skillId?: string,
+	skillId: string,
+	revision?: number,
 ): Promise<void> {
 	if (access === undefined || owner.kind !== "project") return;
-	await access.require(ctx, {
-		projectId: owner.projectId,
+	await access.resource(ctx, {
+		resource: { kind: SKILL_KIND, id: skillId, ...(revision === undefined ? {} : { revision }) },
+		owner,
+		permission: "use",
+		needed: "viewer",
+		operation,
+	});
+}
+
+/**
+ * Checks a change to an existing skill (`ProjectAccess.resource`): the `SkillsAuthority` role on its owner (as
+ * `requireWrite`), a maintainer or approver binding, or a share at `permission`. Resolves the skill's policy.
+ */
+export async function requireChange(
+	access: ProjectAccess | undefined,
+	ctx: CallContext,
+	owner: OwnerRef,
+	permission: SharePermission,
+	needed: Role,
+	operation: string,
+	skillId: string,
+): Promise<ResourcePolicy> {
+	if (access === undefined || owner.kind === "platform") return DEFAULT_RESOURCE_POLICY;
+	const resolved = await access.resource(ctx, {
+		resource: { kind: SKILL_KIND, id: skillId },
+		owner,
+		permission,
 		needed,
 		operation,
-		...(skillId === undefined ? {} : { subject: { kind: "skills.skill", id: skillId } }),
 	});
+	return resolved.policy;
+}
+
+/** Saving a draft: an agent proposes, everyone else edits. */
+export function draftPermission(ctx: CallContext): SharePermission {
+	return ctx.actor.kind === "agent" ? "propose" : "edit";
+}
+
+/** The two-person rule: with it on, no one who saved the open draft may publish it. */
+export function assertNotAuthor(policy: ResourcePolicy, ctx: CallContext, authors: readonly string[]): void {
+	if (policy.twoPersonRule && authors.includes(authorKey(ctx.actor))) {
+		throw new HarbourError("forbidden", "This skill needs a second person to publish: you saved its draft", {
+			reason: "two_person_rule",
+		});
+	}
+}
+
+/** A skill named in `SkillVisibility.shared`, as a store finds it. */
+export interface SharedCandidate {
+	readonly skillId: string;
+	readonly owner: OwnerRef;
+	readonly name: string;
+	readonly latestRevision?: number;
+}
+
+/**
+ * Of the skills `visibility.shared` asks for, those owned outside the visibility that a share lets the caller use,
+ * with the revision to show: the share's pinned one, else the latest. With `sessionId` (pinning), each is checked
+ * with `ProjectAccess.resource`, so the use is recorded against the session's share and a refusal is audited;
+ * otherwise only `allowsResource`.
+ */
+export async function sharedSkills(
+	access: ProjectAccess | undefined,
+	ctx: CallContext,
+	visibility: SkillVisibility,
+	find: (skillId: string) => Promise<SharedCandidate | undefined>,
+	sessionId?: SessionId,
+): Promise<readonly (SharedCandidate & { readonly revision: number })[]> {
+	if (access === undefined || visibility.shared === undefined) return [];
+	const found: (SharedCandidate & { readonly revision: number })[] = [];
+	const where =
+		sessionId !== undefined
+			? { sessionId }
+			: visibility.projectId !== undefined
+				? { projectId: visibility.projectId }
+				: {};
+	for (const skillId of new Set(visibility.shared)) {
+		if (typeof skillId !== "string") continue;
+		const candidate = await find(skillId);
+		if (candidate === undefined || candidate.latestRevision === undefined) continue;
+		if (candidate.owner.kind === "platform" || candidate.owner.organisationId !== ctx.organisationId) continue;
+		if (visibleOwner(ctx, visibility, candidate.owner)) continue;
+		const check = {
+			resource: { kind: SKILL_KIND, id: skillId },
+			owner: candidate.owner,
+			permission: "use",
+			...where,
+		} as const;
+		const allowed = await access.allowsResource(ctx, check);
+		if (allowed === undefined) {
+			if (sessionId !== undefined) {
+				// Refused: audited as `access.denied`, and left out.
+				await access.resource(ctx, { ...check, operation: "skills.pinForSession" }).catch((error: unknown) => {
+					if (!(error instanceof HarbourError && error.code === "forbidden")) throw error;
+				});
+			}
+			continue;
+		}
+		const revision = allowed.share?.resource.revision ?? candidate.latestRevision;
+		if (revision > candidate.latestRevision) continue;
+		if (sessionId !== undefined) {
+			await access.resource(ctx, {
+				...check,
+				resource: { kind: SKILL_KIND, id: skillId, revision },
+				operation: "skills.pinForSession",
+			});
+		}
+		found.push({ ...candidate, revision });
+	}
+	return found;
+}
+
+/** The visible listings with the shared skills added: asked for by ID, a shared skill replaces one of its name. */
+export function withShared<T extends { readonly name: string }>(visible: readonly T[], shared: readonly T[]): T[] {
+	const names = new Set(shared.map((listing) => listing.name));
+	const seen = new Set<string>();
+	const merged = [...visible.filter((listing) => !names.has(listing.name))];
+	for (const listing of shared) {
+		if (seen.has(listing.name)) continue;
+		seen.add(listing.name);
+		merged.push(listing);
+	}
+	return merged.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 /**

@@ -2,6 +2,10 @@
 // request's signal, so the session API's event streams and result waits end with their connection.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
+
+/** A WebSocket upgrade's handler: it takes the socket over, or refuses it. */
+export type UpgradeHandler = (incoming: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
 /** The handler also gets the client's socket address: what a per-client limit counts, as no header can forge it. */
 export type FetchHandler = (request: Request, client: { readonly address?: string }) => Promise<Response>;
@@ -101,6 +105,8 @@ export interface ListenOptions {
 	readonly host?: string;
 	readonly requestTimeoutMs?: number;
 	readonly drainTimeoutMs?: number;
+	/** WebSocket upgrades (a browser's live view). Without it, every upgrade is refused. */
+	readonly onUpgrade?: UpgradeHandler;
 }
 
 export async function listen(handler: FetchHandler, port: number, options: ListenOptions = {}): Promise<Listening> {
@@ -153,6 +159,15 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 			}
 			await write(response, outgoing, incoming.method === "HEAD", drainTimeoutMs);
 		});
+	});
+	const onUpgrade = options.onUpgrade;
+	server.on("upgrade", (incoming: IncomingMessage, socket: Duplex, head: Buffer) => {
+		socket.on("error", () => socket.destroy());
+		if (onUpgrade === undefined) {
+			socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+			return;
+		}
+		onUpgrade(incoming, socket, head);
 	});
 	await new Promise<void>((resolve) => server.listen(port, host, resolve));
 	const address = server.address() as AddressInfo;

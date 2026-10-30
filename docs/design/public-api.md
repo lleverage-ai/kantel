@@ -45,6 +45,7 @@ Planned, not built:
 | `GET /v1/sessions/{sessionId}` | `SessionDirectory.get` | In the public API |
 | `POST /v1/sessions/{sessionId}/close` | `SessionRuntime.close` | In the public API |
 | `POST /v1/sessions/{sessionId}/abort` | `SessionRuntime.abort` | In the public API |
+| `POST /v1/sessions/{sessionId}/warm` | The host's warmer (Cloudflare: `StackSandboxes.warm`); a hint, idempotent | In the public API |
 | `POST /v1/sessions/{sessionId}/messages` | `prompt`, `steer` or `followUp` by `via`; `Idempotency-Key` is the input's `requestId` | In the public API |
 | `GET /v1/sessions/{sessionId}/stream` (WebSocket or SSE) | `SessionRuntime.watch`, `@harbour/protocol` frames | In the public API |
 | `GET /v1/sessions/{sessionId}/history` | `SessionHistory.history` | In the public API |
@@ -95,6 +96,13 @@ Node it sends the bearer as a header, and in a browser (which can't) it needs a 
 A refused or unknown session is a JSON error before any socket opens. `GET /v1/sessions/{sessionId}/history` pages
 back past a snapshot's items, newest first. The stream sends nothing org-wide: a host that wants every session's
 changes uses webhooks, later.
+
+## Resource sharing (v1)
+
+Built: `/v1/sharing/…` (`sharingRoutes`, served by `@harbour/sharing/http`), one route per `Sharing` call: shares,
+access requests and their decisions, bindings, per-resource policy, host resource registration and a session's uses.
+The routes and their rules are in [sharing.md](sharing.md#public-api). A host's key acts as its service: it can read
+and request within its projects, and share or decide only where its role gives it authority over the resource.
 
 ## Vault approvals in a host app
 

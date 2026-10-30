@@ -10,6 +10,7 @@ const shot = { mimeType: "image/png", data: "AAAA" } as const;
 const text = (html: string) =>
 	html
 		.replace(/<[^>]+>/g, " ")
+		.replace(/&#x27;/g, "'")
 		.replace(/\s+/g, " ")
 		.trim();
 const render = (props: Partial<Parameters<typeof BrowserLiveView>[0]>) =>
@@ -21,7 +22,21 @@ describe("the browser's live view", () => {
 		expect(html).toContain('src="https://live.example/s/abc?navbar=false"');
 		expect(html).toContain('sandbox="allow-scripts allow-same-origin"');
 		expect(html).toContain('referrerPolicy="no-referrer"');
-		expect(text(html)).toBe("Live Watch only Open in a new tab");
+		// The embedded page draws its own address bar: the window has only its tab and status.
+		expect(text(html)).toBe("New tab Live Watch only Open in a new tab");
+		expect(html).not.toContain("hb-browser-address");
+	});
+
+	it("draws the browser in a window: its page's tab and address, or the host's tabs", () => {
+		const page = { url: "https://www.kayak.co.uk/flights", title: "Flights" };
+		const html = render({ status: "connecting", page });
+		expect(html).toContain('role="tablist"');
+		expect(text(html)).toContain("Flights");
+		expect(text(html)).toContain("www.kayak.co.uk /flights");
+		const hosted = render({ status: "ended", page, tabs: (end) => createElement("nav", { id: "host-tabs" }, end) });
+		expect(hosted).toContain('id="host-tabs"');
+		expect(hosted).not.toContain('role="tablist"');
+		expect(text(hosted)).toContain("Closed");
 	});
 
 	it("never embeds a page that isn't one, and shows the screenshot instead", () => {
@@ -38,15 +53,17 @@ describe("the browser's live view", () => {
 		expect(html).not.toContain("<iframe");
 		expect(html).toContain('alt="Replay of the browser: Reading the page"');
 		expect(html).toContain("data:image/png;base64,AAAA");
-		expect(text(html)).toBe("Replay Watch only");
+		expect(text(html)).toBe("New tab Replay Watch only Address: The address isn't known yet");
 	});
 
 	it("holds a replay's page behind Play over the last screenshot, so no recording is read until asked", () => {
 		const html = render({ source: { kind: "embed", mode: "replay", url: "/browser/b1#token" }, screenshot: shot });
 		expect(html).not.toContain("<iframe");
 		expect(html).toContain("data:image/png;base64,AAAA");
-		expect(text(html)).toBe("Replay Watch only Open in a new tab Play");
-		expect(html).toContain("hb-browser-live-frame-replay");
+		expect(text(html)).toBe(
+			"New tab Replay Watch only Open in a new tab Address: The address isn't known yet Play the replay",
+		);
+		expect(html).toContain("hb-browser-live-poster");
 	});
 
 	it("embeds a link on this page's own origin, as Harbour's view links are", () => {
@@ -55,9 +72,13 @@ describe("the browser's live view", () => {
 	});
 
 	it("shows the last screenshot while connecting and once the browser has closed", () => {
-		expect(text(render({ status: "connecting", screenshot: shot }))).toBe("Connecting to the live view");
+		expect(text(render({ status: "connecting", screenshot: shot }))).toBe(
+			"New tab Connecting to the live view Address: The address isn't known yet",
+		);
 		expect(render({ status: "connecting", screenshot: shot })).toContain('aria-busy="true"');
-		expect(text(render({ status: "ended" }))).toBe("The browser has closed.");
+		expect(text(render({ status: "ended" }))).toBe(
+			"New tab Closed Address: The address isn't known yet The browser has closed.",
+		);
 		expect(text(render({ status: "ended", screenshot: shot }))).toContain("This is the last page it showed.");
 		expect(render({ status: "unavailable" })).toBe("");
 	});

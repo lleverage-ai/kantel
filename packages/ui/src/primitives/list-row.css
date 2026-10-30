@@ -120,6 +120,13 @@ a.hb-list-row-main {
 	color: var(--hb-text-muted);
 }
 
+/* The row you're on is never quiet: a settled session that's open reads in full-strength text, not just a fill. */
+.hb-list-row-selected .hb-list-row-title,
+.hb-list-row-selected.hb-list-row-quiet .hb-list-row-title {
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-medium);
+}
+
 .hb-list-row-side {
 	position: relative;
 	display: flex;
@@ -150,14 +157,21 @@ a.hb-list-row-main {
 	display: inline-flex;
 }
 
+/* A menu opened from the actions floats outside the row, so an open one keeps them shown, and the row lit. */
 .hb-list-row-has-actions:hover .hb-list-row-actions,
-.hb-list-row-has-actions:focus-within .hb-list-row-actions {
+.hb-list-row-has-actions:focus-within .hb-list-row-actions,
+.hb-list-row-has-actions:has([aria-expanded="true"]) .hb-list-row-actions {
 	display: inline-flex;
 }
 
 .hb-list-row-has-actions:hover .hb-list-row-trailing,
-.hb-list-row-has-actions:focus-within .hb-list-row-trailing {
+.hb-list-row-has-actions:focus-within .hb-list-row-trailing,
+.hb-list-row-has-actions:has([aria-expanded="true"]) .hb-list-row-trailing {
 	display: none;
+}
+
+.hb-list-row:has(.hb-list-row-actions [aria-expanded="true"]):not(.hb-list-row-selected) {
+	background: var(--hb-hover);
 }
 
 .hb-list-row-static.hb-list-row-has-actions:hover .hb-list-row-trailing,

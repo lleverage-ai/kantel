@@ -16,9 +16,15 @@
  *   tool namespace (CLIProxyAPI on Messages), tool names go up under it and come back without it (tool-names.ts).
  * - **Events.** pi's events become `ModelStreamEvent`s, with every known secret redacted (see redact.ts) and
  *   `usage.cost` filled from the upstream's report or pi's `calculateCost`.
+ * - **Images.** `images` makes one call over the model's image API (images.ts: `openai-images` or
+ *   `chat-modalities`), resolved and pinned as `messages` is, with the same key header, attribution headers, routing
+ *   compat and `onPayload` (on a chat image call) and redaction, recorded with `operation: "images"` and the
+ *   image count in its usage. `listConnectorModels` and `testImage` serve the console's connector list and test.
  * - **Accounting.** Each call that resolved a route records one `ModelCallRecord` and appends one `model.call` audit
  *   event (source `session`), as `system("model-gateway")`. Neither holds a prompt, a completion or a key. A failed
  *   append is retried; if it still fails the record is marked `auditPending` and the host told (`onAuditFailure`).
+ *   With `usage`, the same call's `UsageRecord` (usage.ts, docs/usage-analytics.md) is written beside the append, so
+ *   it adds no wait of its own; a write that keeps failing is logged (`onUsageFailure`) and never fails the call.
  */
 import type {
 	AssistantMessageEvent,
@@ -39,6 +45,8 @@ import {
 	type CallContext,
 	type Clock,
 	type ConnectorCredentials,
+	type ConnectorModel,
+	type ConnectorModels,
 	HarbourError,
 	isHarbourError,
 	isSystemActor,
@@ -49,6 +57,8 @@ import {
 	type ModelConnectors,
 	type ModelGateway,
 	type ModelGatewayModel,
+	type ModelImagesRequest,
+	type ModelImagesResult,
 	type ModelMessagesRequest,
 	type ModelStreamEvent,
 	type ModelThinking,
@@ -60,15 +70,28 @@ import {
 	systemClock,
 	systemContext,
 	type Timestamp,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { type CatalogueKeys, createModelCatalogue, type OfferedModel } from "./catalogue.ts";
 import { assertPiContext } from "./context.ts";
 import { MODEL_THINKING_LEVELS } from "./directory.ts";
-import { pageOf } from "./page.ts";
-import { keyHeaders, presetSpec } from "./presets.ts";
+import {
+	assertImagesRequest,
+	CONSOLE_AGENT,
+	chatModalitiesBody,
+	chatModalitiesImages,
+	imageRate,
+	openaiImages,
+	pricedImages,
+	TEST_IMAGE_PROMPT,
+	TEST_IMAGE_ROUTE,
+} from "./images.ts";
+import { allPages, pageOf } from "./page.ts";
+import { keyHeaders, presetSpec, upstreamBaseUrl } from "./presets.ts";
 import { Redactor, StreamRedactor } from "./redact.ts";
 import { connectorServes, overrideId, parseModelRequestId, policyAllows } from "./resolution.ts";
 import { namespaceToolNames } from "./tool-names.ts";
+import { logUsageFailure, type UsageDetails, type UsageWriteFailure, usageRecordOf, writeUsage } from "./usage.ts";
 
 /** The component name the gateway acts as. */
 export const MODEL_GATEWAY_COMPONENT = "model-gateway";
@@ -145,6 +168,10 @@ export interface ModelGatewayOptions {
 	 * the error, nothing more of it.
 	 */
 	readonly onAuditFailure?: (failure: ModelAuditFailure) => void | Promise<void>;
+	/** Where each call's usage record goes: a usage ledger (`@harbour/usage`). Without it, none is written. */
+	readonly usage?: UsageWriter;
+	/** Told when a usage record could not be written after retrying. Defaults to logging one line naming the call. */
+	readonly onUsageFailure?: (failure: UsageWriteFailure) => void | Promise<void>;
 }
 
 /** A `model.call` event the gateway could not append. */
@@ -417,7 +444,15 @@ export function createCredentialCache(
 		async key(connector, scope, signal) {
 			sweep();
 			const hit = entryOf(connector);
-			if (hit !== undefined) return hit.value;
+			if (hit !== undefined) {
+				// The key is the connector's, not the session's, so a cached one would outlive the session's block or end:
+				// asked of the vault on every hit (a read asks it already).
+				await credentials.assertSessionOpen?.(
+					{ ...GATEWAY_CONTEXT, organisationId: scope.organisationId, ...(signal === undefined ? {} : { signal }) },
+					scope,
+				);
+				return hit.value;
+			}
 			const credential = await credentials.readConnectorCredential(
 				{ ...GATEWAY_CONTEXT, organisationId: scope.organisationId, ...(signal === undefined ? {} : { signal }) },
 				{
@@ -487,6 +522,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 	const calls: ModelCallRecord[] = [];
 	const { connectors } = options;
 	const onAuditFailure = options.onAuditFailure ?? logAuditFailure;
+	const onUsageFailure = options.onUsageFailure ?? logUsageFailure;
 
 	const directoryContext = (scope: ModelCallScope): CallContext => ({
 		actor: GATEWAY_CONTEXT.actor,
@@ -550,11 +586,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				? {}
 				: { thinkingLevelMap: model.thinkingLevelMap as { readonly [level: string]: string | null } }),
 			input: [...model.input],
+			output: [...offered.output],
 			cost: {
 				input: model.cost.input,
 				output: model.cost.output,
 				cacheRead: model.cost.cacheRead,
 				cacheWrite: model.cost.cacheWrite,
+				...(imageRate(model.cost) === undefined ? {} : { image: imageRate(model.cost) }),
 			},
 			contextWindow: model.contextWindow,
 			maxTokens: model.maxTokens,
@@ -613,9 +651,17 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 	/**
 	 * Keeps the call for `listCalls` and appends its `model.call` event, trying up to `AUDIT_ATTEMPTS` times under one
 	 * event ID (sinks are idempotent by it). If every attempt fails the call is kept marked `auditPending` and the host
-	 * is told through `onAuditFailure`; the call itself has happened and is not failed after the fact.
+	 * is told through `onAuditFailure`; the call itself has happened and is not failed after the fact. The call's usage
+	 * record is written at the same time, when there is a `usage` writer.
 	 */
-	async function record(call: ModelCallRecord): Promise<void> {
+	async function record(call: ModelCallRecord, details: UsageDetails): Promise<void> {
+		await Promise.all([
+			append(call),
+			options.usage === undefined ? undefined : writeUsage(options.usage, usageRecordOf(call, details), onUsageFailure),
+		]);
+	}
+
+	async function append(call: ModelCallRecord): Promise<void> {
 		calls.push(call);
 		if (calls.length > MAX_KEPT_CALLS) calls.splice(0, calls.length - MAX_KEPT_CALLS);
 		const { scope } = call;
@@ -634,6 +680,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				route: call.route,
 				connectorId: call.connectorId,
 				modelId: call.modelId,
+				...(call.operation === undefined ? {} : { operation: call.operation }),
 				status: call.status,
 				...(call.stopReason === undefined ? {} : { stopReason: call.stopReason }),
 				durationMs: call.durationMs,
@@ -675,27 +722,39 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		else signal?.addEventListener("abort", onAbort, { once: true });
 		let recorded = false;
 		let reportedCost: number | undefined;
+		/** When the upstream's first event came, for the usage record's time to first token. */
+		let firstEventAt: number | undefined;
 
 		const finish = async (
 			status: ModelCallRecord["status"],
 			stopReason: string | undefined,
 			usage: ModelUsage,
 			costSource: ModelCallRecord["costSource"],
+			error?: string,
 		) => {
 			recorded = true;
-			await record({
-				id,
-				at: startedAt,
-				scope,
-				route: call.routeName,
-				connectorId: call.connector.id,
-				modelId: call.target.id,
-				status,
-				...(stopReason === undefined ? {} : { stopReason }),
-				durationMs: Math.max(0, clock.now() - startedAt),
-				usage,
-				costSource,
-			});
+			await record(
+				{
+					id,
+					at: startedAt,
+					scope,
+					route: call.routeName,
+					connectorId: call.connector.id,
+					modelId: call.target.id,
+					status,
+					...(stopReason === undefined ? {} : { stopReason }),
+					durationMs: Math.max(0, clock.now() - startedAt),
+					usage,
+					costSource,
+				},
+				{
+					connector: call.connector,
+					api: call.target.api,
+					rates: call.target.model.cost,
+					...(error === undefined ? {} : { error: redactor.text(error) }),
+					...(firstEventAt === undefined ? {} : { firstTokenMs: Math.max(0, firstEventAt - startedAt) }),
+				},
+			);
 		};
 
 		const priced = (
@@ -738,7 +797,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				const aborted = controller.signal.aborted;
-				await finish(aborted ? "aborted" : "error", aborted ? "aborted" : "error", emptyUsage(), "none");
+				await finish(aborted ? "aborted" : "error", aborted ? "aborted" : "error", emptyUsage(), "none", message);
 				yield sanitised(
 					{ type: "error", reason: aborted ? "aborted" : "error", usage: emptyUsage(), errorMessage: message },
 					redactor,
@@ -805,6 +864,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			};
 
 			for await (const event of upstream) {
+				// pi's `start` comes before the upstream answers; anything after it is the upstream's first output.
+				if (firstEventAt === undefined && event.type !== "start") firstEventAt = clock.now();
 				const out: ModelStreamEvent[] = [];
 				switch (event.type) {
 					case "start":
@@ -872,7 +933,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 						const message = event.message;
 						if (event.reason === "deferred") {
 							const errorMessage = "The upstream deferred the response, which the gateway does not support";
-							await finish("error", "error", usage, costSource);
+							await finish("error", "error", usage, costSource, errorMessage);
 							yield sanitised({ type: "error", reason: "error", usage, errorMessage }, redactor);
 							return;
 						}
@@ -894,7 +955,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					case "error": {
 						const { usage, costSource } = priced(event.error.usage);
 						const message = event.error;
-						await finish(event.reason === "aborted" ? "aborted" : "error", event.reason, usage, costSource);
+						await finish(
+							event.reason === "aborted" ? "aborted" : "error",
+							event.reason,
+							usage,
+							costSource,
+							message.errorMessage,
+						);
 						yield sanitised(
 							{
 								type: "error",
@@ -914,32 +981,18 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				for (const converted of out) yield sanitised(converted, redactor);
 			}
 			// pi's streams always end with done or error; a stream that doesn't is an error the runtime may retry.
-			await finish("error", "error", emptyUsage(), spec.cost === "none" ? "none" : "computed");
-			yield sanitised(
-				{
-					type: "error",
-					reason: "error",
-					usage: emptyUsage(),
-					errorMessage: "The upstream stream ended without a terminal event",
-				},
-				redactor,
-			);
+			const ended = "The upstream stream ended without a terminal event";
+			await finish("error", "error", emptyUsage(), spec.cost === "none" ? "none" : "computed", ended);
+			yield sanitised({ type: "error", reason: "error", usage: emptyUsage(), errorMessage: ended }, redactor);
 		} catch (error) {
 			// A throw once the call resolved, from pi or the gateway itself, ends the call in an error event, recorded as
 			// one; only a real abort is recorded as aborted.
 			if (recorded) throw error;
 			const aborted = controller.signal.aborted;
 			const reason = aborted ? "aborted" : "error";
-			await finish(reason, reason, emptyUsage(), spec.cost === "none" ? "none" : "computed");
-			yield sanitised(
-				{
-					type: "error",
-					reason,
-					usage: emptyUsage(),
-					errorMessage: error instanceof Error ? error.message : String(error),
-				},
-				redactor,
-			);
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			await finish(reason, reason, emptyUsage(), spec.cost === "none" ? "none" : "computed", errorMessage);
+			yield sanitised({ type: "error", reason, usage: emptyUsage(), errorMessage }, redactor);
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 			if (!recorded) {
@@ -947,6 +1000,177 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				controller.abort();
 				await finish("aborted", "aborted", emptyUsage(), spec.cost === "none" ? "none" : "computed");
 			}
+		}
+	}
+
+	/** Checks a console caller: `needed` on `projectId`, or across the organisation; agents never pass. */
+	async function requireCaller(
+		ctx: CallContext,
+		needed: "viewer" | "admin",
+		operation: string,
+		projectId: string | undefined,
+	): Promise<void> {
+		if (typeof ctx !== "object" || ctx === null || typeof ctx.actor !== "object" || ctx.actor === null) {
+			throw new HarbourError("forbidden", "The caller may not do this in this project");
+		}
+		if (isSystemActor(ctx.actor)) return;
+		if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "The caller may not do this in this project");
+		await options.access?.require(ctx, { needed, operation, ...(projectId === undefined ? {} : { projectId }) });
+	}
+
+	/**
+	 * One `images` call to `served`, recorded as `routeName`: the upstream request over the model's image API, its
+	 * images, usage and cost, and the call's `ModelCallRecord` and `model.call` event.
+	 */
+	async function generate(
+		scope: ModelCallScope,
+		served: ServedModel,
+		routeName: string,
+		request: ModelImagesRequest,
+		signal: AbortSignal | undefined,
+	): Promise<ModelImagesResult> {
+		const { connector, target } = served;
+		if (target.imageApi === undefined || !target.output.includes("image")) {
+			throw new HarbourError("invalid", `Model ${request.model} doesn't make images`);
+		}
+		const spec = presetSpec(connector.preset);
+		// A chat image call's body is built first, so a size the upstream can't be asked for is refused before any record.
+		const chatBody =
+			target.imageApi === "chat-modalities"
+				? chatModalitiesBody({
+						modelId: target.id,
+						output: target.output,
+						request,
+						imageConfig: spec.chatImageConfig === true,
+						...(target.model.compat === undefined
+							? {}
+							: { compat: target.model.compat as { readonly [key: string]: unknown } }),
+					})
+				: undefined;
+		const imageCost = spec.imageCost ?? spec.cost;
+		const id = crypto.randomUUID();
+		const startedAt = clock.now();
+		const controller = new AbortController();
+		const onAbort = () => controller.abort(signal?.reason);
+		if (signal?.aborted) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
+		let recorded = false;
+		// Recorded as `messages` records its calls: the `model.call` event, and the usage record under the image API.
+		const finish = (
+			status: ModelCallRecord["status"],
+			usage: ModelUsage,
+			costSource: ModelCallRecord["costSource"],
+			priced: { readonly error?: string; readonly priceVersion?: string } = {},
+		) => {
+			recorded = true;
+			return record(
+				{
+					id,
+					at: startedAt,
+					scope,
+					route: routeName,
+					connectorId: connector.id,
+					modelId: target.id,
+					operation: "images",
+					status,
+					stopReason: status === "done" ? "stop" : status,
+					durationMs: Math.max(0, clock.now() - startedAt),
+					usage,
+					costSource,
+				},
+				// Its usage row, under the image API it was made over (not the chat wire whose base URL it shares).
+				{
+					connector,
+					api: target.imageApi ?? "openai-images",
+					rates: target.model.cost,
+					...(priced.priceVersion === undefined ? {} : { priceVersion: priced.priceVersion }),
+					...(priced.error === undefined ? {} : { error: redactor.text(priced.error) }),
+				},
+			);
+		};
+		const failedCostSource = spec.cost === "none" ? "none" : "computed";
+		let redactor = new Redactor([]);
+		/** Whether the key was read: a call that failed before it reached no upstream, and costs nothing (as `messages`). */
+		let keyRead = false;
+		try {
+			const key = await keys.key(connector, scope, controller.signal);
+			keyRead = true;
+			redactor = new Redactor([key]);
+			// Both image APIs post under the connector's OpenAI-style API root, with the key and attribution as chat does.
+			const baseUrl = upstreamBaseUrl(connector.baseUrl, "openai-completions");
+			const headers = { ...spec.headers(scope, "openai-completions"), ...keyHeaders(spec, "openai-completions", key) };
+			const call =
+				chatBody === undefined
+					? await openaiImages({
+							fetch: upstreamFetch,
+							baseUrl,
+							modelId: target.id,
+							request,
+							headers,
+							...(spec.imagePayload === undefined
+								? {}
+								: { payload: (body: { readonly [key: string]: unknown }) => spec.imagePayload!(body, scope) }),
+							signal: controller.signal,
+						})
+					: await chatModalitiesImages({
+							fetch: upstreamFetch,
+							baseUrl,
+							// The chat body takes the preset's `onPayload`, as a chat call's does.
+							body:
+								(spec.onPayload?.(chatBody, scope, "openai-completions", connector) as
+									| { readonly [key: string]: unknown }
+									| undefined) ?? chatBody,
+							headers,
+							signal: controller.signal,
+						});
+			if (call.status === 401) keys.drop(connector);
+			if (!call.ok) {
+				// An answer without an image may still have been billed (a chat model that only wrote text): keep what it cost.
+				const billed =
+					call.tokens === undefined && call.reportedCost === undefined
+						? undefined
+						: pricedImages(imageCost, target, { ...call, images: [] });
+				const usage = billed?.usage ?? { ...emptyUsage(), images: 0 };
+				await finish(controller.signal.aborted ? "aborted" : "error", usage, billed?.costSource ?? failedCostSource, {
+					error: `${call.status}: ${call.errorMessage}`,
+					...(billed?.priceVersion === undefined ? {} : { priceVersion: billed.priceVersion }),
+				});
+				throw new HarbourError(
+					call.status === 400 || call.status === 422 ? "invalid" : call.status === 429 ? "exhausted" : "unavailable",
+					redactor.text(`${call.status}: ${call.errorMessage}`),
+				);
+			}
+			const { usage, costSource, priceVersion } = pricedImages(imageCost, target, call);
+			await finish("done", usage, costSource, priceVersion === undefined ? {} : { priceVersion });
+			return {
+				images: call.images.map((image) => ({
+					mimeType: image.mimeType,
+					data: image.data,
+					...(image.revisedPrompt === undefined ? {} : { revisedPrompt: redactor.text(image.revisedPrompt) }),
+				})),
+				...(call.text === undefined ? {} : { text: redactor.text(call.text) }),
+				usage,
+				route: routeName,
+				modelId: target.id,
+			};
+		} catch (error) {
+			// An upstream's refusal was recorded with its answer; a key read, a network failure or an abort is recorded here.
+			const aborted = controller.signal.aborted;
+			if (!recorded) {
+				await finish(
+					aborted ? "aborted" : "error",
+					{ ...emptyUsage(), images: 0 },
+					keyRead ? failedCostSource : "none",
+					{
+						error: error instanceof Error ? error.message : String(error),
+					},
+				);
+			}
+			if (isHarbourError(error) && !aborted) throw error;
+			const message = redactor.text(error instanceof Error ? error.message : String(error));
+			throw new HarbourError(aborted ? "aborted" : "unavailable", message);
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
 		}
 	}
 
@@ -988,7 +1212,103 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		async messages(session, request, signal) {
 			assertMessagesRequest(request);
 			const call = await resolveCall(session, request.model, signal);
+			if (!call.target.output.includes("text")) {
+				throw new HarbourError("invalid", `Model ${request.model} makes images only; call images`);
+			}
 			return stream(session, call, request, signal);
+		},
+
+		async images(session, request, signal) {
+			assertImagesRequest(request);
+			const call = await resolveCall(session, request.model, signal);
+			return generate(session, call, call.routeName, request, signal);
+		},
+
+		async listConnectorModels(ctx, filter) {
+			await requireCaller(ctx, "viewer", "models.listConnectorModels", filter?.projectId);
+			const inOrganisation: CallContext = { actor: GATEWAY_CONTEXT.actor, organisationId: ctx.organisationId };
+			const policy =
+				filter?.projectId === undefined
+					? undefined
+					: await connectors.getProjectPolicy(inOrganisation, filter.projectId);
+			const listed = await allPages((page) => connectors.listConnectors(inOrganisation, page));
+			const routes = await allPages((page) =>
+				connectors.listRoutes(
+					inOrganisation,
+					filter?.projectId === undefined ? undefined : { projectId: filter.projectId },
+					page,
+				),
+			);
+			// A catalogue refresh reads the connector's key; the console has no session, so the read is attributed to it.
+			const scope: ModelCallScope = {
+				organisationId: ctx.organisationId,
+				projectId: filter?.projectId ?? CONSOLE_AGENT,
+				agentId: CONSOLE_AGENT,
+				sessionId: CONSOLE_AGENT,
+			};
+			const result: ConnectorModels[] = [];
+			for (const connector of listed) {
+				if (policy?.connectors !== undefined && !policy.connectors.includes(connector.id)) continue;
+				const offered = await catalogue.offered(connector, scope, ctx.signal);
+				const models: ConnectorModel[] = [];
+				for (const target of offered.values()) {
+					if (policy !== undefined && !policyAllows(policy, connector.id, target.id)) continue;
+					models.push({
+						id: target.id,
+						name: target.model.name,
+						input: [...target.model.input],
+						output: [...target.output],
+						...(target.imageApi === undefined ? {} : { imageApi: target.imageApi }),
+						...(target.model.contextWindow > 0 ? { contextWindow: target.model.contextWindow } : {}),
+					});
+				}
+				result.push({
+					id: connector.id,
+					owner: connector.owner,
+					preset: connector.preset,
+					routes: routes
+						.filter((route) => route.connectorId === connector.id)
+						.map((route) => ({ name: route.name, modelId: route.modelId })),
+					models,
+				});
+			}
+			return result;
+		},
+
+		async testImage(ctx, input) {
+			if (
+				typeof input !== "object" ||
+				input === null ||
+				typeof input.projectId !== "string" ||
+				input.projectId === ""
+			) {
+				throw new HarbourError("invalid", "A test image is made in a project");
+			}
+			await requireCaller(ctx, "admin", "models.testImage", input.projectId);
+			const scope: ModelCallScope = {
+				organisationId: ctx.organisationId,
+				projectId: input.projectId,
+				agentId: CONSOLE_AGENT,
+				sessionId: `connector-test:${crypto.randomUUID()}`,
+			};
+			let connector: ModelConnector;
+			try {
+				connector = await connectors.getConnector(directoryContext(scope), input.connectorId);
+			} catch (error) {
+				if (isHarbourError(error, "not_found"))
+					throw new HarbourError("not_found", `No connector ${input.connectorId}`);
+				throw error;
+			}
+			const served = await serve(scope, input.modelId, connector, input.modelId, await policyOf(scope), ctx.signal);
+			const request: ModelImagesRequest = {
+				model: input.modelId,
+				prompt: input.prompt ?? TEST_IMAGE_PROMPT,
+				count: 1,
+				aspect: "square",
+				quality: "low",
+			};
+			assertImagesRequest(request);
+			return generate(scope, served, TEST_IMAGE_ROUTE, request, ctx.signal);
 		},
 
 		async listCalls(ctx, filter, page) {

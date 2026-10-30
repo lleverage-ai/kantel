@@ -90,13 +90,15 @@ function StreamingDemo() {
 		}, 60);
 		return () => clearInterval(timer);
 	}, []);
+	const last = items.at(-1);
+	const working = last?.kind === "assistant" && last.streaming;
 	return (
 		<Sheet
 			title="Transcript streaming"
-			intro="After a second of Working for 30s, an answer streams in a word every 60ms, about 400 words. Only the streaming row renders; the list follows the end unless you scroll up, which brings up Scroll to end."
+			intro="Under the prompt, Working for 30s; after a second of Thinking, an answer streams in a word every 60ms, about 400 words, and the header goes when it ends. Only the streaming row and the timer render; the list follows the end unless you scroll up, which brings up Scroll to end."
 		>
 			<div className="hb-story-transcript-frame">
-				<Transcript items={items} />
+				<Transcript items={items} working={working} />
 			</div>
 		</Sheet>
 	);
@@ -114,10 +116,10 @@ function WorkingDemo() {
 	return (
 		<Sheet
 			title="Transcript working"
-			intro="Not one of the required states: the turn before the answer's first word. The transcript ends with Working for 12s, timed from the prompt and counting each second."
+			intro="Not one of the required states: the turn before the answer's first word. Under the prompt, Working for 12s, timed from it and counting each second, with a divider; then the answer's own activity row, a brain and Thinking."
 		>
 			<div className="hb-story-transcript-frame">
-				<Transcript items={items} />
+				<Transcript items={items} working />
 			</div>
 		</Sheet>
 	);
@@ -134,7 +136,7 @@ function JustSentDemo() {
 	return (
 		<Sheet
 			title="Transcript just sent"
-			intro="The turn has started (working) and no item of the answer has arrived. The transcript ends with the working row at once, so the reader sees the agent has the message before its first token."
+			intro="The turn has started (working) and no item of the answer has arrived. The working header goes under the message at once, and Thinking under it, so the reader sees the agent has the message before its first token."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} working />
@@ -145,7 +147,7 @@ function JustSentDemo() {
 
 export const JustSent: Story = () => <JustSentDemo />;
 
-/** Between steps of a turn: a call has finished, the next has not started, so only the turn's working row moves. */
+/** Between steps of a turn: a call has finished, the next has not started, so the activity row says Thinking. */
 function WorkingBetweenStepsDemo() {
 	const [items] = useState<TranscriptItem[]>(() => [
 		...finishedTurn,
@@ -156,7 +158,7 @@ function WorkingBetweenStepsDemo() {
 	return (
 		<Sheet
 			title="Transcript working between steps"
-			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The working row stays at the end, counting from the prompt."
+			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The header under the prompt keeps counting, and the turn ends with Thinking until the next call or word arrives."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} working />
@@ -202,7 +204,7 @@ function ThinkingDemo() {
 	return (
 		<Sheet
 			title="Transcript thinking"
-			intro="A thought streams live, its newest four lines under Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
+			intro="A thought streams live, its newest four lines under the brain and Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
 		>
 			<div className="hb-story-transcript-frame">
 				<Transcript items={items} working />
@@ -250,6 +252,36 @@ export const WithCards: Story = () => (
 		</div>
 	</Sheet>
 );
+
+const withFiles: TranscriptItem[] = [
+	{
+		...user("u-files", "Why do these disagree? The chart says 412 charges, the invoice 409.", 240),
+		attachments: [
+			{ id: "a1", name: "charges-per-hour.png", type: "image/png", size: 184_000, kind: "image" },
+			{ id: "a2", name: "stripe-invoice-in_1Q2w3e.pdf", type: "application/pdf", size: 412_000, kind: "file" },
+			{ id: "a3", name: "worker.log", type: "text/plain", size: 2_100_000, kind: "file" },
+		],
+	},
+	assistant("a-files", "The invoice drops three refunded charges that the chart still counts.", {
+		secondsAgo: 230,
+	}),
+	{
+		...user("u-only", "", 120),
+		attachments: [{ id: "a4", name: "export.csv", type: "text/csv", size: 8_400, kind: "file" }],
+	},
+];
+
+export const WithAttachments: Story = () => (
+	<Sheet
+		title="Transcript with attached files"
+		intro="The files sent with a message sit above its bubble as cards: the file type's icon, the name, the type and size. A message of files alone has no bubble."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={withFiles} />
+		</div>
+	</Sheet>
+);
+WithAttachments.storyName = "With attachments";
 
 export const ErrorState: Story = () => (
 	<Sheet
@@ -384,13 +416,25 @@ export const OlderPagesError: Story = () => (
 	</Sheet>
 );
 
-export const StartOfSession: Story = () => (
+/** A message the host sent at once and couldn't deliver: still where it was, with Try again and Edit. */
+const unsent: TranscriptItem[] = [
+	...finishedTurn,
+	{ ...user("local:r1", "Now run the full suite and open a PR.", 20), requestId: "r1" },
+];
+const unsentDelivery = new Map([
+	[
+		"local:r1",
+		{ state: "failed", reason: "Can't reach Harbour. Check your connection.", onRetry: noop, onEdit: noop } as const,
+	],
+]);
+
+export const NotSent: Story = () => (
 	<Sheet
-		title="Transcript at the start of the session"
-		intro="A paged transcript with every item loaded: nothing older, so it begins with where the session starts."
+		title="Transcript with a message that didn't send"
+		intro="A message shows the moment it is sent (delivery). One the host couldn't take stays in place, and the line under it says so, with Try again and Edit, which puts the words back in the composer."
 	>
 		<div className="hb-story-transcript-frame">
-			<Transcript items={longTranscript(2)} onLoadOlder={noop} />
+			<Transcript items={unsent} delivery={unsentDelivery} />
 		</div>
 	</Sheet>
 );

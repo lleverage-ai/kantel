@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 // The browser's own writer (images/browser/agent/mkv.mjs): a replay reads what the recorder wrote, byte for byte.
 // @ts-expect-error: plain JavaScript, with no types
 import { mkvFrame, mkvHeader } from "../../../../images/browser/agent/mkv.mjs";
-import { frameAt, readFrames } from "./mkv.ts";
-import { timeline, VIEW_END_MESSAGE, viewOf } from "./viewer.tsx";
+import { frameAt, framePainter, readFrames } from "./mkv.ts";
+import { liveTargets, pageAt, timeline, VIEW_END_MESSAGE, viewOf } from "./viewer.tsx";
 
 const jpeg = (n: number) => new Uint8Array([0xff, 0xd8, n, n, 0xff, 0xd9]);
 const concat = (parts: readonly Uint8Array[]) => {
@@ -47,6 +47,34 @@ describe("reading a recording chunk", () => {
 		expect(frameAt(frames, 100)?.ms).toBe(100);
 		expect(frameAt(frames, 9_999)?.ms).toBe(250);
 		expect(frameAt([], 5)).toBeUndefined();
+	});
+
+	it("paints a frame that decodes slower than playing asks again, and never an older one over a newer", async () => {
+		const decodes = new Map<string, () => void>();
+		const painted: string[] = [];
+		const closed: string[] = [];
+		const show = framePainter(
+			(frame: string) => new Promise<string>((resolve) => decodes.set(frame, () => resolve(frame))),
+			(bitmap) => painted.push(bitmap),
+			(bitmap) => closed.push(bitmap),
+		);
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+		// Playing asks for the same frame on every animation frame while it decodes: it decodes once, and paints.
+		show("a");
+		show("a");
+		show("a");
+		decodes.get("a")!();
+		await settle();
+		expect(painted).toEqual(["a"]);
+		// b is asked for, then c before b has decoded: b is dropped (and closed), c paints.
+		show("b");
+		show("c");
+		decodes.get("c")!();
+		await settle();
+		decodes.get("b")!();
+		await settle();
+		expect(painted).toEqual(["a", "c"]);
+		expect(closed).toEqual(["a", "c", "b"]);
 	});
 });
 
@@ -91,5 +119,48 @@ describe("the view page", () => {
 			["2", 14_000, 17_000],
 		]);
 		expect(duration).toBe(17_000);
+	});
+
+	it("follows a replayed page's address by the navigations its recording kept", () => {
+		const { tracks } = timeline({
+			status: "complete",
+			startedAt: 0,
+			pages: [
+				{
+					pageId: "1",
+					startMs: 0,
+					durationMs: 10_000,
+					width: 1,
+					height: 1,
+					chunks: [{ index: 0, startMs: 0, durationMs: 10_000 }],
+					navigations: [
+						{ atMs: 4_000, url: "https://www.iana.org/", title: "IANA" },
+						{ atMs: 0, url: "https://example.com/" },
+					],
+				},
+			],
+		});
+		const navigations = tracks[0]!.navigations;
+		expect(pageAt(navigations, 0)?.url).toBe("https://example.com/");
+		expect(pageAt(navigations, 3_999)?.url).toBe("https://example.com/");
+		expect(pageAt(navigations, 4_000)).toEqual({ atMs: 4_000, url: "https://www.iana.org/", title: "IANA" });
+		expect(pageAt(navigations, Number.POSITIVE_INFINITY)?.url).toBe("https://www.iana.org/");
+		// A recording from before navigations were kept has no address.
+		expect(pageAt(undefined, 5)).toBeUndefined();
+	});
+
+	it("reads the live browser's pages from the socket's targets message", () => {
+		expect(
+			liveTargets({
+				type: "targets",
+				active: "T2",
+				targets: [{ id: "T1", url: "https://example.com/", title: "Example Domain" }, { id: "T2" }, { url: "x" }],
+			}),
+		).toEqual({
+			active: "T2",
+			targets: [{ id: "T1", url: "https://example.com/", title: "Example Domain" }, { id: "T2" }],
+		});
+		expect(liveTargets({ type: "ended" })).toBeUndefined();
+		expect(liveTargets(null)).toBeUndefined();
 	});
 });

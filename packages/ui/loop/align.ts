@@ -92,6 +92,24 @@ export function measureAlignment(): Misalignment[] {
 		const line = textLine(label);
 		if (dot !== null && visible(dot) && line !== null) compare("status dot", label, centre(dot), line.centre);
 	}
+	// A working session's spinner on its "Working 12s".
+	for (const status of root.querySelectorAll(".hb-session-working")) {
+		const spinner = status.querySelector(":scope > .hb-spinner");
+		const text = status.querySelector(".hb-session-working-text");
+		const line = text === null || !visible(status) ? null : textLine(text);
+		if (spinner === null || !visible(status)) continue;
+		if (line === null) unmeasured("working spinner", status);
+		else compare("working spinner", status, centre(spinner), line.centre);
+	}
+	// The live activity row's brain on its "Thinking".
+	for (const row of root.querySelectorAll(".hb-live-activity")) {
+		if (!visible(row)) continue;
+		const icon = row.querySelector(".hb-live-activity-icon > *");
+		const text = row.querySelector(".hb-live-activity-text");
+		const line = text === null ? null : textLine(text);
+		if (icon === null || line === null) unmeasured("activity icon", row);
+		else compare("activity icon", row, centre(icon), line.centre);
+	}
 	// List rows: the leading dot or icon on the title's first line.
 	for (const row of root.querySelectorAll(".hb-list-row")) {
 		const leading = row.querySelector(".hb-list-row-leading > *");
@@ -162,6 +180,46 @@ export function measureAlignment(): Misalignment[] {
 		if (line === null) unmeasured("disclosure chevron", summary);
 		else compare("disclosure chevron", summary, centre(chevron), line.centre);
 	}
+	// Breadcrumbs: every crumb and slash on the current item's baseline.
+	for (const trail of root.querySelectorAll(".hb-breadcrumbs-list")) {
+		if (!visible(trail)) continue;
+		const current = trail.querySelector(".hb-breadcrumbs-current");
+		// A title still loading is a skeleton, with no line of text to measure against.
+		if (current?.querySelector(".hb-skeleton") !== null) continue;
+		const line = current === null ? null : textLine(current);
+		if (line === null) {
+			unmeasured("breadcrumb baseline", trail);
+			continue;
+		}
+		for (const item of trail.querySelectorAll(".hb-breadcrumbs-parent, .hb-breadcrumbs-separator")) {
+			// Short of room the outer parents are hidden; there's nothing to line up.
+			if (!visible(item)) continue;
+			const other = textLine(item);
+			if (other === null) unmeasured("breadcrumb baseline", item);
+			else compare("breadcrumb baseline", item, other.baseline, line.baseline);
+		}
+	}
+	// The session header: the trail's words on the centre of the icon buttons beside it.
+	for (const header of root.querySelectorAll(".hb-session-header")) {
+		if (!visible(header)) continue;
+		const current = header.querySelector(".hb-breadcrumbs-current");
+		if (current === null || current.querySelector(".hb-skeleton") !== null) continue;
+		const line = textLine(current);
+		if (line === null) {
+			unmeasured("header trail", header);
+			continue;
+		}
+		for (const button of header.querySelectorAll(".hb-session-header-actions .hb-icon-button, .hb-session-header-back"))
+			if (visible(button)) compare("header trail", button, line.centre, centre(button));
+		// The connection, when it says something: its words on the trail's line, its spinner on its words.
+		for (const words of header.querySelectorAll(".hb-connection > span:not(.hb-sr-only, .hb-spinner)")) {
+			const said = visible(words) ? textLine(words) : null;
+			if (said === null) continue;
+			compare("header connection", words, said.centre, line.centre);
+			const spinner = words.parentElement?.querySelector(":scope > .hb-spinner");
+			if (spinner != null && visible(spinner)) compare("header spinner", words, centre(spinner), said.centre);
+		}
+	}
 	// Notices: the icon on the first line of text.
 	for (const notice of root.querySelectorAll(".hb-notice")) {
 		const icon = notice.querySelector(":scope > .hb-icon");
@@ -216,7 +274,13 @@ export function measureAlignment(): Misalignment[] {
 	// Thinking picker: the level on its button's centre and on the model's name beside it; each row's name on the row's
 	// centre, the tick on the name and "Default" on its baseline.
 	for (const trigger of root.querySelectorAll(".hb-thinking-trigger")) {
-		const line = labelled("thinking trigger", trigger, trigger.querySelector(".hb-thinking-trigger-label"), [], true);
+		const line = labelled(
+			"thinking trigger",
+			trigger,
+			trigger.querySelector(".hb-thinking-trigger-label"),
+			trigger.querySelectorAll(":scope > .hb-icon"),
+			true,
+		);
 		const model = trigger.closest(".hb-composer-controls")?.querySelector(".hb-model-trigger .hb-model-trigger-label");
 		const modelLine = model === null || model === undefined ? null : textLine(model);
 		if (line !== null && modelLine !== null) compare("thinking on model", trigger, line.baseline, modelLine.baseline);
@@ -233,6 +297,29 @@ export function measureAlignment(): Misalignment[] {
 		const badgeLine = badge === null ? null : textLine(badge);
 		if (line !== null && badgeLine !== null) compare("thinking row default", option, badgeLine.baseline, line.baseline);
 	}
+	// Access picker: the level on its button's centre, the lock and chevron on it, and on the model's name beside it;
+	// each row's tick on the level's name.
+	for (const trigger of root.querySelectorAll(".hb-access-trigger")) {
+		const line = labelled(
+			"access trigger",
+			trigger,
+			trigger.querySelector(".hb-access-trigger-label"),
+			trigger.querySelectorAll(":scope > .hb-icon"),
+			true,
+		);
+		const model = trigger.closest(".hb-composer-controls")?.querySelector(".hb-model-trigger .hb-model-trigger-label");
+		const modelLine = model === null || model === undefined ? null : textLine(model);
+		if (line !== null && modelLine !== null) compare("access on model", trigger, line.baseline, modelLine.baseline);
+	}
+	for (const option of root.querySelectorAll(".hb-access-option")) {
+		const name = option.querySelector(".hb-access-option-name");
+		const line = visible(option) && name !== null ? textLine(name) : null;
+		const tick = option.querySelector(".hb-access-option-check > .hb-icon");
+		if (tick !== null && visible(tick)) {
+			if (line === null) unmeasured("access row", option);
+			else compare("access row tick", option, centre(tick), line.centre);
+		}
+	}
 	// The search field's magnifier on the field's words. A field has no text node to measure, but a one-line field
 	// centres its line in its content box, so its baseline is that centre plus half the font's ascent less its descent.
 	for (const search of root.querySelectorAll(".hb-model-search")) {
@@ -248,19 +335,43 @@ export function measureAlignment(): Misalignment[] {
 		const baseline = (top + bottom) / 2 + (metrics.fontBoundingBoxAscent - metrics.fontBoundingBoxDescent) / 2;
 		compare("model search icon", search, centre(icon), baseline - metrics.actualBoundingBoxAscent / 2);
 	}
-	// Attachment chips (files and pasted text): the name on the chip's centre, the icon and buttons on the name, the
-	// size on the name's baseline.
-	for (const chip of root.querySelectorAll(".hb-composer-chip")) {
-		const line = labelled(
-			"attachment chip",
-			chip,
-			chip.querySelector(".hb-composer-chip-name"),
-			chip.querySelectorAll(":scope > .hb-icon, .hb-composer-chip-button > .hb-icon"),
-			true,
-		);
-		for (const meta of chip.querySelectorAll(".hb-composer-chip-meta, .hb-composer-progress-text")) {
-			const metaLine = visible(meta) ? textLine(meta) : null;
-			if (line !== null && metaLine !== null) compare("attachment chip size", chip, metaLine.baseline, line.baseline);
+	// Attachment cards (files and pasted text), in the composer and sent with a message: the name over the type and size,
+	// the two lines together on the card's centre; the type's tile, and the buttons, on the card's centre, the icon on
+	// its tile; the type, size and progress on one baseline.
+	for (const [selector, part] of [
+		[".hb-composer-chip", "hb-composer-chip"],
+		[".hb-user-attachment", "hb-user-attachment"],
+	] as const) {
+		for (const chip of root.querySelectorAll(selector)) {
+			if (!visible(chip)) continue;
+			const name = chip.querySelector(`.${part}-name`);
+			const line = name === null ? null : textLine(name);
+			if (line === null) {
+				unmeasured("attachment card name", chip);
+				continue;
+			}
+			const metas = [
+				...chip.querySelectorAll(
+					part === "hb-composer-chip"
+						? ".hb-composer-chip-meta, .hb-composer-progress-text"
+						: ".hb-user-attachment-facts > span",
+				),
+			]
+				.map((meta) => (visible(meta) ? textLine(meta) : null))
+				.filter((meta) => meta !== null);
+			const first = metas[0];
+			if (first === undefined) unmeasured("attachment card facts", chip);
+			else compare("attachment card lines", chip, (line.centre + first.centre) / 2, centre(chip));
+			for (const meta of metas.slice(1)) compare("attachment card facts", chip, meta.baseline, first?.baseline);
+			const tile = chip.querySelector(`.${part}-tile`);
+			if (tile !== null) {
+				compare("attachment card tile", chip, centre(tile), centre(chip));
+				const icon = tile.querySelector(".hb-icon");
+				if (icon !== null) compare("attachment card icon", chip, centre(icon), centre(tile));
+			}
+			for (const icon of chip.querySelectorAll(".hb-composer-chip-button > .hb-icon")) {
+				if (visible(icon)) compare("attachment card button", chip, centre(icon), centre(chip));
+			}
 		}
 	}
 	// Image thumbnails' remove and retry buttons, and a resting file square: the icon on its box.

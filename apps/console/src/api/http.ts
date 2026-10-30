@@ -8,7 +8,10 @@
 //   none, as server-sent events; prompt, steer, follow-up and abort.
 // - Who is signed in and their projects: identity's `GET /v1/me` (identity.ts, before this client is made) and
 //   `GET /v1/projects`, every page, named, the most recently active first.
-// - No list events: a project's list is polled, every page of it, every LIST_POLL_MS while it is shown.
+// - No list events: a project's list is polled every LIST_POLL_MS while it is shown. The API lists sessions newest
+//   first and reads every session for each page it serves, so the console shows the first page as soon as it comes,
+//   reads the rest in the largest pages the API serves, and between full listings (every LIST_FULL_EVERY polls) asks
+//   for the first page only: a new session is always on it, and the rows it has replace the ones held.
 // - History pages: the stream's snapshot is the latest page; a `history` frame the client sends is `GET
 //   /v1/sessions/:id/history?before=<its first item>`, whose newest-first page comes back as a `history` frame,
 //   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
@@ -28,27 +31,37 @@ import {
 	type SessionHistoryPage,
 	type SessionModelState,
 } from "@harbour/contracts";
-import type { ServerFrame, SessionStatus } from "@harbour/protocol";
+import type { ServerFrame, SessionStatus, UserAttachment } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
 	ConsoleClient,
+	FileShareRecord,
 	ModelChoices,
 	ProjectSummary,
 	RepositoryBranches,
 	SendOptions,
+	SessionChange,
 	SessionControl,
 	StartAccess,
 	StartOptions,
 	WorkspaceFiles,
 	WorkspaceListing,
+	WorkspaceShares,
+	WrittenFile,
 } from "./client.ts";
 import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
+/** Every this many polls the list is read in full; the polls between read its first page only. */
+export const LIST_FULL_EVERY = 10;
 const LIST_LIMIT = 100;
+/** The largest page the API serves (`MAX_PAGE_LIMIT` in @harbour/runtime): fewer round trips for the rest of a list. */
+const LIST_PAGE_MAX = 500;
+/** The label a subagent's session has naming the `subagent` call that started it (the stack's `src/subagent.ts`). */
+export const SUBAGENT_CALL_LABEL = "subagentCall";
 /** The most entries the console reads from one directory; past it the tree says some aren't shown. */
 export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
@@ -60,8 +73,14 @@ type SessionRecord = {
 	readonly title?: string;
 	readonly status: SessionStatus;
 	readonly workspaceId?: string;
+	/** Set on a subagent's session: the session that started it. */
+	readonly parentSessionId?: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/** Pinned to the top of the list, archived, or marked unread from its menu, and when (`PATCH /v1/sessions/:id`). */
+	readonly pinnedAt?: number;
+	readonly archivedAt?: number;
+	readonly markedUnreadAt?: number;
 };
 type Page<T> = { readonly items: readonly T[]; readonly nextCursor?: string };
 
@@ -175,6 +194,39 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 
 	/** The project each session we've seen is in. */
 	const projectOfSession = new Map<string, string>();
+	/** Each session's record as last read, for its parent and title: lists and reads keep it current. */
+	const records = new Map<string, SessionRecord>();
+	/** Reads of a record under way, so a screen opening a session asks for it once however many parts want it. */
+	const reading = new Map<string, Promise<SessionRecord | undefined>>();
+	/** A session's record, as last read or else from the API; undefined when there's no such session. */
+	const recordOf = async (sessionId: string, signal?: AbortSignal): Promise<SessionRecord | undefined> => {
+		const known = records.get(sessionId);
+		if (known !== undefined) return known;
+		let read = reading.get(sessionId);
+		if (read === undefined) {
+			read = (async () => {
+				try {
+					const record = await getJson<SessionRecord>(sessionUrl(sessionId));
+					records.set(record.id, record);
+					projectOfSession.set(record.id, record.projectId);
+					return record;
+				} catch (reason) {
+					if (reason instanceof ApiError && reason.code === "not_found") return undefined;
+					throw reason;
+				} finally {
+					reading.delete(sessionId);
+				}
+			})();
+			reading.set(sessionId, read);
+		}
+		if (signal === undefined) return read;
+		// Shared, so one caller's abort doesn't cancel the others' read: it only stops this caller waiting.
+		signal.throwIfAborted();
+		return Promise.race([
+			read,
+			new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+		]);
+	};
 	/**
 	 * Unread: a settled session that has changed since it was last on screen. `seen` holds each session's `updatedAt`
 	 * when it was last on screen, or when it was first listed (so nothing is unread on opening the console). A
@@ -187,6 +239,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const open = new Map<string, number>();
 	/** Sessions just left, whose updatedAt at the time is still being read; never unread meanwhile. */
 	const leaving = new Map<string, number>();
+	/** The lists being watched, told of a change made here so they show it before the next poll. */
+	const listWatchers = new Set<(change: { readonly record: SessionRecord } | { readonly removed: string }) => void>();
+	/** Sessions deleted here: a poll that was already under way doesn't bring them back. */
+	const removed = new Set<string>();
 	const count = (counts: Map<string, number>, sessionId: string, by: 1 | -1) => {
 		const next = (counts.get(sessionId) ?? 0) + by;
 		if (next > 0) counts.set(sessionId, next);
@@ -222,19 +278,32 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		});
 	};
 
-	/** Every session matching `filter`, following the API's pages. */
-	const listSessions = async (filter: Record<string, string> = {}): Promise<SessionRecord[]> => {
-		const records: SessionRecord[] = [];
-		let cursor: string | undefined;
-		do {
-			const query = new URLSearchParams({ ...filter, limit: String(LIST_LIMIT) });
-			if (cursor !== undefined) query.set("cursor", cursor);
-			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
-			for (const record of page.items) projectOfSession.set(record.id, record.projectId);
-			records.push(...page.items);
+	/** One page of the sessions matching `filter`, newest first. */
+	const sessionsPage = async (
+		filter: Record<string, string>,
+		cursor: string | undefined,
+		limit: number,
+	): Promise<Page<SessionRecord>> => {
+		const query = new URLSearchParams({ ...filter, limit: String(limit) });
+		if (cursor !== undefined) query.set("cursor", cursor);
+		const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
+		for (const record of page.items) {
+			projectOfSession.set(record.id, record.projectId);
+			records.set(record.id, record);
+		}
+		return page;
+	};
+
+	/** The sessions matching `filter` from `cursor` on, following the API's pages in the largest it serves. */
+	const restOfSessions = async (filter: Record<string, string>, from: string | undefined): Promise<SessionRecord[]> => {
+		const listed: SessionRecord[] = [];
+		let cursor = from;
+		while (cursor !== undefined) {
+			const page = await sessionsPage(filter, cursor, LIST_PAGE_MAX);
+			listed.push(...page.items);
 			cursor = page.nextCursor;
-		} while (cursor !== undefined);
-		return records;
+		}
+		return listed;
 	};
 
 	/** Every project the caller can see (`GET /v1/projects`), following the pages. */
@@ -281,7 +350,12 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			status: listStatus(record.status),
 			startedAt: record.createdAt,
 			updatedAt: record.updatedAt,
-			...(unread ? { unread: true } : {}),
+			// The runtime moves a record's updatedAt only when its status changes, so a running one's is when its run started.
+			...(record.status === "running" ? { workingSince: record.updatedAt } : {}),
+			// Marked unread from the menu stays unread until it is next opened, even while it is on screen.
+			...(unread || record.markedUnreadAt !== undefined ? { unread: true } : {}),
+			...(record.pinnedAt === undefined ? {} : { pinned: true }),
+			...(record.archivedAt === undefined ? {} : { archived: true }),
 		};
 	};
 
@@ -325,8 +399,59 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				} catch {
 					// Not the read API's header; the version is only shown.
 				}
-				return { content, version, contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+				const digest = (response.headers.get("etag") ?? "").replace(/^W\//, "").replace(/"/g, "");
+				return {
+					content,
+					version,
+					contentType: response.headers.get("content-type") ?? "application/octet-stream",
+					...(digest === "" ? {} : { digest }),
+				};
 			},
+			async write(path, content, ifMatch): Promise<WrittenFile> {
+				const response = await call(url("content", new URLSearchParams({ path })), {
+					method: "PUT",
+					headers: {
+						"content-type": "text/markdown; charset=utf-8",
+						...(ifMatch === undefined ? {} : { "if-match": `"${ifMatch}"` }),
+					},
+					body: content,
+				});
+				const written = (await response.json()) as { version: number; digest?: string | null };
+				return {
+					version: written.version,
+					...(typeof written.digest === "string" ? { digest: written.digest } : {}),
+				};
+			},
+			shares: workspaceShares(id),
+		};
+	};
+
+	/** A workspace's shares over the shares API. */
+	const workspaceShares = (id: string): WorkspaceShares => {
+		const send = async (path: string, method: string, body?: unknown): Promise<FileShareRecord> =>
+			(await (
+				await call(path, {
+					method,
+					...(body === undefined
+						? {}
+						: { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+				})
+			).json()) as FileShareRecord;
+		const ofWorkspace = `${base}/workspaces/${encodeURIComponent(id)}/shares`;
+		const share = (shareId: string, rest = "") => `${base}/shares/${encodeURIComponent(shareId)}${rest}`;
+		return {
+			async find(path, signal) {
+				const page = await getJson<{ items: FileShareRecord[] }>(
+					`${ofWorkspace}?${new URLSearchParams({ path })}`,
+					signal,
+				);
+				return page.items[0];
+			},
+			share: (path, title) => send(ofWorkspace, "POST", { path, ...(title === undefined ? {} : { title }) }),
+			setAccess: (shareId, access) => send(share(shareId), "PATCH", { access }),
+			invite: (shareId, email) => send(share(shareId, "/invites"), "POST", { email }),
+			uninvite: (shareId, email) => send(share(shareId, "/invites/remove"), "POST", { email }),
+			link: (record) => new URL(`/shared/${record.token}`, globalThis.location?.href ?? "https://harbour.invalid").href,
 		};
 	};
 
@@ -338,15 +463,37 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
 				...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
 				...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+				...(sendOptions?.attachments === undefined || sendOptions.attachments.length === 0
+					? {}
+					: { attachments: sendOptions.attachments }),
 			},
 			sendOptions?.requestId,
 		);
+
+	/** `PATCH /v1/sessions/:id`; the lists being watched show the record it answers at once. */
+	const updateSession = async (sessionId: string, change: SessionChange): Promise<void> => {
+		const response = await call(sessionUrl(sessionId), {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(change),
+		});
+		const record = (await response.json()) as SessionRecord;
+		records.set(record.id, record);
+		// Marked read: whatever it has done so far has been seen.
+		if (change.unread === false) seen.set(record.id, Math.max(seen.get(record.id) ?? 0, record.updatedAt));
+		for (const watcher of listWatchers) watcher({ record });
+	};
 
 	return {
 		actor: options.actor ?? SIGNED_IN,
 
 		async projects(): Promise<readonly ProjectSummary[]> {
-			const [projects, sessions] = await Promise.all([listProjects(), listSessions()]);
+			// The newest sessions are enough to order projects by activity: reading every session took seconds once there
+			// were a thousand, all before the console could show anything.
+			const [projects, { items: sessions }] = await Promise.all([
+				listProjects(),
+				sessionsPage({}, undefined, LIST_LIMIT),
+			]);
 			const recent = new Map<string, number>();
 			for (const record of sessions) {
 				recent.set(record.projectId, Math.max(recent.get(record.projectId) ?? 0, record.updatedAt));
@@ -366,14 +513,43 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			let stopped = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			let sessions: readonly SessionSummary[] = [];
+			/** The project's sessions as last listed, newest first. */
+			let listed: readonly SessionRecord[] = [];
+			let polls = 0;
+			/** Whether every page has been read since the list was first shown, so the first page alone keeps it current. */
+			let complete = false;
+			const filter = { projectId };
+			const show = (next: readonly SessionRecord[], firstListing: boolean) => {
+				listed = removed.size === 0 ? next : next.filter((record) => !removed.has(record.id));
+				// A subagent's session is reached from its card in the thread that started it, not listed beside it.
+				sessions = listed
+					.filter((record) => record.parentSessionId === undefined)
+					.map((record) => summaryOf(record, firstListing));
+				onChange({ sessions, loading: false });
+			};
 			const poll = async () => {
 				try {
-					const records = await listSessions({ projectId });
-					if (stopped) return;
+					const full = !complete || polls % LIST_FULL_EVERY === 0;
+					polls += 1;
 					const firstListing = !listedProjects.has(projectId);
+					const first = await sessionsPage(filter, undefined, LIST_LIMIT);
+					if (stopped) return;
+					if (first.nextCursor === undefined) {
+						show(first.items, firstListing);
+						complete = true;
+					} else if (full) {
+						// The first page shows while the rest is read.
+						if (listed.length === 0) show(first.items, firstListing);
+						const rest = await restOfSessions(filter, first.nextCursor);
+						if (stopped) return;
+						show([...first.items, ...rest], firstListing);
+						complete = true;
+					} else {
+						// Newest first, so a new session is on the first page; older rows stay as last read.
+						const fresh = new Set(first.items.map((record) => record.id));
+						show([...first.items, ...listed.filter((record) => !fresh.has(record.id))], firstListing);
+					}
 					listedProjects.add(projectId);
-					sessions = records.map((record) => summaryOf(record, firstListing));
-					onChange({ sessions, loading: false });
 				} catch (reason) {
 					if (stopped) return;
 					// Keep what was listed; say why it may be out of date.
@@ -381,9 +557,21 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				}
 				if (!stopped) timer = setTimeout(poll, pollMs);
 			};
+			// A change made from this console shows at once, in place, rather than at the next poll.
+			const changed = (change: { readonly record: SessionRecord } | { readonly removed: string }) => {
+				if ("removed" in change) show(listed, false);
+				else if (listed.some((record) => record.id === change.record.id)) {
+					show(
+						listed.map((record) => (record.id === change.record.id ? change.record : record)),
+						false,
+					);
+				}
+			};
+			listWatchers.add(changed);
 			void poll();
 			return () => {
 				stopped = true;
+				listWatchers.delete(changed);
 				clearTimeout(timer);
 			};
 		},
@@ -479,14 +667,28 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		async projectOf(sessionId) {
 			const known = projectOfSession.get(sessionId);
 			if (known !== undefined) return known;
-			try {
-				const record = await getJson<SessionRecord>(sessionUrl(sessionId));
-				projectOfSession.set(record.id, record.projectId);
-				return record.projectId;
-			} catch (reason) {
-				if (reason instanceof ApiError && reason.code === "not_found") return undefined;
-				throw reason;
-			}
+			return (await recordOf(sessionId))?.projectId;
+		},
+
+		async parentOf(sessionId, signal) {
+			const parentId = (await recordOf(sessionId, signal))?.parentSessionId;
+			if (parentId === undefined) return undefined;
+			const parent = await recordOf(parentId, signal);
+			return parent === undefined ? undefined : { id: parent.id, title: parent.title ?? "Untitled session" };
+		},
+
+		async subagentOf(sessionId, callId, signal) {
+			const query = new URLSearchParams({
+				parentSessionId: sessionId,
+				[`label.${SUBAGENT_CALL_LABEL}`]: callId,
+				limit: "1",
+			});
+			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`, signal);
+			const child = page.items[0];
+			if (child === undefined) return undefined;
+			records.set(child.id, child);
+			projectOfSession.set(child.id, child.projectId);
+			return child.id;
 		},
 
 		mayStart: (projectId) => startAccess(options.roles, projectId),
@@ -542,10 +744,24 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			return modelChoicesOf(await getJson<SessionModelState>(path, signal));
 		},
 
+		// A file for a message: its bytes as the body, stored under the project (`POST /v1/attachments`).
+		async uploadAttachment(projectId, file, signal) {
+			const response = await call(`${base}/attachments?${new URLSearchParams({ projectId, name: file.name })}`, {
+				method: "POST",
+				headers: { "content-type": file.type === "" ? "application/octet-stream" : file.type },
+				body: file,
+				...(signal === undefined ? {} : { signal }),
+			});
+			return (await response.json()) as UserAttachment;
+		},
+
 		prompt: (sessionId, text, sendOptions) => send(sessionId, "prompt", text, sendOptions),
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
+		warm: async (sessionId) => {
+			await call(sessionUrl(sessionId, "/warm"), { method: "POST" });
+		},
 		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
 
 		async browserReplay(sessionId, browserSessionId, signal) {
@@ -613,7 +829,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				sendOptions?.requestId,
 			),
 
+		updateSession,
+
+		async deleteSession(sessionId) {
+			await call(sessionUrl(sessionId), { method: "DELETE" });
+			removed.add(sessionId);
+			records.delete(sessionId);
+			for (const watcher of listWatchers) watcher({ removed: sessionId });
+		},
+
 		markRead(sessionId) {
+			// Opening a session marked unread clears the mark, for everyone.
+			if (records.get(sessionId)?.markedUnreadAt !== undefined) {
+				updateSession(sessionId, { unread: false }).catch(() => {});
+			}
 			count(open, sessionId, 1);
 			const markSeen = (updatedAt: number | undefined) => {
 				if (updatedAt !== undefined) seen.set(sessionId, Math.max(seen.get(sessionId) ?? 0, updatedAt));

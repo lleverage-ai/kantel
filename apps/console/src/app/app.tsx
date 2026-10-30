@@ -1,35 +1,70 @@
 import {
 	ApiKeysPage,
 	Badge,
+	BookIcon,
 	Button,
+	ClockIcon,
+	type Crumb,
 	EmptyState,
+	IconButton,
+	ImageIcon,
+	KeyIcon,
+	LayersIcon,
+	ListIcon,
 	ListRow,
+	MembersPage,
 	NewSessionRow,
 	Notice,
+	PeopleIcon,
+	PlusIcon,
 	SessionList,
+	type SessionMenuActions,
+	SharingPage,
+	ShieldIcon,
+	Sidebar,
+	SidebarBrand,
+	SidebarItem,
+	SidebarProject,
+	SidebarSection,
+	SidebarToggle,
 	SignedInAs,
 	Spinner,
+	VaultIcon,
 } from "@harbour/ui";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
+import type { ConsoleMembers } from "../api/members.ts";
+import type { ConsoleModels } from "../api/models-http.ts";
+import type {
+	ConsoleAgent,
+	ConsoleAudit,
+	ConsoleKeys,
+	ConsoleSchedules,
+	ConsoleSharing,
+	ConsoleVault,
+} from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
+import { useLineage } from "./lineage.ts";
+import { ModelsScreen } from "./models-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
 	filesPath,
 	interceptLinks,
 	KEYS_PATH,
+	MEMBERS_PATH,
 	memoryPath,
+	modelsPath,
 	navigate,
 	newSessionPath,
 	parseRoute,
 	projectPath,
 	type Route,
+	SHARING_PATH,
 	schedulesPath,
 	sessionPath,
 	skillsPath,
@@ -38,12 +73,16 @@ import {
 } from "./router.ts";
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
+import { ThemeButton, ThemeSwitcher } from "./theme.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
+import { useSessionView } from "./use-session-view.ts";
+import { sidebarShortcut, useSidebarCollapse } from "./use-sidebar.ts";
 import { VaultScreen } from "./vault-screen.tsx";
 
-// The console's shell: projects and the current project's sessions in a sidebar, the open session beside it. On a
-// phone it is one pane at a time: the list, or the session with Back. Every piece is from @harbour/ui; this file
-// only decides what goes where.
+// The console's shell: a sidebar with the projects, the current project's sessions nested under it, and the pages
+// that belong to no project at its foot; the open session or page beside it, as wide as the window. The sidebar
+// collapses to a rail of icons. On a phone it is one pane at a time: the list, or the session with Back. Every piece
+// is from @harbour/ui; this file only decides what goes where.
 
 const loadingList: SessionListState = { sessions: [], loading: true };
 const noList: SessionListState = { sessions: [], loading: false };
@@ -66,9 +105,21 @@ function useProjects(client: ConsoleClient): { projects?: readonly ProjectSummar
 	const [state, setState] = useState<{ projects?: readonly ProjectSummary[]; error?: string }>({});
 	useEffect(() => {
 		let live = true;
+		let answered = false;
+		// The projects this browser last showed, until the API answers.
+		client.cachedProjects?.().then(
+			(projects) => live && !answered && projects !== undefined && setState({ projects }),
+			() => {},
+		);
 		client.projects().then(
-			(projects) => live && setState({ projects }),
-			(reason: unknown) => live && setState({ error: String(reason) }),
+			(projects) => {
+				answered = true;
+				if (live) setState({ projects });
+			},
+			(reason: unknown) => {
+				answered = true;
+				if (live) setState({ error: String(reason) });
+			},
 		);
 		return () => {
 			live = false;
@@ -107,6 +158,7 @@ function Actor({ actor }: { actor: ConsoleActor }) {
 			name={actor.name}
 			{...(actor.email === undefined ? {} : { email: actor.email })}
 			{...(actor.stubbed ? { badge: <Badge>Sign-in stubbed</Badge> } : {})}
+			actions={<ThemeButton />}
 			{...(signOut === undefined
 				? {}
 				: {
@@ -120,36 +172,84 @@ function Actor({ actor }: { actor: ConsoleActor }) {
 	);
 }
 
-function ProjectNav({ projects, current }: { projects: readonly ProjectSummary[]; current: string | undefined }) {
+/**
+ * The projects, each a folder; the one you're in has its sessions nested under it, with New session first. Its
+ * chevron hides and shows them; another project's row opens that project.
+ */
+function ProjectNav({
+	projects,
+	current,
+	selected,
+	open,
+	onToggle,
+	newSession,
+	children,
+}: {
+	projects: readonly ProjectSummary[];
+	/** The project whose sessions are listed: the route's, or the last one visited on a page outside projects. */
+	current: string | undefined;
+	/** The project's own page is the one shown. */
+	selected: boolean;
+	open: boolean;
+	onToggle: () => void;
+	/** The current project's New session link, when you may start one there. */
+	newSession?: string;
+	children: ReactNode;
+}) {
 	return (
-		<nav className="shell-projects" aria-label="Projects">
-			<h2 className="shell-heading">Projects</h2>
-			<ul className="shell-rows">
-				{projects.map((project) => (
-					<li key={project.id}>
-						<ListRow title={project.name} href={projectPath(project.id)} selected={project.id === current} />
-					</li>
-				))}
-			</ul>
-		</nav>
+		<SidebarSection label="Projects">
+			{projects.map((project) => {
+				const isCurrent = project.id === current;
+				return (
+					<SidebarProject
+						key={project.id}
+						name={project.name}
+						href={projectPath(project.id)}
+						current={isCurrent}
+						selected={isCurrent && selected}
+						open={isCurrent && open}
+						{...(isCurrent ? { onToggle } : {})}
+						{...(isCurrent && newSession !== undefined
+							? {
+									action: (
+										<IconButton
+											variant="ghost"
+											size="xs"
+											label={`New session in ${project.name}`}
+											title="New session"
+											icon={<PlusIcon size="sm" />}
+											onClick={() => navigate(newSession)}
+										/>
+									),
+								}
+							: {})}
+					>
+						{isCurrent ? children : undefined}
+					</SidebarProject>
+				);
+			})}
+		</SidebarSection>
 	);
 }
 
-/** The agent's skills and memory, shown when the console has a seam for them. */
-function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
-	if (!agent) return null;
+/**
+ * The agent's skills and memory, shown when the console has a seam for them, and the open project's Models page when it
+ * has the models seam.
+ */
+function AgentNav({ route, agent, modelsHref }: { route: Route; agent: boolean; modelsHref: string | undefined }) {
+	if (!agent && modelsHref === undefined) return null;
 	return (
-		<nav className="shell-organisation" aria-label="Agent">
-			<h2 className="shell-heading">Agent</h2>
-			<ul className="shell-rows">
-				<li>
-					<ListRow title="Skills" href={skillsPath()} selected={route.name === "skills"} />
-				</li>
-				<li>
-					<ListRow title="Memory" href={memoryPath()} selected={route.name === "memory"} />
-				</li>
-			</ul>
-		</nav>
+		<SidebarSection label="Agent">
+			{agent ? (
+				<>
+					<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
+					<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
+				</>
+			) : null}
+			{modelsHref === undefined ? null : (
+				<SidebarItem icon={<ImageIcon />} label="Models" href={modelsHref} selected={route.name === "models"} />
+			)}
+		</SidebarSection>
 	);
 }
 
@@ -160,47 +260,79 @@ function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
 function OrganisationNav({
 	route,
 	schedules,
+	sharing = false,
 	vault,
 	audit,
 	keys,
+	members = false,
 }: {
 	route: Route;
 	schedules: boolean;
+	sharing?: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
+	members?: boolean;
 }) {
-	if (!schedules && !vault && !audit && !keys) return null;
+	if (!schedules && !sharing && !vault && !audit && !keys && !members) return null;
 	return (
-		<nav className="shell-organisation" aria-label="Organisation">
-			<h2 className="shell-heading">Organisation</h2>
-			<ul className="shell-rows">
-				{schedules ? (
-					<li>
-						<ListRow title="Schedules" href={schedulesPath()} selected={route.name === "schedules"} />
-					</li>
-				) : null}
-				{vault ? (
-					<li>
-						<ListRow
-							title="Vault"
-							href={VAULT_PATH}
-							selected={route.name === "vault" || route.name === "vault-request"}
-						/>
-					</li>
-				) : null}
-				{audit ? (
-					<li>
-						<ListRow title="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
-					</li>
-				) : null}
-				{keys ? (
-					<li>
-						<ListRow title="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
-					</li>
-				) : null}
-			</ul>
-		</nav>
+		<SidebarSection label="Organisation">
+			{schedules ? (
+				<SidebarItem
+					icon={<ClockIcon />}
+					label="Schedules"
+					href={schedulesPath()}
+					selected={route.name === "schedules"}
+				/>
+			) : null}
+			{sharing ? (
+				<SidebarItem icon={<ShieldIcon />} label="Sharing" href={SHARING_PATH} selected={route.name === "sharing"} />
+			) : null}
+			{vault ? (
+				<SidebarItem
+					icon={<VaultIcon />}
+					label="Vault"
+					href={VAULT_PATH}
+					selected={route.name === "vault" || route.name === "vault-request"}
+				/>
+			) : null}
+			{audit ? (
+				<SidebarItem icon={<ListIcon />} label="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
+			) : null}
+			{keys ? (
+				<SidebarItem icon={<KeyIcon />} label="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
+			) : null}
+			{members ? (
+				<SidebarItem icon={<PeopleIcon />} label="Members" href={MEMBERS_PATH} selected={route.name === "members"} />
+			) : null}
+		</SidebarSection>
+	);
+}
+
+/**
+ * The shell's frame with nothing in it yet, shown while the console learns who is signed in, so a page load never
+ * starts on a page-wide spinner. The pane follows the address, so a phone opening a session doesn't show the list first.
+ */
+export function ShellPlaceholder() {
+	const route = parseRoute(location.pathname);
+	const pane = route.name === "home" || route.name === "project" ? "list" : "main";
+	// The rail, if that's how it was left, so the frame doesn't jump wide then narrow when the console arrives.
+	const sidebar = useSidebarCollapse(!useMedia(NARROW_QUERY));
+	return (
+		<div className="shell hb-app" data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
+			<Sidebar
+				className="shell-sidebar"
+				collapsed={sidebar.collapsed}
+				role="complementary"
+				aria-label="Projects and sessions"
+				head={<SidebarBrand>Harbour</SidebarBrand>}
+			>
+				<SidebarSection label="Projects">
+					{sidebar.collapsed ? null : <SessionList sessions={[]} loading />}
+				</SidebarSection>
+			</Sidebar>
+			<main className="shell-main" aria-busy="true" />
+		</div>
 	);
 }
 
@@ -209,21 +341,36 @@ export function App({
 	vault,
 	audit,
 	keys,
+	members,
 	agent,
 	schedules,
+	sharing,
+	models,
+	oversightPending = false,
 	onOpen,
 }: {
 	client: ConsoleClient;
+	/**
+	 * True while the organisation's pages (vault, audit log, schedules) are still being asked about: their paths wait
+	 * rather than say there's nothing there, and the rest of the console doesn't wait for them.
+	 */
+	oversightPending?: boolean;
 	/** The vault page's seam; without it there's no Vault in the sidebar. */
 	vault?: ConsoleVault;
 	/** The audit view's seam; without it there's no Audit log in the sidebar. */
 	audit?: ConsoleAudit;
 	/** The API keys page's seam; without it there's no API keys in the sidebar. */
 	keys?: ConsoleKeys;
+	/** The members page's seam, for an organisation admin; without it there's no Members in the sidebar. */
+	members?: ConsoleMembers;
 	/** The skills and memory pages' seam; without it there's no Agent section in the sidebar. */
 	agent?: ConsoleAgent;
 	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
 	schedules?: ConsoleSchedules;
+	/** The sharing page's seam; without it there's no Sharing in the sidebar. */
+	sharing?: ConsoleSharing;
+	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
+	models?: ConsoleModels;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -232,17 +379,79 @@ export function App({
 	const { projects, error: projectsError } = useProjects(client);
 
 	const projectId =
-		route.name === "project" || route.name === "session" || route.name === "files" || route.name === "new-session"
+		route.name === "project" ||
+		route.name === "session" ||
+		route.name === "files" ||
+		route.name === "new-session" ||
+		route.name === "models"
 			? route.projectId
 			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	// A link to a session by its ID alone (a schedule's run): its project is read, then the link becomes its path.
 	const linkedSession = route.name === "session-link" ? route.sessionId : undefined;
 	const project = projects?.find((candidate) => candidate.id === projectId);
-	const list = useSessionList(client, project?.id);
+	// The project the sidebar keeps open: the route's, or on a page outside projects (skills, the vault) the last one
+	// visited, or else the first, so a project's sessions are always a click away.
+	const [lastProjectId, setLastProjectId] = useState<string>();
+	useEffect(() => {
+		if (project !== undefined) setLastProjectId(project.id);
+	}, [project]);
+	const treeProject =
+		project ??
+		(projectId === undefined
+			? (projects?.find((candidate) => candidate.id === lastProjectId) ?? projects?.[0])
+			: undefined);
+	// The list starts with the page, beside the projects, rather than after them; an unknown project stops it.
+	const list = useSessionList(
+		client,
+		projectId === undefined ? treeProject?.id : projects === undefined || project !== undefined ? projectId : undefined,
+	);
+	const [sessionsHidden, setSessionsHidden] = useState(false);
+	const toggleSessions = useCallback(() => setSessionsHidden((hidden) => !hidden), []);
+	const sidebar = useSidebarCollapse(!narrow);
 	const [live, setLive] = useState<LiveSummary>();
-	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
+	const sessionView = useSessionView();
+	// The open session and its project, for Delete to leave a session that's on screen. A ref, so the menu's actions
+	// stay one object and the list's rows don't re-render.
+	const onScreen = useRef<{ sessionId?: string; projectId?: string }>({});
+	onScreen.current = {
+		...(sessionId === undefined ? {} : { sessionId }),
+		...(projectId === undefined ? {} : { projectId }),
+	};
+	const menuActions = useMemo((): SessionMenuActions | undefined => {
+		const { updateSession, deleteSession } = client;
+		if (updateSession === undefined || deleteSession === undefined) return undefined;
+		const update = updateSession.bind(client);
+		return {
+			setUnread: (id, unread) => update(id, { unread }),
+			setPinned: (id, pinned) => update(id, { pinned }),
+			setArchived: (id, archived) => update(id, { archived }),
+			rename: (id, title) => update(id, { title }),
+			remove: async (id) => {
+				await deleteSession.call(client, id);
+				const shown = onScreen.current;
+				if (shown.sessionId === id && shown.projectId !== undefined) {
+					navigate(projectPath(shown.projectId), { replace: true });
+				}
+			},
+		};
+	}, [client]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
+	const lineage = useLineage(client, route.name === "session" ? sessionId : undefined);
+	// A subagent's session isn't listed (it's reached from its card), so it gets no live row of its own while open.
+	const subagentOpen = lineage.length > 0;
+	const sessions = useMemo(
+		() => withLive(list.sessions, subagentOpen ? undefined : live),
+		[list.sessions, live, subagentOpen],
+	);
+	// The session's top bar: the project, then the sessions above a subagent's, each a link back to its level.
+	const parents = useMemo((): readonly Crumb[] | undefined => {
+		if (projectId === undefined) return undefined;
+		return [
+			{ key: "project", label: project?.name ?? "Project", href: projectPath(projectId) },
+			...lineage.map((parent) => ({ key: parent.id, label: parent.title, href: sessionPath(projectId, parent.id) })),
+		];
+	}, [projectId, project?.name, lineage]);
 
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
@@ -259,7 +468,8 @@ export function App({
 		navigate(sessionPath(sessionProject, linkedSession), { replace: true });
 	}, [linkedSession, sessionProject]);
 
-	const hrefFor = useCallback((id: string) => sessionPath(projectId ?? "", id), [projectId]);
+	const treeProjectId = treeProject?.id;
+	const hrefFor = useCallback((id: string) => sessionPath(treeProjectId ?? "", id), [treeProjectId]);
 	const back = useCallback(() => navigate(projectPath(projectId ?? "")), [projectId]);
 	const toFiles = useCallback(
 		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
@@ -274,37 +484,41 @@ export function App({
 				<Notice level="error">{projectsError}</Notice>
 			</div>
 		);
-	if (projects === undefined)
-		return (
-			<div className="boot hb-app">
-				<Spinner label="Opening the console" />
-			</div>
-		);
-
-	const unknownProject = projectId !== undefined && project === undefined;
+	// Until the projects come the shell is shown as it will be, with what doesn't need them (an open session) in place.
+	const projectsKnown = projects !== undefined;
+	const projectList = projects ?? [];
+	const unknownProject = projectsKnown && projectId !== undefined && project === undefined;
 	// The organisation's pages, when the console has their seams; without one the path is not found.
 	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
 	const keysRoute = keys !== undefined && route.name === "keys";
+	const membersRoute = members !== undefined && route.name === "members";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
-	const organisationPage = vaultRoute || auditRoute || keysRoute || schedulesRoute || agentRoute;
+	const sharingRoute = sharing !== undefined && route.name === "sharing";
+	const organisationPage =
+		vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || sharingRoute || agentRoute;
+	const organisationRoute =
+		route.name === "vault" ||
+		route.name === "vault-request" ||
+		route.name === "audit" ||
+		route.name === "keys" ||
+		route.name === "members" ||
+		route.name === "schedules" ||
+		route.name === "sharing" ||
+		route.name === "skills" ||
+		route.name === "memory";
+	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
+	const organisationWaiting = organisationRoute && !organisationPage && oversightPending;
 	const missing =
 		route.name === "not-found" ||
 		(linkedSession !== undefined && sessionProject === undefined) ||
-		((route.name === "vault" ||
-			route.name === "vault-request" ||
-			route.name === "audit" ||
-			route.name === "keys" ||
-			route.name === "schedules" ||
-			route.name === "skills" ||
-			route.name === "memory") &&
-			!organisationPage);
+		(organisationRoute && !organisationPage && !oversightPending);
 	const unknownSession =
 		sessionId !== undefined && project !== undefined && sessionProject !== "pending" && sessionProject !== projectId;
 
 	// A way back for an error, which on a phone fills the screen: the project's list, or the first project's.
-	const way = project ?? projects[0];
+	const way = project ?? projectList[0];
 	const wayBack =
 		way === undefined ? undefined : (
 			<ListRow title={`Go to ${way.name}`} href={projectPath(way.id)} density="compact" />
@@ -345,8 +559,15 @@ export function App({
 				<ApiKeysPage
 					api={keys.api}
 					roles={keys.roles}
-					projects={projects.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
+					projects={projectList.map((candidate) => ({ id: candidate.id, name: candidate.name }))}
 				/>
+			</div>
+		);
+	} else if (membersRoute && members !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<MembersPage api={members.api} viewer={members.viewer} />
 			</div>
 		);
 	} else if (agentRoute && agent !== undefined && route.name === "skills") {
@@ -355,8 +576,9 @@ export function App({
 				{pageBar}
 				<SkillsScreen
 					agent={agent}
-					projects={projects}
+					projects={projectList}
 					{...(route.skillId === undefined ? {} : { skillId: route.skillId })}
+					{...(sharing === undefined ? {} : { sharing })}
 				/>
 			</div>
 		);
@@ -366,7 +588,7 @@ export function App({
 				{pageBar}
 				<MemoryScreen
 					agent={agent}
-					projects={projects}
+					projects={projectList}
 					{...(route.conceptId === undefined ? {} : { conceptId: route.conceptId })}
 				/>
 			</div>
@@ -382,6 +604,24 @@ export function App({
 				/>
 			</div>
 		);
+	} else if (sharingRoute && sharing !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<SharingPage
+					source={sharing.source}
+					projects={sharing.projects}
+					directory={sharing.directory}
+					{...(treeProject !== undefined && sharing.projects.some((shown) => shown.id === treeProject.id)
+						? { initialProjectId: treeProject.id }
+						: {})}
+					{...(sharing.now === undefined ? {} : { now: sharing.now })}
+				/>
+			</div>
+		);
+	} else if (organisationWaiting || (!projectsKnown && (route.name === "home" || route.name === "new-session"))) {
+		// Moments from now: the page's seam, or the projects the home page and New session need. Nothing to show yet.
+		main = <div className="shell-empty" aria-busy="true" />;
 	} else if (linkedSession !== undefined && sessionProject !== undefined) {
 		main = (
 			<div className="shell-empty">
@@ -404,12 +644,26 @@ export function App({
 				</EmptyState>
 			</div>
 		);
+	} else if (route.name === "models") {
+		main =
+			models === undefined ? (
+				<div className="shell-empty">
+					<EmptyState title="There's nothing here" action={wayBack}>
+						This console can't read the model gateway.
+					</EmptyState>
+				</div>
+			) : (
+				<div className="shell-page">
+					{pageBar}
+					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
+				</div>
+			);
 	} else if (route.name === "new-session") {
 		main = (
 			<NewSessionScreen
 				client={client}
 				projectId={route.projectId}
-				projects={projects}
+				projects={projectList}
 				{...(narrow ? { onBack: back } : {})}
 			/>
 		);
@@ -431,12 +685,14 @@ export function App({
 				key={sessionId}
 				client={client}
 				sessionId={sessionId}
-				project={project?.name}
+				{...(projectId === undefined ? {} : { projectId })}
+				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
 				onForked={toFork}
 				onOpen={onOpen}
 				onLive={setLive}
+				subagentHref={hrefFor}
 			/>
 		);
 	} else {
@@ -461,9 +717,11 @@ export function App({
 		sessionId !== undefined ||
 		linkedSession !== undefined ||
 		newSession ||
+		route.name === "models" ||
 		missing ||
 		unknownProject ||
-		organisationPage
+		organisationPage ||
+		organisationWaiting
 			? "main"
 			: "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
@@ -472,53 +730,100 @@ export function App({
 	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
 	// The vault page, the audit log and API keys bring their own headings.
-	const title = organisationPage
-		? undefined
-		: missing || unknownProject
-			? "Page not found"
-			: unknownSession
-				? "Session not found"
-				: sessionId === undefined && !newSession
-					? `${project?.name ?? "Harbour"} sessions`
-					: undefined;
+	const title =
+		organisationPage || organisationWaiting
+			? undefined
+			: missing || unknownProject
+				? "Page not found"
+				: unknownSession
+					? "Session not found"
+					: sessionId === undefined && !newSession
+						? `${project?.name ?? "Harbour"} sessions`
+						: undefined;
 	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
-	const start = project === undefined ? undefined : client.mayStart(project.id);
+	const start = treeProject === undefined ? undefined : client.mayStart(treeProject.id);
 	const startBlocked = start === undefined || start.allowed ? {} : { disabledReason: start.reason };
+	const newSessionHref =
+		treeProject !== undefined && start?.allowed === true ? newSessionPath(treeProject.id) : undefined;
 
 	return (
-		<div className="shell hb-app" data-pane={pane}>
-			<div className="shell-sidebar" {...sidebarRole}>
-				{listIsPage ? heading : null}
-				<div className="shell-brand">
-					<span className="shell-wordmark">Harbour</span>
-				</div>
-				<ProjectNav projects={projects} current={projectId} />
-				<AgentNav route={route} agent={agent !== undefined} />
-				<OrganisationNav
-					route={route}
-					schedules={schedules !== undefined}
-					vault={vault !== undefined}
-					audit={audit !== undefined}
-					keys={keys !== undefined}
-				/>
-				{/* An organisation page belongs to no project, so there's no project's sessions to list beside it. */}
-				<div className="shell-sessions">
-					{organisationPage ? null : (
+		<div className="shell hb-app" data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
+			<Sidebar
+				id="shell-sidebar"
+				className="shell-sidebar"
+				collapsed={sidebar.collapsed}
+				{...sidebarRole}
+				head={
+					<>
+						{listIsPage ? heading : null}
+						<SidebarBrand>Harbour</SidebarBrand>
+						{narrow ? null : (
+							<SidebarToggle
+								collapsed={sidebar.collapsed}
+								onToggle={sidebar.toggle}
+								controls="shell-sidebar"
+								shortcut={sidebarShortcut()}
+							/>
+						)}
+					</>
+				}
+				foot={
+					<>
+						<AgentNav
+							route={route}
+							agent={agent !== undefined}
+							modelsHref={models === undefined || treeProject === undefined ? undefined : modelsPath(treeProject.id)}
+						/>
+						<OrganisationNav
+							route={route}
+							schedules={schedules !== undefined}
+							sharing={sharing !== undefined}
+							vault={vault !== undefined}
+							audit={audit !== undefined}
+							keys={keys !== undefined}
+							members={members !== undefined}
+						/>
+						<div className="shell-actor">
+							<Actor actor={client.actor} />
+						</div>
+					</>
+				}
+			>
+				{/* On the rail the sessions are hidden, so New session gets an icon of its own. */}
+				{sidebar.collapsed && newSessionHref !== undefined ? (
+					<SidebarSection label="Start" heading={false}>
+						<SidebarItem
+							icon={<PlusIcon />}
+							label="New session"
+							href={newSessionHref}
+							selected={route.name === "new-session"}
+						/>
+					</SidebarSection>
+				) : null}
+				<ProjectNav
+					projects={projectList}
+					current={treeProject?.id ?? projectId}
+					selected={route.name === "project"}
+					open={!sessionsHidden}
+					onToggle={toggleSessions}
+					{...(newSessionHref === undefined ? {} : { newSession: newSessionHref })}
+				>
+					{treeProject === undefined ? null : (
 						<>
-							<h2 className="shell-heading">{project === undefined ? "Sessions" : `${project.name} sessions`}</h2>
-							{project === undefined ? null : (
-								<NewSessionRow
-									href={newSessionPath(project.id)}
-									selected={route.name === "new-session"}
-									{...startBlocked}
-								/>
-							)}
+							<NewSessionRow
+								href={newSessionPath(treeProject.id)}
+								selected={route.name === "new-session"}
+								{...startBlocked}
+							/>
 							<SessionList
 								sessions={sessions}
 								selectedId={sessionId}
 								hrefFor={hrefFor}
 								loading={list.loading}
 								error={list.error}
+								view={sessionView.view}
+								onViewChange={sessionView.setView}
+								{...(menuActions !== undefined && start?.allowed === true ? { menuActions } : {})}
 								empty={
 									<EmptyState title="No sessions in this project yet">
 										Sessions started here, by you or a schedule, show up as they run.
@@ -527,17 +832,15 @@ export function App({
 							/>
 						</>
 					)}
-				</div>
-				<div className="shell-actor">
-					<Actor actor={client.actor} />
-				</div>
-			</div>
+				</ProjectNav>
+			</Sidebar>
 			{listIsPage ? null : (
 				<main className="shell-main">
 					{heading}
 					{main}
 				</main>
 			)}
+			<ThemeSwitcher {...(client.saveTheme === undefined ? {} : { onChoose: client.saveTheme })} />
 		</div>
 	);
 }

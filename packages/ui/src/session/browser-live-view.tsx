@@ -1,9 +1,11 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
+import { ExternalLinkIcon, PlayIcon } from "../primitives/lucide.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
-import { ToolImages, toolImageSrc } from "./tool-call.tsx";
+import { BrowserAddressBar, type BrowserPageInfo, BrowserTabs, BrowserWindow } from "./browser-window.tsx";
+import { toolImageSrc } from "./tool-call.tsx";
 import "./browser-live-view.css";
 
 /**
@@ -60,6 +62,16 @@ export type BrowserLiveViewProps = {
 	screenshot?: ToolImage;
 	/** The source said its stream is over (the browser went, or the link ran out). The host asks again, or ends. */
 	onEnded?: () => void;
+	/**
+	 * The page the browser was on last, as the agent's calls said: its tab's title and the address bar's URL while the
+	 * view draws neither itself (connecting, closed, before a replay plays). An embedded view's page draws its own.
+	 */
+	page?: BrowserPageInfo;
+	/**
+	 * The window's tabs, when the host has several browsers to pick between (`BrowserTabs`). Without them the window has
+	 * one tab, this browser's page.
+	 */
+	tabs?: (end: ReactNode) => ReactNode;
 };
 
 /** Only a web page (or a story's inline page) goes in the iframe: never a `javascript:` URL. */
@@ -118,32 +130,26 @@ function EmbedFrame({
 	);
 }
 
-/**
- * A replay's page, behind *Play* over the last screenshot: nothing loads (no recording is read) until a person asks
- * for it.
- */
-function ReplayFrame({
-	url,
-	endMessage,
-	title,
-	screenshot,
-	onEnded,
-}: {
-	url: string;
-	endMessage: string | undefined;
-	title: string;
-	screenshot: ToolImage | undefined;
-	onEnded: () => void;
-}) {
-	const [playing, setPlaying] = useState(false);
-	if (playing) return <EmbedFrame url={url} endMessage={endMessage} title={title} onEnded={onEnded} />;
+/** A replay's Play button, over the last screenshot: nothing loads (no recording is read) until a person asks for it. */
+function ReplayPoster({ screenshot, onPlay }: { screenshot: ToolImage | undefined; onPlay: () => void }) {
 	return (
 		<>
 			{screenshot === undefined ? null : (
-				<img src={toolImageSrc(screenshot)} alt="The last page the browser showed" decoding="async" />
+				<img
+					className="hb-browser-live-poster"
+					src={toolImageSrc(screenshot)}
+					alt="The last page the browser showed"
+					decoding="async"
+				/>
 			)}
-			<Button variant="primary" size="md" className="hb-browser-live-play" onClick={() => setPlaying(true)}>
-				Play
+			<Button
+				variant="primary"
+				size="md"
+				className="hb-browser-live-play"
+				icon={<PlayIcon size="sm" />}
+				onClick={onPlay}
+			>
+				Play the replay
 			</Button>
 		</>
 	);
@@ -175,86 +181,129 @@ function FramesView({
 	return frame === undefined ? null : <img src={toolImageSrc(frame)} alt={alt} decoding="async" />;
 }
 
+/** The window's own tab, when the host gives it no tabs: this browser's page. */
+function OneTab({ page, end, busy }: { page: BrowserPageInfo | undefined; end: ReactNode; busy: boolean }) {
+	return <BrowserTabs label="The browser's tab" tabs={[{ id: "page", ...page, busy }]} active="page" end={end} />;
+}
+
 /**
- * A browser the agent is using, inline in the transcript under the newest call on it: a person watches the page move
- * as the agent works, or plays it back, without opening anything. Provider-neutral: the host passes a source (an
- * embeddable page or a stream of frames, see `BrowserLiveSource`). Watch-only: the view sends nothing to the browser.
- * It costs the source's stream while it is on screen, and nothing once it scrolls away (the transcript unmounts it)
- * or the browser closes, when the last screenshot takes its place.
+ * A browser the agent is using, or used, drawn as a browser window: a tab per browser (the host's, or this one's), an
+ * address bar with the page's URL, the page, and for a replay a player's controls. Provider-neutral: the host passes a
+ * source (an embeddable page or a stream of frames, see `BrowserLiveSource`). An embedded page draws its own address
+ * bar and controls inside the window (Harbour's view page does, following the page as it navigates); for everything
+ * else (connecting, closed, a replay before it plays, frames) the window's address bar shows `page`, the last page the
+ * agent's calls named. Watch-only: the view sends nothing to the browser. It costs the source's stream while it is on
+ * screen, and nothing once it unmounts or the browser closes, when the last screenshot takes its place.
  */
-export function BrowserLiveView({ status, item, source, screenshot, onEnded }: BrowserLiveViewProps) {
+export function BrowserLiveView({ status, item, source, screenshot, onEnded, page, tabs }: BrowserLiveViewProps) {
 	const ended = () => onEnded?.();
+	const [playing, setPlaying] = useState(false);
 	const live = status === "live" && playable(source);
+	const replay = live && source.mode === "replay";
+	const title = `${replay ? "Replay" : "Live view"} of the browser: ${item.label}`;
+	const strip = (end: ReactNode, busy = false) =>
+		tabs === undefined ? <OneTab page={page} end={end} busy={busy} /> : tabs(end);
+	const address = <BrowserAddressBar url={page?.url} placeholder="The address isn't known yet" />;
+
 	if (status === "unavailable" || (status === "live" && !live)) {
-		return screenshot === undefined ? null : <ToolImages item={item} images={[screenshot]} />;
+		if (screenshot === undefined) return null;
+		return (
+			<figure className="hb-browser-live hb-browser-live-still">
+				<BrowserWindow tabs={strip(null)} toolbar={address}>
+					<div className="hb-browser-live-page">
+						<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
+					</div>
+				</BrowserWindow>
+			</figure>
+		);
 	}
 	if (status === "ended") {
 		return (
-			<div className="hb-browser-live hb-browser-live-ended">
-				<p className="hb-browser-live-caption">
-					{screenshot === undefined
-						? "The browser has closed."
-						: "The browser has closed. This is the last page it showed."}
-				</p>
-				{screenshot === undefined ? null : <ToolImages item={item} images={[screenshot]} />}
-			</div>
+			<figure className="hb-browser-live hb-browser-live-ended">
+				<BrowserWindow
+					tabs={strip(
+						<span className="hb-browser-live-wait" role="status">
+							Closed
+						</span>,
+					)}
+					toolbar={address}
+				>
+					<div className="hb-browser-live-page">
+						{screenshot === undefined ? null : (
+							<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
+						)}
+						<p className="hb-browser-live-caption">
+							{screenshot === undefined
+								? "The browser has closed."
+								: "The browser has closed. This is the last page it showed."}
+						</p>
+					</div>
+				</BrowserWindow>
+			</figure>
 		);
 	}
-	const replay = source?.mode === "replay";
-	const title = `${replay ? "Replay" : "Live view"} of the browser: ${item.label}`;
-	return (
-		<figure
-			className={`hb-browser-live hb-browser-live-${live && replay ? "replay" : status}`}
-			aria-busy={live ? undefined : true}
-		>
-			<figcaption className="hb-browser-live-caption">
-				{live ? (
-					<>
-						{replay ? (
-							<StatusLabel status="idle">Replay</StatusLabel>
-						) : (
-							<StatusLabel status="working">Live</StatusLabel>
+
+	if (!live) {
+		return (
+			<figure className="hb-browser-live hb-browser-live-connecting" aria-busy="true">
+				<BrowserWindow
+					tabs={strip(
+						<span className="hb-browser-live-wait" role="status">
+							<Spinner size="sm" />
+							Connecting to the live view
+						</span>,
+						true,
+					)}
+					toolbar={address}
+				>
+					<div className="hb-browser-live-page">
+						{screenshot === undefined ? null : (
+							<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
 						)}
-						<span className="hb-browser-live-note">Watch only</span>
-						{source.kind === "embed" ? (
-							<a
-								className="hb-browser-live-open hb-focusable"
-								href={source.url}
-								target="_blank"
-								rel="noopener noreferrer"
-							>
-								Open in a new tab
-							</a>
-						) : null}
-					</>
-				) : (
-					<span className="hb-browser-live-wait" role="status">
-						<Spinner size="sm" />
-						Connecting to the live view
-					</span>
-				)}
-			</figcaption>
-			<div
-				className={`hb-browser-live-frame${live && replay && source.kind === "embed" ? " hb-browser-live-frame-replay" : ""}`}
+					</div>
+				</BrowserWindow>
+			</figure>
+		);
+	}
+
+	const embedded = source.kind === "embed" && (!replay || playing);
+	const end = (
+		<>
+			{replay ? <StatusLabel status="idle">Replay</StatusLabel> : <StatusLabel status="working">Live</StatusLabel>}
+			<span className="hb-browser-live-note">Watch only</span>
+			{source.kind === "embed" ? (
+				<a
+					className="hb-browser-live-open hb-focusable"
+					href={source.url}
+					target="_blank"
+					rel="noopener noreferrer"
+					title="Open in a new tab"
+				>
+					<ExternalLinkIcon size="sm" />
+					<span className="hb-sr-only">Open in a new tab</span>
+				</a>
+			) : null}
+		</>
+	);
+	return (
+		<figure className={`hb-browser-live hb-browser-live-${replay ? "replay" : "live"}`}>
+			<BrowserWindow
+				tabs={strip(end)}
+				// An embedded page draws its own address bar and controls, following the page as it moves.
+				{...(embedded ? {} : { toolbar: address })}
 			>
-				{!live ? (
-					screenshot === undefined ? null : (
-						<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
-					)
-				) : source.kind === "embed" && replay ? (
-					<ReplayFrame
-						url={source.url}
-						endMessage={source.endMessage}
-						title={title}
-						screenshot={screenshot}
-						onEnded={ended}
-					/>
-				) : source.kind === "embed" ? (
-					<EmbedFrame url={source.url} endMessage={source.endMessage} title={title} onEnded={ended} />
-				) : (
-					<FramesView source={source} first={screenshot} alt={title} onEnded={ended} />
-				)}
-			</div>
+				<div
+					className={`hb-browser-live-page${embedded ? ` hb-browser-live-embed${replay ? " hb-browser-live-embed-replay" : ""}` : ""}`}
+				>
+					{source.kind === "frames" ? (
+						<FramesView source={source} first={screenshot} alt={title} onEnded={ended} />
+					) : embedded ? (
+						<EmbedFrame url={source.url} endMessage={source.endMessage} title={title} onEnded={ended} />
+					) : (
+						<ReplayPoster screenshot={screenshot} onPlay={() => setPlaying(true)} />
+					)}
+				</div>
+			</BrowserWindow>
 		</figure>
 	);
 }

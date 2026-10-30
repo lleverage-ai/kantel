@@ -30,7 +30,20 @@
 	padding: var(--hb-space-2) var(--hb-space-7);
 }
 
-.hb-transcript-row-tools {
+.hb-transcript-row-tools,
+.hb-transcript-row-browsing {
+	padding-top: var(--hb-space-1);
+	padding-bottom: var(--hb-space-1);
+}
+
+/* A working turn's header sits close under the person's message, its divider then leading into the turn; the
+   activity row at the foot is a work-log row, spaced as the tool calls are. */
+.hb-transcript-row-working {
+	padding-top: var(--hb-space-4);
+	padding-bottom: var(--hb-space-3);
+}
+
+.hb-transcript-row-activity {
 	padding-top: var(--hb-space-1);
 	padding-bottom: var(--hb-space-1);
 }
@@ -66,7 +79,8 @@
 	animation: hb-transcript-linked-ring var(--hb-duration-shimmer) var(--hb-ease) both;
 }
 
-.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-user) > .hb-transcript-column,
+.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-browsing, .hb-transcript-row-user)
+	> .hb-transcript-column,
 .hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
 	border-radius: var(--hb-radius-sm);
 	animation: hb-transcript-linked var(--hb-duration-shimmer) var(--hb-ease) both;
@@ -108,34 +122,13 @@
 			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
 	}
 
-	.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-user) > .hb-transcript-column,
+	.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-browsing, .hb-transcript-row-user)
+		> .hb-transcript-column,
 	.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
 		animation: none;
 		background: var(--hb-accent-soft);
 		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
 	}
-}
-
-/* The top of a paged transcript with nothing older: a hairline either side of one quiet line. */
-.hb-transcript-start {
-	padding: var(--hb-space-7) var(--hb-space-7) var(--hb-space-4);
-}
-
-.hb-transcript-start-rule {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-5);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	white-space: nowrap;
-}
-
-.hb-transcript-start-rule::before,
-.hb-transcript-start-rule::after {
-	flex: 1;
-	height: var(--hb-hairline);
-	background: var(--hb-border-strong);
-	content: "";
 }
 
 /*
@@ -311,7 +304,6 @@
 
 @media (min-width: 900px) {
 	.hb-transcript-row,
-	.hb-transcript-start,
 	.hb-transcript-error {
 		padding-left: var(--hb-space-9);
 		padding-right: var(--hb-space-9);

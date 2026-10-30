@@ -16,36 +16,25 @@
 	margin: 0;
 }
 
-.hb-vault-page-head {
-	display: flex;
-	flex-wrap: wrap;
+.hb-vault-page-name {
+	display: inline-flex;
 	align-items: center;
-	gap: var(--hb-space-2) var(--hb-space-4);
-	min-width: 0;
-	padding-bottom: var(--hb-space-6);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
+	gap: var(--hb-space-4);
 }
 
 .hb-vault-page-mark {
 	flex: none;
-	color: var(--hb-text);
-}
-
-.hb-vault-page-name {
-	color: var(--hb-text);
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
 }
 
 .hb-vault-page-host {
 	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
 	overflow-wrap: anywhere;
 }
 
 .hb-vault-page-viewer {
-	margin-left: auto;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
 }
 
 .hb-vault-page-body {
@@ -166,63 +155,21 @@
 	text-decoration: underline;
 }
 
-/* Editable terms: a label with its Proposed or Narrowed tag over each control. */
+/* Editable terms: settings rows (FormField, inline), the label and its Proposed or Narrowed tag beside each value or
+   control, on one pair of tracks so the values line up. A read-only value sits on the control's line. */
 .hb-vault-terms-edit {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-	gap: var(--hb-space-7) var(--hb-space-9);
-	min-width: 0;
-}
-
-.hb-vault-term {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-3);
-	min-width: 0;
-}
-
-.hb-vault-term-head {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-4);
-	min-height: var(--hb-control-xs);
-}
-
-.hb-vault-term-label {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
+	gap: var(--hb-space-6);
 }
 
 .hb-vault-term-value {
+	display: flex;
+	align-items: center;
 	min-width: 0;
+	min-height: var(--hb-control-md);
 	overflow-wrap: anywhere;
 }
 
-/* The field's own label is the term's; it stays for screen readers. */
-.hb-vault-hidden-label > .hb-text-field-label {
-	position: absolute;
-	width: var(--hb-hairline);
-	height: var(--hb-hairline);
-	overflow: hidden;
-	clip-path: inset(50%);
-	white-space: nowrap;
-}
-
-.hb-vault-mono-field .hb-input {
-	width: 100%;
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
-}
-
-.hb-vault-uses-field .hb-input {
-	width: calc(var(--hb-control-lg) * 4);
-	max-width: 100%;
-}
-
 .hb-vault-methods {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-3) var(--hb-space-7);
 	min-width: 0;
 	margin: 0;
 	padding: 0;
@@ -251,11 +198,6 @@
 	opacity: 0.6;
 }
 
-.hb-vault-field-error {
-	color: var(--hb-status-error);
-	font-size: var(--hb-text-xs);
-}
-
 .hb-vault-preview {
 	padding: var(--hb-space-5) var(--hb-space-6);
 	border-radius: var(--hb-radius-control);
@@ -276,12 +218,6 @@
 	gap: var(--hb-space-4);
 	padding-top: var(--hb-space-7);
 	border-top: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-vault-decide-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-4);
 }
 
 .hb-vault-decide-note {
@@ -368,20 +304,4 @@
 	flex-direction: column;
 	align-items: flex-start;
 	gap: var(--hb-space-4);
-}
-
-@media (max-width: 560px) {
-	.hb-vault-terms-edit {
-		grid-template-columns: minmax(0, 1fr);
-	}
-
-	.hb-vault-decide-actions > .hb-button {
-		flex: 1 1 100%;
-		min-height: var(--hb-control-lg);
-	}
-
-	.hb-vault-page-viewer {
-		margin-left: 0;
-		flex-basis: 100%;
-	}
 }

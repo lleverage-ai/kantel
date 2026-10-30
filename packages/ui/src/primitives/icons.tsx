@@ -239,9 +239,66 @@ export const RewindIcon = (props: IconProps) => (
 		<path d="M5.5 9.5 2.5 6.5l3-3M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7.5" />
 	</Svg>
 );
+/**
+ * Thinking: a brain, after Lucide's brain, which T3 Code's live activity row and thinking picker use. Drawn on Lucide's
+ * 24 unit grid and scaled to this one, with the stroke scaled back up to 1.5.
+ */
+export const BrainIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<g transform="scale(0.6667)" strokeWidth={2.25}>
+			<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+			<path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+			<path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+			<path d="M12 5v13" />
+		</g>
+	</Svg>
+);
+/** Access: a padlock, for what an agent may do without asking (the composer's access picker). */
+export const LockIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="3.25" y="7.25" width="9.5" height="6.75" rx="1.5" />
+		<path d="M5.25 7.25V5.25a2.75 2.75 0 0 1 5.5 0v2" />
+	</Svg>
+);
 /** A model: a four-point spark. */
 export const SparkIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M8 1.75c.4 3.3 2.95 5.85 6.25 6.25-3.3.4-5.85 2.95-6.25 6.25C7.6 10.95 5.05 8.4 1.75 8 5.05 7.6 7.6 5.05 8 1.75z" />
+	</Svg>
+);
+/** The sidebar: a window with its left pane drawn, for the button that collapses and expands it. */
+export const SidebarIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75" />
+		<path d="M6 2.75v10.5" />
+	</Svg>
+);
+/** Skills: an open book, the instructions an agent can read. */
+export const BookIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M8 4.25C6.75 3.25 4.75 2.75 1.75 2.75v9.5c3 0 5 .5 6.25 1.5 1.25-1 3.25-1.5 6.25-1.5v-9.5c-3 0-5 .5-6.25 1.5z" />
+		<path d="M8 4.25v9.5" />
+	</Svg>
+);
+/** Memory: stacked layers, what an agent has learnt and keeps. */
+export const LayersIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M8 1.75l6.25 3.25L8 8.25 1.75 5z" />
+		<path d="M1.75 8L8 11.25 14.25 8M1.75 11L8 14.25 14.25 11" />
+	</Svg>
+);
+/** People: two heads and shoulders, for the organisation's members. */
+export const PeopleIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<circle cx="6" cy="5.5" r="2.5" />
+		<path d="M1.75 13.5a4.25 4.25 0 0 1 8.5 0" />
+		<path d="M10.5 3.25a2.25 2.25 0 0 1 0 4.5M12 9.75a4 4 0 0 1 2.25 3.75" />
+	</Svg>
+);
+/** A log: lines of entries, each with a mark, for the audit log. */
+export const ListIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M6 4h7.5M6 8h7.5M6 12h7.5" />
+		<path d="M2.75 4h.01M2.75 8h.01M2.75 12h.01" strokeWidth={2} />
 	</Svg>
 );

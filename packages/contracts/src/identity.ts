@@ -294,6 +294,18 @@ export interface IdentityDirectory {
 	listApiKeys(ctx: CallContext, input?: { readonly serviceId?: ServiceId }): Promise<readonly ApiKey[]>;
 
 	/**
+	 * The signed-in person's own settings, such as the console's theme. They belong to the person, not the organisation,
+	 * so they follow them into every organisation they act in. Needs a role in `ctx.organisationId`; only a person has
+	 * settings, so any other actor is `forbidden`. A person who never set one has `{}`.
+	 */
+	userPreferences(ctx: CallContext): Promise<UserPreferences>;
+	/**
+	 * Changes the caller's settings, as `userPreferences` reads them, and answers with them as now kept. A field left out
+	 * stays as it is; `null` clears it. A theme that isn't a `THEME_PREFERENCE_PATTERN` is `invalid`.
+	 */
+	setUserPreferences(ctx: CallContext, change: UserPreferencesChange): Promise<UserPreferences>;
+
+	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
 	 * caller learns nothing about which keys exist). A live key's use is recorded as its `lastUsedAt` (see
 	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call (settled question 13): Harbour's gateway calls it as `system` to
@@ -438,7 +450,31 @@ export interface MeResponse {
 	 * holds its role on each of its projects and nothing across the organisation.
 	 */
 	readonly roles: readonly HeldRole[];
+	/** A person's own settings (`UserPreferences`). Absent for any caller but a person. */
+	readonly preferences?: UserPreferences;
 }
+
+/**
+ * A person's own settings. `theme` is the console's theme: a theme's ID, such as `harbour` or `catppuccin-latte`, or
+ * `system` to follow the device's light or dark setting. Harbour keeps it as given; the console decides what an ID it
+ * doesn't know means (its default theme).
+ */
+export interface UserPreferences {
+	readonly theme?: string;
+}
+
+/** A change to a person's settings: a field left out stays as it is, `null` clears it. */
+export type UserPreferencesChange = { readonly [K in keyof UserPreferences]?: UserPreferences[K] | null };
+
+/** A theme preference: a theme's ID (lower-case letters, digits and dashes, at most 64) or `system`. */
+export const THEME_PREFERENCE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * The signed-in person's settings over HTTP. `PATCH ME_PREFERENCES_PATH` with a `UserPreferencesChange` (as
+ * `application/json`, else 415) answers 200 with the `UserPreferences` now kept. `GET ME_PATH` carries them too, as
+ * `MeResponse.preferences`. Only a person has settings: any other caller is 403 `forbidden`. A malformed body is 400.
+ */
+export const ME_PREFERENCES_PATH = "/v1/me/preferences";
 
 export interface ProjectsResponse {
 	readonly items: readonly Project[];

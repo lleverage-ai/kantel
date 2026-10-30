@@ -1,38 +1,68 @@
-/* The turn's working row: the working dot, then "Working for 12s" in muted small type with tabular numbers, so the
-   timer does not shift as it counts. One line as tall as an answer's first line. The dot sits on the words' baseline
-   and moves up onto the middle of their capitals (--hb-on-cap), as StatusLabel's does, so it looks centred on the
-   words in any font. */
+/* The turn's header, after T3 Code's working row (TimelineWorkGroupRows.tsx:294-306): "Working for 12s" in muted
+   small type with tabular numbers, so the timer does not shift as it counts, on one 24px line, with a hairline divider
+   under it that separates the person's message from what the agent does about it. It doesn't breathe: the activity
+   row at the turn's foot does, so only one thing on the screen moves at a time. */
 .hb-working-indicator {
 	display: flex;
-	align-items: baseline;
-	gap: var(--hb-space-4);
+	align-items: center;
 	min-width: 0;
-	padding: var(--hb-space-1) 0;
+	min-height: var(--hb-control-xs);
+	padding: var(--hb-space-1) 0 var(--hb-space-4);
+	border-bottom: var(--hb-hairline) solid var(--hb-border-strong);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-sm);
-	line-height: calc(var(--hb-text-md) * var(--hb-leading-prose));
+	line-height: var(--hb-leading-tight);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 }
 
-.hb-working-indicator > .hb-status-dot {
-	translate: 0 var(--hb-on-cap);
-}
-
-/* The words breathe, as a skeleton does (hb-shimmer, an opacity animation): the compositor runs it, so it costs the
-   page nothing per frame. A light swept across the words (T3 Code's shimmer, a moving background clipped to the text)
-   repainted them on the main thread every frame, which on a browser without a GPU cost a fifth of the main thread
-   while it sat still and stuttered the answer streaming above it. Under reduced motion it stops, and the words stay
-   muted. */
 .hb-working-indicator-text {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	animation: hb-shimmer var(--hb-duration-shimmer) ease-in-out infinite;
+}
+
+/* The activity row, after T3 Code's LiveActivityRow (TimelineWorkGroupRows.tsx:383-420): the work log's row shape,
+   so it lines up with the tool calls above it (a 16px icon, 13px muted words, a 24px line), the icon faint and the
+   words trimmed to their capitals, as a tool row's label is, so icon and words share one centre. */
+.hb-live-activity {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	min-height: var(--hb-control-xs);
+	padding: var(--hb-space-1) 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+	white-space: nowrap;
+}
+
+.hb-live-activity-icon {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-icon-md);
+	height: var(--hb-icon-md);
+	color: var(--hb-text-faint);
+}
+
+/* The words breathe, as a skeleton does (hb-shimmer, an opacity animation), in --hb-ease-breathe's steps. A light
+   swept across the words (T3 Code's shimmer, a moving background clipped to the text) repainted them on the main
+   thread every frame, and so does a smooth opacity curve in a browser without a GPU; either stuttered the answer
+   streaming above it. Under reduced motion it stops, and the words stay muted. */
+.hb-live-activity-text {
+	min-width: 0;
+	padding-block: var(--hb-trim-room);
+	text-box: trim-both cap alphabetic;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	animation: hb-shimmer var(--hb-duration-shimmer) var(--hb-ease-breathe) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-working-indicator-text {
+	.hb-live-activity-text {
 		animation: none;
 	}
 }

@@ -19,20 +19,36 @@
  *   (`frame-ancestors`), since an outside app frames it through the embed API.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
-import { BROWSER_VIEW_API, createBrowserViewSigner, viewClaims } from "@harbour/browser/runtime";
+import {
+	BROWSER_VIEW_API,
+	createBrowserViewSigner,
+	VIEW_FORWARD_HEADERS,
+	VIEWER_PAGE,
+	viewClaims,
+	viewerPageHeaders,
+} from "@harbour/browser/runtime";
 import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
 import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
-import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
+import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
+
+/** Where the console uploads a file for a prompt (`src/attachments.ts`). */
+export const ATTACHMENTS_PATH = "/v1/attachments";
+/** The largest file that API takes, in bytes. */
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
 /** Where a host creates a seeded workspace. */
 const WORKSPACES_PATH = "/v1/workspaces";
+/** The shares API (`@harbour/workspace/shares-api`), besides a workspace's own `/shares`. */
+const SHARES_PATH = "/v1/shares";
+/** A share or an invite is a small JSON body. */
+const SHARE_BODY_LIMIT = 8 * 1024;
 /** The one vault object's name. Platform items live outside every organisation, so the deployment has one vault. */
 export const VAULT_NAME = "vault";
 
@@ -152,44 +168,12 @@ export interface RouteEnv<StackId = unknown, VaultId = unknown> extends Placemen
 	readonly HARBOUR_EMBED_ORIGINS?: string;
 }
 
-/** The viewer page's path: `/browser/<browser>`, its token after `#`. */
-export const VIEWER_PAGE = /^\/browser\/[A-Za-z0-9-]{1,64}\/?$/;
-
-/**
- * The origins in `HARBOUR_EMBED_ORIGINS` that may frame the viewer: each an `https://` origin (or `http://localhost`
- * and `127.0.0.1` with any port, for development). Anything else, a path or a wildcard included, is dropped.
- */
-export function embedOrigins(value: string | undefined): readonly string[] {
-	const origins: string[] = [];
-	for (const each of (value ?? "").split(/[\s,]+/)) {
-		if (each === "") continue;
-		let url: URL;
-		try {
-			url = new URL(each);
-		} catch {
-			continue;
-		}
-		const local = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-		if ((url.protocol !== "https:" && !local) || url.origin !== each.replace(/\/$/, "")) continue;
-		// A plain host name only: no wildcard, which `URL` lets through.
-		if (!/^[a-z0-9.-]+$/.test(url.hostname)) continue;
-		if (!origins.includes(url.origin)) origins.push(url.origin);
-	}
-	return origins;
-}
+export { embedOrigins, VIEWER_PAGE } from "@harbour/browser/runtime";
 
 /** The viewer page as the assets answer it, never cached or leaking a referrer, framed only where allowed. */
 async function viewerPage(request: Request, env: RouteEnv): Promise<Response> {
 	const answer = await env.ASSETS.fetch(request);
-	const headers = new Headers(answer.headers);
-	headers.set("cache-control", "no-store");
-	headers.set("referrer-policy", "no-referrer");
-	headers.set(
-		"content-security-policy",
-		`frame-ancestors ${["'self'", ...embedOrigins(env.HARBOUR_EMBED_ORIGINS)].join(" ")}`,
-	);
-	headers.delete("x-frame-options");
-	headers.delete("etag");
+	const headers = viewerPageHeaders(answer.headers, env.HARBOUR_EMBED_ORIGINS);
 	return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers });
 }
 
@@ -212,14 +196,7 @@ async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Pro
 		// The self-hosted host checks the token too (it holds the same key). The path, query and token go; no cookie does.
 		const url = new URL(request.url);
 		const headers = new Headers();
-		for (const name of [
-			"authorization",
-			"upgrade",
-			"connection",
-			"sec-websocket-key",
-			"sec-websocket-version",
-			"sec-websocket-protocol",
-		]) {
+		for (const name of VIEW_FORWARD_HEADERS) {
 			const value = request.headers.get(name);
 			if (value !== null) headers.set(name, value);
 		}
@@ -253,6 +230,25 @@ export async function routeRequest<StackId, VaultId>(
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}
+	if (
+		(request.method === "POST" || request.method === "PATCH") &&
+		(path.startsWith(`${SHARES_PATH}/`) || (path.startsWith(`${WORKSPACES_PATH}/`) && path.endsWith("/shares")))
+	) {
+		// And for sharing a file or changing a share: a stranger is refused before the small JSON body is read.
+		const forwarded = await buffered(request, SHARE_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	// A share link's page, without sign-in (the stack checks the token).
+	if (path.startsWith("/shared/")) {
+		return stack().fetch(new Request(request.url, { method: request.method, headers: request.headers }));
+	}
+	if (request.method === "PUT" && path.startsWith(`${WORKSPACES_PATH}/`)) {
+		// And for writing a file (a document the person edited): the stack refuses a viewer before it reads the bytes.
+		const forwarded = await buffered(request, DEFAULT_MAX_FILE_BODY_BYTES);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
 	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
 		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
 		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
@@ -264,6 +260,13 @@ export async function routeRequest<StackId, VaultId>(
 		// And for importing a skill, loading a snapshot, a search or a recall: the stack refuses a stranger before it reads
 		// the JSON body, at most a skill's files or a space's concepts.
 		const forwarded = await buffered(request, skills ? SKILL_IMPORT_BODY_LIMIT : MEMORY_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	if (request.method === "POST" && path === ATTACHMENTS_PATH) {
+		// And for a prompt's attachment: the stack refuses someone who can't start a session in the project before it reads
+		// the file, at most 20 MB.
+		const forwarded = await buffered(request, MAX_ATTACHMENT_BYTES);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

@@ -9,9 +9,10 @@ pnpm --filter @harbour/console dev             # http://127.0.0.1:5173, on that 
 pnpm --filter @harbour/console dev:recorded    # http://127.0.0.1:5173, on recorded sessions, no backend
 ```
 
-`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`) and signs each call in
-as the dev admin with a token from the gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway
-serves the console itself, and Cloudflare Access signs the calls in.
+`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`), WebSocket upgrades
+included (a session's events, a browser's live view), and signs each call in as the dev admin with a token from the
+gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway serves the console itself, and
+Cloudflare Access signs the calls in.
 
 ## Routes
 
@@ -30,8 +31,12 @@ serves the console itself, and Cloudflare Access signs the calls in.
 | `/projects/:projectId/sessions/:sessionId/files` | The session's workspace files: the tree, and the open file beside it |
 | `/projects/:projectId/sessions/:sessionId/files/:path` | One file open, its whole path as one encoded segment (`notes%2Fplan.md`) |
 
-Schedules, the vault page and the audit log are the organisation's, so the sidebar lists them under Organisation and
-shows no project's sessions beside them. On a phone each fills the screen with *Back to sessions*.
+The sidebar is `@harbour/ui`'s `Sidebar`: the projects, with the current one's sessions nested under it, then at its
+foot the pages outside projects (Skills and Memory under Agent; Schedules, the vault page, the audit log and API keys
+under Organisation), each with an icon, and who is signed in. On one of those pages the last project you were in (or
+the first) keeps its sessions open. Its button or Ctrl+B (⌘B) collapses it to a rail of icons, remembered in this
+browser. The main area takes the rest of the width; only reading text (the transcript, notes, forms) keeps a
+measure. On a phone each page fills the screen with *Back to sessions*, and there is no rail.
 
 `?source=recorded` or `?source=api` picks the source for the tab (the default is `api`, or `VITE_HARBOUR_SOURCE`).
 `?profile=1` adds the render profiler, `?speed=2` plays recordings faster and `?delay=1500` waits longer before an
@@ -49,7 +54,9 @@ Two implementations:
 - `createApiClient` (`src/api/http.ts`): the session API under `/v1` on the console's origin. A session's frames come
   as server-sent events (`/v1/sessions/:id/events?after=<cursor>`); when the stream drops, `SessionClient`
   reconnects with backoff and resumes after the last cursor it applied. Prompt, steer, follow-up and abort are POSTs
-  with a request id, so a retry sends once. While the agent runs, the composer's button steers and "Send after this
+  with a request id, so a retry sends once. A message or steer shows in the transcript the moment it is sent and the
+  composer clears; the stream's copy, matched by its request id, takes its place (`src/state/outbox.ts`), and one
+  that fails stays in place with Try again and Edit. While the agent runs, the composer's button steers and "Send after this
   run" queues a follow-up. The API has no projects list, no "who am I" and no list events yet, so the projects are
   the ones the caller's sessions are in, named by id, and a project's list is polled every 3 seconds. A session's
   files come from the workspace read API (`@harbour/workspace/read-api`, `/v1/workspaces/:id/files` and `/content`),

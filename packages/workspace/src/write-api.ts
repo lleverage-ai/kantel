@@ -38,6 +38,10 @@
  * route can seed them (M2-BE1).
  * Errors are the read API's: `{ "error": { "code", "message" } }` with `errorStatus`'s status, and 413 for a body over
  * the limit.
+ *
+ * `POST /v1/workspaces/:id/fork` with `{ "projectId", "sessionId"?, "version"? }` forks a workspace the caller may read
+ * into a project it operates (`Workspaces.fork`): the new workspace shares the source's bodies, so it costs one tree
+ * whatever its size (docs/design/workspace-hydration.md).
  */
 import {
 	type CallContext,
@@ -70,9 +74,18 @@ export interface CreateWorkspaceBody {
 	readonly mounts?: readonly MountRequest[];
 }
 
+/** The largest file `PUT <basePath>/:id/content` writes: a document the person edited, not an upload. */
+export const DEFAULT_MAX_FILE_BODY_BYTES = 2 * 1024 * 1024;
+
+/** Times the content route re-reads the head when another commit moved it between its read and its commit. */
+const CONTENT_COMMIT_ATTEMPTS = 3;
+
 export interface WorkspaceWriteApiOptions {
-	/** Creates the workspace. Give it the `seeders` (a git fetcher) the host can fetch with. */
-	readonly workspaces: Pick<Workspaces, "create">;
+	/**
+	 * Creates the workspace (give it the `seeders`, a git fetcher, the host can fetch with) and, with `get`, `stat` and
+	 * `commit`, writes one file for the content route. Without those the content route answers `not_supported`.
+	 */
+	readonly workspaces: Pick<Workspaces, "create"> & Partial<Pick<Workspaces, "get" | "stat" | "commit" | "fork">>;
 	/** Project access, for the operator check the route makes before anything else. */
 	readonly access: ProjectAccess;
 	/** Who is calling, from the request. Throw a `HarbourError` to refuse; its code sets the status. */
@@ -83,15 +96,25 @@ export interface WorkspaceWriteApiOptions {
 	readonly maxBodyBytes?: number;
 }
 
-/** Handles `POST <basePath>`; resolves `null` for anything else, so a gateway can pass it to the read API. */
+/**
+ * Handles `POST <basePath>` and `PUT <basePath>/:id/content`; resolves `null` for anything else, so a gateway can pass
+ * it to the read API.
+ */
 export type WorkspaceWriteHandler = (request: Request) => Promise<Response | null>;
 
 export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): WorkspaceWriteHandler {
 	const base = (options.basePath ?? WORKSPACE_READ_API_BASE).replace(/\/+$/, "");
 	const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_SEED_BODY_BYTES;
+	const writeFile = createContentWrite(options, base);
 
 	return async (request) => {
 		const url = new URL(request.url);
+		if (request.method === "PUT") return writeFile(request, url);
+		const forkOf =
+			request.method === "POST" && url.pathname.startsWith(`${base}/`)
+				? url.pathname.slice(base.length).match(/^\/([^/]+)\/fork\/?$/)
+				: null;
+		if (forkOf !== null) return fork(request, decodeURIComponent(forkOf[1] ?? ""));
 		if (request.method !== "POST" || url.pathname.replace(/\/+$/, "") !== base) return null;
 		try {
 			const ctx = await options.authenticate(request);
@@ -116,6 +139,127 @@ export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): Work
 			return errorResponse(500, "unavailable", "the workspace write API failed");
 		}
 	};
+
+	/**
+	 * `POST <base>/:id/fork` with `{ projectId, sessionId?, version? }`: a new workspace in the project that shares the
+	 * source's bodies (`Workspaces.fork`), 201 with its record. Operator on the target project, checked first; the fork
+	 * then needs viewer on the source, as reading it does.
+	 */
+	async function fork(request: Request, sourceId: string): Promise<Response> {
+		try {
+			const forkWorkspace = options.workspaces.fork;
+			if (forkWorkspace === undefined) {
+				throw new HarbourError("not_supported", "this host's workspaces cannot be forked");
+			}
+			const ctx = await options.authenticate(request);
+			const text = await readBounded(request, maxBodyBytes);
+			if (text === undefined) {
+				return errorResponse(413, "refused", `the body is larger than this route reads (${maxBodyBytes} bytes)`);
+			}
+			const raw = parseJson(text);
+			const target = parseTarget(raw);
+			const version = raw.version;
+			if (version !== undefined && (!Number.isSafeInteger(version) || (version as number) < 0)) {
+				throw invalid("version must be a version number");
+			}
+			await options.access.require(ctx, {
+				projectId: target.projectId,
+				...(target.sessionId === undefined ? {} : { sessionId: target.sessionId }),
+				needed: "operator",
+				operation: "workspace.create",
+			});
+			const record = await forkWorkspace.call(options.workspaces, ctx, sourceId, {
+				owner: { kind: "project", organisationId: ctx.organisationId, projectId: target.projectId },
+				...(target.sessionId === undefined ? {} : { sessionId: target.sessionId }),
+				...(version === undefined ? {} : { version: version as number }),
+			});
+			return json(record, 201, { Location: `${base}/${encodeURIComponent(record.id)}` });
+		} catch (error) {
+			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			return errorResponse(500, "unavailable", "the workspace write API failed");
+		}
+	}
+}
+
+/**
+ * `PUT <base>/:id/content?path=`: writes one file of the workspace with the body's bytes, as a new version, and answers
+ * `{ version, digest }`. The person editing a document saves it this way. With `If-Match: "<digest>"` (the `ETag` the
+ * read API sent) the file must still be what the writer read, or the route answers `conflict` (409): a whole-workspace
+ * base version would refuse an edit whenever the agent changed any other file. `If-None-Match: *` creates a file that
+ * must not exist yet. The workspace's own checks apply: operator on its project, and never a path under a mount.
+ */
+function createContentWrite(
+	options: WorkspaceWriteApiOptions,
+	base: string,
+): (request: Request, url: URL) => Promise<Response | null> {
+	return async (request, url) => {
+		if (!url.pathname.startsWith(`${base}/`)) return null;
+		const segments = url.pathname.slice(base.length + 1).split("/");
+		if (segments.length !== 2 || segments[1] !== "content" || segments[0] === "") return null;
+		try {
+			const { get, stat, commit } = options.workspaces;
+			if (get === undefined || stat === undefined || commit === undefined) {
+				throw new HarbourError("not_supported", "this host doesn't write workspace files");
+			}
+			const ctx = await options.authenticate(request);
+			const id = decodeURIComponent(segments[0] ?? "") as WorkspaceRecord["id"];
+			const path = url.searchParams.get("path") ?? "";
+			if (path === "" || path.startsWith("/")) {
+				throw invalid("path must be a file's path in the workspace, not under a mount");
+			}
+			const ifMatch = unquote(request.headers.get("If-Match"));
+			const mustBeNew = request.headers.get("If-None-Match")?.trim() === "*";
+			const limit = options.maxBodyBytes ?? DEFAULT_MAX_FILE_BODY_BYTES;
+			const content = await readBoundedBytes(request, Math.min(limit, DEFAULT_MAX_FILE_BODY_BYTES));
+			if (content === undefined) {
+				return errorResponse(
+					413,
+					"refused",
+					`the file is larger than this route writes (${DEFAULT_MAX_FILE_BODY_BYTES} bytes)`,
+				);
+			}
+			for (let attempt = 1; ; attempt++) {
+				const record = await get(ctx, id);
+				const current = await stat(ctx, id, path, { version: record.head }).then(
+					(entry) => entry,
+					(error: unknown) => {
+						if (isHarbourError(error, "not_found")) return undefined;
+						throw error;
+					},
+				);
+				if (current !== undefined && current.kind !== "file") throw invalid(`${path} is a directory`);
+				if (mustBeNew && current !== undefined) {
+					throw new HarbourError("conflict", `${path} already exists`, { path });
+				}
+				if (ifMatch !== undefined && ifMatch !== "*" && current?.digest !== ifMatch) {
+					throw new HarbourError("conflict", `${path} changed since it was read`, { path });
+				}
+				try {
+					const result = await commit(ctx, id, {
+						baseVersion: record.head,
+						changes: [{ op: "put", path, content }],
+						message: `edit ${path}`,
+					});
+					const written = await stat(ctx, id, path, { version: result.version });
+					return json({ version: result.version, digest: written.digest ?? null }, 200, {
+						...(written.digest === undefined ? {} : { ETag: `"${written.digest}"` }),
+					});
+				} catch (error) {
+					// Another commit moved the head after this read it: read again, and check the file again.
+					if (!isHarbourError(error, "conflict") || attempt >= CONTENT_COMMIT_ATTEMPTS) throw error;
+				}
+			}
+		} catch (error) {
+			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			return errorResponse(500, "unavailable", "the workspace write API failed");
+		}
+	};
+}
+
+function unquote(header: string | null): string | undefined {
+	if (header === null || header.trim() === "") return undefined;
+	const first = header.split(",")[0]?.trim() ?? "";
+	return first.replace(/^W\//, "").replace(/^"|"$/g, "");
 }
 
 /** The input `Workspaces.create` takes, from a checked body: owned by the project, in the caller's organisation. */
@@ -199,12 +343,18 @@ function parseSeed(value: unknown): SeedSpec {
 
 /** The body as text, or `undefined` once it passes `limit` bytes. Counts what arrives, not what Content-Length claims. */
 async function readBounded(request: Request, limit: number): Promise<string | undefined> {
+	const bytes = await readBoundedBytes(request, limit);
+	return bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+}
+
+/** The body's bytes, or `undefined` once it passes `limit` bytes. */
+async function readBoundedBytes(request: Request, limit: number): Promise<Uint8Array | undefined> {
 	const declared = Number(request.headers.get("content-length") ?? "0");
 	if (declared > limit) {
 		await request.body?.cancel();
 		return undefined;
 	}
-	if (request.body === null) return "";
+	if (request.body === null) return new Uint8Array();
 	const reader = request.body.getReader();
 	const chunks: Uint8Array[] = [];
 	let size = 0;
@@ -224,7 +374,7 @@ async function readBounded(request: Request, limit: number): Promise<string | un
 		bytes.set(chunk, offset);
 		offset += chunk.byteLength;
 	}
-	return new TextDecoder().decode(bytes);
+	return bytes;
 }
 
 const SAFE_HEADERS = {
@@ -258,6 +408,20 @@ export interface WorkspaceWriteClientOptions {
 export interface WorkspaceWriteClient {
 	/** Creates a seeded workspace; errors come back as `HarbourError` with the server's code and message. */
 	create(body: CreateWorkspaceBody, init?: { readonly signal?: AbortSignal }): Promise<WorkspaceRecord>;
+	/** Forks a workspace into the project (`POST /:id/fork`), sharing its bodies. */
+	fork(
+		workspaceId: string,
+		body: ForkWorkspaceBody,
+		init?: { readonly signal?: AbortSignal },
+	): Promise<WorkspaceRecord>;
+}
+
+/** What a host sends to fork a workspace. */
+export interface ForkWorkspaceBody {
+	readonly projectId: string;
+	readonly sessionId?: SessionId;
+	/** The source's version to fork; its head when absent. */
+	readonly version?: number;
 }
 
 export function createWorkspaceWriteClient(options: WorkspaceWriteClientOptions): WorkspaceWriteClient {
@@ -266,6 +430,16 @@ export function createWorkspaceWriteClient(options: WorkspaceWriteClientOptions)
 	return {
 		async create(body, init) {
 			const response = await fetcher(base, {
+				method: "POST",
+				headers: { ...options.headers, "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+				...(init?.signal === undefined ? {} : { signal: init.signal }),
+			});
+			if (!response.ok) throw await toError(response);
+			return (await response.json()) as WorkspaceRecord;
+		},
+		async fork(workspaceId, body, init) {
+			const response = await fetcher(`${base}/${encodeURIComponent(workspaceId)}/fork`, {
 				method: "POST",
 				headers: { ...options.headers, "Content-Type": "application/json" },
 				body: JSON.stringify(body),

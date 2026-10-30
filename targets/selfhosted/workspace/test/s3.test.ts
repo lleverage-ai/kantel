@@ -91,4 +91,27 @@ describe("createS3Objects", () => {
 		expect(await codeOf(objects.get("a"))).toBe("unavailable");
 		expect(await codeOf(objects.put("a", new Uint8Array()))).toBe("unavailable");
 	});
+
+	it("reads a range with a Range header on a signed request, and slices a whole object a store sent instead", async () => {
+		const ranges: (string | null)[] = [];
+		const replies = [
+			new Response("cde", { status: 206 }),
+			new Response("abcdefg", { status: 200 }),
+			new Response(null, { status: 404 }),
+		];
+		const fake: typeof fetch = async (input, init) => {
+			const request = input instanceof Request ? input : new Request(input, init);
+			ranges.push(request.headers.get("range"));
+			expect(request.headers.get("authorization")?.startsWith("AWS4-HMAC-SHA256")).toBe(true);
+			const reply = replies.shift();
+			if (reply === undefined) throw new Error("unexpected request");
+			return reply;
+		};
+		const objects = createS3Objects({ ...base, fetch: fake });
+		const text = (bytes: Uint8Array | undefined) => (bytes === undefined ? undefined : new TextDecoder().decode(bytes));
+		expect(text(await objects.getRange("p", 2, 3))).toBe("cde");
+		expect(text(await objects.getRange("p", 2, 3))).toBe("cde");
+		expect(await objects.getRange("gone", 0, 1)).toBeUndefined();
+		expect(ranges).toEqual(["bytes=2-4", "bytes=2-4", "bytes=0-0"]);
+	});
 });

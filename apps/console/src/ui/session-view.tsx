@@ -1,86 +1,158 @@
-import type { Cursor, SessionStatus, TranscriptItem } from "@harbour/protocol";
+import type { Cursor, DraftDocument, PresentedFile, ToolItem } from "@harbour/protocol";
 import {
+	type BrowserEntryState,
 	BrowserLiveView,
+	BrowserPanel,
 	type BrowserViewSlot,
 	Button,
 	Composer,
 	type ConnectionStateValue,
+	type Crumb,
 	DotsIcon,
+	draftDocument,
 	FileIcon,
 	IconButton,
 	Notice,
+	presentedKey,
 	SessionHeader,
-	type Status,
 	Transcript,
 } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
-import { needsOf } from "../state/needs.ts";
+import { type Outgoing, withOutbox } from "../state/outbox.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
 	browserRequestOf,
 	composerState,
+	delivering,
+	deliveryOf,
 	editBlocked,
 	offersFollowUp,
 	type SessionActions,
 	transcriptWorking,
 } from "./actions.ts";
-import type { BrowserLiveStore } from "./browser-live.ts";
+import type { BrowserLive, BrowserLiveStore } from "./browser-live.ts";
+import { COMPOSER_ACCESS } from "./composer-access.ts";
+import { DocumentView, DraftDocumentView } from "./document-view.tsx";
+import { createAutoOpen } from "./presented.ts";
+import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
+import { useSessionBrowser } from "./session-browser.tsx";
+import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 
 // The console is a host for @harbour/ui: the header, transcript and composer are the library's, and this file only
 // maps the session client's state onto their props. Anything that looks like a new component belongs in
 // packages/ui, not here (AGENTS.md).
 
-/** The protocol's run status in the library's words. A finished run reads Done; a stopped one is idle. */
-const statusOf: Record<SessionStatus, Status> = {
-	idle: "done",
-	running: "working",
-	waiting: "waiting",
-	done: "done",
-	failed: "error",
-	cancelled: "idle",
-};
-
-/** The header's status: a waiting session says whether it needs an approval or an answer, as the list does. */
-export function headerStatus(status: SessionStatus, items: readonly TranscriptItem[]): Status {
-	if (status === "waiting" && needsOf(items) === "approval") return "approval";
-	return statusOf[status];
-}
-
 function connectionOf(health: ConnectionHealth): ConnectionStateValue {
 	return health.status === "offline" ? { state: "offline", retryAt: health.retryAt } : { state: health.status };
 }
 
-/** Data freshness: is what's shown the host's latest? Separate from whether the link is up. */
+/**
+ * Data freshness: is what's shown the host's latest? Separate from whether the link is up. A stream fact for the options
+ * menu, never the top bar, which holds breadcrumbs only.
+ */
 function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cursor | undefined }) {
 	switch (freshness.state) {
 		case "loading":
-			return <span className="console-fresh">Loading</span>;
+			return <>Loading</>;
 		case "catching-up":
 			return (
-				<span className="console-fresh">
+				<>
 					Catching up to <code>{freshness.head}</code>
-				</span>
+				</>
 			);
 		case "stale":
 			return (
-				<span className="console-fresh console-fresh-stale">
+				<>
 					May be behind, showing <code>{cursor ?? "nothing"}</code>
-				</span>
+				</>
 			);
 		case "current":
 			return (
-				<span className="console-fresh">
+				<>
 					Up to date at <code>{cursor ?? "start"}</code>
-				</span>
+				</>
 			);
 	}
 }
 
+const NOTHING_OUTGOING: readonly Outgoing[] = [];
+
 /** A browser's live view, as the session screen's link store has it. */
-function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserViewSlot }) {
+type Tabs = ((end: ReactNode) => ReactNode) | undefined;
+
+/** A browser's view as the timeline's card says it: live, a replay, closed with none, or not known yet. */
+export function entryStateOf(view: BrowserLive): BrowserEntryState | undefined {
+	if (view.status === "ended") return "ended";
+	if (view.status !== "live") return undefined;
+	return view.source?.mode === "replay" ? "replay" : "live";
+}
+
+/**
+ * Where each of the session's browsers is, from the live store, for the timeline's cards: asking for each browser's
+ * link (not its stream, which only an open view costs). `undefined` with no store (a recorded session).
+ */
+function useBrowserStates(
+	store: BrowserLiveStore | undefined,
+	browsers: readonly BrowserViewSlot[],
+): ReadonlyMap<string, BrowserEntryState> | undefined {
+	const ids = browsers.map((slot) => slot.browserSessionId).join("\n");
+	const subscribe = useCallback(
+		(listener: () => void) => {
+			if (store === undefined || ids === "") return () => {};
+			const stops = ids.split("\n").map((id) => store.subscribe(id, listener));
+			return () => {
+				for (const stop of stops) stop();
+			};
+		},
+		[store, ids],
+	);
+	const key = useSyncExternalStore(subscribe, () =>
+		store === undefined || ids === ""
+			? ""
+			: ids
+					.split("\n")
+					.map((id) => `${id}\t${entryStateOf(store.get(id)) ?? ""}`)
+					.join("\n"),
+	);
+	return useMemo(() => {
+		if (store === undefined) return undefined;
+		const states = new Map<string, BrowserEntryState>();
+		for (const line of key === "" ? [] : key.split("\n")) {
+			const [id, state] = line.split("\t");
+			if (id !== undefined && state !== undefined && state !== "") states.set(id, state as BrowserEntryState);
+		}
+		return states;
+	}, [store, key]);
+}
+
+function LiveBrowser({
+	store,
+	slot,
+	tabs,
+}: {
+	store: BrowserLiveStore | undefined;
+	slot: BrowserViewSlot;
+	tabs: Tabs;
+}) {
+	if (store === undefined) {
+		// No live links here (a recorded session): the last screenshot the browser left.
+		return (
+			<BrowserLiveView
+				status="unavailable"
+				item={slot.item}
+				{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+				{...(slot.page === undefined ? {} : { page: slot.page })}
+				{...(tabs === undefined ? {} : { tabs })}
+			/>
+		);
+	}
+	return <StoredBrowser store={store} slot={slot} tabs={tabs} />;
+}
+
+function StoredBrowser({ store, slot, tabs }: { store: BrowserLiveStore; slot: BrowserViewSlot; tabs: Tabs }) {
 	const id = slot.browserSessionId;
 	const live = useSyncExternalStore(
 		useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]),
@@ -92,6 +164,8 @@ function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserVi
 			item={slot.item}
 			{...(live.source === undefined ? {} : { source: live.source })}
 			{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+			{...(slot.page === undefined ? {} : { page: slot.page })}
+			{...(tabs === undefined ? {} : { tabs })}
 			onEnded={() => store.disconnected(id)}
 		/>
 	);
@@ -99,7 +173,8 @@ function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserVi
 
 export function SessionView({
 	client,
-	project,
+	parents,
+	subagents,
 	actions,
 	onBack,
 	onFiles,
@@ -108,8 +183,13 @@ export function SessionView({
 	focusBrowser,
 }: {
 	client: SessionClient;
-	/** The project's name, shown with the session's facts. */
-	project?: string;
+	/**
+	 * The top bar's trail above this session, outermost first: its project, then for a subagent's session the sessions
+	 * that started it. Each goes back to its level.
+	 */
+	parents?: readonly Crumb[];
+	/** How subagent cards link to their sessions; without it they show what the call says, with nothing to open. */
+	subagents?: SubagentLinks;
 	actions: SessionActions;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
@@ -124,6 +204,13 @@ export function SessionView({
 }) {
 	const turnMissing = turn !== undefined && turnSearch === "missing";
 	const state = useSyncExternalStore(client.subscribe, client.getState);
+	const renderSubagent = useMemo(
+		() =>
+			subagents === undefined
+				? undefined
+				: (item: ToolItem) => <ConsoleSubagent key={item.callId} item={item} links={subagents} />,
+		[subagents],
+	);
 	const [menu, setMenu] = useState(false);
 	const menuRoot = useRef<HTMLDivElement>(null);
 	const loaded = state.items.length;
@@ -146,14 +233,45 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control, onFork, onEdit, browserLive } = actions;
-	const renderBrowserView = useMemo(
-		() =>
-			browserLive === undefined
-				? undefined
-				: (slot: BrowserViewSlot) => <LiveBrowser store={browserLive} slot={slot} />,
-		[browserLive],
+	const { control, onFork, onEdit, browserLive, readPresented, writePresented } = actions;
+
+	// The presented file open in the viewer. A file a call presents for the first time while the screen is open opens
+	// on its own; any file opens from its card.
+	const [openFile, setOpenFile] = useState<PresentedFile>();
+	const [autoOpen] = useState(createAutoOpen);
+	const ready = state.freshness.state !== "loading";
+	useEffect(() => {
+		if (!ready || readPresented === undefined) return;
+		const next = autoOpen.next(state.items);
+		if (next !== undefined) setOpenFile(next);
+	}, [autoOpen, ready, state.items, readPresented]);
+	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
+	const closeFile = useCallback(() => setOpenFile(undefined), []);
+
+	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
+	// saved document then opens there as its call finishes, starting from the draft's text.
+	const draft = useMemo(() => draftDocument(state.items), [state.items]);
+	const [closedDraft, setClosedDraft] = useState<string>();
+	const shownDraft =
+		draft !== undefined && draft.callId !== closedDraft && readPresented !== undefined ? draft : undefined;
+	const lastDraft = useRef<DraftDocument>(undefined);
+	if (shownDraft !== undefined) lastDraft.current = shownDraft;
+	const closeDraft = useCallback(() => setClosedDraft(draft?.callId), [draft?.callId]);
+	const panelOpen = shownDraft !== undefined || openFile !== undefined;
+
+	// The session's browser, in the same place at the right: an open file takes it, and a browsing run's "Show
+	// browser" puts the browser back.
+	const browser = useSessionBrowser(state.items, focusBrowser);
+	const showPanelBrowser = browser.show;
+	const onShowBrowser = useCallback(
+		(browserSessionId: string) => {
+			setOpenFile(undefined);
+			showPanelBrowser(browserSessionId);
+		},
+		[showPanelBrowser],
 	);
+	const browserPanel = panelOpen ? undefined : browser.panel;
+	const browserStates = useBrowserStates(browserLive, browser.browsers);
 	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
 	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
@@ -161,7 +279,16 @@ export function SessionView({
 		[state.status, actions.promptedAt],
 	);
 	// A prompt on its way to a run counts as running: the edit would race it.
-	const blocked = editBlocked(control, actions.promptedAt === undefined ? state.status : "running", actions.sending);
+	const blocked = editBlocked(
+		control,
+		actions.promptedAt === undefined ? state.status : "running",
+		actions.sending || delivering(actions.outbox),
+	);
+	// The transcript shows what was just sent at once, after the session's items, until the stream brings it.
+	const outbox = actions.outbox ?? NOTHING_OUTGOING;
+	const items = useMemo(() => withOutbox(state.items, outbox), [state.items, outbox]);
+	const { onRetrySend, onEditUnsent } = actions;
+	const delivery = useMemo(() => deliveryOf(outbox, onRetrySend, onEditUnsent), [outbox, onRetrySend, onEditUnsent]);
 	const messageActions = useMemo(
 		() => ({
 			// A recorded session can't be forked or edited: neither is offered.
@@ -176,22 +303,14 @@ export function SessionView({
 		<div className="console">
 			<SessionHeader
 				title={state.title}
-				status={actions.promptedAt === undefined ? headerStatus(state.status, state.items) : "working"}
+				{...(parents === undefined ? {} : { parents })}
 				connection={connectionOf(state.connection)}
 				loading={state.freshness.state === "loading" && state.title === ""}
 				onBack={onBack}
-				meta={
-					<>
-						{project === undefined ? null : <span className="console-project">{project}</span>}
-						<FreshnessText freshness={state.freshness} cursor={state.cursor} />
-					</>
-				}
 				actions={
 					<div className="console-actions">
 						{onFiles === undefined ? null : (
-							<Button variant="ghost" size="sm" icon={<FileIcon />} onClick={onFiles}>
-								Files
-							</Button>
+							<IconButton variant="ghost" label="Files" icon={<FileIcon />} onClick={onFiles} />
 						)}
 						<div className="console-menu-root" ref={menuRoot}>
 							<IconButton
@@ -217,6 +336,9 @@ export function SessionView({
 									<div className="console-menu-label">Stream</div>
 									<ul className="console-menu-facts">
 										<li>
+											<FreshnessText freshness={state.freshness} cursor={state.cursor} />
+										</li>
+										<li>
 											{loaded.toLocaleString("en-GB")} items loaded
 											{state.hasEarlier ? ", earlier ones on scroll" : ", the whole session"}
 										</li>
@@ -233,84 +355,146 @@ export function SessionView({
 					</div>
 				}
 			/>
-			<div className="console-main">
-				<Profiled id="transcript-list">
-					<Transcript
-						items={state.items}
-						hasOlder={state.hasEarlier}
-						loadingOlder={state.loadingOlder}
-						olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
-						onLoadOlder={client.loadOlder}
-						loading={state.freshness.state === "loading"}
-						error={state.error}
-						working={working}
-						onRowRender={recordRow}
-						messageActions={messageActions}
-						{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
-						{...(turn === undefined ? {} : { turn })}
-						{...(focusBrowser === undefined ? {} : { focusBrowser })}
-						dock={
-							<Composer
-								state={composerState(control, state.status, actions.sending)}
-								disabledReason={control.live ? undefined : control.reason}
-								label="Message"
-								banner={
-									actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
-										<>
-											{turnMissing ? (
-												<Notice level="info">The turn this link names isn't in the session.</Notice>
-											) : null}
-											{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
-											{browserRequest === undefined ? null : (
-												<Notice
-													level="warning"
-													action={
-														onBrowserDecision === undefined || !control.live ? undefined : (
-															<span className="console-browser-actions">
-																<Button
-																	size="sm"
-																	disabled={actions.sending}
-																	onClick={() => onBrowserDecision(browserRequest.callId, true)}
-																>
-																	Allow
-																</Button>
-																<Button
-																	variant="ghost"
-																	size="sm"
-																	disabled={actions.sending}
-																	onClick={() => onBrowserDecision(browserRequest.callId, false)}
-																>
-																	Decline
-																</Button>
-															</span>
-														)
-													}
-												>
-													The agent asks for a browser
-													{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
-													{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
-												</Notice>
-											)}
-										</>
-									)
+			<div
+				className={`console-main${panelOpen ? " console-main-split" : ""}${browserPanel === undefined ? "" : " console-main-browser"}`}
+			>
+				<div className="console-main-transcript">
+					<Profiled id="transcript-list">
+						<Transcript
+							items={items}
+							{...(delivery === undefined ? {} : { delivery })}
+							hasOlder={state.hasEarlier}
+							loadingOlder={state.loadingOlder}
+							olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
+							onLoadOlder={client.loadOlder}
+							loading={state.freshness.state === "loading"}
+							error={state.error}
+							working={working}
+							onRowRender={recordRow}
+							messageActions={messageActions}
+							onShowBrowser={onShowBrowser}
+							{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+							{...(browserStates === undefined ? {} : { browserStates })}
+							{...(renderSubagent === undefined ? {} : { renderSubagent })}
+							{...(turn === undefined ? {} : { turn })}
+							{...(focusBrowser === undefined ? {} : { focusBrowser })}
+							{...(readPresented === undefined ? {} : { onOpenFile })}
+							{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+							dock={
+								<Composer
+									state={composerState(control, state.status, actions.sending)}
+									disabledReason={control.live ? undefined : control.reason}
+									label="Message"
+									banner={
+										actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
+											<>
+												{turnMissing ? (
+													<Notice level="info">The turn this link names isn't in the session.</Notice>
+												) : null}
+												{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
+												{browserRequest === undefined ? null : (
+													<Notice
+														level="warning"
+														action={
+															onBrowserDecision === undefined || !control.live ? undefined : (
+																<span className="console-browser-actions">
+																	<Button
+																		size="sm"
+																		disabled={actions.sending}
+																		onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																	>
+																		Allow
+																	</Button>
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		disabled={actions.sending}
+																		onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																	>
+																		Decline
+																	</Button>
+																</span>
+															)
+														}
+													>
+														The agent asks for a browser
+														{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+														{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+													</Notice>
+												)}
+											</>
+										)
+									}
+									value={actions.draft}
+									onChange={actions.onDraft}
+									{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
+									{...actions.pickers}
+									{...COMPOSER_ACCESS}
+									{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+									footer={
+										offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+											<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+												Send after this run
+											</Button>
+										) : undefined
+									}
+									onSend={actions.onSend}
+									onSteer={actions.onSteer}
+									onStop={actions.onStop}
+								/>
+							}
+						/>
+					</Profiled>
+				</div>
+				{shownDraft !== undefined ? (
+					<div className="console-file-panel">
+						<DraftDocumentView key={shownDraft.callId} draft={shownDraft} onClose={closeDraft} />
+					</div>
+				) : openFile === undefined || readPresented === undefined ? null : (
+					<div className="console-file-panel">
+						{openFile.document === true ? (
+							<DocumentView
+								key={presentedKey(openFile)}
+								file={openFile}
+								read={readPresented}
+								write={writePresented}
+								sharesOf={actions.sharesOf}
+								sharer={actions.sharer}
+								onClose={closeFile}
+								initialText={
+									lastDraft.current !== undefined && lastDraft.current.title === openFile.title
+										? lastDraft.current.text
+										: undefined
 								}
-								value={actions.draft}
-								onChange={actions.onDraft}
-								{...actions.pickers}
-								footer={
-									offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-										<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-											Send after this run
-										</Button>
-									) : undefined
-								}
-								onSend={actions.onSend}
-								onSteer={actions.onSteer}
-								onStop={actions.onStop}
 							/>
-						}
-					/>
-				</Profiled>
+						) : (
+							<PresentedPanel
+								key={presentedKey(openFile)}
+								file={openFile}
+								read={readPresented}
+								sharesOf={actions.sharesOf}
+								sharer={actions.sharer}
+								onClose={closeFile}
+							/>
+						)}
+					</div>
+				)}
+				{browserPanel === undefined ? null : (
+					<BrowserPanel
+						className="console-browser"
+						{...(browser.step === undefined ? {} : { step: browser.step })}
+						running={browser.running}
+						onHide={browser.hide}
+					>
+						{/* Keyed by browser: the same browser's view stays mounted, so its live page never reloads. */}
+						<LiveBrowser
+							key={browserPanel.browserSessionId}
+							store={browserLive}
+							slot={browserPanel}
+							tabs={browser.tabs}
+						/>
+					</BrowserPanel>
+				)}
 			</div>
 			{profiling ? <ProfilePanel client={client} /> : null}
 		</div>

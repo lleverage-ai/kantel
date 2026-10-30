@@ -71,6 +71,44 @@ is a form control.
 **Cost:** memoised on its props: a list re-renders only the rows whose props changed. Pass stable `leading`,
 `trailing` and `actions` elements (memoise them or derive them from the item) to keep that true.
 
+A selected row's title is in full-strength text and medium weight, even on a `quiet` row, so the row you're on reads
+as more than a fill.
+
+### Sidebar
+
+**For** an app's main navigation, after T3 Code's sidebar: `Sidebar` frames a head (`SidebarBrand` and
+`SidebarToggle`), a body that scrolls on its own and a foot that stays put. In the body, `SidebarSection` "Projects"
+holds `SidebarProject` rows (chevron, folder, name, an optional action such as New session); the current project's
+sessions (`NewSessionRow`, `SessionList`) are its children, nested on a guide line under its chevron. In the foot,
+`SidebarItem`s link to the pages outside projects, each with a 16px icon, then `SignedInAs`. Every name truncates on
+one line.
+
+Active state: the page shown (`selected`) is filled, in full-strength text and medium weight, with
+`aria-current="page"`; the project you're in (`current`) is in full-strength text without a fill, so only one row in
+the sidebar is ever filled. `collapsed` makes it a rail `--hb-rail-width` wide: icons, a project's first letter in a
+small square, and the avatar, each keeping its name for screen readers and as a tooltip; sessions and headings are
+hidden. The host owns the state, the width (`--hb-sidebar-width` or `--hb-rail-width`) and the landmark role; the
+console remembers it in localStorage and toggles it with Ctrl+B (⌘B on a Mac). `useSidebarCollapsed()` tells a
+component inside whether it is on the rail.
+
+**Not for** navigation inside a page (use `SegmentedControl` or a list), or a file tree (`FileTree`).
+
+**Cost:** no timers or animation; the rail is a CSS state of the same elements, so collapsing mounts nothing new
+but the rail's New session link.
+
+### Breadcrumbs
+
+**For** where you are, as a trail: `Default / Fix the billing worker / Write the refund tests`. `parents` (`Crumb[]`,
+outermost first) are muted, in medium weight, and each is a link (`href`, preferred) or a button (`onSelect`) back to
+its level, brightening on hover; `current` is the last item, in the text colour, with `aria-current="page"` and never
+a link. Slashes in the faint colour separate them and are hidden from screen readers. Everything sits on one
+baseline. The current item takes the room that's left and truncates first; a parent keeps at least a few letters.
+Modelled on T3 Code's `WorkspaceBreadcrumb` and its chat header's project / parent / thread trail.
+
+**Not for** tabs or switching between peers (use `SegmentedControl`), or a path inside a file tree.
+
+**Cost:** memoised on its props; pass a stable `parents` array.
+
 ### Panel, FieldList and Field
 
 **For** framed content: a card's body, a settings group, a grant's terms. `header` and `footer` are separated by
@@ -107,9 +145,35 @@ button with `aria-expanded`; the detail is rendered only while open.
 **For** copying a link, a binding code or a command. Shows "Copied" with a tick for 1.5 seconds, announced
 politely. `iconOnly` for tight rows.
 
+### Config pages and forms: PageHeader, FormLayout, FormSection, FormField, FormGrid and FormActions
+
+Every config page (skills, memory, schedules, vault, audit log, API keys) and every form on them uses these, so
+titles, labels, help text, column tracks and buttons sit in the same places from page to page.
+
+- `PageHeader`: the page's title, one line on what it is for, and its own actions on the right (New key, Export
+  JSONL). The actions drop under the title on a narrow page. Pages take the main area's width; forms keep the
+  `--hb-content-width` measure.
+- `FormLayout`: the column a form sits in. It is the container the fields measure, so the same form lays out the
+  same in a page, a panel or a phone.
+- `FormSection`: a titled group of fields (What runs, When), a line on what it decides and an optional action on
+  its right. Sections after the first get a hairline.
+- `FormField`: one field's label, control and help or error. `TextField`, `TextAreaField` and `SelectField` are
+  built on it; wrap any other control (a `SegmentedControl`, a row of toggles) in it so it gets the same label and
+  help. `layout="inline"` makes it a settings row, the label beside the control on two fixed tracks once the form is
+  36rem wide; `extra` puts a badge beside the label.
+- `FormGrid`: short fields on two or three equal tracks, so inputs line up from row to row; one column under 32rem.
+- `FormActions`: the primary action first, then the rest, left aligned; `end` holds one that removes. Each button
+  takes the whole width, at the touch size, on a form under 30rem.
+
+**Not for** filters above a list (a plain grid of `SelectField`s, as the audit log has), or a decision card in a
+session.
+
+**Costs** container queries only: no script, no listeners.
+
 ### TextField
 
-**For** a labelled single-line input with a hint or an error. 16px under a coarse pointer, so iOS doesn't zoom.
+**For** a labelled single-line input with a hint or an error, laid out by `FormField`. `width="short"` for a number
+or a time, `mono` for a path or a command. 16px under a coarse pointer, so iOS doesn't zoom.
 
 **Not for** the composer, which has its own multi-line field.
 
@@ -147,6 +211,10 @@ stopped when nothing listens. `RelativeTime` stops ticking once a time is a day 
 16px line icons in `currentColor`. Decorative unless given a `label`. The arrow-shaped `SendIcon` is only for the
 composer's icon-only send button.
 
+New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
+bundled). Give one `className="hb-icon hb-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
+carries meaning on its own. The presented-file cards are the first to use them.
+
 ## Workspace
 
 Read-only views of a workspace's files, fed by the host from the workspace read API (`@harbour/workspace/read-api`,
@@ -162,6 +230,25 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
   measure, with when it was last updated.
 - **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
   `formatBytes` and others), exported for hosts.
+
+## Documents
+
+A document the agent writes with `create_document`, after Claude Docs, in `src/documents/`. Presentational: the host
+reads and saves the file and passes the state in.
+
+- **`DocumentPanel`**: the right-hand panel: title, what's happening (Writing while it streams, then Saved, Saving,
+  Edited or Couldn't save), Share and Close, then the document as a page. While `status` is `streaming` the Markdown
+  so far renders with a caret after it; once `ready` it's a TipTap (ProseMirror) editor over Markdown with a sticky
+  toolbar of lucide icons (undo, redo, text, headings 1 to 3, bold, italic, strikethrough, code, lists, quote, table,
+  divider). The editor is its own chunk, loaded when a document first opens. `onChange` gives the Markdown after each
+  edit; without it the page is read-only.
+- **`SharePopover`** and **`ShareButton`**: Share and Export tabs, after Claude's. Share invites by email, lists who
+  has access (the owner, then each invite), sets general access (Only you, or Anyone with the link) and copies the
+  link; Export lists the host's exports. Without `sharing` the popover is Export alone.
+- **`exportMarkdown`** and **`printDocument`**: Export's Markdown (a `.md` download) and PDF (the print dialog with
+  only the document on light paper; its "Save as PDF" makes the file).
+- **`draftDocument`** and **`documentSlug`**: the draft the newest answer is streaming, and a title's file name.
+- **`DraftDocumentCard`** (in the transcript, from `AssistantMessage`): the card a streaming document becomes.
 
 ## Schedules
 

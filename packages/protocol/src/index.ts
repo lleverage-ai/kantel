@@ -24,22 +24,44 @@ export type Attention = "working" | "waiting" | "done";
 
 export type SandboxTierName = "isolate" | "container";
 
+/**
+ * Model token usage and cost. On a snapshot and in a `usage` op it is the session's running total over every model
+ * response so far; on a run result it is the run's answer. `inputTokens` excludes cached input: a prompt served from
+ * the provider's cache counts under `cacheReadTokens`, one written to it under `cacheWriteTokens`.
+ */
 export interface Usage {
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly cacheReadTokens?: number;
+	readonly cacheWriteTokens?: number;
+	/** Zero when the connector reports no cost and computes none (CLIProxyAPI records tokens only). */
 	readonly costUsd?: number;
 }
 
 export type UserItemVia = "prompt" | "steer" | "followUp";
 
+/** A file the person attached to a message (`PromptAttachment` in `@harbour/contracts`), as the transcript shows it. */
+export interface UserAttachment {
+	/** The host's ID for the upload. */
+	readonly id: string;
+	readonly name: string;
+	/** The MIME type, such as `image/png` or `application/pdf`. */
+	readonly type: string;
+	/** In bytes. */
+	readonly size: number;
+	readonly kind: "image" | "file" | "text";
+}
+
 export interface UserItem {
 	readonly kind: "user";
 	readonly id: string;
 	readonly at: Timestamp;
+	/** What the person typed; empty when they sent only attachments. */
 	readonly text: string;
 	readonly via: UserItemVia;
 	readonly requestId?: string;
+	/** The files sent with the message, in the order they were attached. The model saw their contents. */
+	readonly attachments?: readonly UserAttachment[];
 }
 
 export interface AssistantItem {
@@ -50,6 +72,20 @@ export interface AssistantItem {
 	/** True while tokens are still arriving; deltas until then are provisional. */
 	readonly streaming: boolean;
 	readonly thinking?: string;
+	/**
+	 * The document the model is writing in a `create_document` call, while the answer streams: its title and the Markdown
+	 * so far. Gone once the answer is done, when the call's tool item presents the saved document instead.
+	 */
+	readonly document?: DraftDocument;
+}
+
+/** A document as it streams in (`create_document`'s arguments so far). */
+export interface DraftDocument {
+	/** The tool call writing it. */
+	readonly callId: string;
+	readonly title: string;
+	/** Its Markdown so far. */
+	readonly text: string;
 }
 
 export type ToolItemStatus = "running" | "done" | "error" | "interrupted";
@@ -63,6 +99,30 @@ export interface ToolImage {
 	readonly mimeType: ToolImageType;
 	/** Base64. */
 	readonly data: string;
+}
+
+/**
+ * A file the agent presented to the person (the `present_files` tool): a card in the transcript that opens a viewer.
+ * Only where it is: a client reads its bytes through the workspace read API with its own credentials
+ * (`GET /v1/workspaces/{workspaceId}/content?path=`), never from a link in the stream.
+ */
+export interface PresentedFile {
+	/** The session's workspace the file is in. */
+	readonly workspaceId: string;
+	/** Its path in the workspace, as the read API takes it: "out/report.pdf", or "/project/README.md" under a mount. */
+	readonly path: string;
+	/** Its file name: "report.pdf". */
+	readonly name: string;
+	/** Its media type, from its name: "application/pdf". */
+	readonly mimeType: string;
+	/** Its size in bytes when it was presented. */
+	readonly size: number;
+	/** The first lines of a text file (Markdown, CSV, plain text), for the card; never more than a few hundred characters. */
+	readonly preview?: string;
+	/** A title to show for it rather than its name: a document's (`create_document`). */
+	readonly title?: string;
+	/** A document the agent wrote (`create_document`): Markdown the person edits in a document panel. */
+	readonly document?: boolean;
 }
 
 export interface ToolItem {
@@ -83,6 +143,8 @@ export interface ToolItem {
 	 * ask for its live view. Only an ID: never a link or a credential.
 	 */
 	readonly browserSessionId?: string;
+	/** The files the call presented to the person (`present_files`), the most relevant first. */
+	readonly files?: readonly PresentedFile[];
 	readonly tier?: SandboxTierName;
 	readonly endedAt?: Timestamp;
 }
@@ -163,8 +225,16 @@ export type DeltaOp =
 	| { readonly op: "append"; readonly item: TranscriptItem }
 	/** Replaces the item with the same id, keeping the identity of every other item. */
 	| { readonly op: "replace"; readonly item: TranscriptItem }
-	/** Appends streamed text to an assistant item's `text` (or `thinking` when `field` is "thinking"). */
-	| { readonly op: "text"; readonly itemId: string; readonly append: string; readonly field?: "text" | "thinking" }
+	/**
+	 * Appends streamed text to an assistant item's `text` (or `thinking` when `field` is "thinking", or its draft
+	 * document's `text` when `field` is "document").
+	 */
+	| {
+			readonly op: "text";
+			readonly itemId: string;
+			readonly append: string;
+			readonly field?: "text" | "thinking" | "document";
+	  }
 	| { readonly op: "status"; readonly status: SessionStatus; readonly attention: Attention }
 	| { readonly op: "title"; readonly title: string }
 	| { readonly op: "usage"; readonly usage: Usage };

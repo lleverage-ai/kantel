@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1.7
-# Harbour container tier: the Sal worker image (#10). One long-lived container per container-tier lease, on
-# gVisor (`runsc-kvm`) when self-hosted, with the workspace copied into /workspace and out again.
+# Harbour container tier: the image a session's container runs (#10). One container per container-tier lease: on
+# gVisor (`runsc-kvm`) when self-hosted, with the workspace copied into /workspace and out again. What is in it, and
+# why, is in README.md; keep that list in step with this file.
 #
-# Everything is pinned: base images by index digest, downloaded tools by release and SHA-256. Nothing secret is
-# baked in; credentials reach a sandbox only through the vault egress proxy at run time.
+# Everything is pinned: base images by index digest, downloaded tools by release and SHA-256, Debian packages by the
+# base image's release (trixie). Nothing secret is baked in; credentials reach a sandbox only through the vault egress
+# proxy at run time.
 #
-# Tools: bun, node, pnpm, git, gh, jq, ripgrep, python3, linear-cli, plus bash and coreutils for the agent shell.
 # linear-cli links libdbus (its keyring support); the sandbox never has a keyring, so it reads its key from the
 # environment the egress proxy allows.
 
@@ -48,27 +49,59 @@ RUN set -eu; \
 	install -m 0644 pnpm.tgz /out/pnpm.tgz
 
 FROM ${NODE_IMAGE}
+# The agent baseline (README.md lists each with what it's for). Grouped: shell and core tools; fetching and archives;
+# search and text; Python; building native code; documents and images. Left out on purpose, for size: LibreOffice,
+# ffmpeg, a TeX distribution, browsers (sessions have their own), Go, Rust and Java toolchains.
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
-		bash ca-certificates coreutils curl findutils git grep jq less libdbus-1-3 openssh-client procps python3 ripgrep sed \
+		bash bc ca-certificates coreutils diffutils file findutils gawk grep less libdbus-1-3 patch procps sed tree \
+		util-linux \
+		curl git git-lfs openssh-client rsync wget \
+		bzip2 unzip xz-utils zip zstd \
+		fd-find jq ripgrep sqlite3 \
+		python3 python3-dev python3-pip python3-venv \
+		build-essential pkg-config \
+		imagemagick pandoc poppler-utils qpdf \
+	&& ln -s /usr/bin/fdfind /usr/local/bin/fd \
 	&& rm -rf /var/lib/apt/lists/*
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=fetch /out/gh /out/linear-cli /usr/local/bin/
 COPY --from=fetch /out/pnpm.tgz /tmp/pnpm.tgz
+# Cloudflare's container tier (apps/cloudflare/src/sandbox-object.ts) starts the agent as the entrypoint: it keeps
+# /workspace in step with the workspace and runs commands. The self-hosted tier runs each command with its own `sh -c`
+# and never starts it.
+# (Its directory is made with the right modes below: `COPY --chmod` would give the new /opt/harbour 0644 too, which
+# the sandbox user can't enter.)
+COPY agent/agent.ts /tmp/agent.ts
 # The node image's uid 1000 user becomes `sandbox`, the user the container tier runs commands as, with its home in
-# the workspace so tools that write dotfiles write them where the tier can see them.
+# the workspace so tools that write dotfiles write them where the tier can see them. /home/sandbox is for a tier that
+# keeps caches out of the workspace.
+# pip may install into the user's site-packages without a virtualenv (PEP 668 would refuse it otherwise), and npm's
+# global prefix is the user's ($HOME/.local, beside pip's), so `pip install x` and `npm install -g x` work without root
+# and land on PATH.
 RUN set -eu; \
 	ln -s /usr/local/bin/bun /usr/local/bin/bunx; \
 	npm install -g /tmp/pnpm.tgz --no-fund --no-audit; \
 	rm -f /tmp/pnpm.tgz; \
 	npm cache clean --force; \
+	ln -s /usr/bin/python3 /usr/local/bin/python; \
 	usermod -l sandbox -d /workspace node; \
 	groupmod -n sandbox node; \
-	mkdir -p /workspace; \
-	chown 1000:1000 /workspace; \
-	bun --version; node --version; pnpm --version; git --version; gh --version; jq --version; rg --version; \
-	python3 --version; linear-cli --version
-ENV HOME=/workspace
+	mkdir -p /workspace /home/sandbox; \
+	chown 1000:1000 /workspace /home/sandbox; \
+	install -d -m 0755 /opt/harbour; \
+	install -m 0644 /tmp/agent.ts /opt/harbour/agent.ts; \
+	rm -f /tmp/agent.ts; \
+	bun --version; node --version; npm --version; pnpm --version; git --version; gh --version; jq --version; \
+	rg --version; python3 --version; pip --version; linear-cli --version; gcc --version; make --version; \
+	convert -version; pandoc --version; pdftotext -v; sqlite3 --version; fd --version
+ENV HOME=/workspace \
+	PIP_BREAK_SYSTEM_PACKAGES=1 \
+	PIP_DISABLE_PIP_VERSION_CHECK=1 \
+	NPM_CONFIG_PREFIX=/workspace/.local \
+	PATH=/workspace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER 1000:1000
 WORKDIR /workspace
+# The agent's port, on Cloudflare (local `wrangler dev` maps only exposed ports). The self-hosted tier publishes none.
+EXPOSE 8080
 CMD ["sh"]

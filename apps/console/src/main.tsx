@@ -1,24 +1,39 @@
-import { Button, Notice, SignInScreen, Spinner } from "@harbour/ui";
-import { StrictMode, Suspense, use, useCallback, useMemo, useState } from "react";
+import { createPasskeyClient } from "@harbour/identity/passkey/http";
+import { Button, Notice, SignInScreen, Spinner, themeController } from "@harbour/ui";
+import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
 import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
 import { apiAgent } from "./api/agent-http.ts";
 import { apiAudit } from "./api/audit-http.ts";
+import { withLocalCache } from "./api/cached.ts";
 import type { ConsoleClient } from "./api/client.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
+import { apiMembers, type ConsoleMembers } from "./api/members.ts";
+import { apiModels, type ConsoleModels } from "./api/models-http.ts";
+import type {
+	ConsoleAgent,
+	ConsoleAudit,
+	ConsoleKeys,
+	ConsoleSchedules,
+	ConsoleSharing,
+	ConsoleVault,
+} from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
+import { apiSharing } from "./api/sharing-http.ts";
 import { apiVault } from "./api/vault-http.ts";
-import { App } from "./app/app.tsx";
-import { createRecordedAgent } from "./recorded/agent.ts";
+import { App, ShellPlaceholder } from "./app/app.tsx";
+import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
+import { createRecordedSharing } from "./recorded/sharing.ts";
+import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
+import { syncTheme } from "./state/theme-sync.ts";
 import { profileStore } from "./ui/profile.tsx";
 import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
@@ -43,6 +58,7 @@ import "./ui/styles.css";
 // in-memory vault and audit store in the page (recorded/oversight.ts).
 //
 // On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
+// The members page, with an admin's passkey reset (`/v1/members`), is listed only for an organisation admin.
 //
 // The skills and memory pages follow the source too: on `api` the public API's skills and memory routes (`/v1/skills`,
 // `/v1/memory`), read-only; on `recorded` @harbour/ui's fixture stores in the page, with authoring and proposals.
@@ -53,6 +69,11 @@ import "./ui/styles.css";
 //
 // On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
 // identity API (`/v1/organisations`, `/v1/members`).
+
+// The theme: the page already paints in the person's theme (index.html's boot script, from this browser's memory);
+// this puts every theme's stylesheet on the page, so switching is instant. Their saved preference follows from the
+// server once `/v1/me` has answered (ui/theme-sync.ts).
+themeController();
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -115,8 +136,11 @@ type Oversight = {
 	readonly vault?: ConsoleVault;
 	readonly audit?: ConsoleAudit;
 	readonly keys?: ConsoleKeys;
+	readonly members?: ConsoleMembers;
 	readonly schedules?: ConsoleSchedules;
+	readonly sharing?: ConsoleSharing;
 	readonly agent?: ConsoleAgent;
+	readonly models?: ConsoleModels;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -127,9 +151,10 @@ const recordedOversight: Promise<Oversight> | undefined =
 					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
 				),
 				createRecordedAgent(),
-			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, ConsoleAgent]): Oversight => {
+			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
 				proposals = made.proposals;
-				return { vault: made.vault, audit: made.audit, schedules, agent };
+				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
+				return { vault: made.vault, audit: made.audit, schedules, sharing, agent };
 			})
 		: undefined;
 
@@ -138,16 +163,29 @@ function OversightConsole({ client, oversight }: { client: ConsoleClient; oversi
 	return <Console client={client} oversight={use(oversight)} />;
 }
 
-function Console({ client, oversight }: { client: ConsoleClient; oversight: Oversight }) {
-	const { vault, audit, keys, schedules, agent } = oversight;
+function Console({
+	client,
+	oversight,
+	pending = false,
+}: {
+	client: ConsoleClient;
+	oversight: Oversight;
+	/** True while more of the organisation's pages may still come. */
+	pending?: boolean;
+}) {
+	const { vault, audit, keys, members, schedules, sharing, agent, models } = oversight;
 	return (
 		<App
 			client={client}
+			oversightPending={pending}
 			{...(vault === undefined ? {} : { vault })}
 			{...(audit === undefined ? {} : { audit })}
 			{...(keys === undefined ? {} : { keys })}
+			{...(members === undefined ? {} : { members })}
 			{...(schedules === undefined ? {} : { schedules })}
+			{...(sharing === undefined ? {} : { sharing })}
 			{...(agent === undefined ? {} : { agent })}
+			{...(models === undefined ? {} : { models })}
 			onOpen={onOpen}
 		/>
 	);
@@ -163,12 +201,46 @@ function hasStorage(): boolean {
 	}
 }
 
+// This browser's cache of what the console last showed (state/local-cache.ts), so a reload shows it at once: per
+// person, opened once `/v1/me` has said who is signed in, and cleared on signing out or a 401. `?cache=off` turns it off
+// (and clears it) for this browser; `?cache=on` turns it back on.
+const cacheOn = cacheSwitch(params, hasStorage() ? localStorage : undefined);
+const cacheStore = (() => {
+	try {
+		return indexedDbCacheStore(typeof indexedDB === "undefined" ? undefined : indexedDB);
+	} catch {
+		return undefined;
+	}
+})();
+/** Bumped by each clear, so a cache opened before it stops reading and writing. */
+let cacheGeneration = 0;
+const forgetCache = (): Promise<void> => {
+	cacheGeneration += 1;
+	return cacheStore?.clear().catch(() => {}) ?? Promise.resolve();
+};
+// Opening IndexedDB takes a while on a cold start, so it opens beside `/v1/me` rather than after it.
+if (!cacheOn) void forgetCache();
+else if (source === "api") void cacheStore?.keys().catch(() => {});
+
+/** This person's cache, for as long as it isn't cleared. */
+function openCache(store: NonNullable<typeof cacheStore>, owner: string) {
+	const generation = cacheGeneration;
+	return openLocalCache(store, owner, { open: () => generation === cacheGeneration });
+}
+
 type Boot = ConsoleBoot | { readonly kind: "failed"; readonly message: string };
 const boot = (): Promise<Boot> =>
-	identity.boot().catch((reason: unknown) => ({
-		kind: "failed" as const,
-		message: reason instanceof Error ? reason.message : String(reason),
-	}));
+	identity.boot().then(
+		(state) => {
+			// Nobody is signed in: nothing anyone was shown stays behind.
+			if (state.kind !== "signed-in") void forgetCache();
+			return state;
+		},
+		(reason: unknown) => ({
+			kind: "failed" as const,
+			message: reason instanceof Error ? reason.message : String(reason),
+		}),
+	);
 
 // Started here, not in render: a component that suspends before it mounts loses its state, so a promise made in
 // render would be made again on every retry.
@@ -181,7 +253,18 @@ const firstBoot: Promise<Boot> | undefined = source === "recorded" || viewing !=
 function ApiConsole({ first }: { first: Promise<Boot> }) {
 	const [booting, setBooting] = useState(first);
 	const reboot = useCallback(() => setBooting(boot()), []);
-	const state = use(booting);
+	// Awaited in an effect rather than suspended on: React holds a Suspense boundary's fallback for at least 300 ms, which
+	// was most of a reload's wait once `/v1/me` answers in a fraction of that.
+	const [answer, setAnswer] = useState<{ for: Promise<Boot>; state: Boot }>();
+	useEffect(() => {
+		let live = true;
+		void booting.then((state) => live && setAnswer({ for: booting, state }));
+		return () => {
+			live = false;
+		};
+	}, [booting]);
+	if (answer?.for !== booting) return <ShellPlaceholder />;
+	const { state } = answer;
 	if (state.kind === "signed-in") return <SignedInConsole state={state} onSignedOut={reboot} />;
 	if (state.kind === "sign-in") {
 		return (
@@ -221,24 +304,62 @@ function SignedInConsole({
 			if (over) return;
 			over = true;
 			identity.forget();
+			void forgetCache();
 			onSignedOut();
 		};
-		// Rows about a vault request link to its page, when the console has the vault page to open it on.
-		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
-		const keys = apiKeys(identity.client, state.me);
-		const agent = {
-			...apiAgent({ headers: state.headers, onUnauthenticated }),
-			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
-		};
-		return {
-			client: createApiClient({
-				actor: state.actor,
+		// Signing out clears this browser's cache before the session ends.
+		const { signOut } = state.actor;
+		const actor =
+			signOut === undefined
+				? state.actor
+				: {
+						...state.actor,
+						signOut: async () => {
+							await forgetCache();
+							await signOut();
+						},
+					};
+		// The cache is this person's: their organisation and who `/v1/me` says they are.
+		const owner = `${state.me.organisationId}/${JSON.stringify(state.me.actor)}`;
+		// A person's theme is kept for them on the server; a host app's key has none.
+		const saveTheme =
+			state.me.actor.kind === "human"
+				? (preference: string) => {
+						identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
+							console.info("harbour: couldn't keep the theme:", error instanceof Error ? error.message : error);
+						});
+					}
+				: undefined;
+		syncTheme(themeController(), state.me.preferences, saveTheme);
+		const api = {
+			...createApiClient({
+				actor,
 				roles: state.me.roles,
 				headers: state.headers,
 				onUnauthenticated,
 				...(sockets ? {} : { openSocket: false }),
 				onTransport: (sessionId, how) => transports.set(sessionId, how),
 			}),
+			...(saveTheme === undefined ? {} : { saveTheme }),
+		};
+		// Rows about a vault request link to its page, when the console has the vault page to open it on.
+		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
+		const keys = apiKeys(identity.client, state.me);
+		const members = apiMembers(identity.client, createPasskeyClient({ headers: state.headers }), state.me);
+		const agent = {
+			...apiAgent({ headers: state.headers, onUnauthenticated }),
+			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
+		};
+		const models = apiModels({ headers: state.headers, onUnauthenticated });
+		return {
+			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
+			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
+			ready: {
+				agent,
+				models,
+				...(keys === undefined ? {} : { keys }),
+				...(members === undefined ? {} : { members }),
+			} satisfies Oversight,
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
 			oversight: Promise.all([
 				apiVault({ headers: state.headers }).then(
@@ -249,38 +370,59 @@ function SignedInConsole({
 					},
 				),
 				apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
+				// No sharing page on a gateway that doesn't serve /v1/sharing, or for someone who can see no project.
+				apiSharing({ headers: state.headers, onUnauthenticated }).then(
+					(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
+					(error: unknown) => {
+						console.info("harbour: no sharing page:", error instanceof Error ? error.message : error);
+						return undefined;
+					},
+				),
 			]).then(
-				([vault, schedules]): Oversight => ({
+				([vault, schedules, sharing]): Oversight => ({
 					...(vault === undefined ? {} : { vault }),
 					audit: audit(vault !== undefined),
 					agent,
+					models,
 					schedules,
+					...(sharing === undefined ? {} : { sharing }),
 					...(keys === undefined ? {} : { keys }),
+					...(members === undefined ? {} : { members }),
 				}),
 			),
 		};
 	}, [state, onSignedOut]);
-	// A boundary of its own, so this component commits and keeps its promise while the vault answers.
-	return (
-		<Suspense
-			fallback={
-				<div className="boot hb-app">
-					<Spinner label="Opening the console" />
-				</div>
-			}
-		>
-			<OversightConsole client={made.client} oversight={made.oversight} />
-		</Suspense>
-	);
+	// The console opens at once; the vault page, audit log and schedules join the sidebar when they have answered.
+	const [oversight, setOversight] = useState<{ for: typeof made; value: Oversight }>();
+	useEffect(() => {
+		let live = true;
+		made.oversight.then(
+			(value) => live && setOversight({ for: made, value }),
+			(reason: unknown) => {
+				console.info("harbour: no organisation pages:", reason instanceof Error ? reason.message : reason);
+				if (live) setOversight({ for: made, value: made.ready });
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [made]);
+	const answered = oversight?.for === made ? oversight.value : undefined;
+	return <Console client={made.client} oversight={answered ?? made.ready} pending={answered === undefined} />;
 }
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<Suspense
 			fallback={
-				<div className="boot hb-app">
-					<Spinner label="Opening the console" />
-				</div>
+				viewing === undefined ? (
+					// The shell's frame while the console learns who is signed in: no page-wide spinner on a reload.
+					<ShellPlaceholder />
+				) : (
+					<div className="boot hb-app">
+						<Spinner label="Opening the console" />
+					</div>
+				)
 			}
 		>
 			{viewing !== undefined ? (

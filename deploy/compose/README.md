@@ -156,6 +156,21 @@ gets a workspace of its own with them mounted read-only at `/skills`, so `read /
 session whose profile names no skills gets no workspace, so a host's own `read`, `write`, `edit` and `ls` stay the
 host's.
 
+### Usage: one row per model call
+
+The gateway on Postgres writes one row per model call (tokens with the cache split, reasoning, cost, status, the
+session, agent, model, provider and connector) to `usage_calls` in its schema (docs/usage-analytics.md).
+`HARBOUR_USAGE=off` turns it off. One session's totals:
+
+```bash
+docker compose -f deploy/compose/compose.yaml exec -T postgres psql -U harbour -c \
+  "SELECT count(*), sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens)
+   FROM harbour_m1.usage_calls WHERE session_id = '<session>'"
+```
+
+With `analytics.yaml` on top, the gateway also ships the rows to ClickHouse every 15 seconds, with an hourly rollup
+by model, provider and connector (`harbour.usage_hourly`); its header has the commands, next to Sal included.
+
 ### Bindings: the real implementations against the stack
 
 `bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its
@@ -223,6 +238,30 @@ Ports are bound to 127.0.0.1 and can be moved with `HARBOUR_PG_PORT`,
 `HARBOUR_S3_PORT`, `HARBOUR_ISOLATE_PORT`, `HARBOUR_HOST_A_PORT`,
 `HARBOUR_HOST_B_PORT`, `HARBOUR_GATEWAY_PORT`, `HARBOUR_MAILPIT_PORT` and
 `HARBOUR_SMTP_PORT`.
+
+## Harbour's own browsers
+
+With `deploy/compose/browser.yaml` on top of `compose.yaml`, the gateway's sessions get a browser that Harbour runs
+itself (`docs/design/browser-runtime.md`), with no brwsr.dev:
+
+```sh
+export COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/browser.yaml
+docker compose up -d --build --wait
+```
+
+- `browser-image` builds `images/browser` (Chromium and its agent) and exits; `browser-host` starts one container of it
+  per browser through the Docker socket, on the `harbour-browsers` network, and keeps profiles and recordings on its
+  volume, sealed with `HARBOUR_BROWSER_SEAL_KEY`.
+- The gateway gets `HARBOUR_BROWSER_PROVIDER=harbour` and the host's URL and token. An agent asks before it opens any
+  site; a person allows or declines it in the console, then watches it live and plays it back from the session.
+- The live view and replay stay on the gateway's origin (`/browser/<browser>#<token>`); the gateway passes them on to
+  the host only with a valid view token. Set `HARBOUR_PUBLIC_URL` and `HARBOUR_EMBED_ORIGINS` when another app frames
+  them through the embed API.
+- Like the session hosts, `browser-host` holds the Docker socket, which is root on the machine. On Kubernetes, use
+  `deploy/kubernetes/browser-host` instead: a Pod per browser and no socket.
+- The overlay's keys are development defaults. Anywhere else, set `HARBOUR_BROWSER_HOST_TOKEN`,
+  `HARBOUR_BROWSER_VIEW_KEY` and `HARBOUR_BROWSER_SEAL_KEY` to random values of 32 characters or more
+  (`openssl rand -hex 32`).
 
 ## Egress decisions from the M1 vault (experimental)
 

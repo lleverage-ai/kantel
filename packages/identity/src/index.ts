@@ -3,6 +3,7 @@
  * and role ordering. Uses only WebCrypto and other globals, so it runs on Workers, Bun and Node.
  */
 import {
+	type Actor,
 	API_KEY_LAST_USED_PRECISION_MS,
 	API_KEY_NAME_MAX_LENGTH,
 	API_KEY_PERMISSIONS,
@@ -10,6 +11,9 @@ import {
 	HarbourError,
 	ROLES,
 	type Role,
+	THEME_PREFERENCE_PATTERN,
+	type UserId,
+	type UserPreferences,
 } from "@harbour/contracts";
 
 /** Every API key secret starts with this, so leaked keys are easy to spot and scan for. */
@@ -89,4 +93,33 @@ export function apiKeyPermissions(permissions: unknown): readonly ApiKeyPermissi
 /** Whether a use at `now` should be recorded over `recorded`: none yet, or one older than the precision. */
 export function lastUsedIsStale(recorded: number | undefined, now: number): boolean {
 	return recorded === undefined || now - recorded >= API_KEY_LAST_USED_PRECISION_MS;
+}
+
+/** The person whose settings a call reads or changes: only a person has any, so any other actor is `forbidden`. */
+export function preferencesOwner(actor: Actor): UserId {
+	if (actor.kind !== "human") throw new HarbourError("forbidden", "only a person has settings");
+	return actor.userId;
+}
+
+/**
+ * `current` with `change` applied: a field left out stays, `null` clears it. Rejects a change that isn't an object, a
+ * field Harbour doesn't keep, or a theme that isn't a `THEME_PREFERENCE_PATTERN`, with `invalid`.
+ */
+export function changedPreferences(current: UserPreferences, change: unknown): UserPreferences {
+	if (typeof change !== "object" || change === null || Array.isArray(change)) {
+		throw new HarbourError("invalid", "A change to your settings is an object");
+	}
+	const next: { theme?: string } = { ...current };
+	for (const [field, value] of Object.entries(change)) {
+		if (field !== "theme") throw new HarbourError("invalid", `There is no setting called ${field}`);
+		if (value === null) {
+			delete next.theme;
+			continue;
+		}
+		if (typeof value !== "string" || !THEME_PREFERENCE_PATTERN.test(value)) {
+			throw new HarbourError("invalid", "A theme is a theme's ID or system");
+		}
+		next.theme = value;
+	}
+	return next;
 }

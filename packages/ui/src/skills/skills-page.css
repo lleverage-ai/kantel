@@ -6,7 +6,6 @@
 	flex-direction: column;
 	gap: var(--hb-space-8);
 	width: 100%;
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11));
 	min-width: 0;
 	color: var(--hb-text);
 	font-size: var(--hb-text-sm);
@@ -15,33 +14,6 @@
 
 .hb-skills p {
 	margin: 0;
-}
-
-.hb-skills-head {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-end;
-	justify-content: space-between;
-	gap: var(--hb-space-5);
-	padding-bottom: var(--hb-space-6);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-skills-heading {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	min-width: 0;
-}
-
-.hb-skills-title {
-	margin: 0;
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-.hb-skills-lede {
-	color: var(--hb-text-muted);
 }
 
 .hb-skills-body {
@@ -65,8 +37,9 @@
 	gap: var(--hb-space-7);
 }
 
+/* Seen from and Filter on the forms' rhythm, the same gap as the memory page's status and search. */
 .hb-skills-controls {
-	gap: var(--hb-space-5);
+	gap: var(--hb-space-7);
 }
 
 .hb-skills-groups {
@@ -169,34 +142,12 @@
 
 /* Writing a skill. */
 
-.hb-skill-editor-fields {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-6);
-}
-
-.hb-skill-editor-fields + .hb-notice,
-.hb-skill-editor-fields ~ .hb-notice {
-	margin-top: var(--hb-space-6);
-}
-
 .hb-skill-editor .hb-skill-section:focus {
 	outline: none;
 }
 
-.hb-skill-editor-text {
+.hb-skill-editor-text .hb-input {
 	height: calc(var(--hb-space-11) * 7);
-	padding: var(--hb-space-4) var(--hb-space-5);
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
-	line-height: var(--hb-leading);
-	resize: vertical;
-}
-
-.hb-skill-editor-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-3);
 }
 
 .hb-skill-tags,

@@ -22,7 +22,7 @@ parent's height.
 ```
 
 Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `loading`, `empty`, `error`,
-`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `dock`, `className`.
+`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `delivery`, `dock`, `className`.
 
 `dock` floats a node, usually a `Composer`, over the transcript's foot, as T3 Code's thread does: the list scrolls
 under its glass, and the end of the list makes room for it (its measured height plus 16px). A docked `Composer`
@@ -42,15 +42,23 @@ transcript go to it. See [session-composer.md](session-composer.md#docked-in-a-t
 - *Loading:* `loading` with no items shows two skeleton turns. With items, `loading` is ignored and the list shows.
 - *Empty:* no items and not loading shows `empty`, or "No messages yet" with "Send a message to start the session."
 - *Error:* `error` shows in an error `Notice` above the list; the list stays usable below it.
-- *Working:* with `working`, the session is working on a turn, and the transcript ends with a `WorkingIndicator`,
-  "Working for 12s", after T3 Code's turn-level working row (`TimelineWorkGroupRows.tsx:274-308`): from the moment a
-  message is sent until the run settles, before the first token, between tool calls and while the answer streams.
-  `working` is `true` (timed from the last message the person sent, other than a steer) or `{ since, label }` (timed
-  from when the host sent it, before the message is back from the stream). With no `working`, a last answer that
-  streams with no words and no thought shows the same row itself (`AssistantMessage`'s working row), so a host that
-  doesn't pass `working` still shows it before the first word. The two never show together. When the turn's message
-  is not loaded (it is in an older page), it says "Working". The row alone is a list: a message just sent to an empty
-  session shows it, not the empty state.
+- *Working:* with `working`, the session is working on a turn, after T3 Code's timeline
+  (`MessagesTimeline.logic.ts:1646-1684`, `TimelineWorkGroupRows.tsx:277-309` and `383-420`), from the moment a
+  message is sent until the run settles. Right under the person's message, a `WorkingIndicator`, "Working for 12s"
+  with a hairline divider under it; a steer joins the turn under way and doesn't move it. The turn's work follows the
+  divider, and the turn ends with a `LiveActivity` row, a brain and "Thinking", whenever nothing else shows what the
+  agent is doing: before the first token and between steps. A running tool call or a streaming answer is the activity
+  itself, so the row leaves the end to it (`workingPlacement`). `working` is `true` (timed from the last message the
+  person sent, other than a steer) or `{ since, label }` (timed from when the host sent it, before the message is back
+  from the stream). When the turn's message is not loaded (it is in an older page), the header goes at the end,
+  before the activity row, and says "Working" unless `since` is given. The rows alone are a list: a message just sent
+  to an empty session shows them, not the empty state.
+- *Sent from here:* a host that sends optimistically puts the person's message in `items` the moment it is sent,
+  under an ID of its own with the send's `requestId`, and says in `delivery` (by item ID) that it is on its way or
+  failed (`MessageDelivery`). On its way it looks sent, without Edit from here; failed, the line under the bubble
+  says "Couldn't send" and why, with Try again and Edit in the composer. A person's message with a `requestId` is
+  keyed by it (`messageKeys`), so when the session's copy arrives and the host drops its own, the row updates in
+  place: no second copy, no remount, nothing moves.
 - *Docked:* with `dock`, "Scroll to end" sits just above the dock, and the empty state and skeleton stay clear of
   it. A wheel gesture of 24px or more up the list, a finger dragging it, or Page Up or Home rests a docked composer;
   reaching the end, "Scroll to end" or focusing the composer wakes it. While it rests the room at the end keeps the
@@ -114,12 +122,28 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   view under its summary. The host renders a `BrowserLiveView` with a source, which knows no provider
   (`BrowserLiveSource`): an `embed` page (a watch-only share link, or a browser runtime's own embed page, with the
   message it posts to its parent when its stream is over) or `frames` pushed to it (a screencast, or a recording
-  played back, `mode: "replay"`). It is the column's width at the browser's 16 by 9, a "Live" (or "Replay") label
-  with "Watch only", and "Open in a new tab" for an embed. Before the source arrives it shows the last screenshot,
+  played back, `mode: "replay"`). It is drawn as a browser window (`BrowserWindow`, below) at the column's width
+  and the browser's 16 by 10: a tab for the page (its title, else its host, from the newest call's `page`) or the
+  host's own tabs (`tabs`), a "Live" (or "Replay") label with "Watch only", and "Open in a new tab" for an embed. An
+  embedded view page draws its own address bar and replay controls inside the window, following the page as it
+  navigates; otherwise the window's address bar shows `page`. Before the source arrives it shows the last screenshot,
   dimmed, with "Connecting to the live view"; once the source ends (`onEnded`) the host asks again or settles on
-  ended, "The browser has closed" over the last screenshot. With no view to have (`unavailable`) it is the screenshot
-  alone, as without a live view. An embed is sandboxed and sends no referrer; either kind is unmounted, and a frames
+  ended, "Closed" over the last screenshot. With no view to have (`unavailable`) it is the screenshot alone in the
+  window, as without a live view. An embed is sandboxed and sends no referrer; either kind is unmounted, and a frames
   source unsubscribed, when it scrolls away, so it costs a stream only while on screen.
+- **Browser window pieces** (`browser-window.tsx`, stories in Session/Browser window): `BrowserWindow` (tabs, a
+  toolbar, the page, a footer), `BrowserTabs` (a tab list, arrow keys between tabs, each tab its page's host
+  initial, title or host, a spinner while busy), `BrowserAddressBar` (read-only: a lock for https, the host in full
+  colour and the rest quieter, the whole address as its title), `PlayerControls` (play, pause or play again as an
+  `IconButton`, a `Scrubber` drawn in Harbour's colours over a range input, the time, and a speed button) and the
+  helpers `pageLabel`, `pageHost`, `addressParts` and `playerClock`. The window never fetches anything, not even a
+  favicon. Not for a browser a person drives: everything in it is watch-only.
+- **Browser in the timeline:** in a host with a panel (`onShowBrowser`), each browser is one `BrowserEntry` card,
+  under the browsing run (`BrowsingGroup`) that opened it (`browserEntrySlots`); later runs on the same browser show
+  none. The card has the browser's newest page (its title and address, from the calls' `URL:` and `Title:` lines),
+  its last screenshot as a thumbnail, "Live", "Replay"
+  or "Closed" (the host's `browserStates`, else the calls), and a click that shows it in the panel ("Watch live",
+  "Watch the replay"; "Showing" when the panel already does). It never grows while the agent works.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").
@@ -179,11 +203,16 @@ that chip. Collapsed chips are not rendered.
 
 **For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
 `--hb-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
-sent while the agent was working (`via` is `steer` or `followUp`). Under the bubble, on hover or focus, a
+sent while the agent was working (`via` is `steer` or `followUp`). The files sent with it (`item.attachments`) sit
+above the bubble as cards on `--hb-raised`: the file type's Lucide icon (`fileTypeIcon`), the name, the type and
+size; a message of files alone has no bubble. Under the bubble, on hover or focus, a
 `MessageActions` line: when it was sent, Edit from here (when the host gives `MessageActionsContext` an `edit`) and
-Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}` leaves the line out (a preview),
+Copy. `UserMessage({ item, actions?, showActions?, delivery? })`; `actions={false}` leaves the line out (a preview),
 `showActions` shows it without a hover (stories). Edit from here turns the bubble into a `MessageEditor`; while the
-host sets `editBlocked` (a run is going) the button is off and its label says why.
+host sets `editBlocked` (a run is going) the button is off and its label says why. With `delivery` the message is
+the host's own copy of one just sent: `sending` looks sent but has no Edit from here; `failed` shows the line
+always, with "Couldn't send" and the reason in the error colour, Try again and, when the host can take it back,
+Edit in the composer.
 
 **Not for** the agent's words, or quoted text inside an answer.
 
@@ -201,42 +230,55 @@ turn's final answer only
 (`finalAnswerIds`), as T3 Code shows its message meta only on a turn's terminal answer, so the words an agent says
 between tool calls have none, and neither does an answer still streaming.
 
-**States:** while streaming with no text yet, a thought (`item.thinking`) streams live under "Thinking", its newest
-four lines in a window that doesn't grow, after T3 Code's live reasoning preview (`TimelineWorkGroupRows.tsx:503-581`);
-once the first word arrives it folds behind a "Thought it through" disclosure. While streaming with text, a soft caret sits after the last word. While streaming with
-no text and no thought, the working row says the agent is working, after T3 Code's (`TimelineWorkGroupRows.tsx`,
-`WorkingTimelineRow`): "Working for 12s" in muted `--hb-text-sm` with tabular numbers, the time an `Elapsed` from
-`turnStartedAt`; "Working" with no time when there is no `turnStartedAt`. It is one line as tall as the answer's
-first line, so the first word takes its place without the row moving. It is a `WorkingIndicator`; see below.
+**States:** while streaming with no text yet, a thought (`item.thinking`) streams live under the live activity row (a
+brain and "Thinking", `LiveActivity`), its newest four lines in a window that doesn't grow, after T3 Code's live
+reasoning preview (`TimelineWorkGroupRows.tsx:503-581`); once the first word arrives it folds behind a "Thought it
+through" disclosure. While streaming with text, a soft caret sits after the last word. While streaming with no text
+and no thought, the activity row alone says the agent is thinking. It is one line as tall as the answer's first line,
+so the first word takes its place without the row moving. The turn's timer is the transcript's working header, not
+the answer's; `turnStartedAt` is accepted and ignored.
 
 **Not for** host notices (`NoticeRow`) or tool output (`ToolCallChip`).
 
 **Keyboard:** the thought's disclosure is a button with `aria-expanded`. Links in the answer open in a new tab.
 
-**Cost:** memoised on `item` and `turnStartedAt`; Markdown re-parses only the last block as text streams. The caret
-is the only animation, CSS only, and stops under reduced motion (it stays, still). The working row's timer is an
-`Elapsed` on the shared one-second clock: only that leaf renders each second, never the message or its row.
+**Cost:** memoised on `item`; Markdown re-parses only the last block as text streams. The caret and the activity
+row's breathing are the only animations, CSS only, and stop under reduced motion.
 
 ### WorkingIndicator
 
-**For** saying the agent is working on a turn, live: the working status's pulsing dot, then "Working for 12s" in
-muted `--hb-text-sm` with tabular numbers, the words breathing as a skeleton does (`hb-shimmer`,
-`--hb-duration-shimmer`), after T3 Code's shimmering working row. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting",
-say, for another kind of work).
+**For** a working turn's header, under the person's message: "Working for 12s" in muted `--hb-text-sm` with tabular
+numbers on one 24px line, and a hairline divider (`--hb-border-strong`) under it, after T3 Code's working row
+(`TimelineWorkGroupRows.tsx:277-309`). It is still: only the timer moves; the activity row at the turn's foot is what
+breathes. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting", say, for another kind
+of work).
 
 **States:** with `since`, it counts from it and is a `role="timer"` named after the label, whose implicit `aria-live`
 is off: screen readers can read it but are not told every second. Without `since` it says the label alone, as a
-`role="status"`, announced once. The dot sits on the words' baseline and moves up onto the middle of their capitals
-(`--hb-on-cap`), as `StatusLabel`'s does.
+`role="status"`, announced once.
 
 **Not for** a session's status in a header or a list (`StatusLabel`), or a control that is busy (a button's own
 spinner).
 
-**Cost:** memoised on its props. The dot's pulse and the words' breathing animate opacity alone, which the
-compositor runs without the main thread, and stop under reduced motion; the timer is an `Elapsed` on the shared
-one-second clock, so only that leaf renders each second. Don't animate anything that repaints here (a moving
-background clipped to the text did, every frame: a fifth of the main thread at rest without a GPU, and the stream above
-it stuttered).
+**Cost:** memoised on its props; the timer is an `Elapsed` on the shared one-second clock, so only that leaf renders
+each second.
+
+### LiveActivity
+
+**For** what the agent is doing now, at the foot of a working turn: a 16px icon (a brain by default) and a word or
+two ("Thinking" by default) in the work log's row shape, so it lines up with the tool calls above it, after T3 Code's
+`LiveActivityRow` (`TimelineWorkGroupRows.tsx:383-420`). The words breathe as a skeleton does (`hb-shimmer`,
+`--hb-duration-shimmer`) in `--hb-ease-breathe`'s steps. `LiveActivity({ label?, icon? })`. The transcript shows it
+between steps and before the first token, and `AssistantMessage` heads a streaming thought with it.
+
+**States:** one. A `role="status"`, announced once, not on every breath. The icon sits on the middle of the words'
+capitals (the words are trimmed to them).
+
+**Not for** a tool call that is running (its own row, with its spinner, is the activity).
+
+**Cost:** memoised on its props. The breathing animates opacity alone, which the compositor runs without the main
+thread, and stops under reduced motion. Don't animate anything that repaints here (a moving background clipped to the
+text did, every frame: a fifth of the main thread at rest without a GPU, and the stream above it stuttered).
 
 ### MessageActions
 

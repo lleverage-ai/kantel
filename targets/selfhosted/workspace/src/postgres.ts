@@ -62,6 +62,8 @@ export function pgDatabase(pool: PgPoolLike): SqlDatabase {
 /** Immutable objects by key: blobs and trees. `createS3Objects` is the S3/MinIO one. */
 export interface ObjectBucket {
 	get(key: string): Promise<Uint8Array | undefined>;
+	/** Optional: `length` bytes from `offset` (an HTTP range read), for a lazy workspace's reads out of a staging pack. */
+	getRange?(key: string, offset: number, length: number): Promise<Uint8Array | undefined>;
 	put(key: string, bytes: Uint8Array): Promise<void>;
 }
 
@@ -202,6 +204,7 @@ export function createPostgresWorkspaceStore(options: PostgresWorkspaceStoreOpti
 		},
 
 		getObject: (key) => objects.get(key),
+		...(objects.getRange === undefined ? {} : { getObjectRange: objects.getRange.bind(objects) }),
 		putObject: (key, bytes) => objects.put(key, bytes),
 	};
 }

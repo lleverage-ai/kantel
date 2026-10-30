@@ -92,15 +92,45 @@ const REPO_TAR = tar([
 	{ name: "ustar.md", prefix: `${top}/nested`, body: "prefixed\n" },
 ]);
 
-/** A fake GitHub: `main` resolves to COMMIT, `v2` to OTHER; both serve REPO_TAR. Records every URL asked for. */
+/**
+ * A fake GitHub: `main` resolves to COMMIT, `v2` (and `v3`, annotated) to OTHER over `ls-refs`, an abbreviated
+ * `0123456` to COMMIT over the REST API; both commits serve REPO_TAR. Records every URL asked for.
+ */
+/** An annotated tag object; `ls-refs` with `peel` names the commit it points at. */
+const TAG_OBJECT = "fedcba9876543210fedcba9876543210fedcba98";
+
+/** tvdavies/site's refs, as `ls-refs` lists them: `[ref, oid, peeled?]`. */
+const SITE_REFS: readonly (readonly [string, string, string?])[] = [
+	["HEAD", COMMIT],
+	["refs/heads/main", COMMIT],
+	["refs/heads/main-old", OTHER],
+	["refs/tags/v2", OTHER],
+	["refs/tags/v3", TAG_OBJECT, OTHER],
+];
+
+const pkt = (text: string) => `${(encoder.encode(text).length + 4).toString(16).padStart(4, "0")}${text}`;
+
+/** What GitHub's upload-pack answers an `ls-refs` request with: the refs under its prefixes, peeled when asked. */
+function lsRefsReply(request: string): string {
+	const prefixes = [...request.matchAll(/ref-prefix (\S+)\n/g)].map((match) => match[1]!);
+	const peel = request.includes("peel\n");
+	const lines = SITE_REFS.filter(([ref]) => prefixes.some((prefix) => ref.startsWith(prefix))).map(
+		([ref, oid, peeled]) => pkt(`${oid} ${ref}${peel && peeled !== undefined ? ` peeled:${peeled}` : ""}\n`),
+	);
+	return `${lines.join("")}0000`;
+}
+
 function fakeGitHub() {
 	const calls: string[] = [];
-	const fetch = (async (input: string | URL | Request) => {
+	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		calls.push(url);
+		if (url === "https://github.com/tvdavies/site.git/git-upload-pack") {
+			return new Response(lsRefsReply(String(init?.body ?? "")));
+		}
 		const ref = /\/repos\/tvdavies\/site\/commits\/(.+)$/.exec(url)?.[1];
 		if (ref !== undefined) {
-			const commit = { main: COMMIT, v2: OTHER }[decodeURIComponent(ref)];
+			const commit = { "0123456": COMMIT }[decodeURIComponent(ref)];
 			return commit === undefined ? new Response("{}", { status: 422 }) : new Response(commit);
 		}
 		if (url === `https://codeload.github.com/tvdavies/site/tar.gz/${COMMIT}` || url.endsWith(OTHER)) {
@@ -177,10 +207,29 @@ describe("createGitHubTarballFetcher", () => {
 			"nested/ustar.md",
 		]);
 		expect(fetcher.skipped.symlinks).toBe(1);
+		// No REST API: the ref is resolved over git's smart HTTP protocol, which has no per-IP hourly budget.
 		expect(github.calls).toEqual([
-			"https://api.github.com/repos/tvdavies/site/commits/main",
+			"https://github.com/tvdavies/site.git/git-upload-pack",
 			`https://codeload.github.com/tvdavies/site/tar.gz/${COMMIT}`,
 		]);
+	});
+
+	it("resolves branches, tags (an annotated one to its commit) and full refs exactly, as git does", async () => {
+		const github = fakeGitHub();
+		const fetcher = createGitHubTarballFetcher({ fetch: github.fetch });
+		const resolve = (ref: string) => fetcher.resolve!(ctx, { kind: "git", repo: "tvdavies/site", ref });
+		expect(await resolve("main")).toBe(COMMIT);
+		expect(await resolve("refs/heads/main-old")).toBe(OTHER);
+		expect(await resolve("v2")).toBe(OTHER);
+		expect(await resolve("v3")).toBe(OTHER);
+		expect(await resolve("HEAD")).toBe(COMMIT);
+		// `main` is a prefix of `main-old`, but only an exact name resolves.
+		expect(await codeOf(resolve("mai"))).toBe("not_found");
+		expect(github.calls.every((url) => url.startsWith("https://github.com/"))).toBe(true);
+		// Only an abbreviated commit, which ls-refs can't resolve, falls back to the REST API.
+		expect(await resolve("0123456")).toBe(COMMIT);
+		expect(github.calls.at(-1)).toBe("https://api.github.com/repos/tvdavies/site/commits/0123456");
+		expect(await codeOf(resolve("main..v2"))).toBe("invalid");
 	});
 
 	it("skips the API for a pinned commit and reports unknown refs and foreign repos", async () => {

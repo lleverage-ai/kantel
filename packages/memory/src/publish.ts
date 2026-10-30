@@ -163,6 +163,7 @@ export function withBundlePublishing(options: BundlePublishingOptions): Publishi
 	return {
 		createSpace: (ctx, input) => memory.createSpace(ctx, input),
 		listSpaces: (ctx, page) => memory.listSpaces(ctx, page),
+		getSpace: (ctx, spaceId) => memory.getSpace(ctx, spaceId),
 		getConcept: (ctx, spaceId, conceptId) => memory.getConcept(ctx, spaceId, conceptId),
 		listConcepts: (ctx, spaceId, filter, page) => memory.listConcepts(ctx, spaceId, filter, page),
 		recall: (ctx, request) => memory.recall(ctx, request),

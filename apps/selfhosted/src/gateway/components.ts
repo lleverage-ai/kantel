@@ -5,11 +5,13 @@
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
-import type { Sandboxes } from "@harbour/contracts";
+import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@harbour/browser/session";
+import type { Sandboxes, UsageWriter } from "@harbour/contracts";
 import {
 	type AuditSink,
 	type AuditStore,
 	type Authentication,
+	type BrowserProvider,
 	type CallContext,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
@@ -27,14 +29,19 @@ import {
 } from "@harbour/contracts";
 import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
+import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import type { SharingStore } from "@harbour/sharing";
+import { createMemorySharing } from "@harbour/sharing/memory";
+import { componentResolvers } from "@harbour/sharing/resolvers";
 import { createMemorySkills } from "@harbour/skills/memory";
 import type { HarbourVault } from "@harbour/vault/engine";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
+import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
@@ -56,6 +63,8 @@ export interface GatewayComponents {
 	readonly skills: Skills;
 	/** Memory spaces and their concepts (#12): recalled for sessions with memory scopes, and their memory tools. */
 	readonly memory: Memory;
+	/** Sharing resources across projects (docs/design/sharing.md), read by the runtime's access for every resource check. */
+	readonly sharing: SharingStore;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -67,6 +76,11 @@ export interface GatewayComponents {
 	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
 	/**
+	 * People's passkeys (#132), kept with identity: the vault page asks for one before an approval once the person has
+	 * registered one, as on Cloudflare.
+	 */
+	readonly passkeys: Passkeys;
+	/**
 	 * The vault, behind the egress proxy's decisions and the vault page's approval API. Absent on durable stores without a
 	 * cipher key (HARBOUR_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
 	 */
@@ -76,6 +90,11 @@ export interface GatewayComponents {
 	 * on the echo model, where the bootstrap makes only the `echo` profile.
 	 */
 	readonly assistantRoute?: string;
+	/**
+	 * The sessions' browser (`browser.ts`): its tools in every session, a person's decisions and the console's links.
+	 * Absent without a browser provider.
+	 */
+	readonly browser?: SessionBrowser;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -88,7 +107,12 @@ export interface GatewayComponents {
 export interface ModelGatewaySource {
 	/** The route the bootstrap's `assistant` profile names. */
 	readonly route: string;
-	build(deps: { readonly vault: () => HarbourVault | undefined; readonly audit: AuditSink }): GatewayModels;
+	build(deps: {
+		readonly vault: () => HarbourVault | undefined;
+		readonly audit: AuditSink;
+		/** Where each model call's usage row goes: the Postgres usage ledger, on durable components. */
+		readonly usage?: UsageWriter;
+	}): GatewayModels;
 }
 
 type TextContext = { readonly messages: readonly { readonly role: string; readonly content: unknown }[] };
@@ -154,6 +178,8 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 		access: {
 			require: (ctx, check) => need().require(ctx, check),
 			allows: (ctx, check) => need().allows(ctx, check),
+			resource: (ctx, check) => need().resource(ctx, check),
+			allowsResource: (ctx, check) => need().allowsResource(ctx, check),
 		},
 		set: (access) => {
 			target = access;
@@ -165,10 +191,22 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 
 export function createGatewayComponents(
-	options: { readonly models?: GatewayModels; readonly modelGateway?: ModelGatewaySource } = {},
+	options: {
+		readonly models?: GatewayModels;
+		readonly modelGateway?: ModelGatewaySource;
+		/** The sessions' browser provider (`browser.ts`). Without it, sessions have no browser. */
+		readonly browserProvider?: BrowserProvider;
+		/** What `/v1/deployment` says backs the browser. */
+		readonly browserBinding?: string;
+	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
 	const audit = createMemoryAuditStore({ access: auditAccess.access });
+	// Built before the runtime, so a session it resumes has the browser's tools; it reaches the access check per call.
+	const browser =
+		options.browserProvider === undefined
+			? undefined
+			: gatewaySessionBrowser({ provider: options.browserProvider, audit, access: auditAccess.access });
 	const identity = createMemoryIdentity({ audit });
 	const gatewaySandboxes = createGatewaySandboxes();
 	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
@@ -179,6 +217,16 @@ export function createGatewayComponents(
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
+	const sharing = createMemorySharing({
+		audit,
+		access: auditAccess.access,
+		resolvers: componentResolvers(() => ({
+			skills,
+			memory,
+			...(vault === undefined ? {} : { vault }),
+			...(workspaces === undefined ? {} : { workspaces }),
+		})),
+	});
 	const lateWorkspaces = () => {
 		if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
 		return workspaces;
@@ -187,12 +235,16 @@ export function createGatewayComponents(
 		createMemoryRuntime({
 			audit,
 			identity,
+			sharing,
 			...models,
 			...gatewaySandboxes.runtimeOptions,
+			tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
 		}),
 		lateWorkspaces,
 	);
+	// A session's end closes its browsers and ends its grants.
+	if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 	// Given `identity`, the runtime always builds its check; the components share it.
 	const access = runtime.access;
 	if (access === undefined) throw new Error("the runtime built no project-access check");
@@ -201,7 +253,13 @@ export function createGatewayComponents(
 		store: createMemoryWorkspaceStore(),
 		audit,
 		access,
-		sources: [skillsMountSource(skills, () => runtime.directory)],
+		sources: [
+			skillsMountSource(
+				skills,
+				() => runtime.directory,
+				() => runtime.profiles,
+			),
+		],
 	});
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
@@ -213,11 +271,15 @@ export function createGatewayComponents(
 		workspaces,
 		skills,
 		memory,
+		sharing,
 		sandboxes,
 		otp: createMemoryOtpStores(),
+		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
 		vault,
 		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
+		...(browser === undefined ? {} : { browser }),
 		bindings: {
+			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
 			identity: "memory",
 			audit: "memory",
 			runtime:
@@ -427,7 +489,13 @@ export async function bootstrap(
 	};
 	// In a session on a workspace: the file tools on the workspace directly, and `bash` in an isolate leased on its
 	// first command (`sandboxes.ts`).
-	const coding = { tools: [...CODING_TOOLS], skills: [], sandbox: { tiers: ["isolate" as const] }, memoryScopes: [] };
+	// With a browser, its tools too (`browser.ts`): `browser_request` asks a person for sites first.
+	const coding = {
+		tools: [...CODING_TOOLS, ...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES)],
+		skills: [],
+		sandbox: { tiers: ["isolate" as const] },
+		memoryScopes: [],
+	};
 	await runtime.profiles.put(inProject, {
 		id: "echo",
 		organisationId,
