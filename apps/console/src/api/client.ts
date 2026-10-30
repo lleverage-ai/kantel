@@ -125,6 +125,12 @@ export type WorkspaceListing = {
 	readonly truncated: boolean;
 };
 
+/** A message's attachment as the API serves it back: its bytes and type, never run or rendered as HTML. */
+export type AttachmentContent = {
+	readonly content: Uint8Array;
+	readonly contentType: string;
+};
+
 /** One file as the workspace read API serves it: its bytes, never run or rendered as HTML. */
 export type WorkspaceFile = {
 	readonly content: Uint8Array;
@@ -245,6 +251,11 @@ export interface ConsoleClient {
 	 * `ApiError` whose message says why (a type the model can't read, too large). Absent on a client that takes no files.
 	 */
 	uploadAttachment?(projectId: string, file: File, signal?: AbortSignal): Promise<UserAttachment>;
+	/**
+	 * A file sent with a message in the project, as it was uploaded: for an image's thumbnail and the file panel. Absent
+	 * on a client that can't read them back.
+	 */
+	readAttachment?(projectId: string, attachmentId: string, signal?: AbortSignal): Promise<AttachmentContent>;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;
 	/** Joins the running turn after its current tool round. */

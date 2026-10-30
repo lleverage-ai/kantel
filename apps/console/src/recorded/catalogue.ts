@@ -5,6 +5,7 @@
 
 import { parseFixture, type ServerFrame } from "@harbour/protocol";
 import type { ProjectSummary } from "../api/client.ts";
+import { ONE_IMAGE, SIX_FILES, THREE_IMAGES } from "./attachments.ts";
 import { Recording } from "./recording.ts";
 
 export type RecordedSession = {
@@ -301,6 +302,29 @@ function handback(now: number): Recording {
 	return r;
 }
 
+/** Done: messages sent with one, three and six files, the cards above their bubbles. */
+function officeTheme(now: number): Recording {
+	const r = new Recording("s-attachments", "Iterate on the back office artwork", now - 3 * HOUR);
+	r.user("What do you make of this one for the campaign's header?", "prompt", ONE_IMAGE)
+		.status("running")
+		.wait(1200)
+		.say("It reads well at a glance: the lit windows carry the 'working while you sleep' idea without any people.")
+		.status("idle")
+		.wait(60_000)
+		.user("Generate 4 new iterations on this theme using different image gen models", "prompt", THREE_IMAGES)
+		.status("running")
+		.wait(1500)
+		.say("I'll keep the night palette and the empty desks, and try each model on the same prompt.")
+		.status("idle")
+		.wait(60_000)
+		.user("Here's the brief, the pricing and the config. Fold them in.", "prompt", SIX_FILES)
+		.status("running")
+		.wait(1500)
+		.say("Got them. The brief rules out people, so I've dropped the variant with a night guard.")
+		.status("idle");
+	return r;
+}
+
 function fetchFixture(url: string, sessionId: string): () => Promise<readonly ServerFrame[]> {
 	let loaded: Promise<readonly ServerFrame[]> | undefined;
 	return () => {
@@ -332,6 +356,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 		{ id: "s-gvisor", projectId: "harbour", branch: "m0-sh1/gvisor-kvm", unread: true, frames: made(gvisor(now)) },
 		{ id: "s-seed", projectId: "harbour", frames: made(seedCache(now)) },
 		{ id: "s-retries", projectId: "harbour", branch: "billing-retries", frames: made(retries(now)) },
+		{ id: "s-attachments", projectId: "harbour", frames: made(officeTheme(now)) },
 	];
 	if (urls !== undefined) {
 		sessions.push(

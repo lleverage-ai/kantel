@@ -338,46 +338,33 @@ export function measureAlignment(): Misalignment[] {
 	// Attachment cards (files and pasted text), in the composer and sent with a message: the name over the type and size,
 	// the two lines together on the card's centre; the type's tile, and the buttons, on the card's centre, the icon on
 	// its tile; the type, size and progress on one baseline.
-	for (const [selector, part] of [
-		[".hb-composer-chip", "hb-composer-chip"],
-		[".hb-user-attachment", "hb-user-attachment"],
-	] as const) {
-		for (const chip of root.querySelectorAll(selector)) {
-			if (!visible(chip)) continue;
-			const name = chip.querySelector(`.${part}-name`);
-			const line = name === null ? null : textLine(name);
-			if (line === null) {
-				unmeasured("attachment card name", chip);
-				continue;
-			}
-			const metas = [
-				...chip.querySelectorAll(
-					part === "hb-composer-chip"
-						? ".hb-composer-chip-meta, .hb-composer-progress-text"
-						: ".hb-user-attachment-facts > span",
-				),
-			]
-				.map((meta) => (visible(meta) ? textLine(meta) : null))
-				.filter((meta) => meta !== null);
-			const first = metas[0];
-			if (first === undefined) unmeasured("attachment card facts", chip);
-			else compare("attachment card lines", chip, (line.centre + first.centre) / 2, centre(chip));
-			for (const meta of metas.slice(1)) compare("attachment card facts", chip, meta.baseline, first?.baseline);
-			const tile = chip.querySelector(`.${part}-tile`);
-			if (tile !== null) {
-				compare("attachment card tile", chip, centre(tile), centre(chip));
-				const icon = tile.querySelector(".hb-icon");
-				if (icon !== null) compare("attachment card icon", chip, centre(icon), centre(tile));
-			}
-			for (const icon of chip.querySelectorAll(".hb-composer-chip-button > .hb-icon")) {
-				if (visible(icon)) compare("attachment card button", chip, centre(icon), centre(chip));
-			}
+	for (const chip of root.querySelectorAll(".hb-attachment-card")) {
+		if (!visible(chip)) continue;
+		const name = chip.querySelector(".hb-attachment-card-name");
+		const line = name === null ? null : textLine(name);
+		if (line === null) {
+			unmeasured("attachment card name", chip);
+			continue;
+		}
+		const metas = [...chip.querySelectorAll(".hb-attachment-card-fact")]
+			.map((meta) => (visible(meta) ? textLine(meta) : null))
+			.filter((meta) => meta !== null);
+		const first = metas[0];
+		if (first === undefined) unmeasured("attachment card facts", chip);
+		else compare("attachment card lines", chip, (line.centre + first.centre) / 2, centre(chip));
+		for (const meta of metas.slice(1)) compare("attachment card facts", chip, meta.baseline, first?.baseline);
+		const tile = chip.querySelector(".hb-attachment-card-tile");
+		if (tile !== null) {
+			compare("attachment card tile", chip, centre(tile), centre(chip));
+			const icon = tile.querySelector(".hb-icon");
+			if (icon !== null) compare("attachment card icon", chip, centre(icon), centre(tile));
+		}
+		for (const icon of chip.querySelectorAll(".hb-composer-chip-button > .hb-icon")) {
+			if (visible(icon)) compare("attachment card button", chip, centre(icon), centre(chip));
 		}
 	}
-	// Image thumbnails' remove and retry buttons, and a resting file square: the icon on its box.
-	for (const box of root.querySelectorAll(
-		".hb-composer-thumb-remove, .hb-composer-thumb-retry, span.hb-composer-rest-thumb",
-	)) {
+	// A resting file square: the icon on its box.
+	for (const box of root.querySelectorAll("span.hb-composer-rest-thumb")) {
 		const icon = box.querySelector(":scope > .hb-icon");
 		if (icon !== null && visible(box)) compare("composer icon box", box, centre(icon), centre(box));
 	}

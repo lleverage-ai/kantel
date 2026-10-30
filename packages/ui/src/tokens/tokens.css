@@ -186,6 +186,7 @@
 	--hb-composer-narrow: 640px; /* below it the composer rests whenever it isn't in use; mirrored in composer.tsx */
 	--hb-composer-banner-inset: 22px;
 	--hb-thumb: 64px;
+	--hb-attachment-width: 11.5rem; /* every attachment card, in the composer and on a sent message: three to a bubble's row */
 	--hb-thumb-scrim: rgb(0 0 0 / 0.65);
 	--hb-on-solid: #ffffff; /* text and icons on a solid status colour, such as the Stop button */
 	--hb-drop-fill: color-mix(in srgb, var(--hb-accent) 5%, transparent);

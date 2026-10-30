@@ -245,6 +245,15 @@ export {
 	chosenAccess,
 } from "./session/access-picker.tsx";
 export {
+	AttachmentCard,
+	type AttachmentCardFile,
+	type AttachmentCardProps,
+	AttachmentCards,
+	SentAttachments,
+	SentAttachmentsContext,
+	type SentAttachmentsHost,
+} from "./session/attachment-card.tsx";
+export {
 	BrowserEntry,
 	type BrowserEntryProps,
 	type BrowserEntryState,
