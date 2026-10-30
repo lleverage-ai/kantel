@@ -22,8 +22,11 @@
    .css, don't mix the two on one element. Rules elsewhere that reach into it (the sidebar's collapsed rail on
    .hb-signed-in-as) keep working on the hb- class names, which stay as hooks.
 
-   Sources. Only this package's src/ is scanned, whoever builds it (the console, Ladle, the loop's harness): `source(none)`
-   turns off the guess from the working directory, which in Ladle is Ladle's own app. */
+   Sources. This package's src/ and the console's (apps/console/src) are scanned, whoever builds it (the console, Ladle,
+   the loop's harness): `source(none)` turns off the guess from the working directory, which in Ladle is Ladle's own app.
+   A host is scanned here, in the one entry, rather than from its own CSS: a second entry would emit a second utilities
+   sheet, later in the page, and its copy of a utility would beat a more specific one in this sheet (`p-2` over `px-4`).
+   A new host app adds its src/ below. */
 
 @layer theme, base, components, utilities;
 
@@ -35,6 +38,7 @@
 }
 
 @source "../";
+@source "../../../../apps/console/src";
 
 @theme {
 	--*: initial;

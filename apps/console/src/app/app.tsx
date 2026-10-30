@@ -57,6 +57,7 @@ import type {
 import type { ConsoleRules } from "../api/rules-http.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
+import { BOOT, SHELL_EMPTY, SHELL_PAGE_BAR, shellClasses, shellPage } from "../ui/shell-styles.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
@@ -347,11 +348,13 @@ export function ShellPlaceholder() {
 	const route = parseRoute(location.pathname);
 	const pane = route.name === "home" || route.name === "project" ? "list" : "main";
 	// The rail, if that's how it was left, so the frame doesn't jump wide then narrow when the console arrives.
-	const sidebar = useSidebarCollapse(!useMedia(NARROW_QUERY));
+	const narrow = useMedia(NARROW_QUERY);
+	const sidebar = useSidebarCollapse(!narrow);
+	const classes = shellClasses({ narrow, collapsed: sidebar.collapsed, pane });
 	return (
-		<div className="shell hb-app" data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
+		<div className={classes.shell} data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
 			<Sidebar
-				className="shell-sidebar"
+				className={classes.sidebar}
 				collapsed={sidebar.collapsed}
 				role="complementary"
 				aria-label="Projects and sessions"
@@ -361,7 +364,7 @@ export function ShellPlaceholder() {
 					{sidebar.collapsed ? null : <SessionList sessions={[]} loading />}
 				</SidebarSection>
 			</Sidebar>
-			<main className="shell-main" aria-busy="true" />
+			<main className={classes.main} aria-busy="true" />
 		</div>
 	);
 }
@@ -535,7 +538,7 @@ export function App({
 
 	if (projectsError !== undefined)
 		return (
-			<div className="boot hb-app">
+			<div className={BOOT}>
 				<Notice level="error">{projectsError}</Notice>
 			</div>
 		);
@@ -592,8 +595,9 @@ export function App({
 		);
 
 	// On a phone an organisation page fills the screen, so it gets a way back to the list.
+	const page = shellPage(narrow);
 	const pageBar = narrow ? (
-		<div className="shell-page-bar">
+		<div className={SHELL_PAGE_BAR}>
 			<Button size="sm" variant="ghost" onClick={() => navigate(way === undefined ? "/" : projectPath(way.id))}>
 				Back to sessions
 			</Button>
@@ -603,7 +607,7 @@ export function App({
 	let main: ReactNode;
 	if (vaultRoute && vault !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<VaultScreen
 					key={route.name === "vault-request" ? route.proposalId : "grants"}
@@ -614,14 +618,14 @@ export function App({
 		);
 	} else if (auditRoute && audit !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<AuditScreen audit={audit} />
 			</div>
 		);
 	} else if (keysRoute && keys !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<ApiKeysPage
 					api={keys.api}
@@ -632,14 +636,14 @@ export function App({
 		);
 	} else if (membersRoute && members !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<MembersPage api={members.api} viewer={members.viewer} />
 			</div>
 		);
 	} else if (agentRoute && agent !== undefined && route.name === "skills") {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<SkillsScreen
 					agent={agent}
@@ -651,7 +655,7 @@ export function App({
 		);
 	} else if (agentRoute && agent !== undefined && route.name === "memory") {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<MemoryScreen
 					agent={agent}
@@ -662,7 +666,7 @@ export function App({
 		);
 	} else if (schedulesRoute && schedules !== undefined && route.name === "schedules") {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<SchedulesScreen
 					schedules={schedules}
@@ -673,7 +677,7 @@ export function App({
 		);
 	} else if (sharingRoute && sharing !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<SharingPage
 					source={sharing.source}
@@ -688,7 +692,7 @@ export function App({
 		);
 	} else if (connectionsRoute && connections !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<ConnectionsPage
 					source={connections.source}
@@ -701,23 +705,23 @@ export function App({
 		);
 	} else if (rulesRoute && rules !== undefined) {
 		main = (
-			<div className="shell-page">
+			<div className={page}>
 				{pageBar}
 				<RulesScreen rules={rules} projects={projectList} />
 			</div>
 		);
 	} else if (organisationWaiting || (!projectsKnown && (route.name === "home" || route.name === "new-session"))) {
 		// Moments from now: the page's seam, or the projects the home page and New session need. Nothing to show yet.
-		main = <div className="shell-empty" aria-busy="true" />;
+		main = <div className={SHELL_EMPTY} aria-busy="true" />;
 	} else if (linkedSession !== undefined && sessionProject !== undefined) {
 		main = (
-			<div className="shell-empty">
+			<div className={SHELL_EMPTY}>
 				<Spinner label="Opening the session" />
 			</div>
 		);
 	} else if (missing || unknownProject) {
 		main = (
-			<div className="shell-empty">
+			<div className={SHELL_EMPTY}>
 				<EmptyState title="There's nothing here" action={wayBack}>
 					Pick a project or a session from the list.
 				</EmptyState>
@@ -725,7 +729,7 @@ export function App({
 		);
 	} else if (unknownSession) {
 		main = (
-			<div className="shell-empty">
+			<div className={SHELL_EMPTY}>
 				<EmptyState title="There's no such session in this project" action={wayBack}>
 					It may have been in another project.
 				</EmptyState>
@@ -734,13 +738,13 @@ export function App({
 	} else if (route.name === "models") {
 		main =
 			models === undefined ? (
-				<div className="shell-empty">
+				<div className={SHELL_EMPTY}>
 					<EmptyState title="There's nothing here" action={wayBack}>
 						This console can't read the model gateway.
 					</EmptyState>
 				</div>
 			) : (
-				<div className="shell-page">
+				<div className={page}>
 					{pageBar}
 					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
 				</div>
@@ -784,7 +788,7 @@ export function App({
 		);
 	} else {
 		main = (
-			<div className="shell-empty">
+			<div className={SHELL_EMPTY}>
 				{project !== undefined && client.mayStart(project.id).allowed ? (
 					<EmptyState
 						title="No session open"
@@ -815,6 +819,7 @@ export function App({
 	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
 	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
+	const classes = shellClasses({ narrow, collapsed: sidebar.collapsed, pane });
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
 	// The vault page, the audit log and API keys bring their own headings.
 	const title =
@@ -834,10 +839,10 @@ export function App({
 		treeProject !== undefined && start?.allowed === true ? newSessionPath(treeProject.id) : undefined;
 
 	return (
-		<div className="shell hb-app" data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
+		<div className={classes.shell} data-pane={pane} data-sidebar={sidebar.collapsed ? "collapsed" : undefined}>
 			<Sidebar
 				id="shell-sidebar"
-				className="shell-sidebar"
+				className={classes.sidebar}
 				collapsed={sidebar.collapsed}
 				{...sidebarRole}
 				head={
@@ -874,7 +879,7 @@ export function App({
 							keys={keys !== undefined}
 							members={members !== undefined}
 						/>
-						<div className="shell-actor">
+						<div className={classes.actor}>
 							<Actor actor={client.actor} />
 						</div>
 					</>
@@ -932,7 +937,7 @@ export function App({
 				</ProjectNav>
 			</Sidebar>
 			{listIsPage ? null : (
-				<main className="shell-main">
+				<main className={classes.main}>
 					{heading}
 					{main}
 				</main>

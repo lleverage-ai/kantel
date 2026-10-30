@@ -15,6 +15,7 @@ import {
 } from "@harbour/ui";
 import { isOrganisationScope } from "../api/client.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
+import { CONSOLE, CONSOLE_MAIN, CONSOLE_TRANSCRIPT } from "./shell-styles.ts";
 
 // A new session before it exists, after T3 Code's new thread: the session header with nothing in it yet, an empty
 // transcript saying where it starts, and the composer with the project picker in its footer. As with
@@ -121,7 +122,7 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 	const who = state.agentName ?? "The agent";
 	const repo = state.repository?.repo ?? "";
 	return (
-		<div className="console">
+		<div className={CONSOLE}>
 			<SessionHeader
 				title=""
 				parents={[
@@ -135,8 +136,8 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 				onBack={on.onBack}
 			/>
 			{/* console-main is a flex row (#272): the transcript's own column keeps it, and the composer, full width. */}
-			<div className="console-main">
-				<div className="console-main-transcript">
+			<div className={CONSOLE_MAIN}>
+				<div className={CONSOLE_TRANSCRIPT}>
 					<Transcript
 						items={[]}
 						empty={

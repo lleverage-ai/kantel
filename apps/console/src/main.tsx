@@ -40,6 +40,7 @@ import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-
 import type { SessionClient } from "./state/session-client.ts";
 import { syncTheme } from "./state/theme-sync.ts";
 import { profileStore } from "./ui/profile.tsx";
+import { BOOT } from "./ui/shell-styles.ts";
 import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
 
@@ -283,13 +284,13 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	if (state.kind === "signed-in") return <SignedInConsole state={state} onSignedOut={reboot} />;
 	if (state.kind === "sign-in") {
 		return (
-			<div className="boot hb-app">
+			<div className={BOOT}>
 				<SignInScreen api={state.api} onSignedIn={reboot} />
 			</div>
 		);
 	}
 	return (
-		<div className="boot hb-app">
+		<div className={BOOT}>
 			<Notice
 				level={state.kind === "failed" ? "error" : "info"}
 				action={
@@ -446,7 +447,7 @@ createRoot(document.getElementById("root")!).render(
 					// The shell's frame while the console learns who is signed in: no page-wide spinner on a reload.
 					<ShellPlaceholder />
 				) : (
-					<div className="boot hb-app">
+					<div className={BOOT}>
 						<Spinner label="Opening the console" />
 					</div>
 				)

@@ -17,8 +17,11 @@ way, with no JavaScript config: everything is in [src/tokens/tailwind.css](../sr
   `--spacing: 0.25rem`.
 - **Builds.** `src/index.ts` imports the entry after tokens.css and base.css, so every host gets it; the host adds
   `@tailwindcss/vite` to its Vite plugins (the console does; the workbench's is `.ladle/vite.config.ts`; the loop's
-  harness has its own). Only `packages/ui/src` is scanned for class names (`@source "../"`, with automatic
-  detection off).
+  harness has its own). `packages/ui/src` and the console's `apps/console/src` are scanned for class names
+  (`@source "../"` and `@source "../../../../apps/console/src"`, with automatic detection off), whichever of them
+  builds. A new host adds its `src/` there rather than a Tailwind entry of its own: a second entry emits a second
+  utilities sheet later in the page, whose copy of a utility beats a more specific one in the first (`p-2` over
+  `px-4`).
 - **No preflight, for now.** Tailwind's reset would restyle every component still on its own .css, which assume
   browser defaults plus base.css. Only the theme and utilities layers are loaded, and base.css stays the base. A
   converted component sets what it needs itself (`m-0`, `list-none`, `bg-transparent`, `appearance-none`).
@@ -111,3 +114,20 @@ What caught those conversions out:
   (`` `border-t${x}` ``) can be missed. Leave a space before `${`.
 - The theme has Tailwind's breakpoints only. A component with its own breakpoint (900px, 1040px) keeps that
   media query in its .css, on a kept `hb-` class, because `max-[900px]:` is a raw size.
+
+## The console
+
+The console's shell, pages, session layout, files screen, profiler and browser viewer are utilities on its own
+elements; the class strings several of them share (the shell grid, a page, a session's main area) are named in
+`apps/console/src/ui/shell-styles.ts`. Its `src/ui/styles.css` keeps only what utilities can't say, each with a
+comment:
+
+- `html`, `body` and `#root` fill the window, and the body shows the canvas: the page itself, which no component owns.
+- A presented file's preview turns into a sheet over the transcript when the session's main area is under 60rem: a
+  container query at a size the theme has no name for, and it hides the preview's resize handle inside it.
+- The session's browser moves above the transcript under 1340px: a breakpoint the theme lacks, which also sizes the
+  view inside @harbour/ui's `BrowserPanel`.
+
+Those rules select kept hook classes (`console-file-panel`, `console-browser`, `console-main-browser`). Where a
+console utility has to beat a library component's own unlayered CSS (a `Button`'s centred label, `hb-app` on the
+viewer's page), it carries `!` and a comment, as in the library.

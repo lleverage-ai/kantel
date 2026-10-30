@@ -25,8 +25,12 @@ its tokens.
 ## Styling: Tailwind v4
 
 `@harbour/ui` is styled with Tailwind v4 utilities in `className`, moving over from one hand-written .css file per
-component. The details and every utility name are in
-[packages/ui/docs/tailwind.md](packages/ui/docs/tailwind.md).
+component. The console (`apps/console`) is too: its shell, pages and browser viewer use the same utilities on its own
+elements, and its `src/ui/styles.css` keeps only the page's root sizing and the two queries the theme has no size for.
+The details and every utility name are in [packages/ui/docs/tailwind.md](packages/ui/docs/tailwind.md).
+
+- Scanned sources: `packages/ui/src` and `apps/console/src`, both listed in `packages/ui/src/tokens/tailwind.css`.
+  A class in any other app isn't generated: a new host adds its `src/` there.
 
 - Tokens live in `@theme` in `packages/ui/src/tokens/tailwind.css`, mapped from the `--hb-*` tokens with
   `var(--hb-*)` references (`@theme inline`), so a theme switch restyles utilities at runtime. A new token goes in

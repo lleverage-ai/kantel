@@ -46,6 +46,7 @@ import { ProfilePanel } from "./profile-panel.tsx";
 import { openAttachmentId, readOpenFile, useSentAttachments } from "./sent-attachments.ts";
 import { useSessionBrowser } from "./session-browser.tsx";
 import { SessionPreview } from "./session-preview.tsx";
+import { CONSOLE, CONSOLE_MAIN, CONSOLE_TRANSCRIPT } from "./shell-styles.ts";
 import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 
 // The console is a host for @harbour/ui: the header, transcript and composer are the library's, and this file only
@@ -55,6 +56,26 @@ import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 function connectionOf(health: ConnectionHealth): ConnectionStateValue {
 	return health.status === "offline" ? { state: "offline", retryAt: health.retryAt } : { state: health.status };
 }
+
+/** A cursor or a frame in the options menu's facts. */
+const MENU_CODE = "text-faint font-mono text-2xs";
+
+/**
+ * The file preview at the right: the share of the width the person last dragged it to (--hb-preview-share, set by the
+ * panel, 48% at first), never narrower than a card. `console-file-panel` is the hook for its narrow layout, a sheet over
+ * the transcript (styles.css).
+ */
+const FILE_PANEL = "console-file-panel flex-[0_0_clamp(var(--hb-card-width),var(--hb-preview-share,48%),75%)]";
+
+/**
+ * The session's browser, in the same place at the right as a presented file's viewer (which takes it while a file is
+ * open): the full height, so the agent's one browser stays in view while the transcript scrolls. At most 38% of the
+ * width, so the transcript keeps a composer wider than its narrow (resting) layout's 640px. The candidate token for its
+ * width: --hb-browser-panel-width. `console-browser` is the hook for its layout above the transcript on a narrower
+ * screen (styles.css).
+ */
+const BROWSER_PANEL =
+	"console-browser flex-[0_0_clamp(calc(var(--hb-content-width)*0.5),38%,var(--hb-content-width))] min-w-0 min-h-0 border-l border-border";
 
 /**
  * Data freshness: is what's shown the host's latest? Separate from whether the link is up. A stream fact for the options
@@ -67,19 +88,19 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 		case "catching-up":
 			return (
 				<>
-					Catching up to <code>{freshness.head}</code>
+					Catching up to <code className={MENU_CODE}>{freshness.head}</code>
 				</>
 			);
 		case "stale":
 			return (
 				<>
-					May be behind, showing <code>{cursor ?? "nothing"}</code>
+					May be behind, showing <code className={MENU_CODE}>{cursor ?? "nothing"}</code>
 				</>
 			);
 		case "current":
 			return (
 				<>
-					Up to date at <code>{cursor ?? "start"}</code>
+					Up to date at <code className={MENU_CODE}>{cursor ?? "start"}</code>
 				</>
 			);
 	}
@@ -362,7 +383,7 @@ export function SessionView({
 	);
 
 	return (
-		<div className="console">
+		<div className={CONSOLE}>
 			<SessionHeader
 				title={state.title}
 				{...(parents === undefined ? {} : { parents })}
@@ -370,11 +391,11 @@ export function SessionView({
 				loading={state.freshness.state === "loading" && state.title === ""}
 				onBack={onBack}
 				actions={
-					<div className="console-actions">
+					<div className="flex items-center gap-1">
 						{onFiles === undefined ? null : (
 							<IconButton variant="ghost" label="Files" icon={<FileIcon />} onClick={() => onFiles()} />
 						)}
-						<div className="console-menu-root" ref={menuRoot}>
+						<div className="relative" ref={menuRoot}>
 							<IconButton
 								variant="ghost"
 								label="Session options"
@@ -383,8 +404,10 @@ export function SessionView({
 								onClick={() => setMenu((open) => !open)}
 							/>
 							{menu ? (
-								<div className="console-menu">
+								<div className="absolute z-(--hb-z-float) top-full right-0 mt-1 flex flex-col items-stretch w-[calc(var(--hb-sidebar-width)-var(--hb-step-3))] max-w-[calc(100vw-var(--hb-step-8))] p-1 border border-border-strong rounded-panel bg-raised shadow-float text-sm">
+									{/* `justify-start!`: the Button's own CSS centres its label, unlayered, and would beat a plain utility. */}
 									<Button
+										className="justify-start!"
 										variant="ghost"
 										size="sm"
 										onClick={() => {
@@ -395,8 +418,8 @@ export function SessionView({
 									>
 										Drop the connection for 3s
 									</Button>
-									<div className="console-menu-label">Stream</div>
-									<ul className="console-menu-facts">
+									<div className="pt-2 px-2 pb-0.5 text-faint text-xs">Stream</div>
+									<ul className="flex flex-col gap-0.5 m-0 pt-0.5 px-2 pb-1 text-muted text-xs list-none">
 										<li>
 											<FreshnessText freshness={state.freshness} cursor={state.cursor} />
 										</li>
@@ -407,7 +430,7 @@ export function SessionView({
 										<li>{state.flushes.toLocaleString("en-GB")} renders from the stream</li>
 										{last ? (
 											<li>
-												Last resume from <code>{last.from ?? "start"}</code> by {last.how}
+												Last resume from <code className={MENU_CODE}>{last.from ?? "start"}</code> by {last.how}
 											</li>
 										) : null}
 									</ul>
@@ -418,9 +441,9 @@ export function SessionView({
 				}
 			/>
 			<div
-				className={`console-main${panelOpen ? " console-main-split" : ""}${browserPanel === undefined ? "" : " console-main-browser"}`}
+				className={`${CONSOLE_MAIN}${panelOpen ? " console-main-split" : ""}${browserPanel === undefined ? "" : " console-main-browser"}`}
 			>
-				<div className="console-main-transcript">
+				<div className={CONSOLE_TRANSCRIPT}>
 					<Profiled id="transcript-list">
 						<PreviewWarmContext.Provider value={warmFile}>
 							<SentAttachmentsContext.Provider value={sentAttachments}>
@@ -462,7 +485,7 @@ export function SessionView({
 																level="warning"
 																action={
 																	onBrowserDecision === undefined || !control.live ? undefined : (
-																		<span className="console-browser-actions">
+																		<span className="flex gap-1">
 																			<Button
 																				size="sm"
 																				disabled={actions.sending}
@@ -516,7 +539,7 @@ export function SessionView({
 				{readOpen === undefined ? null : (
 					// One panel for every file, kept mounted: a file opening while another is open swaps the body in place.
 					<SessionPreview
-						className="console-file-panel"
+						className={FILE_PANEL}
 						file={shownDraft === undefined ? openFile : undefined}
 						draft={shownDraft}
 						lastDraft={lastDraft.current}
@@ -532,7 +555,7 @@ export function SessionView({
 				)}
 				{browserPanel === undefined ? null : (
 					<BrowserPanel
-						className="console-browser"
+						className={BROWSER_PANEL}
 						{...(browser.step === undefined ? {} : { step: browser.step })}
 						running={browser.running}
 						onHide={browser.hide}

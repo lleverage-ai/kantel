@@ -37,6 +37,8 @@ type WorkspaceState =
 	| { readonly status: "ready"; readonly files: WorkspaceFiles };
 
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
+/** One message in place of the tree or the file, centred. */
+const MESSAGE = "grid h-full place-items-center p-4";
 
 /** The session's workspace, or why there isn't one. */
 function useWorkspace(client: ConsoleClient, sessionId: string): WorkspaceState {
@@ -195,19 +197,19 @@ export function FilesScreen({
 	let body: ReactNode;
 	if (workspace.status === "loading") {
 		body = (
-			<div className="files-message">
+			<div className={MESSAGE}>
 				<Spinner label="Opening the workspace" />
 			</div>
 		);
 	} else if (workspace.status === "error") {
 		body = (
-			<div className="files-message">
+			<div className={MESSAGE}>
 				<Notice level="error">{workspace.message}</Notice>
 			</div>
 		);
 	} else if (workspace.status === "none") {
 		body = (
-			<div className="files-message">
+			<div className={MESSAGE}>
 				<EmptyState title="This session has no workspace">
 					A session started with a workspace shows its files here.
 				</EmptyState>
@@ -215,9 +217,11 @@ export function FilesScreen({
 		);
 	} else {
 		body = (
-			<div className="files-body">
+			<div
+				className={`grid flex-1 min-h-0 ${pane === "both" ? "grid-cols-[var(--hb-sidebar-width)_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]"}`}
+			>
 				{pane === "file" ? null : (
-					<div className="files-tree">
+					<div className={`min-h-0 py-2 px-1.5 overflow-y-auto ${pane === "both" ? "border-r border-border" : ""}`}>
 						<FileTree
 							label="Files"
 							directories={directories}
@@ -228,7 +232,7 @@ export function FilesScreen({
 							hrefFor={hrefFor}
 						/>
 						{rootFailed ? (
-							<div className="files-retry">
+							<div className="flex py-2 px-1.5">
 								<Button size="sm" onClick={() => list("")}>
 									Try again
 								</Button>
@@ -237,9 +241,9 @@ export function FilesScreen({
 					</div>
 				)}
 				{pane === "tree" ? null : (
-					<div className="files-viewer">
+					<div className="min-w-0 min-h-0">
 						{preview === undefined ? (
-							<div className="files-message">
+							<div className={MESSAGE}>
 								<EmptyState title="No file open">Pick a file to read it.</EmptyState>
 							</div>
 						) : null}
@@ -260,16 +264,18 @@ export function FilesScreen({
 	}
 
 	return (
-		<div className="files" data-pane={pane}>
+		<div className="flex flex-col h-full" data-pane={pane}>
 			{!header ? (
 				<h1 className="hb-sr-only">Files</h1>
 			) : (
-				<div className="files-header">
+				<div
+					className={`flex flex-wrap items-center gap-x-2.5 gap-y-1 min-h-[calc(var(--hb-control-md)+var(--hb-step-2)*2)] pt-[max(var(--hb-step-2),env(safe-area-inset-top))] pb-2 border-b border-border ${narrow ? "px-3" : "px-4"}`}
+				>
 					<Button variant="ghost" size="sm" onClick={toSession}>
 						Back to the session
 					</Button>
-					<h1 className="files-title">Files</h1>
-					{project === undefined ? null : <span className="files-meta">{project}</span>}
+					<h1 className="m-0 text-md font-strong leading-tight">Files</h1>
+					{project === undefined ? null : <span className="text-muted text-xs">{project}</span>}
 					<Badge>Read-only</Badge>
 				</div>
 			)}
