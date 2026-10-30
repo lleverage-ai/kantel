@@ -67,6 +67,9 @@ importers:
       "@harbour/schedules":
         specifier: workspace:*
         version: link:../../packages/schedules
+      "@harbour/sharing":
+        specifier: workspace:*
+        version: link:../../packages/sharing
       "@harbour/skills":
         specifier: workspace:*
         version: link:../../packages/skills
@@ -280,6 +283,9 @@ importers:
       "@harbour/selfhosted-workspace":
         specifier: workspace:*
         version: link:../../targets/selfhosted/workspace
+      "@harbour/sharing":
+        specifier: workspace:*
+        version: link:../../packages/sharing
       "@harbour/skills":
         specifier: workspace:*
         version: link:../../packages/skills
@@ -659,6 +665,40 @@ importers:
         specifier: 5.20261023.0-beta
         version: 5.20261023.0-beta(@types/node@24.19.2)
 
+  packages/sharing:
+    dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../sql
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
+      "@harbour/memory":
+        specifier: workspace:*
+        version: link:../memory
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../skills
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../vault
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../workspace
+      miniflare:
+        specifier: 5.20261023.0-beta
+        version: 5.20261023.0-beta(@types/node@24.19.2)
+
   packages/skills:
     dependencies:
       "@harbour/api":
@@ -746,6 +786,9 @@ importers:
       docx-preview:
         specifier: 0.4.1
         version: 0.4.1
+      highlight.js:
+        specifier: 11.12.0
+        version: 11.12.0
       lucide-react:
         specifier: 1.64.0
         version: 1.64.0(@types/react@19.3.0)(react@19.3.1)
@@ -4311,6 +4354,11 @@ packages:
   headers-polyfill@5.0.1:
     resolution:
       { integrity: sha512-1TJ6Fih/b8h5TIcv+1+Hw0PDQWJTKDKzFZzcKOiW1wJza3XoAQlkCuXLbymPYB8+ZQyw8mHvdw560e8zVFIWyA== }
+
+  highlight.js@11.12.0:
+    resolution:
+      { integrity: sha512-nbfWpyRMcMrPMmDwJB+dhX/eiaPKtc2RB+0QZskqJ3WjRA/FDS0e9hZrx8EC/lbEv8gXy98FcDbNa/dspAaJMg== }
+    engines: { node: ">=12.0.0" }
 
   history@5.3.0:
     resolution:
@@ -8968,6 +9016,8 @@ snapshots:
     dependencies:
       "@types/set-cookie-parser": 2.4.10
       set-cookie-parser: 3.2.1
+
+  highlight.js@11.12.0: {}
 
   history@5.3.0:
     dependencies:

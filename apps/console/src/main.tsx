@@ -1,5 +1,5 @@
 import { createPasskeyClient } from "@harbour/identity/passkey/http";
-import { Button, Notice, SignInScreen, Spinner } from "@harbour/ui";
+import { Button, Notice, SignInScreen, Spinner, themeController } from "@harbour/ui";
 import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
@@ -24,6 +24,7 @@ import { createRecordedOversight, type RecordedOversight } from "./recorded/over
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
+import { syncTheme } from "./state/theme-sync.ts";
 import { profileStore } from "./ui/profile.tsx";
 import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
@@ -59,6 +60,11 @@ import "./ui/styles.css";
 //
 // On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
 // identity API (`/v1/organisations`, `/v1/members`).
+
+// The theme: the page already paints in the person's theme (index.html's boot script, from this browser's memory);
+// this puts every theme's stylesheet on the page, so switching is instant. Their saved preference follows from the
+// server once `/v1/me` has answered (ui/theme-sync.ts).
+themeController();
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -303,14 +309,27 @@ function SignedInConsole({
 					};
 		// The cache is this person's: their organisation and who `/v1/me` says they are.
 		const owner = `${state.me.organisationId}/${JSON.stringify(state.me.actor)}`;
-		const api = createApiClient({
-			actor,
-			roles: state.me.roles,
-			headers: state.headers,
-			onUnauthenticated,
-			...(sockets ? {} : { openSocket: false }),
-			onTransport: (sessionId, how) => transports.set(sessionId, how),
-		});
+		// A person's theme is kept for them on the server; a host app's key has none.
+		const saveTheme =
+			state.me.actor.kind === "human"
+				? (preference: string) => {
+						identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
+							console.info("harbour: couldn't keep the theme:", error instanceof Error ? error.message : error);
+						});
+					}
+				: undefined;
+		syncTheme(themeController(), state.me.preferences, saveTheme);
+		const api = {
+			...createApiClient({
+				actor,
+				roles: state.me.roles,
+				headers: state.headers,
+				onUnauthenticated,
+				...(sockets ? {} : { openSocket: false }),
+				onTransport: (sessionId, how) => transports.set(sessionId, how),
+			}),
+			...(saveTheme === undefined ? {} : { saveTheme }),
+		};
 		// Rows about a vault request link to its page, when the console has the vault page to open it on.
 		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);

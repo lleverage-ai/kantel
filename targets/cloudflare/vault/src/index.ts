@@ -13,7 +13,10 @@ import type {
 	ConnectorCredentialRequest,
 	EgressDecision,
 	EgressRequest,
+	ModelCallScope,
 	OrganisationId,
+	SessionPlaceholderRequest,
+	SessionPlaceholders,
 	SystemContext,
 } from "@harbour/contracts";
 import { HarbourError } from "@harbour/contracts";
@@ -204,6 +207,16 @@ export class VaultDurableObjectCore {
 	/** The model gateway's key read, as an RPC call. */
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential> {
 		return this.vault.readConnectorCredential(ctx, request);
+	}
+
+	/** The model gateway's per-call check that the session is neither blocked nor ended, as an RPC call. */
+	assertSessionOpen(ctx: SystemContext, scope: ModelCallScope): Promise<void> {
+		return this.vault.assertSessionOpen(ctx, scope);
+	}
+
+	/** A sandbox start's placeholders, as an RPC call from the host starting it. */
+	issueSessionPlaceholders(ctx: SystemContext, request: SessionPlaceholderRequest): Promise<SessionPlaceholders> {
+		return this.vault.issueSessionPlaceholders(ctx, request);
 	}
 
 	/** The egress decision API (`@harbour/vault/egress-api`), for the object's `fetch`. */

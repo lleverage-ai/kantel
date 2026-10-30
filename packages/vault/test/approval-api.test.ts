@@ -7,6 +7,7 @@ import {
 	type PasskeyChallenge,
 	type Proposal,
 	type ProposalTerms,
+	systemContext,
 	type VaultItem,
 } from "@harbour/contracts";
 import { actors, contextFor, createDeps } from "@harbour/testing/harness";
@@ -28,6 +29,7 @@ const PROJECT = "proj-a";
 const OTHER_PROJECT = "proj-b";
 const HOST = "api.github.com";
 const ORIGIN = "https://harbour.test";
+const systemContextFor = () => systemContext("egress-gateway");
 const SECRET = "approval-api-test-value-6f1d";
 
 /** Each caller the API takes, by the test header that stands in for a sign-in. */
@@ -283,6 +285,57 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks }) => {
 		expect(stopped).toMatchObject({ id: grantId, status: "revoked", endReason: "revoked" });
 		expect((await approver.listGrants({ status: "active" })).items).toEqual([]);
 		expect((await approver.listGrants({ status: "revoked" })).items.map((grant) => grant.id)).toEqual([grantId]);
+	});
+
+	it("blocks and unblocks a session over the API, for an operator only, and reads its egress usage", async () => {
+		const { client, vault, item, handler } = await setUp(apiChecks);
+		await vault.putPolicy(callers.admin, {
+			itemId: item.id,
+			selector: { organisationId: ORG, projectId: PROJECT },
+			route: { host: HOST, methods: ["GET"], pathPrefix: "/user" },
+		});
+		const worker = systemContextFor();
+		const egress = {
+			organisationId: ORG,
+			projectId: PROJECT,
+			agentId: "agent-1",
+			sessionId: "session-1",
+			method: "GET" as const,
+			url: `https://${HOST}/user`,
+		};
+		expect((await vault.decideEgress(worker, egress)).allow).toBe(true);
+
+		const approver = client("approver");
+		expect(await approver.getSessionAccess("session-1")).toEqual({
+			sessionId: "session-1",
+			blocked: false,
+			generation: 0,
+		});
+		expect((await rejection(client("forwarded").setSessionAccess("session-1", { blocked: true }))).code).toBe(
+			"forbidden",
+		);
+		expect((await rejection(client("agent").setSessionAccess("session-1", { blocked: true }))).code).toBe("forbidden");
+		expect((await rejection(client("outsider").getSessionUsage("session-1"))).code).toBe("forbidden");
+		const bad = await handler(
+			new Request(`${ORIGIN}${APPROVAL_API_BASE}/sessions/session-1/access`, {
+				method: "POST",
+				headers: { "x-test-caller": "approver", "content-type": "application/json" },
+				body: JSON.stringify({ blocked: "yes" }),
+			}),
+		);
+		expect(bad.status).toBe(400);
+
+		const blocked = await approver.setSessionAccess("session-1", { blocked: true, reason: "Runaway loop" });
+		expect(blocked).toMatchObject({ sessionId: "session-1", blocked: true, reason: "Runaway loop" });
+		expect((await vault.decideEgress(worker, egress)).allow).toBe(false);
+		expect(await client("forwarded").getSessionAccess("session-1")).toMatchObject({ blocked: true });
+		const usage = await client("forwarded").getSessionUsage("session-1");
+		expect(usage).toMatchObject({ sessionId: "session-1", requests: 2, injected: 1, denied: 1 });
+		expect(usage.hosts).toEqual([{ host: HOST, injected: 1, denied: 1 }]);
+		expect(JSON.stringify(usage)).not.toContain(SECRET);
+
+		expect(await approver.setSessionAccess("session-1", { blocked: false })).toMatchObject({ blocked: false });
+		expect((await vault.decideEgress(worker, egress)).allow).toBe(true);
 	});
 
 	it("reads an item's name and injection, never its value", async () => {

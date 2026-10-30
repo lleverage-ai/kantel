@@ -19,6 +19,9 @@
  * | `GET /grants?status=&sessionId=&limit=&cursor=` | `listGrants` | `Page<Grant>` |
  * | `GET /grants/:id` | `getGrant` | `Grant` |
  * | `POST /grants/:id/revoke` | `revokeGrant` | `Grant` |
+ * | `GET /sessions/:id/access` | `getSessionAccess` | `SessionAccess` |
+ * | `POST /sessions/:id/access` | `setSessionAccess` (`{ blocked, reason? }`) | `SessionAccess` |
+ * | `GET /sessions/:id/usage` | `getSessionUsage` | `SessionEgressUsage` |
  *
  * Every route is a person's call (or a service's acting for one): `authenticate` turns the request into its
  * `CallContext`, and the vault decides what that caller may do, as the contract says. A decision's body is a
@@ -58,6 +61,8 @@ import {
 	type ProposalStatus,
 	type RelyingParty,
 	relyingPartyFor,
+	type SessionAccess,
+	type SessionEgressUsage,
 	systemClock,
 	systemContext,
 	type Vault,
@@ -71,7 +76,17 @@ export const APPROVAL_API_BASE = "/v1/vault";
 /** The vault calls the approval API makes. */
 export type ApprovalVault = Pick<
 	Vault,
-	"getProposal" | "listProposals" | "approvalView" | "decide" | "getItem" | "getGrant" | "listGrants" | "revokeGrant"
+	| "getProposal"
+	| "listProposals"
+	| "approvalView"
+	| "decide"
+	| "getItem"
+	| "getGrant"
+	| "listGrants"
+	| "revokeGrant"
+	| "getSessionAccess"
+	| "setSessionAccess"
+	| "getSessionUsage"
 >;
 
 /** Who the API took the caller for, and their name when the host knows it. */
@@ -248,6 +263,22 @@ export function withProjectAccess(vault: ApprovalVault, access: ProjectAccess): 
 			await access.require(ctx, { ...scope, needed: "operator", operation: "vault.revokeGrant", subject });
 			return vault.revokeGrant(ctx, grantId, reason);
 		},
+		async getSessionAccess(ctx, sessionId) {
+			const subject = { kind: "vault.session", id: sessionId };
+			await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.getSessionAccess", subject });
+			return vault.getSessionAccess(ctx, sessionId);
+		},
+		async setSessionAccess(ctx, sessionId, input) {
+			forbidAgent(ctx, "block or unblock sessions");
+			const subject = { kind: "vault.session", id: sessionId };
+			await access.require(ctx, { sessionId, needed: "operator", operation: "vault.setSessionAccess", subject });
+			return vault.setSessionAccess(ctx, sessionId, input);
+		},
+		async getSessionUsage(ctx, sessionId) {
+			const subject = { kind: "vault.session", id: sessionId };
+			await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.getSessionUsage", subject });
+			return vault.getSessionUsage(ctx, sessionId);
+		},
 	};
 }
 
@@ -332,9 +363,13 @@ type Route =
 	  }
 	| { readonly name: "item"; readonly id: string }
 	| { readonly name: "grants" }
-	| { readonly name: "grant" | "revoke"; readonly id: string };
+	| { readonly name: "grant" | "revoke"; readonly id: string }
+	| { readonly name: "sessionAccess" | "sessionBlock" | "sessionUsage"; readonly id: string };
 
 const METHOD: { readonly [name in Route["name"]]: "GET" | "POST" } = {
+	sessionAccess: "GET",
+	sessionBlock: "POST",
+	sessionUsage: "GET",
 	viewer: "GET",
 	proposals: "GET",
 	proposal: "GET",
@@ -381,6 +416,12 @@ function routeOf(path: string, base: string): Route | undefined {
 			if (id === undefined) return undefined;
 			if (parts.length === 2) return { name: "grant", id };
 			return parts.length === 3 && parts[2] === "revoke" ? { name: "revoke", id } : undefined;
+		case "sessions":
+			if (id === undefined || parts.length !== 3) return undefined;
+			// One path, two methods: GET reads the session's access, POST sets it.
+			if (parts[2] === "access") return { name: "sessionAccess", id };
+			if (parts[2] === "usage") return { name: "sessionUsage", id };
+			return undefined;
 		default:
 			return undefined;
 	}
@@ -600,7 +641,9 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 
 	return async (request) => {
 		const url = new URL(request.url);
-		const route = routeOf(url.pathname, base);
+		const found = routeOf(url.pathname, base);
+		const route: Route | undefined =
+			found?.name === "sessionAccess" && request.method === "POST" ? { name: "sessionBlock", id: found.id } : found;
 		if (route === undefined) return errorResponse(404, "not_found", "No such route");
 		const method = METHOD[route.name];
 		if (request.method !== method) return errorResponse(405, "not_supported", `Use ${method}`, { allow: method });
@@ -664,6 +707,21 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 					}
 					return json(200, await vault.revokeGrant(ctx, route.id, body.reason as string | undefined));
 				}
+				case "sessionAccess":
+					return json(200, await vault.getSessionAccess(ctx, route.id));
+				case "sessionBlock": {
+					const body = await readJson(request);
+					if (!isRecord(body) || typeof body.blocked !== "boolean" || !optionalString(body.reason)) {
+						throw new HarbourError("invalid", "Session access is { blocked, reason? }: a boolean and a string");
+					}
+					const input = {
+						blocked: body.blocked,
+						...(body.reason === undefined ? {} : { reason: body.reason as string }),
+					};
+					return json(200, await vault.setSessionAccess(ctx, route.id, input));
+				}
+				case "sessionUsage":
+					return json(200, await vault.getSessionUsage(ctx, route.id));
 			}
 		} catch (error) {
 			if (isHarbourError(error) && isErrorCode(error.code)) {
@@ -711,6 +769,14 @@ export interface VaultApprovalClient {
 		signal?: AbortSignal,
 	): Promise<Page<Grant>>;
 	revokeGrant(grantId: string, reason?: string, signal?: AbortSignal): Promise<Grant>;
+	getSessionAccess(sessionId: string, signal?: AbortSignal): Promise<SessionAccess>;
+	/** Blocks or unblocks the session's credentials at once: its egress and model calls are refused while blocked. */
+	setSessionAccess(
+		sessionId: string,
+		input: { readonly blocked: boolean; readonly reason?: string },
+		signal?: AbortSignal,
+	): Promise<SessionAccess>;
+	getSessionUsage(sessionId: string, signal?: AbortSignal): Promise<SessionEgressUsage>;
 }
 
 /**
@@ -774,6 +840,9 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 		listGrants: (filter, page, signal) => call(`/grants${query(filter, page)}`, { signal }),
 		revokeGrant: (grantId, reason, signal) =>
 			call(`/grants/${id(grantId)}/revoke`, { body: reason === undefined ? {} : { reason }, signal }),
+		getSessionAccess: (sessionId, signal) => call(`/sessions/${id(sessionId)}/access`, { signal }),
+		setSessionAccess: (sessionId, input, signal) => call(`/sessions/${id(sessionId)}/access`, { body: input, signal }),
+		getSessionUsage: (sessionId, signal) => call(`/sessions/${id(sessionId)}/usage`, { signal }),
 	};
 }
 
@@ -791,5 +860,8 @@ export function approvalClientAsVault(client: VaultApprovalClient): ApprovalVaul
 		getGrant: (ctx, grantId) => client.getGrant(grantId, ctx.signal),
 		listGrants: (ctx, filter, page) => client.listGrants(filter, page, ctx.signal),
 		revokeGrant: (ctx, grantId, reason) => client.revokeGrant(grantId, reason, ctx.signal),
+		getSessionAccess: (ctx, sessionId) => client.getSessionAccess(sessionId, ctx.signal),
+		setSessionAccess: (ctx, sessionId, input) => client.setSessionAccess(sessionId, input, ctx.signal),
+		getSessionUsage: (ctx, sessionId) => client.getSessionUsage(sessionId, ctx.signal),
 	};
 }

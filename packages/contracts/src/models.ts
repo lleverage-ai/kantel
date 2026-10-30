@@ -268,6 +268,12 @@ export interface ConnectorCredential {
  */
 export interface ConnectorCredentials {
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential>;
+	/**
+	 * A worker call the gateway makes before each model call, since it keeps keys for a while: rejects with `refused`
+	 * when the session is blocked or has ended in the vault (`Vault.setSessionAccess`), so a block stops its model calls
+	 * at once rather than when the cached key expires. Optional: without it a block holds from the next key read.
+	 */
+	assertSessionOpen?(ctx: SystemContext, scope: ModelCallScope): Promise<void>;
 }
 
 /** Issues and checks the short-lived tokens the runtime calls the gateway with. Only platform services hold the key. */

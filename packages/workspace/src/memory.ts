@@ -225,6 +225,61 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			return existing.record;
 		},
 
+		async fork(ctx, id, input) {
+			const source = load(ctx, id);
+			await checks.requireWorkspace(ctx, source.record, "viewer", "workspace.fork");
+			checkOwner(ctx, input.owner);
+			await checks.requireCreate(ctx, input.owner, input.sessionId);
+			await checks.requireMounts(ctx, source.record.mounts);
+			if (source.record.seedReadiness === "pending" || source.record.seedReadiness === "metadata") {
+				throw new HarbourError("conflict", `workspace ${id} is still seeding; fork it once its files are in`);
+			}
+			const version = input.version ?? source.record.head;
+			// Copy-on-write: the fork's tree refers to the source's bodies, and every path was last changed at its version 1.
+			const tree = new Map<string, StoredFile>();
+			for (const [path, file] of treeAt(source, version)) tree.set(path, { ...file, version: 1 });
+			const forkId: WorkspaceId = `ws_${crypto.randomUUID()}`;
+			const now = clock.now();
+			const versions: StoredVersion[] = [
+				{ tree: new Map(), info: { version: 0, at: now, actor: ctx.actor, changed: [] } },
+			];
+			if (tree.size > 0) {
+				versions.push({
+					tree,
+					info: {
+						version: 1,
+						at: now,
+						actor: ctx.actor,
+						changed: [...tree.keys()].sort(),
+						message: `fork of ${id} at version ${version}`,
+					},
+				});
+			}
+			const from = source.record;
+			const record: WorkspaceRecord = {
+				id: forkId,
+				owner: input.owner,
+				...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+				head: versions.length - 1,
+				mounts: from.mounts,
+				...(from.seed === undefined ? {} : { seed: from.seed }),
+				seedReadiness: from.seedReadiness,
+				...(from.seedReport === undefined ? {} : { seedReport: from.seedReport }),
+				forkedFrom: { workspaceId: id, version },
+				createdAt: now,
+				updatedAt: now,
+			};
+			const state: WorkspaceState = { organisationId: source.organisationId, record, versions };
+			workspaces.set(forkId, state);
+			await emit({
+				...auditBase(ctx, state),
+				id: `workspace:forked:${forkId}`,
+				type: "workspace.forked",
+				data: { from: id, version, entries: tree.size },
+			});
+			return record;
+		},
+
 		async get(ctx, id) {
 			const state = load(ctx, id);
 			await checks.requireWorkspace(ctx, state.record, "viewer", "workspace.get");

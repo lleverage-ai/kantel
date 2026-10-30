@@ -61,6 +61,7 @@ import {
 	type SessionRecord,
 	type SessionRuntime,
 	type SessionUpdate,
+	type SharingLookup,
 	type Submission,
 	systemClock,
 	systemContext,
@@ -153,6 +154,11 @@ export interface SessionRuntimeOptions {
 	 * checks only the organisation; every target and every conformance run passes one.
 	 */
 	readonly identity?: Pick<IdentityDirectory, "roleOf">;
+	/**
+	 * Shares, bindings and policies across projects (docs/design/sharing.md), read by `access` for its resource checks.
+	 * Without it only the owner rules apply.
+	 */
+	readonly sharing?: SharingLookup;
 	/**
 	 * Released on abort (`aborted`) and close (`session_ended`), as the `sandbox` teardown of the session-end hook.
 	 * Kept for existing wiring: a sandbox created with `sessionEnd: runtime.sessionEnd` registers itself instead.
@@ -501,6 +507,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 					identity: options.identity,
 					sessions: { get: async (ctx, sessionId) => recordOf(await requireStored(ctx, sessionId)) },
 					...(options.audit === undefined ? {} : { audit: options.audit }),
+					...(options.sharing === undefined ? {} : { sharing: options.sharing }),
 					clock,
 				});
 

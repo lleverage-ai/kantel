@@ -20,7 +20,12 @@
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
-import type { ConnectorCredential, ConnectorCredentialRequest, SystemContext } from "@harbour/contracts";
+import type {
+	ConnectorCredential,
+	ConnectorCredentialRequest,
+	ModelCallScope,
+	SystemContext,
+} from "@harbour/contracts";
 import type { AcceptWebSocket } from "@harbour/runtime/http";
 import { r2ObjectBucket } from "@harbour/skills/sql";
 import { d1Driver } from "@harbour/sql/sqlite";
@@ -139,6 +144,7 @@ const PLACEMENT_R2_KEY = "placement-probe/none";
 interface VaultRpc {
 	cpaItem(): Promise<string>;
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential>;
+	assertSessionOpen(ctx: SystemContext, scope: ModelCallScope): Promise<void>;
 }
 
 /**
@@ -326,6 +332,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 					// An AbortSignal can't cross RPC, so the read goes without one: it is one call to the vault object.
 					readConnectorCredential: ({ signal: _signal, ...ctx }, request) =>
 						vault.readConnectorCredential(ctx, request),
+					assertSessionOpen: ({ signal: _signal, ...ctx }, scope) => vault.assertSessionOpen(ctx, scope),
 				},
 				audit,
 				clock,

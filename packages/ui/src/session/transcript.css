@@ -131,28 +131,6 @@
 	}
 }
 
-/* The top of a paged transcript with nothing older: a hairline either side of one quiet line. */
-.hb-transcript-start {
-	padding: var(--hb-space-7) var(--hb-space-7) var(--hb-space-4);
-}
-
-.hb-transcript-start-rule {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-5);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	white-space: nowrap;
-}
-
-.hb-transcript-start-rule::before,
-.hb-transcript-start-rule::after {
-	flex: 1;
-	height: var(--hb-hairline);
-	background: var(--hb-border-strong);
-	content: "";
-}
-
 /*
  * Docked: a composer floats over the transcript's foot (T3 Code's composer overlay, ChatView.tsx). The list scrolls
  * under its glass; the end makes room for it, as tall as transcript.tsx measures the dock, plus the usual gap.
@@ -326,7 +304,6 @@
 
 @media (min-width: 900px) {
 	.hb-transcript-row,
-	.hb-transcript-start,
 	.hb-transcript-error {
 		padding-left: var(--hb-space-9);
 		padding-right: var(--hb-space-9);

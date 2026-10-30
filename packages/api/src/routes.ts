@@ -9,6 +9,11 @@ import { defineRoute } from "./route.ts";
 import { PendingRun, RunResult, RunResultQuery } from "./run-schema.ts";
 import {
 	AbortSessionBody,
+	AccessRequest,
+	AccessRequestDecided,
+	AccessRequestPage,
+	AccessRequestPath,
+	BindingBody,
 	BrowserEmbed,
 	BrowserSessionPath,
 	Concept,
@@ -16,17 +21,23 @@ import {
 	ConceptPath,
 	CreatedSession,
 	CreateMemorySpaceBody,
+	CreateResourceShareBody,
 	CreateScheduleBody,
 	CreateSessionBody,
+	DecideAccessRequestBody,
 	EmbedBrowserBody,
 	FileShare,
 	FileSharePage,
 	ForkSessionBody,
 	ImportSkillBody,
+	ListAccessRequestsQuery,
+	ListBindingsQuery,
 	ListConceptsQuery,
+	ListResourceSharesQuery,
 	ListSchedulesQuery,
 	ListSessionsQuery,
 	ListSharesQuery,
+	ListShareUsesQuery,
 	ListSkillsQuery,
 	MemorySearchBody,
 	MemorySearchResult,
@@ -42,6 +53,17 @@ import {
 	ProfilePath,
 	Recall,
 	RecallBody,
+	RegisteredResource,
+	RegisterResourceBody,
+	RequestAccessBody,
+	ResourceBinding,
+	ResourceBindingPage,
+	ResourcePolicy,
+	ResourceQuery,
+	ResourceShare,
+	ResourceSharePage,
+	ResourceSharePath,
+	RevokeResourceShareBody,
 	Schedule,
 	SchedulePage,
 	SchedulePath,
@@ -51,9 +73,11 @@ import {
 	SessionPath,
 	SessionRecord,
 	SessionWarmth,
+	SetResourcePolicyBody,
 	ShareFileBody,
 	ShareInviteBody,
 	SharePath,
+	ShareUseList,
 	SkillFileContent,
 	SkillFileQuery,
 	SkillListingPage,
@@ -750,6 +774,243 @@ export const shareRoutes = {
 	removeShareInvite,
 } as const;
 
+// Resource sharing (docs/design/sharing.md): a project's resources shared with another project, agent, person or
+// session, with access requests to the owner's approvers, bindings (maintainer, approver, group member) and policies.
+// Every check is the sharing store's, through `ProjectAccess`.
+
+const sharingErrors = ["invalid", "forbidden", "not_found"] as const;
+const sharingChangeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
+
+export const listResourceShares = defineRoute({
+	operationId: "listResourceShares",
+	method: "GET",
+	path: "/sharing/shares",
+	tag: "sharing",
+	summary: "List resource shares",
+	description:
+		"Newest first, active ones unless `includeInactive`. Filter by resource, grantee or `ownerProjectId`. Each share is " +
+		"listed only to those who may read it: viewer on the owner's or the grantee's project, or authority over the resource.",
+	query: ListResourceSharesQuery,
+	answer: { status: 200, description: "A page of shares.", schema: ResourceSharePage },
+	errors: sharingErrors,
+});
+
+export const createResourceShare = defineRoute({
+	operationId: "createResourceShare",
+	method: "POST",
+	path: "/sharing/shares",
+	tag: "sharing",
+	summary: "Share a resource",
+	description:
+		"Needs authority over the resource: `approver` on it, or admin where it lives. An agent may only pass on a share it " +
+		"holds (`parentShareId`) to a session it supervises, never wider, later or at another revision. Audited as " +
+		"`sharing.share.created`.",
+	body: CreateResourceShareBody,
+	answer: { status: 201, description: "The share.", schema: ResourceShare },
+	errors: sharingChangeErrors,
+});
+
+export const getResourceShare = defineRoute({
+	operationId: "getResourceShare",
+	method: "GET",
+	path: "/sharing/shares/{shareId}",
+	tag: "sharing",
+	summary: "Get a resource share",
+	params: ResourceSharePath,
+	answer: { status: 200, description: "The share.", schema: ResourceShare },
+	errors: ["forbidden", "not_found"],
+});
+
+export const revokeResourceShare = defineRoute({
+	operationId: "revokeResourceShare",
+	method: "POST",
+	path: "/sharing/shares/{shareId}/revoke",
+	tag: "sharing",
+	summary: "Revoke a resource share",
+	description:
+		"Revokes it and every share passed on from it; revoking a revoked share returns it unchanged. Needs authority over " +
+		"the resource, admin on the grantee's project (detaching it), or for a passed-on share, the session that passed it " +
+		"on. New uses and later reads stop at once.",
+	params: ResourceSharePath,
+	body: RevokeResourceShareBody,
+	answer: { status: 200, description: "The revoked share.", schema: ResourceShare },
+	errors: sharingErrors,
+});
+
+export const listAccessRequests = defineRoute({
+	operationId: "listAccessRequests",
+	method: "GET",
+	path: "/sharing/requests",
+	tag: "sharing",
+	summary: "List access requests",
+	description: "Newest first. `decidable=true` lists the caller's inbox: the pending requests it may decide.",
+	query: ListAccessRequestsQuery,
+	answer: { status: 200, description: "A page of requests.", schema: AccessRequestPage },
+	errors: sharingErrors,
+});
+
+export const requestAccess = defineRoute({
+	operationId: "requestAccess",
+	method: "POST",
+	path: "/sharing/requests",
+	tag: "sharing",
+	summary: "Request access to a resource",
+	description:
+		"Goes to the resource owner's approvers, not the requesting project's admins. Needs operator on the grantee's " +
+		"project; the grantee defaults to the call's project. Audited as `sharing.request.created`.",
+	body: RequestAccessBody,
+	answer: { status: 201, description: "The pending request.", schema: AccessRequest },
+	errors: sharingChangeErrors,
+});
+
+export const getAccessRequest = defineRoute({
+	operationId: "getAccessRequest",
+	method: "GET",
+	path: "/sharing/requests/{requestId}",
+	tag: "sharing",
+	summary: "Get an access request",
+	params: AccessRequestPath,
+	answer: { status: 200, description: "The request.", schema: AccessRequest },
+	errors: ["forbidden", "not_found"],
+});
+
+export const withdrawAccessRequest = defineRoute({
+	operationId: "withdrawAccessRequest",
+	method: "POST",
+	path: "/sharing/requests/{requestId}/withdraw",
+	tag: "sharing",
+	summary: "Withdraw an access request",
+	description: "Only the requester, while it is pending (`conflict` after).",
+	params: AccessRequestPath,
+	answer: { status: 200, description: "The withdrawn request.", schema: AccessRequest },
+	errors: sharingChangeErrors,
+});
+
+export const decideAccessRequest = defineRoute({
+	operationId: "decideAccessRequest",
+	method: "POST",
+	path: "/sharing/requests/{requestId}/decision",
+	tag: "sharing",
+	summary: "Grant or reject an access request",
+	description:
+		"Once (`conflict` after), by someone with authority over the resource, never by an agent. A grant makes the share in " +
+		"the same write and may narrow what was asked.",
+	params: AccessRequestPath,
+	body: DecideAccessRequestBody,
+	answer: {
+		status: 200,
+		description: "The decided request, and the share a grant made.",
+		schema: AccessRequestDecided,
+	},
+	errors: sharingChangeErrors,
+});
+
+export const listResourceBindings = defineRoute({
+	operationId: "listResourceBindings",
+	method: "GET",
+	path: "/sharing/bindings",
+	tag: "sharing",
+	summary: "List bindings",
+	description: "Relation tuples: who maintains or approves a resource, and who is in a group.",
+	query: ListBindingsQuery,
+	answer: { status: 200, description: "A page of bindings.", schema: ResourceBindingPage },
+	errors: sharingErrors,
+});
+
+export const addResourceBinding = defineRoute({
+	operationId: "addResourceBinding",
+	method: "POST",
+	path: "/sharing/bindings",
+	tag: "sharing",
+	summary: "Add a binding",
+	description:
+		"Needs authority over the resource, or organisation admin for a group. Adding one already there returns it.",
+	body: BindingBody,
+	answer: { status: 200, description: "The binding.", schema: ResourceBinding },
+	errors: sharingErrors,
+});
+
+export const removeResourceBinding = defineRoute({
+	operationId: "removeResourceBinding",
+	method: "POST",
+	path: "/sharing/bindings/remove",
+	tag: "sharing",
+	summary: "Remove a binding",
+	description: "Removing a binding that isn't there does nothing.",
+	body: BindingBody,
+	answer: { status: 204, description: "Removed." },
+	errors: sharingErrors,
+});
+
+export const getResourcePolicy = defineRoute({
+	operationId: "getResourcePolicy",
+	method: "GET",
+	path: "/sharing/policies",
+	tag: "sharing",
+	summary: "Get a resource's policy",
+	query: ResourceQuery,
+	answer: { status: 200, description: "The policy, or the default.", schema: ResourcePolicy },
+	errors: sharingErrors,
+});
+
+export const setResourcePolicy = defineRoute({
+	operationId: "setResourcePolicy",
+	method: "PUT",
+	path: "/sharing/policies",
+	tag: "sharing",
+	summary: "Set a resource's policy",
+	description: "Such as the two-person rule. Needs authority over the resource.",
+	body: SetResourcePolicyBody,
+	answer: { status: 200, description: "The policy as set.", schema: ResourcePolicy },
+	errors: sharingErrors,
+});
+
+export const registerResource = defineRoute({
+	operationId: "registerResource",
+	method: "POST",
+	path: "/sharing/resources",
+	tag: "sharing",
+	summary: "Register a host's resource",
+	description:
+		"Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. " +
+		"Harbour's own kinds are `invalid`.",
+	body: RegisterResourceBody,
+	answer: { status: 200, description: "The registered resource.", schema: RegisteredResource },
+	errors: sharingChangeErrors,
+});
+
+export const listShareUses = defineRoute({
+	operationId: "listShareUses",
+	method: "GET",
+	path: "/sharing/uses",
+	tag: "sharing",
+	summary: "What a session used through shares",
+	description: "Each resource once, with the revision and the share it was used through: a session's provenance.",
+	query: ListShareUsesQuery,
+	answer: { status: 200, description: "The uses.", schema: ShareUseList },
+	errors: sharingErrors,
+});
+
+/** The sharing routes, served by `@harbour/sharing/http`. */
+export const sharingRoutes = {
+	listResourceShares,
+	createResourceShare,
+	getResourceShare,
+	revokeResourceShare,
+	listAccessRequests,
+	requestAccess,
+	getAccessRequest,
+	withdrawAccessRequest,
+	decideAccessRequest,
+	listResourceBindings,
+	addResourceBinding,
+	removeResourceBinding,
+	getResourcePolicy,
+	setResourcePolicy,
+	registerResource,
+	listShareUses,
+} as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
 export const routes = {
 	...sessionRoutes,
@@ -758,6 +1019,7 @@ export const routes = {
 	...scheduleRoutes,
 	...browserRoutes,
 	...shareRoutes,
+	...sharingRoutes,
 } as const;
 
 export type Routes = typeof routes;

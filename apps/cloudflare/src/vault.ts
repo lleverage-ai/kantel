@@ -52,7 +52,7 @@ export const COMPONENT_TOKENS = {
 
 /** Whether the vault's egress decision API answers this path, rather than the stack. */
 export function isVaultPath(path: string): boolean {
-	return path === EGRESS_API_PATHS.decisions || path === EGRESS_API_PATHS.connectorCredentials;
+	return (Object.values(EGRESS_API_PATHS) as string[]).includes(path);
 }
 
 const trimmed = (value: string | undefined): string => (value ?? "").trim();
@@ -174,6 +174,9 @@ export const APPROVAL_METHODS = [
 	"getGrant",
 	"listGrants",
 	"revokeGrant",
+	"getSessionAccess",
+	"setSessionAccess",
+	"getSessionUsage",
 ] as const satisfies readonly (keyof ApprovalVault)[];
 
 export type ApprovalMethod = (typeof APPROVAL_METHODS)[number];

@@ -35,7 +35,7 @@ import {
 } from "./harness.ts";
 
 /** The vault every target builds: the `Vault` contract and the model gateway's connector credential read. */
-export type HarbourVaultUnderTest = Vault & ConnectorCredentials;
+export type HarbourVaultUnderTest = Vault & Required<ConnectorCredentials>;
 
 export interface VaultSubject {
 	readonly vault: HarbourVaultUnderTest;
@@ -1519,9 +1519,235 @@ export function createVaultConformance(options: {
 		}),
 	];
 
+	/** Issues session-1's placeholders and returns the one for `itemId`. */
+	async function placeholderFor(vault: HarbourVaultUnderTest, itemId: string, sessionId = "session-1") {
+		const issued = await vault.issueSessionPlaceholders(WORKER, { organisationId: ORG, projectId: PROJECT, sessionId });
+		const found = issued.placeholders.find((entry) => entry.itemId === itemId);
+		assert.ok(found, `a placeholder is issued for ${itemId}`);
+		return { issued, placeholder: found!.placeholder };
+	}
+
+	/** The github token with a policy letting session-1's project GET /user with it. */
+	async function githubWithPolicy(vault: HarbourVaultUnderTest): Promise<VaultItem> {
+		const item = await putGithubToken(vault);
+		await vault.putPolicy(human, {
+			itemId: item.id,
+			selector: { organisationId: ORG, projectId: PROJECT },
+			route: { host: HOST, methods: ["GET"], pathPrefix: "/user" },
+		});
+		return item;
+	}
+
+	const sessionCredentialCases: ConformanceCase[] = [
+		test("placeholders: issued only to system, random, per item, and never written to the audit trail", async (vault, deps) => {
+			const item = await putGithubToken(vault);
+			const request = { organisationId: ORG, projectId: PROJECT, sessionId: "session-1" };
+			await assertWorkerCallRefused(
+				assert,
+				deps,
+				"vault.issueSessionPlaceholders",
+				(caller) => vault.issueSessionPlaceholders(caller, request),
+				ORG,
+				{ agentId: "agent-1", sessionId: "session-1" },
+			);
+			const issued = await vault.issueSessionPlaceholders(WORKER, request);
+			assert.strictEqual(issued.generation, 1, "the first start is generation 1");
+			assert.partialDeepEqual(issued.placeholders, [
+				{ itemId: item.id, name: "github-token", hosts: [HOST], header: "Authorization" },
+			]);
+			const placeholder = issued.placeholders[0]!.placeholder;
+			assert.ok(/^harbour-ph-[0-9a-f]{32}$/.test(placeholder), "a placeholder is harbour-ph- and 32 hex digits");
+			assert.strictEqual(containsCanary(issued), false, "no value is issued");
+			const other = await vault.issueSessionPlaceholders(WORKER, { ...request, sessionId: "session-2" });
+			assert.ok(other.placeholders[0]!.placeholder !== placeholder, "another session gets its own");
+			const theirs = await vault.issueSessionPlaceholders(WORKER, { ...request, projectId: OTHER_PROJECT });
+			assert.deepEqual(theirs.placeholders, [], "another project's session gets none for this project's item");
+			assert.partialDeepEqual(deps.audit.ofType("vault.session.placeholders_issued")[0], {
+				sessionId: "session-1",
+				data: { generation: 1, itemIds: [item.id] },
+			});
+			assert.strictEqual(containsCanary(deps.audit.events, placeholder), false, "no audit event holds one");
+		}),
+
+		test("placeholders: one in the auth header injects its own item's key on its own host", async (vault) => {
+			const item = await githubWithPolicy(vault);
+			const { placeholder } = await placeholderFor(vault, item.id);
+			const allowed = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/user`, { placeholder }));
+			assert.partialDeepEqual(allowed, {
+				allow: true,
+				inject: { header: "Authorization", value: `Bearer ${CANARY_SECRET}` },
+			});
+			const unknown = await vault.decideEgress(
+				WORKER,
+				egress("GET", `https://${HOST}/user`, { placeholder: `harbour-ph-${"0".repeat(32)}` }),
+			);
+			assert.strictEqual(unknown.allow, false, "a placeholder never issued gets nothing");
+			assert.strictEqual(unknown.inject, undefined);
+		}),
+
+		test("placeholders: one sent to a host its item is not bound to is refused, even where another key would go", async (vault) => {
+			const item = await githubWithPolicy(vault);
+			const other = await vault.putItem(human, {
+				owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
+				name: "other-token",
+				hosts: ["api.other.example"],
+				injection: { header: "Authorization", template: "Bearer {key}" },
+				value: "other-secret-value-0123",
+			});
+			await vault.putPolicy(human, {
+				itemId: other.id,
+				selector: { organisationId: ORG, projectId: PROJECT },
+				route: { host: "api.other.example", methods: ["GET"], pathPrefix: "/" },
+			});
+			const { placeholder } = await placeholderFor(vault, item.id);
+			const wrongHost = await vault.decideEgress(
+				WORKER,
+				egress("GET", "https://api.other.example/collect", { placeholder }),
+			);
+			assert.partialDeepEqual(wrongHost, { allow: false });
+			assert.strictEqual(wrongHost.inject, undefined, "neither key is injected");
+			assert.strictEqual(containsCanary(wrongHost), false);
+			const plain = await vault.decideEgress(WORKER, egress("GET", "https://api.other.example/collect"));
+			assert.strictEqual(plain.allow, true, "without the placeholder the other host's own policy still applies");
+		}),
+
+		test("placeholders: a restart's new placeholders replace the old; another session's never work", async (vault) => {
+			const item = await githubWithPolicy(vault);
+			const url = `https://${HOST}/user`;
+			const first = await placeholderFor(vault, item.id);
+			const theirs = await placeholderFor(vault, item.id, "session-2");
+			const second = await placeholderFor(vault, item.id);
+			assert.strictEqual(second.issued.generation, 2, "the restart is generation 2");
+			const stale = await vault.decideEgress(WORKER, egress("GET", url, { placeholder: first.placeholder }));
+			assert.strictEqual(stale.allow, false, "the placeholder from before the restart is refused");
+			assert.strictEqual(stale.inject, undefined);
+			const current = await vault.decideEgress(WORKER, egress("GET", url, { placeholder: second.placeholder }));
+			assert.strictEqual(current.allow, true, "the new one works");
+			const copied = await vault.decideEgress(WORKER, egress("GET", url, { placeholder: theirs.placeholder }));
+			assert.strictEqual(copied.allow, false, "session-2's placeholder in session-1's request is refused");
+		}),
+
+		test("placeholders: a placeholder grants nothing a policy or grant does not", async (vault) => {
+			const item = await putGithubToken(vault);
+			const { placeholder } = await placeholderFor(vault, item.id);
+			const denied = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/user`, { placeholder }));
+			assert.strictEqual(denied.allow, false, "no policy, no grant: no key");
+			assert.strictEqual(denied.inject, undefined);
+		}),
+
+		test("placeholders: an ended session's stop working and it gets no more; an aborted run keeps them", async (vault) => {
+			const item = await githubWithPolicy(vault);
+			const url = `https://${HOST}/user`;
+			const { placeholder } = await placeholderFor(vault, item.id);
+			await vault.endSession(sessionEnd, "session-1", "aborted");
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url, { placeholder }))).allow, true);
+			await vault.endSession(sessionEnd, "session-1", "session_ended");
+			const after = await vault.decideEgress(WORKER, egress("GET", url, { placeholder }));
+			assert.strictEqual(after.allow, false, "refused once the session has ended");
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", url))).allow,
+				false,
+				"and so is the policy, with no placeholder",
+			);
+			await assert.rejectsWithCode(
+				vault.issueSessionPlaceholders(WORKER, { organisationId: ORG, projectId: PROJECT, sessionId: "session-1" }),
+				"refused",
+				"an ended session is issued no placeholders",
+			);
+			assert.partialDeepEqual(await vault.getSessionAccess(human, "session-1"), { blocked: false, generation: 1 });
+			assert.ok((await vault.getSessionAccess(human, "session-1")).endedAt !== undefined, "the end is recorded");
+			await assert.rejectsWithCode(vault.assertSessionOpen(WORKER, MODEL_SCOPE), "refused");
+			assert.strictEqual(
+				(await vault.decideEgress(WORKER, egress("GET", url, { agentId: "agent-2", sessionId: "session-2" }))).allow,
+				true,
+				"another session is untouched",
+			);
+		}),
+
+		test("session access: blocking refuses egress, key reads and model calls at once, until unblocked", async (vault, deps) => {
+			const item = await githubWithPolicy(vault);
+			const model = await putModelKey(vault, human, "organisation");
+			const url = `https://${HOST}/user`;
+			assert.deepEqual(await vault.getSessionAccess(human, "session-1"), {
+				sessionId: "session-1",
+				blocked: false,
+				generation: 0,
+			});
+			await vault.assertSessionOpen(WORKER, MODEL_SCOPE);
+			await assert.rejectsWithCode(
+				vault.setSessionAccess(agent, "session-1", { blocked: true }),
+				"forbidden",
+				"an agent cannot block or unblock",
+			);
+			await assert.rejectsWithCode(
+				vault.setSessionAccess(human, "session-1", { blocked: "yes" as unknown as boolean }),
+				"invalid",
+			);
+
+			const blocked = await vault.setSessionAccess(human, "session-1", { blocked: true, reason: "Runaway spend" });
+			assert.partialDeepEqual(blocked, { sessionId: "session-1", blocked: true, reason: "Runaway spend" });
+			const denied = await vault.decideEgress(WORKER, egress("GET", url));
+			assert.strictEqual(denied.allow, false, "egress under a policy is refused");
+			assert.strictEqual(denied.inject, undefined);
+			await assert.rejectsWithCode(vault.readConnectorCredential(WORKER, connectorRequest(model.id)), "refused");
+			await assert.rejectsWithCode(vault.assertSessionOpen(WORKER, MODEL_SCOPE), "refused");
+			const theirs = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
+			assert.strictEqual((await vault.decideEgress(WORKER, theirs)).allow, true, "another session is untouched");
+			await vault.setSessionAccess(human, "session-1", { blocked: true });
+			assert.strictEqual(deps.audit.ofType("vault.session.blocked").length, 1, "blocking twice is audited once");
+
+			const open = await vault.setSessionAccess(human, "session-1", { blocked: false });
+			assert.deepEqual(open, { sessionId: "session-1", blocked: false, generation: 0 });
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true, "allowed again");
+			await vault.assertSessionOpen(WORKER, MODEL_SCOPE);
+			assert.strictEqual(deps.audit.ofType("vault.session.unblocked").length, 1);
+			assert.partialDeepEqual(deps.audit.ofType("vault.session.blocked")[0], {
+				sessionId: "session-1",
+				actor: human.actor,
+				data: { reason: "Runaway spend" },
+			});
+			await assertWorkerCallRefused(
+				assert,
+				deps,
+				"vault.assertSessionOpen",
+				(caller) => vault.assertSessionOpen(caller, MODEL_SCOPE),
+				ORG,
+				{ agentId: "agent-1", sessionId: "session-1" },
+			);
+			assert.ok(item.id !== model.id);
+		}),
+
+		test("session usage: counts each of the session's egress decisions by host, and no other session's", async (vault) => {
+			await githubWithPolicy(vault);
+			const url = `https://${HOST}/user`;
+			assert.deepEqual(await vault.getSessionUsage(human, "session-1"), {
+				sessionId: "session-1",
+				requests: 0,
+				injected: 0,
+				denied: 0,
+				hosts: [],
+			});
+			await vault.decideEgress(WORKER, egress("GET", url));
+			await vault.decideEgress(WORKER, egress("GET", url));
+			await vault.decideEgress(WORKER, egress("POST", url));
+			await vault.decideEgress(WORKER, egress("GET", url, { agentId: "agent-2", sessionId: "session-2" }));
+			const usage = await vault.getSessionUsage(human, "session-1");
+			assert.partialDeepEqual(usage, {
+				sessionId: "session-1",
+				requests: 3,
+				injected: 2,
+				denied: 1,
+				hosts: [{ host: HOST, injected: 2, denied: 1 }],
+			});
+			assert.ok(usage.firstAt !== undefined && usage.lastAt !== undefined, "the first and last request are given");
+			assert.partialDeepEqual(await vault.getSessionUsage(human, "session-2"), { requests: 1, injected: 1 });
+		}),
+	];
+
 	return [
 		...cases,
 		...sessionEndCases,
+		...sessionCredentialCases,
 		...platformAndConnectorCases,
 		...(options.projectAccess === true ? projectAccessCases : []),
 	];

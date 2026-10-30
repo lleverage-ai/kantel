@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Code } from "../code/code.tsx";
 import "./markdown.css";
 
 // Incremental Markdown. A streamed answer only ever grows at its end, so the text is split into top-level blocks at
@@ -15,8 +16,20 @@ import "./markdown.css";
 const plugins = [remarkGfm];
 
 // Links leave the session in a new tab, so following one never loses the reader's place in the transcript. Code
-// blocks scroll sideways rather than wrap, so they take focus for keyboard scrolling.
+// blocks scroll sideways rather than wrap, so they take focus for keyboard scrolling. A fence that names its language
+// is highlighted in the theme's syntax colours (../code/code.tsx); one that doesn't, and inline code, stay plain.
 const components: Components = {
+	code: ({ node: _node, className, children, ...props }) => {
+		const language = /(?:^|\s)language-([\w+#-]+)/.exec(className ?? "")?.[1];
+		if (language === undefined || typeof children !== "string") {
+			return (
+				<code {...props} className={className}>
+					{children}
+				</code>
+			);
+		}
+		return <Code code={children.replace(/\n$/, "")} language={language} className={className} />;
+	},
 	a: ({ node: _node, ...props }) => <a {...props} className="hb-focusable" target="_blank" rel="noreferrer noopener" />,
 	pre: ({ node: _node, ...props }) => (
 		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.

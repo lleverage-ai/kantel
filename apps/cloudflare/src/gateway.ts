@@ -20,6 +20,7 @@
  * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
+ * | `/v1/sharing/…` | the sharing API (`@harbour/sharing/http`): resource shares, access requests, bindings, policy, uses |
  * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
@@ -48,6 +49,7 @@ import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/h
 import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createSchedulesApi } from "@harbour/schedules/http";
+import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
@@ -239,6 +241,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
+	// Every check is the sharing store's, through the stack's project access.
+	const sharing = createSharingApi({ sharing: stack.sharing, authenticate: callContext, basePath: API_BASE });
 	const shares =
 		stack.shares === undefined
 			? undefined
@@ -483,6 +487,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return (await schedules.fetch(request)) ?? notFound();
+			}
+			if (isSharingPath(path, API_BASE)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await sharing.fetch(request)) ?? notFound();
 			}
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();

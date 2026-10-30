@@ -8,6 +8,56 @@ export interface AbortSessionBody {
 	readonly reason?: string;
 }
 
+export interface AccessRequest {
+	/** The request's ID. */
+	readonly id: string;
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission: SharePermission;
+	readonly reason: string;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly requestedBy: Actor;
+	/** The session the request came from. */
+	readonly sessionId?: string;
+	readonly agentId?: string;
+	readonly status: AccessRequestStatus;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	readonly decision?: AccessRequestDecision;
+}
+
+export interface AccessRequestDecided {
+	readonly request: AccessRequest;
+	readonly share?: ResourceShare;
+}
+
+export interface AccessRequestDecision {
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly decidedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly decidedAt: number;
+	readonly note?: string;
+	/** The share a grant created. */
+	readonly shareId?: string;
+}
+
+export interface AccessRequestPage {
+	readonly items: readonly AccessRequest[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export type AccessRequestStatus = "pending" | "granted" | "rejected" | "withdrawn";
+
 /** Who acted: a person, a host app's API key, an agent or Harbour itself. */
 export type Actor =
 	| {
@@ -44,6 +94,38 @@ export interface AssistantItem {
 
 /** How a session list groups the session: working, waiting on someone, or done. */
 export type Attention = "working" | "waiting" | "done";
+
+/** A relation tuple: `subject` has `relation` on `object`. */
+export interface BindingBody {
+	/** A resource, or a group (for `member`). */
+	readonly object: BindingObject;
+	readonly relation: BindingRelation;
+	readonly subject: BindingSubject;
+}
+
+/** A resource, or a group (for `member`). */
+export type BindingObject =
+	| ResourceRef
+	| {
+			readonly kind: "group";
+			readonly id: string;
+	  };
+
+export type BindingRelation = "maintainer" | "approver" | "member";
+
+export type BindingSubject =
+	| {
+			readonly kind: "user";
+			readonly userId: string;
+	  }
+	| {
+			readonly kind: "service";
+			readonly serviceId: string;
+	  }
+	| {
+			readonly kind: "group";
+			readonly groupId: string;
+	  };
 
 export interface BrowserEmbed {
 	/** The page to frame. It holds its token after `#`, so the token reaches no server; treat the URL as a secret. */
@@ -172,6 +254,20 @@ export interface CreateMemorySpaceBody {
 	readonly name: string;
 }
 
+export interface CreateResourceShareBody {
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission: SharePermission;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** Required of an agent: the share it passes on. */
+	readonly parentShareId?: string;
+	readonly note?: string;
+}
+
 /** A new schedule. Needs the operator role on a project-owned schedule's project. */
 export interface CreateScheduleBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
@@ -212,6 +308,18 @@ export interface CreateSessionBody {
 
 /** An opaque position in a session's stream. */
 export type Cursor = string;
+
+/** A grant may narrow what was asked (a weaker permission, an earlier expiry, a pinned revision), never widen it. */
+export interface DecideAccessRequestBody {
+	readonly decision: "grant" | "reject";
+	readonly note?: string;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission?: SharePermission;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** Pins this revision. Without one, the share follows the latest. */
+	readonly revision?: number;
+}
 
 /** `append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's. */
 export type DeltaOp =
@@ -349,8 +457,58 @@ export interface Labels {
 	readonly [key: string]: string;
 }
 
+export interface ListAccessRequestsQuery {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly resourceKind?: string;
+	/** With `resourceKind`. */
+	readonly resourceId?: string;
+	readonly granteeKind?: "project" | "agent" | "user" | "session";
+	/** With `granteeKind`: the project's, agent's, person's or session's ID. */
+	readonly granteeId?: string;
+	readonly status?: AccessRequestStatus;
+	/** Requests for resources this project owns. */
+	readonly ownerProjectId?: string;
+	/** Only those the caller may decide: its inbox. */
+	readonly decidable?: boolean;
+	readonly sessionId?: string;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
+export interface ListBindingsQuery {
+	/** A resource kind, or `group`. */
+	readonly objectKind?: string;
+	/** With `objectKind`. */
+	readonly objectId?: string;
+	readonly subjectKind?: "user" | "service" | "group";
+	/** With `subjectKind`. */
+	readonly subjectId?: string;
+	readonly relation?: BindingRelation;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
 export interface ListConceptsQuery {
 	readonly status?: ConceptStatus;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
+export interface ListResourceSharesQuery {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly resourceKind?: string;
+	/** With `resourceKind`. */
+	readonly resourceId?: string;
+	readonly granteeKind?: "project" | "agent" | "user" | "session";
+	/** With `granteeKind`: the project's, agent's, person's or session's ID. */
+	readonly granteeId?: string;
+	/** Shares of resources this project owns. */
+	readonly ownerProjectId?: string;
+	/** Include revoked and expired shares. */
+	readonly includeInactive?: boolean;
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
@@ -384,6 +542,11 @@ export interface ListSessionsQuery {
 export interface ListSharesQuery {
 	/** Only this file's share. */
 	readonly path?: string;
+}
+
+export interface ListShareUsesQuery {
+	/** The session. */
+	readonly sessionId: string;
 }
 
 export interface ListSkillsQuery {
@@ -697,6 +860,133 @@ export type Recurrence =
 			readonly day: number;
 	  };
 
+export interface RegisteredResource {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource: its kind and ID. */
+	readonly resource: ResourceRef;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name?: string;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly registeredBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly registeredAt: number;
+}
+
+/** A host's own resource and its owner. Harbour's kinds are refused. */
+export interface RegisterResourceBody {
+	/** A resource: its kind and ID. */
+	readonly resource: ResourceRef;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name?: string;
+}
+
+export interface RequestAccessBody {
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee?: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission?: SharePermission;
+	readonly reason: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** The session the request is for. */
+	readonly sessionId?: string;
+}
+
+export interface ResourceBinding {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource, or a group (for `member`). */
+	readonly object: BindingObject;
+	readonly relation: BindingRelation;
+	readonly subject: BindingSubject;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly grantedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly grantedAt: number;
+}
+
+export interface ResourceBindingPage {
+	readonly items: readonly ResourceBinding[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export interface ResourcePolicy {
+	/** Whoever publishes an edit may not be one of its authors. */
+	readonly twoPersonRule: boolean;
+}
+
+export interface ResourceQuery {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly kind: string;
+	/** The resource's ID. */
+	readonly id: string;
+}
+
+/** A resource: its kind and ID. */
+export interface ResourceRef {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly kind: string;
+	/** The resource's ID in its component. */
+	readonly id: string;
+}
+
+/** A resource, optionally at one revision. */
+export interface ResourceSelector {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly kind: string;
+	/** The resource's ID in its component. */
+	readonly id: string;
+	/** Pins this revision. Without one, the share follows the latest. */
+	readonly revision?: number;
+}
+
+export interface ResourceShare {
+	/** The share's ID. */
+	readonly id: string;
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission: SharePermission;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly grantedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly grantedAt: number;
+	/** The request this share answers. */
+	readonly requestId?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** The share a supervisor passed this one on from; revoking that revokes this. */
+	readonly parentShareId?: string;
+	readonly note?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly revokedAt?: number;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly revokedBy?: Actor;
+	readonly revokeReason?: string;
+}
+
+export interface ResourceSharePage {
+	readonly items: readonly ResourceShare[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export interface RevokeResourceShareBody {
+	readonly reason?: string;
+}
+
 /** How the run a message started or joined ended. */
 export interface RunResult {
 	readonly sessionId: string;
@@ -881,6 +1171,12 @@ export interface SessionWarmth {
 	readonly container: "started" | "running" | "skipped" | "unavailable";
 }
 
+export interface SetResourcePolicyBody {
+	/** A resource: its kind and ID. */
+	readonly resource: ResourceRef;
+	readonly policy: ResourcePolicy;
+}
+
 /** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
 export type ShareAccess = "restricted" | "link";
 
@@ -892,6 +1188,25 @@ export interface ShareFileBody {
 	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
 	readonly access?: ShareAccess;
 }
+
+/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+export type ShareGrantee =
+	| {
+			readonly kind: "project";
+			readonly projectId: string;
+	  }
+	| {
+			readonly kind: "agent";
+			readonly agentId: string;
+	  }
+	| {
+			readonly kind: "user";
+			readonly userId: string;
+	  }
+	| {
+			readonly kind: "session";
+			readonly sessionId: string;
+	  };
 
 export interface ShareInvite {
 	/** As invited. Harbour sends no email. */
@@ -905,6 +1220,27 @@ export interface ShareInvite {
 export interface ShareInviteBody {
 	/** Who to invite. */
 	readonly email: string;
+}
+
+/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+export type SharePermission = "use" | "propose" | "edit" | "approve";
+
+/** A resource a session used through a share: which revision, under which share. */
+export interface ShareUse {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** The session. */
+	readonly sessionId: string;
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** The share it was used through. */
+	readonly shareId: string;
+	/** Epoch milliseconds, UTC. */
+	readonly usedAt: number;
+}
+
+export interface ShareUseList {
+	readonly items: readonly ShareUse[];
 }
 
 export interface SkillFile {
@@ -1473,6 +1809,42 @@ export interface HarbourClient {
 	inviteToShare(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
 	/** Remove an invite. `POST /shares/{shareId}/invites/remove` */
 	removeShareInvite(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
+	/** List resource shares. Newest first, active ones unless `includeInactive`. Filter by resource, grantee or `ownerProjectId`. Each share is listed only to those who may read it: viewer on the owner's or the grantee's project, or authority over the resource. `GET /sharing/shares` */
+	listResourceShares(query?: ListResourceSharesQuery, options?: CallOptions): Promise<ResourceSharePage>;
+	/** Share a resource. Needs authority over the resource: `approver` on it, or admin where it lives. An agent may only pass on a share it holds (`parentShareId`) to a session it supervises, never wider, later or at another revision. Audited as `sharing.share.created`. `POST /sharing/shares` */
+	createResourceShare(body: CreateResourceShareBody, options?: CallOptions): Promise<ResourceShare>;
+	/** Get a resource share. `GET /sharing/shares/{shareId}` */
+	getResourceShare(shareId: string, options?: CallOptions): Promise<ResourceShare>;
+	/** Revoke a resource share. Revokes it and every share passed on from it; revoking a revoked share returns it unchanged. Needs authority over the resource, admin on the grantee's project (detaching it), or for a passed-on share, the session that passed it on. New uses and later reads stop at once. `POST /sharing/shares/{shareId}/revoke` */
+	revokeResourceShare(shareId: string, body?: RevokeResourceShareBody, options?: CallOptions): Promise<ResourceShare>;
+	/** List access requests. Newest first. `decidable=true` lists the caller's inbox: the pending requests it may decide. `GET /sharing/requests` */
+	listAccessRequests(query?: ListAccessRequestsQuery, options?: CallOptions): Promise<AccessRequestPage>;
+	/** Request access to a resource. Goes to the resource owner's approvers, not the requesting project's admins. Needs operator on the grantee's project; the grantee defaults to the call's project. Audited as `sharing.request.created`. `POST /sharing/requests` */
+	requestAccess(body: RequestAccessBody, options?: CallOptions): Promise<AccessRequest>;
+	/** Get an access request. `GET /sharing/requests/{requestId}` */
+	getAccessRequest(requestId: string, options?: CallOptions): Promise<AccessRequest>;
+	/** Withdraw an access request. Only the requester, while it is pending (`conflict` after). `POST /sharing/requests/{requestId}/withdraw` */
+	withdrawAccessRequest(requestId: string, options?: CallOptions): Promise<AccessRequest>;
+	/** Grant or reject an access request. Once (`conflict` after), by someone with authority over the resource, never by an agent. A grant makes the share in the same write and may narrow what was asked. `POST /sharing/requests/{requestId}/decision` */
+	decideAccessRequest(
+		requestId: string,
+		body: DecideAccessRequestBody,
+		options?: CallOptions,
+	): Promise<AccessRequestDecided>;
+	/** List bindings. Relation tuples: who maintains or approves a resource, and who is in a group. `GET /sharing/bindings` */
+	listResourceBindings(query?: ListBindingsQuery, options?: CallOptions): Promise<ResourceBindingPage>;
+	/** Add a binding. Needs authority over the resource, or organisation admin for a group. Adding one already there returns it. `POST /sharing/bindings` */
+	addResourceBinding(body: BindingBody, options?: CallOptions): Promise<ResourceBinding>;
+	/** Remove a binding. Removing a binding that isn't there does nothing. `POST /sharing/bindings/remove` */
+	removeResourceBinding(body: BindingBody, options?: CallOptions): Promise<void>;
+	/** Get a resource's policy. `GET /sharing/policies` */
+	getResourcePolicy(query: ResourceQuery, options?: CallOptions): Promise<ResourcePolicy>;
+	/** Set a resource's policy. Such as the two-person rule. Needs authority over the resource. `PUT /sharing/policies` */
+	setResourcePolicy(body: SetResourcePolicyBody, options?: CallOptions): Promise<ResourcePolicy>;
+	/** Register a host's resource. Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Harbour's own kinds are `invalid`. `POST /sharing/resources` */
+	registerResource(body: RegisterResourceBody, options?: CallOptions): Promise<RegisteredResource>;
+	/** What a session used through shares. Each resource once, with the revision and the share it was used through: a session's provenance. `GET /sharing/uses` */
+	listShareUses(query: ListShareUsesQuery, options?: CallOptions): Promise<ShareUseList>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -1612,5 +1984,48 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 				{ method: "POST", path: `/shares/${encodeURIComponent(shareId)}/invites/remove`, body },
 				callOptions,
 			),
+		listResourceShares: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/shares", query }, callOptions),
+		createResourceShare: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/shares", body }, callOptions),
+		getResourceShare: (shareId, callOptions) =>
+			send(options, { method: "GET", path: `/sharing/shares/${encodeURIComponent(shareId)}` }, callOptions),
+		revokeResourceShare: (shareId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sharing/shares/${encodeURIComponent(shareId)}/revoke`, body },
+				callOptions,
+			),
+		listAccessRequests: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/requests", query }, callOptions),
+		requestAccess: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/requests", body }, callOptions),
+		getAccessRequest: (requestId, callOptions) =>
+			send(options, { method: "GET", path: `/sharing/requests/${encodeURIComponent(requestId)}` }, callOptions),
+		withdrawAccessRequest: (requestId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sharing/requests/${encodeURIComponent(requestId)}/withdraw` },
+				callOptions,
+			),
+		decideAccessRequest: (requestId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sharing/requests/${encodeURIComponent(requestId)}/decision`, body },
+				callOptions,
+			),
+		listResourceBindings: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/bindings", query }, callOptions),
+		addResourceBinding: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/bindings", body }, callOptions),
+		removeResourceBinding: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/bindings/remove", body }, callOptions),
+		getResourcePolicy: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/policies", query }, callOptions),
+		setResourcePolicy: (body, callOptions) =>
+			send(options, { method: "PUT", path: "/sharing/policies", body }, callOptions),
+		registerResource: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/resources", body }, callOptions),
+		listShareUses: (query, callOptions) => send(options, { method: "GET", path: "/sharing/uses", query }, callOptions),
 	};
 }

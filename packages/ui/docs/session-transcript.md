@@ -22,7 +22,7 @@ parent's height.
 ```
 
 Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `loading`, `empty`, `error`,
-`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `dock`, `className`.
+`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `delivery`, `dock`, `className`.
 
 `dock` floats a node, usually a `Composer`, over the transcript's foot, as T3 Code's thread does: the list scrolls
 under its glass, and the end of the list makes room for it (its measured height plus 16px). A docked `Composer`
@@ -53,6 +53,12 @@ transcript go to it. See [session-composer.md](session-composer.md#docked-in-a-t
   from the stream). When the turn's message is not loaded (it is in an older page), the header goes at the end,
   before the activity row, and says "Working" unless `since` is given. The rows alone are a list: a message just sent
   to an empty session shows them, not the empty state.
+- *Sent from here:* a host that sends optimistically puts the person's message in `items` the moment it is sent,
+  under an ID of its own with the send's `requestId`, and says in `delivery` (by item ID) that it is on its way or
+  failed (`MessageDelivery`). On its way it looks sent, without Edit from here; failed, the line under the bubble
+  says "Couldn't send" and why, with Try again and Edit in the composer. A person's message with a `requestId` is
+  keyed by it (`messageKeys`), so when the session's copy arrives and the host drops its own, the row updates in
+  place: no second copy, no remount, nothing moves.
 - *Docked:* with `dock`, "Scroll to end" sits just above the dock, and the empty state and skeleton stay clear of
   it. A wheel gesture of 24px or more up the list, a finger dragging it, or Page Up or Home rests a docked composer;
   reaching the end, "Scroll to end" or focusing the composer wakes it. While it rests the room at the end keeps the
@@ -201,9 +207,12 @@ sent while the agent was working (`via` is `steer` or `followUp`). The files sen
 above the bubble as cards on `--hb-raised`: the file type's Lucide icon (`fileTypeIcon`), the name, the type and
 size; a message of files alone has no bubble. Under the bubble, on hover or focus, a
 `MessageActions` line: when it was sent, Edit from here (when the host gives `MessageActionsContext` an `edit`) and
-Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}` leaves the line out (a preview),
+Copy. `UserMessage({ item, actions?, showActions?, delivery? })`; `actions={false}` leaves the line out (a preview),
 `showActions` shows it without a hover (stories). Edit from here turns the bubble into a `MessageEditor`; while the
-host sets `editBlocked` (a run is going) the button is off and its label says why.
+host sets `editBlocked` (a run is going) the button is off and its label says why. With `delivery` the message is
+the host's own copy of one just sent: `sending` looks sent but has no Edit from here; `failed` shows the line
+always, with "Couldn't send" and the reason in the error colour, Try again and, when the host can take it back,
+Edit in the composer.
 
 **Not for** the agent's words, or quoted text inside an answer.
 

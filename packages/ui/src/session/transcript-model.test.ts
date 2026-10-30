@@ -9,6 +9,7 @@ import {
 	findTurn,
 	groupTranscript,
 	isTurn,
+	messageKeys,
 	rowOfTurn,
 	sessionBrowsers,
 	type TranscriptRow,
@@ -223,6 +224,31 @@ describe("groupTranscript: browsing", () => {
 		const rows = groupTranscript([browse("b1", "Reading"), assistant("a1", "Then."), browse("b2", "Clicking")]);
 		expect(rowOfTurn(rows, "call-b2")).toMatchObject({ row: { id: "b1" }, item: { id: "b2" } });
 		expect(rowOfTurn(rows, "a1")).toMatchObject({ row: { id: "b1" }, item: { id: "a1" } });
+	});
+});
+
+describe("messageKeys", () => {
+	const sent = (id: string, requestId: string) => ({ ...user(id, "Run the tests."), requestId });
+
+	it("keys a message by its requestId, so the host's copy and the session's are one row", () => {
+		const local = messageKeys(groupTranscript([assistant("a0", "Hi."), sent("local:r1", "r1")]));
+		const echoed = messageKeys(groupTranscript([assistant("a0", "Hi."), sent("u7", "r1")]));
+		expect(local.get("local:r1")).toBe("request:r1");
+		expect(echoed.get("u7")).toBe("request:r1");
+	});
+
+	it("leaves every other row keyed by its id", () => {
+		const keys = messageKeys(
+			groupTranscript([user("u1", "Hello."), assistant("a1", "Hi."), tool("t1", "bash", "Ran ls")]),
+		);
+		expect(keys.size).toBe(0);
+	});
+
+	it("keys none of the messages that share a requestId, so no two rows share a key", () => {
+		const keys = messageKeys(
+			groupTranscript([sent("u1", "r1"), assistant("a1", "Hi."), sent("u2", "r1"), sent("u3", "r1"), sent("u4", "r2")]),
+		);
+		expect([...keys]).toEqual([["u4", "request:r2"]]);
 	});
 });
 

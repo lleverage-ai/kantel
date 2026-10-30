@@ -956,3 +956,309 @@ export const ShareInviteBody = Type.Object(
 	{ email: Type.String({ minLength: 3, maxLength: 254, description: "Who to invite." }) },
 	{ title: "ShareInviteBody" },
 );
+
+// Resource sharing (docs/design/sharing.md): one project's skills, memory spaces, vault items, workspaces and a host's
+// own kinds, shared with another project, agent, person or session, with access requests, bindings and policies.
+
+const resourceKind = Type.String({
+	minLength: 1,
+	pattern: "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
+	description:
+		"Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+});
+const revision = Type.Optional(
+	Type.Integer({ minimum: 1, description: "Pins this revision. Without one, the share follows the latest." }),
+);
+
+export const ResourceRef = Type.Object(
+	{ kind: resourceKind, id: id("The resource's ID in its component.") },
+	{ title: "ResourceRef", description: "A resource: its kind and ID." },
+);
+
+export const ResourceSelector = Type.Object(
+	{ kind: resourceKind, id: id("The resource's ID in its component."), revision },
+	{ title: "ResourceSelector", description: "A resource, optionally at one revision." },
+);
+
+export const ShareGrantee = Type.Union(
+	[
+		Type.Object({ kind: Type.Literal("project"), projectId: Type.String() }),
+		Type.Object({ kind: Type.Literal("agent"), agentId: Type.String() }),
+		Type.Object({ kind: Type.Literal("user"), userId: Type.String() }),
+		Type.Object({ kind: Type.Literal("session"), sessionId: Type.String() }),
+	],
+	{
+		title: "ShareGrantee",
+		description:
+			"Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on).",
+	},
+);
+
+export const SharePermission = Type.Union(
+	[Type.Literal("use"), Type.Literal("propose"), Type.Literal("edit"), Type.Literal("approve")],
+	{
+		title: "SharePermission",
+		description: "Weakest first, each including the ones before. Agents hold at most `propose`.",
+	},
+);
+
+export const ResourceShare = Type.Object(
+	{
+		id: id("The share's ID."),
+		organisationId: id("The organisation."),
+		resource: ResourceSelector,
+		owner: OwnerRef,
+		grantee: ShareGrantee,
+		permission: SharePermission,
+		grantedBy: Actor,
+		grantedAt: Timestamp,
+		requestId: Type.Optional(Type.String({ description: "The request this share answers." })),
+		expiresAt: Type.Optional(Timestamp),
+		parentShareId: Type.Optional(
+			Type.String({ description: "The share a supervisor passed this one on from; revoking that revokes this." }),
+		),
+		note: Type.Optional(Type.String()),
+		revokedAt: Type.Optional(Timestamp),
+		revokedBy: Type.Optional(Actor),
+		revokeReason: Type.Optional(Type.String()),
+	},
+	{ title: "ResourceShare" },
+);
+
+export const ResourceSharePage = Type.Object(
+	{ items: Type.Array(ResourceShare), nextCursor },
+	{ title: "ResourceSharePage" },
+);
+
+export const CreateResourceShareBody = Type.Object(
+	{
+		resource: ResourceSelector,
+		grantee: ShareGrantee,
+		permission: SharePermission,
+		expiresAt: Type.Optional(Timestamp),
+		parentShareId: Type.Optional(Type.String({ description: "Required of an agent: the share it passes on." })),
+		note: Type.Optional(Type.String({ maxLength: 1000 })),
+	},
+	{ title: "CreateResourceShareBody" },
+);
+
+const granteeQuery = {
+	granteeKind: Type.Optional(
+		Type.Union([Type.Literal("project"), Type.Literal("agent"), Type.Literal("user"), Type.Literal("session")]),
+	),
+	granteeId: Type.Optional(
+		Type.String({ description: "With `granteeKind`: the project's, agent's, person's or session's ID." }),
+	),
+};
+const resourceQuery = {
+	resourceKind: Type.Optional(resourceKind),
+	resourceId: Type.Optional(Type.String({ description: "With `resourceKind`." })),
+};
+
+export const ListResourceSharesQuery = Type.Object(
+	{
+		...resourceQuery,
+		...granteeQuery,
+		ownerProjectId: Type.Optional(Type.String({ description: "Shares of resources this project owns." })),
+		includeInactive: Type.Optional(Type.Boolean({ description: "Include revoked and expired shares." })),
+		limit,
+		cursor,
+	},
+	{ title: "ListResourceSharesQuery" },
+);
+
+export const ResourceSharePath = Type.Object({ shareId: id("The share's ID.") });
+
+export const RevokeResourceShareBody = Type.Object(
+	{ reason: Type.Optional(Type.String({ maxLength: 1000 })) },
+	{ title: "RevokeResourceShareBody" },
+);
+
+export const AccessRequestStatus = Type.Union(
+	[Type.Literal("pending"), Type.Literal("granted"), Type.Literal("rejected"), Type.Literal("withdrawn")],
+	{ title: "AccessRequestStatus" },
+);
+
+export const AccessRequestDecision = Type.Object(
+	{
+		decidedBy: Actor,
+		decidedAt: Timestamp,
+		note: Type.Optional(Type.String()),
+		shareId: Type.Optional(Type.String({ description: "The share a grant created." })),
+	},
+	{ title: "AccessRequestDecision" },
+);
+
+export const AccessRequest = Type.Object(
+	{
+		id: id("The request's ID."),
+		organisationId: id("The organisation."),
+		resource: ResourceSelector,
+		owner: OwnerRef,
+		grantee: ShareGrantee,
+		permission: SharePermission,
+		reason: Type.String(),
+		requestedBy: Actor,
+		sessionId: Type.Optional(Type.String({ description: "The session the request came from." })),
+		agentId: Type.Optional(Type.String()),
+		status: AccessRequestStatus,
+		createdAt: Timestamp,
+		expiresAt: Type.Optional(Timestamp),
+		decision: Type.Optional(AccessRequestDecision),
+	},
+	{ title: "AccessRequest" },
+);
+
+export const AccessRequestPage = Type.Object(
+	{ items: Type.Array(AccessRequest), nextCursor },
+	{ title: "AccessRequestPage" },
+);
+
+export const RequestAccessBody = Type.Object(
+	{
+		resource: ResourceSelector,
+		grantee: Type.Optional(ShareGrantee),
+		permission: Type.Optional(SharePermission),
+		reason: Type.String({ minLength: 1, maxLength: 2000 }),
+		expiresAt: Type.Optional(Timestamp),
+		sessionId: Type.Optional(Type.String({ description: "The session the request is for." })),
+	},
+	{ title: "RequestAccessBody" },
+);
+
+export const ListAccessRequestsQuery = Type.Object(
+	{
+		...resourceQuery,
+		...granteeQuery,
+		status: Type.Optional(AccessRequestStatus),
+		ownerProjectId: Type.Optional(Type.String({ description: "Requests for resources this project owns." })),
+		decidable: Type.Optional(Type.Boolean({ description: "Only those the caller may decide: its inbox." })),
+		sessionId: Type.Optional(Type.String()),
+		limit,
+		cursor,
+	},
+	{ title: "ListAccessRequestsQuery" },
+);
+
+export const AccessRequestPath = Type.Object({ requestId: id("The request's ID.") });
+
+export const DecideAccessRequestBody = Type.Object(
+	{
+		decision: Type.Union([Type.Literal("grant"), Type.Literal("reject")]),
+		note: Type.Optional(Type.String({ maxLength: 1000 })),
+		permission: Type.Optional(SharePermission),
+		expiresAt: Type.Optional(Timestamp),
+		revision,
+	},
+	{
+		title: "DecideAccessRequestBody",
+		description:
+			"A grant may narrow what was asked (a weaker permission, an earlier expiry, a pinned revision), never widen it.",
+	},
+);
+
+export const AccessRequestDecided = Type.Object(
+	{ request: AccessRequest, share: Type.Optional(ResourceShare) },
+	{ title: "AccessRequestDecided" },
+);
+
+export const BindingRelation = Type.Union(
+	[Type.Literal("maintainer"), Type.Literal("approver"), Type.Literal("member")],
+	{ title: "BindingRelation" },
+);
+
+export const BindingSubject = Type.Union(
+	[
+		Type.Object({ kind: Type.Literal("user"), userId: Type.String() }),
+		Type.Object({ kind: Type.Literal("service"), serviceId: Type.String() }),
+		Type.Object({ kind: Type.Literal("group"), groupId: Type.String() }),
+	],
+	{ title: "BindingSubject" },
+);
+
+export const BindingObject = Type.Union(
+	[ResourceRef, Type.Object({ kind: Type.Literal("group"), id: Type.String() })],
+	{ title: "BindingObject", description: "A resource, or a group (for `member`)." },
+);
+
+export const BindingBody = Type.Object(
+	{ object: BindingObject, relation: BindingRelation, subject: BindingSubject },
+	{ title: "BindingBody", description: "A relation tuple: `subject` has `relation` on `object`." },
+);
+
+export const ResourceBinding = Type.Object(
+	{
+		organisationId: id("The organisation."),
+		object: BindingObject,
+		relation: BindingRelation,
+		subject: BindingSubject,
+		grantedBy: Actor,
+		grantedAt: Timestamp,
+	},
+	{ title: "ResourceBinding" },
+);
+
+export const ResourceBindingPage = Type.Object(
+	{ items: Type.Array(ResourceBinding), nextCursor },
+	{ title: "ResourceBindingPage" },
+);
+
+export const ListBindingsQuery = Type.Object(
+	{
+		objectKind: Type.Optional(Type.String({ description: "A resource kind, or `group`." })),
+		objectId: Type.Optional(Type.String({ description: "With `objectKind`." })),
+		subjectKind: Type.Optional(Type.Union([Type.Literal("user"), Type.Literal("service"), Type.Literal("group")])),
+		subjectId: Type.Optional(Type.String({ description: "With `subjectKind`." })),
+		relation: Type.Optional(BindingRelation),
+		limit,
+		cursor,
+	},
+	{ title: "ListBindingsQuery" },
+);
+
+export const ResourcePolicy = Type.Object(
+	{ twoPersonRule: Type.Boolean({ description: "Whoever publishes an edit may not be one of its authors." }) },
+	{ title: "ResourcePolicy" },
+);
+
+export const ResourceQuery = Type.Object(
+	{ kind: resourceKind, id: id("The resource's ID.") },
+	{ title: "ResourceQuery" },
+);
+
+export const SetResourcePolicyBody = Type.Object(
+	{ resource: ResourceRef, policy: ResourcePolicy },
+	{ title: "SetResourcePolicyBody" },
+);
+
+export const RegisterResourceBody = Type.Object(
+	{ resource: ResourceRef, owner: OwnerRef, name: Type.Optional(Type.String({ maxLength: 200 })) },
+	{ title: "RegisterResourceBody", description: "A host's own resource and its owner. Harbour's kinds are refused." },
+);
+
+export const RegisteredResource = Type.Object(
+	{
+		organisationId: id("The organisation."),
+		resource: ResourceRef,
+		owner: OwnerRef,
+		name: Type.Optional(Type.String()),
+		registeredBy: Actor,
+		registeredAt: Timestamp,
+	},
+	{ title: "RegisteredResource" },
+);
+
+export const ShareUse = Type.Object(
+	{
+		organisationId: id("The organisation."),
+		sessionId: id("The session."),
+		resource: ResourceSelector,
+		shareId: id("The share it was used through."),
+		usedAt: Timestamp,
+	},
+	{ title: "ShareUse", description: "A resource a session used through a share: which revision, under which share." },
+);
+
+export const ShareUseList = Type.Object({ items: Type.Array(ShareUse) }, { title: "ShareUseList" });
+
+export const ListShareUsesQuery = Type.Object({ sessionId: id("The session.") }, { title: "ListShareUsesQuery" });

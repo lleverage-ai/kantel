@@ -19,10 +19,13 @@ import {
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
+import { type Outgoing, withOutbox } from "../state/outbox.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
 	browserRequestOf,
 	composerState,
+	delivering,
+	deliveryOf,
 	editBlocked,
 	offersFollowUp,
 	type SessionActions,
@@ -74,6 +77,8 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 			);
 	}
 }
+
+const NOTHING_OUTGOING: readonly Outgoing[] = [];
 
 /** A browser's live view, as the session screen's link store has it. */
 type Tabs = ((end: ReactNode) => ReactNode) | undefined;
@@ -274,7 +279,16 @@ export function SessionView({
 		[state.status, actions.promptedAt],
 	);
 	// A prompt on its way to a run counts as running: the edit would race it.
-	const blocked = editBlocked(control, actions.promptedAt === undefined ? state.status : "running", actions.sending);
+	const blocked = editBlocked(
+		control,
+		actions.promptedAt === undefined ? state.status : "running",
+		actions.sending || delivering(actions.outbox),
+	);
+	// The transcript shows what was just sent at once, after the session's items, until the stream brings it.
+	const outbox = actions.outbox ?? NOTHING_OUTGOING;
+	const items = useMemo(() => withOutbox(state.items, outbox), [state.items, outbox]);
+	const { onRetrySend, onEditUnsent } = actions;
+	const delivery = useMemo(() => deliveryOf(outbox, onRetrySend, onEditUnsent), [outbox, onRetrySend, onEditUnsent]);
 	const messageActions = useMemo(
 		() => ({
 			// A recorded session can't be forked or edited: neither is offered.
@@ -347,7 +361,8 @@ export function SessionView({
 				<div className="console-main-transcript">
 					<Profiled id="transcript-list">
 						<Transcript
-							items={state.items}
+							items={items}
+							{...(delivery === undefined ? {} : { delivery })}
 							hasOlder={state.hasEarlier}
 							loadingOlder={state.loadingOlder}
 							olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}

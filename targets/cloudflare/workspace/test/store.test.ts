@@ -245,4 +245,11 @@ describe("Cloudflare workspaces on R2", () => {
 		expect(results.filter(Boolean)).toHaveLength(1);
 		expect(await store.create({ organisationId: "org-1", record: head.record, tree: null }, [])).toBe(false);
 	});
+
+	it("reads a byte range of an object, as a lazy workspace reads one body out of its staging pack", async () => {
+		const store = createR2WorkspaceStore({ bucket: r2.bucket, prefix: `hydration/${crypto.randomUUID()}` });
+		await store.putObject("org/org-1/packs/p.pack", new TextEncoder().encode("abcdefghij"));
+		expect(text((await store.getObjectRange?.("org/org-1/packs/p.pack", 3, 4)) ?? new Uint8Array())).toBe("defg");
+		expect(await store.getObjectRange?.("org/org-1/packs/missing.pack", 0, 1)).toBeUndefined();
+	});
 });

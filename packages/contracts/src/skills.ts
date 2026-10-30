@@ -71,6 +71,13 @@ export interface SkillListing {
 export interface SkillVisibility {
 	readonly projectId?: ProjectId;
 	readonly userId?: UserId;
+	/**
+	 * Skills owned elsewhere asked for by ID, such as an `AgentProfile.skills` entry naming another project's skill. Each
+	 * is listed, and pinned at the revision its share names (else its latest), only while an active share covers the
+	 * session or project (`ProjectAccess.resource`, docs/design/sharing.md); the rest are left out. Asked for by ID, it
+	 * replaces a visible skill of the same name.
+	 */
+	readonly shared?: readonly string[];
 }
 
 export interface SessionSkillPin {

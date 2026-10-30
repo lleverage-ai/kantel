@@ -72,6 +72,33 @@ describe("createEgressDecisionApi and createEgressDecisionClient", () => {
 		expect(credential).toMatchObject({ itemId: item.id, value: VALUE, valueVersion: 1 });
 	});
 
+	it("issues placeholders, swaps one only in the auth header's decision and on its own host, and checks a session is open", async () => {
+		const { item, client, vault } = await setUp();
+		const gateway = client(GATEWAY_KEY);
+		const issued = await gateway.issueSessionPlaceholders({ organisationId: "org-a", sessionId: "session-1" });
+		expect(issued.placeholders.map((entry) => entry.itemId)).toEqual([item.id]);
+		expect(JSON.stringify(issued)).not.toContain(VALUE);
+		const placeholder = issued.placeholders[0]!.placeholder;
+		const request = { organisationId: "org-a", sessionId: "session-1", method: "GET" as const, placeholder };
+		expect(await gateway.decideEgress({ ...request, url: "https://api.example.com/things" })).toMatchObject({
+			allow: true,
+			inject: { header: "Authorization", value: `Bearer ${VALUE}` },
+		});
+		const elsewhere = await gateway.decideEgress({ ...request, url: "https://elsewhere.example/collect" });
+		expect(elsewhere.allow).toBe(false);
+		expect(JSON.stringify(elsewhere)).not.toContain(VALUE);
+
+		await gateway.assertSessionOpen(scope);
+		await vault.setSessionAccess(human, "session-1", { blocked: true });
+		const refused = await gateway.assertSessionOpen(scope).catch((error: unknown) => error);
+		expect(isHarbourError(refused, "refused")).toBe(true);
+		expect((await gateway.decideEgress({ ...request, url: "https://api.example.com/things" })).allow).toBe(false);
+		const agent = await client("not-the-key-0123456789")
+			.issueSessionPlaceholders({ organisationId: "org-a", sessionId: "session-1" })
+			.catch((error: unknown) => error);
+		expect(isHarbourError(agent, "forbidden")).toBe(true);
+	});
+
 	it("sends no-store on every response and answers errors as JSON with one status per code", async () => {
 		const { handler, item } = await setUp();
 		const ok = await handler(

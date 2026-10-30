@@ -26,6 +26,7 @@ export const MAX_SEED_DEPS = 16;
 const METHODS: readonly SeedMethod[] = ["snapshot", "mirror", "overlay", "archive", "clone", "lazy"];
 const TIERS: readonly SandboxTier[] = ["isolate", "container"];
 const PREPARE = ["on-change", "never", "eager"] as const;
+const HYDRATION = ["lazy", "eager"] as const;
 
 /** A spec from parsed JSON; `name` prefixes every message (`seed` by default). Rejects with `invalid`. */
 export function parseSeedSpec(value: unknown, name = "seed"): SeedSpec {
@@ -55,6 +56,7 @@ export function parseSeedSpec(value: unknown, name = "seed"): SeedSpec {
 	}
 	if (value.prepare !== undefined) spec.prepare = oneOf(value.prepare, PREPARE, `${name}.prepare`);
 	if (value.staleWithin !== undefined) spec.staleWithin = count(value.staleWithin, `${name}.staleWithin`);
+	if (value.hydration !== undefined) spec.hydration = oneOf(value.hydration, HYDRATION, `${name}.hydration`);
 	return spec;
 }
 
