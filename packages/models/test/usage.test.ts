@@ -123,6 +123,8 @@ describe("the gateway's usage records", () => {
 			outputTokens: 40,
 			cacheReadTokens: 0,
 			cacheWriteTokens: 0,
+			// A chat call makes no images.
+			images: 0,
 			costSource: "none",
 			priceVersion: "none",
 			cost: { total: 0 },
@@ -218,6 +220,10 @@ describe("usage record helpers", () => {
 		expect(providerOf("claude-sonnet-4-5")).toBe("anthropic");
 		expect(providerOf("gpt-5")).toBe("openai");
 		expect(providerOf("gemini-2.5-pro")).toBe("google");
+		// Image models too.
+		expect(providerOf("gpt-image-1")).toBe("openai");
+		expect(providerOf("dall-e-3")).toBe("openai");
+		expect(providerOf("imagen-4.0-generate-001")).toBe("google");
 		expect(providerOf("my-alias", "openai/gpt-5")).toBe("openai");
 		expect(providerOf("llama-local")).toBe("unknown");
 	});
@@ -256,5 +262,46 @@ describe("usage record helpers", () => {
 		expect(record.error).toHaveLength(500);
 		expect(record.priceVersion).toBe("rates:3/15/0.3/3.75");
 		expect(record.reasoningTokens).toBeUndefined();
+		expect(record.images).toBe(0);
+	});
+
+	it("keeps an image call's image count, image API and per-image price", () => {
+		const record = usageRecordOf(
+			{
+				id: "call-2",
+				at: 1,
+				scope: { organisationId: ORG, projectId: "p", agentId: "a", sessionId: "s" },
+				route: "images",
+				connectorId: "litellm",
+				modelId: "dall-e-3",
+				operation: "images",
+				status: "done",
+				stopReason: "stop",
+				durationMs: 5,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					images: 2,
+					cost: { input: 0, output: 0.08, cacheRead: 0, cacheWrite: 0, total: 0.08 },
+				},
+				costSource: "computed",
+			},
+			{
+				connector: { preset: "litellm", catalogue: { refresh: "static" } },
+				api: "openai-images",
+				rates: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				priceVersion: "image:0.04",
+			},
+		);
+		expect(record).toMatchObject({
+			api: "openai-images",
+			provider: "openai",
+			images: 2,
+			cost: { total: 0.08 },
+			priceVersion: "image:0.04",
+		});
 	});
 });

@@ -9,6 +9,7 @@ import {
 import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway } from "@harbour/models/gateway";
+import { priceVersionOf } from "@harbour/models/usage";
 import { actors, contextFor, createDeps } from "@harbour/testing/harness";
 import { createFakeModelUpstream, FAKE_IMAGE_PNG, type FakeListedModel } from "@harbour/testing/models";
 import { createMemoryVault } from "@harbour/vault/memory";
@@ -43,7 +44,12 @@ async function setup(options: {
 	refresh?: "gateway" | "static";
 	overrides?: { readonly [modelId: string]: ModelOverride };
 	compat?: { readonly [key: string]: JsonValue };
+	/** Where the gateway writes each call's usage record. */
 	usage?: UsageWriter;
+	/** Wraps the fake upstream's fetch. */
+	fetch?: (upstream: typeof fetch) => typeof fetch;
+	/** The hosts the key may go to. Default the upstream's. */
+	keyHosts?: readonly string[];
 }) {
 	const deps = createDeps();
 	deps.tenancy.bind(actors.human("viewer-a"), ORG, "viewer", PROJECT);
@@ -54,7 +60,7 @@ async function setup(options: {
 	const item = await vault.putItem(operator, {
 		owner: { kind: "platform" },
 		name: "Upstream",
-		hosts: ["upstream.internal"],
+		hosts: [...(options.keyHosts ?? ["upstream.internal"])],
 		injection: { header: "Authorization", template: "Bearer {key}" },
 		value: KEY,
 	});
@@ -90,7 +96,7 @@ async function setup(options: {
 		credentials: vault,
 		clock: deps.clock,
 		audit: deps.audit,
-		fetch: upstream.fetch,
+		fetch: options.fetch === undefined ? upstream.fetch : options.fetch(upstream.fetch),
 		baseUrl: "http://gateway.internal",
 		access: deps.access,
 		...(options.usage === undefined ? {} : { usage: options.usage }),
@@ -610,5 +616,252 @@ describe("the console's connector models and test generate", () => {
 		expect(
 			await code(gateway.testImage(viewer, { connectorId: "up", modelId: "gpt-image-1", projectId: PROJECT })),
 		).toBe("forbidden");
+	});
+});
+
+/** A usage writer that keeps what it is given. */
+function recordsWriter(): UsageWriter & { readonly records: UsageRecord[] } {
+	const records: UsageRecord[] = [];
+	return {
+		records,
+		async record(record) {
+			records.push(record);
+		},
+	};
+}
+
+describe("image calls' usage records", () => {
+	it("writes one per call, beside its model.call, with the image count and OpenAI's tokens at the catalogue's rates", async () => {
+		const usage = recordsWriter();
+		const { gateway, upstream, deps } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage,
+		});
+		upstream.nextImages({ usage: { input: 50, output: 4160 } });
+		const scope = scopeFor();
+		const result = await gateway.images(scope, { model: "images", prompt: "A lighthouse", count: 2 });
+		const rates = (await gateway.config(scope)).models.find((model) => model.id === "images")?.cost;
+		expect(rates?.output).toBeGreaterThan(0);
+
+		expect(usage.records).toHaveLength(1);
+		const [record] = usage.records;
+		expect(record).toMatchObject({
+			callId: deps.audit.ofType("model.call")[0]?.subject?.id,
+			organisationId: ORG,
+			projectId: PROJECT,
+			sessionId: scope.sessionId,
+			agentId: "agent-1",
+			route: "images",
+			modelId: "gpt-image-1",
+			provider: "openai",
+			connectorId: "up",
+			connectorPreset: "openai",
+			api: "openai-images",
+			status: "done",
+			stopReason: "stop",
+			inputTokens: 50,
+			outputTokens: 4160,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			images: 2,
+			cost: result.usage.cost,
+			costSource: "computed",
+			priceVersion: priceVersionOf("computed", {
+				input: rates?.input ?? 0,
+				output: rates?.output ?? 0,
+				cacheRead: rates?.cacheRead ?? 0,
+				cacheWrite: rates?.cacheWrite ?? 0,
+			}),
+		});
+		expect(record?.cost.total).toBeCloseTo(((rates?.input ?? 0) * 50 + (rates?.output ?? 0) * 4160) / 1_000_000);
+		// No prompt, no image and no time to a first token: an image call doesn't stream.
+		expect(record?.firstTokenMs).toBeUndefined();
+		expect(JSON.stringify(record)).not.toContain("lighthouse");
+		expect(JSON.stringify(record)).not.toContain(FAKE_IMAGE_PNG.slice(0, 40));
+	});
+
+	it("takes the cost LiteLLM reports", async () => {
+		const usage = recordsWriter();
+		const { gateway, upstream } = await setup({
+			preset: "litellm",
+			models: [{ id: "gpt-image-1", output: ["image"] }],
+			imageModel: "gpt-image-1",
+			usage,
+		});
+		upstream.nextImages({ usage: { input: 20, output: 1056 }, reportedCost: 0.042 });
+		await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse" });
+		expect(usage.records).toEqual([
+			expect.objectContaining({
+				connectorPreset: "litellm",
+				provider: "openai",
+				api: "openai-images",
+				images: 1,
+				inputTokens: 20,
+				outputTokens: 1056,
+				cost: { total: 0.042, input: 0, output: 0.042, cacheRead: 0, cacheWrite: 0 },
+				costSource: "reported",
+				priceVersion: "reported",
+			}),
+		]);
+	});
+
+	it("writes one for OpenRouter's and Vercel's chat-modalities image calls, with the cost each reports", async () => {
+		const presets: readonly ConnectorPreset[] = ["openrouter", "vercel-ai-gateway"];
+		for (const preset of presets) {
+			const usage = recordsWriter();
+			const { gateway, upstream } = await setup({
+				preset,
+				models: [{ id: "google/gemini-2.5-flash-image", output: ["image", "text"] }],
+				imageModel: "google/gemini-2.5-flash-image",
+				usage,
+			});
+			upstream.nextImages({ reportedCost: 0.039, usage: { input: 9, output: 1290 } });
+			await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse" });
+			expect(usage.records, preset).toHaveLength(1);
+			expect(usage.records[0], preset).toMatchObject({
+				status: "done",
+				images: 1,
+				inputTokens: 9,
+				outputTokens: 1290,
+				cost: { total: 0.039 },
+				costSource: "reported",
+			});
+		}
+	});
+
+	it("names the per-image rate a cost made per image used", async () => {
+		const usage = recordsWriter();
+		const { gateway, upstream } = await setup({
+			preset: "openai-compatible",
+			models: [{ id: "dall-e-3" }],
+			imageModel: "dall-e-3",
+			overrides: { "dall-e-3": { rates: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, image: 0.04 } } },
+			usage,
+		});
+		upstream.nextImages({});
+		await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse", count: 3 });
+		expect(usage.records[0]).toMatchObject({
+			images: 3,
+			inputTokens: 0,
+			outputTokens: 0,
+			cost: { total: expect.closeTo(0.12, 9), output: expect.closeTo(0.12, 9) },
+			costSource: "computed",
+			priceVersion: "image:0.04",
+		});
+	});
+
+	it("costs nothing on CLIProxyAPI, whose preset reports no cost, and still counts the images", async () => {
+		const usage = recordsWriter();
+		const { gateway, upstream } = await setup({
+			preset: "cliproxyapi",
+			models: [{ id: "gpt-5" }],
+			imageModel: "gpt-image-1",
+			overrides: { "gpt-image-1": { output: ["image"] } },
+			usage,
+		});
+		upstream.nextImages({ usage: { input: 50, output: 4160 }, reportedCost: 0.17 });
+		await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse", count: 2 });
+		expect(usage.records[0]).toMatchObject({
+			connectorPreset: "cliproxyapi",
+			api: "openai-images",
+			images: 2,
+			inputTokens: 50,
+			outputTokens: 4160,
+			cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			costSource: "none",
+			priceVersion: "none",
+		});
+	});
+
+	it("records a refused call as an error with the redacted reason and no images, as messages does", async () => {
+		const usage = recordsWriter();
+		const { gateway, upstream, deps } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage,
+		});
+		upstream.nextImages({ error: { status: 400, message: `Your request was rejected (key ${KEY})` } });
+		expect(await code(gateway.images(scopeFor(), { model: "images", prompt: "x" }))).toBe("invalid");
+		expect(usage.records).toHaveLength(1);
+		const [record] = usage.records;
+		expect(record).toMatchObject({
+			callId: deps.audit.ofType("model.call")[0]?.subject?.id,
+			status: "error",
+			stopReason: "error",
+			images: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cost: { total: 0 },
+			costSource: "computed",
+			priceVersion: expect.stringMatching(/^rates:/),
+		});
+		expect(record?.error).toContain("400: Your request was rejected");
+		expect(record?.error).not.toContain(KEY);
+	});
+
+	it("records an aborted call as aborted, and one whose key can't be read as an error that cost nothing", async () => {
+		const usage = recordsWriter();
+		const { gateway } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage,
+			// An Images API call that waits until it is cancelled.
+			fetch: (upstream) => async (input, init) => {
+				if (!String(input instanceof Request ? input.url : input).includes("/images/")) return upstream(input, init);
+				const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+				return new Promise<Response>((_, reject) => {
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			},
+		});
+		const controller = new AbortController();
+		const call = gateway.images(scopeFor(), { model: "images", prompt: "x" }, controller.signal);
+		setTimeout(() => controller.abort(new Error("The client went away")), 10);
+		expect(await code(call)).toBe("aborted");
+		expect(usage.records).toEqual([
+			expect.objectContaining({ status: "aborted", stopReason: "aborted", images: 0, costSource: "computed" }),
+		]);
+
+		const refused = recordsWriter();
+		const elsewhere = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage: refused,
+			// A static catalogue, so the route resolves without the key, and the key read is the call's own.
+			refresh: "static",
+			keyHosts: ["somewhere-else.internal"],
+		});
+		expect(await code(elsewhere.gateway.images(scopeFor(), { model: "images", prompt: "x" }))).toBe("refused");
+		expect(elsewhere.upstream.requests.filter((request) => request.kind === "images")).toHaveLength(0);
+		expect(refused.records).toEqual([
+			expect.objectContaining({ status: "error", images: 0, costSource: "none", priceVersion: "none" }),
+		]);
+		expect(refused.records[0]?.error).toBeTypeOf("string");
+	});
+
+	it("writes one for the console's test image, under the console", async () => {
+		const usage = recordsWriter();
+		const { gateway } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage,
+		});
+		const admin = contextFor(actors.human("admin-a"), ORG);
+		await gateway.testImage(admin, { connectorId: "up", modelId: "gpt-image-1", projectId: PROJECT });
+		expect(usage.records).toEqual([
+			expect.objectContaining({
+				agentId: "console",
+				projectId: PROJECT,
+				route: "connector-test",
+				api: "openai-images",
+				images: 1,
+			}),
+		]);
 	});
 });

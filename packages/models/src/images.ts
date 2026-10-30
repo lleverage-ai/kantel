@@ -505,12 +505,20 @@ export function imageRate(rates: ModelRates | { readonly image?: number }): numb
 	return typeof rate === "number" && Number.isFinite(rate) && rate >= 0 ? rate : undefined;
 }
 
-/** The usage and cost of a successful image call, by the preset's cost source (see the module comment). */
+/**
+ * The usage and cost of a successful image call, by the preset's cost source (see the module comment). A cost made
+ * per image names its rate in `priceVersion` (`image:<rate>`, `image:0` without one), for the usage record; a cost made
+ * from tokens used the model's token rates, as a chat call's does, and has none.
+ */
 export function pricedImages(
 	cost: "reported" | "computed" | "none",
 	target: OfferedModel,
 	call: Pick<Extract<ImagesCall, { ok: true }>, "tokens" | "reportedCost"> & { readonly images: readonly unknown[] },
-): { readonly usage: ModelUsage; readonly costSource: ModelCallRecord["costSource"] } {
+): {
+	readonly usage: ModelUsage;
+	readonly costSource: ModelCallRecord["costSource"];
+	readonly priceVersion?: string;
+} {
 	const tokens = call.tokens ?? { input: 0, output: 0, total: 0 };
 	const counts = {
 		input: tokens.input,
@@ -539,5 +547,9 @@ export function pricedImages(
 	}
 	const perImage = imageRate(rates);
 	const output = perImage === undefined ? 0 : perImage * call.images.length;
-	return { usage: { ...counts, cost: { ...zero, output, total: output } }, costSource: "computed" };
+	return {
+		usage: { ...counts, cost: { ...zero, output, total: output } },
+		costSource: "computed",
+		priceVersion: `image:${perImage ?? 0}`,
+	};
 }

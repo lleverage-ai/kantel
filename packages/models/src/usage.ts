@@ -32,8 +32,8 @@ export function providerOf(modelId: string, canonical?: string): string {
 	const pi = findPiModel(id);
 	if (pi !== undefined && MAKERS.has(pi.provider)) return pi.provider;
 	if (/claude/i.test(id)) return "anthropic";
-	if (/^(gpt-|o\d|codex|chatgpt)/i.test(id)) return "openai";
-	if (/gemini|gemma/i.test(id)) return "google";
+	if (/^(gpt-|o\d|codex|chatgpt|dall-e)/i.test(id)) return "openai";
+	if (/gemini|gemma|imagen/i.test(id)) return "google";
 	return "unknown";
 }
 
@@ -45,8 +45,11 @@ export function priceVersionOf(costSource: ModelCallRecord["costSource"], rates:
 
 export interface UsageDetails {
 	readonly connector: Pick<ModelConnector, "preset" | "catalogue">;
+	/** The chat call's wire API, or the image call's image API. */
 	readonly api: ModelWireApi | ModelImageApi;
 	readonly rates: ModelRates;
+	/** Which prices made the cost, when not `priceVersionOf(costSource, rates)`: an image call priced per image. */
+	readonly priceVersion?: string;
 	readonly error?: string;
 	readonly firstTokenMs?: number;
 }
@@ -77,9 +80,10 @@ export function usageRecordOf(call: ModelCallRecord, details: UsageDetails): Usa
 		cacheReadTokens: usage.cacheRead,
 		cacheWriteTokens: usage.cacheWrite,
 		...(usage.reasoning === undefined ? {} : { reasoningTokens: usage.reasoning }),
+		images: usage.images ?? 0,
 		cost: { ...usage.cost },
 		costSource: call.costSource,
-		priceVersion: priceVersionOf(call.costSource, details.rates),
+		priceVersion: details.priceVersion ?? priceVersionOf(call.costSource, details.rates),
 		durationMs: call.durationMs,
 		...(details.firstTokenMs === undefined ? {} : { firstTokenMs: details.firstTokenMs }),
 	};
