@@ -190,8 +190,8 @@
 	--hb-ring: 2px;
 	--hb-content-width: 46rem; /* the transcript and composer column, as T3 Code's chat-content-max-width */
 	--hb-card-width: 560px;
-	--hb-presented-image-size: 336px; /* the widest and tallest a presented image shows in the transcript */
-	--hb-presented-image-size-many: 264px; /* the same, three or more side by side: four portraits to a row */
+	--hb-presented-image-size: 336px; /* an image's tile in the transcript, alone: the widest it shows */
+	--hb-presented-image-size-many: 176px; /* the same, two or more side by side: four to a row in the content width */
 	--hb-sidebar-width: 300px;
 	--hb-rail-width: 52px; /* the sidebar collapsed to a rail of icons */
 

@@ -1,7 +1,8 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { File, FileCode, FileImage, FileSpreadsheet, FileText, type LucideIcon, Presentation } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, type ReactNode, useEffect, useState } from "react";
 import { useWarmHandlers } from "../preview/warm.ts";
+import { ImageIcon } from "../primitives/icons.tsx";
 import {
 	type PresentedKind,
 	presentedKey,
@@ -124,36 +125,40 @@ export type PresentedImageCardProps = PresentedFileCardProps & {
 	previewImage?: PreviewImageSource | undefined;
 };
 
+export type ImageTileProps = PresentedFileCardProps & {
+	/** The picture's URL; `loading` while it is read (a frame, its icon breathing); `none` when there is none to show. */
+	src: string | "loading" | "none";
+};
+
 /**
- * A presented image as a picture, with its name and kind under it: a frame its shape while the host reads it, then the
- * image itself, no wider or taller than an image is shown in the transcript. Pressing it opens the file in the host's
- * viewer. When the host can't preview it, it is a file's card.
+ * An image in the transcript as a tile: a square of the picture (cropped to fill it, `object-fit: cover`), and under it
+ * the file's name and what it is. Every image in the transcript is one, whatever showed it (a `generate_image` call's
+ * own picture or the host's read of a presented file), so a set of them is one even grid, and a tile is the same size
+ * before, while and after its picture loads. Its size comes from the grid it is in (`ImageTiles`), never from the
+ * picture, so a picture that has not loaded (or an engine that sizes it late, as iOS Safari did) can't squash it.
+ * Pressing it opens the file in the host's viewer.
  */
-export const PresentedImageCard = memo(function PresentedImageCard({
-	file,
-	onOpen,
-	open = false,
-	previewImage,
-}: PresentedImageCardProps) {
-	const preview = usePreview(file, previewImage);
-	const [failed, setFailed] = useState(false);
+export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = false }: ImageTileProps) {
+	const [failed, setFailed] = useState<string>();
 	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
-	if (preview === "none" || failed) return <PresentedFileCard file={file} onOpen={onOpen} open={open} />;
 	const title = presentedTitle(file);
+	const shown = src === failed ? "none" : src;
 	const body = (
 		<>
-			{preview === "loading" ? (
-				<span className="hb-presented-image-frame" aria-hidden="true" />
+			{shown === "loading" || shown === "none" ? (
+				<span className="hb-image-tile-picture hb-image-tile-frame" data-state={shown} aria-hidden="true">
+					<ImageIcon size="md" className="hb-image-tile-icon" />
+				</span>
 			) : (
 				<img
-					className="hb-presented-image-picture"
-					src={preview}
+					className="hb-image-tile-picture"
+					src={shown}
 					alt={title}
 					decoding="async"
-					onError={() => setFailed(true)}
+					onError={() => setFailed(shown)}
 				/>
 			)}
-			<span className="hb-presented-image-caption">
+			<span className="hb-image-tile-caption">
 				<span className="hb-presented-name" title={file.path}>
 					{title}
 				</span>
@@ -162,11 +167,11 @@ export const PresentedImageCard = memo(function PresentedImageCard({
 		</>
 	);
 	return onOpen === undefined ? (
-		<figure className="hb-presented-image">{body}</figure>
+		<figure className="hb-image-tile">{body}</figure>
 	) : (
 		<button
 			type="button"
-			className={`hb-presented-image hb-presented-image-button hb-focusable${open ? " hb-presented-image-open" : ""}`}
+			className={`hb-image-tile hb-image-tile-button hb-focusable${open ? " hb-image-tile-open" : ""}`}
 			aria-label={`Open ${title}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
@@ -175,6 +180,38 @@ export const PresentedImageCard = memo(function PresentedImageCard({
 			{body}
 		</button>
 	);
+});
+
+/**
+ * Image tiles side by side, wrapping: one alone up to `--hb-presented-image-size` (the column's width on a phone), two
+ * or more up to `--hb-presented-image-size-many` each, and never fewer than two to a row. Each child is one tile.
+ */
+export function ImageTiles({ label, children }: { label: string; children: readonly ReactNode[] }) {
+	return (
+		<ul className="hb-image-tiles" aria-label={label} {...(children.length >= 2 ? { "data-many": "" } : {})}>
+			{children}
+		</ul>
+	);
+}
+
+/** One tile's place in `ImageTiles`. */
+export function ImageTilesItem({ children }: { children: ReactNode }) {
+	return <li className="hb-image-tiles-item">{children}</li>;
+}
+
+/**
+ * A presented image as a tile (`ImageTile`): a frame while the host reads it, then the picture. A file the host has
+ * no picture of keeps its tile, with the image icon in the frame. Without a host that previews images, a file's card.
+ */
+export const PresentedImageCard = memo(function PresentedImageCard({
+	file,
+	onOpen,
+	open = false,
+	previewImage,
+}: PresentedImageCardProps) {
+	const preview = usePreview(file, previewImage);
+	if (previewImage === undefined) return <PresentedFileCard file={file} onOpen={onOpen} open={open} />;
+	return <ImageTile file={file} src={preview} onOpen={onOpen} open={open} />;
 });
 
 export type PresentedFilesProps = {
@@ -224,20 +261,19 @@ export function PresentedFiles({ item, onOpen, openKey, previewImage }: Presente
 					);
 				}
 				return (
-					<li
-						key={presentedKey(first)}
-						className="hb-presented-images"
-						{...(run.length >= 3 ? { "data-many": "" } : {})}
-					>
-						{run.map((file) => (
-							<PresentedImageCard
-								key={presentedKey(file)}
-								file={file}
-								onOpen={open}
-								open={openKey === presentedKey(file)}
-								previewImage={previewImage}
-							/>
-						))}
+					<li key={presentedKey(first)} className="hb-presented-images">
+						<ImageTiles label={run.length === 1 ? "Image" : "Images"}>
+							{run.map((file) => (
+								<ImageTilesItem key={presentedKey(file)}>
+									<PresentedImageCard
+										file={file}
+										onOpen={open}
+										open={openKey === presentedKey(file)}
+										previewImage={previewImage}
+									/>
+								</ImageTilesItem>
+							))}
+						</ImageTiles>
 					</li>
 				);
 			})}

@@ -108,9 +108,9 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
 The library's entries (`defaultToolRenderers`):
 
 - `present_files` and `create_document`, once done with files: their files' cards. With the host's `previewImage` an
-  image file is its picture (`PresentedImageCard`, at most `--hb-presented-image-size` wide and tall, smaller three or
-  more to a row, never fewer than two to a row on a phone), opening in the viewer like any card; without it, or when
-  the host has no picture for it, a file's card with its icon. Files an earlier `generate_image` already showed get
+  image file is an image tile (`PresentedImageCard`, an `ImageTile`; see Image tiles), opening in the viewer like any
+  card; a picture the host has none of keeps its tile, with the image icon. Without `previewImage`, a file's card with
+  its icon. Files an earlier `generate_image` already showed get
   no second card (`repeatedImageFiles`); a call left with none takes no room.
 - `generate_image`: while it runs, its row with `ImagePlaceholders` under it; once done with files,
   `GeneratedImages` (see Generated images), an image the call returned no picture of shown through `previewImage`.
@@ -196,12 +196,23 @@ only a changed fold's rows render again.
 `ImagePlaceholder` per image it asked for (`count`), in the shape it asked for (`aspect`: square, landscape 3:2,
 portrait 2:3): a frame, a soft band of light crossing it by `transform` on its own layer, and an image icon breathing
 (`hb-pulse`, opacity). Nothing that repaints animates. Once done, the runtime presents the saved images as
-`present_files` presents files, each with `model` (`PresentedFile.model`), and `GeneratedImages` shows each as a card:
-the picture (the call's image, scaled down by the runtime when the file is too large), its name and "Made with
-gpt-image-1". The card is as wide as its picture, within `--hb-generated-image-width` and
-`--hb-generated-image-height`, and opens the file in the host's viewer, whose facts end with the model. Without a
-picture it is the host's preview of the file (`previewImage`, a `PresentedImageCard`), else a `PresentedFileCard`,
-whose subtitle says "JPG image made with gpt-image-1". It renders in place through the tool renderer registry (see
+`present_files` presents files, each with `model` (`PresentedFile.model`), and `GeneratedImages` shows each as an
+image tile (see Image tiles): the picture (the call's image, scaled down by the runtime when the file is too large),
+its name and "PNG image made with gpt-image-1". It opens the file in the host's viewer, whose facts end with the
+model. Without a picture from the call, the tile shows the host's read of the file (`previewImage`, a
+`PresentedImageCard`); without a host either, it is a `PresentedFileCard`. The placeholders sit in the same grid, so
+each is as wide as the tile its image becomes.
+
+### Image tiles (`ImageTile`, `ImageTiles`, presented-file-card.tsx)
+
+**For** every image in the transcript, whichever way it got there: a `generate_image` call's own picture or the host's
+read of a presented image. A tile is a card with the picture as a square (`object-fit: cover`; the viewer shows it
+whole), then the file's name and what it is. While the host reads the picture the square is a frame with the image
+icon breathing (opacity); a picture it has none of, or one that fails to load, leaves the icon. `ImageTiles` lays them
+side by side, wrapping: one image alone up to `--hb-presented-image-size` (the column's width on a phone), two or more
+up to `--hb-presented-image-size-many` each, four to a row in the content column and two on a phone. A tile's width
+comes from its place in the grid, never from its picture: cards sized to their picture (`width: fit-content` round a
+`max-width: 100%` image) shrank to their caption's padding on iOS Safari, a row of narrow pills. It renders in place through the tool renderer registry (see
 Tool renderers), so its call is not a step of the turn's work. The call's chip doesn't
 repeat the picture (`images="none"`), and a later `present_files` of the same file adds no second card
 (`repeatedImageFiles`).

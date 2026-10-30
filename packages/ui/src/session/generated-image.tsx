@@ -1,14 +1,20 @@
 import type { PresentedFile, ToolImage, ToolItem } from "@harbour/protocol";
 import { memo } from "react";
-import { PresentedImageCard, type PreviewImageSource } from "../presented/presented-file-card.tsx";
-import { presentedKey, presentedTitle } from "../presented/presented-file-model.ts";
-import { useWarmHandlers } from "../preview/warm.ts";
+import {
+	ImageTile,
+	ImageTiles,
+	ImageTilesItem,
+	PresentedImageCard,
+	type PreviewImageSource,
+} from "../presented/presented-file-card.tsx";
+import { presentedKey } from "../presented/presented-file-model.ts";
 import { ImageIcon } from "../primitives/icons.tsx";
 import { toolImageSrc } from "./tool-call.tsx";
 import "./generated-image.css";
 
 // The images `generate_image` makes, in the transcript: while the call runs, a placeholder the shape of each image it
-// asked for; once it is done, each image as a card under the work, with the model that made it.
+// asked for; once it is done, each image as a tile under the work (`ImageTile`, as every image in the transcript is),
+// with the model that made it.
 
 /** The shape `generate_image` was asked for. */
 export type ImageAspect = "square" | "landscape" | "portrait";
@@ -38,16 +44,23 @@ export function ImagePlaceholder({ aspect = "square" }: { aspect?: ImageAspect }
 	);
 }
 
-/** The placeholders for a running `generate_image` call: one per image it asked for, in the shape it asked for. */
+/**
+ * The placeholders for a running `generate_image` call: one per image it asked for, in the shape it asked for, as wide
+ * as the tiles the images become.
+ */
 export const ImagePlaceholders = memo(function ImagePlaceholders({ item }: { item: ToolItem }) {
 	const { aspect, count } = imageRequest(item.args);
 	return (
 		<div className="hb-generated-images" role="status">
 			<span className="hb-sr-only">{count === 1 ? "Making an image" : `Making ${count} images`}</span>
-			{Array.from({ length: count }, (_, index) => (
-				// biome-ignore lint/suspicious/noArrayIndexKey: placeholders are identical and never reorder.
-				<ImagePlaceholder key={index} aspect={aspect} />
-			))}
+			<ImageTiles label={count === 1 ? "Image to come" : "Images to come"}>
+				{Array.from({ length: count }, (_, index) => (
+					// biome-ignore lint/suspicious/noArrayIndexKey: placeholders are identical and never reorder.
+					<ImageTilesItem key={index}>
+						<ImagePlaceholder aspect={aspect} />
+					</ImageTilesItem>
+				))}
+			</ImageTiles>
 		</div>
 	);
 });
@@ -68,9 +81,10 @@ export type GeneratedImageCardProps = {
 };
 
 /**
- * One generated image as a card: the picture, and under it the file's name and the model that made it. Pressing it
- * opens the file in the host's viewer. Without a picture from the call (the image was too large to scale down) it is
- * the host's preview of the file, else a file's card.
+ * One generated image as a tile (`ImageTile`): the picture, and under it the file's name and "PNG image made with
+ * gpt-image-1". Pressing it opens the file in the host's viewer. Without a picture from the call (the image was too
+ * large to scale down) the tile shows the host's read of the file (`PresentedImageCard`); without a host either, it is
+ * a file's card.
  */
 export const GeneratedImageCard = memo(function GeneratedImageCard({
 	file,
@@ -79,43 +93,10 @@ export const GeneratedImageCard = memo(function GeneratedImageCard({
 	open = false,
 	previewImage,
 }: GeneratedImageCardProps) {
-	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
 	if (image === undefined) {
 		return <PresentedImageCard file={file} onOpen={onOpen} open={open} previewImage={previewImage} />;
 	}
-	const title = presentedTitle(file);
-	const model = madeWith(file);
-	const body = (
-		<>
-			<img
-				className="hb-generated-image-picture"
-				src={toolImageSrc(image)}
-				alt={title}
-				loading="lazy"
-				decoding="async"
-			/>
-			<span className="hb-generated-image-caption">
-				<span className="hb-generated-image-name" title={file.path}>
-					{title}
-				</span>
-				{model === undefined ? null : <span className="hb-generated-image-model">{model}</span>}
-			</span>
-		</>
-	);
-	return onOpen === undefined ? (
-		<figure className="hb-generated-image">{body}</figure>
-	) : (
-		<button
-			type="button"
-			className={`hb-generated-image hb-generated-image-button hb-focusable${open ? " hb-generated-image-open" : ""}`}
-			aria-label={`Open ${title}`}
-			aria-pressed={open}
-			onClick={() => onOpen(file)}
-			{...warm}
-		>
-			{body}
-		</button>
-	);
+	return <ImageTile file={file} src={toolImageSrc(image)} onOpen={onOpen} open={open} />;
 });
 
 export type GeneratedImagesProps = {
@@ -128,25 +109,27 @@ export type GeneratedImagesProps = {
 	previewImage?: PreviewImageSource | undefined;
 };
 
-/** The images one `generate_image` call made, as cards side by side. */
+/** The images one `generate_image` call made, as tiles side by side, wrapping (`ImageTiles`). */
 export function GeneratedImages({ item, onOpen, openKey, previewImage }: GeneratedImagesProps) {
 	const files = item.status === "done" ? (item.files ?? []) : [];
 	if (files.length === 0) return null;
 	// The call's pictures are its files' only when there is one for each: an image too large to scale down has none.
 	const images = item.images?.length === files.length ? item.images : undefined;
 	return (
-		<ul className="hb-generated-images" aria-label={files.length === 1 ? "Generated image" : "Generated images"}>
-			{files.map((file, index) => (
-				<li key={presentedKey(file)} className="hb-generated-images-item">
-					<GeneratedImageCard
-						file={file}
-						image={images?.[index]}
-						onOpen={onOpen === undefined ? undefined : (opened) => onOpen(opened, item)}
-						open={openKey === presentedKey(file)}
-						previewImage={previewImage}
-					/>
-				</li>
-			))}
-		</ul>
+		<div className="hb-generated-images">
+			<ImageTiles label={files.length === 1 ? "Generated image" : "Generated images"}>
+				{files.map((file, index) => (
+					<ImageTilesItem key={presentedKey(file)}>
+						<GeneratedImageCard
+							file={file}
+							image={images?.[index]}
+							onOpen={onOpen === undefined ? undefined : (opened) => onOpen(opened, item)}
+							open={openKey === presentedKey(file)}
+							previewImage={previewImage}
+						/>
+					</ImageTilesItem>
+				))}
+			</ImageTiles>
+		</div>
 	);
 }

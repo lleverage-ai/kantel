@@ -120,28 +120,42 @@
 	white-space: nowrap;
 }
 
-/* Presented images, with a host that previews them: each as its picture with its name and kind under it, side by side
-   with the images next to it, wrapping. A card is as wide as its picture, within the widest and tallest an image is
-   shown in the transcript, so a portrait poster doesn't fill the screen. */
+/* A run of presented images, with a host that previews them: one place in the list, holding their tiles. */
 .hb-presented-images {
+	min-width: 0;
+}
+
+/* Image tiles (`ImageTiles`): every image in the transcript, side by side and wrapping. Each place has a set width,
+   so a tile never takes its size from its picture: a picture that hasn't loaded, or one an engine sizes late (iOS
+   Safari shrank `width: fit-content` cards round a `max-width: 100%` image to their caption's padding), can't squash
+   it. One image alone is up to --hb-presented-image-size, and the column's width on a phone. */
+.hb-image-tiles {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-start;
 	gap: var(--hb-gap-within);
 	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
 }
 
-/* Three or more: smaller, so a set of portraits (an agent's variations) reads as one row, and never fewer than two to a
-   row in a narrow column (a phone). */
-.hb-presented-images[data-many] {
-	--hb-presented-image-size: var(--hb-presented-image-size-many);
+.hb-image-tiles-item {
+	flex: none;
+	width: min(100%, var(--hb-presented-image-size));
+	min-width: 0;
 }
 
-.hb-presented-image {
+/* Two or more: smaller, four to a row in the content column, and two to a row on a phone, never fewer. */
+.hb-image-tiles[data-many] > .hb-image-tiles-item {
+	width: min(calc((100% - var(--hb-gap-within)) / 2), var(--hb-presented-image-size-many));
+}
+
+/* A tile: the picture as a square, then the name and what it is, in a card as wide as its place. */
+.hb-image-tile {
 	display: flex;
 	flex-direction: column;
-	width: fit-content;
-	max-width: min(100%, var(--hb-presented-image-size));
+	width: 100%;
 	min-width: 0;
 	margin: 0;
 	padding: 0;
@@ -154,51 +168,56 @@
 	text-align: left;
 }
 
-.hb-presented-images[data-many] > .hb-presented-image {
-	max-width: min(calc((100% - var(--hb-gap-within)) / 2), var(--hb-presented-image-size));
-}
-
-.hb-presented-image-button {
+.hb-image-tile-button {
 	cursor: pointer;
 	transition:
 		background-color var(--hb-duration-fast) var(--hb-ease),
 		border-color var(--hb-duration-fast) var(--hb-ease);
 }
 
-.hb-presented-image-button:hover {
+.hb-image-tile-button:hover {
 	border-color: var(--hb-border-strong);
 	background: var(--hb-user-message);
 }
 
-.hb-presented-image-open {
+.hb-image-tile-open {
 	border-color: var(--hb-accent);
 }
 
-.hb-presented-image-picture {
+/* The picture fills a square, cropped rather than squeezed; the viewer shows it whole. The frame before it (and in
+   place of a picture the host has none of) is the same square. */
+.hb-image-tile-picture {
 	display: block;
-	max-width: 100%;
-	max-height: var(--hb-presented-image-size);
-	object-fit: contain;
-	background: var(--hb-panel);
-}
-
-/* While the host reads the image: a square frame the size of a picture, so the row doesn't jump twice. */
-.hb-presented-image-frame {
-	display: block;
-	width: var(--hb-presented-image-size);
-	max-width: 100%;
+	width: 100%;
+	height: auto;
 	aspect-ratio: 1;
+	object-fit: cover;
 	background: var(--hb-panel);
 }
 
-/* The caption takes the picture's width rather than giving the card its own: a long name is cut short, never widening
-   the card past its picture. */
-.hb-presented-image-caption {
+.hb-image-tile-frame {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--hb-text-faint);
+}
+
+.hb-image-tile-icon {
+	width: var(--hb-control-xs);
+	height: var(--hb-control-xs);
+}
+
+/* While the host reads the picture, its icon breathes: opacity alone, as the placeholders' does. */
+.hb-image-tile-frame[data-state="loading"] .hb-image-tile-icon {
+	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
+}
+
+/* The caption is as wide as the tile: a long name is cut short. */
+.hb-image-tile-caption {
 	display: flex;
 	flex-direction: column;
 	gap: var(--hb-step-0_5);
 	min-width: 0;
-	contain: inline-size;
 	padding: var(--hb-step-2) var(--hb-step-3);
 	border-top: var(--hb-hairline) solid var(--hb-border);
 }

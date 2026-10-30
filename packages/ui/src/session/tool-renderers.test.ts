@@ -95,8 +95,10 @@ describe("the tool renderer registry", () => {
 			assistant("a1", "I generated 4 new poster iterations."),
 		];
 		const html = render({ items });
-		expect(count(html, "hb-generated-image-picture")).toBe(4);
-		expect(count(html, "Made with gpt-image-1")).toBe(4);
+		expect(count(html, "hb-image-tile-picture")).toBe(4);
+		expect(count(html, "PNG image made with gpt-image-1")).toBe(4);
+		// Each call's image is a tile, as a presented image is: there is one kind of image card.
+		expect(html.match(/class="hb-image-tile[ "]/g)).toHaveLength(4);
 		expect(html).not.toContain("Making an image");
 		expect(html).not.toContain("Presenting 4 files");
 		expect(html).not.toContain("hb-presented-card");
@@ -132,12 +134,16 @@ describe("the tool renderer registry", () => {
 		const previewImage = () => Promise.resolve("blob:poster");
 		const previewed = render({ items: referenceTurn(presenting("p1")), previewImage });
 		// Server rendering runs no effects: each image is the frame it shows while the host reads it.
-		expect(count(previewed, "hb-presented-image-frame")).toBe(4);
+		expect(count(previewed, "hb-image-tile-frame")).toBe(4);
+		expect(count(previewed, 'data-state="loading"')).toBe(4);
 		expect(count(previewed, "hb-presented-images")).toBe(1);
+		// Four images: one grid, two or more to a row.
+		expect(count(previewed, 'class="hb-image-tiles"')).toBe(1);
+		expect(previewed).toContain("data-many");
 		expect(previewed).not.toContain("hb-presented-card");
 		const plain = render({ items: referenceTurn(presenting("p1")) });
 		expect(count(plain, "hb-presented-card")).toBe(4);
-		expect(plain).not.toContain("hb-presented-image");
+		expect(plain).not.toContain("hb-image-tile");
 	});
 
 	it("renders a host's own in-place tool once, and its own label and detail inside the generic row", () => {
