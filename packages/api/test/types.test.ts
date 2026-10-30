@@ -13,14 +13,19 @@ import type {
 	MemorySearchRequest as ContractMemorySearchRequest,
 	MemorySnapshot as ContractMemorySnapshot,
 	MemorySpace as ContractMemorySpace,
+	ModelOption as ContractModelOption,
+	ModelSelection as ContractModelSelection,
 	Occurrence as ContractOccurrence,
 	OwnerRef as ContractOwnerRef,
+	PromptAttachment as ContractPromptAttachment,
 	Recall as ContractRecall,
 	RecallRequest as ContractRecallRequest,
 	Recurrence as ContractRecurrence,
+	RunResult as ContractRunResult,
 	Schedule as ContractSchedule,
 	ScheduleKind as ContractScheduleKind,
 	ScheduleUpdate as ContractScheduleUpdate,
+	SessionModelState as ContractSessionModelState,
 	SessionRecord as ContractSessionRecord,
 	SessionStatus as ContractSessionStatus,
 	SkillListing as ContractSkillListing,
@@ -29,18 +34,22 @@ import type {
 	Skills as ContractSkills,
 	Submission as ContractSubmission,
 	CreateSessionInput,
+	ForkSessionInput,
 	ModelThinking,
 	Page,
 	PromptInput,
 	ScheduleInput,
 	Schedules,
+	SessionFilter,
 	SessionHistoryRequest,
+	SessionModelsStart,
 } from "@harbour/contracts";
 import type * as Protocol from "@harbour/protocol";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
 import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
+import type * as Runs from "../src/run-schema.ts";
 import type * as Wires from "../src/schema.ts";
 import type {
 	Actor,
@@ -53,20 +62,27 @@ import type {
 	CreateSessionBody,
 	ErrorCode,
 	FirstMessage,
+	ForkSessionBody,
 	ImportSkillBody,
+	ListSessionsQuery,
 	MemorySearchBody,
 	MemorySearchHit,
 	MemorySnapshot,
 	MemorySpace,
 	MemorySpacePage,
 	MessageBody,
+	ModelOption,
+	ModelSelection,
+	NewSessionModelsQuery,
 	Occurrence,
 	OwnerRef,
+	PromptAttachment,
 	Recall,
 	RecallBody,
 	Recurrence,
 	Schedule,
 	ScheduleKind,
+	SessionModelState,
 	SessionPage,
 	SessionRecord,
 	SessionStatus,
@@ -97,8 +113,8 @@ type TypedObject<T> = { readonly [K in keyof T as K extends Opaque ? never : K]:
 
 type ImportInput = Parameters<ContractSkills["importRevision"]>[1];
 
-/** What the public API sends of a prompt; attachments come with workspace uploads. */
-type Message = Omit<PromptInput, "requestId" | "attachments">;
+/** What the public API sends of a prompt: everything but its `requestId`, which is the `Idempotency-Key` header. */
+type Message = Omit<PromptInput, "requestId">;
 
 describe("schemas match the contracts", () => {
 	it("compiles", () => {
@@ -111,6 +127,14 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof FirstMessage>, Message>(true),
 			same<Omit<Wire<typeof MessageBody>, "via">, Message>(true),
 			same<Wire<typeof Submission>, ContractSubmission>(true),
+			same<Wire<typeof PromptAttachment>, ContractPromptAttachment>(true),
+			same<Typed<Wire<typeof Runs.RunResult>>, Typed<ContractRunResult>>(true),
+			same<Wire<typeof ModelOption>, ContractModelOption>(true),
+			same<Wire<typeof ModelSelection>, ContractModelSelection>(true),
+			same<Wire<typeof SessionModelState>, ContractSessionModelState>(true),
+			same<Wire<typeof NewSessionModelsQuery>, Pick<SessionModelsStart, "projectId">>(true),
+			same<Wire<typeof ForkSessionBody>, ForkSessionInput>(true),
+			same<Omit<Wire<typeof ListSessionsQuery>, "label" | "limit" | "cursor">, Omit<SessionFilter, "labels">>(true),
 			same<Omit<Wire<typeof CreatedSession>, "submission">, ContractSessionRecord>(true),
 			same<Wire<typeof SessionPage>, Page<ContractSessionRecord>>(true),
 			same<Wire<typeof ErrorCode>, ContractErrorCode | "unauthenticated">(true),

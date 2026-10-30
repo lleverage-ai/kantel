@@ -80,11 +80,46 @@ export const MessageVia = Type.Union([Type.Literal("prompt"), Type.Literal("stee
 	title: "MessageVia",
 	description:
 		"How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in " +
-		"progress at its next model call, and `followUp` runs after the current run ends.",
+		"progress at its next model call, without stopping it (usually right after the tool call in progress), and " +
+		"`followUp` runs after the current run ends. A steer or follow-up to a session with no run in progress starts " +
+		"one, as a prompt does, so a message sent just as a run ends is never lost.",
 });
 
+/** The most attachments one message may carry (`MAX_PROMPT_ATTACHMENTS` in `@harbour/runtime`). */
+const MAX_MESSAGE_ATTACHMENTS = 20;
+
+export const PromptAttachment = Type.Object(
+	{
+		id: id("The upload's ID, as the deployment's upload route answered it. Unique within the message."),
+		name: id("The file's name, such as `invoice.pdf`."),
+		type: Type.String({ description: "The MIME type, such as `image/png` or `application/pdf`." }),
+		size: Type.Number({ minimum: 0, description: "In bytes." }),
+		kind: Type.Union([Type.Literal("image"), Type.Literal("file"), Type.Literal("text")], {
+			description:
+				"`image`: a PNG, JPEG, GIF or WebP the model looks at; `file`: any other file; `text`: a long paste folded " +
+				"into a file.",
+		}),
+	},
+	{
+		title: "PromptAttachment",
+		description:
+			"A file for a message, uploaded first: on Cloudflare `POST /v1/attachments?projectId=&name=` with the file's bytes " +
+			"as the body answers this reference. The message carries only the reference; the model sees the file's contents.",
+	},
+);
+
 const messageFields = {
-	text: Type.String({ minLength: 1, description: "The message's words." }),
+	text: Type.String({
+		description: "The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`.",
+	}),
+	attachments: Type.Optional(
+		Type.Array(PromptAttachment, {
+			maxItems: MAX_MESSAGE_ATTACHMENTS,
+			description:
+				"Files for this message, in the order they were attached. A deployment that stores no uploads refuses them " +
+				"(`invalid`), as it does a file from another project.",
+		}),
+	),
 	model: Type.Optional(
 		Type.String({
 			minLength: 1,
@@ -157,6 +192,12 @@ export const ListSessionsQuery = Type.Object(
 		agentId: Type.Optional(Type.String()),
 		status: Type.Optional(SessionStatus),
 		parentSessionId: Type.Optional(Type.String()),
+		workspaceId: Type.Optional(
+			Type.String({
+				description:
+					"Sessions running in this workspace: the conversations that share its files, each with its own history.",
+			}),
+		),
 		label: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description:
@@ -175,6 +216,77 @@ export const AbortSessionBody = Type.Object(
 );
 
 export const SessionPath = Type.Object({ sessionId: id("The session's ID.") });
+
+export const ModelOption = Type.Object(
+	{
+		id: Type.String({
+			description: "What a message's `model` names: a route such as `default`, or `<route>:<modelId>` for an override.",
+		}),
+		label: Type.String({ description: "What a person reads, such as `Claude Sonnet 4.5`." }),
+		provider: Type.Optional(Type.String({ description: "Who serves the model, for grouping, such as `Anthropic`." })),
+		description: Type.Optional(Type.String()),
+		capabilities: Type.Optional(
+			Type.Object(
+				{
+					images: Type.Optional(Type.Boolean({ description: "Reads images." })),
+					thinking: Type.Optional(Type.Array(ThinkingLevel, { description: "The thinking levels it supports." })),
+				},
+				{ description: "What the model takes. A field left out is unknown." },
+			),
+		),
+		default: Type.Optional(
+			Type.Boolean({ description: "The model the session runs with when no message names one. At most one." }),
+		),
+		disabledReason: Type.Optional(
+			Type.String({ description: "Set when the model is listed but can't be chosen now, with the reason." }),
+		),
+	},
+	{ title: "ModelOption", description: "A model a session may run with, as a model picker shows it." },
+);
+
+export const ModelSelection = Type.Object(
+	{
+		model: Type.String({ description: "A `ModelOption.id`." }),
+		thinking: Type.Optional(ThinkingLevel),
+	},
+	{ title: "ModelSelection", description: "A model and thinking level." },
+);
+
+export const SessionModelState = Type.Object(
+	{
+		models: Type.Array(ModelOption),
+		selected: Type.Optional(ModelSelection),
+		defaults: Type.Optional(ModelSelection),
+	},
+	{
+		title: "SessionModelState",
+		description:
+			"The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; " +
+			"`selected`, what the session's next model call uses (its agent profile's until a message names another); and " +
+			"`defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies " +
+			"from the run's next model call, so the conversation keeps its context across a change of model.",
+	},
+);
+
+export const ProfilePath = Type.Object({ agentId: id("The agent profile's ID.") });
+
+export const NewSessionModelsQuery = Type.Object(
+	{ projectId: id("The project the session would run in.") },
+	{ title: "NewSessionModelsQuery" },
+);
+
+export const ForkSessionBody = Type.Object(
+	{
+		itemId: id("The transcript item ID of an assistant answer, as the session's stream gives it."),
+		title: Type.Optional(
+			Type.String({ description: "The new session's title. Default the source's, with \" (fork)\"." }),
+		),
+	},
+	{
+		title: "ForkSessionBody",
+		description: "Where to fork: the answer the new session's history ends with.",
+	},
+);
 
 export const SessionWarmth = Type.Object(
 	{

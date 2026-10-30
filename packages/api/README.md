@@ -49,7 +49,19 @@ const session = await harbour.createSession({
 	labels: { lleverageRunId: "run-42" },
 	message: { text: "Summarise the open invoices" },
 });
-await harbour.sendMessage(session.id, { via: "steer", text: "Only this month's" }, { idempotencyKey: crypto.randomUUID() });
+const steer = await harbour.sendMessage(
+	session.id,
+	{ via: "steer", text: "Only this month's" },
+	{ idempotencyKey: crypto.randomUUID() },
+);
+
+// Without a stream: poll until the run ends (202 `pending` until then), answered, failed or aborted.
+let result = await harbour.getRunResult(session.id, { submission: steer.id });
+while (result.status === "pending") result = await harbour.getRunResult(session.id, { submission: steer.id });
+
+// Switch model mid-conversation; the new model gets the whole transcript.
+const { models } = await harbour.getSessionModels(session.id);
+await harbour.sendMessage(session.id, { text: "Double-check the totals", model: models[1].id });
 
 // @harbour/protocol frames over a WebSocket; fold them with applyFrames, resume with { after: stream.cursor }.
 const stream = harbour.streamSession(session.id, { onFrames: (frames) => render(frames) });

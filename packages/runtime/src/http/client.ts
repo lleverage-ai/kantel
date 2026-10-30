@@ -99,6 +99,7 @@ function filterQuery(filter: SessionFilter | undefined, page: PageRequest | unde
 	if (filter?.agentId !== undefined) params.set("agentId", filter.agentId);
 	if (filter?.status !== undefined) params.set("status", filter.status);
 	if (filter?.parentSessionId !== undefined) params.set("parentSessionId", filter.parentSessionId);
+	if (filter?.workspaceId !== undefined) params.set("workspaceId", filter.workspaceId);
 	for (const [key, value] of Object.entries(filter?.labels ?? {})) params.set(`label.${key}`, value);
 	if (page?.limit !== undefined) params.set("limit", String(page.limit));
 	if (page?.cursor !== undefined) params.set("cursor", page.cursor);

@@ -76,6 +76,7 @@ export function matchesSessionFilter(record: SessionRecord, filter: SessionFilte
 	if (filter.agentId !== undefined && record.agentId !== filter.agentId) return false;
 	if (filter.status !== undefined && record.status !== filter.status) return false;
 	if (filter.parentSessionId !== undefined && record.parentSessionId !== filter.parentSessionId) return false;
+	if (filter.workspaceId !== undefined && record.workspaceId !== filter.workspaceId) return false;
 	for (const [key, value] of Object.entries(filter.labels ?? {})) if (record.labels[key] !== value) return false;
 	return true;
 }
