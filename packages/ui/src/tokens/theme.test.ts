@@ -37,8 +37,8 @@ describe("themes", () => {
 
 	it("every colour token in tokens.css is a theme token", () => {
 		const names = new Set(THEME_TOKENS.map((spec) => spec.name));
-		// Colours that are the same in every theme: white on a solid colour, the scrim over an image.
-		const fixed = new Set(["on-solid", "thumb-scrim"]);
+		// Colours that are the same in every theme: white on a solid colour, the scrim over an image, a logo's tile.
+		const fixed = new Set(["on-solid", "thumb-scrim", "logo-tile"]);
 		const colours = [...rootTokens()].filter(([, value]) => /#|rgb\(|color-mix\(/.test(value)).map(([name]) => name);
 		expect(colours.filter((name) => !names.has(name) && !fixed.has(name))).toEqual([]);
 	});

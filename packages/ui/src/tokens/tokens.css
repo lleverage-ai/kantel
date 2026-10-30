@@ -248,11 +248,13 @@
 	--hb-attachment-width: 11.5rem; /* every attachment card, in the composer and on a sent message: three to a bubble's row */
 	--hb-thumb-scrim: rgb(0 0 0 / 0.65);
 	--hb-on-solid: #ffffff; /* text and icons on a solid status colour, such as the Stop button */
+	--hb-logo-tile: #ffffff; /* a service's logo tile on the Connections page: light in every theme, so a logo in its own colours reads */
 	--hb-drop-fill: color-mix(in srgb, var(--hb-accent) 5%, transparent);
 	--hb-drop-line: color-mix(in srgb, var(--hb-accent) 60%, transparent);
 	--hb-popover-width: 20rem;
 	--hb-popover-height: 22rem;
 	--hb-share-width: 26rem; /* the Share popover on a document: invite, who has access, the link */
+	--hb-connect-width: 22rem; /* the Connect panel beside a service's page on the Connections page */
 	--hb-doc-width: 44rem; /* a document's measure in its panel, as a page */
 	--hb-doc-text: 15px; /* a document's body text: a page to read, a step up from the transcript */
 	--hb-doc-h1: 30px;

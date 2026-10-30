@@ -30,6 +30,32 @@ export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/cr
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
 // Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
 export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
+// The Connections page (#339): the connector catalogue, connecting, what's connected and OAuth clients, through the
+// source the host binds to the public API.
+export type { PeopleNames } from "./connections/connection-list.tsx";
+export {
+	type ConnectAttemptState,
+	type Connection as ConnectionView,
+	type ConnectionHealth,
+	type ConnectionOwner as ConnectionOwnerView,
+	type ConnectionsSource,
+	type ConnectionsViewer,
+	type ConnectStart,
+	type DisconnectResult,
+	type KeyConnectionInput,
+	type KeyConnectionResult,
+	type McpServerInput,
+	type McpServerStart,
+	needsAttention,
+	type OAuthClient as OAuthClientView,
+	type OAuthClientInput,
+	type ProviderTemplate as ProviderTemplateView,
+} from "./connections/connections-model.ts";
+export {
+	ConnectionsPage,
+	type ConnectionsPageProps,
+	type ConnectionsView,
+} from "./connections/connections-page.tsx";
 // Documents the agent writes (`create_document`): streamed in, edited in place, exported and shared.
 export { documentSlug, draftDocument } from "./documents/document-model.ts";
 export { exportMarkdown, printDocument } from "./documents/export.ts";
