@@ -63,15 +63,15 @@ Every settled rule stays as it is: records in another organisation are `not_foun
 distinct from `not_found`; a refusal says the same thing whichever rule failed, holds no secret and is audited once as
 `access.denied`; worker calls still take a `SystemContext` and `requireSystem`.
 
-**Sharing.** The cross-project sharing primitive (shares, access requests and resource-level bindings, being built at
-the same time) sits on this check. `AccessScope` is the shape it should use for an owner or grantee at organisation or
+**Sharing.** The cross-project sharing primitive (shares, access requests and resource-level bindings; TASK-4035,
+merged to main before this stack, which is rebased on it) sits on this check. `AccessScope` is the shape it should use for an owner or grantee at organisation or
 project level, so "shared with the organisation" is a grantee kind like "shared with project P", and the check that
 resolves a session's scope is the one place both read.
 
 ### 3. What an organisation-scoped agent can reach (least privilege)
 
 An organisation agent sees what the organisation owns, and the session's user's own, and **nothing a project owns**
-unless that project shares it explicitly (through the sharing primitive, once it lands). It does not get into every
+unless that project shares it explicitly (through the sharing primitive). It does not get into every
 project because its organisation is above them.
 
 | Resource | Organisation agent | Project agent (unchanged) |
@@ -159,9 +159,12 @@ contract). From this PR it is its user's:
   request (an operator on the session's project) can't read the item, so the page shows "A credential", read-only,
   and says the credential may be someone's personal one. The fixture gains an open proposal for one.
 
-With the sharing primitive (docs/design/sharing.md in that stack), `ResourceCheck.owner` of kind `user` is the same
-owner. Its owner rule should take this one: an agent passes `use` through a session that works for the user, and a
-change needs the user or a service, not any organisation admin.
+With the sharing primitive (docs/design/sharing.md, merged first), `ResourceCheck.owner` of kind `user` is the same
+owner, but its owner rule still treats a user's resource like the organisation's for anyone but the user (as skills
+and memory relied on before sharing). The vault doesn't go through it for a user's item: only a project's item is
+shared, and a user's is checked with `AccessCheck.userId` as above. Moving `ResourceCheck`'s user rule to this one (an
+agent passes `use` through a session that works for the user, a change needs the user or a service) is a follow-up,
+since it changes who may write a user's memory space and skills.
 
 ## Contract changes by package
 
@@ -255,4 +258,8 @@ Out of scope here:
   the two should be designed together.
 - A personal secret paste: a `secret` proposal that creates an item owned by the session's user, not the
   organisation or project. Today an agent's new secret is still the organisation's or the project's.
+- Session placeholders for a user's items: `issueSessionPlaceholders` (TASK-4055) issues the organisation's and the
+  project's items only, so a session working for a user gets no placeholder for that user's own items yet; egress still
+  injects them by host.
+- `ResourceCheck`'s user-owner rule, as decision 6 says.
 - Schedules owned by an organisation that start organisation sessions.

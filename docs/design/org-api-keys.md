@@ -1,7 +1,7 @@
 # Organisation-wide API keys
 
-Status: design note only (Tom, 30 Oct 2026: "Design note now"). Not built; it follows #253 (key permissions) and the
-organisation-scope stack ([org-scope.md](org-scope.md)).
+Status: design note only (Tom, 30 Oct 2026: "Design note now"). Not built; it follows #253 (key permissions, merged 30 Oct
+2026) and the organisation-scope stack ([org-scope.md](org-scope.md)).
 
 ## Why
 
@@ -112,7 +112,7 @@ still gets 403 on both.
 
 ## PRs
 
-After #253 merges: (1) contracts and identity (both directories) with the conformance cases; (2) the gateways'
+With #253 merged: (1) contracts and identity (both directories) with the conformance cases; (2) the gateways'
 key-route refusals and the user check on session create; (3) the console's API keys page, where the project picker
 gains "Whole organisation".
 
