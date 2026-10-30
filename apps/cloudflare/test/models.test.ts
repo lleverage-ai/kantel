@@ -6,8 +6,9 @@ import { isHarbourError, systemContext } from "@harbour/contracts";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
 import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
+import { objectSqlDriver } from "../src/audit-outbox.ts";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
 
 /** The namespace the model gateway sends tool names under on CPA's Messages API (`@harbour/models`, #227). */
@@ -222,6 +223,71 @@ describe("sessions on the model gateway", () => {
 		expect(first).toBe("unavailable");
 		fail = false;
 		expect((await ask("two")).result).toMatchObject({ answer: DEFAULT_FAKE_SCRIPT.text });
+	});
+
+	it("writes one usage row per call to the object's ledger and ships it to D1, cache split included", async () => {
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const ledgerDb = new DatabaseSync(":memory:");
+		const { sql, transactionSync } = objectStorage(ledgerDb);
+		const background: Promise<unknown>[] = [];
+		const upstream = createFakeModelUpstream({ models: [{ id: MODEL, contextWindow: 1_000_000, maxTokens: 64_000 }] });
+		upstream.next({ usage: { input: 25, output: 10, cacheRead: 3_000, cacheWrite: 400 } });
+		const stack = await createStack({
+			config: gatewayConfig({}),
+			storage: {
+				sql: syncSqliteDriver(auditDb),
+				usageLedger: {
+					driver: objectSqlDriver(sql, transactionSync),
+					background: (work) => {
+						background.push(work);
+					},
+				},
+			},
+			models: ({ audit, clock, usage }) =>
+				createGatewayModels({
+					upstream: (request) => upstream.fetch(request),
+					vault,
+					audit,
+					clock,
+					modelId: MODEL,
+					...(usage === undefined ? {} : { usage }),
+				}),
+		});
+		opened.push(stack);
+		const session = await stack.runtime.runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			title: "Usage",
+		});
+		const prompt = await stack.runtime.runtime.prompt(stack.admin, session.id, { text: "ping" });
+		await stack.runtime.runtime.wait(stack.admin, session.id, prompt.id);
+		await vi.waitFor(() => expect(ledgerDb.prepare("SELECT * FROM usage_calls").all()).toHaveLength(1));
+		while (background.length > 0) await Promise.allSettled(background.splice(0));
+
+		const shipped = auditDb.prepare("SELECT * FROM usage_calls").all();
+		expect(shipped).toEqual([
+			expect.objectContaining({
+				session_id: session.id,
+				organisation_id: stack.organisation.id,
+				project_id: stack.project.id,
+				agent_id: DEFAULT_AGENT_ID,
+				model_id: MODEL,
+				provider: "anthropic",
+				connector_id: CPA_CONNECTOR_ID,
+				connector_preset: "cliproxyapi",
+				status: "done",
+				input_tokens: 25,
+				output_tokens: 10,
+				cache_read_tokens: 3_000,
+				cache_write_tokens: 400,
+				cost_source: "none",
+			}),
+		]);
+		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {
+			types: ["model.call"],
+		});
+		expect(shipped[0]).toMatchObject({ call_id: events.items[0]?.subject?.id });
 	});
 });
 

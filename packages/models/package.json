@@ -15,6 +15,7 @@
 		"./redact": "./src/redact.ts",
 		"./gateway": "./src/gateway.ts",
 		"./tool-names": "./src/tool-names.ts",
+		"./usage": "./src/usage.ts",
 		"./http": "./src/http.ts"
 	},
 	"dependencies": {

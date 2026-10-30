@@ -6,7 +6,7 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@harbour/browser/session";
-import type { Sandboxes } from "@harbour/contracts";
+import type { Sandboxes, UsageWriter } from "@harbour/contracts";
 import {
 	type AuditSink,
 	type AuditStore,
@@ -102,7 +102,12 @@ export interface GatewayComponents {
 export interface ModelGatewaySource {
 	/** The route the bootstrap's `assistant` profile names. */
 	readonly route: string;
-	build(deps: { readonly vault: () => HarbourVault | undefined; readonly audit: AuditSink }): GatewayModels;
+	build(deps: {
+		readonly vault: () => HarbourVault | undefined;
+		readonly audit: AuditSink;
+		/** Where each model call's usage row goes: the Postgres usage ledger, on durable components. */
+		readonly usage?: UsageWriter;
+	}): GatewayModels;
 }
 
 type TextContext = { readonly messages: readonly { readonly role: string; readonly content: unknown }[] };

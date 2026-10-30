@@ -18,6 +18,8 @@
 //   skills      packages, revisions and session pins on Postgres, each file's body in S3 by its SHA-256 under their own
 //               prefix (@harbour/skills/sql, #12); a session's pins are mounted read-only at `/skills` (skills-memory.ts)
 //   memory      spaces, concepts and proposals on Postgres (@harbour/memory/sql, #12); recall and the memory tools
+//   usage       one row per model call in `usage_calls` on Postgres (@harbour/usage, usage.ts), shipped to
+//               ClickHouse too when HARBOUR_CLICKHOUSE_URL is set; HARBOUR_USAGE=off writes none
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too),
 // `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
@@ -49,6 +51,7 @@ import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
+import { selfHostedUsage, type UsageConfig } from "./usage.ts";
 
 export interface DurableConfig {
 	readonly databaseUrl: string;
@@ -76,6 +79,8 @@ export interface DurableConfig {
 	readonly browserProvider?: BrowserProvider;
 	/** What `/v1/deployment` says backs the browser. */
 	readonly browserBinding?: string;
+	/** Usage rows for model calls (`usage.ts`); left out, none are written. */
+	readonly usage?: UsageConfig;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -119,6 +124,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await migrateIdentity(driver);
 		await migrateSkills(driver);
 		await migrateMemory(driver);
+		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
+		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
@@ -147,7 +154,9 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		let vault: HarbourVault | undefined;
 		const modelGateway = config.models === undefined ? config.modelGateway : undefined;
 		const models = config.models ??
-			modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
+			modelGateway?.build({ vault: () => vault, audit, ...(usage === undefined ? {} : { usage: usage.writer }) }) ?? {
+				models: createEchoModels(),
+			};
 		const runtime = withOwnWorkspaces(
 			createSessionRuntime({
 				...gatewaySandboxes.runtimeOptions,
@@ -219,6 +228,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				workspaces: "postgres + s3",
 				skills: "postgres + s3",
 				memory: "postgres",
+				usage: usage?.binding ?? "off",
 				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",
 			},

@@ -25,6 +25,7 @@
 		"@harbour/selfhosted-workspace": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@harbour/sql": "workspace:*",
+		"@harbour/usage": "workspace:*",
 		"@harbour/vault": "workspace:*",
 		"@harbour/vault-selfhosted": "workspace:*",
 		"@harbour/workspace": "workspace:*",

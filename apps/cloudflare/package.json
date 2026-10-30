@@ -33,6 +33,7 @@
 		"@harbour/schedules": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@harbour/sql": "workspace:*",
+		"@harbour/usage": "workspace:*",
 		"@harbour/vault": "workspace:*",
 		"@harbour/vault-cloudflare": "workspace:*",
 		"@harbour/workspace": "workspace:*",

@@ -71,6 +71,11 @@ export interface Env
 	 * default) offers it, and the console shows the files it presents as cards that open a viewer.
 	 */
 	readonly HARBOUR_PRESENT_FILES?: string;
+	/**
+	 * `off` stops writing a usage row per model call (`src/usage.ts`, docs/usage-analytics.md). Anything else (the
+	 * default) writes them to the object's ledger and ships them to `usage_calls` in D1.
+	 */
+	readonly HARBOUR_USAGE?: string;
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
 	readonly VAULTS: DurableObjectNamespace<HarbourVault>;
@@ -304,8 +309,9 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		}
 		const modelId = defaultModel(this.env);
 		const vault = namedObject(this.env.VAULTS, VAULT_NAME, this.env) as unknown as VaultRpc;
-		return ({ audit, clock }) =>
+		return ({ audit, clock, usage }) =>
 			createGatewayModels({
+				...(usage === undefined ? {} : { usage }),
 				upstream: (request) => upstream.fetch(request),
 				vault: {
 					cpaItem: () => vault.cpaItem(),
@@ -351,6 +357,15 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
 				background: (work) => this.ctx.waitUntil(work),
 			},
+			// One usage row per model call, in this object's SQLite, shipped to D1 after the answer (src/usage.ts).
+			...(this.env.HARBOUR_USAGE?.trim() === "off"
+				? {}
+				: {
+						usageLedger: {
+							driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
+							background: (work: Promise<unknown>) => this.ctx.waitUntil(work),
+						},
+					}),
 		};
 	}
 

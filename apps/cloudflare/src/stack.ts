@@ -56,6 +56,7 @@ import {
 	type Skills,
 	type SystemContext,
 	systemClock,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { createAuthenticator } from "@harbour/identity/authenticator";
 import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity/jwt";
@@ -116,6 +117,7 @@ import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules
 import { sessionMemory } from "./session-memory.ts";
 import { SKILLS_MOUNT_ROOT, sessionSkillsMount } from "./skills-mount.ts";
 import { SUBAGENT_TOOL, sessionSubagentTool } from "./subagent.ts";
+import { objectUsage } from "./usage.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -205,6 +207,11 @@ export interface StackStorage {
 	 * the store in the background, kept alive by `background` (`ctx.waitUntil`). Left out, they go straight to the store.
 	 */
 	readonly auditOutbox?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
+	/**
+	 * With `sql`: the model gateway's usage ledger, one row per model call, in this driver (the object's own SQLite),
+	 * shipped to `usage_calls` in `sql` in the background (`src/usage.ts`). Left out, no usage rows are written.
+	 */
+	readonly usageLedger?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
 }
 
 export interface StackOptions {
@@ -228,7 +235,12 @@ export interface StackOptions {
 	 * The models sessions run on, given the stack's audit store for `model.call` events: the model gateway
 	 * (`createGatewayModels`) when the Worker can reach CPA. Default the echo model.
 	 */
-	readonly models?: (deps: { readonly audit: AuditSink; readonly clock: Clock }) => StackModels;
+	readonly models?: (deps: {
+		readonly audit: AuditSink;
+		readonly clock: Clock;
+		/** The usage ledger's writer, with `storage.usageLedger`. */
+		readonly usage?: UsageWriter;
+	}) => StackModels;
 	/** The isolate backend sessions run on. Default `in-process`. */
 	readonly isolateBackend?: IsolateBackendName;
 	/** Isolate backends beyond `in-process`, such as the Dynamic Worker one on Cloudflare. */
@@ -385,7 +397,19 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const passkeyStores = driver === undefined ? createMemoryPasskeyStores() : createSqlPasskeyStores(driver);
 	const passkeys = createPasskeys({ ...passkeyStores, identity, clock, audit });
 
-	const models: StackModels = options.models?.({ audit, clock }) ?? { models: createEchoModels() };
+	const usage =
+		driver !== undefined && storage.usageLedger !== undefined
+			? await objectUsage({
+					ledger: storage.usageLedger.driver,
+					store: driver,
+					background: storage.usageLedger.background,
+				})
+			: undefined;
+	const models: StackModels = options.models?.({
+		audit,
+		clock,
+		...(usage === undefined ? {} : { usage: usage.writer }),
+	}) ?? { models: createEchoModels() };
 	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
 	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
 	let built: StackSandboxes | undefined;
