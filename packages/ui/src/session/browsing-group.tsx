@@ -17,6 +17,20 @@ import "./browsing-group.css";
 // For a host with a panel, the browser the run used is a card under the line (`BrowserEntry`): the page it was on,
 // its last screenshot, live or replay; clicking it shows the browser in the panel. A transcript gives each browser one
 // card, on the run that opened it (`browserEntrySlots`), with the browser's newest page.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css): one quiet work-log line, the same height and colours as a
+// tool call's row: the globe (a spinner while a step runs), "Browsing, 12 steps", what the agent is doing now, muted,
+// and a chevron. The line's height never changes while the agent works, so the transcript under the reader stays still.
+// browsing-group.css keeps the indent of a BrowserLiveView under the line.
+
+/** The run: its line, its browser's card, its steps when open and a browser view. */
+const run = "hb-browsing flex min-w-0 flex-col";
+/** The line's button: the whole line opens and closes the steps. */
+const summary =
+	"hb-browsing-summary hb-focusable -ml-1.5 flex min-h-control-xs min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left text-sm leading-tight text-muted [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] hover:bg-hover hover:text-fg";
+/** One line: the summary, then the current step, which gives way first when the column is narrow. */
+const summaryText =
+	"hb-browsing-text flex min-w-0 flex-1 gap-2 py-(--hb-trim-room) whitespace-nowrap [text-box:trim-both_cap_alphabetic]";
 
 const isCall = (step: BrowsingStep): step is ToolItem => step.kind === "tool";
 
@@ -147,18 +161,18 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 				onShow={() => onShowBrowser(browser)}
 			/>
 		);
-	if (folded) return card === null ? null : <div className="hb-browsing hb-browsing-folded">{card}</div>;
+	if (folded) return card === null ? null : <div className={`${run} hb-browsing-folded`}>{card}</div>;
 	return (
-		<div className={`hb-browsing${open ? " hb-browsing-open" : ""}${busy ? " hb-browsing-running" : ""}`}>
-			<div className="hb-browsing-line">
+		<div className={`${run} ${open ? "hb-browsing-open" : ""} ${busy ? "hb-browsing-running" : ""}`}>
+			<div className="hb-browsing-line flex min-w-0 items-center gap-1.5">
 				<button
 					type="button"
-					className="hb-browsing-summary hb-focusable"
+					className={summary}
 					aria-expanded={open}
 					aria-controls={open ? id : undefined}
 					onClick={() => setOpen((value) => !value)}
 				>
-					<span className="hb-browsing-icon">
+					<span className="hb-browsing-icon inline-flex size-icon-md flex-none items-center justify-center text-faint">
 						{busy ? (
 							<>
 								<Spinner />
@@ -168,18 +182,28 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 							<GlobeIcon />
 						)}
 					</span>
-					<span className="hb-browsing-text">
-						<span className="hb-browsing-title">{browsingSummary(calls, active)}</span>
+					<span className={summaryText}>
+						{/* Running, the summary in the text colour. */}
+						<span className={`hb-browsing-title flex-none ${busy ? "text-fg" : ""}`}>
+							{browsingSummary(calls, active)}
+						</span>
 						{/* Beside the line's words, as on a "Worked for" line, not out by the chevron. */}
 						{open ? null : <StepFailed failed={failed} />}
-						{current === undefined ? null : <span className="hb-browsing-current">{current.label}</span>}
+						{current === undefined ? null : (
+							<span className="hb-browsing-current min-w-0 flex-1 overflow-hidden text-ellipsis text-faint">
+								{current.label}
+							</span>
+						)}
 					</span>
-					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
+					<ChevronRightIcon
+						size="sm"
+						className={`hb-browsing-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
+					/>
 				</button>
 			</div>
 			{card}
 			{open ? (
-				<div id={id} className="hb-browsing-steps">
+				<div id={id} className="hb-browsing-steps flex min-w-0 flex-col pb-1 pl-4">
 					{items.map((step) => (isCall(step) ? chip(step) : <BrowsingNote key={step.id} item={step} />))}
 				</div>
 			) : null}
@@ -245,7 +269,8 @@ function SlotBrowser({
 /** What the agent said between two steps, as it said it, quieter than an answer. */
 function BrowsingNote({ item }: { item: AssistantItem }) {
 	return (
-		<div className="hb-browsing-note">
+		// The agent's words between two steps: its own Markdown, a size down and muted, so the steps stay the list's spine.
+		<div className="hb-browsing-note py-1 text-sm text-muted">
 			<AssistantMessage item={item} actions={false} />
 		</div>
 	);

@@ -99,7 +99,12 @@ utilities that means `transition-opacity` or `transition-transform`, not `transi
    doesn't change with the theme is reading a copied value, not a token.
 
 The first component converted is `SignedInAs` (src/identity/signed-in-as.tsx). The identity, theme, sharing,
-skills and vault areas followed.
+skills and vault areas followed, then the session's transcript, messages, tool calls and cards, and the code, diff
+and terminal views (src/code/). What those keep in CSS, each with its reason beside it: the transcript's folded-row
+and linked-turn rules (`:has()`, keyframes on other components' elements) and its 900px gutters; rendered Markdown
+(session/markdown.css, also used by documents and notes); the assistant message's child spacing and streaming caret;
+the working row's shimmer; the generated-image placeholder's sweep; the tool group's reach into `Disclosure`'s
+parts; a browsing run's margin on the live view under it; the code view's caret; the terminal's ANSI colours; and syntax.css.
 
 What caught those conversions out:
 

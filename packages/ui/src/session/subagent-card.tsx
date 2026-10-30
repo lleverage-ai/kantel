@@ -7,7 +7,6 @@ import { BotIcon } from "../primitives/lucide.tsx";
 import { Badge, StatusDot } from "../primitives/status.tsx";
 import { Elapsed } from "../primitives/time.tsx";
 import type { Status } from "../tokens/tokens.ts";
-import "./subagent-card.css";
 
 // A subagent in the thread: the task an agent handed to a session of its own, as one card that opens that session.
 // After T3 Code's subagent timeline link (V2LifecycleRow.tsx, SubagentTimelineLink, with its SubagentAvatar): a round
@@ -19,6 +18,50 @@ import "./subagent-card.css";
 // square, before the chevron. A link can't hold a button, so a stoppable card lays its link over the whole card
 // instead, with the button above it.
 // Which calls are subagents, and what the card says about one, is in subagent-model.ts.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb- class names stay as hooks (the console's scripts find
+// `.hb-subagent-card.hb-subagent-done` and the like); the hb-status-* classes set the status colour the avatar reads.
+
+/**
+ * The card: a quiet framed block, the width of the column. --hb-subagent-surface is what the avatar's status dot is cut
+ * out of, so it follows the card's hover. `font: inherit` as its parts, as the card may be a button.
+ */
+const cardFrame =
+	"hb-subagent-card m-0 flex w-full min-w-0 flex-col gap-1 rounded-panel border border-border bg-(--hb-subagent-surface) px-3 py-2.5 text-left text-sm leading-tight text-fg no-underline [--hb-subagent-surface:var(--hb-panel)] [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit]";
+/** A card that opens: the raised surface and the strong border on hover, and the chevron lights up. */
+const cardOpens =
+	"hb-subagent-opens group/subagent cursor-pointer transition-[background-color,border-color] duration-(--hb-duration-fast) hover:border-border-strong hover:[--hb-subagent-surface:var(--hb-raised)]";
+/**
+ * The avatar: a bot in a ring, the status as a dot on its lower right, cut out of the card's surface. `!` on the dot's
+ * size: .hb-status-dot's own (primitives/status.css) is unlayered and would beat a plain utility.
+ */
+const avatar =
+	"hb-subagent-avatar relative inline-flex size-control-xs flex-none items-center justify-center rounded-full border [&>.hb-status-dot]:absolute [&>.hb-status-dot]:right-[calc(-1*var(--hb-hairline))] [&>.hb-status-dot]:bottom-[calc(-1*var(--hb-hairline))] [&>.hb-status-dot]:size-[calc(var(--hb-dot)_+_var(--hb-step-0_5))]! [&>.hb-status-dot]:[box-shadow:0_0_0_var(--hb-ring)_var(--hb-subagent-surface)]";
+/**
+ * The words are trimmed to their capitals, as a Button's label is, so the head centres the letters rather than their
+ * line boxes: the dot, the title, the status and the chevron share one centre. The padding keeps descenders inside.
+ */
+const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+/** The status in words and its time (Elapsed's or Timing's `hb-time`, trimmed and faint). */
+const statusWords =
+	"hb-subagent-status flex flex-none items-center gap-1.5 text-xs tabular-nums [&>.hb-time]:py-(--hb-trim-room) [&>.hb-time]:text-faint [&>.hb-time]:[text-box:trim-both_cap_alphabetic]";
+/**
+ * A working card that can be stopped: its link lies over the whole card (a link can't hold the Stop button), and the
+ * button sits above the link. The link's ring is the card's outline.
+ */
+const cardLink =
+	"hb-subagent-link hb-focusable absolute inset-[calc(var(--hb-hairline)*-1)] m-0 cursor-pointer rounded-panel border-0 bg-transparent p-0";
+/**
+ * Stop, after T3 Code's: a ghost square with a filled stop mark, red on hover. It is the avatar's height, so the head
+ * keeps its height; on a touch screen it is taller and gives the difference back above and below, so the mark still
+ * sits on the head's one centre. `!` on the hover: .hb-button-ghost's own (primitives/button.css) is unlayered and
+ * would beat a plain utility.
+ */
+const stopButton =
+	"hb-subagent-stop relative z-1 flex-none hover:enabled:bg-status-error-soft! hover:enabled:text-status-error! pointer-coarse:my-[calc((var(--hb-control-xs)_-_var(--hb-control-lg))/2)]";
+/** Under the tag: indented past the avatar and the gap after it. One line; the whole of it is in the session. */
+const detailLine =
+	"hb-subagent-detail block min-w-0 truncate pl-[calc(var(--hb-control-xs)+var(--hb-step-2))] leading-normal text-muted";
 
 const STATUS: Record<ToolItemStatus, { readonly status: Status; readonly words: string }> = {
 	running: { status: "working", words: "Working" },
@@ -59,6 +102,7 @@ export type SubagentCardProps = {
 function Timing({ status, startedAt, endedAt }: Pick<SubagentCardProps, "status" | "startedAt" | "endedAt">) {
 	if (status === "running") return <Elapsed since={startedAt} />;
 	if (endedAt === undefined) return null;
+	// Styled by its row (`statusWords`), as Elapsed's is.
 	return <span className="hb-time">{duration(endedAt - startedAt)}</span>;
 }
 
@@ -67,8 +111,12 @@ function Timing({ status, startedAt, endedAt }: Pick<SubagentCardProps, "status"
  * it works). Working, the ring takes the working tone too, so a live subagent stands out from finished ones.
  */
 function SubagentAvatar({ tone }: { tone: Status }) {
+	const ring =
+		tone === "working"
+			? "border-(--hb-status-current) bg-(--hb-status-current-soft) text-(--hb-status-current)"
+			: "border-border-strong bg-active text-muted";
 	return (
-		<span className={`hb-subagent-avatar hb-status-${tone}`} aria-hidden>
+		<span className={`${avatar} hb-status-${tone} ${ring}`} aria-hidden>
 			<BotIcon size="sm" />
 			<StatusDot status={tone} />
 		</span>
@@ -101,17 +149,17 @@ export const SubagentCard = memo(function SubagentCard({
 	const openLabel = `Open subagent: ${title}, ${words.toLowerCase()}`;
 	const body: ReactNode = (
 		<>
-			<span className="hb-subagent-head">
+			<span className="hb-subagent-head flex min-w-0 items-center gap-2">
 				<SubagentAvatar tone={tone} />
 				<Badge>Subagent</Badge>
-				<span className="hb-subagent-title">{title}</span>
-				<span className={`hb-subagent-status hb-status-${tone}`}>
-					<span className="hb-subagent-words">{words}</span>
+				<span className={`hb-subagent-title min-w-0 flex-[1_1_auto] truncate font-medium ${trimmed}`}>{title}</span>
+				<span className={`${statusWords} hb-status-${tone} ${tone === "error" ? "text-status-error" : "text-muted"}`}>
+					<span className={`hb-subagent-words ${trimmed}`}>{words}</span>
 					<Timing status={status} startedAt={startedAt} endedAt={endedAt} />
 				</span>
 				{stoppable ? (
 					<IconButton
-						className="hb-subagent-stop"
+						className={stopButton}
 						label={`Stop subagent: ${title}`}
 						title="Stop subagent"
 						icon={<StopIcon />}
@@ -121,11 +169,13 @@ export const SubagentCard = memo(function SubagentCard({
 						onClick={onStop}
 					/>
 				) : null}
-				{opens ? <ChevronRightIcon className="hb-subagent-chevron" /> : null}
+				{opens ? (
+					<ChevronRightIcon className="hb-subagent-chevron flex-none text-faint transition-[color] duration-(--hb-duration-fast) group-hover/subagent:text-fg" />
+				) : null}
 			</span>
 			{detail === undefined ? null : (
 				// One line; the whole of it on hover, and in the subagent's session.
-				<span className="hb-subagent-detail" title={detail}>
+				<span className={detailLine} title={detail}>
 					{detail}
 				</span>
 			)}
@@ -134,15 +184,13 @@ export const SubagentCard = memo(function SubagentCard({
 	if (stoppable) {
 		// The link lies over the card, under the Stop button: the card still opens from anywhere but the button.
 		return (
-			<div
-				className={`hb-subagent-card hb-subagent-${status} hb-subagent-stoppable${opens ? " hb-subagent-opens" : ""}`}
-			>
+			<div className={`${cardFrame} hb-subagent-${status} hb-subagent-stoppable relative ${opens ? cardOpens : ""}`}>
 				{href !== undefined ? (
-					<a className="hb-subagent-link hb-focusable" href={href}>
+					<a className={cardLink} href={href}>
 						<span className="hb-sr-only">{openLabel}</span>
 					</a>
 				) : onOpen !== undefined ? (
-					<button type="button" className="hb-subagent-link hb-focusable" onClick={onOpen}>
+					<button type="button" className={cardLink} onClick={onOpen}>
 						<span className="hb-sr-only">{openLabel}</span>
 					</button>
 				) : null}
@@ -150,7 +198,7 @@ export const SubagentCard = memo(function SubagentCard({
 			</div>
 		);
 	}
-	const className = `hb-subagent-card hb-subagent-${status}${opens ? " hb-subagent-opens hb-focusable" : ""}`;
+	const className = `${cardFrame} hb-subagent-${status} ${opens ? `${cardOpens} hb-focusable` : ""}`;
 	if (href !== undefined) {
 		return (
 			<a className={className} href={href} aria-label={openLabel}>

@@ -1,5 +1,5 @@
 import type { ToolItem } from "@harbour/protocol";
-import { memo, type ReactNode, useMemo } from "react";
+import { createContext, memo, type ReactNode, useMemo } from "react";
 import { languageForPath } from "../code/code.tsx";
 import { CodeView, codeLines } from "../code/code-view.tsx";
 import { diffCounts, diffLines } from "../code/diff.ts";
@@ -22,21 +22,38 @@ import {
 	toolView,
 	toolViewLabel,
 } from "./tool-views-model.ts";
-import "./tool-views.css";
 
 // The file and shell tools' cards (write, read, edit, bash), in place of their arguments as JSON: a file as an editor
 // shows it, an edit as a diff, a command as a terminal. Each card has a header (what, where, how it went) with copy
 // and a switch to the raw arguments and output, which every call keeps.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md), as Claude's code cards: a framed block
+// under the call's row, the column's full width and in line with the row's icon, not indented under it (T3 Code's tool
+// detail panel, WorkLogDetails in WorkLog.tsx, has no inline start margin), with a slim header (an icon, the path with
+// its file name at full strength, quiet meta, then Raw and Copy) over the code, diff or terminal, edge to edge. A
+// failure frames the card in the error line. The hb- class names stay as hooks for tests and other stylesheets.
 
 const count = new Intl.NumberFormat("en-GB");
 
-function Notes({ notes }: { notes: readonly HarnessNote[] }) {
+/**
+ * Inside a card: the generic detail (tool-call.tsx) drawn there as the raw view reads it and leaves off its own frame
+ * (margin, border and radius), as the card is its frame.
+ */
+export const InToolCard = createContext(false);
+
+/** A note's tone, by its severity: an error in the error tone, a warning in the approval tone, the rest quiet. */
+const noteTone = { error: "text-status-error", warn: "text-status-approval", info: "" } as const;
+
+function Notes({ notes, inFooter = false }: { notes: readonly HarnessNote[]; inFooter?: boolean }) {
 	if (notes.length === 0) return null;
 	return (
-		<ul className="hb-tool-card-notes">
+		<ul
+			// Inside a terminal's footer the notes sit on its rule already: no padding or rule of their own.
+			className={`hb-tool-card-notes m-0 flex list-none flex-col gap-0.5 text-xs text-faint wrap-anywhere ${inFooter ? "p-0" : "border-t border-border px-3 py-1.5"}`}
+		>
 			{notes.map((note, index) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: a result's notes never reorder.
-				<li key={index} className={`hb-tool-card-note hb-tool-card-note-${note.severity}`}>
+				<li key={index} className={`hb-tool-card-note hb-tool-card-note-${note.severity} ${noteTone[note.severity]}`}>
 					{note.message}
 				</li>
 			))}
@@ -51,7 +68,7 @@ function Result({ item, body }: { item: ToolItem; body: string }) {
 	const failed = item.status !== "done";
 	return (
 		<p
-			className={`hb-tool-card-result${failed ? " hb-tool-card-result-failed" : ""}`}
+			className={`hb-tool-card-result m-0 border-t border-border px-3 py-1.5 whitespace-pre-wrap wrap-anywhere ${failed ? "hb-tool-card-result-failed font-mono text-code text-status-error" : "text-xs text-faint"}`}
 			role={failed ? "alert" : undefined}
 		>
 			{text}
@@ -73,17 +90,32 @@ type CardProps = {
 	children: ReactNode;
 };
 
+/** The card's frame. */
+const card = "hb-tool-card mx-0 mt-1 mb-2 flex min-w-0 flex-col overflow-hidden rounded-control border bg-panel";
+/** The slim header over the card's view. */
+const header =
+	"hb-tool-card-header flex min-h-[calc(var(--hb-control-xs)_+_var(--hb-step-1_5))] min-w-0 items-center gap-2 border-b border-border py-0.5 pr-1.5 pl-3 text-xs text-muted";
+/** Raw: a quiet toggle, lit while on. */
+const rawToggle =
+	"hb-tool-card-raw hb-focusable inline-flex h-control-xs cursor-pointer items-center gap-1 rounded-sm border-0 px-1.5 py-0 [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] text-xs [line-height:inherit]";
+
 function Card({ item, icon, title, meta, copy, raw, onRawChange, children }: CardProps) {
 	return (
-		<div className={`hb-tool-card hb-tool-card-${item.status}${item.streaming ? " hb-tool-card-streaming" : ""}`}>
-			<div className="hb-tool-card-header">
-				<span className="hb-tool-card-icon">{icon}</span>
-				<span className="hb-tool-card-title">{title}</span>
-				{meta === undefined ? null : <span className="hb-tool-card-meta">{meta}</span>}
-				<span className="hb-tool-card-actions">
+		<div
+			className={`${card} hb-tool-card-${item.status}${item.streaming ? " hb-tool-card-streaming" : ""} ${item.status === "error" ? "border-status-error-line" : "border-border-strong"}`}
+		>
+			<div className={header}>
+				<span className="hb-tool-card-icon inline-flex flex-none text-faint">{icon}</span>
+				<span className="hb-tool-card-title flex min-w-0 flex-auto">{title}</span>
+				{meta === undefined ? null : (
+					<span className="hb-tool-card-meta inline-flex flex-none items-center gap-2 whitespace-nowrap text-faint tabular-nums">
+						{meta}
+					</span>
+				)}
+				<span className="hb-tool-card-actions inline-flex flex-none items-center gap-0.5">
 					<button
 						type="button"
-						className={`hb-tool-card-raw hb-focusable${raw ? " hb-tool-card-raw-on" : ""}`}
+						className={`${rawToggle} ${raw ? "hb-tool-card-raw-on bg-hover text-fg" : "bg-transparent text-faint hover:bg-hover hover:text-fg"}`}
 						aria-pressed={raw}
 						title={raw ? "Show the formatted view" : "Show the raw arguments and output"}
 						onClick={() => onRawChange(!raw)}
@@ -96,26 +128,31 @@ function Card({ item, icon, title, meta, copy, raw, onRawChange, children }: Car
 					)}
 				</span>
 			</div>
-			{children}
+			<InToolCard.Provider value={true}>{children}</InToolCard.Provider>
 		</div>
 	);
 }
 
+/** The path or the command's name in a header: one line, clipped at its end. */
+const pathText = "hb-tool-card-path truncate [direction:ltr]";
+
 /** A path for a header: the file name at full strength after its folder. */
 function PathTitle({ path, fallback }: { path: string; fallback: string }) {
-	if (path === "") return <span className="hb-tool-card-path hb-tool-card-path-pending">{fallback}</span>;
+	if (path === "") {
+		return <span className={`${pathText} hb-tool-card-path-pending font-sans text-xs text-faint`}>{fallback}</span>;
+	}
 	const slash = path.lastIndexOf("/");
 	return (
-		<span className="hb-tool-card-path" title={path}>
-			{slash < 0 ? null : <span className="hb-tool-card-dir">{path.slice(0, slash + 1)}</span>}
-			<span className="hb-tool-card-file">{path.slice(slash + 1)}</span>
+		<span className={`${pathText} font-mono text-code`} title={path}>
+			{slash < 0 ? null : <span className="hb-tool-card-dir text-faint">{path.slice(0, slash + 1)}</span>}
+			<span className="hb-tool-card-file text-fg">{path.slice(slash + 1)}</span>
 		</span>
 	);
 }
 
 const languageBadge = (language: string | undefined) => {
 	const name = language === undefined ? undefined : languageName(language);
-	return name === undefined ? null : <span className="hb-tool-card-language">{name}</span>;
+	return name === undefined ? null : <span className="hb-tool-card-language text-faint">{name}</span>;
 };
 
 type ViewProps<K extends ToolView["kind"]> = {
@@ -201,7 +238,7 @@ function ReadCard({ item, view, raw, onRawChange, rawView }: ViewProps<"read">) 
 			{raw ? (
 				rawView
 			) : item.status === "running" ? (
-				<p className="hb-tool-card-waiting">Reading&hellip;</p>
+				<p className="hb-tool-card-waiting m-0 px-3 py-2.5 text-sm text-faint">Reading&hellip;</p>
 			) : done ? (
 				<>
 					{hasImages && body === "" ? null : (
@@ -242,8 +279,8 @@ function EditCard({ item, view, raw, onRawChange, rawView }: ViewProps<"edit">) 
 					{languageBadge(language)}
 					{counts.additions + counts.deletions > 0 ? (
 						<span className="hb-tool-card-count">
-							<span className="hb-tool-card-add">+{count.format(counts.additions)}</span>{" "}
-							<span className="hb-tool-card-del">&minus;{count.format(counts.deletions)}</span>
+							<span className="hb-tool-card-add text-diff-add">+{count.format(counts.additions)}</span>{" "}
+							<span className="hb-tool-card-del text-diff-del">&minus;{count.format(counts.deletions)}</span>
 						</span>
 					) : null}
 				</>
@@ -295,7 +332,7 @@ function BashCard({ item, view, raw, onRawChange, rawView }: ViewProps<"bash">) 
 		<Card
 			item={item}
 			icon={<TerminalWindowIcon />}
-			title={<span className="hb-tool-card-path">Terminal</span>}
+			title={<span className={`${pathText} font-mono text-code`}>Terminal</span>}
 			meta={
 				<>
 					{view.timeout === undefined ? null : (
@@ -320,11 +357,11 @@ function BashCard({ item, view, raw, onRawChange, rawView }: ViewProps<"bash">) 
 					footer={
 						reason !== undefined && !output.includes(reason) ? (
 							<>
-								<span className="hb-terminal-error">{reason}</span>
-								<Notes notes={notes} />
+								<span className="hb-terminal-error font-mono text-code text-status-error">{reason}</span>
+								<Notes notes={notes} inFooter />
 							</>
 						) : notes.length > 0 ? (
-							<Notes notes={notes} />
+							<Notes notes={notes} inFooter />
 						) : undefined
 					}
 				/>

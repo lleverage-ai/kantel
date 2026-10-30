@@ -191,7 +191,7 @@ describe("ToolCallChip with a card", () => {
 			),
 		);
 		expect(html).toContain("Writing notes/plan.py");
-		expect(html).toContain('class="hb-tool-card-file">plan.py');
+		expect(html).toMatch(/class="[^"]*hb-tool-card-file[^"]*">plan\.py/);
 		expect(html).toContain("Python");
 		expect(html).toContain('<span class="hljs-keyword">import</span>');
 		expect(html).toContain("hb-code-caret");
@@ -216,7 +216,7 @@ describe("ToolCallChip with a card", () => {
 			tool("write", { path: "/etc/x", content: "y" }, { status: "error", output: "EACCES: permission denied" }),
 		);
 		expect(html).toContain("hb-tool-card-error");
-		expect(html).toContain('class="hb-tool-card-result hb-tool-card-result-failed" role="alert"');
+		expect(html).toMatch(/class="[^"]*\bhb-tool-card-result\b[^"]*\bhb-tool-card-result-failed\b[^"]*" role="alert"/);
 		expect(html).toContain("EACCES: permission denied");
 	});
 

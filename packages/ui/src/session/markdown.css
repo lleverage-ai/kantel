@@ -1,5 +1,10 @@
 /* Rendered Markdown in the transcript: prose at the body size, compact headings (none larger than --hb-text-lg),
-   code in the mono font on --hb-code with its own horizontal scroll, tables that scroll rather than squeeze. */
+   code in the mono font on --hb-code with its own horizontal scroll, tables that scroll rather than squeeze.
+
+   Kept in CSS, whole, on purpose (docs/tailwind.md): this styles HTML that react-markdown writes, not elements the
+   component writes one by one, so every rule is an element selector under .hb-markdown. The root rule stays too,
+   because .hb-markdown is also put on prose by hosts that don't render <Markdown> (the rich editor, the note viewer,
+   a document's export), and document-panel.css and note-viewer.css override these rules unlayered. */
 
 .hb-markdown {
 	min-width: 0;

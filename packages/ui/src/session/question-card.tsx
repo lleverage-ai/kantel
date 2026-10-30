@@ -4,7 +4,46 @@ import { Button } from "../primitives/button.tsx";
 import { TextField } from "../primitives/controls.tsx";
 import { CheckCircleIcon, MinusCircleIcon, QuestionIcon } from "../primitives/icons.tsx";
 import { Panel } from "../primitives/surface.tsx";
-import "./cards.css";
+
+// The question and browser cards (this file and browser-grant-card.tsx), styled with Tailwind utilities
+// (src/tokens/tailwind.css): a Panel while open, one quiet line once settled. The hb- class names stay as hooks:
+// composer.css pads `.hb-composer-banner > .hb-card-quiet`.
+
+/** A settled card: one line, the size of a tool row. */
+export const cardQuiet =
+	"hb-card-quiet m-0 flex min-h-control-xs min-w-0 items-center gap-2 text-sm leading-tight text-muted";
+/** The settled line's words, cut short with an ellipsis. */
+export const cardQuietText = "hb-card-quiet-text min-w-0 truncate";
+/** The open card: a Panel the width of the column. */
+export const cardPanel = "hb-card w-full";
+/** The icon and the words beside it. */
+export const cardHead = "hb-card-head flex min-w-0 items-start gap-2";
+/** The head's icon, centred on the first line of the question. */
+export const cardHeadIcon = "mt-[calc((var(--hb-text-md)*var(--hb-leading)_-_var(--hb-icon-md))/2)]";
+/** The question over its detail. */
+export const cardText = "hb-card-text flex min-w-0 flex-col gap-0.5";
+export const cardQuestion = "hb-card-question m-0 min-w-0 text-md leading-normal font-medium text-fg wrap-anywhere";
+export const cardDetail = "hb-card-detail m-0 min-w-0 text-sm leading-normal text-muted wrap-anywhere";
+/** The card's buttons, at its end. */
+export const cardActions = "hb-card-actions flex flex-wrap justify-end gap-2";
+/**
+ * A button in the actions: on a phone the buttons share the row. `!`: .hb-button's own `flex: none`
+ * (primitives/button.css) is unlayered and would beat a plain utility.
+ */
+export const cardAction = "max-sm:flex-1!";
+
+/** The options: whole rows are the click target, the radio is real, the number says which digit picks it. */
+const optionList = "hb-question-options flex min-w-0 flex-col gap-0.5";
+/** Read-only options (no onAnswer): a numbered list, not radios. */
+const staticList = "hb-question-options-static m-0 list-none p-0";
+/** An option's row; on a touch screen a touch target tall, its parts centred. Its background is set where it's used. */
+const optionRow =
+	"hb-question-option flex min-h-control-sm min-w-0 cursor-pointer items-start gap-2 rounded-control px-2 py-1 text-sm leading-normal text-fg transition-[background-color] duration-(--hb-duration-fast) pointer-coarse:min-h-control-lg pointer-coarse:items-center";
+/** The radio, centred on the option's first line (on its row's centre on a touch screen). */
+const radio =
+	"hb-question-radio hb-focusable mx-0 mt-[calc((var(--hb-text-sm)*var(--hb-leading)_-_var(--hb-icon-sm))/2)] mb-0 size-icon-sm flex-none cursor-pointer accent-accent pointer-coarse:mt-0";
+const optionNumber = "hb-question-number min-w-[1ch] flex-none text-faint tabular-nums";
+const optionText = "hb-question-option-text min-w-0 flex-1 wrap-anywhere";
 
 export type QuestionCardProps = {
 	card: QuestionCardData;
@@ -32,14 +71,14 @@ function typingInto(target: EventTarget): boolean {
 export const QuestionCard = memo(function QuestionCard({ card, onAnswer, busy = false }: QuestionCardProps) {
 	if (card.status === "answered") {
 		return (
-			<p className="hb-card-quiet" title={card.text}>
-				<CheckCircleIcon size="sm" className="hb-card-icon-done" />
-				<span className="hb-card-quiet-text">
+			<p className={cardQuiet} title={card.text}>
+				<CheckCircleIcon size="sm" className="hb-card-icon-done text-status-done" />
+				<span className={cardQuietText}>
 					{card.answer === undefined || card.answer === "" ? (
 						"You answered"
 					) : (
 						<>
-							You answered: <span className="hb-card-quiet-value">{card.answer}</span>
+							You answered: <span className="hb-card-quiet-value text-fg">{card.answer}</span>
 						</>
 					)}
 				</span>
@@ -48,9 +87,9 @@ export const QuestionCard = memo(function QuestionCard({ card, onAnswer, busy = 
 	}
 	if (card.status === "withdrawn") {
 		return (
-			<p className="hb-card-quiet" title={card.text}>
-				<MinusCircleIcon size="sm" className="hb-card-icon-quiet" />
-				<span className="hb-card-quiet-text">The agent withdrew this question</span>
+			<p className={cardQuiet} title={card.text}>
+				<MinusCircleIcon size="sm" className="hb-card-icon-quiet text-faint" />
+				<span className={cardQuietText}>The agent withdrew this question</span>
 			</p>
 		);
 	}
@@ -63,24 +102,24 @@ function PendingQuestion({ card }: { card: QuestionCardData }) {
 	const questionId = useId();
 	const options = card.options ?? [];
 	return (
-		<Panel className="hb-card hb-question-card" aria-labelledby={questionId}>
-			<div className="hb-card-head">
-				<QuestionIcon className="hb-card-icon-waiting" />
-				<div className="hb-card-text">
-					<p id={questionId} className="hb-card-question">
+		<Panel className={`${cardPanel} hb-question-card`} aria-labelledby={questionId}>
+			<div className={cardHead}>
+				<QuestionIcon className={`hb-card-icon-waiting text-status-waiting ${cardHeadIcon}`} />
+				<div className={cardText}>
+					<p id={questionId} className={cardQuestion}>
 						{card.text}
 					</p>
-					<p className="hb-card-detail">Waiting for an answer</p>
+					<p className={cardDetail}>Waiting for an answer</p>
 				</div>
 			</div>
 			{options.length === 0 ? null : (
-				<ol className="hb-question-options hb-question-options-static" aria-label="Options">
+				<ol className={`${optionList} ${staticList}`} aria-label="Options">
 					{options.map((option, index) => (
-						<li key={option} className="hb-question-option">
-							<span className="hb-question-number" aria-hidden="true">
+						<li key={option} className={`${optionRow} hover:bg-hover`}>
+							<span className={optionNumber} aria-hidden="true">
 								{index + 1}
 							</span>
-							<span className="hb-question-option-text">{option}</span>
+							<span className={optionText}>{option}</span>
 						</li>
 					))}
 				</ol>
@@ -127,33 +166,34 @@ function OpenQuestion({
 	};
 
 	return (
-		<Panel className="hb-card hb-question-card" aria-labelledby={questionId} onKeyDown={keyDown}>
-			<form className="hb-card-form" onSubmit={submit}>
-				<div className="hb-card-head">
-					<QuestionIcon className="hb-card-icon-waiting" />
-					<p id={questionId} className="hb-card-question">
+		<Panel className={`${cardPanel} hb-question-card`} aria-labelledby={questionId} onKeyDown={keyDown}>
+			<form className="hb-card-form m-0 flex min-w-0 flex-col gap-3" onSubmit={submit}>
+				<div className={cardHead}>
+					<QuestionIcon className={`hb-card-icon-waiting text-status-waiting ${cardHeadIcon}`} />
+					<p id={questionId} className={cardQuestion}>
 						{card.text}
 					</p>
 				</div>
 				{options.length === 0 ? null : (
-					<div className="hb-question-options" role="radiogroup" aria-labelledby={questionId}>
+					<div className={optionList} role="radiogroup" aria-labelledby={questionId}>
 						{options.map((option, index) => (
-							<label key={option} className="hb-question-option">
+							// The chosen row is selected whether or not it is hovered.
+							<label key={option} className={`${optionRow} ${choice === index ? "bg-selected" : "hover:bg-hover"}`}>
 								<input
 									ref={(element) => {
 										radios.current[index] = element;
 									}}
 									type="radio"
 									name={`${id}-option`}
-									className="hb-question-radio hb-focusable"
+									className={radio}
 									value={option}
 									checked={choice === index}
 									onChange={() => setChoice(index)}
 								/>
-								<span className="hb-question-number" aria-hidden="true">
+								<span className={optionNumber} aria-hidden="true">
 									{index + 1}
 								</span>
-								<span className="hb-question-option-text">{option}</span>
+								<span className={optionText}>{option}</span>
 							</label>
 						))}
 					</div>
@@ -167,8 +207,8 @@ function OpenQuestion({
 					}}
 					autoComplete="off"
 				/>
-				<div className="hb-card-actions">
-					<Button type="submit" variant="primary" disabled={!ready} busy={busy}>
+				<div className={cardActions}>
+					<Button type="submit" variant="primary" className={cardAction} disabled={!ready} busy={busy}>
 						Answer
 					</Button>
 				</div>

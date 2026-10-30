@@ -1,6 +1,7 @@
 import { type CSSProperties, memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CollapseIcon, ExpandIcon } from "../primitives/lucide.tsx";
 import { useHighlightedLines } from "./lines.ts";
+// Only the caret's breathing is left in this CSS; the rest is Tailwind utilities.
 import "./code-view.css";
 import "./syntax.css";
 
@@ -10,6 +11,40 @@ export const COLLAPSED_LINES = 16;
 export const MAX_RENDERED_LINES = 5_000;
 
 const count = new Intl.NumberFormat("en-GB");
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). A read-only code view: a gutter of line
+// numbers held at the left and the code beside it, mono, never wrapping, on the code surface. Collapsed, it is a window
+// `--hb-code-lines` lines tall that scrolls, with "Show all" under it. Token colours come from syntax.css, each a
+// theme's --hb-syntax-* token. The diff view and the terminal reuse its parts below; the hb-code-* names stay as hooks.
+
+/** The view's frame: the code surface in the theme's syntax text colour. */
+export const codeView = "hb-code-view flex min-w-0 flex-col bg-code-surface text-(--hb-syntax-text)";
+
+/**
+ * The scrolling window. Collapsed, `--hb-code-lines` lines tall (set on the view) plus its padding: a line is
+ * --hb-text-code at --hb-leading.
+ */
+export const codeScroll = (collapsed: boolean): string =>
+	`hb-code-scroll hb-focusable min-w-0 overflow-auto overscroll-contain py-2 ${collapsed ? "max-h-[calc(var(--hb-text-code)*var(--hb-leading)*var(--hb-code-lines)_+_var(--hb-step-2)*2)]" : ""}`;
+
+/**
+ * The streaming caret, as an answer's: a soft block after the last character. Its breathing (hb-pulse) is in
+ * code-view.css. Without its margin: the terminal's output caret sits flush (`ml-0`).
+ */
+export const codeCaretBase =
+	"hb-code-caret inline-block h-[1.1em] w-1.5 rounded-xs bg-accent-text align-[-0.2em] opacity-60";
+/** The caret after the text, a half step from its last character. */
+export const codeCaret = `${codeCaretBase} ml-0.5`;
+
+/** "Empty file", "No changes": in place of the code. */
+export const codeEmpty = "hb-code-empty m-0 px-3 py-2.5 text-sm text-faint";
+
+/** "Show all 240 lines": a quiet full-width bar under the window, as a code card's expander. */
+export const codeMore =
+	"hb-code-more hb-focusable flex min-h-control-xs w-full cursor-pointer items-center justify-center gap-1.5 border-0 border-t border-border bg-transparent px-3 py-1 [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] text-xs [line-height:inherit] text-muted hover:bg-hover hover:text-fg";
+
+/** The gutter and the code: mono, one line per line, never wrapping. */
+const codeColumn = "m-0 py-0 font-mono text-code leading-normal whitespace-pre";
 
 /** A text's lines, split at "\n" (or "\r\n"). A final newline ends the last line rather than starting another. */
 export function codeLines(text: string): string[] {
@@ -27,9 +62,9 @@ export function HighlightedText({ html }: { html: string }) {
 
 const HighlightedLine = memo(function HighlightedLine({ html, caret }: { html: string; caret: boolean }) {
 	return (
-		<span className="hb-code-line">
+		<span className="hb-code-line inline">
 			<HighlightedText html={html} />
-			{caret ? <span className="hb-code-caret" aria-hidden="true" /> : null}
+			{caret ? <span className={codeCaret} aria-hidden="true" /> : null}
 			{"\n"}
 		</span>
 	);
@@ -37,9 +72,9 @@ const HighlightedLine = memo(function HighlightedLine({ html, caret }: { html: s
 
 const PlainLine = memo(function PlainLine({ text, caret }: { text: string; caret: boolean }) {
 	return (
-		<span className="hb-code-line">
+		<span className="hb-code-line inline">
 			{text}
-			{caret ? <span className="hb-code-caret" aria-hidden="true" /> : null}
+			{caret ? <span className={codeCaret} aria-hidden="true" /> : null}
 			{"\n"}
 		</span>
 	);
@@ -118,19 +153,19 @@ export const CodeView = memo(function CodeView({
 	}, [shown, startLine]);
 	if (lines.length === 0) {
 		return (
-			<div className={`hb-code-view${className ? ` ${className}` : ""}`}>
-				<p className="hb-code-empty">{streaming ? <span className="hb-code-caret" aria-hidden="true" /> : empty}</p>
+			<div className={`${codeView}${className ? ` ${className}` : ""}`}>
+				<p className={codeEmpty}>{streaming ? <span className={codeCaret} aria-hidden="true" /> : empty}</p>
 			</div>
 		);
 	}
 	return (
 		<div
-			className={`hb-code-view${collapsible && !expanded ? " hb-code-view-collapsed" : ""}${className ? ` ${className}` : ""}`}
+			className={`${codeView}${collapsible && !expanded ? " hb-code-view-collapsed" : ""}${className ? ` ${className}` : ""}`}
 			style={{ "--hb-code-lines": collapsedLines } as CSSProperties}
 		>
 			<section
 				ref={scroller}
-				className="hb-code-scroll hb-focusable"
+				className={codeScroll(collapsible && !expanded)}
 				aria-label={label}
 				// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard.
 				tabIndex={0}
@@ -139,17 +174,23 @@ export const CodeView = memo(function CodeView({
 					pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 8;
 				}}
 			>
-				<div className="hb-code-grid">
-					<pre className="hb-code-gutter" aria-hidden="true">
+				<div className="hb-code-grid grid w-max min-w-full grid-cols-[auto_minmax(0,1fr)]">
+					{/* Held at the left while the code scrolls sideways; out of selection, so copying copies only the code. */}
+					<pre
+						className={`hb-code-gutter ${codeColumn} sticky left-0 z-1 bg-code-surface pr-2.5 pl-3 text-right text-faint tabular-nums select-none`}
+						aria-hidden="true"
+					>
 						{numbers}
 					</pre>
-					<pre className="hb-code-text hb-selectable">
-						<code className="hb-syntax">{rows}</code>
+					<pre className={`hb-code-text hb-selectable ${codeColumn} pr-3 pl-1 select-text`}>
+						{/* The browser gives <code> its own monospace; one with other metrics than the gutter's would make every
+						    line a little taller than its number. */}
+						<code className="hb-syntax [font:inherit]">{rows}</code>
 					</pre>
 				</div>
 			</section>
 			{hidden > 0 ? (
-				<p className="hb-code-cap">
+				<p className="hb-code-cap m-0 border-t border-border px-3 py-1.5 text-xs text-faint">
 					Showing the first {count.format(shown)} lines. {count.format(hidden)} more{" "}
 					{hidden === 1 ? "line isn't" : "lines aren't"} shown here.
 				</p>
@@ -157,7 +198,7 @@ export const CodeView = memo(function CodeView({
 			{collapsible ? (
 				<button
 					type="button"
-					className="hb-code-more hb-focusable"
+					className={codeMore}
 					aria-expanded={expanded}
 					onClick={() => setExpanded((value) => !value)}
 				>

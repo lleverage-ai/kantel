@@ -15,6 +15,12 @@ import "./generated-image.css";
 // The images `generate_image` makes, in the transcript: while the call runs, a placeholder the shape of each image it
 // asked for; once it is done, each image as a tile under the work (`ImageTile`, as every image in the transcript is),
 // with the model that made it.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md); generated-image.css keeps the
+// placeholder's sweep and breathing (keyframes). The hb- class names stay as hooks for tests and stories.
+
+/** The images' block in the transcript, under the work. */
+export const generatedImagesFrame = "hb-generated-images mx-0 mt-2 mb-1 min-w-0";
 
 /** The shape `generate_image` was asked for. */
 export type ImageAspect = "square" | "landscape" | "portrait";
@@ -37,9 +43,16 @@ export const makingImages = (item: ToolItem): boolean => item.name === "generate
  */
 export function ImagePlaceholder({ aspect = "square" }: { aspect?: ImageAspect }) {
 	return (
-		<div className="hb-image-placeholder" data-aspect={aspect} aria-hidden="true">
+		// A frame the shape of the image to come (gpt-image's 1024 square, 1536 by 1024 and 1024 by 1536), as wide as its
+		// place in the grid, and rounded as the tile the image becomes.
+		<div
+			className="hb-image-placeholder relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-bubble border border-border-strong bg-panel text-faint data-[aspect=landscape]:aspect-3/2 data-[aspect=portrait]:aspect-2/3"
+			data-aspect={aspect}
+			aria-hidden="true"
+		>
 			<span className="hb-image-placeholder-sweep" />
-			<ImageIcon size="md" className="hb-image-placeholder-icon" />
+			{/* `!`: the icon's own size (icons.css's .hb-icon-md, unlayered) would beat a plain utility. */}
+			<ImageIcon size="md" className="hb-image-placeholder-icon relative size-control-xs!" />
 		</div>
 	);
 }
@@ -51,7 +64,7 @@ export function ImagePlaceholder({ aspect = "square" }: { aspect?: ImageAspect }
 export const ImagePlaceholders = memo(function ImagePlaceholders({ item }: { item: ToolItem }) {
 	const { aspect, count } = imageRequest(item.args);
 	return (
-		<div className="hb-generated-images" role="status">
+		<div className={generatedImagesFrame} role="status">
 			<span className="hb-sr-only">{count === 1 ? "Making an image" : `Making ${count} images`}</span>
 			<ImageTiles label={count === 1 ? "Image to come" : "Images to come"}>
 				{Array.from({ length: count }, (_, index) => (
@@ -116,7 +129,7 @@ export function GeneratedImages({ item, onOpen, openKey, previewImage }: Generat
 	// The call's pictures are its files' only when there is one for each: an image too large to scale down has none.
 	const images = item.images?.length === files.length ? item.images : undefined;
 	return (
-		<div className="hb-generated-images">
+		<div className={generatedImagesFrame}>
 			<ImageTiles label={files.length === 1 ? "Generated image" : "Generated images"}>
 				{files.map((file, index) => (
 					<ImageTilesItem key={presentedKey(file)}>
