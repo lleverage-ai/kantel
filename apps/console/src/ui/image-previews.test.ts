@@ -39,6 +39,29 @@ describe("createImagePreviews", () => {
 		expect(revoked).toEqual(["blob:1"]);
 	});
 
+	it("gives the panel the card's read and URL: joined while it is under way, at once once it has finished", async () => {
+		let answer: (file: WorkspaceFile) => void = () => {};
+		const { previews, reads } = setup(
+			() =>
+				new Promise((resolve) => {
+					answer = resolve;
+				}),
+		);
+		const image = file("images/a.png");
+		const card = previews.url(image);
+		expect(previews.shown(image)).toBeUndefined();
+		const panel = previews.picture(image);
+		answer({ ...png, digest: "abc" });
+		expect(await card).toBe("blob:1");
+		const opened = await panel;
+		expect(opened?.url).toBe("blob:1");
+		expect(opened?.digest).toBe("abc");
+		expect(previews.shown(image)).toBe(opened);
+		expect(reads).toEqual(["images/a.png"]);
+		previews.dispose();
+		expect(previews.shown(image)).toBeUndefined();
+	});
+
 	it("has no preview for a file that isn't an image, and asks again after a read fails", async () => {
 		let fail = true;
 		const { previews, reads } = setup((path) =>
