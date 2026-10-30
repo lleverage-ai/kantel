@@ -2,7 +2,14 @@ import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
 import { columnName, safeHref } from "./office-view.tsx";
-import { fileToOpen, presentedFiles, presentedKey, presentedKind } from "./presented-file-model.ts";
+import {
+	fileToOpen,
+	presentedFiles,
+	presentedKey,
+	presentedKind,
+	presentedSubtitle,
+	presentedTitle,
+} from "./presented-file-model.ts";
 
 const file = (path: string, mimeType = "application/octet-stream"): PresentedFile => ({
 	workspaceId: "ws-1",
@@ -34,6 +41,28 @@ describe("presentedKind", () => {
 		expect(presentedKind(file("picture", "image/png"))).toBe("image");
 		expect(presentedKind(file("Makefile"))).toBe("text");
 		expect(presentedKind(file("archive.zip"))).toBe("other");
+	});
+});
+
+describe("presentedTitle and presentedSubtitle", () => {
+	const card = (path: string, mimeType?: string) => {
+		const presented = file(path, mimeType);
+		return [presentedTitle(presented), presentedSubtitle(presented, presentedKind(presented))];
+	};
+
+	it("titles a card with the name less its extension, and says what kind of file it is", () => {
+		expect(card("out/The colours of the rainbow.pdf")).toEqual(["The colours of the rainbow", "PDF document"]);
+		expect(card("notes.md")).toEqual(["notes", "Markdown document"]);
+		expect(card("review.docx")).toEqual(["review", "Word document"]);
+		expect(card("chart.png")).toEqual(["chart", "PNG image"]);
+		expect(card("data.tsv")).toEqual(["data", "TSV spreadsheet"]);
+		expect(card("config.json")).toEqual(["config", "JSON file"]);
+		expect(card("archive.zip")).toEqual(["archive", "ZIP file"]);
+	});
+
+	it("keeps a name with no extension, or a leading dot, whole", () => {
+		expect(card("Makefile")).toEqual(["Makefile", "Text file"]);
+		expect(card(".env")).toEqual([".env", "Text file"]);
 	});
 });
 

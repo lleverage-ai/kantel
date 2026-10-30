@@ -211,6 +211,10 @@ stopped when nothing listens. `RelativeTime` stops ticking once a time is a day 
 16px line icons in `currentColor`. Decorative unless given a `label`. The arrow-shaped `SendIcon` is only for the
 composer's icon-only send button.
 
+New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
+bundled). Give one `className="hb-icon hb-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
+carries meaning on its own. The presented-file cards are the first to use them.
+
 ## Workspace
 
 Read-only views of a workspace's files, fed by the host from the workspace read API (`@harbour/workspace/read-api`,

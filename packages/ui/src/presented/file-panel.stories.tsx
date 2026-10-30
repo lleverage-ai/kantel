@@ -92,7 +92,7 @@ function useContent(file: PresentedFile): FilePanelState {
 export const Cards: Story = () => (
 	<Sheet
 		title="Presented file cards"
-		intro="What a present_files call leaves in the transcript: a card per file, with its kind, size and, for text, its first lines. Pressing one opens it in the viewer; the open one has an accent border."
+		intro="What a present_files call leaves in the transcript: a card per file, after Claude's: a lucide icon in a square tinted for its kind, its title and what kind of file it is. Pressing one opens it in the viewer; the open one has an accent border."
 	>
 		<Section title={`One call, ${all.length} files`}>
 			<PresentedFiles item={call} onOpen={() => {}} openKey={presentedKey(presentedPdf)} />

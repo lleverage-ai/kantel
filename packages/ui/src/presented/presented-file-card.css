@@ -1,33 +1,32 @@
-/* Presented files: cards under the work that made them, in a row that wraps. Each is a quiet panel with the file's
-   icon and kind, its name, its kind and size, and for text its first lines, faded at the foot. */
+/* Presented files: cards under the work that made them, one under another, after Claude's. Each is a rounded, quiet
+   panel with a lucide icon in a square tinted for the kind of file, the file's title and, muted under it, its kind. */
 
 .hb-presented-files {
 	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-start;
-	gap: var(--hb-space-3);
-	margin: var(--hb-space-3) 0 0;
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--hb-space-4);
+	margin: var(--hb-space-4) 0 0;
 	padding: 0;
 	list-style: none;
 }
 
 .hb-presented-files-item {
 	display: flex;
-	flex: 1 1 calc(var(--hb-card-width) / 2);
 	min-width: 0;
 	max-width: var(--hb-card-width);
 }
 
 .hb-presented-card {
 	display: flex;
-	align-items: flex-start;
-	gap: var(--hb-space-4);
+	align-items: center;
+	gap: var(--hb-space-6);
 	width: 100%;
 	min-width: 0;
-	padding: var(--hb-space-4);
+	padding: var(--hb-space-6) var(--hb-space-7) var(--hb-space-6) var(--hb-space-6);
 	border: var(--hb-hairline) solid var(--hb-border);
-	border-radius: var(--hb-radius);
-	background: var(--hb-panel);
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-raised);
 	color: var(--hb-text);
 	font: inherit;
 	text-align: left;
@@ -42,7 +41,7 @@
 
 .hb-presented-card-button:hover {
 	border-color: var(--hb-border-strong);
-	background: var(--hb-raised);
+	background: var(--hb-user-message);
 }
 
 .hb-presented-card-open {
@@ -50,54 +49,47 @@
 }
 
 .hb-presented-icon {
-	position: relative;
 	display: inline-flex;
 	flex: none;
 	align-items: center;
 	justify-content: center;
 	width: var(--hb-control-lg);
 	height: var(--hb-control-lg);
-	border-radius: var(--hb-radius-sm);
-	background: var(--hb-sunken);
+	border-radius: var(--hb-radius-control);
+	background: var(--hb-active);
 	color: var(--hb-text-muted);
 }
 
 .hb-presented-icon[data-kind="pdf"] {
+	background: var(--hb-status-error-soft);
 	color: var(--hb-status-error);
 }
 
 .hb-presented-icon[data-kind="html"] {
+	background: var(--hb-status-working-soft);
 	color: var(--hb-status-working);
 }
 
 .hb-presented-icon[data-kind="docx"],
 .hb-presented-icon[data-kind="markdown"] {
+	background: var(--hb-accent-soft);
 	color: var(--hb-accent-text);
 }
 
 .hb-presented-icon[data-kind="xlsx"],
 .hb-presented-icon[data-kind="csv"] {
+	background: var(--hb-status-done-soft);
 	color: var(--hb-status-done);
 }
 
 .hb-presented-icon[data-kind="pptx"] {
+	background: var(--hb-status-approval-soft);
+	color: var(--hb-status-approval);
+}
+
+.hb-presented-icon[data-kind="image"] {
+	background: var(--hb-status-waiting-soft);
 	color: var(--hb-status-waiting);
-}
-
-.hb-presented-tag {
-	position: absolute;
-	inset-inline: 0;
-	bottom: var(--hb-space-1);
-	color: inherit;
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-2xs);
-	font-weight: var(--hb-weight-strong);
-	line-height: 1;
-	text-align: center;
-}
-
-.hb-presented-icon:has(.hb-presented-tag) > .hb-icon {
-	margin-bottom: var(--hb-space-3);
 }
 
 .hb-presented-text {
@@ -118,25 +110,10 @@
 }
 
 .hb-presented-facts {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-3);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	line-height: var(--hb-leading-tight);
-}
-
-.hb-presented-preview {
-	display: -webkit-box;
-	margin-top: var(--hb-space-2);
 	overflow: hidden;
-	color: var(--hb-text-faint);
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-xs);
-	line-height: var(--hb-leading);
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 3;
-	line-clamp: 3;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }

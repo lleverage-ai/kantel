@@ -63,6 +63,7 @@
 		"@harbour/schedules": "workspace:*",
 		"@harbour/vault": "workspace:*",
 		"docx-preview": "0.4.1",
+		"lucide-react": "1.64.0",
 		"pdfjs-dist": "6.4.299",
 		"react-markdown": "10.1.0",
 		"remark-gfm": "4.0.1",
