@@ -6,13 +6,14 @@
 // (`@harbour/contracts`' connections.ts) onto it and back. No call ever returns a secret: a key or client secret goes
 // out once, in the call that stores it.
 
-import { createHarbourClient, type HarbourClient } from "@harbour/api/sdk";
+import { createHarbourClient, HarbourApiError, type HarbourClient } from "@harbour/api/sdk";
 import type {
 	CatalogueEntry,
 	ConnectAttempt,
 	ConnectFailureCode,
 	Connection,
 	ConnectionOwner,
+	ConnectionUse,
 	KeyInjection,
 	MeResponse,
 	OAuthClient,
@@ -22,15 +23,16 @@ import type {
 	ProviderCategory,
 	ProviderTemplate,
 } from "@harbour/contracts";
-import type {
-	ConnectAttemptState,
-	ConnectionsSource,
-	ConnectionsViewer,
-	ConnectionView,
-	ConnectStart,
-	KeyConnectionInput,
-	OAuthClientView,
-	ProviderTemplateView,
+import {
+	CONNECT_FAILURE_TEXT,
+	type ConnectAttemptState,
+	type ConnectionsSource,
+	type ConnectionsViewer,
+	type ConnectionView,
+	type ConnectStart,
+	type KeyConnectionInput,
+	type OAuthClientView,
+	type ProviderTemplateView,
 } from "@harbour/ui";
 import { readPeople } from "./audit-http.ts";
 import type { ConsoleConnections } from "./oversight.ts";
@@ -203,6 +205,60 @@ export function failureOf(attempt: ConnectAttempt): Extract<ConnectAttemptState,
 	}
 }
 
+/**
+ * A connect the API refused to start, in the page's words. A missing OAuth client or an MCP server that names no
+ * sign-in comes back as a refusal carrying `details.failure`, not as a failed attempt, so the page would otherwise show
+ * only the API's message.
+ */
+export function startError(error: unknown): unknown {
+	if (!(error instanceof HarbourApiError)) return error;
+	const failure = error.details?.failure;
+	switch (failure) {
+		case "no_client":
+		case "discovery_failed":
+			return new Error(`${CONNECT_FAILURE_TEXT[failure]} (${error.message})`);
+		case "registration_failed":
+			return new Error(
+				`${error.message}. Add your own OAuth client for it under "Use your own OAuth client", or connect it with a key.`,
+			);
+		default:
+			return error;
+	}
+}
+
+/** Runs a connect start, putting a refusal in the page's words. */
+async function starting<T>(start: () => Promise<T>): Promise<T> {
+	try {
+		return await start();
+	} catch (error) {
+		throw startError(error);
+	}
+}
+
+/**
+ * When each connection was last used by a session: the newest allowed use of each. One page of the organisation's
+ * uses (newest first) covers most; a connection it misses, when there were more, is asked after by itself.
+ */
+export async function lastUses(api: HarbourClient, connectionIds: readonly string[]): Promise<Map<string, number>> {
+	const last = new Map<string, number>();
+	const note = (uses: readonly ConnectionUse[]) => {
+		for (const use of uses)
+			if (use.outcome === "allowed" && !last.has(use.connectionId)) last.set(use.connectionId, use.at);
+	};
+	const page = (await api.listConnectionUses({ limit: 200 })) as Page<ConnectionUse>;
+	note(page.items);
+	if (page.nextCursor !== undefined) {
+		const missed = connectionIds.filter((id) => !last.has(id));
+		const pages = await Promise.all(
+			missed.map((connectionId) =>
+				(api.listConnectionUses({ connectionId, limit: 20 }) as Promise<Page<ConnectionUse>>).catch(() => undefined),
+			),
+		);
+		for (const found of pages) if (found !== undefined) note(found.items);
+	}
+	return last;
+}
+
 /** A key's way out, as the contract says it. */
 export function injectionOf(injection: NonNullable<KeyConnectionInput["injection"]>): KeyInjection {
 	switch (injection.kind) {
@@ -334,16 +390,26 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 			const items = await allPages((cursor) => api.listConnections(pageArgs(cursor)) as Promise<Page<Connection>>);
 			keys.clear();
 			for (const connection of items) if (connection.auth === "key") keys.add(connection.id);
-			return items.map(view);
+			// "Used 4m ago": best effort, so a list never fails for want of it.
+			const used = await lastUses(
+				api,
+				items.map((connection) => connection.id),
+			).catch(() => new Map<string, number>());
+			return items.map((connection) => {
+				const at = used.get(connection.id);
+				return at === undefined ? view(connection) : { ...view(connection), lastUsedAt: at };
+			});
 		},
 		connect: async (input) =>
 			started(
-				(await api.startConnect({
-					templateId: input.templateId,
-					owner: ownerOf(input.owner),
-					...(input.scopeSets === undefined ? {} : { scopeSets: input.scopeSets }),
-					...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
-				})) as ConnectAttempt,
+				(await starting(() =>
+					api.startConnect({
+						templateId: input.templateId,
+						owner: ownerOf(input.owner),
+						...(input.scopeSets === undefined ? {} : { scopeSets: input.scopeSets }),
+						...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
+					}),
+				)) as ConnectAttempt,
 			),
 		attempt: async (attemptId) => {
 			const attempt = (await api.getConnectAttempt(attemptId)) as ConnectAttempt;
@@ -399,11 +465,13 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 					...(input.client.clientSecret === undefined ? {} : { clientSecret: input.client.clientSecret }),
 				});
 			}
-			const attempt = (await api.startConnect({
-				mcpUrl: input.url,
-				owner: ownerOf(input.owner),
-				...(input.name === undefined ? {} : { name: input.name }),
-			})) as ConnectAttempt;
+			const attempt = (await starting(() =>
+				api.startConnect({
+					mcpUrl: input.url,
+					owner: ownerOf(input.owner),
+					...(input.name === undefined ? {} : { name: input.name }),
+				}),
+			)) as ConnectAttempt;
 			return { auth: "oauth", serverName, ...(await started(attempt)) };
 		},
 		disconnect: async (connectionId) => {
@@ -413,15 +481,17 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 		reconnect: async (connectionId) => {
 			const connection = (await api.getConnection(connectionId)) as Connection;
 			return started(
-				(await api.startConnect({
-					...(connection.templateId !== undefined
-						? { templateId: connection.templateId }
-						: connection.mcp === undefined
-							? {}
-							: { mcpUrl: connection.mcp.url }),
-					owner: connection.owner,
-					connectionId,
-				})) as ConnectAttempt,
+				(await starting(() =>
+					api.startConnect({
+						...(connection.templateId !== undefined
+							? { templateId: connection.templateId }
+							: connection.mcp === undefined
+								? {}
+								: { mcpUrl: connection.mcp.url }),
+						owner: connection.owner,
+						connectionId,
+					}),
+				)) as ConnectAttempt,
 			);
 		},
 		clients: async () => {

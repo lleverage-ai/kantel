@@ -130,22 +130,25 @@ export function McpServerForm({ viewer, flow, onAdd, onKey, onDone, onCancel, in
 		});
 	};
 
-	if (keyServer !== undefined)
+	if (keyServer !== undefined) {
+		// A key in `Authorization` is a bearer token, as MCP servers take one: a bare header would go out without `Bearer`.
+		const bearer = keyServer.header.toLowerCase() === "authorization";
 		return (
 			<KeyConnectionForm
 				viewer={viewer}
 				custom={{
 					name: keyServer.serverName,
 					hosts: [safeHost(url)],
-					injection: { kind: "header", name: keyServer.header },
+					injection: bearer ? { kind: "bearer" } : { kind: "header", name: keyServer.header },
 					mcpUrl: url.trim(),
 				}}
-				lede={`${keyServer.serverName} takes a key rather than a sign-in. Harbour sends it in the ${keyServer.header} header, only to ${safeHost(url)}.`}
+				lede={`${keyServer.serverName} takes a key rather than a sign-in. Harbour sends it ${bearer ? "as a bearer token" : `in the ${keyServer.header} header`}, only to ${safeHost(url)}.`}
 				onSave={onKey}
 				onDone={onDone}
 				onCancel={() => setKeyServer(undefined)}
 			/>
 		);
+	}
 
 	return (
 		<div className="flex w-full max-w-content min-w-0 flex-col gap-5">

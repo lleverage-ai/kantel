@@ -114,6 +114,21 @@ describe("remote MCP OAuth connect", () => {
 		await expect(env.connections.removeClient(human("admin"), client.id)).rejects.toMatchObject({ code: "conflict" });
 	});
 
+	it("sends the redirect URI a client was registered with, on its own redirect domain", async () => {
+		const env = setup();
+		const client = await env.connections.createClient(human("admin"), {
+			owner: { kind: "organisation", organisationId: ORG },
+			issuer: "https://mcp.example.com",
+			label: "Our app",
+			clientId: "registered-client",
+			redirectDomain: "connect.acme.test",
+		});
+		expect(client.redirectUri).toBe("https://connect.acme.test/v1/connections/callback");
+		const { url, done } = await connectAlice(env);
+		expect(new URL(url).searchParams.get("redirect_uri")).toBe(client.redirectUri);
+		expect(done.status).toBe("completed");
+	});
+
 	it("refuses a server with no client route", async () => {
 		const env = setup({ dcr: false });
 		await expect(
@@ -289,6 +304,127 @@ describe("using a connection", () => {
 		});
 		expect(response.body).toBe("[redacted]");
 		expect(response.body).not.toContain(btoa("user:pa55word-long"));
+	});
+
+	it("sends a basic key's UTF-8 bytes, split at the first colon", async () => {
+		const sent: string[] = [];
+		const connections = createMemoryConnections({
+			credentials: memoryCredentials(),
+			access: fakeAccess(["admin"]),
+			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			fetch: async (_url, init) => {
+				sent.push(new Headers(init?.headers).get("authorization") ?? "");
+				return new Response("ok");
+			},
+		});
+		const connection = await connections.connectKey(human("admin"), {
+			owner: { kind: "organisation", organisationId: ORG },
+			custom: { hosts: ["api.example.com"], injection: { kind: "basic" }, kind: "http" },
+			value: "zoë:pässwörd:with-colon",
+			usage: { unattended: true, visibility: "shared" },
+		});
+		await connections.send(SYSTEM, scope({ audience: { kind: "shared" } }), connection.id, {
+			method: "GET",
+			url: "https://api.example.com/",
+			kind: "http",
+		});
+		const decoded = new TextDecoder().decode(
+			Uint8Array.from(atob(sent[0]!.replace(/^Basic /, "")), (char) => char.charCodeAt(0)),
+		);
+		expect(decoded).toBe("zoë:pässwörd:with-colon");
+	});
+
+	it("tests a template's key the way it goes out, and keeps a refused key as failing_test", async () => {
+		const sent: Headers[] = [];
+		const connections = createMemoryConnections({
+			credentials: memoryCredentials(),
+			access: fakeAccess(["admin"]),
+			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			templates: [
+				{
+					id: "acme-api",
+					version: 1,
+					name: "Acme API",
+					description: "Acme's API with a key.",
+					icon: "data:image/svg+xml,x",
+					docsUrl: "https://acme.test/docs",
+					category: "developer",
+					kind: "http",
+					authTypes: ["header"],
+					apiHosts: ["api.acme.test"],
+					key: { injection: { kind: "header", header: "Authorization" } },
+					scopeSets: [],
+					endpointHints: [],
+					testRequest: { method: "GET", url: "https://api.acme.test/me", account: { name: "name" } },
+					source: "deployment",
+				},
+			],
+			fetch: async (_url, init) => {
+				const headers = new Headers(init?.headers);
+				sent.push(headers);
+				return headers.get("authorization") === "acme_good_key_1234"
+					? Response.json({ name: "Release bot" })
+					: new Response("no", { status: 401 });
+			},
+		});
+		const owner = { kind: "organisation", organisationId: ORG } as const;
+		const good = await connections.connectKey(human("admin"), {
+			owner,
+			templateId: "acme-api",
+			value: "acme_good_key_1234",
+		});
+		expect(sent[0]!.get("authorization")).toBe("acme_good_key_1234");
+		expect(good).toMatchObject({ status: "active", account: { name: "Release bot" } });
+		const bad = await connections.connectKey(human("admin"), {
+			owner,
+			templateId: "acme-api",
+			value: "acme_revoked_key_99",
+		});
+		expect(bad.status).toBe("failing_test");
+		expect(bad.account).toBeUndefined();
+		const fixed = await connections.rotateKey(human("admin"), bad.id, { value: "acme_good_key_1234" });
+		expect(fixed).toMatchObject({ status: "active", account: { name: "Release bot" } });
+		const broken = await connections.rotateKey(human("admin"), good.id, { value: "acme_revoked_key_99" });
+		expect(broken.status).toBe("failing_test");
+	});
+
+	it("never sends a key to a test URL outside the template's API hosts", async () => {
+		const sent: string[] = [];
+		const connections = createMemoryConnections({
+			credentials: memoryCredentials(),
+			access: fakeAccess(["admin"]),
+			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			templates: [
+				{
+					id: "acme-api",
+					version: 1,
+					name: "Acme API",
+					description: "Acme's API with a key.",
+					icon: "data:image/svg+xml,x",
+					docsUrl: "https://acme.test/docs",
+					category: "developer",
+					kind: "http",
+					authTypes: ["bearer"],
+					apiHosts: ["api.acme.test"],
+					key: { injection: { kind: "bearer" } },
+					scopeSets: [],
+					endpointHints: [],
+					testRequest: { method: "GET", url: "https://elsewhere.test/me" },
+					source: "deployment",
+				},
+			],
+			fetch: async (url) => {
+				sent.push(String(url));
+				return new Response("no", { status: 401 });
+			},
+		});
+		const connection = await connections.connectKey(human("admin"), {
+			owner: { kind: "organisation", organisationId: ORG },
+			templateId: "acme-api",
+			value: "acme_key_12345678",
+		});
+		expect(sent).toEqual([]);
+		expect(connection.status).toBe("active");
 	});
 
 	it("sends a key connection's key only to its hosts", async () => {

@@ -298,7 +298,7 @@ export type ConnectionStatus =
 	| "active"
 	/** The token was refused or can't be refreshed: someone must connect again. */
 	| "needs_reauth"
-	/** Stored, but its test request failed. */
+	/** Stored, but the service refused it (401 or 403) on the template's test request. Still usable. */
 	| "failing_test"
 	| "disabled";
 
@@ -450,7 +450,10 @@ export interface ConnectKeyInput {
 	};
 	readonly owner: ConnectionOwner;
 	readonly name?: string;
-	/** The key. Write-only: stored in the vault and never returned. */
+	/**
+	 * The key. Write-only: stored in the vault and never returned. For `basic` injection it is `username:password`,
+	 * split at the first colon; with no colon it is the user name and the password is empty.
+	 */
 	readonly value: string;
 	readonly usage?: ConnectionUsage;
 }

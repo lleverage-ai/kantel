@@ -404,7 +404,12 @@ export const ConnectKeyBody = Type.Object({
 	),
 	owner: ConnectionOwner,
 	name: Type.Optional(Type.String()),
-	value: Type.String({ minLength: 1, description: "The key. Write-only: never returned." }),
+	value: Type.String({
+		minLength: 1,
+		description:
+			"The key. Write-only: never returned. For `basic` injection, `username:password` (split at the first colon; " +
+			"no colon: the user name with an empty password).",
+	}),
 	usage: Type.Optional(ConnectionUsage),
 });
 

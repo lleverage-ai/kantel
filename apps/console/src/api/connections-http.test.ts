@@ -1,6 +1,13 @@
 // The Connections page's API source: each of the page's calls is one or two calls to `/v1/connections`, the contract's
 // shapes become the page's, and nothing secret comes back.
-import type { CatalogueEntry, ConnectAttempt, Connection, OAuthClient, ProviderTemplate } from "@harbour/contracts";
+import type {
+	CatalogueEntry,
+	ConnectAttempt,
+	Connection,
+	ConnectionUse,
+	OAuthClient,
+	ProviderTemplate,
+} from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 import { apiConnections, connectionView, entryView, failureOf, serverNameOf, summaryOf } from "./connections-http.ts";
 
@@ -109,7 +116,14 @@ const strip = <T extends object>(value: T): T =>
 	Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
 
 /** A fetch that answers each route the page uses, and records what it was asked. */
-function fakeApi(options: { catalogue?: number; attempt?: ConnectAttempt } = {}) {
+function fakeApi(
+	options: {
+		catalogue?: number;
+		attempt?: ConnectAttempt;
+		uses?: { items: ConnectionUse[]; nextCursor?: string };
+		refuse?: { message: string; failure: string };
+	} = {},
+) {
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
 		const request = new Request(new URL(String(input), "https://harbour.test"), init);
@@ -131,6 +145,18 @@ function fakeApi(options: { catalogue?: number; attempt?: ConnectAttempt } = {})
 		if (path === "/v1/connections/conn_1" && request.method === "GET") return Response.json(CONNECTION);
 		if (path.startsWith("/v1/connections/conn_") && request.method === "DELETE")
 			return new Response(null, { status: 204 });
+		if (path === "/v1/connections/uses") {
+			const connectionId = url.searchParams.get("connectionId");
+			const items = options.uses?.items ?? [];
+			return connectionId === null
+				? Response.json(options.uses ?? { items: [] })
+				: Response.json({ items: items.filter((use) => use.connectionId === connectionId) });
+		}
+		if (path === "/v1/connections/connect" && options.refuse !== undefined)
+			return Response.json(
+				{ error: { code: "refused", message: options.refuse.message, details: { failure: options.refuse.failure } } },
+				{ status: 409 },
+			);
 		if (path === "/v1/connections/connect") return Response.json(PENDING, { status: 201 });
 		if (path === "/v1/connections/connect/ca_1") return Response.json(options.attempt ?? PENDING);
 		if (path === "/v1/connections/keys")
@@ -191,6 +217,55 @@ describe("the Connections page over the API", () => {
 			onlyProjects: ["prj_web"],
 		});
 		expect(key).toMatchObject({ name: "Status API", kind: "key", key: { set: true, last4: "9z9z" } });
+	});
+
+	it("says when each connection was last used, from its newest allowed use", async () => {
+		const use = (connectionId: string, at: number, outcome: ConnectionUse["outcome"] = "allowed"): ConnectionUse => ({
+			id: `cu_${connectionId}_${at}`,
+			connectionId,
+			organisationId: ORG,
+			sessionId: "ses_1",
+			kind: "http",
+			method: "GET",
+			host: "api.github.com",
+			path: "/user",
+			audience: { kind: "shared" },
+			outcome,
+			at,
+		});
+		// The first page holds conn_1's uses only, newest first, and says there are more: conn_key is asked after alone.
+		const api = fakeApi({
+			uses: { items: [use("conn_1", 30, "denied"), use("conn_1", 20), use("conn_1", 10)], nextCursor: "next" },
+		});
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		let [oauth, key] = await source.connections();
+		expect(oauth?.lastUsedAt).toBe(20);
+		expect(key?.lastUsedAt).toBeUndefined();
+		expect(api.calls).toContain("GET /v1/connections/uses?connectionId=conn_key&limit=20");
+		// A gateway that can't list uses still lists the connections.
+		const failing = fakeApi();
+		const bare = await apiConnections(ME, {
+			fetch: (async (input: string | URL | Request, init?: RequestInit) =>
+				String(input).includes("/connections/uses")
+					? new Response(null, { status: 500 })
+					: failing.fetch(input, init)) as typeof fetch,
+		});
+		[oauth, key] = await bare.source.connections();
+		expect(oauth?.lastUsedAt).toBeUndefined();
+		expect(key?.name).toBe("Status API");
+	});
+
+	it("puts a refused connect start in the page's words", async () => {
+		const api = fakeApi({
+			refuse: { failure: "no_client", message: "GitHub needs an OAuth app registered first" },
+		});
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		await expect(source.connect({ templateId: "github", owner: { kind: "user" } })).rejects.toThrow(
+			"There's no OAuth client for this service yet. An admin can add one in OAuth clients. (GitHub needs an OAuth app registered first)",
+		);
+		const other = fakeApi({ refuse: { failure: "something_else", message: "No" } });
+		const second = await apiConnections(ME, { fetch: other.fetch });
+		await expect(second.source.connect({ templateId: "github", owner: { kind: "user" } })).rejects.toThrow("No");
 	});
 
 	it("starts a connect for the viewer and follows it to the connection", async () => {
