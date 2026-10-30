@@ -1415,3 +1415,164 @@ export const ReopenOnboardingBody = Type.Object(
 	{ step: Type.Optional(OnboardingStepId) },
 	{ title: "ReopenOnboardingBody", description: "Where to reopen it. Default the first step." },
 );
+
+// Model providers (packages/contracts/src/model-providers.ts): how an organisation connects the models its agents run
+// on, by subscription (through CLIProxyAPI) or by key. No shape here carries a key but `ConnectModelKeyInput.key`,
+// which is write-only.
+
+export const ModelProviderId = Type.Union(
+	[
+		Type.Literal("claude"),
+		Type.Literal("chatgpt"),
+		Type.Literal("anthropic"),
+		Type.Literal("openai"),
+		Type.Literal("openrouter"),
+		Type.Literal("vercel-ai-gateway"),
+		Type.Literal("openai-compatible"),
+	],
+	{ title: "ModelProviderId" },
+);
+
+export const ModelProviderAuth = Type.Union([Type.Literal("subscription"), Type.Literal("key")], {
+	title: "ModelProviderAuth",
+	description: "`subscription`: signed in through the deployment's CLIProxyAPI; `key`: an API key in the vault.",
+});
+
+export const ConnectorPreset = Type.Union(
+	[
+		Type.Literal("litellm"),
+		Type.Literal("vercel-ai-gateway"),
+		Type.Literal("openrouter"),
+		Type.Literal("anthropic"),
+		Type.Literal("openai"),
+		Type.Literal("cliproxyapi"),
+		Type.Literal("openai-compatible"),
+		Type.Literal("anthropic-compatible"),
+	],
+	{ title: "ConnectorPreset", description: "The model gateway preset a connector uses." },
+);
+
+export const ModelProviderConnection = Type.Object(
+	{
+		connectorId: Type.String({ description: "The model gateway connector that serves it." }),
+		routes: Type.Array(Type.String(), {
+			description: "The routes it serves: one named after the provider, and `default` when it took that.",
+		}),
+		modelId: Type.Optional(Type.String({ description: "The upstream model its route serves." })),
+		baseUrl: Type.Optional(Type.String()),
+		connectedAt: Type.Optional(Timestamp),
+		account: Type.Optional(
+			Type.String({ description: "For a subscription: the account signed in (an email), when CLIProxyAPI names it." }),
+		),
+	},
+	{ title: "ModelProviderConnection", description: "An organisation's connection to a provider. Never a secret." },
+);
+
+export const ModelProvider = Type.Object(
+	{
+		id: ModelProviderId,
+		name: Type.String(),
+		description: Type.String(),
+		auth: ModelProviderAuth,
+		preset: ConnectorPreset,
+		baseUrl: Type.Optional(
+			Type.String({ description: "For a key provider: the base URL used unless the caller names one." }),
+		),
+		defaultModel: Type.Optional(
+			Type.String({ description: "The model a new connection's route serves unless the caller names one." }),
+		),
+		keyUrl: Type.Optional(Type.String({ description: "Where a person gets a key." })),
+		keyPrefix: Type.Optional(Type.String({ description: "How keys start, as a hint for the field." })),
+		available: Type.Boolean({ description: "Whether this deployment can connect it." }),
+		unavailableReason: Type.Optional(Type.String({ description: "Why not, when it can't." })),
+		connection: Type.Optional(ModelProviderConnection),
+	},
+	{ title: "ModelProvider", description: "A provider of models, and the organisation's connection to it." },
+);
+
+export const DefaultModelRoute = Type.Object(
+	{
+		connectorId: Type.String(),
+		modelId: Type.String(),
+		owner: Type.Union([Type.Literal("platform"), Type.Literal("organisation")], {
+			description: "Whose route it is: the deployment's or the organisation's own.",
+		}),
+	},
+	{
+		title: "DefaultModelRoute",
+		description: "The route sessions run on when their profile names `default`, as the gateway would resolve it now.",
+	},
+);
+
+export const ModelProviderList = Type.Object(
+	{
+		items: Type.Array(ModelProvider),
+		defaultRoute: Type.Optional(DefaultModelRoute),
+	},
+	{
+		title: "ModelProviderList",
+		description: "Every provider. `defaultRoute` is absent when nothing serves `default`, so sessions can't run yet.",
+	},
+);
+
+export const ConnectModelKeyInput = Type.Object(
+	{
+		key: Type.String({
+			minLength: 1,
+			maxLength: 8192,
+			writeOnly: true,
+			description:
+				"The provider's API key: 8 to 4096 characters with no spaces. Write-only: stored in the vault and never " +
+				"returned or audited.",
+		}),
+		baseUrl: Type.Optional(
+			Type.String({
+				description:
+					"Another base URL, such as a proxy's; required for `openai-compatible`. https only, except to localhost.",
+			}),
+		),
+		model: Type.Optional(
+			Type.String({ description: "The model the provider's route serves. Default the provider's `defaultModel`." }),
+		),
+		makeDefault: Type.Optional(
+			Type.Boolean({
+				description:
+					"Make it the organisation's `default` route even when another provider has it. Default: only if none does.",
+			}),
+		),
+	},
+	{ title: "ConnectModelKeyInput" },
+);
+
+export const ModelSignInStatus = Type.Union(
+	[Type.Literal("pending"), Type.Literal("completed"), Type.Literal("failed")],
+	{ title: "ModelSignInStatus" },
+);
+
+export const ModelSignIn = Type.Object(
+	{
+		id: id("The sign-in's ID."),
+		providerId: ModelProviderId,
+		status: ModelSignInStatus,
+		url: Type.Optional(
+			Type.String({ description: "The provider's sign-in page, when the sign-in starts. Open it, sign in, then poll." }),
+		),
+		error: Type.Optional(Type.String({ description: "Why it failed." })),
+	},
+	{ title: "ModelSignIn", description: "A subscription sign-in." },
+);
+
+export const ModelProviderPath = Type.Object({ providerId: ModelProviderId });
+
+export const ModelSignInPath = Type.Object({ providerId: ModelProviderId, signInId: id("The sign-in's ID.") });
+
+export const FinishModelSignInBody = Type.Object(
+	{
+		redirectUrl: Type.String({
+			minLength: 1,
+			maxLength: 8192,
+			description: "The whole address the browser ended on after signing in, which carries the provider's code.",
+		}),
+	},
+	{ title: "FinishModelSignInBody" },
+);

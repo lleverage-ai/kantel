@@ -34,6 +34,10 @@ hosts it on Node and Workers.
 | `./redact` | `Redactor` and `StreamRedactor` |
 | `./gateway` | `createModelGateway(...)`, the `ModelGateway`; `createMemoryModelPinStore`, `createCredentialCache`, `singleRequestFetch` |
 | `./http` | `createModelGatewayHttp({ gateway, tokens, basePath? })`, a fetch handler |
+| `./providers` | `createModelProviders(...)`, the `ModelProviders` (contracts/model-providers.ts); `createMemoryModelProviderStore`, `replayModelProviders` |
+| `./providers-sql` | `modelProvidersSchema`, `migrateModelProviders`, `createSqlModelProviderStore(driver)` |
+| `./providers-http` | `createModelProvidersApi({ providers, authenticate, basePath? })`, serving `@harbour/api`'s `modelProviderRoutes` |
+| `./cpa-management` | `createCpaManagement({ baseUrl, managementKey, fetch? })`, a client for CLIProxyAPI's management API |
 
 ## Rules and the suite cases that enforce them
 
@@ -218,6 +222,28 @@ Gateway cases are in `registerModelGatewayConformance` and connector cases in `r
 
 `override.api` picks a wire API the preset speaks. On Vercel, `compat.vercelGatewayRouting` is applied to Messages
 bodies through `onPayload` (pi applies it only on Chat Completions).
+
+### Model providers
+
+Unit cases are in `packages/models/test/providers*.test.ts` and `cpa-management.test.ts`.
+
+- Listing needs an organisation-wide viewer; connecting, signing in and disconnecting an organisation-wide admin.
+  Agents are always refused, audited once as `access.denied` when `access` is given; `system` passes.
+- A key goes to the vault as an organisation item bound to the base URL's host (`model-<provider>-<6 hex>`), with the
+  preset's key header as its injection rule, and nowhere else: not the connector, the routes, the store, the audit or
+  any answer. It isn't tried with the provider.
+- Connecting puts connector `org-<provider>` (or the `connectorId` option's ID) and a route named after the provider,
+  and the organisation's `default` when it has none, when `makeDefault` is set, or when it already names this
+  connector. Disconnecting deletes the organisation's routes over the connector, then the connector.
+- Base URLs are https, http only to localhost, 127.0.0.1 or ::1, with no credentials, query or fragment. Keys are 8 to
+  4096 characters with no spaces (surrounding whitespace is dropped). Model IDs have no spaces or `:`.
+- A subscription's sign-in ID is CLIProxyAPI's `state`; `wait` is pending, `ok` completed and `error` failed. A
+  settled sign-in is audited once under an ID made from the sign-in and its outcome. The redirect address goes to
+  CLIProxyAPI only.
+- CLIProxyAPI's management API answering 401 or 403 is `refused`; any other failure is `unavailable` with the HTTP
+  status, its own error text redacted of the management key.
+- Every change is audited with source `models`: `models.provider.connected`, `models.provider.signin`,
+  `models.provider.disconnected`.
 
 ## HTTP API
 

@@ -6,13 +6,14 @@
  *   into the vault as an organisation item bound to the provider's host, written once and never returned, and the
  *   model gateway gets an organisation connector naming that item, with a route named after the provider. The first
  *   one an organisation connects also takes its `default` route, which every agent profile names unless it says
- *   otherwise; an organisation's route is nearer than the platform's, so it wins.
+ *   otherwise; an organisation's route is nearer than the platform's, so it wins. Harbour doesn't try the key with the
+ *   provider: a wrong one shows at the first model call.
  * - **A subscription** (Claude, ChatGPT): signed in through the deployment's CLIProxyAPI, the gateway's existing path
  *   to subscriptions. CLIProxyAPI keeps the subscription's tokens and refreshes them; Harbour holds only CLIProxyAPI's
  *   client key, in the vault, as it already does. Offered only where the operator has given the gateway CLIProxyAPI's
  *   management key, since a sign-in there serves every organisation on the deployment.
- * - Reading needs viewer on any project of the organisation; connecting, signing in and disconnecting need an
- *   organisation-wide admin, which no agent holds. No call returns a key.
+ * - Reading needs an organisation-wide viewer; connecting, signing in and disconnecting need an organisation-wide
+ *   admin, which no agent holds. No call returns or audits a key.
  *
  * Harbour adds nothing to a model's prompt on any of these paths.
  */
@@ -109,11 +110,14 @@ export interface ModelProviders {
 	list(ctx: CallContext): Promise<ModelProviderList>;
 	/**
 	 * Connects a key provider for the organisation, or replaces its key: a new vault item, the connector and its routes.
-	 * Rejects with `invalid` for a subscription, a malformed key or base URL, and `refused` when the provider answers
-	 * that it doesn't know the key.
+	 * Rejects with `invalid` for a subscription or a malformed key, base URL or model ID, and `unavailable` where the
+	 * deployment can't use a key (see `ModelProvider.available`).
 	 */
 	connectKey(ctx: CallContext, providerId: ModelProviderId, input: ConnectModelKeyInput): Promise<ModelProvider>;
-	/** Starts signing in to a subscription. `unavailable` where the deployment can't (see `ModelProvider.available`). */
+	/**
+	 * Starts signing in to a subscription. `invalid` for a key provider; `unavailable` where the deployment can't (see
+	 * `ModelProvider.available`).
+	 */
 	startSignIn(ctx: CallContext, providerId: ModelProviderId): Promise<ModelSignIn>;
 	/** Where a sign-in is. */
 	signInStatus(ctx: CallContext, providerId: ModelProviderId, signInId: string): Promise<ModelSignIn>;
@@ -127,7 +131,11 @@ export interface ModelProviders {
 		signInId: string,
 		redirectUrl: string,
 	): Promise<ModelSignIn>;
-	/** Removes the organisation's connector and routes for a key provider. Its vault item stays, with no route to it. */
+	/**
+	 * Removes the organisation's connector for a key provider and its routes, `default` among them when it names that
+	 * connector. Its vault item stays, with no route to it. `invalid` for a subscription, which is signed out in
+	 * CLIProxyAPI; `not_found` when the provider isn't connected.
+	 */
 	disconnect(ctx: CallContext, providerId: ModelProviderId): Promise<void>;
 }
 

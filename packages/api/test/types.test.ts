@@ -220,6 +220,24 @@ describe("schemas match the contracts", () => {
 		expect(proofs.every(Boolean)).toBe(true);
 	});
 
+	it("matches the model providers contract", () => {
+		const proofs = [
+			same<Wire<typeof Wires.ModelProviderId>, Sharing.ModelProviderId>(true),
+			same<Wire<typeof Wires.ModelProviderAuth>, Sharing.ModelProviderAuth>(true),
+			same<Wire<typeof Wires.ConnectorPreset>, Sharing.ConnectorPreset>(true),
+			same<Wire<typeof Wires.ModelProviderConnection>, Sharing.ModelProviderConnection>(true),
+			same<Wire<typeof Wires.ModelProvider>, Sharing.ModelProvider>(true),
+			same<Wire<typeof Wires.DefaultModelRoute>, Sharing.DefaultModelRoute>(true),
+			same<Wire<typeof Wires.ModelProviderList>, Sharing.ModelProviderList>(true),
+			same<Wire<typeof Wires.ConnectModelKeyInput>, Sharing.ConnectModelKeyInput>(true),
+			same<Wire<typeof Wires.ModelSignInStatus>, Sharing.ModelSignInStatus>(true),
+			same<Wire<typeof Wires.ModelSignIn>, Sharing.ModelSignIn>(true),
+			same<Wire<typeof Wires.ModelProviderPath>, { readonly providerId: Sharing.ModelProviderId }>(true),
+			same<Wire<typeof Wires.FinishModelSignInBody>, { readonly redirectUrl: string }>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
+	});
+
 	it("matches the connections contract", () => {
 		const proofs = [
 			same<Wire<typeof Conn.ProviderTemplate>, Sharing.ProviderTemplate>(true),

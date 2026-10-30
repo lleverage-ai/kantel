@@ -20,6 +20,7 @@ import {
 	Concept,
 	ConceptPage,
 	ConceptPath,
+	ConnectModelKeyInput,
 	CreatedSession,
 	CreateMemorySpaceBody,
 	CreateResourceShareBody,
@@ -29,6 +30,7 @@ import {
 	EmbedBrowserBody,
 	FileShare,
 	FileSharePage,
+	FinishModelSignInBody,
 	ForkSessionBody,
 	ImportSkillBody,
 	ListAccessRequestsQuery,
@@ -48,6 +50,11 @@ import {
 	MemorySpacePage,
 	MemorySpacePath,
 	MessageBody,
+	ModelProvider,
+	ModelProviderList,
+	ModelProviderPath,
+	ModelSignIn,
+	ModelSignInPath,
 	NewSessionModelsQuery,
 	OccurrencePage,
 	Onboarding,
@@ -1185,6 +1192,109 @@ export const onboardingRoutes = {
 	reopenOnboarding,
 } as const;
 
+// Model providers (packages/contracts/src/model-providers.ts): connecting the models an organisation's agents run on, by
+// key or by subscription. Read by an organisation-wide viewer; changed by an organisation-wide admin, never an agent.
+
+const signInErrors = ["invalid", "forbidden", "refused", "unavailable"] as const;
+
+export const listModelProviders = defineRoute({
+	operationId: "listModelProviders",
+	method: "GET",
+	path: "/model-providers",
+	tag: "models",
+	summary: "List model providers",
+	description:
+		"Every provider of models, whether this deployment can connect it, and the organisation's connection to it, with " +
+		"what the `default` route resolves to now. Needs an organisation-wide viewer. Never a key.",
+	answer: { status: 200, description: "The providers.", schema: ModelProviderList },
+	errors: ["forbidden"],
+});
+
+export const connectModelProviderKey = defineRoute({
+	operationId: "connectModelProviderKey",
+	method: "PUT",
+	path: "/model-providers/{providerId}/key",
+	tag: "models",
+	summary: "Connect a model provider with a key",
+	description:
+		"Connects a key provider for the organisation, or replaces its key: the key goes into the vault, write-only and " +
+		"never returned, and the model gateway gets the organisation's connector with a route named after the provider, " +
+		"and `default` when the organisation has none of its own or `makeDefault` is set. The key isn't tried with the " +
+		"provider. Needs an organisation-wide admin; agents never may. Audited as `models.provider.connected`, without " +
+		"the key.",
+	params: ModelProviderPath,
+	body: ConnectModelKeyInput,
+	answer: { status: 200, description: "The provider, with its connection.", schema: ModelProvider },
+	errors: ["invalid", "forbidden", "conflict", "unavailable"],
+});
+
+export const startModelSignIn = defineRoute({
+	operationId: "startModelSignIn",
+	method: "POST",
+	path: "/model-providers/{providerId}/sign-ins",
+	tag: "models",
+	summary: "Start signing in to a subscription",
+	description:
+		"Starts signing in to a subscription through the deployment's CLIProxyAPI: open `url`, sign in with the provider, " +
+		"then poll the sign-in until it settles. `unavailable` where the deployment has no CLIProxyAPI management key. " +
+		"Needs an organisation-wide admin; agents never may.",
+	params: ModelProviderPath,
+	answer: { status: 201, description: "The sign-in, pending, with the provider's sign-in page.", schema: ModelSignIn },
+	errors: signInErrors,
+});
+
+export const getModelSignIn = defineRoute({
+	operationId: "getModelSignIn",
+	method: "GET",
+	path: "/model-providers/{providerId}/sign-ins/{signInId}",
+	tag: "models",
+	summary: "Get a subscription sign-in",
+	description: "Where a sign-in is: pending, completed or failed. Needs an organisation-wide admin.",
+	params: ModelSignInPath,
+	answer: { status: 200, description: "The sign-in.", schema: ModelSignIn },
+	errors: signInErrors,
+});
+
+export const finishModelSignIn = defineRoute({
+	operationId: "finishModelSignIn",
+	method: "POST",
+	path: "/model-providers/{providerId}/sign-ins/{signInId}/finish",
+	tag: "models",
+	summary: "Finish a subscription sign-in by hand",
+	description:
+		"Finishes a sign-in whose provider couldn't redirect back to the deployment (a remote machine): give the whole " +
+		"address the browser ended on, which carries the provider's code. It goes to CLIProxyAPI and is never stored or " +
+		"audited. Needs an organisation-wide admin.",
+	params: ModelSignInPath,
+	body: FinishModelSignInBody,
+	answer: { status: 200, description: "The sign-in.", schema: ModelSignIn },
+	errors: signInErrors,
+});
+
+export const disconnectModelProvider = defineRoute({
+	operationId: "disconnectModelProvider",
+	method: "DELETE",
+	path: "/model-providers/{providerId}",
+	tag: "models",
+	summary: "Disconnect a model provider",
+	description:
+		"Removes the organisation's connector for a key provider and its routes, `default` among them when it names that " +
+		"connector. The vault item stays, with no route to it. A subscription is signed out in CLIProxyAPI instead " +
+		"(`invalid`). Needs an organisation-wide admin; agents never may. Audited as `models.provider.disconnected`.",
+	params: ModelProviderPath,
+	answer: { status: 204, description: "Disconnected." },
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+export const modelProviderRoutes = {
+	listModelProviders,
+	connectModelProviderKey,
+	startModelSignIn,
+	getModelSignIn,
+	finishModelSignIn,
+	disconnectModelProvider,
+} as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
 export const routes = {
 	...sessionRoutes,
@@ -1197,6 +1307,7 @@ export const routes = {
 	...shareRoutes,
 	...sharingRoutes,
 	...connectionRoutes,
+	...modelProviderRoutes,
 } as const;
 
 export type Routes = typeof routes;

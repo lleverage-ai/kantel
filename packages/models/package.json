@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Model connectors and the model gateway: routes, resolution, pins, presets, catalogue, redaction and the pi-messages HTTP API",
+	"description": "Model connectors and the model gateway: routes, resolution, pins, presets, catalogue, redaction, the pi-messages HTTP API and model providers",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
@@ -16,14 +16,22 @@
 		"./gateway": "./src/gateway.ts",
 		"./tool-names": "./src/tool-names.ts",
 		"./usage": "./src/usage.ts",
-		"./http": "./src/http.ts"
+		"./http": "./src/http.ts",
+		"./cpa-management": "./src/cpa-management.ts",
+		"./providers": "./src/providers.ts",
+		"./providers-sql": "./src/providers-sql.ts",
+		"./providers-http": "./src/providers-http.ts"
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
-		"@harbour/contracts": "workspace:*"
+		"@harbour/api": "workspace:*",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*"
 	},
 	"devDependencies": {
+		"@electric-sql/pglite": "0.5.12",
 		"@harbour/testing": "workspace:*",
-		"@harbour/vault": "workspace:*"
+		"@harbour/vault": "workspace:*",
+		"miniflare": "5.20261023.0-beta"
 	}
 }
