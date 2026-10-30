@@ -23,9 +23,9 @@
 		"directory": "../console/dist",
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
-		// The API, the health check and the browser viewer page (for its framing headers) always reach the Worker; every
-		// other path is the console.
-		"run_worker_first": ["/v1/*", "/healthz", "/browser/*"]
+		// The API, the health check, the browser viewer page (for its framing headers) and share links' pages always reach
+		// the Worker; every other path is the console.
+		"run_worker_first": ["/v1/*", "/healthz", "/browser/*", "/shared/*"]
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
 	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so. Code mode loads one per session
@@ -108,7 +108,7 @@
 				"directory": "../console/dist",
 				"binding": "ASSETS",
 				"not_found_handling": "single-page-application",
-				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*", "/browser/*"]
+				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*", "/browser/*", "/shared/*"]
 			},
 			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {

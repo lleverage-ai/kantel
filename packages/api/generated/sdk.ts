@@ -260,6 +260,36 @@ export interface EmbedBrowserBody {
 	readonly minutes?: number;
 }
 
+export interface FileShare {
+	/** The share's ID. */
+	readonly id: string;
+	/** The organisation. */
+	readonly organisationId: string;
+	/** The workspace the file is in. */
+	readonly workspaceId: string;
+	/** The file's path in the workspace. */
+	readonly path: string;
+	/** What the link's page calls the file. */
+	readonly title?: string;
+	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+	readonly access: ShareAccess;
+	/** The link's secret: the link is `/shared/<token>` on the deployment's hostname. Treat it as one. */
+	readonly token: string;
+	/** The person who shared the file, its owner. */
+	readonly createdBy: string;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	readonly invites: readonly ShareInvite[];
+	/** Epoch milliseconds, UTC. */
+	readonly revokedAt?: number;
+}
+
+export interface FileSharePage {
+	readonly items: readonly FileShare[];
+}
+
 /** The session's first prompt, sent as soon as it exists. */
 export interface FirstMessage {
 	/** The message's words. */
@@ -336,6 +366,11 @@ export interface ListSessionsQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+export interface ListSharesQuery {
+	/** Only this file's share. */
+	readonly path?: string;
 }
 
 export interface ListSkillsQuery {
@@ -745,6 +780,32 @@ export interface SessionWarmth {
 	readonly container: "started" | "running" | "skipped" | "unavailable";
 }
 
+/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+export type ShareAccess = "restricted" | "link";
+
+export interface ShareFileBody {
+	/** The file's path in the workspace. */
+	readonly path: string;
+	/** What the link's page calls it. */
+	readonly title?: string;
+	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+	readonly access?: ShareAccess;
+}
+
+export interface ShareInvite {
+	/** As invited. Harbour sends no email. */
+	readonly email: string;
+	/** The person who invited them. */
+	readonly invitedBy: string;
+	/** Epoch milliseconds, UTC. */
+	readonly invitedAt: number;
+}
+
+export interface ShareInviteBody {
+	/** Who to invite. */
+	readonly email: string;
+}
+
 export interface SkillFile {
 	/** A relative path inside the package, such as `SKILL.md` or `scripts/run.sh`. */
 	readonly path: string;
@@ -922,6 +983,13 @@ export interface UpdateScheduleBody {
 	/** Any JSON value. */
 	readonly payload?: JsonValue;
 	readonly check?: CheckSettings;
+}
+
+/** The fields to change; one left out stays as it is. */
+export interface UpdateShareBody {
+	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+	readonly access?: ShareAccess;
+	readonly title?: string;
 }
 
 export interface Usage {
@@ -1270,6 +1338,20 @@ export interface HarbourClient {
 		body: EmbedBrowserBody,
 		options?: CallOptions,
 	): Promise<BrowserEmbed>;
+	/** List a workspace's shares. The live shares of the workspace's files, or of one file, with their invites. Needs viewer on it. `GET /workspaces/{workspaceId}/shares` */
+	listShares(workspaceId: string, query?: ListSharesQuery, options?: CallOptions): Promise<FileSharePage>;
+	/** Share a file. The file's share, made if it has none: a file has one live share, and sharing it again returns that one unchanged. A new share is `restricted` unless `access` says otherwise. Needs operator on the workspace's project, as a person (never an agent or an API key). Audited as `workspace.share.created`, without the token. `POST /workspaces/{workspaceId}/shares` */
+	shareFile(workspaceId: string, body: ShareFileBody, options?: CallOptions): Promise<FileShare>;
+	/** Get a share. `GET /shares/{shareId}` */
+	getShare(shareId: string, options?: CallOptions): Promise<FileShare>;
+	/** Set a share's general access. `link` lets anyone with the link read the file; `restricted` stops the link at once, and `link` again restarts the same link. Needs operator, as a person. Audited as `workspace.share.changed`. `PATCH /shares/{shareId}` */
+	updateShare(shareId: string, body?: UpdateShareBody, options?: CallOptions): Promise<FileShare>;
+	/** Revoke a share. Its link stops for good; sharing the file again makes a new link. Needs operator, as a person. Audited as `workspace.share.revoked`. `DELETE /shares/{shareId}` */
+	revokeShare(shareId: string, options?: CallOptions): Promise<FileShare>;
+	/** Invite someone by email. Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person. `POST /shares/{shareId}/invites` */
+	inviteToShare(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
+	/** Remove an invite. `POST /shares/{shareId}/invites/remove` */
+	removeShareInvite(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -1373,6 +1455,32 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 					path: `/sessions/${encodeURIComponent(sessionId)}/browsers/${encodeURIComponent(browserSessionId)}/embed`,
 					body,
 				},
+				callOptions,
+			),
+		listShares: (workspaceId, query, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/workspaces/${encodeURIComponent(workspaceId)}/shares`, query },
+				callOptions,
+			),
+		shareFile: (workspaceId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/workspaces/${encodeURIComponent(workspaceId)}/shares`, body },
+				callOptions,
+			),
+		getShare: (shareId, callOptions) =>
+			send(options, { method: "GET", path: `/shares/${encodeURIComponent(shareId)}` }, callOptions),
+		updateShare: (shareId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/shares/${encodeURIComponent(shareId)}`, body }, callOptions),
+		revokeShare: (shareId, callOptions) =>
+			send(options, { method: "DELETE", path: `/shares/${encodeURIComponent(shareId)}` }, callOptions),
+		inviteToShare: (shareId, body, callOptions) =>
+			send(options, { method: "POST", path: `/shares/${encodeURIComponent(shareId)}/invites`, body }, callOptions),
+		removeShareInvite: (shareId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/shares/${encodeURIComponent(shareId)}/invites/remove`, body },
 				callOptions,
 			),
 	};

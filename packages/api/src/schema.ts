@@ -778,3 +778,69 @@ export const BrowserEmbed = Type.Object(
 	},
 	{ title: "BrowserEmbed" },
 );
+
+// Sharing (`FileShares`): a file an agent made, shared by invite or by link.
+
+export const ShareAccess = Type.Union([Type.Literal("restricted"), Type.Literal("link")], {
+	title: "ShareAccess",
+	description: "`restricted`: only those who can see the session's workspace. `link`: anyone with the link.",
+});
+
+export const ShareInvite = Type.Object(
+	{
+		email: Type.String({ description: "As invited. Harbour sends no email." }),
+		invitedBy: id("The person who invited them."),
+		invitedAt: Timestamp,
+	},
+	{ title: "ShareInvite" },
+);
+
+export const FileShare = Type.Object(
+	{
+		id: id("The share's ID."),
+		organisationId: id("The organisation."),
+		workspaceId: id("The workspace the file is in."),
+		path: Type.String({ description: "The file's path in the workspace." }),
+		title: Type.Optional(Type.String({ description: "What the link's page calls the file." })),
+		access: ShareAccess,
+		token: Type.String({
+			description: "The link's secret: the link is `/shared/<token>` on the deployment's hostname. Treat it as one.",
+		}),
+		createdBy: id("The person who shared the file, its owner."),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+		invites: Type.Array(ShareInvite),
+		revokedAt: Type.Optional(Timestamp),
+	},
+	{ title: "FileShare" },
+);
+
+export const FileSharePage = Type.Object({ items: Type.Array(FileShare) }, { title: "FileSharePage" });
+
+export const WorkspaceSharesPath = Type.Object({ workspaceId: id("The workspace's ID.") });
+
+export const ListSharesQuery = Type.Object(
+	{ path: Type.Optional(Type.String({ minLength: 1, description: "Only this file's share." })) },
+	{ title: "ListSharesQuery" },
+);
+
+export const ShareFileBody = Type.Object(
+	{
+		path: Type.String({ minLength: 1, description: "The file's path in the workspace." }),
+		title: Type.Optional(Type.String({ maxLength: 200, description: "What the link's page calls it." })),
+		access: Type.Optional(ShareAccess),
+	},
+	{ title: "ShareFileBody" },
+);
+
+export const SharePath = Type.Object({ shareId: id("The share's ID.") });
+
+export const UpdateShareBody = Type.Object(
+	{ access: Type.Optional(ShareAccess), title: Type.Optional(Type.String({ maxLength: 200 })) },
+	{ title: "UpdateShareBody", description: "The fields to change; one left out stays as it is." },
+);
+
+export const ShareInviteBody = Type.Object(
+	{ email: Type.String({ minLength: 3, maxLength: 254, description: "Who to invite." }) },
+	{ title: "ShareInviteBody" },
+);

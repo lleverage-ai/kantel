@@ -20,10 +20,14 @@
 		"./export": "./src/export.ts",
 		"./dependency-layers": "./src/dependency-layers.ts",
 		"./git-refs": "./src/git-refs.ts",
-		"./git-history": "./src/git-history.ts"
+		"./git-history": "./src/git-history.ts",
+		"./shares": "./src/shares.ts",
+		"./shares-api": "./src/shares-api.ts"
 	},
 	"dependencies": {
+		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*",
 		"isomorphic-git": "1.44.8"
 	},
 	"devDependencies": {

@@ -39,6 +39,7 @@ import {
 	type BrowserProvider,
 	type CallContext,
 	type Clock,
+	type FileShares,
 	type IdentityDirectory,
 	isHarbourError,
 	type LeaseEndReason,
@@ -84,6 +85,7 @@ import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
 import { createSkillsMountSource, sessionSkillVisibility } from "@harbour/workspace/mounts";
+import { createSqlFileShares, migrateFileShares } from "@harbour/workspace/shares";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
@@ -301,6 +303,8 @@ export interface Stack {
 	 * when that is sooner than the alarm already set.
 	 */
 	readonly schedules: Schedules;
+	/** The shares of workspace files (a document, a PDF), with SQL storage only; absent in memory. */
+	readonly shares?: FileShares;
 	/** Runs due schedules; the alarm wakes it. */
 	readonly scheduler: CloudflareScheduler;
 	readonly organisation: Organisation;
@@ -330,6 +334,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateSkills(driver);
 		await migrateMemory(driver);
 		await migrateSchedules(driver);
+		await migrateFileShares(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -678,6 +683,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
 			...(options.vault === undefined ? {} : { vault: options.vault }),
 			schedules,
+			...(driver === undefined ? {} : { shares: createSqlFileShares({ driver, workspaces, access, audit, clock }) }),
 			scheduler,
 			organisation,
 			project,

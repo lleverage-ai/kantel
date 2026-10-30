@@ -10,6 +10,7 @@ export * from "./passkey.ts";
 export * from "./sandbox.ts";
 export * from "./schedules.ts";
 export * from "./session.ts";
+export * from "./shares.ts";
 export * from "./skills.ts";
 export * from "./vault.ts";
 export * from "./workspace.ts";

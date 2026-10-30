@@ -1,5 +1,6 @@
 import type { PresentedFile } from "@harbour/protocol";
 import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { ShareButton, SharePopover, type SharePopoverProps } from "../documents/share-popover.tsx";
 import { IconButton } from "../primitives/button.tsx";
 import { XIcon } from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -10,7 +11,7 @@ import { fileViewerLineCap, formatBytes, textLines } from "../workspace/workspac
 import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
 import { DocxView, PptxView, SheetView } from "./office-view.tsx";
 import { PdfView } from "./pdf-view.tsx";
-import { type PresentedKind, presentedKind, presentedKindLabel } from "./presented-file-model.ts";
+import { type PresentedKind, presentedKind, presentedKindLabel, presentedTitle } from "./presented-file-model.ts";
 import "./file-panel.css";
 
 // The viewer a presented file opens in: a panel that slides in from the right, with the file's name, kind and size,
@@ -32,6 +33,8 @@ export type FilePanelProps = {
 	onDownload?: (() => void) | undefined;
 	/** Kinds the host renders itself (Office files, say), by kind; the panel shows anything else. */
 	renderers?: Partial<Record<PresentedKind, (content: Uint8Array, file: PresentedFile) => ReactNode>>;
+	/** Share and Export, from a Share button in the header. Absent, there is no Share. */
+	share?: Omit<SharePopoverProps, "title" | "onClose"> | undefined;
 };
 
 const decoder = new TextDecoder("utf-8");
@@ -184,16 +187,18 @@ function DownloadIcon() {
  * page, text and CSV as text, images fitted; other kinds say to download them unless the host renders them
  * (`renderers`). Escape closes it.
  */
-export function FilePanel({ file, state, onClose, onDownload, renderers }: FilePanelProps) {
+export function FilePanel({ file, state, onClose, onDownload, renderers, share }: FilePanelProps) {
 	const id = useId();
+	const [sharing, setSharing] = useState(false);
 	const kind = presentedKind(file);
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape" && !event.defaultPrevented) onClose();
+			// With the Share popover open, Escape is the popover's: it closes that, and the panel stays.
+			if (event.key === "Escape" && !event.defaultPrevented && !sharing) onClose();
 		};
 		document.addEventListener("keydown", onKey);
 		return () => document.removeEventListener("keydown", onKey);
-	}, [onClose]);
+	}, [onClose, sharing]);
 	return (
 		<aside className="hb-file-panel" aria-labelledby={id} data-kind={kind}>
 			<ViewerHeader
@@ -208,6 +213,14 @@ export function FilePanel({ file, state, onClose, onDownload, renderers }: FileP
 				}
 				actions={
 					<>
+						{share === undefined ? null : (
+							<span className="hb-share-anchor">
+								<ShareButton open={sharing} onToggle={() => setSharing((open) => !open)} />
+								{sharing ? (
+									<SharePopover {...share} title={presentedTitle(file)} onClose={() => setSharing(false)} />
+								) : null}
+							</span>
+						)}
 						{onDownload === undefined || state.status !== "ready" ? null : (
 							<IconButton
 								variant="ghost"
