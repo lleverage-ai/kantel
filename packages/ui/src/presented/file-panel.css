@@ -50,7 +50,7 @@
 }
 
 .hb-file-panel-prose {
-	padding: var(--hb-space-8) var(--hb-space-7) var(--hb-space-10);
+	padding: var(--hb-step-5) var(--hb-step-4) var(--hb-step-8);
 }
 
 .hb-file-panel-measure {
@@ -60,13 +60,13 @@
 }
 
 .hb-file-panel-sunken {
-	padding: var(--hb-space-5);
+	padding: var(--hb-step-2_5);
 	background: var(--hb-sunken);
 }
 
 .hb-file-panel-text {
 	margin: 0;
-	padding: var(--hb-space-5) var(--hb-space-6);
+	padding: var(--hb-step-2_5) var(--hb-step-3);
 	color: var(--hb-text);
 	font-family: var(--hb-font-mono);
 	font-size: var(--hb-text-code);
@@ -79,7 +79,7 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: var(--hb-space-5);
+	padding: var(--hb-step-2_5);
 	background: var(--hb-sunken);
 }
 
@@ -101,31 +101,31 @@
 .hb-file-panel-loading {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-4);
-	padding: var(--hb-space-8) var(--hb-space-7);
+	gap: var(--hb-step-2);
+	padding: var(--hb-step-5) var(--hb-step-4);
 }
 
 .hb-file-panel-message {
-	padding: var(--hb-space-6) var(--hb-space-6) 0;
+	padding: var(--hb-step-3) var(--hb-step-3) 0;
 }
 
 .hb-pdf-view {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-5);
+	gap: var(--hb-step-2_5);
 	min-width: 0;
 }
 
 .hb-pdf-loading {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 }
 
 .hb-pdf-pages {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-5);
+	gap: var(--hb-step-2_5);
 	min-width: 0;
 }
 

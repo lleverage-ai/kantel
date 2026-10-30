@@ -145,9 +145,9 @@
 .hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after {
 	content: "";
 	display: inline-block;
-	width: var(--hb-space-3);
+	width: var(--hb-step-1_5);
 	height: 1em;
-	margin-left: var(--hb-space-1);
+	margin-left: var(--hb-step-0_5);
 	vertical-align: -0.15em;
 	border-radius: var(--hb-radius-xs);
 	background: var(--hb-accent-text);

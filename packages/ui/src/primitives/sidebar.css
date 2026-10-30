@@ -1,5 +1,5 @@
 /* The sidebar: a head, a body that scrolls on its own, and a foot that stays. Every row in it shares one inset
-   (--hb-space-3 from the edge, --hb-space-5 inside the row), so icons, names and headings line up down the column. */
+   (--hb-step-1_5 from the edge, --hb-step-2_5 inside the row), so icons, names and headings line up down the column. */
 
 .hb-sidebar {
 	display: flex;
@@ -17,9 +17,9 @@
 	flex: none;
 	align-items: center;
 	justify-content: space-between;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-height: var(--hb-control-lg);
-	padding: var(--hb-space-4) var(--hb-space-3) var(--hb-space-4) calc(var(--hb-space-3) + var(--hb-space-5));
+	padding: var(--hb-step-2) var(--hb-step-1_5) var(--hb-step-2) calc(var(--hb-step-1_5) + var(--hb-step-2_5));
 }
 
 .hb-sidebar-brand {
@@ -39,9 +39,9 @@
 	display: flex;
 	flex: 1;
 	flex-direction: column;
-	gap: var(--hb-space-7);
+	gap: var(--hb-step-4);
 	min-height: 0;
-	padding: var(--hb-space-2) var(--hb-space-3) var(--hb-space-7);
+	padding: var(--hb-step-1) var(--hb-step-1_5) var(--hb-step-4);
 	overflow-y: auto;
 	overscroll-behavior: contain;
 }
@@ -50,15 +50,15 @@
 	display: flex;
 	flex: none;
 	flex-direction: column;
-	gap: var(--hb-space-5);
-	padding: var(--hb-space-5) var(--hb-space-3) var(--hb-space-4);
+	gap: var(--hb-step-2_5);
+	padding: var(--hb-step-2_5) var(--hb-step-1_5) var(--hb-step-2);
 	border-top: var(--hb-hairline) solid var(--hb-border);
 }
 
 /* Small and muted, like the session list's group headings: a shelf label, not a banner. */
 .hb-sidebar-heading {
-	margin: 0 0 var(--hb-space-2);
-	padding: 0 var(--hb-space-5);
+	margin: 0 0 var(--hb-step-1);
+	padding: 0 var(--hb-step-2_5);
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
 	font-weight: var(--hb-weight-medium);
@@ -68,7 +68,7 @@
 .hb-sidebar-items {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-1);
+	gap: var(--hb-step-0_5);
 	min-width: 0;
 	margin: 0;
 	padding: 0;
@@ -83,10 +83,10 @@
 .hb-sidebar-item {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
 	min-height: var(--hb-control-md);
-	padding: 0 var(--hb-space-5);
+	padding: 0 var(--hb-step-2_5);
 	border-radius: var(--hb-radius-control);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-sm);
@@ -190,7 +190,7 @@
 	flex: none;
 	width: var(--hb-control-xs);
 	height: var(--hb-control-xs);
-	margin-left: var(--hb-space-2);
+	margin-left: var(--hb-step-1);
 	padding: 0;
 	place-items: center;
 	border: 0;
@@ -212,10 +212,10 @@ button.hb-sidebar-project-toggle:hover {
 	display: flex;
 	flex: 1;
 	align-items: center;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	align-self: stretch;
 	min-width: 0;
-	padding: 0 var(--hb-space-5) 0 var(--hb-space-2);
+	padding: 0 var(--hb-step-2_5) 0 var(--hb-step-1);
 	border-radius: inherit;
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-md);
@@ -259,7 +259,7 @@ button.hb-sidebar-project-toggle:hover {
 	display: inline-flex;
 	flex: none;
 	align-items: center;
-	padding-right: var(--hb-space-2);
+	padding-right: var(--hb-step-1);
 	visibility: hidden;
 }
 
@@ -282,10 +282,10 @@ button.hb-sidebar-project-toggle:hover {
 .hb-sidebar-project-children {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
-	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-space-2) + var(--hb-control-xs) / 2);
-	padding-left: var(--hb-space-3);
+	margin: var(--hb-step-1) 0 var(--hb-step-2) calc(var(--hb-step-1) + var(--hb-control-xs) / 2);
+	padding-left: var(--hb-step-1_5);
 	border-left: var(--hb-hairline) solid var(--hb-border-strong);
 }
 
@@ -319,7 +319,7 @@ button.hb-sidebar-project-toggle:hover {
 }
 
 .hb-sidebar[data-collapsed] .hb-sidebar-body {
-	gap: var(--hb-space-5);
+	gap: var(--hb-step-2_5);
 }
 
 .hb-sidebar[data-collapsed] .hb-sidebar-item,

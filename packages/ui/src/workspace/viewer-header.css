@@ -13,7 +13,7 @@
 }
 
 .hb-viewer-back {
-	margin-left: calc(var(--hb-space-3) * -1);
+	margin-left: calc(var(--hb-step-1_5) * -1);
 }
 
 /* The chevron points right everywhere else; mirrored, it says "back" without an arrow glyph. */
@@ -26,7 +26,7 @@
 	display: flex;
 	flex: 1 1 0;
 	flex-direction: column;
-	gap: var(--hb-space-1);
+	gap: var(--hb-step-0_5);
 	min-width: 0;
 }
 
@@ -45,7 +45,7 @@
 .hb-viewer-facts {
 	display: flex;
 	align-items: baseline;
-	gap: var(--hb-space-5);
+	gap: var(--hb-step-2_5);
 	min-width: 0;
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
@@ -70,6 +70,6 @@
 	display: flex;
 	flex: none;
 	align-items: center;
-	gap: var(--hb-space-2);
-	margin-right: calc(var(--hb-space-3) * -1);
+	gap: var(--hb-step-1);
+	margin-right: calc(var(--hb-step-1_5) * -1);
 }

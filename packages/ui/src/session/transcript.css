@@ -83,13 +83,13 @@
 	50% {
 		box-shadow:
 			0 0 0 var(--hb-ring) var(--hb-accent),
-			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+			0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 
 	to {
 		box-shadow:
 			0 0 0 var(--hb-ring) transparent,
-			0 0 0 var(--hb-space-3) transparent;
+			0 0 0 var(--hb-step-1_5) transparent;
 	}
 }
 
@@ -97,12 +97,12 @@
 	from,
 	50% {
 		background: var(--hb-accent-soft);
-		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+		box-shadow: 0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 
 	to {
 		background: transparent;
-		box-shadow: 0 0 0 var(--hb-space-3) transparent;
+		box-shadow: 0 0 0 var(--hb-step-1_5) transparent;
 	}
 }
 
@@ -111,7 +111,7 @@
 		animation: none;
 		box-shadow:
 			0 0 0 var(--hb-ring) var(--hb-accent),
-			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+			0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 
 	.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-browsing, .hb-transcript-row-user)
@@ -119,7 +119,7 @@
 	.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
 		animation: none;
 		background: var(--hb-accent-soft);
-		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+		box-shadow: 0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 }
 
@@ -153,12 +153,12 @@
 .hb-transcript-drop {
 	position: absolute;
 	z-index: var(--hb-z-overlay);
-	inset: var(--hb-space-4);
+	inset: var(--hb-step-2);
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	gap: var(--hb-space-3);
+	gap: var(--hb-step-1_5);
 	border: var(--hb-ring) dashed var(--hb-drop-line);
 	border-radius: var(--hb-radius-bubble);
 	background: var(--hb-drop-fill);
@@ -166,7 +166,7 @@
 }
 
 .hb-transcript-drop-label {
-	padding: var(--hb-space-3) var(--hb-space-7);
+	padding: var(--hb-step-1_5) var(--hb-step-4);
 	border-radius: var(--hb-radius-full);
 	background: var(--hb-raised);
 	box-shadow: var(--hb-shadow-float);
@@ -176,7 +176,7 @@
 }
 
 .hb-transcript-drop-limits {
-	padding: var(--hb-space-1) var(--hb-space-5);
+	padding: var(--hb-step-0_5) var(--hb-step-2_5);
 	border-radius: var(--hb-radius-full);
 	background: var(--hb-raised);
 	color: var(--hb-text-muted);
@@ -188,12 +188,12 @@
 .hb-transcript-older {
 	position: absolute;
 	z-index: var(--hb-z-float);
-	top: var(--hb-space-5);
+	top: var(--hb-step-2_5);
 	left: 50%;
 	display: inline-flex;
 	align-items: center;
-	gap: var(--hb-space-3);
-	padding: var(--hb-space-2) var(--hb-space-6);
+	gap: var(--hb-step-1_5);
+	padding: var(--hb-step-1) var(--hb-step-3);
 	transform: translateX(-50%);
 	border-radius: var(--hb-radius-full);
 	background: var(--hb-raised);
@@ -205,7 +205,7 @@
 
 /* A failed page: the reason and "Try again", in the same pill. */
 .hb-transcript-older-error {
-	padding-right: var(--hb-space-2);
+	padding-right: var(--hb-step-1);
 	color: var(--hb-text);
 }
 
@@ -222,7 +222,7 @@
 .hb-transcript-scroll-end.hb-button {
 	position: absolute;
 	z-index: var(--hb-z-float);
-	bottom: var(--hb-space-7);
+	bottom: var(--hb-step-4);
 	left: 50%;
 	transform: translateX(-50%);
 	border-radius: var(--hb-radius-full);
@@ -233,7 +233,7 @@
 
 /* Docked, it sits just above the composer (T3 Code: the measured clearance plus 4px). */
 .hb-transcript-docked .hb-transcript-scroll-end.hb-button {
-	bottom: calc(var(--hb-transcript-dock-height) + var(--hb-space-2));
+	bottom: calc(var(--hb-transcript-dock-height) + var(--hb-step-1));
 }
 
 .hb-transcript-scroll-end.hb-button:hover:not(:disabled) {
@@ -245,7 +245,7 @@
 
 .hb-transcript-error {
 	flex: none;
-	padding: var(--hb-space-4) var(--hb-space-7) 0;
+	padding: var(--hb-step-2) var(--hb-step-4) 0;
 }
 
 .hb-transcript-empty {
@@ -254,14 +254,14 @@
 	align-items: center;
 	justify-content: center;
 	min-height: 0;
-	padding: 0 var(--hb-space-7);
+	padding: 0 var(--hb-step-4);
 }
 
 .hb-transcript-loading {
 	flex: 1;
 	min-height: 0;
 	overflow: hidden;
-	padding: var(--hb-space-7);
+	padding: var(--hb-step-4);
 }
 
 /* Docked, the empty state and the skeleton stay clear of the composer. */
@@ -273,8 +273,8 @@
 .hb-transcript-skeleton-turn {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-6);
-	padding-bottom: var(--hb-space-10);
+	gap: var(--hb-step-3);
+	padding-bottom: var(--hb-step-8);
 }
 
 .hb-transcript-skeleton-user .hb-skeleton {
@@ -286,7 +286,7 @@
 .hb-transcript-skeleton-tools {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-3);
+	gap: var(--hb-step-1_5);
 }
 
 @media (min-width: 640px) {
