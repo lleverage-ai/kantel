@@ -167,6 +167,12 @@
 	--hb-drop-line: color-mix(in srgb, var(--hb-accent) 60%, transparent);
 	--hb-popover-width: 20rem;
 	--hb-popover-height: 22rem;
+	--hb-share-width: 26rem; /* the Share popover on a document: invite, who has access, the link */
+	--hb-doc-width: 44rem; /* a document's measure in its panel, as a page */
+	--hb-doc-text: 15px; /* a document's body text: a page to read, a step up from the transcript */
+	--hb-doc-h1: 30px;
+	--hb-doc-h2: 21px;
+	--hb-doc-h3: 17px;
 	--hb-menu-width: 12rem; /* a short menu of choices, such as the composer's thinking levels */
 	--hb-picker-min: 6rem; /* the least a composer picker with a name shortens to before its row wraps */
 }

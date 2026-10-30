@@ -26,6 +26,25 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// Documents the agent writes (`create_document`): streamed in, edited in place, exported and shared.
+export { documentSlug, draftDocument } from "./documents/document-model.ts";
+export {
+	DocumentPanel,
+	type DocumentPanelProps,
+	type DocumentPanelStatus,
+	type DocumentSaveState,
+} from "./documents/document-panel.tsx";
+export { exportMarkdown, printDocument } from "./documents/export.ts";
+export {
+	type ShareAccess,
+	ShareButton,
+	type ShareControls,
+	type ShareExport,
+	type ShareInvite,
+	SharePopover,
+	type SharePopoverProps,
+	type ShareState,
+} from "./documents/share-popover.tsx";
 // Identity: a host app's API keys.
 export { ApiKeysPage, type ApiKeysPageProps } from "./identity/api-keys.tsx";
 export {
@@ -88,6 +107,7 @@ export { FilePanel, type FilePanelProps, type FilePanelState, saveFile } from ".
 export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
 // Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
 export {
+	DraftDocumentCard,
 	PresentedFileCard,
 	type PresentedFileCardProps,
 	PresentedFiles,

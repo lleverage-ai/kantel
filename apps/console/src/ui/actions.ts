@@ -1,6 +1,6 @@
 import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
 import type { ComposerProps, ComposerState } from "@harbour/ui";
-import type { SessionControl, WorkspaceFile } from "../api/client.ts";
+import type { SessionControl, WorkspaceFile, WrittenFile } from "../api/client.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
 /**
@@ -37,6 +37,11 @@ export type SessionActions = {
 	 * cards with nothing to open. Rejects with an `ApiError` (`too_large` for a file larger than the API serves).
 	 */
 	readPresented?: (file: PresentedFile, signal: AbortSignal) => Promise<WorkspaceFile>;
+	/**
+	 * Saves a document the person edited (`create_document`'s), only if it is still the digest they read. Absent, a
+	 * document opens read-only.
+	 */
+	writePresented?: (file: PresentedFile, markdown: string, ifMatch: string | undefined) => Promise<WrittenFile>;
 	/** The composer's model and thinking pickers, when the session offers a choice. */
 	pickers?: Pick<
 		ComposerProps,

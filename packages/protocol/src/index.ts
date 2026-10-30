@@ -50,6 +50,20 @@ export interface AssistantItem {
 	/** True while tokens are still arriving; deltas until then are provisional. */
 	readonly streaming: boolean;
 	readonly thinking?: string;
+	/**
+	 * The document the model is writing in a `create_document` call, while the answer streams: its title and the Markdown
+	 * so far. Gone once the answer is done, when the call's tool item presents the saved document instead.
+	 */
+	readonly document?: DraftDocument;
+}
+
+/** A document as it streams in (`create_document`'s arguments so far). */
+export interface DraftDocument {
+	/** The tool call writing it. */
+	readonly callId: string;
+	readonly title: string;
+	/** Its Markdown so far. */
+	readonly text: string;
 }
 
 export type ToolItemStatus = "running" | "done" | "error" | "interrupted";
@@ -83,6 +97,10 @@ export interface PresentedFile {
 	readonly size: number;
 	/** The first lines of a text file (Markdown, CSV, plain text), for the card; never more than a few hundred characters. */
 	readonly preview?: string;
+	/** A title to show for it rather than its name: a document's (`create_document`). */
+	readonly title?: string;
+	/** A document the agent wrote (`create_document`): Markdown the person edits in a document panel. */
+	readonly document?: boolean;
 }
 
 export interface ToolItem {
@@ -185,8 +203,16 @@ export type DeltaOp =
 	| { readonly op: "append"; readonly item: TranscriptItem }
 	/** Replaces the item with the same id, keeping the identity of every other item. */
 	| { readonly op: "replace"; readonly item: TranscriptItem }
-	/** Appends streamed text to an assistant item's `text` (or `thinking` when `field` is "thinking"). */
-	| { readonly op: "text"; readonly itemId: string; readonly append: string; readonly field?: "text" | "thinking" }
+	/**
+	 * Appends streamed text to an assistant item's `text` (or `thinking` when `field` is "thinking", or its draft
+	 * document's `text` when `field` is "document").
+	 */
+	| {
+			readonly op: "text";
+			readonly itemId: string;
+			readonly append: string;
+			readonly field?: "text" | "thinking" | "document";
+	  }
 	| { readonly op: "status"; readonly status: SessionStatus; readonly attention: Attention }
 	| { readonly op: "title"; readonly title: string }
 	| { readonly op: "usage"; readonly usage: Usage };

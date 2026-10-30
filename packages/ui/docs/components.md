@@ -231,6 +231,25 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
 - **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
   `formatBytes` and others), exported for hosts.
 
+## Documents
+
+A document the agent writes with `create_document`, after Claude Docs, in `src/documents/`. Presentational: the host
+reads and saves the file and passes the state in.
+
+- **`DocumentPanel`**: the right-hand panel: title, what's happening (Writing while it streams, then Saved, Saving,
+  Edited or Couldn't save), Share and Close, then the document as a page. While `status` is `streaming` the Markdown
+  so far renders with a caret after it; once `ready` it's a TipTap (ProseMirror) editor over Markdown with a sticky
+  toolbar of lucide icons (undo, redo, text, headings 1 to 3, bold, italic, strikethrough, code, lists, quote, table,
+  divider). The editor is its own chunk, loaded when a document first opens. `onChange` gives the Markdown after each
+  edit; without it the page is read-only.
+- **`SharePopover`** and **`ShareButton`**: Share and Export tabs, after Claude's. Share invites by email, lists who
+  has access (the owner, then each invite), sets general access (Only you, or Anyone with the link) and copies the
+  link; Export lists the host's exports. Without `sharing` the popover is Export alone.
+- **`exportMarkdown`** and **`printDocument`**: Export's Markdown (a `.md` download) and PDF (the print dialog with
+  only the document on light paper; its "Save as PDF" makes the file).
+- **`draftDocument`** and **`documentSlug`**: the draft the newest answer is streaming, and a title's file name.
+- **`DraftDocumentCard`** (in the transcript, from `AssistantMessage`): the card a streaming document becomes.
+
 ## Schedules
 
 The schedule form, in `src/schedules/form/`. The schedules page (list, detail, run history) is in `src/schedules/`

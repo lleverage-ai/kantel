@@ -1,4 +1,4 @@
-import type { Cursor, PresentedFile, ToolItem } from "@harbour/protocol";
+import type { Cursor, DraftDocument, PresentedFile, ToolItem } from "@harbour/protocol";
 import {
 	BrowserLiveView,
 	BrowserPanel,
@@ -8,6 +8,7 @@ import {
 	type ConnectionStateValue,
 	type Crumb,
 	DotsIcon,
+	draftDocument,
 	FileIcon,
 	IconButton,
 	Notice,
@@ -28,6 +29,7 @@ import {
 } from "./actions.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
+import { DocumentView, DraftDocumentView } from "./document-view.tsx";
 import { createAutoOpen } from "./presented.ts";
 import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
@@ -166,7 +168,7 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control, onFork, onEdit, browserLive, readPresented } = actions;
+	const { control, onFork, onEdit, browserLive, readPresented, writePresented } = actions;
 
 	// The presented file open in the viewer. A file a call presents for the first time while the screen is open opens
 	// on its own; any file opens from its card.
@@ -181,6 +183,17 @@ export function SessionView({
 	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
 	const closeFile = useCallback(() => setOpenFile(undefined), []);
 
+	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
+	// saved document then opens there as its call finishes, starting from the draft's text.
+	const draft = useMemo(() => draftDocument(state.items), [state.items]);
+	const [closedDraft, setClosedDraft] = useState<string>();
+	const shownDraft =
+		draft !== undefined && draft.callId !== closedDraft && readPresented !== undefined ? draft : undefined;
+	const lastDraft = useRef<DraftDocument>(undefined);
+	if (shownDraft !== undefined) lastDraft.current = shownDraft;
+	const closeDraft = useCallback(() => setClosedDraft(draft?.callId), [draft?.callId]);
+	const panelOpen = shownDraft !== undefined || openFile !== undefined;
+
 	// The session's browser, in the same place at the right: an open file takes it, and a browsing run's "Show
 	// browser" puts the browser back.
 	const browser = useSessionBrowser(state.items, focusBrowser);
@@ -192,7 +205,7 @@ export function SessionView({
 		},
 		[showPanelBrowser],
 	);
-	const browserPanel = openFile === undefined ? browser.panel : undefined;
+	const browserPanel = panelOpen ? undefined : browser.panel;
 	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
 	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
@@ -268,7 +281,7 @@ export function SessionView({
 				}
 			/>
 			<div
-				className={`console-main${openFile === undefined ? "" : " console-main-split"}${browserPanel === undefined ? "" : " console-main-browser"}`}
+				className={`console-main${panelOpen ? " console-main-split" : ""}${browserPanel === undefined ? "" : " console-main-browser"}`}
 			>
 				<div className="console-main-transcript">
 					<Profiled id="transcript-list">
@@ -355,9 +368,28 @@ export function SessionView({
 						/>
 					</Profiled>
 				</div>
-				{openFile === undefined || readPresented === undefined ? null : (
+				{shownDraft !== undefined ? (
 					<div className="console-file-panel">
-						<PresentedPanel key={presentedKey(openFile)} file={openFile} read={readPresented} onClose={closeFile} />
+						<DraftDocumentView key={shownDraft.callId} draft={shownDraft} onClose={closeDraft} />
+					</div>
+				) : openFile === undefined || readPresented === undefined ? null : (
+					<div className="console-file-panel">
+						{openFile.document === true ? (
+							<DocumentView
+								key={presentedKey(openFile)}
+								file={openFile}
+								read={readPresented}
+								write={writePresented}
+								onClose={closeFile}
+								initialText={
+									lastDraft.current !== undefined && lastDraft.current.title === openFile.title
+										? lastDraft.current.text
+										: undefined
+								}
+							/>
+						) : (
+							<PresentedPanel key={presentedKey(openFile)} file={openFile} read={readPresented} onClose={closeFile} />
+						)}
 					</div>
 				)}
 				{browserPanel === undefined ? null : (

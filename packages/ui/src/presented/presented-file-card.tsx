@@ -62,12 +62,27 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 		<button
 			type="button"
 			className={`hb-presented-card hb-presented-card-button hb-focusable${open ? " hb-presented-card-open" : ""}`}
-			aria-label={`Open ${file.name}`}
+			aria-label={`Open ${presentedTitle(file)}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
 		>
 			{body}
 		</button>
+	);
+});
+
+/** A document the agent is still writing (`create_document` streaming in), as the card it becomes. */
+export const DraftDocumentCard = memo(function DraftDocumentCard({ title }: { title: string }) {
+	return (
+		<div className="hb-presented-card hb-presented-card-draft" aria-live="polite">
+			<span className="hb-presented-icon" data-kind="markdown">
+				<FileText className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
+			</span>
+			<span className="hb-presented-text">
+				<span className="hb-presented-name">{title}</span>
+				<span className="hb-presented-facts">Writing the document</span>
+			</span>
+		</div>
 	);
 });
 

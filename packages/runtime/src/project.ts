@@ -15,6 +15,7 @@ import {
 	type AssistantItem,
 	attentionFor,
 	type DeltaOp,
+	type DraftDocument,
 	type NoticeItem,
 	type PresentedFile,
 	type SessionStatus,
@@ -42,7 +43,14 @@ export function harbourUserEntry(via: UserItemVia, requestId?: string): InputEnt
 
 /** The plain-language chip label of a tool call. */
 export function toolLabel(name: string, args?: unknown): string {
-	return browserToolLabel(name, args) ?? presentLabel(name, args) ?? `Calling ${name}`;
+	return browserToolLabel(name, args) ?? presentLabel(name, args) ?? documentLabel(name, args) ?? `Calling ${name}`;
+}
+
+/** `create_document`'s label: "Writing Quarterly plan". */
+function documentLabel(name: string, args: unknown): string | undefined {
+	if (name !== "create_document") return undefined;
+	const title = typeof args === "object" && args !== null ? (args as { title?: unknown }).title : undefined;
+	return typeof title === "string" && title.trim() !== "" ? `Writing ${title.trim()}` : "Writing a document";
 }
 
 /** `present_files`' label: "Presenting report.pdf", or "Presenting 3 files". */
@@ -161,7 +169,9 @@ export const MAX_PRESENTED_PREVIEW = 600;
 
 function presentedFile(value: unknown): PresentedFile | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
-	const { workspaceId, path, name, mimeType, size, preview } = value as { readonly [key: string]: unknown };
+	const { workspaceId, path, name, mimeType, size, preview, title, document } = value as {
+		readonly [key: string]: unknown;
+	};
 	if (typeof workspaceId !== "string" || workspaceId === "" || workspaceId.length > 200) return undefined;
 	if (typeof path !== "string" || path === "" || path.length > 1024) return undefined;
 	if (typeof name !== "string" || name === "" || name.length > 255) return undefined;
@@ -174,7 +184,44 @@ function presentedFile(value: unknown): PresentedFile | undefined {
 		mimeType,
 		size,
 		...(typeof preview === "string" && preview !== "" ? { preview: preview.slice(0, MAX_PRESENTED_PREVIEW) } : {}),
+		...(typeof title === "string" && title.trim() !== "" ? { title: title.trim().slice(0, MAX_PRESENTED_TITLE) } : {}),
+		...(document === true ? { document: true } : {}),
 	};
+}
+
+function withoutDocument(file: PresentedFile): PresentedFile {
+	if (file.document === undefined) return file;
+	const { document: _document, ...rest } = file;
+	return rest;
+}
+
+/** The longest title a presented file carries. */
+export const MAX_PRESENTED_TITLE = 200;
+
+/** The tools whose results present files: `present_files`, and `create_document` its document. */
+const PRESENTING_TOOLS = new Set(["present_files", "create_document"]);
+
+/**
+ * The document a partial answer is writing: the last `create_document` call in it, once its title has arrived. Its
+ * arguments are the provider's partial JSON parsed so far, so `content` grows as the model writes.
+ */
+export function draftDocumentOf(content: readonly ContentBlock[] | undefined): DraftDocument | undefined {
+	if (content === undefined) return undefined;
+	for (let index = content.length - 1; index >= 0; index--) {
+		const block = content[index];
+		if (block?.type !== "toolCall") continue;
+		const call = block as ToolCall;
+		if (call.name !== "create_document") continue;
+		const args = (typeof call.arguments === "object" && call.arguments !== null ? call.arguments : {}) as {
+			readonly title?: unknown;
+			readonly content?: unknown;
+		};
+		const title = typeof args.title === "string" ? args.title.trim().slice(0, MAX_PRESENTED_TITLE) : "";
+		const text = typeof args.content === "string" ? args.content : "";
+		if (title === "" && text === "") return undefined;
+		return { callId: call.id, title: title === "" ? "Untitled document" : title, text };
+	}
+	return undefined;
 }
 
 /** The files a tool result's UI details say it presented (`details.presentedFiles`), at most `MAX_PRESENTED_FILES`. */
@@ -323,7 +370,8 @@ export class ConversationProjector {
 		const at = answeredAt(message) ?? this.#now();
 		if (streaming !== undefined) {
 			this.#streaming = undefined;
-			const { thinking: _previous, ...rest } = streaming;
+			// The draft document goes: the call's tool item presents the saved one.
+			const { thinking: _previous, document: _draft, ...rest } = streaming;
 			// A finished answer is timed by when it was generated, not when it started streaming.
 			const item: AssistantItem = { ...rest, at, text, streaming: false, ...(thinking === "" ? {} : { thinking }) };
 			this.#entries.set(item.id, entry);
@@ -378,8 +426,14 @@ export class ConversationProjector {
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
 		const images = toolImagesOf(message);
 		const browserSessionId = toolBrowserSessionOf(message);
-		// Only `present_files` presents files: another tool's details can't put a card in the transcript.
-		const files = running.name === "present_files" && status === "done" ? toolPresentedFilesOf(message) : [];
+		// Only `present_files` and `create_document` present files: another tool's details can't put a card in the
+		// transcript, and only `create_document`'s are documents.
+		const files =
+			PRESENTING_TOOLS.has(running.name) && status === "done"
+				? toolPresentedFilesOf(message).map((file) =>
+						running.name === "create_document" ? { ...file, document: true } : withoutDocument(file),
+					)
+				: [];
 		const item: ToolItem = {
 			...running,
 			status,
@@ -396,24 +450,30 @@ export class ConversationProjector {
 		const partial = live?.generation?.message as AssistantMessage | undefined;
 		const text = partial === undefined ? "" : textOf(partial.content);
 		const thinking = partial === undefined ? "" : thinkingOf(partial.content);
+		const document = partial === undefined ? undefined : draftDocumentOf(partial.content);
 		const current = this.#streaming;
-		if (text === "" && thinking === "") {
+		if (text === "" && thinking === "" && document === undefined) {
 			// The answer entry claims a streaming item; one left when the run ends without it stops streaming here.
 			if (current !== undefined && live?.run === undefined) {
 				this.#streaming = undefined;
-				ops.push({ op: "replace", item: { ...current, streaming: false } });
+				const { document: _draft, ...rest } = current;
+				ops.push({ op: "replace", item: { ...rest, streaming: false } });
 			}
 			return;
 		}
+		const fields = {
+			text,
+			...(thinking === "" ? {} : { thinking }),
+			...(document === undefined ? {} : { document }),
+		};
 		if (current === undefined) {
 			this.#streamCount += 1;
 			const item: AssistantItem = {
 				kind: "assistant",
 				id: `p${this.#streamCount}`,
 				at: this.#now(),
-				text,
 				streaming: true,
-				...(thinking === "" ? {} : { thinking }),
+				...fields,
 			};
 			this.#streaming = item;
 			ops.push({ op: "append", item });
@@ -422,9 +482,18 @@ export class ConversationProjector {
 		const currentThinking = current.thinking ?? "";
 		const textGrows = text.startsWith(current.text);
 		const thinkingGrows = thinking.startsWith(currentThinking);
-		if (!textGrows || !thinkingGrows) {
-			const { thinking: _previous, ...rest } = current;
-			const item: AssistantItem = { ...rest, text, ...(thinking === "" ? {} : { thinking }) };
+		// A draft grows when it's the same call and title with more text; a new call, a new title or a shorter text replaces.
+		const draft = current.document;
+		const documentGrows =
+			document === undefined
+				? draft === undefined
+				: draft !== undefined &&
+					draft.callId === document.callId &&
+					draft.title === document.title &&
+					document.text.startsWith(draft.text);
+		if (!textGrows || !thinkingGrows || !documentGrows) {
+			const { thinking: _previous, document: _draft, ...rest } = current;
+			const item: AssistantItem = { ...rest, ...fields };
 			this.#streaming = item;
 			ops.push({ op: "replace", item });
 			return;
@@ -435,7 +504,10 @@ export class ConversationProjector {
 		if (text.length > current.text.length) {
 			ops.push({ op: "text", itemId: current.id, append: text.slice(current.text.length) });
 		}
-		this.#streaming = { ...current, text, ...(thinking === "" ? {} : { thinking }) };
+		if (document !== undefined && draft !== undefined && document.text.length > draft.text.length) {
+			ops.push({ op: "text", itemId: current.id, append: document.text.slice(draft.text.length), field: "document" });
+		}
+		this.#streaming = { ...current, ...fields };
 	}
 
 	#projectStatus(running: boolean, ops: DeltaOp[]): void {

@@ -71,6 +71,7 @@ import {
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
 } from "@harbour/runtime-cloudflare";
+import { CREATE_DOCUMENT_TOOL, createDocumentTool } from "@harbour/sandbox/documents";
 import { createPresentFilesTool, PRESENT_FILES_TOOL } from "@harbour/sandbox/present-files";
 import type { CheckExecutor } from "@harbour/schedules/handlers";
 import { createMemorySchedules } from "@harbour/schedules/memory";
@@ -243,8 +244,9 @@ export interface StackOptions {
 	readonly codemode?: SessionCodemodeOptions;
 	/**
 	 * Offers the experimental `present_files` tool (`@harbour/sandbox/present-files`) to every session with a workspace:
-	 * the files it presents show in the transcript as cards that open a viewer. Default off; the Worker turns it on unless
-	 * HARBOUR_PRESENT_FILES is `off`.
+	 * the files it presents show in the transcript as cards that open a viewer. With it comes `create_document`
+	 * (`@harbour/sandbox/documents`), a document the person edits, presented the same way. Default off; the Worker turns
+	 * them on unless HARBOUR_PRESENT_FILES is `off`.
 	 */
 	readonly presentFiles?: boolean;
 	/**
@@ -464,12 +466,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// With a browser provider, every session also gets the browser's tools, bound to it (`src/browser.ts`).
 		// With code mode, a session that has any of those gets `codemode` too, whose scripts call them; its isolate is loaded
 		// by the first script, not before (`src/codemode.ts`).
-		// With `presentFiles`, a session on a workspace gets `present_files` for it too.
+		// With `presentFiles`, a session on a workspace gets `present_files` and `create_document` for it too.
 		tools: (record: SessionRecord) => {
 			const coding = codingToolsFor(record);
 			const present =
 				options.presentFiles === true && record.workspaceId !== undefined
-					? [createPresentFilesTool(record.workspaceId)]
+					? [createPresentFilesTool(record.workspaceId), createDocumentTool(record.workspaceId)]
 					: [];
 			const tools = browser === undefined ? [...coding, ...present] : [...coding, ...present, ...browser.tools(record)];
 			const codemode = options.codemode;
@@ -582,7 +584,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			// through their schemas; Harbour adds no prompt about them.
 			tools: [
 				...CODING_TOOLS,
-				...(options.presentFiles === true ? [PRESENT_FILES_TOOL] : []),
+				...(options.presentFiles === true ? [PRESENT_FILES_TOOL, CREATE_DOCUMENT_TOOL] : []),
 				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
 				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
 				...(options.subagents === true ? [SUBAGENT_TOOL] : []),

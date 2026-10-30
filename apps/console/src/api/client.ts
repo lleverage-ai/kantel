@@ -129,6 +129,14 @@ export type WorkspaceFile = {
 	readonly contentType: string;
 	/** The workspace version that last changed it, or a mount's pinned version. */
 	readonly version: number | string;
+	/** Its digest (the read API's `ETag`), for writing it back only if it hasn't changed since. */
+	readonly digest?: string;
+};
+
+/** A file written back: the workspace version that wrote it, and its new digest. */
+export type WrittenFile = {
+	readonly version: number;
+	readonly digest?: string;
 };
 
 /**
@@ -141,6 +149,11 @@ export interface WorkspaceFiles {
 	/** A directory's entries; `""` is the root and `/project` a mount. Every page, up to a cap. */
 	list(path: string, signal?: AbortSignal): Promise<WorkspaceListing>;
 	read(path: string, signal?: AbortSignal): Promise<WorkspaceFile>;
+	/**
+	 * Writes one file (a document the person edited) through `PUT /v1/workspaces/{id}/content`, only if it is still the
+	 * digest `ifMatch` names; rejects with the code `conflict` when it changed. Absent on a client that can't write.
+	 */
+	write?(path: string, content: string, ifMatch: string | undefined): Promise<WrittenFile>;
 }
 
 /** A watch-only live view of one of a session's browsers: the link to embed, and when it stops working (epoch ms). */

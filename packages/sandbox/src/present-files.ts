@@ -33,6 +33,8 @@ export type PresentedFileDetails = {
 	readonly mimeType: string;
 	readonly size: number;
 	readonly preview?: string;
+	/** A title to show rather than its name: a document's (`./documents.ts`). */
+	readonly title?: string;
 };
 
 const MEDIA_TYPES: { readonly [extension: string]: string } = {
