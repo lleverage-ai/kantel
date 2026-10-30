@@ -477,6 +477,12 @@ export interface SessionFilter {
 	readonly agentId?: AgentId;
 	readonly status?: SessionStatus;
 	readonly parentSessionId?: SessionId;
+	/**
+	 * Proposed (30 Oct 2026, session control parity): the sessions that run in this workspace. Several sessions can share
+	 * one workspace (`CreateSessionInput.workspaceId`), each its own conversation with its own history, as boat.dev runs
+	 * several conversations in one sandbox; this lists them.
+	 */
+	readonly workspaceId?: WorkspaceId;
 	/** Every label given must match. */
 	readonly labels?: { readonly [key: string]: string };
 }

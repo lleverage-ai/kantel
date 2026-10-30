@@ -6,6 +6,7 @@
 
 import { HistoryQuery, ServerFrame, SessionHistoryPage, StreamQuery } from "./protocol-schema.ts";
 import { defineRoute } from "./route.ts";
+import { PendingRun, RunResult, RunResultQuery } from "./run-schema.ts";
 import {
 	AbortSessionBody,
 	BrowserEmbed,
@@ -20,6 +21,7 @@ import {
 	EmbedBrowserBody,
 	FileShare,
 	FileSharePage,
+	ForkSessionBody,
 	ImportSkillBody,
 	ListConceptsQuery,
 	ListSchedulesQuery,
@@ -33,15 +35,18 @@ import {
 	MemorySpacePage,
 	MemorySpacePath,
 	MessageBody,
+	NewSessionModelsQuery,
 	OccurrencePage,
 	PageQuery,
 	PreviewScheduleQuery,
+	ProfilePath,
 	Recall,
 	RecallBody,
 	Schedule,
 	SchedulePage,
 	SchedulePath,
 	SchedulePreview,
+	SessionModelState,
 	SessionPage,
 	SessionPath,
 	SessionRecord,
@@ -122,7 +127,10 @@ export const abortSession = defineRoute({
 	path: "/sessions/{sessionId}/abort",
 	tag: "sessions",
 	summary: "Abort a session's run",
-	description: "Stops what the session is doing now. The session stays open and takes new messages.",
+	description:
+		"Interrupts the session's run in progress, and its child sessions' runs. The conversation keeps its history, and " +
+		"files the run changed stay changed; what the run held ends (its browsers, sandbox leases and grants). The " +
+		"run's result is `aborted`. The session stays open and takes new messages.",
 	params: SessionPath,
 	body: AbortSessionBody,
 	answer: { status: 204, description: "Aborted." },
@@ -136,8 +144,9 @@ export const sendMessage = defineRoute({
 	tag: "messages",
 	summary: "Send a message",
 	description:
-		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the " +
-		"session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers " +
+		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's " +
+		"`model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` " +
+		"says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers " +
 		"the first call's submission without sending anything, and one with another `via` is a `conflict`.",
 	params: SessionPath,
 	body: MessageBody,
@@ -179,6 +188,73 @@ export const getSessionHistory = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "not_supported"],
 });
 
+export const getRunResult = defineRoute({
+	operationId: "getRunResult",
+	method: "GET",
+	path: "/sessions/{sessionId}/result",
+	tag: "messages",
+	summary: "Wait for a message's run to end",
+	description:
+		"How the run that a message started or joined ended: `answered` with its final answer, `failed` or `aborted`. " +
+		"Waits up to `timeoutMs` for it and answers 202 `pending` while it goes on, so a host that holds no stream " +
+		"polls this until it ends. A steer's result is the run that acted on it: the run in progress when the steer " +
+		"reached its next model call, or, when it arrived as that run gave its final answer, the run it started straight " +
+		"after on the same conversation. Needs viewer on the session.",
+	params: SessionPath,
+	query: RunResultQuery,
+	answer: { status: 200, description: "The run has ended.", schema: RunResult },
+	otherAnswers: [{ status: 202, description: "The run is still going.", schema: PendingRun }],
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
+export const getSessionModels = defineRoute({
+	operationId: "getSessionModels",
+	method: "GET",
+	path: "/sessions/{sessionId}/models",
+	tag: "messages",
+	summary: "List the models a session may switch to",
+	description:
+		"For a model and thinking picker: the models a message's `model` may name, what the session runs with now and " +
+		"what its agent profile names. Naming another model on a message switches the session from that run on (a " +
+		"steer's from the run's next model call) and keeps the conversation's context. Needs viewer on the session.",
+	params: SessionPath,
+	answer: { status: 200, description: "The session's models.", schema: SessionModelState },
+	errors: ["forbidden", "not_found", "not_supported"],
+});
+
+export const getNewSessionModels = defineRoute({
+	operationId: "getNewSessionModels",
+	method: "GET",
+	path: "/profiles/{agentId}/models",
+	tag: "messages",
+	summary: "List the models a new session could use",
+	description:
+		"What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a " +
+		"New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator " +
+		"on the project, as creating the session does.",
+	params: ProfilePath,
+	query: NewSessionModelsQuery,
+	answer: { status: 200, description: "The models a new session would list.", schema: SessionModelState },
+	errors: ["invalid", "forbidden", "not_found", "not_supported"],
+});
+
+export const forkSession = defineRoute({
+	operationId: "forkSession",
+	method: "POST",
+	path: "/sessions/{sessionId}/fork",
+	tag: "sessions",
+	summary: "Fork a session from an answer",
+	description:
+		"Starts a new session in the same project, with the same agent profile and workspace, whose history is this " +
+		"session's up to and including the answer `itemId` names: a second conversation that carries the first one's " +
+		"context and goes its own way. It starts idle. The source session is unchanged. Needs operator on the project; an " +
+		"item that is not an answer in the session's transcript is `not_found`.",
+	params: SessionPath,
+	body: ForkSessionBody,
+	answer: { status: 201, description: "The new session.", schema: SessionRecord },
+	errors: ["invalid", "forbidden", "not_found", "not_supported"],
+});
+
 /** The session plane's routes, served by `@harbour/runtime/http`. */
 export const warmSession = defineRoute({
 	operationId: "warmSession",
@@ -201,7 +277,11 @@ export const sessionRoutes = {
 	getSession,
 	closeSession,
 	abortSession,
+	forkSession,
 	sendMessage,
+	getRunResult,
+	getSessionModels,
+	getNewSessionModels,
 	warmSession,
 	streamSession,
 	getSessionHistory,

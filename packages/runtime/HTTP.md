@@ -38,15 +38,17 @@ Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 M
 The routes in Harbour's public API are defined once in `@harbour/api` (`packages/api/src/routes.ts`), with their
 schemas; the server answers them through that package's router, which checks the path, query and body before the
 contract call, and the OpenAPI document and TS SDK are generated from the same definitions. They are `POST /sessions`,
-`GET /sessions`, `GET /sessions/:id`, `POST /sessions/:id/abort`, `POST /sessions/:id/close` and
-`POST /sessions/:id/messages` (prompt, steer or follow-up by `via`, with an `Idempotency-Key`),
-`GET /sessions/:id/stream` (the `events` handler below: WebSocket or SSE) and `GET /sessions/:id/history` so far. The rest of
-this table moves there route by route (#150); until then those routes are served as before.
+`GET /sessions`, `GET /sessions/:id`, `POST /sessions/:id/abort`, `POST /sessions/:id/close`,
+`POST /sessions/:id/fork`, `POST /sessions/:id/messages` (prompt, steer or follow-up by `via`, with an
+`Idempotency-Key`), `GET /sessions/:id/result`, `GET /sessions/:id/models`, `GET /profiles/:id/models`,
+`POST /sessions/:id/warm`, `GET /sessions/:id/stream` (the `events` handler below: WebSocket or SSE) and
+`GET /sessions/:id/history` so far. The rest of this table moves there route by route (#150); until then those routes
+are served as before. A public route answers before the table's route at the same path, with the same answers.
 
 | Route | Contract call | Answer |
 | --- | --- | --- |
 | `POST /sessions` | `runtime.create` (body `CreateSessionInput`) | 201 `SessionRecord` |
-| `GET /sessions?projectId&agentId&status&parentSessionId&label.<key>=<value>&limit&cursor` | `directory.list` | `Page<SessionRecord>` |
+| `GET /sessions?projectId&agentId&status&parentSessionId&workspaceId&label.<key>=<value>&limit&cursor` | `directory.list` | `Page<SessionRecord>` |
 | `GET /sessions/:id` | `directory.get` | `SessionRecord` |
 | `GET /sessions/:id/children` | `directory.children` | `{ items }` |
 | `GET /sessions/:id/snapshot` | `runtime.snapshot` | `SessionSnapshot` |
@@ -81,7 +83,8 @@ name, what it runs with now (`selected`) and what its agent profile names (`defa
 session in `projectId` would get, so a New session screen can offer the choice; the first prompt carries it. A prompt's
 `model` and `thinking` stay with the session for its later runs (and from a steer's next model call); an unknown model
 or level is `invalid`, and a level the model lacks runs as its nearest one. Without `models` both routes are
-`not_found` and prompts still take the fields.
+`not_supported` (they were `not_found` before they joined the public API) and prompts still take the fields. Without
+`branching`, `fork` is `not_supported` too and `edit` is `not_found`.
 
 `result` waits up to `timeoutMs` (default 25 s, at most 120 s) and answers 202 while the run goes on; the client polls
 until it ends. Submission IDs hold a `/`, which is why they go in the query.
