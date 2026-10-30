@@ -23,7 +23,8 @@
 		"@harbour/contracts": "workspace:*",
 		"@harbour/memory": "workspace:*",
 		"@harbour/protocol": "workspace:*",
-		"@harbour/skills": "workspace:*"
+		"@harbour/skills": "workspace:*",
+		"jpeg-js": "0.4.4"
 	},
 	"devDependencies": {
 		"@harbour/browser": "workspace:*",

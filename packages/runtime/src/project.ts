@@ -66,7 +66,23 @@ export function harbourUserEntry(
 
 /** The plain-language chip label of a tool call. */
 export function toolLabel(name: string, args?: unknown): string {
-	return browserToolLabel(name, args) ?? presentLabel(name, args) ?? documentLabel(name, args) ?? `Calling ${name}`;
+	return (
+		browserToolLabel(name, args) ??
+		presentLabel(name, args) ??
+		documentLabel(name, args) ??
+		imageLabel(name, args) ??
+		`Calling ${name}`
+	);
+}
+
+/** `generate_image`'s label: "Making an image", "Making 2 images", or "Editing an image" from reference images. */
+function imageLabel(name: string, args: unknown): string | undefined {
+	if (name !== "generate_image") return undefined;
+	const input = typeof args === "object" && args !== null ? (args as { readonly [key: string]: unknown }) : {};
+	const count = typeof input.count === "number" && Number.isInteger(input.count) && input.count > 1 ? input.count : 1;
+	const editing = Array.isArray(input.reference_images) && input.reference_images.length > 0;
+	const what = count === 1 ? "an image" : `${count} images`;
+	return `${editing ? "Editing" : "Making"} ${what}`;
 }
 
 /** `create_document`'s label: "Writing Quarterly plan". */
@@ -192,7 +208,7 @@ export const MAX_PRESENTED_PREVIEW = 600;
 
 function presentedFile(value: unknown): PresentedFile | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
-	const { workspaceId, path, name, mimeType, size, preview, title, document } = value as {
+	const { workspaceId, path, name, mimeType, size, preview, title, document, model } = value as {
 		readonly [key: string]: unknown;
 	};
 	if (typeof workspaceId !== "string" || workspaceId === "" || workspaceId.length > 200) return undefined;
@@ -209,6 +225,7 @@ function presentedFile(value: unknown): PresentedFile | undefined {
 		...(typeof preview === "string" && preview !== "" ? { preview: preview.slice(0, MAX_PRESENTED_PREVIEW) } : {}),
 		...(typeof title === "string" && title.trim() !== "" ? { title: title.trim().slice(0, MAX_PRESENTED_TITLE) } : {}),
 		...(document === true ? { document: true } : {}),
+		...(typeof model === "string" && model.trim() !== "" ? { model: model.trim().slice(0, MAX_PRESENTED_TITLE) } : {}),
 	};
 }
 
@@ -218,11 +235,20 @@ function withoutDocument(file: PresentedFile): PresentedFile {
 	return rest;
 }
 
+function withoutModel(file: PresentedFile): PresentedFile {
+	if (file.model === undefined) return file;
+	const { model: _model, ...rest } = file;
+	return rest;
+}
+
 /** The longest title a presented file carries. */
 export const MAX_PRESENTED_TITLE = 200;
 
-/** The tools whose results present files: `present_files`, and `create_document` its document. */
-const PRESENTING_TOOLS = new Set(["present_files", "create_document"]);
+/**
+ * The tools whose results present files: `present_files`, `create_document` its document, and `generate_image` the
+ * images it made.
+ */
+const PRESENTING_TOOLS = new Set(["present_files", "create_document", "generate_image"]);
 
 /**
  * The document a partial answer is writing: the last `create_document` call in it, once its title has arrived. Its
@@ -521,13 +547,15 @@ export class ConversationProjector {
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
 		const images = toolImagesOf(message);
 		const browserSessionId = toolBrowserSessionOf(message);
-		// Only `present_files` and `create_document` present files: another tool's details can't put a card in the
-		// transcript, and only `create_document`'s are documents.
+		// Only `present_files`, `create_document` and `generate_image` present files: another tool's details can't put a
+		// card in the transcript, and only `create_document`'s are documents. Only `generate_image` says which model made a
+		// file.
 		const files =
 			PRESENTING_TOOLS.has(running.name) && status === "done"
-				? toolPresentedFilesOf(message).map((file) =>
-						running.name === "create_document" ? { ...file, document: true } : withoutDocument(file),
-					)
+				? toolPresentedFilesOf(message).map((file) => {
+						const shown = running.name === "create_document" ? { ...file, document: true } : withoutDocument(file);
+						return running.name === "generate_image" ? shown : withoutModel(shown);
+					})
 				: [];
 		const item: ToolItem = {
 			...running,

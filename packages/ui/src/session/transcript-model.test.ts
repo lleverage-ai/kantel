@@ -10,10 +10,12 @@ import {
 	groupTranscript,
 	isTurn,
 	messageKeys,
+	repeatedImageFiles,
 	rowOfTurn,
 	sessionBrowsers,
 	type TranscriptRow,
 	turnAnchor,
+	turnFolds,
 	workingPlacement,
 } from "./transcript-model.ts";
 
@@ -525,5 +527,87 @@ describe("workingPlacement, the header", () => {
 
 	it("has no place for the header when the turn's message is in an older page", () => {
 		expect(place([tool("t1", "bash", "Ran ls")])).toEqual({ headerAfter: -1, activity: true });
+	});
+});
+
+describe("turnFolds", () => {
+	const folds = (items: readonly TranscriptItem[], working = false) => {
+		const rows = groupTranscript(items);
+		const found = turnFolds(rows, working);
+		return [...new Set(found.values())].map((fold) => ({ ...fold, rows: [...fold.rows] }));
+	};
+
+	it("folds a finished turn's work, and the words before its answer, under one line", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Draw a lighthouse.", 100),
+			assistant("a1", "Making it.", { secondsAgo: 95 }),
+			tool("t1", "generate_image", "Making an image", { secondsAgo: 90 }),
+			assistant("a2", "Checking it.", { secondsAgo: 60 }),
+			tool("t2", "present_files", "Presenting lighthouse.png", { secondsAgo: 50 }),
+			assistant("a3", "Here it is.", { secondsAgo: 28 }),
+		];
+		expect(folds(items)).toEqual([{ id: "a1", rows: ["a1", "t1", "a2", "t2"], elapsed: 72_000, steps: 2 }]);
+	});
+
+	it("leaves the person's message, the answer, notices and cards out", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Fix it.", 100),
+			tool("t1", "read", "Read a.md", { secondsAgo: 90 }),
+			notice("n1", "warning", "The last command may have partly run."),
+			tool("t2", "edit", "Edited a.md", { secondsAgo: 80 }),
+			assistant("a1", "Fixed.", { secondsAgo: 70 }),
+		];
+		const [fold] = folds(items);
+		expect(fold?.rows).toEqual(["t1", "t2"]);
+	});
+
+	it("doesn't fold the turn under way, or a finished turn with no answer", () => {
+		expect(folds(liveTurn, true)).toEqual([]);
+		const stopped: TranscriptItem[] = [
+			user("u1", "Fix it.", 100),
+			tool("t1", "read", "Read a.md", { secondsAgo: 90 }),
+			tool("t2", "bash", "Ran pnpm test", { status: "interrupted", secondsAgo: 80 }),
+		];
+		expect(folds(stopped)).toEqual([]);
+	});
+
+	it("folds earlier turns while the last one works", () => {
+		const found = folds([...finishedTurn, ...liveTurn], true);
+		expect(found.map((fold) => fold.rows)).toEqual([["t1"]]);
+	});
+
+	it("doesn't fold a turn whose answer is the only thing in it", () => {
+		expect(folds([user("u1", "Hi."), assistant("a1", "Hello.")])).toEqual([]);
+	});
+
+	it("keeps a steer in its turn, and out of the fold", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Fix it.", 100),
+			tool("t1", "read", "Read a.md", { secondsAgo: 90 }),
+			{ ...user("u2", "Use the new API.", 85), via: "steer" },
+			tool("t2", "edit", "Edited a.md", { secondsAgo: 80 }),
+			assistant("a1", "Fixed.", { secondsAgo: 70 }),
+		];
+		expect(folds(items).map((fold) => fold.rows)).toEqual([["t1", "t2"]]);
+	});
+
+	it("keeps each unchanged fold's identity", () => {
+		const rows = groupTranscript(finishedTurn);
+		const first = turnFolds(rows, false);
+		const again = turnFolds(groupTranscript(finishedTurn, rows), false, first);
+		expect(again.get("t1")).toBe(first.get("t1"));
+	});
+});
+
+describe("repeatedImageFiles", () => {
+	const file = { workspaceId: "ws", path: "images/a.png", name: "a.png", mimeType: "image/png", size: 1 };
+	it("names the files a later call presents again that generate_image showed", () => {
+		const made: ToolItem = { ...tool("t1", "generate_image", "Making an image"), files: [{ ...file, model: "m" }] };
+		const presented: ToolItem = {
+			...tool("t2", "present_files", "Presenting a.png"),
+			files: [file, { ...file, path: "out/b.md", name: "b.md" }],
+		};
+		const rows = groupTranscript([user("u1", "Go"), made, assistant("a1", "Here."), presented]);
+		expect([...repeatedImageFiles(rows)]).toEqual([["t2", "ws:images/a.png"]]);
 	});
 });

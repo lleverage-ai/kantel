@@ -291,6 +291,135 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 	return ids;
 }
 
+/**
+ * A finished turn's work, folded under one "Worked for 1m 12s" line, after T3 Code's turn folds (`deriveTurnFolds` in
+ * pingdotgg/t3code's `MessagesTimeline.logic.ts`): every call, browsing run, subagent and word the agent said before
+ * its answer. The answer stays out of it, and so do the person's steers, cards and notices. The rows stay rows of the
+ * transcript (a folded one shows only what must stay in view, such as the files a call presented), so folding a turn
+ * when it ends never changes how many rows the list has.
+ */
+export type TurnFold = {
+	/** The first folded row's id: that row carries the fold's line. */
+	readonly id: string;
+	/** The folded rows' ids, in order. */
+	readonly rows: readonly string[];
+	/** How long the turn took: from the person's message (else the first folded row) to the answer, in ms. */
+	readonly elapsed: number;
+	/** The tool calls it folds, a subagent counted as one. */
+	readonly steps: number;
+};
+
+/** The tool calls in a row, a subagent counted as one. */
+function rowSteps(row: TranscriptRow): number {
+	if (row.kind === "item") return 0;
+	if (row.kind === "subagent") return 1;
+	return row.items.filter((step) => step.kind === "tool").length;
+}
+
+/**
+ * The files a later call presents again that `generate_image` already showed as pictures (an agent used to present
+ * each image it made): by row, the keys (`workspaceId:path`) joined by newlines, a string so a row's props compare
+ * equal while they don't change. Their cards would repeat the pictures above them.
+ */
+export function repeatedImageFiles(rows: readonly TranscriptRow[]): ReadonlyMap<string, string> {
+	const shown = new Set<string>();
+	const repeated = new Map<string, string>();
+	for (const row of rows) {
+		if (row.kind !== "tools") continue;
+		const keys: string[] = [];
+		for (const item of row.items) {
+			if (item.status !== "done") continue;
+			for (const file of item.files ?? []) {
+				const key = `${file.workspaceId}:${file.path}`;
+				if (item.name === "generate_image") shown.add(key);
+				else if (shown.has(key)) keys.push(key);
+			}
+		}
+		if (keys.length > 0) repeated.set(row.id, keys.join("\n"));
+	}
+	return repeated;
+}
+
+/** When a row's work started, for a fold with no message of the person's loaded before it. */
+function rowStart(row: TranscriptRow): number {
+	if (row.kind === "item" || row.kind === "subagent") return row.item.at;
+	return row.items[0]?.at ?? 0;
+}
+
+/** A row a finished turn folds: its calls, browsing runs, subagents and the agent's words before the answer. */
+const foldable = (row: TranscriptRow): boolean => row.kind !== "item" || row.item.kind === "assistant";
+
+/** A row still doing something: a call running, or an answer streaming. Its turn isn't finished. */
+function busy(row: TranscriptRow): boolean {
+	if (row.kind === "item") return row.item.kind === "assistant" && row.item.streaming;
+	if (row.kind === "subagent") return row.item.status === "running";
+	return row.items.some((step) => (step.kind === "tool" ? step.status === "running" : step.streaming));
+}
+
+/** A turn starts at a message the person sent, other than a steer (a steer joins the turn under way). */
+const startsTurn = (row: TranscriptRow): boolean =>
+	row.kind === "item" && row.item.kind === "user" && row.item.via !== "steer";
+
+/**
+ * Each finished turn's fold, by the id of every row it folds. A turn folds once it has ended with an answer: an answer
+ * with words, after all of the turn's work. One that stopped without an answer (it failed, or was stopped) stays
+ * unfolded, so what happened stays in view, as T3 Code leaves a failed run open. With `working`, the last turn is under
+ * way and doesn't fold: its work streams at the top level until it ends. Pass the previous result as `previous` to keep
+ * each unchanged fold's identity, so only the rows of a fold that changed render again.
+ */
+export function turnFolds(
+	rows: readonly TranscriptRow[],
+	working: boolean,
+	previous?: ReadonlyMap<string, TurnFold>,
+): ReadonlyMap<string, TurnFold> {
+	const folds = new Map<string, TurnFold>();
+	const starts: number[] = [];
+	for (const [index, row] of rows.entries()) if (startsTurn(row)) starts.push(index);
+	// A page that starts mid-turn: its first rows are the end of a turn whose message isn't loaded.
+	if (starts[0] !== 0) starts.unshift(-1);
+	for (const [turn, start] of starts.entries()) {
+		const end = starts[turn + 1] ?? rows.length;
+		if (working && end === rows.length) continue;
+		let answer = -1;
+		for (let index = end - 1; index > start; index--) {
+			const row = rows[index];
+			if (row === undefined || !foldable(row)) continue;
+			if (row.kind === "item" && row.item.kind === "assistant" && row.item.text.trim() !== "") answer = index;
+			break;
+		}
+		if (answer < 0) continue;
+		const members: string[] = [];
+		let unfinished = false;
+		let steps = 0;
+		for (let index = start + 1; index < answer; index++) {
+			const row = rows[index];
+			if (row === undefined || !foldable(row)) continue;
+			if (busy(row)) unfinished = true;
+			steps += rowSteps(row);
+			members.push(row.id);
+		}
+		const first = rows[start + 1];
+		const answered = rows[answer];
+		if (unfinished || members.length === 0 || first === undefined || answered?.kind !== "item") continue;
+		const opened = start >= 0 ? rows[start] : undefined;
+		const began = opened?.kind === "item" ? opened.item.at : rowStart(first);
+		const id = members[0] as string;
+		const elapsed = Math.max(0, answered.item.at - began);
+		const before = previous?.get(id);
+		const fold =
+			before !== undefined &&
+			before.id === id &&
+			before.elapsed === elapsed &&
+			before.steps === steps &&
+			before.rows.length === members.length &&
+			before.rows.every((row, index) => row === members[index])
+				? before
+				: { id, rows: members, elapsed, steps };
+		for (const member of members) folds.set(member, fold);
+	}
+	return folds;
+}
+
 /** The page a browser call left the browser on, as far as its result says: its URL and title. */
 export type BrowserCallPage = { readonly url?: string; readonly title?: string };
 

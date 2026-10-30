@@ -6743,6 +6743,10 @@
 					"document": {
 						"type": "boolean",
 						"description": "A document the agent wrote (`create_document`): Markdown the person edits."
+					},
+					"model": {
+						"type": "string",
+						"description": "The model that made the file: an image `generate_image` made, such as \"gpt-image-1\"."
 					}
 				},
 				"title": "PresentedFile",
@@ -8501,7 +8505,7 @@
 						"items": {
 							"$ref": "#/components/schemas/PresentedFile"
 						},
-						"description": "The files the call presented to the person (`present_files`), the most relevant first."
+						"description": "The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first."
 					},
 					"tier": {
 						"anyOf": [
