@@ -27,6 +27,7 @@ import {
 	type SessionHistory,
 	type SessionHistoryRequest,
 	type SessionModels,
+	type SessionRecord,
 	type SessionRuntime,
 	type Subscription,
 	systemClock,
@@ -69,6 +70,11 @@ export interface SessionApiOptions {
 	 * (rewind to a message and send it edited, 202 with the submission): the runtime's `branching`.
 	 */
 	readonly branching?: SessionBranching;
+	/**
+	 * Serves `POST /sessions/:id/warm`, a hint that a message is coming: gets the session's sandbox ready for its next
+	 * command. Without it the route checks the session and answers `unavailable` for the container.
+	 */
+	readonly warm?: SessionWarmer;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -103,6 +109,14 @@ export interface SessionApiOptions {
 	 * can accept one. Without it an upgrade gets the event stream, which a WebSocket client takes as a failed handshake.
 	 */
 	readonly acceptWebSocket?: AcceptWebSocket;
+}
+
+/** What `POST /sessions/:id/warm` calls, once the caller may see the session. */
+export interface SessionWarmer {
+	warm(
+		ctx: CallContext,
+		session: SessionRecord,
+	): Promise<{ readonly container: "started" | "running" | "skipped" | "unavailable" }>;
 }
 
 export interface SessionApi {
@@ -645,6 +659,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					throw new HarbourError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
 				}
 				return submitted;
+			},
+			warmSession: async (ctx: CallContext, { params }) => {
+				// The session first, so a session the caller can't see is `not_found` whether or not this server warms.
+				const session = await directory.get(ctx, params.sessionId);
+				if (options.warm === undefined) return { container: "unavailable" as const };
+				const { container } = await options.warm.warm(ctx, session);
+				return { container };
 			},
 			streamSession: (ctx: CallContext, { params }, request) =>
 				events(ctx, request, new URL(request.url), params.sessionId),

@@ -45,6 +45,7 @@ Planned, not built:
 | `GET /v1/sessions/{sessionId}` | `SessionDirectory.get` | In the public API |
 | `POST /v1/sessions/{sessionId}/close` | `SessionRuntime.close` | In the public API |
 | `POST /v1/sessions/{sessionId}/abort` | `SessionRuntime.abort` | In the public API |
+| `POST /v1/sessions/{sessionId}/warm` | The host's warmer (Cloudflare: `StackSandboxes.warm`); a hint, idempotent | In the public API |
 | `POST /v1/sessions/{sessionId}/messages` | `prompt`, `steer` or `followUp` by `via`; `Idempotency-Key` is the input's `requestId` | In the public API |
 | `GET /v1/sessions/{sessionId}/stream` (WebSocket or SSE) | `SessionRuntime.watch`, `@harbour/protocol` frames | In the public API |
 | `GET /v1/sessions/{sessionId}/history` | `SessionHistory.history` | In the public API |

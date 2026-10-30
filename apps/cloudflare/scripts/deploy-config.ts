@@ -47,6 +47,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// HARBOUR_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `harbour`).
 	"HARBOUR_BROWSER_CONTAINERS",
 	"HARBOUR_BROWSER_PROVIDER",
+	// The container tier (src/sandbox-object.ts): `on` adds its container app (images/sandbox, held to WEUR) and turns
+	// escalation on (the HARBOUR_SANDBOX_CONTAINERS var).
+	"HARBOUR_SANDBOX_CONTAINERS",
 	// The origins (such as a host app's) that may frame a browser's embed page, besides the console.
 	"HARBOUR_EMBED_ORIGINS",
 ] as const;
@@ -90,6 +93,7 @@ const OPTIONAL_CHECKS: Readonly<
 		expect: `one of ${LOCATION_HINTS.join(", ")}`,
 	},
 	HARBOUR_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	HARBOUR_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	HARBOUR_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
 	HARBOUR_EMBED_ORIGINS: {
 		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
@@ -110,6 +114,21 @@ export const BROWSER_CONTAINERS = [
 		instance_type: { vcpu: 1, memory_mib: 3072, disk_mb: 4000 },
 		constraints: { regions: ["WEUR"] },
 		max_instances: 3,
+	},
+] as const;
+/**
+ * The sandbox containers' app: images/sandbox, one container per session's `HarbourSandbox`, held to WEUR beside the
+ * stack. 1 vCPU and 2 GiB, enough for `npm install`, a native build or `pandoc`; the disk holds the 1.7 GB image and a
+ * working copy.
+ */
+export const SANDBOX_CONTAINERS = [
+	{
+		class_name: "HarbourSandbox",
+		image: "../../images/sandbox/Dockerfile",
+		image_build_context: "../../images/sandbox",
+		instance_type: { vcpu: 1, memory_mib: 2048, disk_mb: 8000 },
+		constraints: { regions: ["WEUR"] },
+		max_instances: 10,
 	},
 ] as const;
 export type DeployMode = "deploy" | "dry-run";
@@ -192,6 +211,7 @@ export interface DeployValues {
 	readonly locationHint?: string;
 	/** Whether the browsers' container app is deployed. */
 	readonly browserContainers?: boolean;
+	readonly sandboxContainers?: boolean;
 	/** The browser provider, when set. */
 	readonly browserProvider?: string;
 	/** The origins that may frame a browser's embed page, when set. */
@@ -251,6 +271,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(r2Bucket === undefined ? {} : { r2Bucket }),
 		...(hint === undefined ? {} : { locationHint: hint }),
 		...(optional("HARBOUR_BROWSER_CONTAINERS") === "on" ? { browserContainers: true } : {}),
+		...(optional("HARBOUR_SANDBOX_CONTAINERS") === "on" ? { sandboxContainers: true } : {}),
 		...(optional("HARBOUR_BROWSER_PROVIDER") === undefined
 			? {}
 			: { browserProvider: optional("HARBOUR_BROWSER_PROVIDER") }),
@@ -316,8 +337,16 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.locationHint === undefined ? {} : { HARBOUR_LOCATION_HINT: values.locationHint }),
 			...(values.browserProvider === undefined ? {} : { HARBOUR_BROWSER_PROVIDER: values.browserProvider }),
 			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),
+			...(values.sandboxContainers === true ? { HARBOUR_SANDBOX_CONTAINERS: "on" } : {}),
 		},
-		...(values.browserContainers === true ? { containers: BROWSER_CONTAINERS } : {}),
+		...(values.browserContainers === true || values.sandboxContainers === true
+			? {
+					containers: [
+						...(values.browserContainers === true ? BROWSER_CONTAINERS : []),
+						...(values.sandboxContainers === true ? SANDBOX_CONTAINERS : []),
+					],
+				}
+			: {}),
 		vpc_services: [{ binding: MODELS_BINDING, service_id: values.modelsVpcServiceId }],
 	};
 }

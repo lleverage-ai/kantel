@@ -288,12 +288,14 @@ describe("the vault's deploy", () => {
 				{ name: "STACK", class_name: "HarbourStack" },
 				{ name: "VAULTS", class_name: "HarbourVault" },
 				{ name: "BROWSERS", class_name: "HarbourBrowser" },
+				{ name: "SANDBOXES", class_name: "HarbourSandbox" },
 			],
 		});
 		expect(config.migrations).toEqual([
 			{ tag: "v1", new_sqlite_classes: ["HarbourStack"] },
 			{ tag: "v2", new_sqlite_classes: ["HarbourVault"] },
 			{ tag: "v3", new_sqlite_classes: ["HarbourBrowser"] },
+			{ tag: "v4", new_sqlite_classes: ["HarbourSandbox"] },
 		]);
 		// The vault's secrets are never vars of the deployed Worker; only the local dev environment has its own.
 		for (const name of VAULT_SECRETS) expect(config.vars as Record<string, unknown>).not.toHaveProperty(name);
@@ -315,6 +317,27 @@ describe("the vault's deploy", () => {
 			}),
 		]);
 		expect(on.vars).toMatchObject({ HARBOUR_BROWSER_PROVIDER: "harbour" });
+	});
+
+	it("deploys the sandbox containers only when asked, held to WEUR, with escalation on, beside the browsers'", () => {
+		const plain = deployConfig(rawConfig, values);
+		expect(plain).not.toHaveProperty("containers");
+		expect(plain.vars).toMatchObject({ HARBOUR_SANDBOX_CONTAINERS: "off" });
+		const sandbox = expect.objectContaining({
+			class_name: "HarbourSandbox",
+			image: "../../images/sandbox/Dockerfile",
+			image_build_context: "../../images/sandbox",
+			constraints: { regions: ["WEUR"] },
+		});
+		const on = deployConfig(rawConfig, deployValues({ HARBOUR_SANDBOX_CONTAINERS: "on" }, "dry-run"));
+		expect(on.containers).toEqual([sandbox]);
+		expect(on.vars).toMatchObject({ HARBOUR_SANDBOX_CONTAINERS: "on" });
+		const both = deployConfig(
+			rawConfig,
+			deployValues({ HARBOUR_SANDBOX_CONTAINERS: "on", HARBOUR_BROWSER_CONTAINERS: "on" }, "dry-run"),
+		);
+		expect(both.containers).toEqual([expect.objectContaining({ class_name: "HarbourBrowser" }), sandbox]);
+		expect(() => deployValues({ HARBOUR_SANDBOX_CONTAINERS: "yes" }, "dry-run")).toThrow(/HARBOUR_SANDBOX_CONTAINERS/);
 	});
 
 	it("refuses a browser setting it doesn't know", () => {

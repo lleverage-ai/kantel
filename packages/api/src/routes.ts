@@ -42,6 +42,7 @@ import {
 	SessionPage,
 	SessionPath,
 	SessionRecord,
+	SessionWarmth,
 	SkillFileContent,
 	SkillFileQuery,
 	SkillListingPage,
@@ -171,6 +172,21 @@ export const getSessionHistory = defineRoute({
 });
 
 /** The session plane's routes, served by `@harbour/runtime/http`. */
+export const warmSession = defineRoute({
+	operationId: "warmSession",
+	method: "POST",
+	path: "/sessions/{sessionId}/warm",
+	tag: "sessions",
+	summary: "Warm a session's sandbox",
+	description:
+		"A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its " +
+		"next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and " +
+		"cheap to repeat; send it at most every few seconds. Needs the operator role on the session.",
+	params: SessionPath,
+	answer: { status: 200, description: "What the sandbox did.", schema: SessionWarmth },
+	errors: ["forbidden", "not_found"],
+});
+
 export const sessionRoutes = {
 	createSession,
 	listSessions,
@@ -178,6 +194,7 @@ export const sessionRoutes = {
 	closeSession,
 	abortSession,
 	sendMessage,
+	warmSession,
 	streamSession,
 	getSessionHistory,
 } as const;

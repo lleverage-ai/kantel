@@ -11,9 +11,25 @@
  * fails with `Read-only file system`, however the write is reached (directly, or inside a recursive `cp` or `mv`).
  * Nothing under a mount is ever collected.
  */
-import { type CallContext, type FileEntry, HarbourError, type Mount, type WorkspaceId } from "@harbour/contracts";
+import {
+	type CallContext,
+	type FileEntry,
+	HarbourError,
+	type Mount,
+	type SandboxTier,
+	type WorkspaceId,
+} from "@harbour/contracts";
 import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@harbour/workspace/stored";
-import { Bash, type CustomCommand, type IFileSystem, InMemoryFs, MountableFs } from "just-bash/browser";
+import {
+	Bash,
+	type CustomCommand,
+	getCommandNames,
+	getNetworkCommandNames,
+	type IFileSystem,
+	InMemoryFs,
+	MountableFs,
+} from "just-bash/browser";
+import { commandPrograms } from "./index.ts";
 import type { BackendExec, BackendOutput, IsolateBackend } from "./tiered.ts";
 
 export const ROOT = "/workspace";
@@ -397,6 +413,86 @@ export function createWorkspacePort(
 	};
 }
 
+/** An isolate backend that can read a workspace version's listing ahead of its first command. */
+export interface WarmableIsolateBackend extends IsolateBackend {
+	/** Reads (and keeps) the listing of `version`, with the caller's context: the workspace's checks apply. */
+	warm(ctx: CallContext, id: WorkspaceId, version: number): Promise<void>;
+}
+
+/**
+ * Words the isolate's shell runs itself rather than as a program: builtins and the reserved words `commandPrograms`
+ * doesn't already skip.
+ */
+const SHELL_BUILTINS = [
+	".",
+	":",
+	"[",
+	"[[",
+	"alias",
+	"break",
+	"builtin",
+	"cd",
+	"command",
+	"continue",
+	"declare",
+	"dirs",
+	"eval",
+	"exec",
+	"exit",
+	"export",
+	"false",
+	"getopts",
+	"hash",
+	"let",
+	"local",
+	"mapfile",
+	"popd",
+	"pushd",
+	"read",
+	"readarray",
+	"readonly",
+	"return",
+	"set",
+	"shift",
+	"shopt",
+	"source",
+	"test",
+	"trap",
+	"true",
+	"type",
+	"typeset",
+	"ulimit",
+	"umask",
+	"unalias",
+	"unset",
+	"wait",
+];
+
+/** Every program the isolate's shell has: just-bash's own, its network commands, `extra` and the shell's builtins. */
+export function isolatePrograms(extra: readonly CustomCommand[] = []): ReadonlySet<string> {
+	return new Set([
+		...getCommandNames(),
+		...getNetworkCommandNames(),
+		...extra.map((command) => command.name),
+		...SHELL_BUILTINS,
+	]);
+}
+
+/**
+ * A `router` for the tiered sandboxes (`TieredSandboxesOptions.router`) of a host with a container tier: a shell
+ * command the table sends to the isolate goes to the container instead when it starts a program the isolate doesn't
+ * have (`isolatePrograms`), anywhere in it (`make && ./run`, `cat x | python3`), so it runs once, where it can, rather
+ * than failing in the isolate with `command not found`. Nothing is retried, so nothing runs twice.
+ */
+export function escalatingRouter(
+	known: ReadonlySet<string>,
+): (tool: string, command: string | readonly string[] | undefined, tabled: SandboxTier) => SandboxTier {
+	return (tool, command, tabled) => {
+		if (tabled !== "isolate" || tool !== "bash" || command === undefined) return tabled;
+		return commandPrograms(command).some((program) => !known.has(program)) ? "container" : "isolate";
+	};
+}
+
 export interface InProcessIsolateOptions {
 	/** Bodies by digest; one per backend when absent. */
 	readonly cache?: BlobCache;
@@ -415,7 +511,7 @@ export interface InProcessIsolateOptions {
 export function createInProcessIsolateBackend(
 	workspaces: StoredWorkspaces,
 	options: InProcessIsolateOptions = {},
-): IsolateBackend {
+): WarmableIsolateBackend {
 	const cache = options.cache ?? new BlobCache();
 	const limit = options.entryCacheVersions ?? ENTRY_CACHE_VERSIONS;
 	const listings = new Map<string, Promise<readonly ModedFileEntry[]>>();
@@ -443,6 +539,9 @@ export function createInProcessIsolateBackend(
 	}
 
 	return {
+		async warm(ctx, id, version) {
+			await cachedEntries(ctx, id)(version);
+		},
 		async exec({ ctx, lease, record, request }: BackendExec): Promise<BackendOutput> {
 			const entries = cachedEntries(ctx, lease.workspaceId);
 			const port = createWorkspacePort(workspaces, ctx, lease.workspaceId, record.head, { entries });

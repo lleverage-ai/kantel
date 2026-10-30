@@ -525,6 +525,68 @@
 				}
 			}
 		},
+		"/sessions/{sessionId}/warm": {
+			"post": {
+				"operationId": "warmSession",
+				"summary": "Warm a session's sandbox",
+				"description": "A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and cheap to repeat; send it at most every few seconds. Needs the operator role on the session.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "What the sandbox did.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionWarmth"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/sessions/{sessionId}/stream": {
 			"get": {
 				"operationId": "streamSession",
@@ -4541,6 +4603,34 @@
 					}
 				],
 				"title": "SessionStatus"
+			},
+			"SessionWarmth": {
+				"type": "object",
+				"required": ["container"],
+				"properties": {
+					"container": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "started"
+							},
+							{
+								"type": "string",
+								"const": "running"
+							},
+							{
+								"type": "string",
+								"const": "skipped"
+							},
+							{
+								"type": "string",
+								"const": "unavailable"
+							}
+						],
+						"description": "The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace)."
+					}
+				},
+				"title": "SessionWarmth"
 			},
 			"SkillFile": {
 				"type": "object",

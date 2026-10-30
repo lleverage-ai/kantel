@@ -1,12 +1,19 @@
 import { type CallContext, type ExecRequest, systemContext } from "@harbour/contracts";
 import {
 	createInProcessIsolateBackend,
+	escalatingRouter,
+	isolatePrograms,
 	runShell,
 	type ShellRequest,
 	type WorkspacePort,
 } from "@harbour/sandbox/isolate";
 import { usageReport } from "@harbour/sandbox/sweeper";
-import { containerWins, createTieredSandboxes, type IsolateBackend } from "@harbour/sandbox/tiered";
+import {
+	containerWins,
+	createTieredSandboxes,
+	type IsolateBackend,
+	type TieredSandboxesOptions,
+} from "@harbour/sandbox/tiered";
 import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
 import {
@@ -40,6 +47,8 @@ interface SetUpOptions {
 	readonly sandboxWorkspaces?: (inner: StoredWorkspaces) => StoredWorkspaces;
 	/** Wraps the workspace store, e.g. to pause object writes. */
 	readonly store?: (inner: WorkspaceStore) => WorkspaceStore;
+	readonly router?: TieredSandboxesOptions["router"];
+	readonly checkpointContainer?: boolean;
 }
 
 /** A store whose tree writes wait on `paused` while `armed` is set. */
@@ -79,6 +88,8 @@ async function setUp(options: SetUpOptions = {}) {
 		container,
 		clock,
 		audit,
+		...(options.router === undefined ? {} : { router: options.router }),
+		...(options.checkpointContainer === undefined ? {} : { checkpointContainer: options.checkpointContainer }),
 	});
 	const workspaceId = record.id;
 	const run = (command: string) =>
@@ -220,6 +231,55 @@ describe("tiered sandboxes: one tree in both directions", () => {
 		const released = audit.ofType("sandbox.lease.released").find((event) => event.subject?.id === lease.id);
 		expect(released?.data).toMatchObject({ reason: "released", committedVersion: before + 1 });
 		expect((await run("cat notes/r.txt")).stdout).toBe("released");
+	});
+});
+
+describe("tiered sandboxes: escalation and container checkpoints", () => {
+	it("sends a command with a program the isolate lacks to the container, whole and once", async () => {
+		const { run, sandboxes } = await setUp({ router: escalatingRouter(isolatePrograms()) });
+		expect(sandboxes.route("bash", "ls && cat top.txt | sort")).toBe("isolate");
+		expect(sandboxes.route("bash", "ls && frobnicate")).toBe("container");
+		expect(sandboxes.route("bash", "echo $(uname -a)")).toBe("container");
+		expect(sandboxes.route("bash", "bash -c 'make all'")).toBe("container");
+		expect(sandboxes.route("read")).toBe("isolate");
+
+		// The printf runs once, in the container, before the missing program fails there.
+		const escalated = await run("printf '%s' 'x' >> once.txt; frobnicate");
+		expect(escalated.tier).toBe("container");
+		expect(escalated.exitCode).toBe(127);
+		const seen = await run("cat once.txt");
+		expect(seen).toMatchObject({ tier: "isolate", stdout: "x" });
+	});
+
+	it("leaves the table alone without a router", async () => {
+		const { sandboxes } = await setUp();
+		expect(sandboxes.route("bash", "ls && frobnicate")).toBe("isolate");
+		expect(sandboxes.route("bash", "git status")).toBe("container");
+	});
+
+	it("commits a container command's changes at once with checkpoints, keeping the lease live", async () => {
+		const { run, head, text, sandboxes, container } = await setUp({ checkpointContainer: true });
+		const before = await head();
+		const wrote = await run("git --version && printf '%s' 'from container' > c.txt");
+		expect(wrote.tier).toBe("container");
+		expect(wrote.workspaceVersion).toBe(before + 1);
+		expect(await head()).toBe(before + 1);
+		expect(await text("c.txt")).toBe("from container");
+		expect(container.pendingPaths(wrote.leaseId)).toEqual([]);
+		const live = await sandboxes.leases(ctx, { sessionId: "sess-1", live: true });
+		expect(live.map((entry) => entry.id)).toContain(wrote.leaseId);
+
+		// A command that changes nothing commits nothing, and the same lease carries on.
+		const read = await run("git --version && cat c.txt");
+		expect(read.leaseId).toBe(wrote.leaseId);
+		expect(await head()).toBe(before + 1);
+	});
+
+	it("without checkpoints, leaves a container command's changes pending until the next isolate command", async () => {
+		const { run, head } = await setUp();
+		const before = await head();
+		await run("git --version && printf '%s' 'later' > c.txt");
+		expect(await head()).toBe(before);
 	});
 });
 

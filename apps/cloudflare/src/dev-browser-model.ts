@@ -3,7 +3,8 @@
  * end to end without a model gateway. A message `browse <url>` makes it ask for a browser on the URL's host, open the
  * URL once a person allows it, take a screenshot, scroll the page and say what it saw; `close` closes the browser it
  * opened last (so its replay shows). A message `codemode <script>` makes it run the script with the `codemode` tool
- * and say what it answered. Anything else is echoed. The tool calls are real: the broker, the browser provider (brwsr,
+ * and say what it answered; `bash <command>` makes it run the command with `bash` (in the isolate, or the container
+ * tier when the command needs it) and say what it printed. Anything else is echoed. The tool calls are real: the broker, the browser provider (brwsr,
  * or Harbour's own browsers), the console's Allow and the code mode isolate are what a deployed session uses.
  */
 import type { Message } from "@earendil-works/pi-ai";
@@ -32,6 +33,14 @@ export function nextStep(messages: readonly Message[]) {
 	while (start >= 0 && messages[start]?.role !== "user") start -= 1;
 	const said = start < 0 ? "" : textOf((messages[start] as { content: Parameters<typeof textOf>[0] }).content).trim();
 	if (/^close$/i.test(said)) return closeStep(messages, start);
+	const command = /^bash\s+([\s\S]+)$/i.exec(said)?.[1];
+	if (command !== undefined) {
+		const answered = messages.slice(start + 1).find((message) => message.role === "toolResult");
+		if (answered === undefined) {
+			return fauxAssistantMessage([fauxToolCall("bash", { command })], { stopReason: "toolUse" });
+		}
+		return fauxAssistantMessage(fauxText(`Ran: ${textOf(answered.content)}`));
+	}
 	const script = /^codemode\s+([\s\S]+)$/i.exec(said)?.[1];
 	if (script !== undefined) {
 		const answered = messages.slice(start + 1).find((message) => message.role === "toolResult");

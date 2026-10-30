@@ -95,6 +95,7 @@ import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./bro
 import { CODEMODE_TOOL, type SessionCodemodeOptions, sessionCodemodeTool } from "./codemode.ts";
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
+import type { SandboxContainers } from "./container-backend.ts";
 import { createEchoModels } from "./echo-model.ts";
 import type { StackModels } from "./models.ts";
 import { memoiseRoleOf } from "./role-memo.ts";
@@ -228,6 +229,8 @@ export interface StackOptions {
 	readonly extraIsolateBackends?: ExtraIsolateBackends;
 	/** The compiled QuickJS module: with it, `node` runs plain JavaScript in the in-process isolate (`src/sandboxes.ts`). */
 	readonly nodeEngine?: NodeEngine;
+	/** The sessions' container objects (`src/sandbox-object.ts`), when the deploy runs sandbox containers. */
+	readonly sandboxContainers?: SandboxContainers;
 	/**
 	 * The browser provider (brwsr, `src/browser.ts`), when the Worker has its key. With it the default profile has the
 	 * browser's tools; without it sessions have none.
@@ -550,6 +553,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			backend: options.isolateBackend ?? DEFAULT_ISOLATE_BACKEND,
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
 			...(options.nodeEngine === undefined ? {} : { nodeEngine: options.nodeEngine }),
+			...(options.sandboxContainers === undefined ? {} : { containers: options.sandboxContainers }),
 		});
 		const sandboxes = built;
 

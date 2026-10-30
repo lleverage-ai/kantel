@@ -36,6 +36,7 @@ import {
 	type AuthenticatedCaller,
 	type CallContext,
 	callContextFor,
+	isHarbourError,
 	type Proposal,
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
@@ -49,6 +50,7 @@ import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
+import { sessionWorkspaceId } from "./coding-tools.ts";
 import {
 	MEASURE_PATH,
 	type MeasureInput,
@@ -144,6 +146,20 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		models: stack.runtime.models,
 		// The session view's message actions: fork from an answer, edit a message and rerun from it.
 		branching: stack.runtime.branching,
+		// The composer's warm-up hint (and a host's): the session's sandbox gets ready for its next command.
+		warm: {
+			async warm(ctx, session) {
+				const workspaceId = session.workspaceId ?? sessionWorkspaceId(session.id);
+				try {
+					const warmed = await stack.sandboxes.warm(ctx, { sessionId: session.id, workspaceId });
+					return { container: warmed.container };
+				} catch (error) {
+					// A session whose own workspace its tools haven't made yet has nothing to warm.
+					if (isHarbourError(error, "not_found")) return { container: "unavailable" };
+					throw error;
+				}
+			},
+		},
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,

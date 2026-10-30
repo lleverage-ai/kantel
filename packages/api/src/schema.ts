@@ -167,6 +167,20 @@ export const AbortSessionBody = Type.Object(
 
 export const SessionPath = Type.Object({ sessionId: id("The session's ID.") });
 
+export const SessionWarmth = Type.Object(
+	{
+		container: Type.Union(
+			[Type.Literal("started"), Type.Literal("running"), Type.Literal("skipped"), Type.Literal("unavailable")],
+			{
+				description:
+					"The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so " +
+					"none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace).",
+			},
+		),
+	},
+	{ title: "SessionWarmth" },
+);
+
 /**
  * Any JSON value: a schedule's payload, an occurrence's result and a host's namespaced `extensions` are opaque to
  * Harbour. Its static type is `unknown` rather than the contracts' recursive `JsonValue`, which the router's read-only

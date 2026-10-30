@@ -337,6 +337,7 @@ export function SessionView({
 									}
 									value={actions.draft}
 									onChange={actions.onDraft}
+									{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
 									{...actions.pickers}
 									{...COMPOSER_ACCESS}
 									footer={

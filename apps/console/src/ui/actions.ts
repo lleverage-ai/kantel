@@ -46,7 +46,38 @@ export type SessionActions = {
 	onFork?: (itemId: string) => Promise<void>;
 	/** Rewinds the session to a message and sends new words in its place. Absent when the host can't. */
 	onEdit?: (itemId: string, text: string) => Promise<void>;
+	/** Someone is about to write (the composer's `onEngage`): warms the session's sandbox. Absent when the host can't. */
+	onEngage?: () => void;
 };
+
+/** The least time between two warm-up hints for one session. A warmed container stays up for minutes. */
+export const WARM_INTERVAL_MS = 30_000;
+
+/**
+ * The composer's warm-up hint for one session, after the public API's `POST /sessions/{id}/warm`: at most one call
+ * every `intervalMs`, and none while one is on its way. The call is idempotent, so this only saves requests; a failed
+ * hint is dropped (the next command starts the sandbox anyway) and may be sent again after the interval.
+ */
+export function createWarmHint(
+	warm: () => Promise<unknown>,
+	options: { readonly intervalMs?: number; readonly now?: () => number } = {},
+): () => void {
+	const intervalMs = options.intervalMs ?? WARM_INTERVAL_MS;
+	const now = options.now ?? Date.now;
+	let last = Number.NEGATIVE_INFINITY;
+	let inFlight = false;
+	return () => {
+		const at = now();
+		if (inFlight || at - last < intervalMs) return;
+		last = at;
+		inFlight = true;
+		warm()
+			.catch(() => undefined)
+			.finally(() => {
+				inFlight = false;
+			});
+	};
+}
 
 /** An agent's request for a browser that waits for a person: the call, why, and the sites it names. */
 export type BrowserRequest = {

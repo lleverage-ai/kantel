@@ -33,6 +33,7 @@ import { type BrowserObjects, type BrowserVars, browserProviderFrom } from "./br
 import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
+import type { SandboxContainer } from "./container-backend.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
 import type { IsolatePort } from "./isolate/runner.ts";
@@ -84,6 +85,13 @@ export interface Env
 	readonly HARBOUR_BROWSER_RECORDING_DAYS?: string;
 	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
 	readonly LOADER?: WorkerLoader;
+	/** The sessions' container tier (`HarbourSandbox`, `src/sandbox-object.ts`), one object per session. */
+	readonly SANDBOXES?: DurableObjectNamespace;
+	/**
+	 * `on` when the deploy runs the sandbox containers (`HARBOUR_SANDBOX_CONTAINERS`, scripts/deploy-config.ts): only then
+	 * do commands escalate to a container. Anything else refuses them `unavailable`, as before.
+	 */
+	readonly HARBOUR_SANDBOX_CONTAINERS?: string;
 }
 
 /**
@@ -188,9 +196,18 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		if (browserProvider === undefined) {
 			console.warn("harbour: the browser provider has no key (HARBOUR_BROWSER_PROVIDER); sessions have no browser");
 		}
+		const sandboxObjects = env.SANDBOXES;
+		const containersOn = (env.HARBOUR_SANDBOX_CONTAINERS ?? "").trim() === "on" && sandboxObjects !== undefined;
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
 			presentFiles: (env.HARBOUR_PRESENT_FILES ?? "").trim() !== "off",
+			// One container object per session, beside the stack (the container app's regions place the container itself).
+			...(containersOn
+				? {
+						sandboxContainers: (sessionId: string) =>
+							namedObject(sandboxObjects, `sandbox:${sessionId}`, env) as unknown as SandboxContainer,
+					}
+				: {}),
 			// Code mode, when the Worker has the loader and HARBOUR_CODEMODE isn't `off`: each session's scripts run in its own
 			// isolate, with no bindings and no network, loaded by its first script (`src/codemode.ts`).
 			...(loader === undefined || !codemodeEnabled(env)
