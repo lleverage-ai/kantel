@@ -118,10 +118,27 @@ export function siteCovered(parentSites: readonly string[], site: string): boole
 	});
 }
 
+/** Google's own hosts in one country, `google.com`, `www.google.co.uk` or `*.google.de`, with that country's suffix. */
+const GOOGLE_SITE = /^(?:\*\.|www\.)?google\.(com|[a-z]{2}|com?\.[a-z]{2})$/;
+
 /**
- * Whether `url` (http or https) is on one of `allowedSites`. An exact site matches only that host; `*.example.com`
- * matches every subdomain of `example.com` but not `example.com` itself. Ports are ignored; an invalid URL is never
- * allowed.
+ * A grant's sites with the consent pages they redirect through. Google sends a visitor without its consent cookie
+ * (`www.google.com/travel/flights`, `www.google.co.uk/maps`) to `consent.google.<the same suffix>` first, so a grant
+ * for Google also admits that one consent host, and nothing else on Google or any other site.
+ */
+export function sitesWithConsent(allowedSites: readonly string[]): string[] {
+	const sites = new Set(allowedSites);
+	for (const site of allowedSites) {
+		const google = GOOGLE_SITE.exec(site.toLowerCase());
+		if (google) sites.add(`consent.google.${google[1]}`);
+	}
+	return [...sites];
+}
+
+/**
+ * Whether `url` (http or https) is on one of `allowedSites`, or on the consent page one of them redirects through
+ * (`sitesWithConsent`). An exact site matches only that host; `*.example.com` matches every subdomain of `example.com`
+ * but not `example.com` itself. Ports are ignored; an invalid URL is never allowed.
  */
 export function siteAllowed(allowedSites: readonly string[], url: string): boolean {
 	let parsed: URL;
@@ -133,7 +150,7 @@ export function siteAllowed(allowedSites: readonly string[], url: string): boole
 	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
 	const host = parsed.hostname.toLowerCase();
 	if (host.length === 0) return false;
-	return allowedSites.some((site) => {
+	return sitesWithConsent(allowedSites).some((site) => {
 		const pattern = site.toLowerCase();
 		if (pattern.startsWith("*.")) {
 			const suffix = pattern.slice(1);
