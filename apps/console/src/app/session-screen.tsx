@@ -14,6 +14,11 @@ import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 
+/** How long a session waits for this browser's cached copy before connecting without it. */
+export const CACHE_WAIT_MS = 150;
+/** How often, at most, an open session is kept for the next load while it changes. */
+export const KEEP_EVERY_MS = 10_000;
+
 /**
  * The turn a `#turn=<id>` link names, on load and whenever the hash changes, and where the search for it stands. A turn
  * that isn't loaded yet is looked for by paging back through the session's history, a page at a time, until it is
@@ -76,10 +81,56 @@ export function SessionScreen({
 	const linked = useLinkedTurn(session);
 
 	useEffect(() => {
-		session.start();
+		// What this browser last held of the session shows at once, and the stream resumes after it. The cache gets a
+		// moment; a slow one never holds the stream up, and what it has still shows if it comes before the host's.
+		let started = false;
+		let closed = false;
+		const start = () => {
+			if (started || closed) return;
+			started = true;
+			session.start();
+		};
+		const cached = client.cachedSession?.(sessionId);
+		const wait = cached === undefined ? undefined : setTimeout(start, CACHE_WAIT_MS);
+		if (cached === undefined) start();
+		else {
+			cached.then((snapshot) => {
+				if (!closed && snapshot !== undefined) session.seed(snapshot);
+				start();
+			}, start);
+		}
+		// Kept for the next load: once it is current, at most every KEEP_EVERY_MS while it changes, and as it closes.
+		const remember = client.rememberSession?.bind(client);
+		let keepTimer: ReturnType<typeof setTimeout> | undefined;
+		const keep = () => {
+			clearTimeout(keepTimer);
+			keepTimer = undefined;
+			const snapshot = session.kept();
+			if (snapshot !== undefined && session.getState().freshness.state === "current") remember?.(snapshot);
+		};
+		let keptOnce = false;
+		const unsubscribe =
+			remember === undefined
+				? undefined
+				: session.subscribe(() => {
+						if (session.getState().freshness.state !== "current") return;
+						if (!keptOnce) {
+							keptOnce = true;
+							keep();
+						} else keepTimer ??= setTimeout(keep, KEEP_EVERY_MS);
+					});
+		const onHide = () => keep();
+		if (remember !== undefined) addEventListener("pagehide", onHide);
 		const release = client.markRead(sessionId);
 		onOpen?.(sessionId, session);
 		return () => {
+			closed = true;
+			clearTimeout(wait);
+			if (remember !== undefined) {
+				unsubscribe?.();
+				removeEventListener("pagehide", onHide);
+				keep();
+			}
 			release();
 			session.stop();
 		};
