@@ -99,6 +99,14 @@ export type ContainerChanges =
 	  }
 	| Behind;
 
+/**
+ * What a close did to the session's container: `stopped` it, by `destroyed` (the object saw it running) or by a short
+ * `inactivity` timeout (Cloudflare still ran one the object no longer saw, src/sandbox-stop.ts), or found none to stop.
+ */
+export type ContainerClosed =
+	| { readonly stopped: false }
+	| { readonly stopped: true; readonly via: "destroyed" | "inactivity" };
+
 /** What a warm-up did: started the container, found it running, or skipped it (the session never needed one). */
 export type ContainerWarmth = "started" | "running" | "skipped" | "unavailable";
 
@@ -124,9 +132,9 @@ export interface SandboxContainer {
 	/**
 	 * The session has closed for good: its container stops now, rather than after the inactivity timeout, so its instance
 	 * is free at once, and nothing starts it again (a command is refused, a warm-up skipped). Idempotent; a session that
-	 * never ran a container changes nothing. `stopped` says whether a container was running.
+	 * never ran a container changes nothing. `stopped` says whether a container was running, and `via` how it stops.
 	 */
-	closeSession(): Promise<{ readonly stopped: boolean }>;
+	closeSession(): Promise<ContainerClosed>;
 }
 
 /**
@@ -148,7 +156,7 @@ export interface CloudflareContainerBackend extends ContainerBackend {
 	 * The session has closed for good: stops its container at once (`SandboxContainer.closeSession`). Call it after the
 	 * session's leases are released, so the container's last changes are committed first. Touches no other session.
 	 */
-	closeSession(sessionId: SessionId): Promise<{ readonly stopped: boolean }>;
+	closeSession(sessionId: SessionId): Promise<ContainerClosed>;
 }
 
 /** R2 reads in parallel batches: one at a time costs a round trip per file. */

@@ -20,6 +20,7 @@ import type {
 	Behind,
 	ContainerCall,
 	ContainerChanges,
+	ContainerClosed,
 	ContainerCommand,
 	ContainerRan,
 	ContainerStage,
@@ -29,6 +30,7 @@ import type {
 	SandboxContainer,
 } from "./container-backend.ts";
 import { startContainer } from "./sandbox-start.ts";
+import { stopContainer } from "./sandbox-stop.ts";
 
 const PORT = 8080;
 /** How long a container waits for a call before it stops. A warm-up on typing covers coming back later. */
@@ -36,6 +38,8 @@ const INACTIVITY_MS = 10 * 60_000;
 const READY_TIMEOUT_MS = 60_000;
 /** How long a start keeps asking for an instance while Cloudflare has none free (src/sandbox-start.ts). */
 const INSTANCE_WAIT_MS = 20_000;
+/** A closed session's container this object can't see stops this long after its last call (src/sandbox-stop.ts). */
+const CLOSED_INACTIVITY_MS = 1_000;
 const ENTRYPOINT = ["bun", "/opt/harbour/agent.ts"];
 /**
  * The agent's own environment. The image's HOME is /workspace (the self-hosted tier's), where Bun would keep its
@@ -216,12 +220,14 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 		});
 	}
 
-	async closeSession(): Promise<{ readonly stopped: boolean }> {
+	async closeSession(): Promise<ContainerClosed> {
+		// Serialised behind any call still running here, so a start in flight (its wait for an instance included) has
+		// settled before the close looks.
 		return this.#serial(async () => {
-			const running = this.#running();
+			const container = this.#container();
 			// A session that never ran a container here has nothing to stop, and nothing worth storing: every closed session
 			// calls this, and most never escalate.
-			if (!running && (await this.ctx.storage.get<boolean>("used")) !== true) return { stopped: false };
+			if (!this.#running() && (await this.ctx.storage.get<boolean>("used")) !== true) return { stopped: false };
 			await this.ctx.storage.put("closed", true);
 			const owner = await this.ctx.storage.get<Owner>("owner");
 			// The stack released the session's lease (committing its last changes) before this call; fence one it couldn't,
@@ -230,9 +236,12 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 				await this.ctx.storage.put(fenceKey(owner.leaseId), "ended" satisfies Fence);
 				await this.ctx.storage.put("owner", { ...owner, leaseId: "" } satisfies Owner);
 			}
-			// Stopped now, not after the inactivity timeout: the instance is free for another session at once.
-			if (running) await this.#container()?.destroy();
-			return { stopped: running };
+			// Stopped now, not after the inactivity timeout: the instance is free for another session at once. `running` is
+			// only this object's view, and can read false while Cloudflare still runs the container: that one gets a short
+			// inactivity timeout instead, as `destroy()` would do nothing.
+			if (container === undefined) return { stopped: false };
+			const via = await stopContainer(container, { releaseMs: CLOSED_INACTIVITY_MS });
+			return via === "none" ? { stopped: false } : { stopped: true, via };
 		});
 	}
 

@@ -224,8 +224,8 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 			// Asked of the session's container object itself, not of the leases this object holds in memory: an evicted or
 			// redeployed stack object has forgotten them, and its container may still be running.
 			await options.access.require(ctx, { sessionId, needed: "operator", operation: "sandbox.closeSession" });
-			const { stopped } = await container.closeSession(sessionId);
-			if (!stopped) return;
+			const closed = await container.closeSession(sessionId);
+			if (!closed.stopped) return;
 			await options.audit.append(AUDIT_CONTEXT, [
 				{
 					id: `sandbox:container:${ctx.organisationId}:${sessionId}:stopped`,
@@ -236,7 +236,8 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 					organisationId: ctx.organisationId,
 					sessionId,
 					subject: { kind: "session", id: sessionId },
-					data: { reason },
+					// `inactivity`: the object no longer saw its container running, so it stops on a short timeout instead.
+					data: { reason, via: closed.via },
 				},
 			]);
 		},
