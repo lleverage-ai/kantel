@@ -14,20 +14,33 @@
  *   checks the item's host and records each use. A rotated secret makes a new item, named from a hash of the value.
  * - **Models.** One platform route, `default`, the route the default agent profile names, to `HARBOUR_DEFAULT_MODEL`
  *   (default `claude-sonnet-5-5`); every other model CPA lists is offered as `default:<model>`.
+ * - **Images.** With `HARBOUR_IMAGE_MODEL` (such as `gpt-image-1`), a second platform route, `images`, to that model on
+ *   CPA, with an override saying it makes images: CPA serves gpt-image on `/v1/images/generations` with a Codex login
+ *   but doesn't list it in `/v1/models`. An agent profile whose `imageModel` names the route gets `generate_image`.
+ *   The console reads the connectors and makes test images through `gateway`.
  *
  * Without the `MODELS` binding or the CPA key, sessions stay on the echo model (`src/echo-model.ts`).
  */
-import type { AuditSink, Clock, ConnectorCredentials, InjectionRule, UsageWriter } from "@harbour/contracts";
+import type {
+	AuditSink,
+	Clock,
+	ConnectorCredentials,
+	InjectionRule,
+	ModelGateway,
+	UsageWriter,
+} from "@harbour/contracts";
 import { HarbourError } from "@harbour/contracts";
 import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
 import type { SessionRuntimeOptions } from "@harbour/runtime/core";
-import { harbourModels, harbourResolveModel } from "@harbour/runtime/models";
+import { harbourImages, harbourModels, harbourResolveModel } from "@harbour/runtime/models";
 
 export interface ModelsVars {
 	/** CLIProxyAPI's client key (a Worker secret). The vault object keeps it as a platform item. */
 	readonly HARBOUR_CPA_API_KEY?: string;
 	/** The upstream model the `default` route serves. Default `DEFAULT_MODEL`. */
 	readonly HARBOUR_DEFAULT_MODEL?: string;
+	/** The image model the `images` route serves on CPA, such as `gpt-image-1`. Without it there is no `images` route. */
+	readonly HARBOUR_IMAGE_MODEL?: string;
 }
 
 /**
@@ -42,6 +55,7 @@ export const CPA_INJECTION: InjectionRule = { header: "Authorization", template:
 /** The gateway as the runtime addresses it. Never resolved: the runtime's fetch hands each request to the gateway. */
 export const GATEWAY_BASE_URL = "http://model-gateway.harbour.internal";
 export const DEFAULT_ROUTE = "default";
+export const IMAGES_ROUTE = "images";
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
 
 const trimmed = (value: string | undefined): string => (value ?? "").trim();
@@ -57,6 +71,14 @@ export function defaultModel(vars: ModelsVars): string {
 	const model = trimmed(vars.HARBOUR_DEFAULT_MODEL);
 	if (model === "") return DEFAULT_MODEL;
 	if (/[\s:]/.test(model)) throw new HarbourError("invalid", "HARBOUR_DEFAULT_MODEL must be one model ID");
+	return model;
+}
+
+/** The model the `images` route serves, or undefined. Refuses (`invalid`) a value with spaces or a colon. */
+export function imageModel(vars: ModelsVars): string | undefined {
+	const model = trimmed(vars.HARBOUR_IMAGE_MODEL);
+	if (model === "") return undefined;
+	if (/[\s:]/.test(model)) throw new HarbourError("invalid", "HARBOUR_IMAGE_MODEL must be one model ID");
 	return model;
 }
 
@@ -84,16 +106,23 @@ export interface GatewayModelsOptions {
 	/** Where `model.call` events go: the stack's audit store. */
 	readonly audit: AuditSink;
 	readonly modelId: string;
+	/** The model the `images` route serves; none without it. */
+	readonly imageModelId?: string;
 	readonly clock?: Clock;
 	/** Where each call's usage record goes: the stack object's usage ledger (`src/usage.ts`). */
 	readonly usage?: UsageWriter;
 }
 
-/** The runtime's `models` and `resolveModel`. */
-export type StackModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+/**
+ * The runtime's `models`, `resolveModel` and `images`, and the gateway itself for the console's connector page (absent
+ * on the echo model).
+ */
+export type StackModels = Pick<SessionRuntimeOptions, "models" | "resolveModel" | "images"> & {
+	readonly gateway?: () => Promise<ModelGateway>;
+};
 
-/** The gateway's one connector (CPA) and one route. */
-export function modelGatewayConfig(vaultItemId: string, modelId: string): ModelGatewayConfig {
+/** The gateway's one connector (CPA), its `default` route and, with an image model, its `images` route. */
+export function modelGatewayConfig(vaultItemId: string, modelId: string, imageModelId?: string): ModelGatewayConfig {
 	return {
 		baseUrl: GATEWAY_BASE_URL,
 		connectors: [
@@ -103,10 +132,25 @@ export function modelGatewayConfig(vaultItemId: string, modelId: string): ModelG
 				preset: "cliproxyapi",
 				baseUrl: CPA_BASE_URL,
 				vaultItemId,
-				catalogue: { refresh: "gateway" },
+				catalogue: {
+					refresh: "gateway",
+					...(imageModelId === undefined ? {} : { overrides: { [imageModelId]: { output: ["image"] } } }),
+				},
 			},
 		],
-		routes: [{ name: DEFAULT_ROUTE, owner: { kind: "platform" }, connectorId: CPA_CONNECTOR_ID, modelId }],
+		routes: [
+			{ name: DEFAULT_ROUTE, owner: { kind: "platform" }, connectorId: CPA_CONNECTOR_ID, modelId },
+			...(imageModelId === undefined
+				? []
+				: [
+						{
+							name: IMAGES_ROUTE,
+							owner: { kind: "platform" as const },
+							connectorId: CPA_CONNECTOR_ID,
+							modelId: imageModelId,
+						},
+					]),
+		],
 	};
 }
 
@@ -135,7 +179,7 @@ export function createGatewayModels(options: GatewayModelsOptions): StackModels 
 		if (app === undefined) {
 			const building = (async () =>
 				createModelGatewayApp({
-					config: modelGatewayConfig(await options.vault.cpaItem(), options.modelId),
+					config: modelGatewayConfig(await options.vault.cpaItem(), options.modelId, options.imageModelId),
 					tokenKey,
 					credentials: { readConnectorCredential: options.vault.readConnectorCredential },
 					audit: options.audit,
@@ -150,15 +194,21 @@ export function createGatewayModels(options: GatewayModelsOptions): StackModels 
 		}
 		return app;
 	};
+	const sessions = {
+		gateway: {
+			baseUrl: GATEWAY_BASE_URL,
+			fetch: async (input: RequestInfo | URL, init?: RequestInit) =>
+				(await gateway()).handler(new Request(input, init)),
+		},
+		tokens: {
+			mint: async (...args: Parameters<ModelGatewayApp["tokens"]["mint"]>) => (await gateway()).tokens.mint(...args),
+		},
+		...(options.clock === undefined ? {} : { clock: options.clock }),
+	};
 	return {
-		models: harbourModels({
-			gateway: {
-				baseUrl: GATEWAY_BASE_URL,
-				fetch: async (input, init) => (await gateway()).handler(new Request(input, init)),
-			},
-			tokens: { mint: async (ctx, scope, ttlMs) => (await gateway()).tokens.mint(ctx, scope, ttlMs) },
-			...(options.clock === undefined ? {} : { clock: options.clock }),
-		}),
+		models: harbourModels(sessions),
 		resolveModel: harbourResolveModel,
+		images: harbourImages(sessions),
+		gateway: async () => (await gateway()).gateway,
 	};
 }

@@ -44,6 +44,7 @@ import {
 	isHarbourError,
 	type LeaseEndReason,
 	type Memory,
+	type ModelGateway,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
@@ -290,6 +291,8 @@ export interface Stack {
 	readonly access: ProjectAccess;
 	/** Files people attach to prompts, which the runtime reads into the prompt's message (`src/attachments.ts`). */
 	readonly attachments: AttachmentStore;
+	/** The model gateway, for the console's connectors (`src/connectors.ts`); absent on the echo model. */
+	readonly modelGateway?: () => Promise<ModelGateway>;
 	readonly sandboxes: StackSandboxes;
 	/**
 	 * A session's execution environment, as its tools get it (`src/coding-tools.ts`): its workspace, as its agent, and
@@ -405,7 +408,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					background: storage.usageLedger.background,
 				})
 			: undefined;
-	const models: StackModels = options.models?.({
+	const { gateway: modelGateway, ...models }: StackModels = options.models?.({
 		audit,
 		clock,
 		...(usage === undefined ? {} : { usage: usage.writer }),
@@ -617,6 +620,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			projectId: project.id,
 			name: "Assistant",
 			model: { route: "default" },
+			// The image model is the user's choice (the console's Models page), kept across starts: none until they pick one.
+			...(stored?.imageModel === undefined ? {} : { imageModel: stored.imageModel }),
 			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
 			promptLayers: userPromptLayers(stored),
 			// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
@@ -707,6 +712,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			gitRefs,
 			access,
 			attachments,
+			...(modelGateway === undefined ? {} : { modelGateway }),
 			sandboxes,
 			environment,
 			...(browser === undefined ? {} : { browser }),

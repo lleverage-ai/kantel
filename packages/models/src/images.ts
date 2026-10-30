@@ -38,6 +38,7 @@ export const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const ASPECTS: readonly ModelImageAspect[] = ["square", "landscape", "portrait"];
 const QUALITIES = ["low", "medium", "high", "auto"];
+const FORMATS = ["png", "jpeg", "webp"];
 
 const isRecord = (value: unknown): value is { readonly [key: string]: unknown } =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,7 +56,10 @@ export function assertImagesRequest(request: unknown): asserts request is ModelI
 	if (request.prompt.length > MAX_IMAGE_PROMPT_LENGTH) {
 		throw new HarbourError("invalid", `A prompt holds at most ${MAX_IMAGE_PROMPT_LENGTH} characters`);
 	}
-	const { count, aspect, size, quality, images } = request;
+	const { count, aspect, size, quality, outputFormat, images } = request;
+	if (outputFormat !== undefined && !FORMATS.includes(outputFormat as string)) {
+		throw new HarbourError("invalid", `Unknown output format ${String(outputFormat)}`);
+	}
 	if (
 		count !== undefined &&
 		(!Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_IMAGES_PER_CALL)
@@ -201,6 +205,7 @@ export async function openaiImages(input: OpenAIImagesInput): Promise<ImagesCall
 		n: request.count ?? 1,
 		...(size === undefined ? {} : { size }),
 		...(family === "gpt-image" && request.quality !== undefined ? { quality: request.quality } : {}),
+		...(family === "gpt-image" && request.outputFormat !== undefined ? { output_format: request.outputFormat } : {}),
 		...(family === "dall-e-2" || family === "dall-e-3" ? { response_format: "b64_json" } : {}),
 	};
 	let body: string | FormData;
