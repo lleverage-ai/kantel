@@ -1039,20 +1039,24 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			costSource: ModelCallRecord["costSource"],
 		) => {
 			recorded = true;
-			return record({
-				id,
-				at: startedAt,
-				scope,
-				route: routeName,
-				connectorId: connector.id,
-				modelId: target.id,
-				operation: "images",
-				status,
-				stopReason: status === "done" ? "stop" : status,
-				durationMs: Math.max(0, clock.now() - startedAt),
-				usage,
-				costSource,
-			});
+			return record(
+				{
+					id,
+					at: startedAt,
+					scope,
+					route: routeName,
+					connectorId: connector.id,
+					modelId: target.id,
+					operation: "images",
+					status,
+					stopReason: status === "done" ? "stop" : status,
+					durationMs: Math.max(0, clock.now() - startedAt),
+					usage,
+					costSource,
+				},
+				// Its usage row: the image API is called through the connector's OpenAI-compatible base URL.
+				{ connector, api: "openai-completions", rates: target.model.cost },
+			);
 		};
 		const failedCostSource = spec.cost === "none" ? "none" : "computed";
 		let redactor = new Redactor([]);
