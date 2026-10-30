@@ -696,9 +696,16 @@ describe("host-tool callbacks", () => {
 
 	it("aborts the host request, and the handler's signal, when the call is aborted", async () => {
 		let handlerSignal: AbortSignal | undefined;
+		// Abort once the handler runs, not after a fixed sleep: on a loaded host signing and checking the call can take
+		// longer than any sleep, and an abort before the handler starts would leave its listener waiting for good.
+		let started!: () => void;
+		const handlerStarted = new Promise<void>((resolve) => {
+			started = resolve;
+		});
 		const endpoint = createHostToolEndpoint(
 			(_incoming, signal) => {
 				handlerSignal = signal;
+				started();
 				return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
 			},
 			{ secret },
@@ -710,7 +717,7 @@ describe("host-tool callbacks", () => {
 		});
 		const controller = new AbortController();
 		const running = handler(call, controller.signal);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		await handlerStarted;
 		controller.abort();
 		// In process the endpoint answers 500 once its handler rejects; over a network the fetch itself rejects.
 		await expect(running).rejects.toBeInstanceOf(HarbourError);
