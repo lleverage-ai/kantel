@@ -33,11 +33,11 @@ export interface McpToolResult {
 
 /** An MCP server refused or failed: the status, and whether a sign-in is what it wants. */
 export class McpError extends HarbourError {
-	constructor(
-		message: string,
-		readonly status: number,
-	) {
+	readonly status: number;
+
+	constructor(message: string, status: number) {
 		super(status === 401 || status === 403 ? "refused" : "unavailable", message);
+		this.status = status;
 	}
 }
 
