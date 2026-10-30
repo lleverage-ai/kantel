@@ -112,6 +112,11 @@ case "$PARTAN_HOME" in
 esac
 ENV_FILE="$PARTAN_HOME/partan.env"
 SRC="$PARTAN_HOME/src"
+# A tarball file is saved for later runs by its full path.
+case "$opt_tarball" in
+'' | /* | http://* | https://*) ;;
+*) opt_tarball="$(pwd)/$opt_tarball" ;;
+esac
 
 # Docker builds from the extracted source; a umask like 077 would leave it unreadable to the build (EACCES).
 umask 022
@@ -208,6 +213,10 @@ fi
 if [ -z "$opt_source" ] && [ -z "$opt_tarball" ] && [ -z "$opt_ref" ] && [ -z "$opt_repo" ] && [ -L "$SRC" ]; then
 	opt_source="$SRC"
 fi
+# So does an install from a tarball, until GitHub is asked for with --ref or --repo.
+if [ -z "$opt_source" ] && [ -z "$opt_tarball" ] && [ -z "$opt_ref" ] && [ -z "$opt_repo" ]; then
+	opt_tarball="$(saved PARTAN_TARBALL)"
+fi
 
 repo="${opt_repo:-$(saved PARTAN_REPO)}"
 repo="${repo:-$DEFAULT_REPO}"
@@ -251,8 +260,9 @@ if [ -n "$opt_source" ]; then
 	fi
 	source_kind=checkout
 elif [ -d "$SRC" ] && [ ! -L "$SRC" ] && [ -f "$SRC/deploy/local/compose.yaml" ] && [ -z "$opt_upgrade" ] &&
-	[ -z "$opt_tarball" ] && [ "$ref" = "$(saved PARTAN_REF)" ] && [ "$repo" = "$(saved PARTAN_REPO)" ]; then
-	ok "already in $SRC ($repo at $ref); --upgrade fetches it again"
+	[ "$opt_tarball" = "$(saved PARTAN_TARBALL)" ] && [ "$ref" = "$(saved PARTAN_REF)" ] && [ "$repo" = "$(saved PARTAN_REPO)" ]; then
+	if [ -n "$opt_tarball" ]; then from="$opt_tarball"; else from="$repo at $ref"; fi
+	ok "already in $SRC (from $from); --upgrade fetches it again"
 	source_kind=tarball
 else
 	work="$(mktemp -d "${TMPDIR:-/tmp}/partan.XXXXXX")"
@@ -344,6 +354,7 @@ fi
 set_setting PARTAN_REPO "$repo"
 set_setting PARTAN_REF "$ref"
 set_setting PARTAN_SOURCE_KIND "$source_kind"
+if [ "$source_kind" = checkout ]; then set_setting PARTAN_TARBALL ""; else set_setting PARTAN_TARBALL "$opt_tarball"; fi
 set_setting PARTAN_PORT "$port"
 set_setting PARTAN_MAIL_PORT "$mail_port"
 set_setting PARTAN_ADMIN_EMAIL "$email"
