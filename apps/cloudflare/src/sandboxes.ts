@@ -17,6 +17,10 @@
  *   shallow `.git` a git seed writes (`@harbour/workspace/git-history`). Its reads (`status`, `log`, `show`, ...) run
  *   there, so they never wait for a container. With containers, git writes go to the container; without, every
  *   command that starts with `git` runs in the isolate, whose writes say they need the container tier.
+ * - **Session close**: the session-end teardown releases the session's leases (a container lease commits its last
+ *   changes), then, when the session closed for good (`session_ended`: a close or a delete), stops its container at
+ *   once, so the instance is free for another session rather than held for the 10-minute inactivity timeout. An abort
+ *   (the session stays usable) keeps the container warm for the next command.
  * - **Warm-up** (`warm`): reads the head's listing for the isolate and, with containers, starts the session's container
  *   (if it has used one) and re-bases it, so the first command after a pause waits for neither.
  * - **`node`**: with `nodeEngine` (the compiled QuickJS module), the in-process isolate has a `node` program that runs
@@ -36,6 +40,7 @@ import {
 	type SandboxLease,
 	type SessionId,
 	type SystemContext,
+	systemContext,
 	type TierRoute,
 	type WorkspaceId,
 } from "@harbour/contracts";
@@ -75,6 +80,8 @@ export function isolateBackendName(vars: SandboxVars): IsolateBackendName {
 	}
 	return value;
 }
+
+const AUDIT_CONTEXT: SystemContext = systemContext("sandbox");
 
 const NO_CONTAINERS =
 	"This command needs the container tier, which this deployment doesn't run (HARBOUR_SANDBOX_CONTAINERS is off)";
@@ -143,7 +150,10 @@ export interface StackSandboxes {
 	readonly sandboxes: TieredSandboxes;
 	/** The sandboxes on `backend`, or `undefined` when this Worker doesn't have it. */
 	on(backend: IsolateBackendName): TieredSandboxes | undefined;
-	/** Ends a session's leases on every backend: the runtime's `sandbox` teardown. */
+	/**
+	 * Ends a session's leases on every backend: the runtime's `sandbox` teardown. When the session closed for good
+	 * (`session_ended`, the default), its container stops too, once the leases are released.
+	 */
 	releaseSession(ctx: CallContext, sessionId: SessionId, reason?: LeaseEndReason): Promise<void>;
 	/** Sweeps expired leases on every backend. */
 	sweep(ctx: SystemContext): Promise<readonly SandboxLease[]>;
@@ -206,8 +216,29 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 		backend: options.backend,
 		sandboxes,
 		on: (backend) => all.get(backend),
-		async releaseSession(ctx, sessionId, reason) {
+		async releaseSession(ctx, sessionId, reason = "session_ended") {
+			// The leases first: a container lease's release commits its last changes. If one fails, the container is left to
+			// its inactivity timeout rather than stopped with changes the workspace doesn't have.
 			for (const each of all.values()) await each.releaseSession(ctx, sessionId, reason);
+			if (container === undefined || reason !== "session_ended") return;
+			// Asked of the session's container object itself, not of the leases this object holds in memory: an evicted or
+			// redeployed stack object has forgotten them, and its container may still be running.
+			await options.access.require(ctx, { sessionId, needed: "operator", operation: "sandbox.closeSession" });
+			const { stopped } = await container.closeSession(sessionId);
+			if (!stopped) return;
+			await options.audit.append(AUDIT_CONTEXT, [
+				{
+					id: `sandbox:container:${ctx.organisationId}:${sessionId}:stopped`,
+					at: options.clock.now(),
+					source: "sandbox",
+					type: "sandbox.container.stopped",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					sessionId,
+					subject: { kind: "session", id: sessionId },
+					data: { reason },
+				},
+			]);
 		},
 		async sweep(ctx) {
 			const swept: SandboxLease[] = [];

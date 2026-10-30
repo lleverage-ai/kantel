@@ -121,6 +121,12 @@ export interface SandboxContainer {
 		readonly force?: boolean;
 	}): Promise<ContainerWarmed>;
 	stage(call: ContainerStage): Promise<ContainerStaged>;
+	/**
+	 * The session has closed for good: its container stops now, rather than after the inactivity timeout, so its instance
+	 * is free at once, and nothing starts it again (a command is refused, a warm-up skipped). Idempotent; a session that
+	 * never ran a container changes nothing. `stopped` says whether a container was running.
+	 */
+	closeSession(): Promise<{ readonly stopped: boolean }>;
 }
 
 /**
@@ -138,6 +144,11 @@ export interface CloudflareContainerBackend extends ContainerBackend {
 		ctx: CallContext,
 		input: { readonly sessionId: SessionId; readonly workspaceId: WorkspaceId; readonly force?: boolean },
 	): Promise<{ readonly state: ContainerWarmth; readonly timings: Record<string, number> }>;
+	/**
+	 * The session has closed for good: stops its container at once (`SandboxContainer.closeSession`). Call it after the
+	 * session's leases are released, so the container's last changes are committed first. Touches no other session.
+	 */
+	closeSession(sessionId: SessionId): Promise<{ readonly stopped: boolean }>;
 }
 
 /** R2 reads in parallel batches: one at a time costs a round trip per file. */
@@ -332,6 +343,12 @@ export function createContainerBackend(options: {
 				state: probe.started === true ? "started" : result.state,
 				timings: { ...probe.timings, ...result.timings, "container.read": round(syncMs) },
 			};
+		},
+
+		async closeSession(sessionId) {
+			const closed = await containers(sessionId).closeSession();
+			held.delete(sessionId);
+			return closed;
 		},
 	};
 }
