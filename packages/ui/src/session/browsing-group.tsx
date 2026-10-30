@@ -6,7 +6,7 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { BrowserEntry, type BrowserEntryState } from "./browser-entry.tsx";
 import { AssistantMessage } from "./message.tsx";
-import { ToolCallChip } from "./tool-call.tsx";
+import { FailedSteps, isFailed, ToolCallChip } from "./tool-call.tsx";
 import { type BrowserCallPage, type BrowserViewSlot, type BrowsingStep, browserPageOf } from "./transcript-model.ts";
 import "./browsing-group.css";
 
@@ -19,7 +19,6 @@ import "./browsing-group.css";
 // card, on the run that opened it (`browserEntrySlots`), with the browser's newest page.
 
 const isCall = (step: BrowsingStep): step is ToolItem => step.kind === "tool";
-const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
 
 /**
  * "Browsing, 12 steps" while it runs; "Browsed for 48s, 12 steps" once every call has finished. `active`: the run may
@@ -96,14 +95,15 @@ export type BrowsingGroupProps = {
 	active?: boolean;
 	/**
 	 * The run is in a finished turn whose work is folded under the turn's "Worked for" line (`TurnFold`), and that line
-	 * is closed: the run's own line goes, and only its browser's card and its failed calls stay.
+	 * is closed: the run's own line goes, and only its browser's card stays (its failed calls fold away too; the turn's
+	 * line counts them).
 	 */
 	folded?: boolean;
 };
 
 /**
- * A browsing run, folded to one line by default, also while it runs. Failed and interrupted calls stay visible under
- * the line while it is folded, so a failure is never hidden. Memoised on `items`.
+ * A browsing run, folded to one line by default, also while it runs. Failed and interrupted calls fold with the rest;
+ * the line says how many failed (`FailedSteps`). Memoised on `items`.
  */
 export const BrowsingGroup = memo(function BrowsingGroup({
 	items,
@@ -149,15 +149,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 				onShow={() => onShowBrowser(browser)}
 			/>
 		);
-	if (folded) {
-		if (card === null && failed.length === 0) return null;
-		return (
-			<div className="hb-browsing hb-browsing-folded">
-				{card}
-				{failed.length > 0 ? <div className="hb-browsing-failed">{failed.map(chip)}</div> : null}
-			</div>
-		);
-	}
+	if (folded) return card === null ? null : <div className="hb-browsing hb-browsing-folded">{card}</div>;
 	return (
 		<div className={`hb-browsing${open ? " hb-browsing-open" : ""}${busy ? " hb-browsing-running" : ""}`}>
 			<div className="hb-browsing-line">
@@ -182,6 +174,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 						<span className="hb-browsing-title">{browsingSummary(calls, active)}</span>
 						{current === undefined ? null : <span className="hb-browsing-current">{current.label}</span>}
 					</span>
+					{open ? null : <FailedSteps count={failed.length} />}
 					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
 				</button>
 			</div>
@@ -190,8 +183,6 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 				<div id={id} className="hb-browsing-steps">
 					{items.map((step) => (isCall(step) ? chip(step) : <BrowsingNote key={step.id} item={step} />))}
 				</div>
-			) : failed.length > 0 ? (
-				<div className="hb-browsing-failed">{failed.map(chip)}</div>
 			) : null}
 			{browserView}
 		</div>

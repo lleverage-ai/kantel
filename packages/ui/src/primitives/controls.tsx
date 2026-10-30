@@ -19,6 +19,7 @@ import "./controls.css";
  */
 export function Disclosure({
 	summary,
+	trailing,
 	children,
 	defaultOpen = false,
 	open: controlled,
@@ -26,6 +27,8 @@ export function Disclosure({
 	className,
 }: {
 	summary: ReactNode;
+	/** After the summary's words, in the button, outside their clip: a count or a mark that must stay whole. */
+	trailing?: ReactNode;
 	children: ReactNode;
 	defaultOpen?: boolean;
 	open?: boolean;
@@ -49,6 +52,7 @@ export function Disclosure({
 			>
 				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
 				<span className="hb-disclosure-text">{summary}</span>
+				{trailing}
 			</button>
 			{open ? (
 				<div id={id} className="hb-disclosure-detail">

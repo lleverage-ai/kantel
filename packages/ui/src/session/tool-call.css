@@ -1,6 +1,7 @@
 /* Tool calls as quiet work-log rows (T3 Code's WorkLog): 24px rows, 13px muted labels (full strength while running or
    failed), a 16px icon, a chevron at the end, and the start time only on hover or focus. The detail is a framed block
-   of selectable mono text with a bounded height. */
+   of selectable mono text with a bounded height, the column's full width under its row, not indented past the icon:
+   T3 Code's tool detail is a "panel" (WorkLogDetails, WorkLog.tsx), which has no inline start margin. */
 
 .hb-tool {
 	/* The tallest an argument or output block grows before it scrolls. Candidate token: --hb-tool-output-height. */
@@ -117,7 +118,7 @@
 	flex-direction: column;
 	gap: var(--hb-step-2_5);
 	min-width: 0;
-	margin: var(--hb-step-1) 0 var(--hb-step-2) calc(var(--hb-icon-md) + var(--hb-step-2));
+	margin: var(--hb-step-1) 0 var(--hb-step-2);
 	padding: var(--hb-step-2_5) var(--hb-step-3);
 	border: var(--hb-hairline) solid var(--hb-border);
 	border-radius: var(--hb-radius-control);
@@ -181,15 +182,9 @@
 	white-space: nowrap;
 }
 
+/* The group's calls sit in line with its summary, as T3 Code's expanded group (ExpandedWorkGroupEntries) does. */
 .hb-tool-group-summary > .hb-disclosure-detail {
-	padding: 0 0 var(--hb-step-1) var(--hb-step-4);
-}
-
-.hb-tool-group-failed {
-	display: flex;
-	flex-direction: column;
-	min-width: 0;
-	padding-left: var(--hb-step-4);
+	padding: 0 0 var(--hb-step-1);
 }
 
 /* Images a call returned, such as a browser's screenshot: under the row, in line with its label, always shown, so a

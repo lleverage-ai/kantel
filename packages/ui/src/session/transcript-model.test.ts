@@ -641,7 +641,45 @@ describe("turnFolds", () => {
 			tool("t2", "present_files", "Presenting lighthouse.png", { secondsAgo: 50 }),
 			assistant("a3", "Here it is.", { secondsAgo: 28 }),
 		];
-		expect(folds(items)).toEqual([{ id: "a1", rows: ["a1", "t1", "a2", "t2"], elapsed: 72_000, steps: 2 }]);
+		expect(folds(items)).toEqual([{ id: "a1", rows: ["a1", "t1", "a2", "t2"], elapsed: 72_000, steps: 2, failed: 0 }]);
+	});
+
+	it("folds failed and interrupted calls with the rest, and counts them", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Run it.", 100),
+			tool("t1", "write", "Wrote hello.py", { secondsAgo: 90 }),
+			tool("t2", "bash", "Ran python3 hello.py", { status: "error", secondsAgo: 85 }),
+			assistant("a1", "Checking where it is.", { secondsAgo: 80 }),
+			tool("t3", "bash", "Ran ls", { status: "interrupted", secondsAgo: 75 }),
+			tool("t4", "bash", "Ran ls; python3 hello.py", { secondsAgo: 70 }),
+			assistant("a2", "It prints Hello.", { secondsAgo: 60 }),
+		];
+		const [fold] = folds(items);
+		expect(fold?.rows).toEqual(["t1", "a1", "t3"]);
+		expect(fold).toMatchObject({ steps: 4, failed: 2 });
+	});
+
+	it("leaves a turn's subagents out of its fold, and doesn't count them as steps", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Review it.", 100),
+			tool("t1", "read", "Read a.py", { secondsAgo: 90 }),
+			tool("s1", "subagent", "subagent", { status: "error", args: { task: "Review a.py" }, secondsAgo: 85 }),
+			tool("t2", "bash", "Ran pytest", { secondsAgo: 70 }),
+			assistant("a1", "Reviewed.", { secondsAgo: 60 }),
+		];
+		const [fold] = folds(items);
+		expect(fold?.rows).not.toContain("s1");
+		expect(fold).toMatchObject({ steps: 2, failed: 0 });
+	});
+
+	it("doesn't fold a turn whose subagent is still working", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Review it.", 100),
+			tool("t1", "read", "Read a.py", { secondsAgo: 90 }),
+			tool("s1", "subagent", "subagent", { status: "running", args: { task: "Review a.py" }, secondsAgo: 85 }),
+			assistant("a1", "Started a review.", { secondsAgo: 60 }),
+		];
+		expect(folds(items)).toEqual([]);
 	});
 
 	it("leaves the person's message, the answer, notices and cards out", () => {

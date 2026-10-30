@@ -31,7 +31,7 @@ import { type MessageActionHandlers, MessageActionsContext } from "./message-act
 import { QuestionCard } from "./question-card.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf, subagentStatus } from "./subagent-model.ts";
-import { imagesAsCards, isFailed, ToolCallGroup } from "./tool-call.tsx";
+import { FailedSteps, imagesAsCards, ToolCallGroup } from "./tool-call.tsx";
 import {
 	type PreviewImage,
 	type ToolInPlaceProps,
@@ -212,6 +212,7 @@ export function turnFoldSummary(fold: Pick<TurnFold, "elapsed" | "steps">): stri
 /**
  * A finished turn's "Worked for" line: a button that shows and hides the turn's work, in the rows under it. It looks
  * and works as a Disclosure's summary; the work it shows is in rows of its own, so it names no one region it controls.
+ * Closed, it says how many of the steps it hides failed.
  */
 function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean; onToggle: (id: string) => void }) {
 	return (
@@ -224,6 +225,7 @@ function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean;
 			>
 				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
 				<span className="hb-disclosure-text">{turnFoldSummary(fold)}</span>
+				{open ? null : <FailedSteps count={fold.failed} />}
 			</button>
 		</div>
 	);
@@ -314,13 +316,14 @@ function rowBody(
 	renderers: RowProps["renderers"],
 	previewImage: RowProps["previewImage"],
 ): ReactNode {
-	// A closed fold hides the agent's words before its answer and its subagents' cards.
+	// A closed fold hides the agent's words before its answer. A subagent is never in one (`turnFolds`): its card stays.
 	if (fold === "closed" && (row.kind === "subagent" || row.kind === "item")) return null;
 	if (row.kind === "call") {
 		const { item } = row;
 		const shows = renderers.shows(item);
-		// As the generic row, the call is a step of the turn's work: a closed fold keeps it in view only if it failed.
-		if (fold === "closed" && !shows && !isFailed(item)) return null;
+		// As the generic row, the call is a step of the turn's work: a closed fold hides it, failed or not; the fold's
+		// line counts the failed ones.
+		if (fold === "closed" && !shows) return null;
 		if (!shows) return <GenericToolCall item={item} linked={highlight === item.id} />;
 		// Files an earlier `generate_image` already showed as pictures get no second card.
 		const skip = new Set(repeated?.split("\n"));
