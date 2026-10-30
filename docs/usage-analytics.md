@@ -93,12 +93,12 @@ The options for the queryable store:
 
 | Option | For | Against |
 | --- | --- | --- |
-| **D1** `usage_calls` + hourly rollup table, shipped from the object | Same SQL and code as self-hosted; exact; already bound (`harbour-weur`, weur hint); no new vendor; per-session and per-day queries are cheap | 10 GB per database (roughly 20–30M rows with indexes), single writer; long-range group-bys get slow, so dashboards read the rollup |
+| **D1** `usage_calls` (an hourly rollup table later), shipped from the object | Same SQL and code as self-hosted; exact; already bound (`harbour-weur`, weur hint); no new vendor; per-session and per-day queries are cheap | 10 GB per database (roughly 20–30M rows with indexes), single writer; long-range group-bys get slow, so dashboards read the rollup |
 | **R2 Parquet/Iceberg** via Pipelines, queried with R2 SQL | Cheapest at scale; columnar; R2 SQL has had aggregations since Dec 2025 | Minutes of ingest lag; no per-row lookup or upsert, so idempotency is on the reader; still young; a third query path |
 | **External ClickHouse** (ClickHouse Cloud, or the self-hosted one over the existing tunnel) | One analytics store for both deployments; the best for dashboards | A paid service or a host dependency for the Cloudflare stack; data leaves Cloudflare |
 | Workers Analytics Engine | Free, built in | Samples under load and keeps three months: not a record of truth. Rejected |
 
-**Recommendation:** D1 now, as the Cloudflare record of truth, shipped from the object's ledger by the same shipper
+**Decision (30 Oct 2026):** D1 is the Cloudflare record of truth, shipped from the object's ledger by the same shipper
 and SQL sink as self-hosted. It is the same code path as self-hosted, adds nothing to deploy, and at Harbour's volume
 (thousands of calls a day) 10 GB is years away. Keep the `UsageSink` seam so the Cloudflare stack can also ship to an
 external ClickHouse once a dashboard needs it; that is a config change, not a migration, because the ledger can be
