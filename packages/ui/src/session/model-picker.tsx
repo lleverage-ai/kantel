@@ -1,4 +1,5 @@
 import {
+	type CSSProperties,
 	type KeyboardEvent,
 	type ReactNode,
 	useCallback,
@@ -19,6 +20,7 @@ import {
 	SearchIcon,
 } from "../primitives/icons.tsx";
 import "./model-picker.css";
+import { orderModels, providerKey, providerOrder } from "./model-order.ts";
 import { ProviderIcon } from "./provider-icon.tsx";
 import type { ThinkingLevel } from "./thinking-model.ts";
 
@@ -79,7 +81,7 @@ type Group = { provider: string; models: ComposerModelOption[] };
 function groupByProvider(models: readonly ComposerModelOption[]): Group[] {
 	const groups: Group[] = [];
 	for (const model of models) {
-		const provider = model.provider ?? "";
+		const provider = providerKey(model);
 		const group = groups.find((entry) => entry.provider === provider);
 		if (group) group.models.push(model);
 		else groups.push({ provider, models: [model] });
@@ -268,13 +270,20 @@ export function ProjectPicker({ projects, ...rest }: ProjectPickerProps) {
 }
 
 /**
- * The composer's model picker: a quiet toolbar button with the model's name that opens a searchable list above it,
- * grouped by provider, as T3 Code's ProviderModelPicker. Type to filter; Up and Down move, Enter chooses, Escape
- * closes. A model the session can't use now shows dimmed with its reason.
+ * The model picker, provider first, as T3 Code's ProviderModelPicker: a quiet button with the chosen model's provider
+ * mark and name opens a popover above it with the providers' marks down its side and the chosen provider's models
+ * beside them, newest and largest first (`orderModels`). Click a mark, or press Left and Right in the empty search, to
+ * change provider; Up and Down move through its models, Enter chooses, Escape closes. Typing searches every provider's
+ * models at once. A catalogue with one provider has no side rail. A model the session can't use now shows dimmed with
+ * its reason.
  */
-export function ModelPicker(props: ModelPickerProps) {
-	return <Picker {...props} words={MODEL_WORDS} />;
+export function ModelPicker({ models, ...rest }: ModelPickerProps) {
+	const ordered = useMemo(() => orderModels(models), [models]);
+	return <Picker {...rest} models={ordered} words={MODEL_WORDS} rail />;
 }
+
+/** What a provider is called in the picker: its name, or "Other" for models without one. */
+const providerName = (key: string): string => (key === "" ? "Other" : key);
 
 function Picker({
 	models,
@@ -289,16 +298,21 @@ function Picker({
 	words,
 	custom,
 	placeholder,
+	rail = false,
 }: ModelPickerProps & {
 	words: PickerWords;
 	/** An option made from the query, offered first when the list doesn't already have it (a typed repository). */
 	custom?: (query: string) => ComposerModelOption | undefined;
 	/** The button's words when nothing is chosen. Default `words.choose`. */
 	placeholder?: string;
+	/** Provider first: a rail of the providers' marks beside the list, which shows one provider's options at a time. */
+	rail?: boolean;
 }) {
 	const [open, setOpenState] = useState(defaultOpen);
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState<string | undefined>(undefined);
+	/** The provider the rail shows; undefined until the list opens, then the chosen model's. */
+	const [railChoice, setRailChoice] = useState<string | undefined>(undefined);
 	const root = useRef<HTMLDivElement>(null);
 	const trigger = useRef<HTMLButtonElement>(null);
 	const search = useRef<HTMLInputElement>(null);
@@ -316,10 +330,37 @@ function Picker({
 		},
 		[models, custom],
 	);
-	const filtered = useMemo(() => optionsFor(query), [optionsFor, query]);
+	const providers = useMemo(() => (rail ? providerOrder(models) : []), [rail, models]);
+	const showRail = providers.length > 1;
+	const railProvider =
+		railChoice !== undefined && providers.includes(railChoice)
+			? railChoice
+			: chosen === undefined
+				? providers[0]
+				: providerKey(chosen);
+	/** What the list shows for a query: with the rail and no query, only the rail's provider's options. */
+	const visibleFor = useCallback(
+		(text: string, provider: string | undefined): ComposerModelOption[] => {
+			const matching = optionsFor(text);
+			if (!showRail || text.trim() !== "") return matching;
+			return matching.filter((model) => providerKey(model) === provider);
+		},
+		[optionsFor, showRail],
+	);
+	const searching = query.trim() !== "";
+	const filtered = useMemo(() => visibleFor(query, railProvider), [visibleFor, query, railProvider]);
 	const enabled = useMemo(() => filtered.filter((model) => model.disabledReason === undefined), [filtered]);
 	const groups = useMemo(() => groupByProvider(filtered), [filtered]);
-	const showGroups = groups.length > 1 || (groups[0]?.provider ?? "") !== "";
+	const showGroups = groups.length > 1 || (groups[0]?.provider ?? "") !== "" || showRail;
+	/** While searching, the providers with a match: the rail dims the rest. */
+	const matched = useMemo(() => new Set(groups.map((group) => group.provider)), [groups]);
+	/** The longest provider's list, so the popover keeps one height as the rail changes provider. */
+	const railRows = useMemo(() => {
+		if (!showRail) return 0;
+		const counts = new Map<string, number>();
+		for (const model of models) counts.set(providerKey(model), (counts.get(providerKey(model)) ?? 0) + 1);
+		return Math.max(providers.length, ...counts.values());
+	}, [showRail, models, providers]);
 
 	const onOpenChangeRef = useRef(onOpenChange);
 	onOpenChangeRef.current = onOpenChange;
@@ -341,6 +382,7 @@ function Picker({
 		if (!open) return;
 		const current = chosenRef.current;
 		setQuery("");
+		setRailChoice(current === undefined ? undefined : providerKey(current));
 		setActive(current?.disabledReason === undefined ? current?.id : undefined);
 		search.current?.focus({ preventScroll: true });
 	}, [open]);
@@ -374,6 +416,23 @@ function Picker({
 		close("field");
 	};
 
+	/**
+	 * Shows a provider's models, from the rail or Left and Right: the active option is the chosen model when it is
+	 * that provider's, else its first that can be chosen. Clears a search.
+	 */
+	const openProvider = (provider: string) => {
+		setRailChoice(provider);
+		setQuery("");
+		const visible = visibleFor("", provider).filter((model) => model.disabledReason === undefined);
+		setActive((visible.find((model) => model.id === chosen?.id) ?? visible[0])?.id);
+	};
+
+	const stepProvider = (step: number) => {
+		const index = providers.indexOf(railProvider ?? "");
+		const next = providers[(Math.max(index, 0) + step + providers.length) % providers.length];
+		if (next !== undefined) openProvider(next);
+	};
+
 	const move = (step: number) => {
 		if (enabled.length === 0) return;
 		const index = enabled.findIndex((model) => model.id === active);
@@ -401,6 +460,13 @@ function Picker({
 				event.preventDefault();
 				setActive(enabled.at(-1)?.id);
 				break;
+			// With the rail and an empty search, Left and Right change provider; with a query they move the caret.
+			case "ArrowLeft":
+			case "ArrowRight":
+				if (!showRail || query !== "" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) break;
+				event.preventDefault();
+				stepProvider(event.key === "ArrowRight" ? 1 : -1);
+				break;
 			case "Enter": {
 				event.preventDefault();
 				const model = enabled.find((entry) => entry.id === active) ?? enabled[0];
@@ -425,10 +491,19 @@ function Picker({
 		}
 	};
 
-	// Typing narrows the list; keep the active option on a visible one.
+	// Typing narrows the list; keep the active option on a visible one. Clearing a search goes back to the rail's
+	// view on the provider of the option it had reached, so arrowing to a match and clearing stays there.
 	const changeQuery = (next: string) => {
 		setQuery(next);
-		const visible = optionsFor(next).filter((model) => model.disabledReason === undefined);
+		let provider = railProvider;
+		if (showRail && next.trim() === "") {
+			const reached = models.find((model) => model.id === active);
+			if (reached !== undefined) {
+				provider = providerKey(reached);
+				setRailChoice(provider);
+			}
+		}
+		const visible = visibleFor(next, provider).filter((model) => model.disabledReason === undefined);
 		if (!visible.some((model) => model.id === active)) setActive(visible[0]?.id);
 	};
 
@@ -453,59 +528,106 @@ function Picker({
 				{chevron ? <ChevronDownIcon size="sm" className="hb-model-trigger-chevron" /> : null}
 			</button>
 			{open ? (
-				<div className="hb-model-popover" role="dialog" aria-label={words.choose}>
-					<div className="hb-model-search" data-focus-surface="">
-						<SearchIcon size="sm" className="hb-model-search-icon" />
-						<input
-							ref={search}
-							className="hb-model-search-input"
-							type="text"
-							role="combobox"
-							aria-label={words.search}
-							aria-expanded="true"
-							aria-controls={listId}
-							aria-autocomplete="list"
-							aria-activedescendant={active === undefined ? undefined : optionId(active)}
-							placeholder={words.search}
-							value={query}
-							onChange={(event) => changeQuery(event.target.value)}
-							onKeyDown={onSearchKey}
-							autoComplete="off"
-							spellCheck={false}
-						/>
-					</div>
-					<div className="hb-model-list" ref={list} id={listId} role="listbox" aria-label={words.plural}>
-						{filtered.length === 0 ? (
-							<p className="hb-model-empty">{words.none(query)}</p>
-						) : (
-							groups.map((group) => (
-								// biome-ignore lint/a11y/useSemanticElements: a listbox's groups are ARIA groups; a fieldset isn't allowed in one.
-								<div
-									key={group.provider || "models"}
-									role="group"
-									aria-label={group.provider || words.plural}
-									className="hb-model-group"
-								>
-									{showGroups && group.provider !== "" ? (
-										<div className="hb-model-group-label" aria-hidden="true">
-											{group.provider}
-										</div>
-									) : null}
-									{group.models.map((model) => (
-										<ModelOption
-											key={model.id}
-											id={optionId(model.id)}
-											model={model}
-											selected={model.id === chosen?.id}
-											active={model.id === active}
-											showProvider={!showGroups}
-											onChoose={() => choose(model)}
-											onHover={() => model.disabledReason === undefined && setActive(model.id)}
-										/>
-									))}
-								</div>
-							))
-						)}
+				<div
+					className={`hb-model-popover${showRail ? " hb-model-popover-rail" : ""}`}
+					role="dialog"
+					aria-label={words.choose}
+					{...(showRail ? { style: { "--hb-model-rows": railRows } as CSSProperties } : {})}
+				>
+					{showRail ? (
+						// biome-ignore lint/a11y/useSemanticElements: a set of toggle buttons, not a form's fieldset.
+						<div className="hb-model-rail" role="group" aria-label="Providers">
+							{providers.map((provider) => {
+								const name = providerName(provider);
+								const count = models.filter((model) => providerKey(model) === provider).length;
+								const current = !searching && provider === railProvider;
+								return (
+									<button
+										key={provider || "other"}
+										type="button"
+										className="hb-model-rail-button"
+										// The search field owns the keyboard: Left and Right there change provider.
+										tabIndex={-1}
+										aria-pressed={current}
+										aria-label={`${name}, ${count === 1 ? "1 model" : `${count} models`}`}
+										title={name}
+										data-provider={provider}
+										data-unmatched={(searching && !matched.has(provider)) || undefined}
+										onClick={() => {
+											openProvider(provider);
+											search.current?.focus({ preventScroll: true });
+										}}
+										// Keep focus in the search field while choosing a provider with the pointer.
+										onMouseDown={(event) => event.preventDefault()}
+									>
+										<ProviderIcon provider={provider} fallback="initial" className="hb-model-rail-mark" />
+									</button>
+								);
+							})}
+						</div>
+					) : null}
+					<div className="hb-model-main">
+						<div className="hb-model-search" data-focus-surface="">
+							<SearchIcon size="sm" className="hb-model-search-icon" />
+							<input
+								ref={search}
+								className="hb-model-search-input"
+								type="text"
+								role="combobox"
+								aria-label={words.search}
+								aria-expanded="true"
+								aria-controls={listId}
+								aria-autocomplete="list"
+								aria-activedescendant={active === undefined ? undefined : optionId(active)}
+								placeholder={words.search}
+								value={query}
+								onChange={(event) => changeQuery(event.target.value)}
+								onKeyDown={onSearchKey}
+								autoComplete="off"
+								spellCheck={false}
+							/>
+						</div>
+						<div className="hb-model-list" ref={list} id={listId} role="listbox" aria-label={words.plural}>
+							{filtered.length === 0 ? (
+								<p className="hb-model-empty">{words.none(query)}</p>
+							) : (
+								groups.map((group) => (
+									// biome-ignore lint/a11y/useSemanticElements: a listbox's groups are ARIA groups; a fieldset isn't allowed in one.
+									<div
+										key={group.provider || "models"}
+										role="group"
+										aria-label={group.provider || words.plural}
+										className="hb-model-group"
+									>
+										{showGroups && (group.provider !== "" || showRail) ? (
+											<div className="hb-model-group-label" aria-hidden="true">
+												{showRail ? (
+													<ProviderIcon
+														provider={group.provider}
+														fallback="initial"
+														size="sm"
+														className="hb-model-group-mark"
+													/>
+												) : null}
+												<span className="hb-model-group-name">{providerName(group.provider)}</span>
+											</div>
+										) : null}
+										{group.models.map((model) => (
+											<ModelOption
+												key={model.id}
+												id={optionId(model.id)}
+												model={model}
+												selected={model.id === chosen?.id}
+												active={model.id === active}
+												showProvider={!showGroups}
+												onChoose={() => choose(model)}
+												onHover={() => model.disabledReason === undefined && setActive(model.id)}
+											/>
+										))}
+									</div>
+								))
+							)}
+						</div>
 					</div>
 				</div>
 			) : null}

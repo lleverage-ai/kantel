@@ -246,6 +246,7 @@ export {
 	MessageEditor,
 	type MessageEditorProps,
 } from "./session/message-actions.tsx";
+export { orderModels } from "./session/model-order.ts";
 export {
 	type BranchOption,
 	BranchPicker,
@@ -264,7 +265,7 @@ export {
 	selectedModel,
 } from "./session/model-picker.tsx";
 export { NewSessionRow, type NewSessionRowProps } from "./session/new-session.tsx";
-export { ProviderIcon, providerMark } from "./session/provider-icon.tsx";
+export { ProviderIcon, providerInitial, providerMark } from "./session/provider-icon.tsx";
 export { QuestionCard, type QuestionCardProps } from "./session/question-card.tsx";
 export {
 	ConnectionState,

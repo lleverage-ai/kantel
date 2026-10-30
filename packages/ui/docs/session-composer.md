@@ -158,12 +158,29 @@ off.
 
 #### Model picker
 
-`ModelPicker` is the composer's, and exported for hosts that put it elsewhere. A ghost button with the chosen model's
-provider mark (`ProviderIcon`: Anthropic, OpenAI and Google's from Simple Icons, the spark for any other), its label
-and a chevron opens a popover upward: a search field, then the catalogue grouped by provider, each with its description, a
-"Default" mark, an image icon when it reads images and a tick on the chosen one. A model with `disabledReason` shows
-dimmed with the reason and can't be chosen. `selectedModel(models, id)` falls back to the default, then the first
-enabled model; `filterModels(models, query)` matches every word against the label, provider, description and id.
+`ModelPicker` is the composer's, and exported for hosts that put it elsewhere. Provider first, after T3 Code's
+`ProviderModelPicker` and `ModelPickerSidebar`. A ghost button with the chosen model's provider mark, its label and a
+chevron opens a popover upward: the providers' marks down its left side (a rail), and beside them a search field and the
+chosen model's provider's models, each with its description, a "Default" mark, an image icon when it reads images and
+a tick on the chosen one. The rail's chosen provider has the selected tint and a short accent bar on its inner edge.
+Clicking a mark shows that provider's models; typing searches every provider at once, grouped under each provider's
+mark, and the rail fades the providers without a match. The popover keeps one height (the longest provider's list, up
+to `--hb-popover-height`), so the rail never moves under the pointer. A catalogue with one provider has no rail and
+looks as the plain list did. A model with `disabledReason` shows dimmed with the reason and can't be chosen.
+`selectedModel(models, id)` falls back to the default, then the first enabled model; `filterModels(models, query)`
+matches every word against the label, provider, description and id.
+
+**Order.** The picker orders the catalogue itself (`orderModels` in `model-order.ts`, pure and tested), from the labels
+alone: providers in the order they first appear (so the default model's provider leads); within a provider, families
+("Claude", "GPT", "o", "Gemini") with the newest version first; within a family the newest version first, and within a
+version the largest variant first (Fable, Opus, Sonnet, Haiku; Astra, Sol, Terra, Luna; Pro, the plain model, mini,
+nano). A preview, alias or dated snapshot follows its plain model; a label with no version keeps the catalogue's order
+after the rest.
+
+**Marks.** `ProviderIcon` draws Anthropic, OpenAI, Google (Gemini), Mistral, Meta, DeepSeek and OpenRouter's marks from
+Simple Icons (CC0 1.0) in currentColor; any other provider gets its initial in a mark-sized tile on the rail
+(`fallback="initial"`) and the spark on the button. The marks are their owners' trademarks, shown only to say who
+serves a model.
 
 ```ts
 type ComposerModelOption = {
@@ -242,10 +259,13 @@ project a running session is in: a session stays in the project it started in.
 - Up in an empty field recalls the last message in `history`; Up again, with the caret on the first line, goes
   further back; Down on the last line goes forward, and past the newest returns to an empty draft (`recall()`). A
   draft you typed, a selection, a modifier or attachments turn it off.
-- The model picker: Enter, Space, Up or Down opens it with focus in the search field; Up and Down move through
-  enabled models (the search field keeps focus, with `aria-activedescendant`), Home and End jump while the search is
-  empty, Enter chooses and returns focus to the composer's field, Escape closes and returns focus to the picker's
-  button, Tab closes and moves on.
+- The model picker: Enter, Space, Up or Down opens it with focus in the search field, on the chosen model's provider;
+  Up and Down move through that provider's enabled models (the search field keeps focus, with
+  `aria-activedescendant`), Left and Right in the empty search change provider (wrapping), Home and End jump while
+  the search is empty, typing searches every provider, Enter chooses and returns focus to the composer's field,
+  Escape closes and returns focus to the picker's button, Tab closes and moves on. The rail's buttons are for the
+  pointer (`tabIndex=-1`, each named "Anthropic, 14 models"); clearing a search returns to the provider of the model
+  the keyboard reached.
 - Escape is otherwise not bound: it belongs to whatever overlay is open.
 - After sending, focus stays in the field. After Stop, focus returns to the field.
 - Tab order: the attachments' Retry and Remove buttons, the field, the model picker, the footer, the paperclip, the
