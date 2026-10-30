@@ -20,6 +20,8 @@ The console uses the public API like any other client, so anything it can do a h
 3. `pnpm typecheck` now fails until the server gives it a handler (`createRouter` takes one per route).
 4. Run `pnpm --filter @harbour/api generate` and commit `generated/`. CI runs `generate:check`, which fails while the
    generated files are stale.
+5. Run `pnpm docs:reference` and commit the docs site's API reference pages (`docs/site/src/content/docs/api/reference/`),
+   which are made from `generated/openapi.json`. CI fails while they are stale too.
 
 ## The router
 
