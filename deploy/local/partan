@@ -1,0 +1,174 @@
+#!/bin/sh
+# partan: manage a local Partan that install.sh set up. install.sh copies this file to ~/.partan/bin/partan.
+#
+#   partan status            what's running, and the console's URL
+#   partan start | stop | restart
+#   partan open              open the console in a browser (and print its URL)
+#   partan logs [SERVICE]    follow the logs (gateway, browser-host, postgres, minio, mailpit)
+#   partan upgrade [--ref REF]
+#                            fetch the source again (or rebuild a checkout install), rebuild and restart; data is kept
+#   partan uninstall [--keep-data] [--yes]
+#                            remove the containers, images and, without --keep-data, every session, file and key
+#   partan compose ARGS...   run `docker compose` on this install's project, for anything else
+#
+# Everything runs as the Docker Compose project `partan`; the Docker daemon restarts it after a reboot until it is
+# stopped with `partan stop`.
+
+set -eu
+
+say() { printf '%s\n' "$*"; }
+die() {
+	printf 'partan: %s\n' "$*" >&2
+	exit 1
+}
+
+# This file lives in <home>/bin; PARTAN_HOME overrides that, for a copy elsewhere.
+self="$0"
+while [ -L "$self" ]; do
+	target="$(readlink "$self")"
+	case "$target" in
+	/*) self="$target" ;;
+	*) self="$(dirname "$self")/$target" ;;
+	esac
+done
+PARTAN_HOME="${PARTAN_HOME:-$(cd "$(dirname "$self")/.." && pwd)}"
+ENV_FILE="$PARTAN_HOME/partan.env"
+SRC="$PARTAN_HOME/src"
+[ -f "$ENV_FILE" ] || die "no install in $PARTAN_HOME (no partan.env); run install.sh first"
+# How to name this command in what it prints: `partan` when that is what's on PATH, else its full path.
+me="$PARTAN_HOME/bin/partan"
+[ "$(command -v partan 2>/dev/null || true)" = "$HOME/.local/bin/partan" ] && [ -L "$HOME/.local/bin/partan" ] &&
+	[ "$(readlink "$HOME/.local/bin/partan")" = "$me" ] && me=partan
+
+saved() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
+
+compose() {
+	[ -f "$SRC/deploy/local/compose.yaml" ] || die "the source in $SRC is missing; run install.sh again"
+	if [ "$(saved PARTAN_BROWSER)" = off ]; then
+		set -- -f "$SRC/deploy/local/compose.yaml" "$@"
+	else
+		set -- -f "$SRC/deploy/local/compose.yaml" -f "$SRC/deploy/local/browser.yaml" "$@"
+	fi
+	docker compose --project-name partan --project-directory "$SRC/deploy/local" --env-file "$ENV_FILE" "$@"
+}
+
+url() { printf 'http://127.0.0.1:%s/\n' "$(saved PARTAN_PORT)"; }
+
+healthy() { curl -fs -o /dev/null --max-time 3 "$(url)healthz"; }
+
+open_console() { # $1: --quiet to print only the URL when there is no browser to open it in
+	u="$(url)"
+	if [ "$(uname -s)" = Darwin ]; then
+		open "$u" >/dev/null 2>&1 && {
+			say "Opened $u"
+			return 0
+		}
+	elif { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && command -v xdg-open >/dev/null 2>&1; then
+		xdg-open "$u" >/dev/null 2>&1 &
+		say "Opened $u"
+		return 0
+	fi
+	[ "${1:-}" = --quiet ] || say "No browser here: open $u yourself."
+}
+
+browser_containers() { docker ps -aq --filter label=harbour.browser-host=partan; }
+
+confirm() { # $1: question; true for yes. Needs a terminal: without one, ask for --yes instead.
+	if [ ! -r /dev/tty ] || ! (: </dev/tty) 2>/dev/null; then return 1; fi
+	printf '%s [y/N] ' "$1" >/dev/tty
+	read -r answer </dev/tty || return 1
+	case "$answer" in y | Y | yes | YES) return 0 ;; *) return 1 ;; esac
+}
+
+command="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$command" in
+start)
+	compose up -d --wait --wait-timeout 300
+	healthy || die "the gateway isn't answering at $(url)healthz; see: $me logs gateway"
+	say "Partan is running at $(url)"
+	[ "${1:-}" = --no-open ] || open_console --quiet
+	;;
+stop)
+	compose stop
+	say "Stopped. Start it again with: $me start"
+	;;
+restart)
+	compose restart
+	;;
+status)
+	compose ps
+	if healthy; then say "Console: $(url) (healthy)"; else say "Console: $(url) (not answering)"; fi
+	say "Mailbox: http://127.0.0.1:$(saved PARTAN_MAIL_PORT)/ (sign-in codes for $(saved PARTAN_ADMIN_EMAIL))"
+	;;
+open)
+	open_console "$@"
+	;;
+url)
+	url
+	;;
+logs)
+	compose logs --follow --tail 200 "$@"
+	;;
+compose)
+	compose "$@"
+	;;
+upgrade)
+	[ -f "$SRC/install.sh" ] || die "the source in $SRC is missing; run install.sh again"
+	# Run a copy: the upgrade replaces src/, this script's own file included.
+	installer="$(mktemp "${TMPDIR:-/tmp}/partan-install.XXXXXX")"
+	trap 'rm -f "$installer"' EXIT INT TERM
+	cp "$SRC/install.sh" "$installer"
+	if [ -L "$SRC" ] && [ $# -eq 0 ]; then
+		say "This install runs the checkout at $(cd "$SRC" && pwd -P): update it (git pull), then this rebuilds it."
+		sh "$installer" --home "$PARTAN_HOME" --source "$SRC" --no-open
+	else
+		sh "$installer" --home "$PARTAN_HOME" --upgrade --no-open "$@"
+	fi
+	;;
+uninstall)
+	keep=""
+	yes=""
+	for arg in "$@"; do
+		case "$arg" in
+		--keep-data) keep=1 ;;
+		--yes | -y) yes=1 ;;
+		*) die "unknown option for uninstall: $arg" ;;
+		esac
+	done
+	if [ -z "$keep" ] && [ -z "$yes" ]; then
+		confirm "Remove Partan and all its data (sessions, workspaces, vault, browser profiles) from this machine?" ||
+			die "not removed. To go ahead: $me uninstall --yes (or --keep-data to keep the data)"
+	fi
+	leftovers="$(browser_containers)"
+	# shellcheck disable=SC2086 # one container ID per word
+	[ -z "$leftovers" ] || docker rm -f $leftovers >/dev/null
+	if [ -n "$keep" ]; then
+		compose down --remove-orphans
+	else
+		compose down --remove-orphans --volumes
+	fi
+	docker image rm partan-selfhosted:local partan-browser:local >/dev/null 2>&1 || true
+	link="$HOME/.local/bin/partan"
+	if [ -L "$link" ] && [ "$(readlink "$link")" = "$PARTAN_HOME/bin/partan" ]; then rm -f "$link"; fi
+	if [ -n "$keep" ]; then
+		if [ -L "$SRC" ]; then rm -f "$SRC"; else rm -rf "$SRC"; fi
+		rm -rf "${PARTAN_HOME:?}/bin"
+		say "Removed Partan's containers and images. Its data is kept in Docker volumes (partan_*) with its keys in"
+		say "$ENV_FILE: install again to pick it up, or run: docker volume rm partan_pgdata partan_miniodata partan_gatewaystate partan_browserdata"
+	else
+		case "$PARTAN_HOME" in
+		"" | / | "$HOME") die "refusing to remove $PARTAN_HOME" ;;
+		esac
+		if [ -L "$SRC" ]; then rm -f "$SRC"; fi
+		rm -rf "$PARTAN_HOME"
+		say "Removed Partan and its data. The base images it pulled (postgres, minio, mailpit) are left for Docker to prune."
+	fi
+	;;
+help | -h | --help)
+	sed -n '2,15p' "$self" | sed 's/^# \{0,1\}//'
+	;;
+*)
+	die "unknown command: $command (try: $me help)"
+	;;
+esac

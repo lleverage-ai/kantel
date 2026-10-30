@@ -1,6 +1,17 @@
 # harbour
 Agent platform: sessions, sandboxes (isolate + container), workspace, browser, vault, audit, schedules, skills and memory. Runs on Cloudflare or self-hosted.
 
+## Install
+
+Run Partan on your own machine (Linux or macOS, with Docker):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tvdavies/harbour/main/install.sh | sh
+```
+
+It opens the console at <http://127.0.0.1:8470/> when it's ready. Options, signing in, stopping, upgrading and
+uninstalling are in [deploy/local/README.md](deploy/local/README.md).
+
 ## Plan
 
 - [Harbour plan v2 (27 October 2026)](https://files.myslop.app/6278860afc/harbour-plan-v2-2026-10-27.html): architecture on Pi Durable, Sal's workers first, the Cloudflare and self-hosted targets, and the delivery plan.

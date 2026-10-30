@@ -1,0 +1,71 @@
+# Harbour's own browsers for a local Partan (docs/design/browser-runtime.md), on top of compose.yaml. install.sh adds
+# this file unless it is run with --no-browser. The same services as deploy/compose/browser.yaml, with the keys from
+# partan.env instead of development defaults.
+#
+# - `browser-image` builds images/browser (Chromium and its agent) and exits. That image is linux/amd64 only (Chrome for
+#   Testing's headless shell has no arm64 build), so on an arm64 machine Docker runs it under emulation: Docker Desktop
+#   and OrbStack do that out of the box; elsewhere it needs qemu's binfmt handlers, or --no-browser.
+# - `browser-host` starts one container of it per browser through the Docker socket (PARTAN_DOCKER_SOCKET, which
+#   install.sh finds from the Docker context), on the `partan-browsers` network, and keeps profiles and recordings on
+#   its volume, sealed with PARTAN_BROWSER_SEAL_KEY. Anything holding the Docker socket is root on the machine.
+# - The gateway's sessions get the browser's tools; a person allows or declines each site in the console, then watches
+#   it live and plays it back from the session.
+services:
+  browser-image:
+    build:
+      context: ../../images/browser
+    platform: linux/amd64
+    image: partan-browser:local
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+
+  browser-host:
+    build:
+      context: ../..
+      dockerfile: apps/selfhosted/Dockerfile
+    image: partan-selfhosted:local
+    command: ["bun", "src/browser/host.ts"]
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8790"
+      HARBOUR_BROWSER_HOST_TOKEN: ${PARTAN_BROWSER_HOST_TOKEN:?run install.sh, which writes it to partan.env}
+      HARBOUR_BROWSER_VIEW_KEY: ${PARTAN_BROWSER_VIEW_KEY:?run install.sh, which writes it to partan.env}
+      HARBOUR_BROWSER_SEAL_KEY: ${PARTAN_BROWSER_SEAL_KEY:?run install.sh, which writes it to partan.env}
+      HARBOUR_BROWSER_DATA_DIR: /var/lib/harbour-browser
+      HARBOUR_BROWSER_IMAGE: partan-browser:local
+      # Names this install's browser containers (label harbour.browser-host=partan), so its janitor, and `partan
+      # uninstall`, remove only its own on a shared daemon.
+      HARBOUR_BROWSER_STACK: partan
+      HARBOUR_BROWSER_NETWORK: partan-browsers
+      HARBOUR_BROWSER_MEMORY_MB: ${PARTAN_BROWSER_MEMORY_MB:-2048}
+      HARBOUR_BROWSER_CPUS: ${PARTAN_BROWSER_CPUS:-1}
+    networks: [default, browsers]
+    volumes:
+      - ${PARTAN_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - browserdata:/var/lib/harbour-browser
+    depends_on:
+      browser-image: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8790/health'); process.exit(r.ok ? 0 : 1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  gateway:
+    environment:
+      HARBOUR_BROWSER_PROVIDER: harbour
+      HARBOUR_BROWSER_HOST_URL: http://browser-host:8790
+      HARBOUR_BROWSER_HOST_TOKEN: ${PARTAN_BROWSER_HOST_TOKEN}
+      HARBOUR_BROWSER_VIEW_KEY: ${PARTAN_BROWSER_VIEW_KEY}
+    depends_on:
+      browser-host: { condition: service_healthy }
+
+networks:
+  browsers:
+    # Named outright: the host joins each browser container to it by this name.
+    name: partan-browsers
+
+volumes:
+  browserdata: {}

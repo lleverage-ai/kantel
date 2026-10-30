@@ -1,0 +1,100 @@
+# Partan on your own machine: the self-hosted target, as small as it gets. install.sh (at the repo root) writes the
+# settings and keys this file reads to ~/.partan/partan.env and runs it as the compose project `partan`; the `partan`
+# command it installs (deploy/local/partan) starts, stops, upgrades and removes it. See deploy/local/README.md.
+#
+# What runs: the gateway (the APIs and the console, on 127.0.0.1:PARTAN_PORT), Postgres (sessions, identity, audit,
+# vault, skills and memory), MinIO (workspace trees and skill files) and Mailpit (where sign-in codes go, on
+# 127.0.0.1:PARTAN_MAIL_PORT). browser.yaml adds Harbour's own browsers. Nothing else is published: Postgres and MinIO
+# are reached only on the project's network.
+#
+# Unlike deploy/compose/compose.yaml (the M0 spike stack CI and Sal's host run), there are no M0 session hosts, no
+# isolate host, no vault proxy and no fixtures, and no development secrets: every password and key comes from the env
+# file, generated per install. The Docker daemon is the service manager: every long-running service restarts with it.
+
+name: partan
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: partan
+      POSTGRES_PASSWORD: ${PARTAN_POSTGRES_PASSWORD:?run install.sh, which writes it to partan.env}
+      POSTGRES_DB: partan
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "partan"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+
+  minio:
+    # Chainguard's public build of MinIO, as deploy/compose/compose.yaml pins it.
+    image: cgr.dev/chainguard/minio@sha256:a1d2b3516a41296510f7fb49184c18b88287fa8f35cf3ce5c047289053b94964
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: partan
+      MINIO_ROOT_PASSWORD: ${PARTAN_S3_SECRET:?run install.sh, which writes it to partan.env}
+    volumes: [miniodata:/data]
+    healthcheck:
+      test: ["CMD", "/usr/bin/minio", "--version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # Sign-in is by email one-time PIN and Partan is invite-only: the gateway invites PARTAN_ADMIN_EMAIL, and its codes
+  # land here, at http://127.0.0.1:PARTAN_MAIL_PORT/. Mailpit keeps them in memory and relays nothing.
+  mailpit:
+    image: axllent/mailpit:v1.32.0@sha256:0790692be935ea4420d085694f7985b1f692ca6a8771ab0e0bd8ba75ac180498
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports: ["127.0.0.1:${PARTAN_MAIL_PORT:-8471}:8025"]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  # The gateway (apps/selfhosted/src/gateway/main.ts lists its settings): the session, workspace, audit, vault, skills
+  # and memory APIs, sign-in, and the console on every other path. On its first start it makes an organisation, a
+  # project and an operator key, kept in /var/lib/harbour/bootstrap.json on its volume. No model is configured here:
+  # credentials are entered in the console's onboarding and kept in the vault, sealed with PARTAN_VAULT_CIPHER_KEY.
+  gateway:
+    build:
+      context: ../..
+      dockerfile: apps/selfhosted/Dockerfile
+    image: partan-selfhosted:local
+    command: ["bun", "src/gateway/main.ts"]
+    restart: unless-stopped
+    environment:
+      HARBOUR_BOOTSTRAP_FILE: /var/lib/harbour/bootstrap.json
+      HARBOUR_CONSOLE_DIR: /harbour/apps/console/dist
+      HARBOUR_SMTP_URL: smtp://mailpit:1025?starttls=off
+      HARBOUR_MAIL_FROM: Partan <partan@partan.localhost>
+      HARBOUR_ADMIN_EMAIL: ${PARTAN_ADMIN_EMAIL:-admin@partan.localhost}
+      HARBOUR_DATABASE_URL: postgres://partan:${PARTAN_POSTGRES_PASSWORD}@postgres:5432/partan
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: partan
+      S3_ACCESS_KEY: partan
+      S3_SECRET_KEY: ${PARTAN_S3_SECRET}
+      HARBOUR_VAULT_CIPHER_KEY: ${PARTAN_VAULT_CIPHER_KEY:?run install.sh, which writes it to partan.env}
+    ports: ["127.0.0.1:${PARTAN_PORT:-8470}:8080"]
+    volumes: [gatewaystate:/var/lib/harbour]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+volumes:
+  pgdata: {}
+  miniodata: {}
+  gatewaystate: {}
