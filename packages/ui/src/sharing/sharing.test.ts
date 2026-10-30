@@ -4,7 +4,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR } from "../primitives/format.ts";
-import { createSharingScenario, directory, FIXTURE_NOW, fixtureRequests, fixtureShares } from "./fixtures.ts";
+import {
+	createSharingScenario,
+	directory,
+	FIXTURE_NOW,
+	fixtureRequests,
+	fixtureShares,
+	skillSharingFixtures,
+} from "./fixtures.ts";
 import {
 	expiryText,
 	grantablePermissions,
@@ -13,11 +20,12 @@ import {
 	kindLabel,
 	readAll,
 	readOverview,
+	readResourceSharing,
 	resourceText,
 	shareState,
 	sortShares,
 } from "./sharing-model.ts";
-import { SharingView } from "./sharing-page.tsx";
+import { ShareList, SharingView } from "./sharing-page.tsx";
 
 describe("the sharing model", () => {
 	it("offers a grant no wider than asked", () => {
@@ -133,5 +141,47 @@ describe("the sharing view", () => {
 		expect(html).toContain(">Revoke</span>");
 		expect(html).toContain(">Detach</span>");
 		expect(html).toContain("No requests from this project");
+	});
+});
+
+describe("a resource's sharing", () => {
+	const extra = skillSharingFixtures("skill_reconcile", "prj_billing");
+	const resource = { kind: "skills.skill", id: "skill_reconcile" } as const;
+
+	it("reads only that resource's shares and pending requests", async () => {
+		const source = createSharingScenario(extra);
+		const sharing = await readResourceSharing(source, resource);
+		expect(sharing.shares.map((share) => share.id)).toEqual([
+			"share_skill_reconcile_web",
+			"share_skill_reconcile_agent",
+		]);
+		expect(sharing.pending.map((request) => request.id)).toEqual(["request_skill_reconcile_platform"]);
+		await source.decideRequest("request_skill_reconcile_platform", { decision: "reject" });
+		await source.revokeShare("share_skill_reconcile_web");
+		const after = await readResourceSharing(source, resource);
+		expect(after.pending).toEqual([]);
+		expect(after.shares.map((share) => share.id)).toEqual(["share_skill_reconcile_agent"]);
+	});
+
+	it("names each grantee, and the revision a share pins", () => {
+		const html = renderToStaticMarkup(
+			createElement(ShareList, {
+				title: "Shared with",
+				empty: "Not shared outside its owner.",
+				shares: extra.shares,
+				directory,
+				now: FIXTURE_NOW,
+				busy: undefined,
+				action: "Revoke",
+				onRevoke: () => undefined,
+				side: "resource",
+				heading: "h3",
+			}),
+		);
+		expect(html).toContain("Website project, revision 1");
+		expect(html).toContain("Agent Triage");
+		expect(html).toContain("Shared by Tom Davies");
+		expect(html).toContain("13 days left");
+		expect(html).not.toContain("Skill ");
 	});
 });

@@ -448,12 +448,15 @@ export {
 	type WorkingIndicatorProps,
 } from "./session/working-indicator.tsx";
 // The sharing page (docs/design/sharing.md), and the client it reads and writes through.
+export { ResourceSharingPanel, type ResourceSharingPanelProps } from "./sharing/resource-sharing-panel.tsx";
 export {
 	grantablePermissions,
 	granteeText,
 	kindLabel,
 	PERMISSION_LABELS,
+	type ResourceSharing,
 	readOverview,
+	readResourceSharing,
 	resourceText,
 	type SharingDirectory,
 	type SharingOverview,
@@ -477,7 +480,13 @@ export {
 	type SkillsAuthorApi,
 	type SkillsSource,
 } from "./skills/skills-model.ts";
-export { SkillDetail, type SkillDetailProps, SkillsPage, type SkillsPageProps } from "./skills/skills-page.tsx";
+export {
+	SkillDetail,
+	type SkillDetailProps,
+	type SkillSharing,
+	SkillsPage,
+	type SkillsPageProps,
+} from "./skills/skills-page.tsx";
 export { THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
 export {
 	createThemeController,

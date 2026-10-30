@@ -12,6 +12,8 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Field, FieldList, Notice, Panel } from "../primitives/surface.tsx";
 import { ClockTime } from "../primitives/time.tsx";
+import { ResourceSharingPanel } from "../sharing/resource-sharing-panel.tsx";
+import type { SharingDirectory, SharingSource } from "../sharing/sharing-model.ts";
 import { FileViewer } from "../workspace/file-viewer.tsx";
 import { NoteViewer } from "../workspace/note-viewer.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
@@ -54,6 +56,14 @@ export interface SkillsPageProps {
 	readonly owners?: readonly OwnerChoice[];
 	/** Open the new-skill form when the page loads, for stories. */
 	readonly initialCreating?: boolean;
+	/** Shows a project's skill's sharing (who has it, and requests for it) on its page. Absent, no sharing panel. */
+	readonly sharing?: SkillSharing;
+}
+
+/** The sharing seam a skill's page reads its shares and requests through. */
+export interface SkillSharing {
+	readonly source: SharingSource;
+	readonly directory?: SharingDirectory;
 }
 
 /**
@@ -77,6 +87,7 @@ export function SkillsPage({
 	author,
 	owners = [],
 	initialCreating = false,
+	sharing,
 }: SkillsPageProps) {
 	const [visibility, setVisibility] = useState<SkillVisibility>(initialVisibility);
 	const [query, setQuery] = useState("");
@@ -272,6 +283,7 @@ export function SkillsPage({
 							viewerId={visibility.userId}
 							now={now}
 							onBack={() => open(undefined)}
+							{...(sharing === undefined ? {} : { sharing })}
 							{...(canWrite
 								? {
 										onEdit: (pkg: SkillPackage, latest: SkillRevision | undefined) => {
@@ -299,6 +311,8 @@ export interface SkillDetailProps {
 	readonly onBack?: () => void;
 	/** Shows Edit, for a skill the viewer may change (never a built-in one). */
 	readonly onEdit?: (pkg: SkillPackage, latest: SkillRevision | undefined) => void;
+	/** Shows the skill's sharing, when a project owns it. */
+	readonly sharing?: SkillSharing;
 }
 
 /** One skill: what it is, its revisions newest first, and the picked revision's files. */
@@ -311,6 +325,7 @@ export function SkillDetail({
 	initialRevision,
 	onBack,
 	onEdit,
+	sharing,
 }: SkillDetailProps) {
 	const { state, reload } = useLoad(async () => {
 		const [pkg, revisions] = await Promise.all([source.get(skillId), readRevisions(source, skillId)]);
@@ -448,6 +463,22 @@ export function SkillDetail({
 					</ul>
 				)}
 			</Panel>
+
+			{sharing === undefined || pkg.owner.kind !== "project" ? null : (
+				<section className="hb-skill-sharing" aria-label="Sharing">
+					<ResourceSharingPanel
+						source={sharing.source}
+						resource={{ kind: "skills.skill", id: pkg.id }}
+						directory={{
+							...directory,
+							...sharing.directory,
+							resource: (kind, id) =>
+								kind === "skills.skill" && id === pkg.id ? pkg.name : sharing.directory?.resource?.(kind, id),
+						}}
+						now={now}
+					/>
+				</section>
+			)}
 
 			{revision === undefined ? null : <RevisionFiles key={revision.revision} source={source} revision={revision} />}
 		</article>

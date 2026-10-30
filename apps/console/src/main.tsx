@@ -26,7 +26,7 @@ import { apiSchedules } from "./api/schedules-http.ts";
 import { apiSharing } from "./api/sharing-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
-import { createRecordedAgent } from "./recorded/agent.ts";
+import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
@@ -151,9 +151,10 @@ const recordedOversight: Promise<Oversight> | undefined =
 					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
 				),
 				createRecordedAgent(),
-			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, ConsoleAgent]): Oversight => {
+			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
 				proposals = made.proposals;
-				return { vault: made.vault, audit: made.audit, schedules, sharing: createRecordedSharing(), agent };
+				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
+				return { vault: made.vault, audit: made.audit, schedules, sharing, agent };
 			})
 		: undefined;
 

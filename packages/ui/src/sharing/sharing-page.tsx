@@ -27,6 +27,7 @@ import {
 	type SharingDirectory,
 	type SharingOverview,
 	type SharingSource,
+	sentenceCase,
 	shareState,
 	sortShares,
 } from "./sharing-model.ts";
@@ -213,7 +214,7 @@ export function SharingView({ overview, directory = {}, now, busy, onDecide, onR
 	);
 }
 
-function InboxRow({
+export function InboxRow({
 	request,
 	directory,
 	now,
@@ -267,7 +268,7 @@ function InboxRow({
 	);
 }
 
-function ShareList({
+export function ShareList({
 	title,
 	empty,
 	shares,
@@ -277,6 +278,7 @@ function ShareList({
 	action,
 	onRevoke,
 	side,
+	heading: Heading = "h2",
 }: {
 	title: string;
 	empty: string;
@@ -286,10 +288,12 @@ function ShareList({
 	busy: string | undefined;
 	action: string;
 	onRevoke: (share: ResourceShare) => void;
-	side: "outgoing" | "incoming";
+	/** `resource` names only the grantee: the panel is already on the resource. */
+	side: "outgoing" | "incoming" | "resource";
+	heading?: "h2" | "h3";
 }) {
 	return (
-		<Panel header={<h2 className="hb-sharing-title">{title}</h2>} aria-label={title}>
+		<Panel header={<Heading className="hb-sharing-title">{title}</Heading>} aria-label={title}>
 			{shares.length === 0 ? (
 				<EmptyState title={empty} />
 			) : (
@@ -299,12 +303,19 @@ function ShareList({
 						return (
 							<li key={share.id} className="hb-sharing-row">
 								<div className="hb-sharing-what">
-									<span className="hb-sharing-resource">{resourceText(share.resource, directory)}</span>
+									<span className="hb-sharing-resource">
+										{side === "resource"
+											? sentenceCase(granteeText(share.grantee, directory)) +
+												(share.resource.revision === undefined ? "" : `, revision ${share.resource.revision}`)
+											: resourceText(share.resource, directory)}
+									</span>
 									<span className="hb-sharing-detail">
 										{side === "outgoing"
-											? `With ${granteeText(share.grantee, directory)}`
-											: `From ${ownerName(share.owner, directory)}`}
-										, shared by {actorText(share.grantedBy, directory)} <ClockTime at={share.grantedAt} now={now} />
+											? `With ${granteeText(share.grantee, directory)}, shared by `
+											: side === "incoming"
+												? `From ${ownerName(share.owner, directory)}, shared by `
+												: "Shared by "}
+										{actorText(share.grantedBy, directory)} <ClockTime at={share.grantedAt} now={now} />
 										{share.expiresAt === undefined ? null : state === "expired" ? (
 											<>
 												, ended <ClockTime at={share.expiresAt} now={now} />

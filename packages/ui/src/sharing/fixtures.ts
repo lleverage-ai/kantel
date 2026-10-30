@@ -27,6 +27,7 @@ const resources = names({
 export const directory: SharingDirectory = {
 	person: names({ usr_tom: "Tom Davies", usr_ana: "Ana Silva" }),
 	agent: names({ agent_triage: "Triage" }),
+	project: names({ prj_web: "Website", prj_platform: "Platform", prj_billing: "Billing" }),
 	resource: (kind, id) => resources(`${kind}:${id}`),
 };
 
@@ -83,10 +84,70 @@ export function fixtureRequests(): AccessRequest[] {
 	];
 }
 
-/** A source over the fixtures, in the page: decisions, revocations and withdrawals change what it lists next. */
-export function createSharingScenario(): SharingSource {
-	const shares = fixtureShares();
-	const requests = fixtureRequests();
+/**
+ * Sharing for one project's skill, for its page: in use by a project at a pinned revision and by an agent, and a
+ * request for edit waiting. The projects are the skills fixtures' (`@harbour/ui/skills/fixtures`).
+ */
+export function skillSharingFixtures(
+	skillId: string,
+	ownerProjectId: string,
+): { shares: ResourceShare[]; requests: AccessRequest[] } {
+	const owner: OwnerRef = { kind: "project", organisationId: ORG, projectId: ownerProjectId };
+	const resource = { kind: "skills.skill", id: skillId } as const;
+	return {
+		shares: [
+			{
+				id: `share_${skillId}_web`,
+				organisationId: ORG,
+				resource: { ...resource, revision: 1 },
+				owner,
+				grantee: { kind: "project", projectId: "prj_web" },
+				permission: "use",
+				grantedBy: tom,
+				grantedAt: FIXTURE_NOW - 5 * DAY,
+			},
+			{
+				id: `share_${skillId}_agent`,
+				organisationId: ORG,
+				resource,
+				owner,
+				grantee: { kind: "agent", agentId: "agent_triage" },
+				permission: "propose",
+				grantedBy: tom,
+				grantedAt: FIXTURE_NOW - DAY,
+				expiresAt: FIXTURE_NOW + 13 * DAY,
+			},
+		],
+		requests: [
+			{
+				id: `request_${skillId}_platform`,
+				organisationId: ORG,
+				resource,
+				owner,
+				grantee: { kind: "project", projectId: "prj_platform" },
+				permission: "edit",
+				reason: "Platform runs the month-end close too and wants to keep the matching rules in one place.",
+				requestedBy: ana,
+				status: "pending",
+				createdAt: FIXTURE_NOW - 2 * HOUR,
+			},
+		],
+	};
+}
+
+/**
+ * A source over the fixtures, in the page: decisions, revocations and withdrawals change what it lists next. `extra`
+ * adds shares and requests, such as `skillSharingFixtures`.
+ */
+export function createSharingScenario(
+	extra: { readonly shares?: readonly ResourceShare[]; readonly requests?: readonly AccessRequest[] } = {},
+): SharingSource {
+	const shares = [...fixtureShares(), ...(extra.shares ?? [])];
+	const requests = [...fixtureRequests(), ...(extra.requests ?? [])];
+	const sameResource = (
+		item: { readonly resource: { readonly kind: string; readonly id: string } },
+		resource: { readonly kind: string; readonly id: string } | undefined,
+	) => resource === undefined || (item.resource.kind === resource.kind && item.resource.id === resource.id);
 	const ownerProject = (owner: OwnerRef) => (owner.kind === "project" ? owner.projectId : undefined);
 	const sameGrantee = (a: ResourceShare["grantee"], b: ResourceShare["grantee"]) =>
 		JSON.stringify(a) === JSON.stringify(b);
@@ -95,6 +156,7 @@ export function createSharingScenario(): SharingSource {
 			const items = shares.filter(
 				(share) =>
 					(query.includeInactive === true || share.revokedAt === undefined) &&
+					sameResource(share, query.resource) &&
 					(query.ownerProjectId === undefined || ownerProject(share.owner) === query.ownerProjectId) &&
 					(query.grantee === undefined || sameGrantee(share.grantee, query.grantee)),
 			);
@@ -104,6 +166,7 @@ export function createSharingScenario(): SharingSource {
 			const items = requests.filter(
 				(request) =>
 					(query.status === undefined || request.status === query.status) &&
+					sameResource(request, query.resource) &&
 					(query.decidable !== true || ownerProject(request.owner) === "proj_support") &&
 					(query.grantee === undefined || sameGrantee(request.grantee, query.grantee)),
 			);

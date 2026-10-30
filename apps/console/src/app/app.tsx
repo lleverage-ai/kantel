@@ -578,6 +578,7 @@ export function App({
 					agent={agent}
 					projects={projectList}
 					{...(route.skillId === undefined ? {} : { skillId: route.skillId })}
+					{...(sharing === undefined ? {} : { sharing })}
 				/>
 			</div>
 		);

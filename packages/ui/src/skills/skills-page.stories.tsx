@@ -1,5 +1,7 @@
 import type { SkillVisibility } from "@harbour/contracts";
 import { useEffect, useState } from "react";
+import { createSharingScenario, directory as sharingDirectory, skillSharingFixtures } from "../sharing/fixtures.ts";
+import type { SharingSource } from "../sharing/sharing-model.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import {
 	BILLING_VISIBILITY,
@@ -30,6 +32,7 @@ function ScenarioPage({
 	readOnly,
 	creating,
 	brokenPublish,
+	shared,
 }: {
 	open?: string;
 	visibility?: SkillVisibility;
@@ -38,6 +41,8 @@ function ScenarioPage({
 	readOnly?: boolean;
 	creating?: boolean;
 	brokenPublish?: boolean;
+	/** Give the opened project skill the sharing fixtures: two shares and a request to decide. */
+	shared?: boolean;
 }) {
 	const [scenario, setScenario] = useState<SkillsScenario>();
 	useEffect(() => {
@@ -52,6 +57,11 @@ function ScenarioPage({
 	const source =
 		scenario === undefined ? pendingSource : brokenFiles === true ? failingFiles(scenario.source) : scenario.source;
 	const selected = open === undefined ? undefined : scenario?.ids[open];
+	const [sharing, setSharing] = useState<SharingSource>();
+	useEffect(() => {
+		if (shared === true && selected !== undefined)
+			setSharing(createSharingScenario(skillSharingFixtures(selected, "prj_billing")));
+	}, [shared, selected]);
 	const author =
 		scenario === undefined || readOnly === true
 			? undefined
@@ -70,6 +80,7 @@ function ScenarioPage({
 				{...(selected === undefined ? {} : { initialSelected: selected })}
 				{...(author === undefined ? {} : { author, owners: ownerChoices })}
 				initialCreating={creating === true}
+				{...(sharing === undefined ? {} : { sharing: { source: sharing, directory: sharingDirectory } })}
 			/>
 		</div>
 	);
@@ -83,6 +94,9 @@ export const ImportedSkill: Story = () => <ScenarioPage open="pr-review" />;
 
 /** A Billing skill whose latest revision carries Lleverage's host data. */
 export const ProjectSkill: Story = () => <ScenarioPage open="stripe-reconcile" />;
+
+/** Billing's skill with its sharing: in use by Website at revision 1 and by an agent, and Platform asking for edit. */
+export const SharedProjectSkill: Story = () => <ScenarioPage open="stripe-reconcile" shared />;
 
 /** Tom's own skill, with a newer draft open that sessions don't see yet. */
 export const DraftOpen: Story = () => <ScenarioPage open="morning-brief" />;

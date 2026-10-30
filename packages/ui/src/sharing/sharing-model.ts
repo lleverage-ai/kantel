@@ -9,6 +9,7 @@ import {
 	type Page,
 	type PageRequest,
 	permissionSatisfies,
+	type ResourceRef,
 	type ResourceSelector,
 	type ResourceShare,
 	SHARE_PERMISSIONS,
@@ -74,6 +75,21 @@ export async function readOverview(source: SharingSource, projectId: string): Pr
 	return { inbox, outgoing, incoming, requests };
 }
 
+/** One resource's sharing: who has it, and the requests for it still waiting. */
+export interface ResourceSharing {
+	readonly shares: readonly ResourceShare[];
+	readonly pending: readonly AccessRequest[];
+}
+
+/** A resource's shares (active ones; the store leaves out the rest by default) and its pending requests. */
+export async function readResourceSharing(source: SharingSource, resource: ResourceRef): Promise<ResourceSharing> {
+	const [shares, pending] = await Promise.all([
+		readAll((page) => source.listShares({ resource }, page)),
+		readAll((page) => source.listRequests({ resource, status: "pending" }, page)),
+	]);
+	return { shares, pending };
+}
+
 export const PERMISSION_LABELS: Readonly<Record<SharePermission, string>> = {
 	use: "Use",
 	propose: "Propose changes",
@@ -126,6 +142,11 @@ export function granteeText(grantee: ShareGrantee, directory: SharingDirectory =
 		case "session":
 			return `session ${directory.session?.(grantee.sessionId) ?? grantee.sessionId}`;
 	}
+}
+
+/** "agent Triage" as a row's title: "Agent Triage". */
+export function sentenceCase(text: string): string {
+	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export function actorText(actor: Actor, directory: SharingDirectory = {}): string {
