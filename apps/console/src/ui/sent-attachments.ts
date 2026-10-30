@@ -45,6 +45,8 @@ export function useSentAttachments(
 	read: Read | undefined,
 	openFile: PresentedFile | undefined,
 	open: (file: PresentedFile) => void,
+	/** Starts reading a file into the preview's cache, from its card's hover or focus. */
+	warm?: ((file: PresentedFile) => void) | undefined,
 ): SentAttachmentsHost {
 	// Made in the effect, so the cache freed when the session closes (or React remounts) is never used again.
 	const [thumbnails, setThumbnails] = useState<Thumbnails>();
@@ -67,9 +69,10 @@ export function useSentAttachments(
 							? {}
 							: { thumbnail: (attachment: UserAttachment) => thumbnails.thumbnail(attachment) }),
 						open: (attachment) => open(attachmentAsPresented(attachment)),
+						...(warm === undefined ? {} : { warm: (attachment) => warm(attachmentAsPresented(attachment)) }),
 						...(openId === undefined ? {} : { openId }),
 					},
-		[read, thumbnails, open, openId],
+		[read, thumbnails, open, warm, openId],
 	);
 }
 

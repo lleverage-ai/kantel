@@ -1,8 +1,10 @@
 import type { SkillPackage, SkillRevision, SkillVisibility } from "@harbour/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
+import { FilePreview, saveFile } from "../preview/file-preview.tsx";
+import type { PreviewContent, PreviewFile } from "../preview/preview-model.ts";
 import { Button } from "../primitives/button.tsx";
-import { CopyButton, SelectField, type SelectOption, TextField } from "../primitives/controls.tsx";
+import { SelectField, type SelectOption, TextField } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { FileIcon, PencilIcon, PlusIcon, TextFileIcon } from "../primitives/icons.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
@@ -14,8 +16,6 @@ import { EmptyState, Field, FieldList, Notice, Panel } from "../primitives/surfa
 import { ClockTime } from "../primitives/time.tsx";
 import { ResourceSharingPanel } from "../sharing/resource-sharing-panel.tsx";
 import type { SharingDirectory, SharingSource } from "../sharing/sharing-model.ts";
-import { FileViewer } from "../workspace/file-viewer.tsx";
-import { NoteViewer } from "../workspace/note-viewer.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
 import { SkillEditor, type SkillEditorTarget } from "./skill-editor.tsx";
 import {
@@ -530,7 +530,7 @@ async function readRevisions(source: SkillsSource, skillId: string): Promise<Ski
 
 /** A revision's files, SKILL.md first, and the picked file's content. */
 function RevisionFiles({ source, revision }: { source: SkillsSource; revision: SkillRevision }) {
-	const files = sortFiles(revision.files);
+	const files = useMemo(() => sortFiles(revision.files), [revision.files]);
 	const [path, setPath] = useState(files[0]?.path ?? "SKILL.md");
 	const file = files.find((item) => item.path === path);
 	const { state, reload } = useLoad(
@@ -540,6 +540,33 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 	const extensions = extensionNames(revision);
 	const isSkillMd = path === "SKILL.md";
 	const split = state.status === "ready" && isSkillMd ? splitSkillMarkdown(state.value) : undefined;
+	const shown = split === undefined ? (state.status === "ready" ? state.value : undefined) : split.body;
+	const preview = useMemo(
+		(): PreviewFile => ({
+			key: `${revision.name}/${path}`,
+			name: path.slice(path.lastIndexOf("/") + 1),
+			path: `${revision.name}/${path}`,
+			...(file === undefined ? {} : { size: file.size }),
+		}),
+		[revision.name, path, file],
+	);
+	const content = useMemo(
+		(): PreviewContent =>
+			shown === undefined ? { status: "loading" } : { status: "ready", bytes: new TextEncoder().encode(shown) },
+		[shown],
+	);
+	const siblings = useMemo(
+		() =>
+			files.map(
+				(item): PreviewFile => ({
+					key: `${revision.name}/${item.path}`,
+					name: item.path.slice(item.path.lastIndexOf("/") + 1),
+					path: `${revision.name}/${item.path}`,
+					size: item.size,
+				}),
+			),
+		[files, revision.name],
+	);
 
 	return (
 		<Panel
@@ -592,23 +619,19 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 					>
 						Couldn't read {path}. Try again.
 					</Notice>
-				) : isSkillMd ? (
-					<NoteViewer
-						path={`${revision.name}/SKILL.md`}
-						state={split === undefined ? { status: "loading" } : { status: "ready", markdown: split.body }}
-						actions={
-							state.status === "ready" ? (
-								<CopyButton text={state.value} label="Copy SKILL.md" iconOnly variant="ghost" />
-							) : undefined
-						}
-					/>
 				) : (
-					<FileViewer
-						path={path}
-						state={
+					// The same preview every file in the console opens in, embedded: SKILL.md's body (its fields are above),
+					// any other file as itself, with Previous and Next through the revision's files.
+					<FilePreview
+						layout="docked"
+						file={preview}
+						content={content}
+						siblings={siblings}
+						onNavigate={(next) => setPath(next.path.slice(revision.name.length + 1))}
+						onDownload={
 							state.status === "ready"
-								? { status: "ready", text: state.value, size: file?.size ?? state.value.length }
-								: { status: "loading" }
+								? () => saveFile(new TextEncoder().encode(state.value), preview.name, "text/plain")
+								: undefined
 						}
 					/>
 				)}

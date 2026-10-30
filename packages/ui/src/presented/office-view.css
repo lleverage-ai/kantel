@@ -66,7 +66,7 @@
 }
 
 /* The grid sits on the canvas, edge to edge, not on the sunken ground with padding. */
-.hb-office-grid-scroll.hb-file-panel-sunken {
+.hb-office-scroll.hb-office-grid-scroll {
 	padding: 0;
 	background: var(--hb-canvas);
 }

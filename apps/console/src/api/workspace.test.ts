@@ -8,10 +8,11 @@ import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/htt
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { createMemorySandboxes } from "@harbour/sandbox/memory";
+import { textOf } from "@harbour/ui";
 import { createMemoryWorkspaces } from "@harbour/workspace/memory";
 import { createWorkspaceReadApi } from "@harbour/workspace/read-api";
 import { afterEach, describe, expect, it } from "vitest";
-import { viewOf } from "../ui/files-model.ts";
+import { contentOf } from "../ui/files-model.ts";
 import type { WorkspaceFiles } from "./client.ts";
 import { createApiClient } from "./http.ts";
 
@@ -136,13 +137,14 @@ describe("the console's file browser on the workspace read API", () => {
 		const plan = await files.read("notes/plan.md");
 		expect(new TextDecoder().decode(plan.content)).toBe(FILES["notes/plan.md"]);
 		expect(plan.version).toBe(1);
-		expect(viewOf("notes/plan.md", undefined, { status: "ready", file: plan })).toEqual({
-			viewer: "note",
-			state: { status: "ready", markdown: FILES["notes/plan.md"] },
+		expect(contentOf("notes/plan.md", undefined, { status: "ready", file: plan })).toMatchObject({
+			status: "ready",
+			bytes: plan.content,
 		});
 
+		// Bytes that aren't text reach the preview as they are; it shows them as a file it can't draw.
 		const blob = await files.read("assets/blob.dat");
-		expect(viewOf("assets/blob.dat", undefined, { status: "ready", file: blob }).state.status).toBe("binary");
+		expect(textOf(blob.content)).toBeUndefined();
 	});
 
 	it("says a file is too large, and that a missing one isn't there", async () => {

@@ -1,7 +1,7 @@
 import { Check, ChevronDown, FileDown, FileText, Globe, Link, Lock, Share, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { initials } from "../identity/signed-in-as.tsx";
-import { Button } from "../primitives/button.tsx";
+import { Button, IconButton } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
 
 // Sharing a file the agent made, after Claude's Share popover: Share (invite people by email, who has access, general
@@ -396,7 +396,29 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 }
 
 /** The Share button that opens the popover beside it. */
-export function ShareButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+export function ShareButton({
+	open,
+	onToggle,
+	iconOnly = false,
+}: {
+	open: boolean;
+	onToggle: () => void;
+	/** Just the icon, named for assistive tech and in a tooltip: a header with no room for words. */
+	iconOnly?: boolean;
+}) {
+	if (iconOnly) {
+		return (
+			<IconButton
+				variant="ghost"
+				label="Share"
+				data-share-trigger=""
+				aria-haspopup="dialog"
+				aria-expanded={open}
+				icon={<Share className="hb-icon hb-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
+				onClick={onToggle}
+			/>
+		);
+	}
 	return (
 		<Button
 			variant="ghost"

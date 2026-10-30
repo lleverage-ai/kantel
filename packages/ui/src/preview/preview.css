@@ -1,0 +1,125 @@
+/* What the file preview can't say in utilities. The panel and its bodies are styled in their .tsx files; this keeps
+   the keyframes their animations name, and the page's type, which styles HTML the preview doesn't write element by
+   element (NoteMarkdown's rendered Markdown, TipTap's ProseMirror nodes) and has to beat .hb-markdown's own unlayered
+   rules. */
+
+/* The panel sliding in from the right as it opens, and out as it closes: transform and opacity only, so it runs on
+   the compositor and the transcript beside it lays out once. Their `animate-` utilities are on the panel. */
+@keyframes hb-preview-in {
+	from {
+		transform: translateX(var(--hb-step-8));
+		opacity: 0;
+	}
+}
+
+@keyframes hb-preview-out {
+	to {
+		transform: translateX(var(--hb-step-8));
+		opacity: 0;
+	}
+}
+
+/* While the panel's edge is dragged: the resize cursor everywhere, no text selected, and frames (an HTML page) letting
+   the pointer through to the page. */
+:root[data-hb-resizing] {
+	cursor: col-resize;
+	user-select: none;
+}
+
+:root[data-hb-resizing] iframe {
+	pointer-events: none;
+}
+
+/* A placeholder fading in after a beat, so content that arrives quickly never flashes one. */
+@keyframes hb-preview-fade {
+	from {
+		opacity: 0;
+	}
+}
+
+/* The streaming caret breathing, opacity only. Its `animate-` utility is on the element, in markdown-body.tsx. */
+@keyframes hb-preview-caret {
+	50% {
+		opacity: 0.2;
+	}
+}
+
+/* The page's type: the transcript's Markdown, set larger, as a document. Rendered HTML, so plain CSS. */
+.hb-doc-prose,
+.hb-preview-streaming .hb-markdown {
+	padding-top: var(--hb-step-2);
+	font-size: var(--hb-doc-text);
+	line-height: var(--hb-leading-prose);
+	outline: none;
+}
+
+.hb-doc-prose h1,
+.hb-preview-streaming .hb-markdown h1 {
+	margin: var(--hb-step-8) 0 var(--hb-step-3);
+	font-size: var(--hb-doc-h1);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-doc-prose h2,
+.hb-preview-streaming .hb-markdown h2 {
+	margin: var(--hb-step-8) 0 var(--hb-step-2);
+	font-size: var(--hb-doc-h2);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-doc-prose h3,
+.hb-preview-streaming .hb-markdown h3 {
+	margin: var(--hb-step-6) 0 var(--hb-step-2);
+	font-size: var(--hb-doc-h3);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-doc-prose > :first-child,
+.hb-doc-prose .hb-markdown > :first-child,
+.hb-preview-streaming .hb-markdown > :first-child {
+	margin-top: 0;
+}
+
+.hb-doc-prose table,
+.hb-preview-streaming .hb-markdown table {
+	font-size: var(--hb-text-md);
+}
+
+.hb-doc-prose p.is-editor-empty:first-child::before {
+	content: attr(data-placeholder);
+	float: left;
+	height: 0;
+	color: var(--hb-text-faint);
+	pointer-events: none;
+}
+
+/* ProseMirror's own needs: a selected cell, a column being resized, a gap cursor. Its class names, so plain CSS. */
+.hb-doc-prose .selectedCell {
+	background: var(--hb-accent-soft);
+}
+
+.hb-doc-prose .column-resize-handle {
+	position: absolute;
+	top: 0;
+	right: calc(var(--hb-step-0_5) * -1);
+	bottom: 0;
+	width: var(--hb-step-1);
+	background: var(--hb-accent);
+	pointer-events: none;
+}
+
+.hb-doc-prose .tableWrapper {
+	overflow-x: auto;
+}
+
+.hb-doc-prose td,
+.hb-doc-prose th {
+	position: relative;
+}
+
+.hb-doc-prose .ProseMirror-gapcursor::after {
+	border-top-color: var(--hb-text);
+}

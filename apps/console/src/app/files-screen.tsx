@@ -3,21 +3,32 @@ import {
 	Button,
 	type DirectoryState,
 	EmptyState,
+	FilePreview,
 	FileTree,
-	FileViewer,
-	NoteViewer,
 	Notice,
 	parentPath,
 	Spinner,
+	saveFile,
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient, WorkspaceFiles } from "../api/client.ts";
-import { ancestorsOf, entryFor, type FileRead, isImageType, mediaType, shouldRead, viewOf } from "../ui/files-model.ts";
+import {
+	ancestorsOf,
+	contentOf,
+	entryFor,
+	previewOfPath,
+	shouldRead,
+	siblingsOf,
+	worthPrefetching,
+} from "../ui/files-model.ts";
+import { createPreviewCache, usePreviewContent } from "../ui/preview-cache.ts";
 import { filesPath, navigate, sessionPath } from "./router.ts";
 
 // A session's workspace, read-only: the file tree beside the open file on a desktop, one at a time on a phone. Every
 // read is a GET on the workspace read API through `ConsoleClient.workspace`, which has nothing that writes or starts a
-// sandbox. The tree, the file viewer and the note viewer are @harbour/ui's; this file only fetches and lays them out.
+// sandbox. The tree and the file preview are @harbour/ui's (the preview the same panel the session opens files in);
+// this file only fetches and lays them out. Files read are kept while the screen is open, so going back to one, or
+// Previous and Next through a folder, shows it at once.
 
 type WorkspaceState =
 	| { readonly status: "loading" }
@@ -26,8 +37,6 @@ type WorkspaceState =
 	| { readonly status: "ready"; readonly files: WorkspaceFiles };
 
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
-const codeOf = (reason: unknown) =>
-	typeof reason === "object" && reason !== null && "code" in reason ? String(reason.code) : "unavailable";
 
 /** The session's workspace, or why there isn't one. */
 function useWorkspace(client: ConsoleClient, sessionId: string): WorkspaceState {
@@ -83,42 +92,6 @@ function useDirectories(files: WorkspaceFiles | undefined) {
 	return { directories, list };
 }
 
-/** The open file's bytes, read once per file, or nothing for a file that isn't asked for. */
-function useFileRead(files: WorkspaceFiles | undefined, path: string | undefined, read: boolean): FileRead | undefined {
-	const [state, setState] = useState<{ path: string; read: FileRead }>();
-	useEffect(() => {
-		if (files === undefined || path === undefined || !read) return;
-		const controller = new AbortController();
-		setState({ path, read: { status: "loading" } });
-		files.read(path, controller.signal).then(
-			(file) => !controller.signal.aborted && setState({ path, read: { status: "ready", file } }),
-			(reason: unknown) =>
-				!controller.signal.aborted &&
-				setState({ path, read: { status: "error", code: codeOf(reason), message: messageOf(reason) } }),
-		);
-		return () => controller.abort();
-	}, [files, path, read]);
-	return state !== undefined && state.path === path && read ? state.read : undefined;
-}
-
-/**
- * An object URL for an image the content route returned, made from the bytes already read (so the console's own
- * credentials and recorded sources work alike), and revoked when the file changes or the screen goes.
- */
-function useImageUrl(read: FileRead | undefined): string | undefined {
-	const file = read?.status === "ready" && isImageType(read.file.contentType) ? read.file : undefined;
-	const [made, setMade] = useState<{ readonly file: object; readonly url: string }>();
-	useEffect(() => {
-		if (file === undefined) return;
-		const url = URL.createObjectURL(
-			new Blob([file.content as Uint8Array<ArrayBuffer>], { type: mediaType(file.contentType) }),
-		);
-		setMade({ file, url });
-		return () => URL.revokeObjectURL(url);
-	}, [file]);
-	return made !== undefined && made.file === file ? made.url : undefined;
-}
-
 export function FilesScreen({
 	client,
 	projectId,
@@ -169,11 +142,40 @@ export function FilesScreen({
 	const listing = path === undefined ? undefined : directories.get(parentPath(path));
 	const entry =
 		path === undefined ? undefined : entryFor(listing?.status === "ready" ? listing.entries : undefined, path);
-	const read = useFileRead(files, path, path !== undefined && shouldRead(path, entry));
-	const imageSrc = useImageUrl(read);
-	const view = useMemo(
-		() => (path === undefined ? undefined : viewOf(path, entry, read, imageSrc)),
-		[path, entry, read, imageSrc],
+	const cache = useMemo(
+		() =>
+			files === undefined
+				? undefined
+				: createPreviewCache(
+						(file: string, signal) => files.read(file, signal),
+						(file) => file,
+						{
+							nameOf: (file: string) => file.slice(file.lastIndexOf("/") + 1),
+						},
+					),
+		[files],
+	);
+	const reading = path !== undefined && shouldRead(path, entry) ? path : undefined;
+	const read = usePreviewContent(cache, reading);
+	const preview = useMemo(() => (path === undefined ? undefined : previewOfPath(path, entry)), [path, entry]);
+	const content = path === undefined || reading !== undefined ? read : contentOf(path, entry, undefined);
+	const siblings = useMemo(() => siblingsOf(listing?.status === "ready" ? listing.entries : undefined), [listing]);
+	// The files either side are read once this one has arrived, so Previous and Next show theirs at once.
+	useEffect(() => {
+		if (cache === undefined || path === undefined || content.status !== "ready") return;
+		const at = siblings.findIndex((file) => file.key === path);
+		const entries = listing?.status === "ready" ? listing.entries : [];
+		for (const near of [siblings[at + 1], siblings[at - 1]]) {
+			const nearEntry = near === undefined ? undefined : entryFor(entries, near.path);
+			if (nearEntry !== undefined && worthPrefetching(nearEntry)) cache.load(nearEntry.path);
+		}
+	}, [cache, path, content.status, siblings, listing]);
+	const download = useMemo(
+		() =>
+			content.status !== "ready" || preview === undefined || content.bytes.byteLength === 0
+				? undefined
+				: () => saveFile(content.bytes, preview.name, content.contentType || "application/octet-stream"),
+		[content, preview],
 	);
 
 	const toSession = () => navigate(sessionPath(projectId, sessionId));
@@ -236,15 +238,21 @@ export function FilesScreen({
 				)}
 				{pane === "tree" ? null : (
 					<div className="files-viewer">
-						{view === undefined || path === undefined ? (
+						{preview === undefined ? (
 							<div className="files-message">
 								<EmptyState title="No file open">Pick a file to read it.</EmptyState>
 							</div>
-						) : view.viewer === "note" ? (
-							<NoteViewer path={path} state={view.state} onBack={narrow ? toTree : undefined} />
-						) : (
-							<FileViewer path={path} state={view.state} onBack={narrow ? toTree : undefined} />
-						)}
+						) : null}
+						<FilePreview
+							layout="docked"
+							file={preview}
+							content={content}
+							onClose={toTree}
+							siblings={siblings}
+							onNavigate={(next) => navigate(filesPath(projectId, sessionId, next.path), { replace: true })}
+							onDownload={download}
+							onBack={narrow ? toTree : undefined}
+						/>
 					</div>
 				)}
 			</div>
