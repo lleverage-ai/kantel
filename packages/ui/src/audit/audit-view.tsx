@@ -29,12 +29,32 @@ import {
 } from "./audit-model.ts";
 import { CredentialUsagePanel } from "./credential-usage.tsx";
 import { PAGE_SIZE, useAuditFeed } from "./use-audit-feed.ts";
-import "./audit-view.css";
 
 // The audit log as a filterable, virtualised timeline, newest first. Only the rows near the viewport are mounted, so a
 // log of any length costs the same to scroll; pages are read from the store as the reader nears the end of what's
 // loaded. Each row reads as a sentence ("Tom Davies approved Linear API key for POST api.linear.app/graphql") and
 // links to the session turn or vault request it came from. Export writes every event the filters match as JSONL.
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-audit-list, hb-audit-row and hb-audit-status classes
+// carry no style: scripts/audit-perf.ts finds the list by them. Under `max-sm:` (a phone) the filters go two to a row
+// and a row's sentence and link take the whole second line.
+
+/** The page: header, filters, the credential summary and the timeline. Headings and paragraphs inside it, the
+ * primitives' included, sit flush, as they did when each set its own margin to 0. */
+const page = "hb-audit flex min-w-0 flex-col gap-4 text-sm text-fg [&_h1]:m-0 [&_h2]:m-0 [&_p]:m-0";
+/** Three equal tracks at the forms' measure, as FormGrid lays out short fields, so the usual six read as two full rows
+ * that line up rather than five and one left over; two to a row on a phone. */
+const filtersGrid = "grid max-w-content grid-cols-3 items-end gap-4 max-sm:grid-cols-2 max-sm:gap-y-3";
+const filter = "flex min-w-0 flex-col gap-1";
+/** The timeline scrolls inside a fixed-height box so the virtual list knows its viewport. */
+const viewport = "relative h-[70vh] min-h-[calc(var(--hb-control-lg)*8)] max-sm:h-[75vh]";
+const rowToggle =
+	"hb-focusable inline-flex size-control-xs cursor-pointer items-center justify-center self-center rounded-sm border-0 bg-transparent p-0 text-faint hover:bg-hover hover:text-fg";
+/** Under the toggle's column on a desktop, so the details line up with the time. */
+const rowDetails =
+	"flex flex-col gap-2 pr-3 pb-2.5 pl-[calc(var(--hb-control-xs)+var(--hb-space-3)+var(--hb-space-4))] max-sm:pl-3";
+const dt = "text-muted";
+const dd = "hb-mono m-0 wrap-anywhere";
 
 /** How close to the end of the loaded rows asks for the next page, in rows. */
 const LOAD_AHEAD_ROWS = 40;
@@ -169,15 +189,15 @@ const AuditRow = memo(function AuditRow({
 		event.sessionId === undefined ? undefined : (directory.session?.(event.sessionId) ?? event.sessionId);
 	const session = line.link?.label === sessionName ? undefined : sessionName;
 	return (
-		<div className="hb-audit-row" data-open={open || undefined}>
-			<div className="hb-audit-row-main">
+		<div className="hb-audit-row border-t border-border data-open:bg-sunken" data-open={open || undefined}>
+			<div className="grid grid-cols-[auto_auto_auto_minmax(0,1fr)_auto] items-baseline gap-2 py-2 pr-3 pl-1.5 max-sm:grid-cols-[auto_auto_minmax(0,1fr)] max-sm:gap-y-1">
 				<button
 					type="button"
 					id={`audit-toggle-${event.seq}`}
 					tabIndex={active ? 0 : -1}
 					aria-describedby={active ? "hb-audit-keys" : undefined}
 					onFocus={() => onFocusRow(event.id)}
-					className="hb-audit-row-toggle hb-focusable"
+					className={rowToggle}
 					aria-expanded={open}
 					aria-controls={open ? detailsId : undefined}
 					aria-label={`Details: ${actor} ${line.action}`}
@@ -186,19 +206,19 @@ const AuditRow = memo(function AuditRow({
 					{open ? <ChevronDownIcon /> : <ChevronRightIcon />}
 				</button>
 				<time
-					className="hb-audit-row-time"
+					className="font-mono text-xs text-faint tabular-nums"
 					dateTime={new Date(event.at).toISOString()}
 					title={absolute.format(event.at)}
 				>
 					{timeFormat.format(event.at)}
 				</time>
-				<span className="hb-audit-row-badge">
+				<span className="inline-flex">
 					<Badge tone={line.tone}>{line.label}</Badge>
 				</span>
-				<p className="hb-audit-row-text">
-					<span className="hb-audit-row-actor">{actor}</span> {line.action}
+				<p className="m-0 min-w-0 wrap-anywhere max-sm:col-[2/-1]">
+					<span className="font-medium">{actor}</span> {line.action}
 					{project === undefined && session === undefined ? null : (
-						<span className="hb-audit-row-where">
+						<span className="ml-2 inline-flex flex-wrap gap-x-2 text-xs text-faint">
 							{project === undefined ? null : <span>{project}</span>}
 							{session === undefined ? null : <span>{session}</span>}
 						</span>
@@ -206,7 +226,7 @@ const AuditRow = memo(function AuditRow({
 				</p>
 				{line.link === undefined ? null : (
 					<a
-						className="hb-audit-row-link hb-focusable"
+						className="hb-focusable rounded-xs text-xs whitespace-nowrap text-accent-text no-underline hover:underline max-sm:col-[2/-1]"
 						href={line.link.href}
 						tabIndex={active ? 0 : -1}
 						onFocus={() => onFocusRow(event.id)}
@@ -216,32 +236,34 @@ const AuditRow = memo(function AuditRow({
 				)}
 			</div>
 			{open ? (
-				<div id={detailsId} className="hb-audit-row-details">
-					<dl className="hb-audit-detail-list">
-						<dt>Type</dt>
-						<dd className="hb-mono">{event.type}</dd>
-						<dt>At</dt>
-						<dd>{absolute.format(event.at)}</dd>
-						<dt>Actor</dt>
-						<dd className="hb-mono">{actorKey(event.actor)}</dd>
+				<div id={detailsId} className={rowDetails}>
+					<dl className="m-0 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+						<dt className={dt}>Type</dt>
+						<dd className={dd}>{event.type}</dd>
+						<dt className={dt}>At</dt>
+						<dd className="m-0 wrap-anywhere">{absolute.format(event.at)}</dd>
+						<dt className={dt}>Actor</dt>
+						<dd className={dd}>{actorKey(event.actor)}</dd>
 						{event.subject === undefined ? null : (
 							<>
-								<dt>Subject</dt>
-								<dd className="hb-mono">
+								<dt className={dt}>Subject</dt>
+								<dd className={dd}>
 									{event.subject.kind} {event.subject.id}
 								</dd>
 							</>
 						)}
-						<dt>Event</dt>
-						<dd className="hb-mono">
+						<dt className={dt}>Event</dt>
+						<dd className={dd}>
 							{event.id} (seq {event.seq})
 						</dd>
 					</dl>
 					{event.data === undefined ? null : (
-						<pre className="hb-audit-row-data hb-selectable">{JSON.stringify(event.data, null, 2)}</pre>
+						<pre className="hb-selectable m-0 rounded-control bg-code-surface px-2.5 py-2 font-mono text-code whitespace-pre-wrap wrap-anywhere">
+							{JSON.stringify(event.data, null, 2)}
+						</pre>
 					)}
 					{browserSession === undefined || onBrowser === undefined ? null : (
-						<div className="hb-audit-row-actions">
+						<div className="flex gap-1.5">
 							<Button size="sm" variant="secondary" onClick={() => onBrowser(browserSession)}>
 								This browser's history
 							</Button>
@@ -407,7 +429,7 @@ export function AuditView({
 	const { from, to } = rangeBounds(filters.range, now);
 
 	return (
-		<section className="hb-audit" aria-labelledby="hb-audit-title">
+		<section className={page} aria-labelledby="hb-audit-title">
 			<PageHeader
 				titleId="hb-audit-title"
 				title="Audit log"
@@ -415,7 +437,7 @@ export function AuditView({
 				actions={
 					exporting.phase === "running" ? (
 						<>
-							<span className="hb-audit-export-progress" role="status">
+							<span className="inline-flex items-center gap-1.5 text-muted tabular-nums" role="status">
 								<Spinner size="sm" /> Exporting {count.format(exporting.count)} events
 							</span>
 							<Button size="sm" variant="ghost" onClick={cancelExport}>
@@ -433,7 +455,7 @@ export function AuditView({
 				<Notice level="error">The export couldn't read every event, so nothing was saved. Try again.</Notice>
 			) : null}
 
-			<form className="hb-audit-filters" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
+			<form className={filtersGrid} aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
 				{choices.organisations === undefined || choices.organisations.length < 2 ? null : (
 					<Select
 						label="Organisation"
@@ -502,10 +524,10 @@ export function AuditView({
 					/>
 				)}
 				{filters.browserSession === undefined || filters.browserSession === "" ? null : (
-					<div className="hb-audit-filter hb-audit-filter-browser">
-						<span className="hb-audit-filter-label">Browser session</span>
-						<span className="hb-audit-filter-value">
-							<code className="hb-mono">{filters.browserSession}</code>
+					<div className={filter}>
+						<span className="text-xs leading-normal text-muted">Browser session</span>
+						<span className="flex min-h-control-md min-w-0 items-center gap-1.5 text-sm">
+							<code className="hb-mono truncate">{filters.browserSession}</code>
 							<Button size="sm" variant="ghost" onClick={() => update({ browserSession: "" })}>
 								Every browser
 							</Button>
@@ -513,7 +535,7 @@ export function AuditView({
 					</div>
 				)}
 				{isFiltered(filters) ? (
-					<div className="hb-audit-filter hb-audit-filter-clear">
+					<div className={`${filter} min-h-control-md items-start justify-end`}>
 						<Button
 							size="sm"
 							variant="ghost"
@@ -549,14 +571,14 @@ export function AuditView({
 				/>
 			)}
 
-			<p className="hb-audit-status" role="status" data-loaded={feed.events.length}>
+			<p className="hb-audit-status m-0 text-xs text-faint tabular-nums" role="status" data-loaded={feed.events.length}>
 				{feed.loading
 					? "Reading the audit log"
 					: `${count.format(feed.events.length)} ${feed.events.length === 1 ? "event" : "events"}${feed.hasMore ? " so far, newest first" : ", newest first"}`}
 			</p>
 
 			{feed.newer > 0 ? (
-				<div className="hb-audit-newer">
+				<div className="flex justify-center">
 					<Button size="sm" variant="secondary" onClick={showNewest}>
 						{feed.newer >= PAGE_SIZE
 							? `${PAGE_SIZE} or more newer events`
@@ -566,7 +588,7 @@ export function AuditView({
 			) : null}
 
 			{feed.loading ? (
-				<div className="hb-audit-loading" aria-hidden="true">
+				<div className="flex flex-col gap-4 py-2.5" aria-hidden="true">
 					{[0, 1, 2, 3, 4, 5].map((row) => (
 						<Skeleton key={row} />
 					))}
@@ -587,9 +609,9 @@ export function AuditView({
 					{isFiltered(filters) ? "Widen the time or clear a filter." : "Pick a longer time to see older events."}
 				</EmptyState>
 			) : (
-				<div className="hb-audit-timeline">
+				<div className="flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
 					{/* biome-ignore lint/a11y/noStaticElementInteractions: arrow keys move focus between the rows' own buttons. */}
-					<div className="hb-audit-viewport" onKeyDown={onListKey}>
+					<div className={viewport} onKeyDown={onListKey}>
 						<p id="hb-audit-keys" className="hb-sr-only">
 							Up and down arrows move between events; Home and End go to the newest and oldest loaded.
 						</p>
@@ -597,14 +619,14 @@ export function AuditView({
 							ref={list}
 							data={entries}
 							onScroll={onScroll}
-							className="hb-audit-list"
+							className="hb-audit-list absolute inset-0 overscroll-contain"
 							aria-label="Audit events"
 							bufferSize={BUFFER_PX}
 							keepMounted={activeIndex === -1 ? [] : [activeIndex]}
 						>
 							{(entry, index) =>
 								"day" in entry ? (
-									<h2 key={entry.key} className="hb-audit-day">
+									<h2 key={entry.key} className="relative m-0 px-3 pt-3 pb-1.5 text-xs font-medium text-muted">
 										{entry.day}
 									</h2>
 								) : (
@@ -623,10 +645,10 @@ export function AuditView({
 							}
 						</VList>
 					</div>
-					<div className="hb-audit-foot">
+					<div className="flex min-h-control-lg items-center justify-center gap-2 border-t border-border px-3 py-1.5 text-xs text-faint">
 						{feed.error !== undefined ? (
 							<>
-								<span className="hb-audit-foot-error">Couldn't read the next page.</span>
+								<span className="text-status-error">Couldn't read the next page.</span>
 								<Button size="sm" variant="secondary" onClick={feed.retry}>
 									Try again
 								</Button>
@@ -643,7 +665,7 @@ export function AuditView({
 								{feed.loadingMore ? "Reading older events" : "Load older events"}
 							</Button>
 						) : (
-							<span className="hb-audit-foot-text">Start of the log for these filters</span>
+							<span className="inline-flex items-center gap-1.5">Start of the log for these filters</span>
 						)}
 					</div>
 				</div>

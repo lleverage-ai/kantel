@@ -1,18 +1,10 @@
-/* A document in its panel, after Claude Docs: a header with the title, what's happening (writing, saving) and Share,
-   then the document as a page in a column that scrolls, with the formatting toolbar held at its top. */
+/* What the document panel can't say in utilities. The panel itself is styled in document-panel.tsx and
+   rich-editor.tsx; this keeps the two keyframes its animations name, and the page's type, which sets HTML the panel
+   doesn't write element by element (NoteMarkdown's rendered Markdown, TipTap's ProseMirror nodes) and has to beat
+   .hb-markdown's own unlayered rules. */
 
-.hb-doc-panel {
-	display: flex;
-	flex-direction: column;
-	height: 100%;
-	min-width: 0;
-	min-height: 0;
-	border-left: var(--hb-hairline) solid var(--hb-border);
-	background: var(--hb-canvas);
-	color: var(--hb-text);
-	animation: hb-doc-panel-in var(--hb-duration) var(--hb-ease);
-}
-
+/* Keyframes, which utilities can't define: the panel sliding in and the streaming caret breathing. Their `animate-`
+   utilities are on the elements, in document-panel.tsx. */
 @keyframes hb-doc-panel-in {
 	from {
 		transform: translateX(100%);
@@ -24,138 +16,13 @@
 	}
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.hb-doc-panel {
-		animation: none;
+@keyframes hb-doc-caret {
+	50% {
+		opacity: 0.2;
 	}
 }
 
-.hb-doc-header {
-	display: flex;
-	flex: none;
-	align-items: center;
-	gap: var(--hb-space-5);
-	min-height: var(--hb-control-lg);
-	padding: var(--hb-space-4) var(--hb-space-5) var(--hb-space-4) var(--hb-space-7);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-doc-title {
-	min-width: 0;
-	margin: 0;
-	overflow: hidden;
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-medium);
-	line-height: var(--hb-leading-tight);
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.hb-doc-status {
-	display: inline-flex;
-	flex: none;
-	align-items: center;
-	gap: var(--hb-space-3);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-doc-status-failed {
-	color: var(--hb-status-error);
-}
-
-.hb-doc-actions {
-	display: flex;
-	flex: none;
-	align-items: center;
-	gap: var(--hb-space-2);
-	margin-left: auto;
-}
-
-.hb-doc-scroll {
-	flex: 1 1 auto;
-	min-height: 0;
-	overflow: auto;
-	overscroll-behavior: contain;
-}
-
-.hb-doc-scroll:focus-visible {
-	outline-offset: calc(var(--hb-ring) * -1);
-}
-
-.hb-doc-page {
-	width: 100%;
-	max-width: var(--hb-doc-width);
-	margin: 0 auto;
-	padding: 0 var(--hb-space-9) var(--hb-space-11);
-}
-
-.hb-doc-loading {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-5);
-	padding-top: var(--hb-space-10);
-}
-
-.hb-doc-page > .hb-notice {
-	margin-top: var(--hb-space-9);
-}
-
-/* The toolbar stays at the top of the page as it scrolls. */
-.hb-doc-toolbar {
-	position: sticky;
-	z-index: var(--hb-z-float);
-	top: 0;
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--hb-space-4);
-	margin: 0 calc(var(--hb-space-4) * -1);
-	padding: var(--hb-space-4);
-	background: var(--hb-canvas);
-}
-
-.hb-doc-toolbar-group {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-1);
-}
-
-.hb-doc-toolbar-group + .hb-doc-toolbar-group {
-	padding-left: var(--hb-space-4);
-	border-left: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-doc-tool {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: var(--hb-control-sm);
-	height: var(--hb-control-sm);
-	padding: 0;
-	border: 0;
-	border-radius: var(--hb-radius-sm);
-	background: transparent;
-	color: var(--hb-text-muted);
-	cursor: pointer;
-}
-
-.hb-doc-tool:hover:not(:disabled) {
-	background: var(--hb-hover);
-	color: var(--hb-text);
-}
-
-.hb-doc-tool[aria-pressed="true"] {
-	background: var(--hb-active);
-	color: var(--hb-text);
-}
-
-.hb-doc-tool:disabled {
-	color: var(--hb-text-disabled);
-	cursor: default;
-}
-
-/* The page's type: the transcript's Markdown, set larger, as a document. */
+/* The page's type: the transcript's Markdown, set larger, as a document. Rendered HTML, so plain CSS. */
 .hb-doc-prose,
 .hb-doc-streaming .hb-markdown {
 	padding-top: var(--hb-space-8);
@@ -206,7 +73,7 @@
 	pointer-events: none;
 }
 
-/* ProseMirror's own needs: a selected cell, a column being resized, a gap cursor. */
+/* ProseMirror's own needs: a selected cell, a column being resized, a gap cursor. Its class names, so plain CSS. */
 .hb-doc-prose .selectedCell {
 	background: var(--hb-accent-soft);
 }
@@ -232,31 +99,4 @@
 
 .hb-doc-prose .ProseMirror-gapcursor::after {
 	border-top-color: var(--hb-text);
-}
-
-/* The caret after the text that's arriving. */
-.hb-doc-streaming {
-	position: relative;
-}
-
-.hb-doc-caret {
-	display: inline-block;
-	width: var(--hb-space-2);
-	height: var(--hb-doc-text);
-	margin-top: var(--hb-space-2);
-	border-radius: var(--hb-radius-xs);
-	background: var(--hb-accent-text);
-	animation: hb-doc-caret var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
-}
-
-@keyframes hb-doc-caret {
-	50% {
-		opacity: 0.2;
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.hb-doc-caret {
-		animation: none;
-	}
 }

@@ -3,7 +3,6 @@ import { type FormEvent, useCallback, useEffect, useId, useLayoutEffect, useRef,
 import { initials } from "../identity/signed-in-as.tsx";
 import { Button } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
-import "./share-popover.css";
 
 // Sharing a file the agent made, after Claude's Share popover: Share (invite people by email, who has access, general
 // access and the link) and Export (Markdown, PDF). Presentational: the host owns the share and its calls, and passes
@@ -66,28 +65,54 @@ const ACCESS: { readonly [access in ShareAccess]: { label: string; hint: string 
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css). hb-share-popover and hb-share-close carry no style: the
+// story frame and the focus-on-open below find them by those names. The popover hangs from its trigger's wrapper, which
+// must be positioned: give it `shareAnchor`.
+
+/** The wrapper round the Share button and its popover: the box the popover hangs from. */
+export const shareAnchor = "hb-share-anchor relative";
+/** Close and Remove: a 28px icon button. */
+const iconButton =
+	"hb-focusable inline-flex size-control-sm cursor-pointer items-center justify-center rounded-control border-0 bg-transparent p-0 text-muted hover:bg-hover hover:text-fg";
+/** Each tab's content. */
+const body = "m-0 flex list-none flex-col px-5 pt-4 pb-5";
+/** A 36px mark at the start of a row: initials, the general access, an export's file type. */
+const mark = "inline-flex size-control-lg flex-none items-center justify-center text-sm font-medium";
+const who = "flex min-w-0 flex-1 flex-col gap-0.5";
+const name = "truncate leading-tight";
+const secondary = "truncate text-sm leading-tight text-muted";
+const heading = "m-0 text-sm font-regular text-muted";
+const section = "flex flex-col gap-2.5";
+
 function GeneralAccess({ access, onChange }: { access: ShareAccess; onChange: (access: ShareAccess) => void }) {
 	const id = useId();
 	const Icon = access === "link" ? Globe : Lock;
 	return (
-		<div className="hb-share-access">
-			<span className="hb-share-access-icon" aria-hidden="true">
+		<div className="flex items-center gap-3">
+			<span className={`${mark} rounded-full bg-active text-muted`} aria-hidden="true">
 				<Icon className="hb-icon hb-icon-md" strokeWidth={1.75} />
 			</span>
 			<label className="hb-sr-only" htmlFor={id}>
 				General access
 			</label>
-			<span className="hb-share-access-select">
+			<span className="relative inline-flex items-center">
 				<select
 					id={id}
-					className="hb-share-access-native hb-focusable"
+					className="hb-focusable h-control-md cursor-pointer appearance-none rounded-control border-0 bg-transparent py-0 pr-6 pl-2 text-fg [font:inherit] hover:bg-hover"
 					value={access}
 					onChange={(event) => onChange(event.target.value as ShareAccess)}
 				>
-					<option value="restricted">{ACCESS.restricted.label}</option>
-					<option value="link">{ACCESS.link.label}</option>
+					<option className="bg-raised text-fg" value="restricted">
+						{ACCESS.restricted.label}
+					</option>
+					<option className="bg-raised text-fg" value="link">
+						{ACCESS.link.label}
+					</option>
 				</select>
-				<ChevronDown className="hb-icon hb-icon-sm hb-share-access-chevron" aria-hidden="true" />
+				<ChevronDown
+					className="hb-icon hb-icon-sm pointer-events-none absolute right-2 text-muted"
+					aria-hidden="true"
+				/>
 			</span>
 		</div>
 	);
@@ -160,14 +185,16 @@ function ShareTab({
 	};
 	return (
 		<>
-			<div className="hb-share-body">
-				<form className="hb-share-invite" onSubmit={(event) => void submit(event)}>
+			<div className={`${body} gap-4`}>
+				<form className="flex gap-2" onSubmit={(event) => void submit(event)}>
 					<label className="hb-sr-only" htmlFor={inviteId}>
 						Invite people by email
 					</label>
 					<input
 						id={inviteId}
-						className="hb-input hb-focusable hb-share-invite-input"
+						// `!`: .hb-input (primitives/controls.css) is unlayered, so it beats a plain utility. Drop it once controls.css
+						// is converted.
+						className="hb-input hb-focusable min-w-0 flex-1 h-control-lg! bg-canvas!"
 						type="email"
 						placeholder="Invite people by email"
 						autoComplete="off"
@@ -184,35 +211,35 @@ function ShareTab({
 						</Button>
 					)}
 				</form>
-				<section className="hb-share-section" aria-label="People with access">
-					<h3 className="hb-share-heading">People with access</h3>
-					<ul className="hb-share-people">
-						<li className="hb-share-person">
-							<span className="hb-share-avatar" aria-hidden="true">
+				<section className={section} aria-label="People with access">
+					<h3 className={heading}>People with access</h3>
+					<ul className="m-0 flex list-none flex-col gap-2.5 p-0">
+						<li className="flex min-w-0 items-center gap-3">
+							<span className={`${mark} rounded-full bg-status-done-soft text-status-done`} aria-hidden="true">
 								{initials(share.owner.name)}
 							</span>
-							<span className="hb-share-who">
-								<span className="hb-share-name">
-									{share.owner.name} <span className="hb-share-you">(you)</span>
+							<span className={who}>
+								<span className={name}>
+									{share.owner.name} <span className="text-muted">(you)</span>
 								</span>
-								{share.owner.email === undefined ? null : <span className="hb-share-email">{share.owner.email}</span>}
+								{share.owner.email === undefined ? null : <span className={secondary}>{share.owner.email}</span>}
 							</span>
-							<span className="hb-share-role">Owner</span>
+							<span className="flex-none text-sm text-muted">Owner</span>
 						</li>
 						{share.invites.map((invite) => (
-							<li key={invite.email} className="hb-share-person">
-								<span className="hb-share-avatar hb-share-avatar-invited" aria-hidden="true">
+							<li key={invite.email} className="flex min-w-0 items-center gap-3">
+								<span className={`${mark} rounded-full bg-accent-soft text-accent-text`} aria-hidden="true">
 									{initials(invite.email)}
 								</span>
-								<span className="hb-share-who">
-									<span className="hb-share-name">{invite.email}</span>
-									<span className="hb-share-email">Invited</span>
+								<span className={who}>
+									<span className={name}>{invite.email}</span>
+									<span className={secondary}>Invited</span>
 								</span>
-								<span className="hb-share-role">Can view</span>
+								<span className="flex-none text-sm text-muted">Can view</span>
 								{onRemoveInvite === undefined ? null : (
 									<button
 										type="button"
-										className="hb-share-remove hb-focusable"
+										className={iconButton}
 										aria-label={`Remove ${invite.email}`}
 										title={`Remove ${invite.email}`}
 										onClick={() => void onRemoveInvite(invite.email)}
@@ -224,13 +251,13 @@ function ShareTab({
 						))}
 					</ul>
 				</section>
-				<section className="hb-share-section" aria-label="General access">
-					<h3 className="hb-share-heading">General access</h3>
+				<section className={section} aria-label="General access">
+					<h3 className={heading}>General access</h3>
 					<GeneralAccess access={share.access} onChange={(access) => void onAccessChange(access)} />
 				</section>
 			</div>
-			<footer className="hb-share-footer">
-				<span className="hb-share-hint">{ACCESS[share.access].hint}</span>
+			<footer className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
+				<span className="min-w-0 text-sm text-muted">{ACCESS[share.access].hint}</span>
 				<CopyLink access={share.access} onCopyLink={onCopyLink} />
 			</footer>
 		</>
@@ -239,20 +266,24 @@ function ShareTab({
 
 function ExportTab({ exports }: { exports: readonly ShareExport[] }) {
 	return (
-		<ul className="hb-share-body hb-share-exports">
+		<ul className={`${body} gap-1.5`}>
 			{exports.map((option) => (
 				<li key={option.id}>
-					<button type="button" className="hb-share-export hb-focusable" onClick={option.run}>
-						<span className="hb-share-export-icon" aria-hidden="true">
+					<button
+						type="button"
+						className="hb-focusable flex w-full cursor-pointer items-center gap-3 rounded-panel border-0 bg-transparent p-2 text-left text-fg [font:inherit] hover:bg-hover"
+						onClick={option.run}
+					>
+						<span className={`${mark} rounded-control bg-active text-muted`} aria-hidden="true">
 							{option.id === "pdf" ? (
 								<FileDown className="hb-icon hb-icon-md" strokeWidth={1.75} />
 							) : (
 								<FileText className="hb-icon hb-icon-md" strokeWidth={1.75} />
 							)}
 						</span>
-						<span className="hb-share-who">
-							<span className="hb-share-name">{option.label}</span>
-							<span className="hb-share-email">{option.hint}</span>
+						<span className={who}>
+							<span className={name}>{option.label}</span>
+							<span className={secondary}>{option.hint}</span>
 						</span>
 					</button>
 				</li>
@@ -311,17 +342,23 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 		};
 	}, [onClose]);
 	return (
-		<div ref={ref} className="hb-share-popover" role="dialog" aria-labelledby={titleId}>
-			<header className="hb-share-header">
-				<h2 id={titleId} className="hb-share-title">
+		<div
+			ref={ref}
+			// --hb-share-room: the trigger's right edge from the viewport's left, measured as it opens, less a gutter.
+			className="hb-share-popover absolute top-[calc(100%+var(--hb-space-3))] right-0 z-(--hb-z-overlay) flex w-[min(var(--hb-share-width),calc(var(--hb-share-room,100vw)_-_var(--hb-space-6)))] flex-col rounded-bubble bg-raised text-left text-md text-fg shadow-float"
+			role="dialog"
+			aria-labelledby={titleId}
+		>
+			<header className="flex items-center gap-2 px-5 pt-5 pb-3">
+				<h2 id={titleId} className="m-0 min-w-0 flex-1 truncate text-lg leading-tight font-medium">
 					{title}
 				</h2>
-				<button type="button" className="hb-share-close hb-focusable" aria-label="Close" onClick={onClose}>
+				<button type="button" className={`hb-share-close ${iconButton}`} aria-label="Close" onClick={onClose}>
 					<X className="hb-icon hb-icon-md" aria-hidden="true" />
 				</button>
 			</header>
 			{sharing === undefined ? null : (
-				<div className="hb-share-tabs">
+				<div className="flex px-5 [&_.hb-segment]:flex-1 [&_.hb-segment]:justify-center [&>.hb-segmented]:flex-1">
 					<SegmentedControl
 						label="Share or export"
 						options={[
@@ -334,14 +371,14 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 				</div>
 			)}
 			{sharing?.error === undefined ? null : (
-				<p className="hb-share-error" role="alert">
+				<p className="mx-5 mt-2.5 mb-0 text-sm text-status-error" role="alert">
 					{sharing.error}
 				</p>
 			)}
 			{tab === "export" || sharing === undefined ? (
 				<ExportTab exports={exports} />
 			) : sharing.share === undefined ? (
-				<div className="hb-share-body hb-share-loading" aria-busy="true">
+				<div className={`${body} min-h-thumb gap-4`} aria-busy="true">
 					<span className="hb-sr-only">Loading who has access</span>
 				</div>
 			) : (

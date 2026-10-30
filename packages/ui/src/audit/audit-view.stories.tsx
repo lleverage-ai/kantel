@@ -17,9 +17,11 @@ import {
 	ORGANISATION,
 	pendingSource,
 } from "./fixtures.ts";
-import "./stories.css";
 
 export default { title: "Audit/Audit view" } satisfies StoryDefault;
+
+/** Story-only frame: the width the console gives the view beside its sidebar. */
+const frame = "max-w-[calc(var(--hb-content-width)+var(--hb-sidebar-width))]";
 
 // Each story builds its own in-memory store from the generated fixture, so filters, paging and export run against
 // the store's real query and cursors.
@@ -49,7 +51,7 @@ function ScenarioView({
 	}, [count, options]);
 	useEffect(() => (scenario === undefined || setup === undefined ? undefined : setup(scenario)), [scenario, setup]);
 	return (
-		<div className="audit-story">
+		<div className={frame}>
 			<AuditView
 				source={scenario?.source ?? pendingSource}
 				directory={directory}
@@ -82,6 +84,10 @@ export const SandboxInOneProject: Story = () => <ScenarioView filters={oneProjec
 
 const byPerson: AuditFilters = { range: "day", kind: "all", actor: "human:usr_alex" };
 export const ByPerson: Story = () => <ScenarioView filters={byPerson} />;
+
+/** One browser session's history, as "This browser's history" on an event opens it: its ID, and the way back. */
+const oneBrowser: AuditFilters = { range: "all", kind: "all", browserSession: "brs_7f3a9c2e41d8" };
+export const OneBrowser: Story = () => <ScenarioView filters={oneBrowser} />;
 
 /** One long, wide event with every row field, and an expanded detail. */
 const longSource: AuditSource = {
@@ -119,19 +125,19 @@ const longSource: AuditSource = {
 	},
 };
 export const LongContent: Story = () => (
-	<div className="audit-story">
+	<div className={frame}>
 		<AuditView source={longSource} directory={directory} links={links} choices={choices} now={FIXTURE_NOW} />
 	</div>
 );
 
 export const Loading: Story = () => (
-	<div className="audit-story">
+	<div className={frame}>
 		<AuditView source={pendingSource} directory={directory} links={links} choices={choices} now={FIXTURE_NOW} />
 	</div>
 );
 
 export const Empty: Story = () => (
-	<div className="audit-story">
+	<div className={frame}>
 		<AuditView source={emptySource} directory={directory} links={links} choices={choices} now={FIXTURE_NOW} />
 	</div>
 );
@@ -160,7 +166,7 @@ const sparseSource: AuditSource = (() => {
 })();
 const linearAllTime: AuditFilters = { range: "all", kind: "all", credential: "itm_linear" };
 export const SparseMatches: Story = () => (
-	<div className="audit-story">
+	<div className={frame}>
 		<AuditView
 			source={sparseSource}
 			directory={directory}
@@ -174,7 +180,7 @@ export const SparseMatches: Story = () => (
 
 // biome-ignore lint/suspicious/noShadowRestrictedNames: every component's error state is the story named Error.
 export const Error: Story = () => (
-	<div className="audit-story">
+	<div className={frame}>
 		<AuditView source={failingSource} directory={directory} links={links} choices={choices} now={FIXTURE_NOW} />
 	</div>
 );

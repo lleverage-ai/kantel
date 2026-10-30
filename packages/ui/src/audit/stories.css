@@ -1,5 +1,0 @@
-/* Story-only frame for the audit view. */
-
-.audit-story {
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width));
-}

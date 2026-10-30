@@ -4,7 +4,8 @@ import { IconButton } from "../primitives/button.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { NoteMarkdown } from "../workspace/note-markdown.tsx";
-import { ShareButton, SharePopover, type SharePopoverProps } from "./share-popover.tsx";
+import { ShareButton, SharePopover, type SharePopoverProps, shareAnchor } from "./share-popover.tsx";
+// Only what utilities can't say: the two keyframes, and the type of the Markdown and ProseMirror HTML on the page.
 import "./document-panel.css";
 
 // A document the agent writes, after Claude Docs: a panel at the right of the session with the document's title, Share
@@ -38,6 +39,12 @@ export type DocumentPanelProps = {
 	actions?: ReactNode;
 };
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css), apart from document-panel.css above. hb-doc-streaming and
+// the editor's hb-doc-prose are that file's hooks.
+
+/** What's happening beside the title: writing, saving, saved. */
+const statusLine = "inline-flex flex-none items-center gap-1.5 text-xs";
+
 const SAVE_LABELS: { readonly [state in DocumentSaveState]: string } = {
 	saved: "Saved",
 	saving: "Saving",
@@ -48,7 +55,7 @@ const SAVE_LABELS: { readonly [state in DocumentSaveState]: string } = {
 function Status({ status, saveState }: { status: DocumentPanelStatus; saveState: DocumentSaveState | undefined }) {
 	if (status === "streaming") {
 		return (
-			<span className="hb-doc-status" aria-live="polite">
+			<span className={`${statusLine} text-muted`} aria-live="polite">
 				<Spinner size="sm" />
 				Writing
 			</span>
@@ -56,7 +63,7 @@ function Status({ status, saveState }: { status: DocumentPanelStatus; saveState:
 	}
 	if (status !== "ready" || saveState === undefined) return null;
 	return (
-		<span className={`hb-doc-status${saveState === "failed" ? " hb-doc-status-failed" : ""}`} aria-live="polite">
+		<span className={`${statusLine} ${saveState === "failed" ? "text-status-error" : "text-muted"}`} aria-live="polite">
 			{saveState === "saving" ? <Spinner size="sm" /> : null}
 			{SAVE_LABELS[saveState]}
 		</span>
@@ -65,7 +72,7 @@ function Status({ status, saveState }: { status: DocumentPanelStatus; saveState:
 
 function Loading({ title }: { title: string }) {
 	return (
-		<div className="hb-doc-loading" aria-busy="true">
+		<div className="flex flex-col gap-2.5 pt-8" aria-busy="true">
 			<span className="hb-sr-only">Loading {title}</span>
 			<Skeleton width="55%" />
 			<Skeleton width="90%" />
@@ -99,16 +106,21 @@ export function DocumentPanel({
 		return () => document.removeEventListener("keydown", onKey);
 	}, [onClose, sharing]);
 	return (
-		<aside className="hb-doc-panel" aria-labelledby={id} data-status={status}>
-			<header className="hb-doc-header">
-				<h2 id={id} className="hb-doc-title" title={title}>
+		<aside
+			// Slides in from the right (hb-doc-panel-in, document-panel.css), opacity and transform only.
+			className="hb-doc-panel flex h-full min-h-0 min-w-0 animate-[hb-doc-panel-in_var(--hb-duration)_var(--hb-ease)] flex-col border-l border-border bg-canvas text-fg motion-reduce:animate-none"
+			aria-labelledby={id}
+			data-status={status}
+		>
+			<header className="flex min-h-control-lg flex-none items-center gap-2.5 border-b border-border py-2 pr-2.5 pl-4">
+				<h2 id={id} className="m-0 min-w-0 truncate text-md leading-tight font-medium" title={title}>
 					{title}
 				</h2>
 				<Status status={status} saveState={saveState} />
-				<div className="hb-doc-actions">
+				<div className="ml-auto flex flex-none items-center gap-1">
 					{actions}
 					{share === undefined || status === "streaming" ? null : (
-						<span className="hb-share-anchor">
+						<span className={shareAnchor}>
 							<ShareButton open={sharing} onToggle={() => setSharing((open) => !open)} />
 							{sharing ? <SharePopover {...share} title={title} onClose={() => setSharing(false)} /> : null}
 						</span>
@@ -123,17 +135,26 @@ export function DocumentPanel({
 					)}
 				</div>
 			</header>
-			{/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard. */}
-			<section className="hb-doc-scroll hb-focusable" tabIndex={0} aria-label={`Contents of ${title}`}>
-				<div className="hb-doc-page" ref={pageRef}>
+			<section
+				// The focus ring inset, so the panel's edges don't clip it. `!`: base.css's .hb-focusable offset is unlayered.
+				className="hb-focusable min-h-0 flex-auto overflow-auto overscroll-contain focus-visible:-outline-offset-(--hb-ring)!"
+				// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
+				tabIndex={0}
+				aria-label={`Contents of ${title}`}
+			>
+				<div className="mx-auto w-full max-w-doc px-6 pb-12 [&>.hb-notice]:mt-6" ref={pageRef}>
 					{status === "loading" ? (
 						<Loading title={title} />
 					) : status === "error" ? (
 						<Notice level="error">{error ?? `${title} couldn't be read.`}</Notice>
 					) : status === "streaming" ? (
-						<div className="hb-doc-streaming">
+						<div className="hb-doc-streaming relative">
 							<NoteMarkdown text={markdown} />
-							<span className="hb-doc-caret" aria-hidden="true" />
+							<span
+								// The caret after the text that's arriving: it breathes (hb-doc-caret, document-panel.css), opacity only.
+								className="mt-1 inline-block h-(--hb-doc-text) w-1 animate-[hb-doc-caret_var(--hb-duration-pulse)_var(--hb-ease-breathe)_infinite] rounded-xs bg-accent-text motion-reduce:animate-none"
+								aria-hidden="true"
+							/>
 						</div>
 					) : (
 						<Suspense
