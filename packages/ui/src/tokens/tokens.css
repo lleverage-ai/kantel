@@ -99,19 +99,51 @@
 	--hb-weight-medium: 500;
 	--hb-weight-strong: 600;
 
-	/* Space, a 2px-based scale. */
-	--hb-space-0: 0;
-	--hb-space-1: 2px;
-	--hb-space-2: 4px;
-	--hb-space-3: 6px;
-	--hb-space-4: 8px;
-	--hb-space-5: 10px;
-	--hb-space-6: 12px;
-	--hb-space-7: 16px;
-	--hb-space-8: 20px;
-	--hb-space-9: 24px;
-	--hb-space-10: 32px;
-	--hb-space-11: 48px;
+	/*
+	 * Space: one scale on a 4px step, numbered as Tailwind v4's spacing (`--spacing: 0.25rem`), so step n is n × 4px and
+	 * `--hb-step-4` is Tailwind's `p-4`, 16px. The half steps are for the insides of small controls only. Where each
+	 * step goes, and the three rules behind it, are in docs/spacing.md.
+	 */
+	--hb-spacing: 0.25rem;
+	--hb-step-0: 0;
+	--hb-step-0_5: calc(var(--hb-spacing) * 0.5); /* 2px */
+	--hb-step-1: var(--hb-spacing); /* 4px */
+	--hb-step-1_5: calc(var(--hb-spacing) * 1.5); /* 6px */
+	--hb-step-2: calc(var(--hb-spacing) * 2); /* 8px */
+	--hb-step-2_5: calc(var(--hb-spacing) * 2.5); /* 10px */
+	--hb-step-3: calc(var(--hb-spacing) * 3); /* 12px */
+	--hb-step-4: calc(var(--hb-spacing) * 4); /* 16px */
+	--hb-step-5: calc(var(--hb-spacing) * 5); /* 20px */
+	--hb-step-6: calc(var(--hb-spacing) * 6); /* 24px */
+	--hb-step-8: calc(var(--hb-spacing) * 8); /* 32px */
+	--hb-step-10: calc(var(--hb-spacing) * 10); /* 40px */
+	--hb-step-12: calc(var(--hb-spacing) * 12); /* 48px */
+
+	/* The rhythm, named (docs/spacing.md): within a block 2, between blocks 6, between turns 8. */
+	--hb-gap-within: var(--hb-step-2); /* related things in one block: card to card, a run of work lines */
+	--hb-gap-between: var(--hb-step-6); /* one block to the next: prose, work, cards, a subagent */
+	--hb-gap-turn: var(--hb-step-8); /* one turn to the next: an answer's end to the next message */
+	--hb-pad-card: var(--hb-step-3); /* inside a card in the flow */
+	--hb-pad-panel: var(--hb-step-4); /* inside a panel or a popover */
+	--hb-gutter: var(--hb-step-6); /* a page's or a panel's edge to its content, on a wide screen */
+	--hb-gutter-narrow: var(--hb-step-4); /* the same on a phone */
+
+	/*
+	 * The scale's old names, numbered on a 2px step: the same values, mapped onto the steps. Each file moves to
+	 * `--hb-step-*` (or a Tailwind utility) as it is next touched; new CSS uses the steps.
+	 */
+	--hb-space-0: var(--hb-step-0);
+	--hb-space-1: var(--hb-step-0_5);
+	--hb-space-2: var(--hb-step-1);
+	--hb-space-3: var(--hb-step-1_5);
+	--hb-space-4: var(--hb-step-2);
+	--hb-space-5: var(--hb-step-2_5);
+	--hb-space-6: var(--hb-step-3);
+	--hb-space-7: var(--hb-step-4);
+	--hb-space-8: var(--hb-step-5);
+	--hb-space-9: var(--hb-step-6);
+	--hb-space-10: var(--hb-step-8);
+	--hb-space-11: var(--hb-step-12);
 
 	/* Sizes. */
 	--hb-control-xs: 24px;

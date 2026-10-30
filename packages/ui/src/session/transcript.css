@@ -26,58 +26,58 @@
 	outline-offset: calc(var(--hb-ring) * -1);
 }
 
+/*
+ * The rhythm (docs/spacing.md): every row stands a block apart from the one above it; a line of work under another
+ * (a run of calls, a thought, the activity row) sits within their block; a person's message starts a turn, a turn
+ * apart. virtua wraps every row in its own element, so sibling selectors can't see the row above: the transcript marks
+ * each row instead (`hb-transcript-row-close`, `hb-transcript-turn`, `hb-transcript-row-first`). Space goes above a
+ * row only, so two rows' paddings never add up.
+ */
 .hb-transcript-row {
-	padding: var(--hb-space-2) var(--hb-space-7);
+	padding: var(--hb-gap-between) var(--hb-gutter-narrow) 0;
 }
 
-.hb-transcript-row-tools,
-.hb-transcript-row-browsing {
-	padding-top: var(--hb-space-1);
-	padding-bottom: var(--hb-space-1);
+.hb-transcript-row-close {
+	padding-top: var(--hb-gap-within);
 }
 
-/* A working turn's header sits close under the person's message, its divider then leading into the turn; the
-   activity row at the foot is a work-log row, spaced as the tool calls are. */
+/* A working turn's header follows the person's message, whose actions row already gives it room. */
 .hb-transcript-row-working {
-	padding-top: var(--hb-space-4);
-	padding-bottom: var(--hb-space-3);
-}
-
-.hb-transcript-row-activity {
-	padding-top: var(--hb-space-1);
-	padding-bottom: var(--hb-space-1);
-}
-
-.hb-transcript-row-card {
-	padding-top: var(--hb-space-3);
-	padding-bottom: var(--hb-space-3);
-}
-
-/* virtua wraps every row in its own element, so the ends are marked explicitly, not with :first-child. */
-.hb-transcript-row-first {
-	padding-top: var(--hb-space-7);
+	padding-top: var(--hb-gap-within);
 }
 
 .hb-transcript-turn {
-	padding-top: var(--hb-space-9);
+	padding-top: var(--hb-gap-turn);
+}
+
+.hb-transcript-row-first {
+	padding-top: var(--hb-gutter-narrow);
 }
 
 /* A finished turn's work, folded under its "Worked for" line (TurnFoldLine). A folded row that shows nothing (the agent's
    words before its answer, a run of calls that presented nothing) takes no room; one that keeps something in view
-   (presented files, a browser's card, a failed call) is spaced as a row of calls. */
+   (presented files, a browser's card, a failed call) is a block of its own, a block under the line above it. The
+   "Worked for" line is a line of work like any other: close under the person's message, a block above the answer. */
 .hb-transcript-row-folded:not(.hb-transcript-row-fold-line) {
 	padding-top: 0;
-	padding-bottom: 0;
 }
 
 .hb-transcript-row-folded:not(.hb-transcript-row-fold-line):has(.hb-transcript-column > *) {
-	padding-top: var(--hb-space-1);
-	padding-bottom: var(--hb-space-1);
+	padding-top: var(--hb-gap-between);
 }
 
-.hb-transcript-row-fold-line {
-	padding-top: var(--hb-space-1);
-	padding-bottom: var(--hb-space-1);
+/* Presented files first in a folded row: the row's padding already stands them a block under the line. */
+.hb-transcript-row-folded .hb-transcript-column > .hb-presented-files:first-child {
+	margin-top: 0;
+}
+
+/* An open fold: the line's first row of work sits close under it, the agent's words a block under it. */
+.hb-transcript-column > .hb-turn-fold + * {
+	margin-top: var(--hb-gap-within);
+}
+
+.hb-transcript-column > .hb-turn-fold + .hb-assistant-message {
+	margin-top: var(--hb-gap-between);
 }
 
 .hb-turn-fold > .hb-disclosure-summary {
@@ -92,7 +92,7 @@
 }
 
 .hb-transcript-end {
-	height: var(--hb-space-10);
+	height: var(--hb-gap-turn);
 }
 
 /* A linked turn (`#turn=<id>`) stands out for a moment and fades, so the reader sees where the link landed: a message
@@ -114,13 +114,13 @@
 	50% {
 		box-shadow:
 			0 0 0 var(--hb-ring) var(--hb-accent),
-			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+			0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 
 	to {
 		box-shadow:
 			0 0 0 var(--hb-ring) transparent,
-			0 0 0 var(--hb-space-3) transparent;
+			0 0 0 var(--hb-step-1_5) transparent;
 	}
 }
 
@@ -128,12 +128,12 @@
 	from,
 	50% {
 		background: var(--hb-accent-soft);
-		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+		box-shadow: 0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 
 	to {
 		background: transparent;
-		box-shadow: 0 0 0 var(--hb-space-3) transparent;
+		box-shadow: 0 0 0 var(--hb-step-1_5) transparent;
 	}
 }
 
@@ -142,7 +142,7 @@
 		animation: none;
 		box-shadow:
 			0 0 0 var(--hb-ring) var(--hb-accent),
-			0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+			0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 
 	.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-browsing, .hb-transcript-row-user)
@@ -150,7 +150,7 @@
 	.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
 		animation: none;
 		background: var(--hb-accent-soft);
-		box-shadow: 0 0 0 var(--hb-space-3) var(--hb-accent-soft);
+		box-shadow: 0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
 	}
 }
 
@@ -159,7 +159,7 @@
  * under its glass; the end makes room for it, as tall as transcript.tsx measures the dock, plus the usual gap.
  */
 .hb-transcript-docked .hb-transcript-end {
-	height: calc(var(--hb-transcript-dock-height) + var(--hb-space-7));
+	height: calc(var(--hb-transcript-dock-height) + var(--hb-gap-between));
 }
 
 .hb-transcript-dock {
@@ -168,7 +168,8 @@
 	right: 0;
 	bottom: 0;
 	left: 0;
-	padding: var(--hb-space-3) var(--hb-space-6) calc(var(--hb-space-7) + env(safe-area-inset-bottom));
+	/* The composer keeps the transcript's gutters at its sides and the window's at its foot (docs/spacing.md). */
+	padding: var(--hb-step-1_5) var(--hb-gutter-narrow) calc(var(--hb-gutter-narrow) + env(safe-area-inset-bottom));
 	/* The lane takes the pointer; the gutters beside it scroll the list. */
 	pointer-events: none;
 }
@@ -183,12 +184,12 @@
 .hb-transcript-drop {
 	position: absolute;
 	z-index: var(--hb-z-overlay);
-	inset: var(--hb-space-4);
+	inset: var(--hb-step-2);
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	gap: var(--hb-space-3);
+	gap: var(--hb-step-1_5);
 	border: var(--hb-ring) dashed var(--hb-drop-line);
 	border-radius: var(--hb-radius-bubble);
 	background: var(--hb-drop-fill);
@@ -196,7 +197,7 @@
 }
 
 .hb-transcript-drop-label {
-	padding: var(--hb-space-3) var(--hb-space-7);
+	padding: var(--hb-step-1_5) var(--hb-step-4);
 	border-radius: var(--hb-radius-full);
 	background: var(--hb-raised);
 	box-shadow: var(--hb-shadow-float);
@@ -206,7 +207,7 @@
 }
 
 .hb-transcript-drop-limits {
-	padding: var(--hb-space-1) var(--hb-space-5);
+	padding: var(--hb-step-0_5) var(--hb-step-2_5);
 	border-radius: var(--hb-radius-full);
 	background: var(--hb-raised);
 	color: var(--hb-text-muted);
@@ -218,12 +219,12 @@
 .hb-transcript-older {
 	position: absolute;
 	z-index: var(--hb-z-float);
-	top: var(--hb-space-5);
+	top: var(--hb-step-2_5);
 	left: 50%;
 	display: inline-flex;
 	align-items: center;
-	gap: var(--hb-space-3);
-	padding: var(--hb-space-2) var(--hb-space-6);
+	gap: var(--hb-step-1_5);
+	padding: var(--hb-step-1) var(--hb-step-3);
 	transform: translateX(-50%);
 	border-radius: var(--hb-radius-full);
 	background: var(--hb-raised);
@@ -235,7 +236,7 @@
 
 /* A failed page: the reason and "Try again", in the same pill. */
 .hb-transcript-older-error {
-	padding-right: var(--hb-space-2);
+	padding-right: var(--hb-step-1);
 	color: var(--hb-text);
 }
 
@@ -252,7 +253,7 @@
 .hb-transcript-scroll-end.hb-button {
 	position: absolute;
 	z-index: var(--hb-z-float);
-	bottom: var(--hb-space-7);
+	bottom: var(--hb-step-4);
 	left: 50%;
 	transform: translateX(-50%);
 	border-radius: var(--hb-radius-full);
@@ -263,7 +264,7 @@
 
 /* Docked, it sits just above the composer (T3 Code: the measured clearance plus 4px). */
 .hb-transcript-docked .hb-transcript-scroll-end.hb-button {
-	bottom: calc(var(--hb-transcript-dock-height) + var(--hb-space-2));
+	bottom: calc(var(--hb-transcript-dock-height) + var(--hb-step-1));
 }
 
 .hb-transcript-scroll-end.hb-button:hover:not(:disabled) {
@@ -275,7 +276,7 @@
 
 .hb-transcript-error {
 	flex: none;
-	padding: var(--hb-space-4) var(--hb-space-7) 0;
+	padding: var(--hb-step-2) var(--hb-step-4) 0;
 }
 
 .hb-transcript-empty {
@@ -284,14 +285,14 @@
 	align-items: center;
 	justify-content: center;
 	min-height: 0;
-	padding: 0 var(--hb-space-7);
+	padding: 0 var(--hb-step-4);
 }
 
 .hb-transcript-loading {
 	flex: 1;
 	min-height: 0;
 	overflow: hidden;
-	padding: var(--hb-space-7);
+	padding: var(--hb-step-4);
 }
 
 /* Docked, the empty state and the skeleton stay clear of the composer. */
@@ -303,8 +304,8 @@
 .hb-transcript-skeleton-turn {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-6);
-	padding-bottom: var(--hb-space-10);
+	gap: var(--hb-step-3);
+	padding-bottom: var(--hb-step-8);
 }
 
 .hb-transcript-skeleton-user .hb-skeleton {
@@ -316,24 +317,28 @@
 .hb-transcript-skeleton-tools {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-3);
+	gap: var(--hb-step-1_5);
 }
 
 @media (min-width: 640px) {
 	.hb-transcript-dock {
-		padding: var(--hb-space-4) var(--hb-space-7) calc(var(--hb-space-8) + env(safe-area-inset-bottom));
+		padding: var(--hb-step-2) var(--hb-gutter-narrow) calc(var(--hb-gutter) + env(safe-area-inset-bottom));
 	}
 }
 
 @media (min-width: 900px) {
 	.hb-transcript-row,
 	.hb-transcript-error {
-		padding-left: var(--hb-space-9);
-		padding-right: var(--hb-space-9);
+		padding-left: var(--hb-gutter);
+		padding-right: var(--hb-gutter);
+	}
+
+	.hb-transcript-row-first {
+		padding-top: var(--hb-gutter);
 	}
 
 	.hb-transcript-dock {
-		padding-right: var(--hb-space-9);
-		padding-left: var(--hb-space-9);
+		padding-right: var(--hb-gutter);
+		padding-left: var(--hb-gutter);
 	}
 }

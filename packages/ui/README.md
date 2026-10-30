@@ -37,10 +37,12 @@ with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`),
    use it from your app. Don't write a one-off component in an app.
 2. Use the tokens (`--hb-*` in [src/tokens/tokens.css](src/tokens/tokens.css)) for every colour, size, radius and
    duration. `pnpm --filter @harbour/ui test` fails on a raw value.
-3. Copy is plain sentence case. No uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
-4. Every component has a story for each state it can be in: loading, empty, streaming, error, long content and
+3. Space follows [docs/spacing.md](docs/spacing.md): one 4px scale (`--hb-step-*`, numbered as Tailwind's), within
+   a block 2, between blocks 6, between turns 8.
+4. Copy is plain sentence case. No uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
+5. Every component has a story for each state it can be in: loading, empty, streaming, error, long content and
    mobile (420px), where they apply.
-5. A component that costs render time, bytes or a timer has to say what it does for the person in its docs.
+6. A component that costs render time, bytes or a timer has to say what it does for the person in its docs.
 
 ## The workbench
 

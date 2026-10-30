@@ -7,6 +7,7 @@ import { parseFixture, type ServerFrame } from "@harbour/protocol";
 import type { ProjectSummary } from "../api/client.ts";
 import { ONE_IMAGE, SIX_FILES, THREE_IMAGES } from "./attachments.ts";
 import { Recording } from "./recording.ts";
+import { POSTERS } from "./workspace.ts";
 
 export type RecordedSession = {
 	readonly id: string;
@@ -291,6 +292,80 @@ function retries(now: number): Recording {
 	return r;
 }
 
+const posterAnswer = [
+	"I generated 4 new poster iterations. They all came from the same model, `gpt-image-2.5-flare`, because the image tool has no model option. They differ in style, not in model. I haven't looked at the images myself, since they were too large to preview, so I can't say how well they match your references or whether the text came out right.",
+	"",
+	'1. **Isometric flat vector.** Navy and orange, with flying documents and delivery drones. It\'s closest to your "Back office" poster.',
+	"2. **Retro screen-print.** A 1960s travel-poster look with halftone grain, a logistics hub and an orange moon.",
+	'3. **Bauhaus geometric.** A block tower labelled READS / DECIDES / LEARNS / ACTS, with the tagline "Nobody clocked in. Everything got done."',
+	"4. **Neon-noir cinematic.** A wide night view of a warehouse with robot arms and forklifts, and rain reflections on the ground.",
+].join("\n");
+
+/**
+ * Done, with the turn Tom judged the console's spacing by (30 October 2026): prose, a run of calls, a thought, a call
+ * presenting four images as file cards, and a closing answer with a list. A subagent's card in the turn before.
+ */
+function posters(now: number): Recording {
+	const r = new Recording("s-posters", "Poster ideas for the Back office launch", now - 40 * MINUTE);
+	const image = (prompt: string, ms: number) => ({
+		name: "generate_image",
+		args: { prompt },
+		label: "Generated an image",
+		ms,
+		output: "Saved the image to out/",
+	});
+	r.user("Find a few references for a launch poster for Back office: logistics, automation, a bit playful.")
+		.status("running")
+		.wait(1200)
+		.say("I'll have a subagent gather references while I read the brief.")
+		.tool({
+			name: "subagent",
+			args: {
+				title: "Gather poster references",
+				task: "Find six to eight poster references for a logistics automation launch: isometric, retro print, Bauhaus and cinematic styles.",
+			},
+			ms: 42_000,
+			output:
+				"Found seven references across four styles: two isometric explainers, a 1960s travel poster series, a Bauhaus exhibition set and a neon-noir film poster. Links and notes are in out/references.md.",
+		})
+		.wait(1500)
+		.say(
+			"The subagent found seven references across four styles. The isometric and retro ones fit the playful brief best; the cinematic one is the outlier, but worth a try.",
+		)
+		.status("idle")
+		.wait(4 * MINUTE)
+		.user("Make four posters from those, and use a different image model this time.")
+		.status("running")
+		.wait(1400)
+		.say(
+			"I can't choose the image model, because this tool has no model parameter. I'll generate 4 distinct variations with it instead, each taking a different stylistic direction on the theme.",
+		)
+		.tool(image("Isometric flat vector poster, navy and orange, flying documents and delivery drones", 7_000))
+		.tool(image("Retro 1960s screen-print travel poster, halftone grain, logistics hub, orange moon", 8_000))
+		.tool(image("Minimalist geometric Bauhaus poster, a block tower labelled READS DECIDES LEARNS ACTS", 7_000))
+		.tool(image("Cinematic neon-noir illustration, wide night view of a warehouse with robot arms", 8_000))
+		.wait(800)
+		.say("", { thinking: "All four are saved under out/. I'll present them together so they open in the panel." })
+		.tool({
+			name: "present_files",
+			args: { paths: POSTERS.map((name) => `out/${name}`) },
+			label: "Presenting 4 files",
+			ms: 200,
+			output: "Presented 4 files",
+			files: POSTERS.map((name) => ({
+				workspaceId: "ws-s-posters",
+				path: `out/${name}`,
+				name,
+				mimeType: "image/png",
+				size: 1_400_000,
+			})),
+		})
+		.wait(1200)
+		.say(posterAnswer)
+		.status("idle");
+	return r;
+}
+
 /** Done and read: quiet in the list. */
 function handback(now: number): Recording {
 	const r = new Recording("s-handback", "Draft the M0 handback", now - 26 * HOUR);
@@ -357,6 +432,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 		{ id: "s-seed", projectId: "harbour", frames: made(seedCache(now)) },
 		{ id: "s-retries", projectId: "harbour", branch: "billing-retries", frames: made(retries(now)) },
 		{ id: "s-attachments", projectId: "harbour", frames: made(officeTheme(now)) },
+		{ id: "s-posters", projectId: "harbour", frames: made(posters(now)) },
 	];
 	if (urls !== undefined) {
 		sessions.push(

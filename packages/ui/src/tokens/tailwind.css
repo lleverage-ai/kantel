@@ -7,8 +7,9 @@
 
    Closed theme. `--*: initial` drops Tailwind's default palette, type scale, radii, shadows and the rest, so the only
    named values are Harbour's: `bg-red-500`, `text-base` or `rounded-lg` don't exist and fail to style anything. Space
-   is the exception: Tailwind's 4px step (--spacing, 0.25rem), which every --hb-space-* value is a multiple of
-   (--hb-space-4 is 8px is `p-2`). No arbitrary px or rem values (`p-[13px]`): the token lint fails on them.
+   is the exception: Tailwind's 4px step (--spacing, 0.25rem), which --hb-step-* is numbered by (--hb-step-2 is 8px is
+   `p-2`; the legacy --hb-space-4 is the same 8px), plus the rhythm's names (`gap-within`, `mt-between`, `px-gutter`;
+   docs/spacing.md). No arbitrary px or rem values (`p-[13px]`): the token lint fails on them.
 
    No preflight, for the transition. Tailwind's reset (margins, list styles, button and heading styles, `display:
    block` on images and svg) would restyle every component still written in its own .css file, which were written
@@ -38,8 +39,18 @@
 @theme {
 	--*: initial;
 
-	/* 4px steps, as Tailwind's default: `p-1` is 4px, `gap-2` 8px, `px-0.5` 2px. */
+	/* 4px steps, as Tailwind's default: `p-1` is 4px, `gap-2` 8px, `px-0.5` 2px. Step n is --hb-step-n. */
 	--spacing: 0.25rem;
+
+	/* The rhythm (docs/spacing.md), on every spacing utility: `gap-within`, `mt-between`, `pt-turn`, `p-pad-card`,
+	   `p-pad-panel`, `px-gutter`, `px-gutter-narrow`. Prefer these to a bare step where one of them is meant. */
+	--spacing-within: var(--hb-gap-within);
+	--spacing-between: var(--hb-gap-between);
+	--spacing-turn: var(--hb-gap-turn);
+	--spacing-pad-card: var(--hb-pad-card);
+	--spacing-pad-panel: var(--hb-pad-panel);
+	--spacing-gutter: var(--hb-gutter);
+	--spacing-gutter-narrow: var(--hb-gutter-narrow);
 
 	/* Tailwind's default breakpoints, for `sm:` to `2xl:`. */
 	--breakpoint-sm: 40rem;

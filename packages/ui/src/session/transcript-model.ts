@@ -239,6 +239,47 @@ function showsActivity(row: TranscriptRow | undefined): boolean {
 	return row.item.kind === "assistant" && row.item.streaming;
 }
 
+/**
+ * Whether a row is one line of the agent's work: a group of calls, a browsing run, or a thought with no answer under
+ * it ("Thought it through"). Lines of work in a row are one block, so they stack close (docs/spacing.md: within a
+ * block); everything else (the person's message, an answer, a card, a subagent) is a block of its own.
+ */
+export function isWorkLine(row: TranscriptRow): boolean {
+	if (row.kind === "tools" || row.kind === "browsing") return true;
+	if (row.kind === "subagent") return false;
+	const { item } = row;
+	return item.kind === "assistant" && item.text === "" && item.document === undefined && item.thinking !== undefined;
+}
+
+/** Whether a row ends with a line of work, rather than with something it shows under it: presented files. */
+export function endsInWorkLine(row: TranscriptRow): boolean {
+	if (!isWorkLine(row)) return false;
+	return row.kind !== "tools" || !row.items.some((item) => item.status === "done" && (item.files?.length ?? 0) > 0);
+}
+
+/**
+ * The rows that sit close under the row before them rather than a block apart: a line of work right under another,
+ * and whatever comes first under a message with an actions row (Copy and the time, shown on hover): the person's
+ * message, or a turn's final answer (`finalAnswers`) with a card or a notice after it. The actions row already stands
+ * a block's room between them. The transcript spaces every other row a block apart, and a person's message a turn
+ * apart.
+ */
+export function closeRows(
+	rows: readonly TranscriptRow[],
+	finalAnswers: ReadonlySet<string> = new Set(),
+): ReadonlySet<string> {
+	const close = new Set<string>();
+	for (let index = 1; index < rows.length; index++) {
+		const row = rows[index];
+		const before = rows[index - 1];
+		if (row === undefined || before === undefined) continue;
+		const underActions = before.kind === "item" && (before.item.kind === "user" || finalAnswers.has(before.id));
+		const underWork = isWorkLine(row) && endsInWorkLine(before);
+		if (underActions || underWork) close.add(row.id);
+	}
+	return close;
+}
+
 /** The DOM ID of a row's anchor, from its item's ID: `turn-<id>`, so a page can link to a mounted row. */
 export const turnAnchor = (itemId: string): string => `turn-${itemId}`;
 

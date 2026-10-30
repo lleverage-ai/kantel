@@ -12,6 +12,10 @@ its tokens.
   components in an app.
 - Use the `--hb-*` tokens for every colour, size, radius and duration. `pnpm --filter @harbour/ui test` fails on a
   raw value in the library.
+- Space follows [packages/ui/docs/spacing.md](packages/ui/docs/spacing.md): one 4px scale, `--hb-step-*` numbered as
+  Tailwind's (`--hb-step-4` is `p-4`, 16px), and the rhythm tokens (`--hb-gap-within`, `--hb-gap-between`,
+  `--hb-gap-turn`). Within a block 2, between blocks 6, between turns 8. New CSS uses the steps, not the old
+  2px-numbered `--hb-space-*` names.
 - Copy is plain sentence case: no uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
 - Style with Tailwind v4 (below), not a new .css file.
 - Check your component in the workbench (`pnpm --filter @harbour/ui dev`) at 1280px and 420px, and run

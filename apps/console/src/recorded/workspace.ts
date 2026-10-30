@@ -125,6 +125,14 @@ type Stored =
 	/** Listed with its size, refused when read, as the read API refuses a file over its limit. */
 	| { readonly size: number; readonly version: number };
 
+/** The images the poster session presents (catalogue.ts), under `out/`. */
+export const POSTERS = [
+	"poster-illustration-dark-navy-background-with-mvv1x9uw.png",
+	"retro-1960s-screen-print-travel-poster-mvv1xc4c.png",
+	"minimalist-geometric-bauhaus-style-poster-a-mvv1x3f7.png",
+	"cinematic-neon-noir-illustration-wide-night-mvv1x677.png",
+] as const;
+
 const text = (value: string, contentType = "text/plain; charset=utf-8", version = 3): Stored => ({
 	content: encoder.encode(value),
 	contentType,
@@ -143,6 +151,11 @@ const FILES: ReadonlyMap<string, Stored> = new Map<string, Stored>([
 	["logs/sync-2026-10-27.log", text(runLog, "text/plain; charset=utf-8", 5)],
 	["assets/logo.png", { content: logo, contentType: "image/png", version: 1 }],
 	["assets/ledger-export.csv", { size: 48 * 1024 * 1024, version: 5 }],
+	// The poster session's images (catalogue.ts): stand-ins, each the same chart.
+	...POSTERS.map((name): [string, Stored] => [
+		`out/${name}`,
+		{ content: retriesChartBytes(), contentType: "image/png", version: 1 },
+	]),
 ]);
 
 const sizeOf = (stored: Stored) => ("content" in stored ? stored.content.byteLength : stored.size);

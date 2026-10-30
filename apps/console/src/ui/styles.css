@@ -43,8 +43,8 @@ body {
 .shell-actor {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-3);
-	padding: var(--hb-space-4) var(--hb-space-5) 0;
+	gap: var(--hb-step-1_5);
+	padding: var(--hb-step-2) var(--hb-step-2_5) 0;
 	border-top: var(--hb-hairline) solid var(--hb-border);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-xs);
@@ -74,19 +74,19 @@ body {
 .shell-page {
 	box-sizing: border-box;
 	height: 100%;
-	padding: var(--hb-space-9) var(--hb-space-10);
+	padding: var(--hb-gutter);
 	overflow-y: auto;
 }
 
 .shell-page-bar {
-	margin: calc(var(--hb-space-5) * -1) 0 var(--hb-space-5) calc(var(--hb-space-3) * -1);
+	margin: calc(var(--hb-step-2_5) * -1) 0 var(--hb-step-2_5) calc(var(--hb-step-1_5) * -1);
 }
 
 .shell-empty {
 	display: grid;
 	height: 100%;
 	place-items: center;
-	padding: var(--hb-space-7);
+	padding: var(--hb-gutter-narrow);
 }
 
 /* A phone: one pane at a time, the list or the open session (with Back). */
@@ -101,7 +101,7 @@ body {
 	}
 
 	.shell-page {
-		padding: var(--hb-space-7) var(--hb-space-5);
+		padding: var(--hb-gutter-narrow);
 	}
 
 	.shell[data-pane="list"] .shell-main,
@@ -178,7 +178,7 @@ body {
 
 	/* Its view (live, the last page or the replay) keeps the browser's shape at the height it has, centred. */
 	.console-browser .hb-browser-panel-body {
-		width: min(100%, calc((38dvh - var(--hb-space-11) * 2) * 16 / 9));
+		width: min(100%, calc((38dvh - var(--hb-step-12) * 2) * 16 / 9));
 		margin-inline: auto;
 	}
 }
@@ -193,7 +193,7 @@ body {
 .console-actions {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-2);
+	gap: var(--hb-step-1);
 }
 
 .console-menu-root {
@@ -203,19 +203,19 @@ body {
 /* Allow and Decline on an agent's request for a browser, in the composer's banner. */
 .console-browser-actions {
 	display: flex;
-	gap: var(--hb-space-2);
+	gap: var(--hb-step-1);
 }
 
 .console-menu {
 	position: absolute;
 	z-index: var(--hb-z-float);
-	top: calc(100% + var(--hb-space-2));
+	top: calc(100% + var(--hb-step-1));
 	right: 0;
 	display: flex;
 	flex-direction: column;
 	align-items: stretch;
-	width: min(calc(var(--hb-sidebar-width) - var(--hb-space-6)), calc(100vw - var(--hb-space-7) * 2));
-	padding: var(--hb-space-2);
+	width: min(calc(var(--hb-sidebar-width) - var(--hb-step-3)), calc(100vw - var(--hb-step-4) * 2));
+	padding: var(--hb-step-1);
 	border: var(--hb-hairline) solid var(--hb-border-strong);
 	border-radius: var(--hb-radius);
 	background: var(--hb-raised);
@@ -229,7 +229,7 @@ body {
 
 .console-menu-link {
 	display: block;
-	padding: var(--hb-space-2) var(--hb-space-4);
+	padding: var(--hb-step-1) var(--hb-step-2);
 	border-radius: var(--hb-radius-control);
 	color: var(--hb-text);
 	text-decoration: none;
@@ -244,7 +244,7 @@ body {
 }
 
 .console-menu-label {
-	padding: var(--hb-space-4) var(--hb-space-4) var(--hb-space-1);
+	padding: var(--hb-step-2) var(--hb-step-2) var(--hb-step-0_5);
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
 }
@@ -252,9 +252,9 @@ body {
 .console-menu-facts {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-1);
+	gap: var(--hb-step-0_5);
 	margin: 0;
-	padding: var(--hb-space-1) var(--hb-space-4) var(--hb-space-2);
+	padding: var(--hb-step-0_5) var(--hb-step-2) var(--hb-step-1);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-xs);
 	list-style: none;
@@ -264,10 +264,10 @@ body {
 .profile {
 	position: fixed;
 	z-index: var(--hb-z-overlay);
-	right: var(--hb-space-5);
-	bottom: calc(var(--hb-space-11) * 2);
-	width: min(var(--hb-sidebar-width), calc(100vw - var(--hb-space-5) * 2));
-	padding: var(--hb-space-4) var(--hb-space-5);
+	right: var(--hb-step-2_5);
+	bottom: calc(var(--hb-step-12) * 2);
+	width: min(var(--hb-sidebar-width), calc(100vw - var(--hb-step-2_5) * 2));
+	padding: var(--hb-step-2) var(--hb-step-2_5);
 	border: var(--hb-hairline) solid var(--hb-border-strong);
 	border-radius: var(--hb-radius);
 	background: var(--hb-raised);
@@ -279,7 +279,7 @@ body {
 .profile-head {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-2);
+	gap: var(--hb-step-1);
 }
 
 .profile-head strong {
@@ -290,8 +290,8 @@ body {
 .profile-facts {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
-	gap: var(--hb-space-1) var(--hb-space-4);
-	margin: var(--hb-space-4) 0 var(--hb-space-2);
+	gap: var(--hb-step-0_5) var(--hb-step-2);
+	margin: var(--hb-step-2) 0 var(--hb-step-1);
 	color: var(--hb-text-muted);
 	font-variant-numeric: tabular-nums;
 }
@@ -307,8 +307,8 @@ body {
 }
 
 .profile-list {
-	margin: var(--hb-space-2) 0 0;
-	padding-left: var(--hb-space-7);
+	margin: var(--hb-step-1) 0 0;
+	padding-left: var(--hb-step-4);
 	color: var(--hb-text-muted);
 }
 
@@ -329,10 +329,10 @@ body {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--hb-space-2) var(--hb-space-5);
-	min-height: calc(var(--hb-control-md) + var(--hb-space-4) * 2);
-	padding: var(--hb-space-4) var(--hb-space-7);
-	padding-top: max(var(--hb-space-4), env(safe-area-inset-top));
+	gap: var(--hb-step-1) var(--hb-step-2_5);
+	min-height: calc(var(--hb-control-md) + var(--hb-step-2) * 2);
+	padding: var(--hb-step-2) var(--hb-step-4);
+	padding-top: max(var(--hb-step-2), env(safe-area-inset-top));
 	border-bottom: var(--hb-hairline) solid var(--hb-border);
 }
 
@@ -357,14 +357,14 @@ body {
 
 .files-tree {
 	min-height: 0;
-	padding: var(--hb-space-4) var(--hb-space-3);
+	padding: var(--hb-step-2) var(--hb-step-1_5);
 	border-right: var(--hb-hairline) solid var(--hb-border);
 	overflow-y: auto;
 }
 
 .files-retry {
 	display: flex;
-	padding: var(--hb-space-4) var(--hb-space-3);
+	padding: var(--hb-step-2) var(--hb-step-1_5);
 }
 
 .files-viewer {
@@ -376,7 +376,7 @@ body {
 	display: grid;
 	height: 100%;
 	place-items: center;
-	padding: var(--hb-space-7);
+	padding: var(--hb-step-4);
 }
 
 .files[data-pane="tree"] .files-body,
@@ -390,7 +390,7 @@ body {
 
 @media (max-width: 640px) {
 	.files-header {
-		padding-right: var(--hb-space-6);
-		padding-left: var(--hb-space-6);
+		padding-right: var(--hb-step-3);
+		padding-left: var(--hb-step-3);
 	}
 }

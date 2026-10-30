@@ -11,7 +11,7 @@
 .hb-browsing-line {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-3);
+	gap: var(--hb-step-1_5);
 	min-width: 0;
 }
 
@@ -19,11 +19,11 @@
 	display: flex;
 	flex: 1;
 	align-items: center;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
 	min-height: var(--hb-control-xs);
-	margin-left: calc(var(--hb-space-3) * -1);
-	padding: var(--hb-space-1) var(--hb-space-3);
+	margin-left: calc(var(--hb-step-1_5) * -1);
+	padding: var(--hb-step-0_5) var(--hb-step-1_5);
 	border: 0;
 	border-radius: var(--hb-radius-sm);
 	background: none;
@@ -54,7 +54,7 @@
 .hb-browsing-text {
 	display: flex;
 	flex: 1;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
 	padding-block: var(--hb-trim-room);
 	text-box: trim-both cap alphabetic;
@@ -96,16 +96,16 @@
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
-	padding: 0 0 var(--hb-space-2) var(--hb-space-7);
+	padding: 0 0 var(--hb-step-1) var(--hb-step-4);
 }
 
 /* The agent's words between two steps: its own Markdown, a size down and muted, so the steps stay the list's spine. */
 .hb-browsing-note {
-	padding: var(--hb-space-2) 0;
+	padding: var(--hb-step-1) 0;
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-sm);
 }
 
 .hb-browsing > .hb-browser-live {
-	margin-left: var(--hb-space-7);
+	margin-left: var(--hb-step-4);
 }

@@ -24,7 +24,7 @@
 .hb-markdown pre,
 .hb-markdown table,
 .hb-markdown blockquote {
-	margin: 0 0 var(--hb-space-6);
+	margin: 0 0 var(--hb-step-3);
 }
 
 .hb-markdown h1,
@@ -33,7 +33,7 @@
 .hb-markdown h4,
 .hb-markdown h5,
 .hb-markdown h6 {
-	margin: var(--hb-space-8) 0 var(--hb-space-4);
+	margin: var(--hb-step-5) 0 var(--hb-step-2);
 	color: var(--hb-text);
 	font-size: var(--hb-text-md);
 	font-weight: var(--hb-weight-strong);
@@ -53,11 +53,11 @@
 
 .hb-markdown ul,
 .hb-markdown ol {
-	padding-left: calc(var(--hb-space-7) + var(--hb-space-2));
+	padding-left: calc(var(--hb-step-4) + var(--hb-step-1));
 }
 
 .hb-markdown li + li {
-	margin-top: var(--hb-space-1);
+	margin-top: var(--hb-step-0_5);
 }
 
 .hb-markdown li > p {
@@ -66,7 +66,7 @@
 
 .hb-markdown li > ul,
 .hb-markdown li > ol {
-	margin: var(--hb-space-1) 0 0;
+	margin: var(--hb-step-0_5) 0 0;
 }
 
 .hb-markdown li::marker {
@@ -81,7 +81,7 @@
 	color: var(--hb-accent-text);
 	text-decoration: underline;
 	text-decoration-color: var(--hb-accent-soft);
-	text-underline-offset: var(--hb-space-1);
+	text-underline-offset: var(--hb-step-0_5);
 	border-radius: var(--hb-radius-xs);
 }
 
@@ -90,7 +90,7 @@
 }
 
 .hb-markdown code {
-	padding: var(--hb-space-1) var(--hb-space-2);
+	padding: var(--hb-step-0_5) var(--hb-step-1);
 	border: var(--hb-hairline) solid var(--hb-border);
 	border-radius: var(--hb-radius-xs);
 	background: var(--hb-code);
@@ -100,7 +100,7 @@
 
 .hb-markdown pre {
 	max-width: 100%;
-	padding: var(--hb-space-5) var(--hb-space-6);
+	padding: var(--hb-step-2_5) var(--hb-step-3);
 	overflow-x: auto;
 	border: var(--hb-hairline) solid var(--hb-border);
 	border-radius: var(--hb-radius-control);
@@ -130,7 +130,7 @@
 
 .hb-markdown th,
 .hb-markdown td {
-	padding: var(--hb-space-3) var(--hb-space-5);
+	padding: var(--hb-step-1_5) var(--hb-step-2_5);
 	border-bottom: var(--hb-hairline) solid var(--hb-border);
 	text-align: left;
 	white-space: nowrap;
@@ -144,13 +144,13 @@
 }
 
 .hb-markdown blockquote {
-	padding-left: var(--hb-space-6);
+	padding-left: var(--hb-step-3);
 	border-left: var(--hb-ring) solid var(--hb-border-strong);
 	color: var(--hb-text-muted);
 }
 
 .hb-markdown hr {
-	margin: var(--hb-space-8) 0;
+	margin: var(--hb-step-5) 0;
 	border: 0;
 	border-top: var(--hb-hairline) solid var(--hb-border);
 }
@@ -160,6 +160,6 @@
 }
 
 .hb-markdown input[type="checkbox"] {
-	margin: 0 var(--hb-space-3) 0 0;
+	margin: 0 var(--hb-step-1_5) 0 0;
 	vertical-align: middle;
 }

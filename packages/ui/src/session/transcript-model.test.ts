@@ -5,6 +5,7 @@ import {
 	activeBrowsingRow,
 	browserEntrySlots,
 	browserViewSlots,
+	closeRows,
 	finalAnswerIds,
 	findTurn,
 	groupTranscript,
@@ -251,6 +252,45 @@ describe("messageKeys", () => {
 			groupTranscript([sent("u1", "r1"), assistant("a1", "Hi."), sent("u2", "r1"), sent("u3", "r1"), sent("u4", "r2")]),
 		);
 		expect([...keys]).toEqual([["u4", "request:r2"]]);
+	});
+});
+
+describe("closeRows", () => {
+	// The poster turn Tom judged the spacing by: prose, a group of calls, a thought, a call presenting files, the answer.
+	const presenting: ToolItem = {
+		...tool("x3", "present_files", "Presenting 4 files"),
+		files: [{ workspaceId: "ws-1", path: "out/a.png", name: "a.png", mimeType: "image/png", size: 1 }],
+	};
+	const items: TranscriptItem[] = [
+		user("u1", "Make four posters."),
+		assistant("a1", "I'll make four."),
+		tool("x1", "generate_image", "Generated an image"),
+		tool("x2", "generate_image", "Generated an image"),
+		assistant("a2", "", { thinking: "Now present them." }),
+		presenting,
+		assistant("a3", "", { thinking: "Done; say so." }),
+		assistant("a4", "Here they are."),
+	];
+
+	it("keeps lines of work close, and whatever comes first under the person's message", () => {
+		// a1 is under the message; x1's group a block under the prose; the thought and the presenting call close under
+		// the lines before them; the thought after the presented files a block under them; the answer a block apart.
+		expect([...closeRows(groupTranscript(items))]).toEqual(["a1", "a2", "x3"]);
+	});
+
+	it("keeps a card close under a final answer, whose actions row stands between them", () => {
+		const rows = groupTranscript([
+			user("u1", "Rotate the key."),
+			tool("x1", "read", "Read a.md"),
+			assistant("a1", "I've asked the vault."),
+			notice("n1", "info", "Waiting for approval."),
+		]);
+		expect([...closeRows(rows, finalAnswerIds(rows))]).toEqual(["x1", "n1"]);
+	});
+
+	it("keeps an answer with words a block apart, even after a thought", () => {
+		const rows = groupTranscript([tool("x1", "read", "Read a.md"), assistant("a1", "Done.", { thinking: "Hm." })]);
+		expect([...closeRows(rows)]).toEqual([]);
 	});
 });
 

@@ -7,7 +7,7 @@
 	align-items: center;
 	min-width: 0;
 	min-height: var(--hb-control-xs);
-	padding: var(--hb-space-1) 0 var(--hb-space-4);
+	padding: var(--hb-step-0_5) 0 var(--hb-step-2);
 	border-bottom: var(--hb-hairline) solid var(--hb-border-strong);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-sm);
@@ -28,10 +28,10 @@
 .hb-live-activity {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
 	min-height: var(--hb-control-xs);
-	padding: var(--hb-space-1) 0;
+	padding: var(--hb-step-0_5) 0;
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-sm);
 	line-height: var(--hb-leading-tight);

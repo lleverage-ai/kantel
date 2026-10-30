@@ -12,6 +12,7 @@ import {
 	type Card,
 	type DeltaOp,
 	PROTOCOL_VERSION,
+	type PresentedFile,
 	type ServerFrame,
 	type SessionDelta,
 	type SessionSnapshot,
@@ -30,6 +31,10 @@ export type ToolStep = {
 	ms?: number;
 	status?: "done" | "error";
 	tier?: "isolate" | "container";
+	/** The chip's words, where the stand-in labels don't know the tool ("Presenting 4 files"). */
+	label?: string;
+	/** The files the call presented (`present_files`), as cards under its group. */
+	files?: readonly PresentedFile[];
 };
 
 export class Recording {
@@ -103,18 +108,24 @@ export class Recording {
 		return this;
 	}
 
-	/** An answer, streamed in `chunks` pieces `gap` ms apart. */
-	say(text: string, { chunks = 1, gap = 120 }: { chunks?: number; gap?: number } = {}): this {
+	/** An answer, streamed in `chunks` pieces `gap` ms apart, after its `thinking` when it has some. */
+	say(
+		text: string,
+		{ chunks = 1, gap = 120, thinking }: { chunks?: number; gap?: number; thinking?: string } = {},
+	): this {
 		const id = this.id("a");
 		const at = this.clock;
 		const pieces = split(text, chunks);
-		this.commit([{ op: "append", item: { kind: "assistant", id, at, text: pieces[0] ?? "", streaming: true } }]);
+		const thought = thinking === undefined ? {} : { thinking };
+		this.commit([
+			{ op: "append", item: { kind: "assistant", id, at, text: pieces[0] ?? "", streaming: true, ...thought } },
+		]);
 		for (const piece of pieces.slice(1)) {
 			this.wait(gap);
 			this.commit([{ op: "text", itemId: id, append: piece }]);
 		}
 		this.wait(gap);
-		this.commit([{ op: "replace", item: { kind: "assistant", id, at, text, streaming: false } }]);
+		this.commit([{ op: "replace", item: { kind: "assistant", id, at, text, streaming: false, ...thought } }]);
 		return this;
 	}
 
@@ -152,10 +163,11 @@ export class Recording {
 			at: current.at,
 			callId: current.callId,
 			name: step.name,
-			label: toolLabel(step.name, step.args, status),
+			label: step.label ?? toolLabel(step.name, step.args, status),
 			status,
 			args: step.args,
 			...(status === "running" || step.output === undefined ? {} : { output: step.output }),
+			...(status !== "done" || step.files === undefined ? {} : { files: step.files }),
 			...(step.tier === undefined ? {} : { tier: step.tier }),
 			...(status === "running" ? {} : { endedAt: this.clock }),
 		};

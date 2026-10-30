@@ -48,6 +48,8 @@ import {
 	type BrowserViewSlot,
 	browserEntrySlots,
 	browserViewSlots,
+	closeRows,
+	endsInWorkLine,
 	finalAnswerIds,
 	groupTranscript,
 	messageKeys,
@@ -150,6 +152,8 @@ type RowProps = {
 	row: TranscriptRow;
 	first: boolean;
 	turnStart: boolean;
+	/** The row is a line of work under another, so it sits within their block rather than a block apart. */
+	close: boolean;
 	/** The row is its turn's final answer, which gets Copy and its time on hover. */
 	finalAnswer: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
@@ -362,6 +366,7 @@ const Row = memo(function Row({
 	row,
 	first,
 	turnStart,
+	close,
 	finalAnswer,
 	renderCard,
 	renderSubagent,
@@ -391,7 +396,7 @@ const Row = memo(function Row({
 	const kind = row.kind === "item" ? row.item.kind : row.kind;
 	return (
 		<div
-			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}${fold === "closed" ? " hb-transcript-row-folded" : ""}${foldLine === undefined ? "" : " hb-transcript-row-fold-line"}`}
+			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${close ? " hb-transcript-row-close" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}${fold === "closed" ? " hb-transcript-row-folded" : ""}${foldLine === undefined ? "" : " hb-transcript-row-fold-line"}`}
 			id={turnAnchor(row.id)}
 			data-row={row.id}
 		>
@@ -641,6 +646,10 @@ export function Transcript({
 	// Each turn's final answer: an answer with no answer or tool call after it before the person's next message. Only
 	// these get Copy and their time, as in T3 Code; the words an agent says between tool calls don't.
 	const finalAnswers = useMemo(() => finalAnswerIds(rows), [rows]);
+	// A line of work right under another sits close to it; every other row is a block apart (docs/spacing.md).
+	const close = useMemo(() => closeRows(rows, finalAnswers), [rows, finalAnswers]);
+	const last = rows.at(-1);
+	const activityClose = last !== undefined && endsInWorkLine(last);
 	const repeated = useMemo(() => repeatedImageFiles(rows), [rows]);
 
 	// Each finished turn's work, folded under its "Worked for" line. Closed by default, on every load: only the folds a
@@ -1075,7 +1084,10 @@ export function Transcript({
 						) : "working" in entry ? (
 							<Fragment key="working">{workingHeader}</Fragment>
 						) : "activity" in entry ? (
-							<div key="activity" className="hb-transcript-row hb-transcript-row-activity">
+							<div
+								key="activity"
+								className={`hb-transcript-row hb-transcript-row-activity${activityClose ? " hb-transcript-row-close" : ""}`}
+							>
 								<div className="hb-transcript-column">
 									<LiveActivity />
 								</div>
@@ -1086,6 +1098,7 @@ export function Transcript({
 									row={entry}
 									first={index === 0 && !hasOlder}
 									turnStart={index > 0 && entry.kind === "item" && entry.item.kind === "user"}
+									close={close.has(entry.id)}
 									finalAnswer={finalAnswers.has(entry.id)}
 									renderCard={renderCard}
 									renderSubagent={renderSubagent}

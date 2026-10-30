@@ -4,7 +4,7 @@
 
 .hb-tool {
 	/* The tallest an argument or output block grows before it scrolls. Candidate token: --hb-tool-output-height. */
-	--hb-tool-output-height: calc(var(--hb-space-11) * 5);
+	--hb-tool-output-height: calc(var(--hb-step-12) * 5);
 
 	min-width: 0;
 }
@@ -13,12 +13,12 @@
 	position: relative;
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-4);
-	width: calc(100% + var(--hb-space-3) * 2);
+	gap: var(--hb-step-2);
+	width: calc(100% + var(--hb-step-1_5) * 2);
 	min-width: 0;
 	min-height: var(--hb-control-xs);
-	margin: 0 calc(var(--hb-space-3) * -1);
-	padding: var(--hb-space-1) var(--hb-space-3);
+	margin: 0 calc(var(--hb-step-1_5) * -1);
+	padding: var(--hb-step-0_5) var(--hb-step-1_5);
 	border: 0;
 	border-radius: var(--hb-radius-sm);
 	background: none;
@@ -115,10 +115,10 @@
 .hb-tool-detail {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-5);
+	gap: var(--hb-step-2_5);
 	min-width: 0;
-	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
-	padding: var(--hb-space-5) var(--hb-space-6);
+	margin: var(--hb-step-1) 0 var(--hb-step-2) calc(var(--hb-icon-md) + var(--hb-step-2));
+	padding: var(--hb-step-2_5) var(--hb-step-3);
 	border: var(--hb-hairline) solid var(--hb-border);
 	border-radius: var(--hb-radius-control);
 	background: var(--hb-panel);
@@ -131,7 +131,7 @@
 .hb-tool-section {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-2);
+	gap: var(--hb-step-1);
 	min-width: 0;
 }
 
@@ -143,7 +143,7 @@
 .hb-tool-pre {
 	max-height: var(--hb-tool-output-height);
 	margin: 0;
-	padding: var(--hb-space-4) var(--hb-space-5);
+	padding: var(--hb-step-2) var(--hb-step-2_5);
 	overflow: auto;
 	border-radius: var(--hb-radius-sm);
 	background: var(--hb-code);
@@ -182,33 +182,33 @@
 }
 
 .hb-tool-group-summary > .hb-disclosure-detail {
-	padding: 0 0 var(--hb-space-2) var(--hb-space-7);
+	padding: 0 0 var(--hb-step-1) var(--hb-step-4);
 }
 
 .hb-tool-group-failed {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
-	padding-left: var(--hb-space-7);
+	padding-left: var(--hb-step-4);
 }
 
 /* Images a call returned, such as a browser's screenshot: under the row, in line with its label, always shown, so a
    person watches the browser move without opening anything. Each is a button that opens the image full size. */
 .hb-tool {
 	/* The widest a tool image is shown. Candidate token: --hb-tool-image-width. */
-	--hb-tool-image-width: calc(var(--hb-space-11) * 8);
+	--hb-tool-image-width: calc(var(--hb-step-12) * 8);
 }
 
 .hb-tool-images {
 	display: flex;
 	flex-wrap: wrap;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
-	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
+	margin: var(--hb-step-1) 0 var(--hb-step-2) calc(var(--hb-icon-md) + var(--hb-step-2));
 }
 
 .hb-tool-group-collapsible > .hb-tool-images {
-	margin-left: var(--hb-space-7);
+	margin-left: var(--hb-step-4);
 }
 
 .hb-tool-image {
