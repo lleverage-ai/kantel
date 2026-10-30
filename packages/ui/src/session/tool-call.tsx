@@ -1,5 +1,6 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
 import { memo, type ReactNode, useEffect, useId, useState } from "react";
+import { Code, languageForPath } from "../code/code.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
 import {
@@ -46,17 +47,31 @@ export function toolIcon(name: string): IconComponent {
 	return FileIcon;
 }
 
-/** What the detail shows for the arguments: a lone `command` as itself, anything else as indented JSON. */
-export function formatArgs(args: unknown): { label: string; text: string } | undefined {
+/**
+ * What the detail shows for the arguments: a lone `command` as itself, anything else as indented JSON. `language` is
+ * what to highlight it as.
+ */
+export function formatArgs(args: unknown): { label: string; text: string; language?: string } | undefined {
 	if (args === undefined || args === null) return undefined;
 	if (typeof args === "string") return args === "" ? undefined : { label: "Arguments", text: args };
 	if (typeof args === "object") {
 		const keys = Object.keys(args);
 		if (keys.length === 0) return undefined;
 		const command = (args as { command?: unknown }).command;
-		if (keys.length === 1 && typeof command === "string") return { label: "Command", text: command };
+		if (keys.length === 1 && typeof command === "string") return { label: "Command", text: command, language: "bash" };
 	}
-	return { label: "Arguments", text: JSON.stringify(args, null, 2) };
+	return { label: "Arguments", text: JSON.stringify(args, null, 2), language: "json" };
+}
+
+/**
+ * What to highlight a call's output as: the file's language when a read-like call names one file (`read` with
+ * `path: "src/app.ts"`), otherwise nothing, and the output shows as plain text in the theme's code colour.
+ */
+export function outputLanguage(item: Pick<ToolItem, "name" | "args" | "status">): string | undefined {
+	if (item.status === "error" || !/read|view|cat/i.test(item.name)) return undefined;
+	const args = item.args as Record<string, unknown> | undefined;
+	const path = args?.path ?? args?.file_path ?? args?.file;
+	return typeof path === "string" ? languageForPath(path) : undefined;
 }
 
 const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
@@ -98,7 +113,7 @@ function Detail({ item, id, images }: { item: ToolItem; id: string; images: bool
 					<div className="hb-tool-section-label">{args.label}</div>
 					{/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard. */}
 					<pre className="hb-tool-pre hb-selectable hb-focusable" tabIndex={0}>
-						{args.text}
+						<Code code={args.text} language={args.language} />
 					</pre>
 				</div>
 			)}
@@ -111,7 +126,7 @@ function Detail({ item, id, images }: { item: ToolItem; id: string; images: bool
 				) : (
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard.
 					<pre className="hb-tool-pre hb-tool-output hb-selectable hb-focusable" tabIndex={0}>
-						{output}
+						{running || item.status === "error" ? output : <Code code={output} language={outputLanguage(item)} />}
 					</pre>
 				)}
 			</div>

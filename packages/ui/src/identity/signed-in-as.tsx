@@ -13,6 +13,8 @@ export interface SignedInAsProps {
 	/** Shown when the person can end their own session (an email code); Access ends it at the edge instead. */
 	readonly onSignOut?: () => void;
 	readonly signingOut?: boolean;
+	/** Small controls for the person's own settings, before Sign out: the theme picker's button. */
+	readonly actions?: ReactNode;
 }
 
 /** One or two letters for the avatar: the first letters of the first two words, or of the email's name. */
@@ -30,7 +32,7 @@ export function initials(name: string): string {
  * something, their email. A sign-out button when the person can end their own session. Loading is a skeleton of the
  * same height, so the sidebar doesn't jump when the name arrives.
  */
-export function SignedInAs({ name, email, badge, onSignOut, signingOut = false }: SignedInAsProps) {
+export function SignedInAs({ name, email, badge, onSignOut, signingOut = false, actions }: SignedInAsProps) {
 	if (name === undefined) {
 		return (
 			<div className="hb-signed-in-as" aria-busy="true">
@@ -60,6 +62,7 @@ export function SignedInAs({ name, email, badge, onSignOut, signingOut = false }
 				) : null}
 			</span>
 			{badge}
+			{actions}
 			{onSignOut === undefined ? null : (
 				<Button variant="ghost" size="xs" busy={signingOut} onClick={onSignOut}>
 					Sign out

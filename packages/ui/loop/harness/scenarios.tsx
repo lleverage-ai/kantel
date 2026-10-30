@@ -4,6 +4,7 @@
 
 import type { AssistantItem, ToolItem, TranscriptItem } from "@harbour/protocol";
 import { type ComponentType, useCallback, useState } from "react";
+import { loadHighlighter } from "../../src/code/code.tsx";
 import { Composer, ComposerSendHint } from "../../src/session/composer.tsx";
 import {
 	assistant,
@@ -19,6 +20,8 @@ import type { SessionSummary } from "../../src/session/session-model.ts";
 import { ToolCallGroup } from "../../src/session/tool-call.tsx";
 import { Transcript } from "../../src/session/transcript.tsx";
 import { BindingCodePicker, VaultApprovalCard } from "../../src/session/vault-approval-card.tsx";
+import { createThemeController } from "../../src/theme/controller.ts";
+import { ThemePicker } from "../../src/theme/theme-picker.tsx";
 import { FollowScenario } from "./follow.tsx";
 
 /** Resolves after the next frame has been produced: a rAF, then a task, so layout and paint have run. */
@@ -221,12 +224,49 @@ async function runVault() {
 	return { changed: [] };
 }
 
+// Theme picker: the picker open over the transcript's 300 items, a code block in every fifth answer. Arrowing through
+// the picker previews each theme on the whole page; nothing in the transcript should render for it.
+const fence = (turn: number) =>
+	[
+		`Tenant ${turn + 1} is done. The check I ran:`,
+		"",
+		"```ts",
+		`const duplicates = invoices.filter((invoice, i) => invoices.findIndex((other) => other.number === invoice.number) !== i); // ${turn}`,
+		'await ledger.void(duplicates.map((invoice) => invoice.id), { reason: "duplicate" });',
+		"```",
+	].join("\n");
+const themeItems: TranscriptItem[] = longTranscript(75).map((item, i) =>
+	item.kind === "assistant" && i % 20 === 3 ? { ...item, text: fence(i) } : item,
+);
+const themeController = createThemeController({
+	storage: { getItem: () => null, setItem: () => {} },
+	prefersLight: { matches: false, addEventListener: () => {} },
+});
+
+function ThemeScenario() {
+	return (
+		<div style={{ display: "flex", flexDirection: "column", width: "100%", height: "calc(var(--hb-space-11) * 14)" }}>
+			<Transcript items={themeItems} />
+			<ThemePicker open onClose={() => {}} controller={themeController} />
+		</div>
+	);
+}
+
+// Nothing changes: the measures come from the arrow keys. The highlighter loads first, so its code is highlighted.
+async function runTheme() {
+	step([]);
+	await loadHighlighter();
+	for (let i = 0; i < 5; i++) await frame();
+	return { changed: [] };
+}
+
 export const scenarios: Record<string, Scenario> = {
 	transcript: { Component: TranscriptScenario, run: runTranscript },
 	"tool-group": { Component: ToolGroupScenario, run: runToolGroup },
 	composer: { Component: ComposerScenario, run: async () => ({ changed: [] }) },
 	"session-list": { Component: SessionListScenario, run: runSessionList },
 	"vault-card": { Component: VaultScenario, run: runVault },
+	theme: { Component: ThemeScenario, run: runTheme },
 	// Not measured: loop/follow.ts drives it with the wheel while it streams (follow.tsx).
 	follow: { Component: FollowScenario, run: async () => ({ changed: [] }) },
 };

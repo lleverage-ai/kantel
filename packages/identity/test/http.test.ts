@@ -102,6 +102,7 @@ describe("GET /v1/me", () => {
 			name: "Ada Lovelace",
 			email: "ada@harbour.test",
 			roles: [{ role: "admin" }],
+			preferences: {},
 		});
 	});
 
@@ -162,6 +163,44 @@ describe("GET /v1/me", () => {
 		await client.me();
 		await clientWith().endSession(session.token);
 		expect(authenticationFailureOf(await refusal(client.me()))).toBe("invalid");
+	});
+});
+
+describe("PATCH /v1/me/preferences", () => {
+	it("keeps a person's theme, which GET /v1/me then carries", async () => {
+		const { signIn } = await world();
+		const { client } = await signIn("grace@harbour.test");
+		expect(await client.setPreferences({ theme: "tokyo-night" })).toEqual({ theme: "tokyo-night" });
+		expect((await client.me()).preferences).toEqual({ theme: "tokyo-night" });
+		expect(await client.setPreferences({ theme: null })).toEqual({});
+		expect((await client.me()).preferences).toEqual({});
+	});
+
+	it("refuses a bad theme, a body that isn't JSON, and another method", async () => {
+		const { signIn, serve } = await world();
+		const { client, session } = await signIn("ada@harbour.test");
+		const bad = await refusal(client.setPreferences({ theme: "<script>" }));
+		expect(isHarbourError(bad, "invalid")).toBe(true);
+		const url = `${ORIGIN}/v1/me/preferences`;
+		const authorization = `Bearer ${session.token}`;
+		const plain = await serve(url, { method: "PATCH", headers: { authorization }, body: '{"theme":"nord"}' });
+		expect(plain.status).toBe(415);
+		const get = await serve(url, { headers: { authorization } });
+		expect([get.status, get.headers.get("allow")]).toEqual([405, "PATCH"]);
+		const anonymous = await serve(url, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: "{}",
+		});
+		expect(anonymous.status).toBe(401);
+	});
+
+	it("refuses a host app's key: only a person has settings, and its /v1/me has none", async () => {
+		const { clientWith, key } = await world();
+		const client = clientWith({ authorization: `Bearer ${key.secret}` });
+		const error = await refusal(client.setPreferences({ theme: "nord" }));
+		expect(isHarbourError(error, "forbidden")).toBe(true);
+		expect((await client.me()).preferences).toBeUndefined();
 	});
 });
 

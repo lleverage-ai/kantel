@@ -37,13 +37,16 @@ import {
 	systemContext,
 	type User,
 	type UserId,
+	type UserPreferences,
 } from "@harbour/contracts";
 import {
 	apiKeyName,
 	apiKeyPrefix,
+	changedPreferences,
 	generateApiKeySecret,
 	hashApiKeySecret,
 	lastUsedIsStale,
+	preferencesOwner,
 	strongestRole,
 } from "./index.ts";
 
@@ -103,6 +106,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 	const bindings = new Map<string, RoleBinding>();
 	const apiKeys = new Map<ApiKeyId, ApiKey>();
 	const apiKeyIdsByHash = new Map<string, ApiKeyId>();
+	const preferences = new Map<UserId, UserPreferences>();
 
 	const bindingKey = (organisationId: OrganisationId, principal: Principal, projectId: ProjectId | undefined): string =>
 		`${organisationId}|${principalKey(principal)}|${projectId ?? "*"}`;
@@ -532,6 +536,20 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 						return held !== undefined && roleSatisfies(held, "admin");
 					}),
 			);
+		},
+
+		async userPreferences(ctx) {
+			const userId = preferencesOwner(ctx.actor);
+			requireMember(ctx);
+			return preferences.get(userId) ?? {};
+		},
+
+		async setUserPreferences(ctx, change) {
+			const userId = preferencesOwner(ctx.actor);
+			requireMember(ctx);
+			const next = Object.freeze(changedPreferences(preferences.get(userId) ?? {}, change));
+			preferences.set(userId, next);
+			return next;
 		},
 
 		async authenticateApiKey(ctx, secret): Promise<Authentication> {

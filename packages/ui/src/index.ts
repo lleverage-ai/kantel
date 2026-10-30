@@ -26,6 +26,8 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
+export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
 // Documents the agent writes (`create_document`): streamed in, edited in place, exported and shared.
 export { documentSlug, draftDocument } from "./documents/document-model.ts";
 export {
@@ -457,6 +459,44 @@ export {
 	type SkillsSource,
 } from "./skills/skills-model.ts";
 export { SkillDetail, type SkillDetailProps, SkillsPage, type SkillsPageProps } from "./skills/skills-page.tsx";
+export { THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
+export {
+	createThemeController,
+	SYSTEM_THEME,
+	type ThemeCache,
+	type ThemeController,
+	type ThemeControllerOptions,
+	type ThemeState,
+	themeController,
+} from "./theme/controller.ts";
+export { createThemeRegistry, type ThemeRegistry } from "./theme/registry.ts";
+export {
+	ThemePicker,
+	type ThemePickerProps,
+	themeShortcut,
+	useThemeShortcut,
+	useThemeState,
+} from "./theme/theme-picker.tsx";
+export { contrast, distance } from "./tokens/colour.ts";
+export {
+	isSafeValue,
+	PALETTE_TOKENS,
+	parseTheme,
+	type ResolvedTheme,
+	resolveTheme,
+	THEME_ID,
+	THEME_TOKENS,
+	type ThemeDefinition,
+	type ThemeKind,
+	type ThemeProblem,
+	type ThemeSource,
+	type TokenGroup,
+	type TokenSpec,
+	themeCss,
+	themeSelector,
+	tokenSpec,
+} from "./tokens/theme-schema.ts";
+export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";

@@ -1,0 +1,114 @@
+/* Highlighted code: highlight.js's classes onto the theme's syntax tokens. Nothing here has a colour of its own, so a
+   theme switch restyles every block on the page at once. A theme sets the tokens (src/tokens/theme-schema.ts). */
+
+.hb-syntax {
+	color: var(--hb-syntax-text);
+	/* As the file viewer: a tab is four columns, not the browser's eight. */
+	tab-size: 4;
+}
+
+.hb-syntax .hljs-comment,
+.hb-syntax .hljs-quote {
+	color: var(--hb-syntax-comment);
+	font-style: italic;
+}
+
+.hb-syntax .hljs-keyword,
+.hb-syntax .hljs-selector-tag,
+.hb-syntax .hljs-doctag,
+.hb-syntax .hljs-variable.language_ {
+	color: var(--hb-syntax-keyword);
+}
+
+.hb-syntax .hljs-string,
+.hb-syntax .hljs-char,
+.hb-syntax .hljs-template-tag {
+	color: var(--hb-syntax-string);
+}
+
+.hb-syntax .hljs-number,
+.hb-syntax .hljs-literal,
+.hb-syntax .hljs-symbol,
+.hb-syntax .hljs-bullet {
+	color: var(--hb-syntax-number);
+}
+
+.hb-syntax .hljs-title,
+.hb-syntax .hljs-title.function_,
+.hb-syntax .hljs-section {
+	color: var(--hb-syntax-function);
+}
+
+.hb-syntax .hljs-type,
+.hb-syntax .hljs-built_in,
+.hb-syntax .hljs-title.class_,
+.hb-syntax .hljs-title.class_.inherited__ {
+	color: var(--hb-syntax-type);
+}
+
+.hb-syntax .hljs-attr,
+.hb-syntax .hljs-attribute,
+.hb-syntax .hljs-property,
+.hb-syntax .hljs-selector-attr,
+.hb-syntax .hljs-selector-class,
+.hb-syntax .hljs-selector-id,
+.hb-syntax .hljs-selector-pseudo {
+	color: var(--hb-syntax-property);
+}
+
+.hb-syntax .hljs-variable,
+.hb-syntax .hljs-template-variable,
+.hb-syntax .hljs-params {
+	color: var(--hb-syntax-variable);
+}
+
+.hb-syntax .hljs-operator {
+	color: var(--hb-syntax-operator);
+}
+
+.hb-syntax .hljs-punctuation {
+	color: var(--hb-syntax-punctuation);
+}
+
+.hb-syntax .hljs-tag,
+.hb-syntax .hljs-name {
+	color: var(--hb-syntax-tag);
+}
+
+.hb-syntax .hljs-tag .hljs-attr {
+	color: var(--hb-syntax-property);
+}
+
+.hb-syntax .hljs-regexp,
+.hb-syntax .hljs-link {
+	color: var(--hb-syntax-regexp);
+}
+
+.hb-syntax .hljs-meta,
+.hb-syntax .hljs-meta .hljs-keyword {
+	color: var(--hb-syntax-meta);
+}
+
+.hb-syntax .hljs-meta .hljs-string {
+	color: var(--hb-syntax-string);
+}
+
+.hb-syntax .hljs-subst {
+	color: var(--hb-syntax-text);
+}
+
+.hb-syntax .hljs-addition {
+	color: var(--hb-syntax-inserted);
+}
+
+.hb-syntax .hljs-deletion {
+	color: var(--hb-syntax-deleted);
+}
+
+.hb-syntax .hljs-emphasis {
+	font-style: italic;
+}
+
+.hb-syntax .hljs-strong {
+	font-weight: var(--hb-weight-strong);
+}

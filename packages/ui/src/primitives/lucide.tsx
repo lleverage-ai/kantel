@@ -15,6 +15,7 @@ import {
 	FileText,
 	ListFilter,
 	type LucideIcon,
+	Palette,
 	Pause,
 	Pencil,
 	Pin,
@@ -60,6 +61,7 @@ export const RenameIcon = lucide(Pencil, "RenameIcon");
 export const PinIcon = lucide(Pin, "PinIcon");
 export const UnpinIcon = lucide(PinOff, "UnpinIcon");
 export const TrashIcon = lucide(Trash2, "TrashIcon");
+export const PaletteIcon = lucide(Palette, "PaletteIcon");
 /** A subagent: the bot in T3 Code's subagent avatar. */
 export const BotIcon = lucide(Bot, "BotIcon");
 // A player's controls (a browser's replay) and a link that opens in a new tab.

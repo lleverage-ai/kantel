@@ -12,6 +12,8 @@ import { join, relative, resolve } from "node:path";
 export type Finding = { file: string; line: number; rule: string; text: string };
 
 const TOKENS_FILE = "src/tokens/tokens.css";
+const THEMES_DIR = "src/tokens/themes/";
+const THEME_SCHEMA = "src/tokens/theme-schema.ts";
 
 const namedColours =
 	/\b(white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver|navy|teal|aqua|fuchsia|lime|maroon|olive)\b/i;
@@ -103,7 +105,9 @@ function files(root: string, dir: string, out: string[] = []): string[] {
 
 /** Lints one file's text. `path` is relative to the package root. */
 export function lintSource(path: string, text: string): Finding[] {
-	if (path === TOKENS_FILE || path.endsWith(".test.ts") || path.endsWith(".d.ts")) return [];
+	// Themes are tokens too: src/tokens/themes/ holds each built-in theme's colours, and the schema the derived ones.
+	const tokens = path === TOKENS_FILE || path === THEME_SCHEMA || path.startsWith(THEMES_DIR);
+	if (tokens || path.endsWith(".test.ts") || path.endsWith(".d.ts")) return [];
 	const rules = path.endsWith(".css")
 		? cssRules
 		: path.endsWith(".tsx")

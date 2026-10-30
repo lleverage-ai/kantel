@@ -9,9 +9,9 @@ body,
 	margin: 0;
 }
 
+/* The theme on <html> sets color-scheme, so the browser's own scrollbars and controls follow it. */
 body {
 	background: var(--hb-canvas);
-	color-scheme: dark;
 }
 
 /* Before the session client exists. */

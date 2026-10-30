@@ -1,15 +1,27 @@
 import { fileURLToPath } from "node:url";
+import { themeBootScript } from "@harbour/ui/theme-boot";
 import react from "@vitejs/plugin-react";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import { devGateway } from "./scripts/dev-gateway.ts";
 
 // Recorded sessions, as protocol frames, live at the repo root in fixtures/sessions, outside this app.
 const fixtures = fileURLToPath(new URL("../../fixtures/sessions", import.meta.url));
 
+/**
+ * @harbour/ui's theme boot script, inline at the top of <head>: the first paint is in the theme this browser last
+ * showed, with no flash of the default before the bundle loads.
+ */
+const themeBoot = (): Plugin => ({
+	name: "harbour-theme-boot",
+	transformIndexHtml: () => [{ tag: "script", children: themeBootScript, injectTo: "head" }],
+});
+
 export default defineConfig(({ mode }) => ({
 	// `pnpm dev` forwards /v1 to a local gateway; HARBOUR_GATEWAY points it elsewhere, and HARBOUR_DEV_EMAIL signs in as
 	// another invited person than the dev admin.
 	plugins: [
+		themeBoot(),
 		react(),
 		devGateway(process.env.HARBOUR_GATEWAY ?? "http://127.0.0.1:8787", process.env.HARBOUR_DEV_EMAIL || undefined),
 	],
