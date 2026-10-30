@@ -1,63 +1,21 @@
 /* The transcript: a centred reading column (--hb-content-width, as T3 Code's chat column) inside a virtualised list
-   that fills its parent. The parent gives the transcript its height. */
+   that fills its parent. The parent gives the transcript its height. Its layout and the rows' rhythm are utilities in
+   transcript.tsx (rowSpace); what stays here is what utilities would do worse, each with its reason. */
 
-.hb-transcript {
-	position: relative;
-	display: flex;
-	flex-direction: column;
-	height: 100%;
-	min-height: 0;
-}
-
-.hb-transcript-frame {
-	position: relative;
-	flex: 1;
-	min-height: 0;
-}
-
-.hb-transcript-list {
-	position: absolute;
-	inset: 0;
-	overscroll-behavior: contain;
-}
-
-/* The list is focusable so the keyboard can scroll it; its ring sits inside the edge, which may be the screen's. */
+/* The list is focusable so the keyboard can scroll it; its ring sits inside the edge, which may be the screen's.
+   Kept in CSS: it adjusts the shared focus ring (base.css's .hb-focusable:focus-visible), which is unlayered and would
+   beat a utility. */
 .hb-transcript-list.hb-focusable:focus-visible {
 	outline-offset: calc(var(--hb-ring) * -1);
-}
-
-/*
- * The rhythm (docs/spacing.md): every row stands a block apart from the one above it; a line of work under another
- * (a run of calls, a thought, the activity row) sits within their block; a person's message starts a turn, a turn
- * apart. virtua wraps every row in its own element, so sibling selectors can't see the row above: the transcript marks
- * each row instead (`hb-transcript-row-close`, `hb-transcript-turn`, `hb-transcript-row-first`). Space goes above a
- * row only, so two rows' paddings never add up.
- */
-.hb-transcript-row {
-	padding: var(--hb-gap-between) var(--hb-gutter-narrow) 0;
-}
-
-.hb-transcript-row-close {
-	padding-top: var(--hb-gap-within);
-}
-
-/* A working turn's header follows the person's message, whose actions row already gives it room. */
-.hb-transcript-row-working {
-	padding-top: var(--hb-gap-within);
-}
-
-.hb-transcript-turn {
-	padding-top: var(--hb-gap-turn);
-}
-
-.hb-transcript-row-first {
-	padding-top: var(--hb-gutter-narrow);
 }
 
 /* A finished turn's work, folded under its "Worked for" line (TurnFoldLine). A folded row that shows nothing (the agent's
    words before its answer, a run of calls that presented nothing) takes no room; one that keeps something in view
    (presented files, a browser's card, a failed call) is a block of its own, a block under the line above it. The
-   "Worked for" line is a line of work like any other: close under the person's message, a block above the answer. */
+   "Worked for" line is a line of work like any other: close under the person's message, a block above the answer.
+   Kept in CSS: whether a row shows anything is known only from what its children rendered (:has), and the spacing
+   between the fold line and what follows it, or of presented files first in a row, is set on other components'
+   elements whose own CSS sets that margin. These rules override the row's rhythm utilities, as they always did. */
 .hb-transcript-row-folded:not(.hb-transcript-row-fold-line) {
 	padding-top: 0;
 }
@@ -85,24 +43,10 @@
 	padding-top: 0;
 }
 
-.hb-turn-fold > .hb-disclosure-summary {
-	width: auto;
-	max-width: 100%;
-}
-
-.hb-transcript-column {
-	min-width: 0;
-	max-width: var(--hb-content-width);
-	margin: 0 auto;
-}
-
-.hb-transcript-end {
-	height: var(--hb-gap-turn);
-}
-
 /* A linked turn (`#turn=<id>`) stands out for a moment and fades, so the reader sees where the link landed: a message
    the person sent gets an accent ring round its bubble; an answer, notice or card its column, and a tool call its row,
-   in the accent's soft tint. Under reduced motion it stays marked, without a fade, while the transcript highlights it. */
+   in the accent's soft tint. Under reduced motion it stays marked, without a fade, while the transcript highlights it.
+   Kept in CSS: keyframe animations, on elements other components render (the bubble, the tool row). */
 .hb-transcript-row-linked.hb-transcript-row-user .hb-user-message-bubble {
 	animation: hb-transcript-linked-ring var(--hb-duration-shimmer) var(--hb-ease) both;
 }
@@ -159,178 +103,16 @@
 	}
 }
 
-/*
- * Docked: a composer floats over the transcript's foot (T3 Code's composer overlay, ChatView.tsx). The list scrolls
- * under its glass; the end makes room for it, as tall as transcript.tsx measures the dock, plus the usual gap.
- */
-.hb-transcript-docked .hb-transcript-end {
-	height: calc(var(--hb-transcript-dock-height) + var(--hb-gap-between));
-}
-
-.hb-transcript-dock {
-	position: absolute;
-	z-index: var(--hb-z-float);
-	right: 0;
-	bottom: 0;
-	left: 0;
-	/* The composer keeps the transcript's gutters at its sides and the window's at its foot (docs/spacing.md). */
-	padding: var(--hb-step-1_5) var(--hb-gutter-narrow) calc(var(--hb-gutter-narrow) + env(safe-area-inset-bottom));
-	/* The lane takes the pointer; the gutters beside it scroll the list. */
-	pointer-events: none;
-}
-
-.hb-transcript-dock-lane {
-	max-width: var(--hb-content-width);
-	margin: 0 auto;
-	pointer-events: auto;
-}
-
-/* Files dragged over a docked transcript: a dashed frame and one line saying where they go. */
-.hb-transcript-drop {
-	position: absolute;
-	z-index: var(--hb-z-overlay);
-	inset: var(--hb-step-2);
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	gap: var(--hb-step-1_5);
-	border: var(--hb-ring) dashed var(--hb-drop-line);
-	border-radius: var(--hb-radius-bubble);
-	background: var(--hb-drop-fill);
-	pointer-events: none;
-}
-
-.hb-transcript-drop-label {
-	padding: var(--hb-step-1_5) var(--hb-step-4);
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-raised);
-	box-shadow: var(--hb-shadow-float);
-	color: var(--hb-text);
-	font-size: var(--hb-text-sm);
-	font-weight: var(--hb-weight-medium);
-}
-
-.hb-transcript-drop-limits {
-	padding: var(--hb-step-0_5) var(--hb-step-2_5);
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-raised);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
-/* Floating controls. These float over the list, so they get the float shadow. */
-
-.hb-transcript-older {
-	position: absolute;
-	z-index: var(--hb-z-float);
-	top: var(--hb-step-2_5);
-	left: 50%;
-	display: inline-flex;
-	align-items: center;
-	gap: var(--hb-step-1_5);
-	padding: var(--hb-step-1) var(--hb-step-3);
-	transform: translateX(-50%);
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-raised);
-	box-shadow: var(--hb-shadow-float);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	white-space: nowrap;
-}
-
-/* A failed page: the reason and "Try again", in the same pill. */
-.hb-transcript-older-error {
-	padding-right: var(--hb-step-1);
-	color: var(--hb-text);
-}
-
-.hb-transcript-older-text {
-	overflow: hidden;
-	max-width: var(--hb-popover-width);
-	text-overflow: ellipsis;
-}
-
-.hb-transcript-older-error .hb-button {
-	border-radius: var(--hb-radius-full);
-}
-
-.hb-transcript-scroll-end.hb-button {
-	position: absolute;
-	z-index: var(--hb-z-float);
-	bottom: var(--hb-step-4);
-	left: 50%;
-	transform: translateX(-50%);
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-raised);
-	box-shadow: var(--hb-shadow-float);
-	color: var(--hb-text-muted);
-}
-
-/* Docked, it sits just above the composer (T3 Code: the measured clearance plus 4px). */
-.hb-transcript-docked .hb-transcript-scroll-end.hb-button {
-	bottom: calc(var(--hb-transcript-dock-height) + var(--hb-step-1));
-}
-
-.hb-transcript-scroll-end.hb-button:hover:not(:disabled) {
-	background: var(--hb-active);
-	color: var(--hb-text);
-}
-
-/* States. */
-
-.hb-transcript-error {
-	flex: none;
-	padding: var(--hb-step-2) var(--hb-step-4) 0;
-}
-
-.hb-transcript-empty {
-	display: flex;
-	flex: 1;
-	align-items: center;
-	justify-content: center;
-	min-height: 0;
-	padding: 0 var(--hb-step-4);
-}
-
-.hb-transcript-loading {
-	flex: 1;
-	min-height: 0;
-	overflow: hidden;
-	padding: var(--hb-step-4);
-}
-
-/* Docked, the empty state and the skeleton stay clear of the composer. */
-.hb-transcript-docked .hb-transcript-empty,
-.hb-transcript-docked .hb-transcript-loading {
-	padding-bottom: var(--hb-transcript-dock-height);
-}
-
-.hb-transcript-skeleton-turn {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-step-3);
-	padding-bottom: var(--hb-step-8);
-}
-
+/* The loading skeleton's first line stands in for the person's bubble. Kept in CSS: it reaches into the Skeleton
+   primitive's own line (feedback.css's .hb-skeleton, unlayered), which takes no class. */
 .hb-transcript-skeleton-user .hb-skeleton {
 	height: var(--hb-control-lg);
 	margin-left: auto;
 	border-radius: var(--hb-radius-bubble);
 }
 
-.hb-transcript-skeleton-tools {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-step-1_5);
-}
-
-@media (min-width: 640px) {
-	.hb-transcript-dock {
-		padding: var(--hb-step-2) var(--hb-gutter-narrow) calc(var(--hb-gutter) + env(safe-area-inset-bottom));
-	}
-}
-
+/* From 900px the session's columns take the wide gutter. Kept in CSS: 900px isn't one of the theme's breakpoints, and
+   `min-[900px]:` is a raw size the token lint refuses. Unlayered, these beat the narrow gutters' utilities. */
 @media (min-width: 900px) {
 	.hb-transcript-row,
 	.hb-transcript-error {

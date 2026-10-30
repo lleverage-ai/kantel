@@ -22,7 +22,8 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { ClockTime } from "../primitives/time.tsx";
 import { ToolRenderersContext, toolRenderers } from "./tool-renderer-model.ts";
-import { codingToolRenderers } from "./tool-views.tsx";
+import { codingToolRenderers, InToolCard } from "./tool-views.tsx";
+// Only the group summary's reach into Disclosure's own parts is left in this CSS; the rest is Tailwind utilities.
 import "./tool-call.css";
 
 // A tool call as one quiet work-log line, after T3 Code's work-log row (TimelineWorkEntryRow.tsx, WorkLog.tsx at
@@ -30,7 +31,7 @@ import "./tool-call.css";
 // src/billing/charge.ts") and a chevron. Like T3, a call shows no duration of its own: when it started appears on
 // hover or focus, and how long the work took is said once for the group ("Worked for 8s"). The arguments and output
 // are one tap away and rendered only while open; nothing about a call shouts while it runs, though its label is at
-// full strength (see tool-call.css) so the call happening now is read before the finished ones.
+// full strength (`labelTone` below) so the call happening now is read before the finished ones.
 //
 // A tool with an entry in the transcript's renderer registry (tool-renderer-model.ts) can have its own label, its own
 // detail and start open; one that renders in place never reaches a row here. The file and shell tools (write, read,
@@ -40,6 +41,56 @@ import "./tool-call.css";
 const OUTSIDE_A_TRANSCRIPT = toolRenderers(codingToolRenderers);
 
 type IconComponent = (props: IconProps) => ReactNode;
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). Quiet work-log rows after T3 Code's
+// WorkLog: 24px rows, 13px muted labels (full strength while running or failed), a 16px icon, a chevron at the end, and
+// the start time only on hover or focus. The detail is a framed block of selectable mono text with a bounded height,
+// the column's full width under its row, not indented past the icon: T3 Code's tool detail is a "panel"
+// (WorkLogDetails, WorkLog.tsx), which has no inline start margin. The hb- class names stay as hooks: transcript.css,
+// browser-panel.css and loop/align.ts select on them.
+
+/** A group of calls, here and in tool-renderers.tsx. */
+export const toolGroup = "hb-tool-group flex min-w-0 flex-col";
+/**
+ * The call: `group/tool` shows the start time while it is hovered or holds focus. The tallest an argument or output
+ * block grows before it scrolls (candidate token: --hb-tool-output-height), and the widest a tool image is shown
+ * (candidate token: --hb-tool-image-width).
+ */
+const call =
+	"hb-tool group/tool min-w-0 [--hb-tool-image-width:calc(var(--hb-step-12)*8)] [--hb-tool-output-height:calc(var(--hb-step-12)*5)]";
+/** The row: a full-width button, pulled out by its own padding so its icon stays on the column's edge. */
+const row =
+	"hb-tool-row hb-focusable relative -mx-1.5 my-0 flex min-h-control-xs w-[calc(100%_+_var(--hb-step-1_5)*2)] min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] text-sm leading-tight text-muted hover:bg-hover hover:text-fg";
+/**
+ * The label is trimmed to its capitals, as a Button's label is, so the row centres the letters, not a line box whose
+ * space below them is deeper than above: the icon, the words and the chevron then share one centre. The even padding
+ * gives descenders room inside the clip.
+ */
+const labelBase = "hb-tool-label min-w-0 flex-1 truncate py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+/**
+ * When the call started, by the clock. As in T3 Code (TimelineRowTimestamp), it is out of the flow and transparent until
+ * the call is hovered or holds focus, so the label keeps the row's width; then it takes its place before the chevron,
+ * with the full date and time as its title.
+ */
+const stamp =
+	"hb-tool-stamp pointer-events-none absolute flex-none text-xs whitespace-nowrap text-faint tabular-nums opacity-0 [text-box:trim-both_cap_alphabetic] group-hover/tool:pointer-events-auto group-hover/tool:static group-hover/tool:opacity-100 group-focus-within/tool:pointer-events-auto group-focus-within/tool:static group-focus-within/tool:opacity-100";
+/** An argument or output block: selectable mono text, scrolling past --hb-tool-output-height. */
+const pre =
+	"hb-tool-pre hb-selectable hb-focusable m-0 max-h-(--hb-tool-output-height) overflow-auto rounded-sm bg-code-surface px-2.5 py-2 font-mono text-code leading-normal whitespace-pre-wrap wrap-anywhere select-text";
+const section = "hb-tool-section flex min-w-0 flex-col gap-1";
+const sectionLabel = "hb-tool-section-label text-xs text-faint";
+
+/** Failure is said by the icon; an interrupted call's icon is in the approval tone. */
+const iconTone = (status: ToolItem["status"]): string =>
+	status === "error" ? "text-status-error" : status === "interrupted" ? "text-status-approval" : "text-faint";
+
+/**
+ * A failed call's label stays readable at full strength. In a live group every finished call is muted, so the one
+ * happening now is read first by its label at full strength, not only by its small spinner. Nothing moves; only the
+ * colour differs. Otherwise the label takes the row's colour.
+ */
+const labelTone = (status: ToolItem["status"]): string =>
+	status === "error" || status === "running" ? " text-fg" : "";
 
 // Checked in order; vault comes first so "vault_read" is a vault call, not a read.
 const iconRules: readonly [RegExp, IconComponent][] = [
@@ -132,33 +183,37 @@ function Leading({ item }: { item: ToolItem }) {
 function Detail({ item, id, images }: { item: ToolItem; id?: string; images: boolean }) {
 	const args = formatArgs(item.args);
 	const running = item.status === "running";
+	const failed = item.status === "error";
 	const output = item.output ?? "";
+	// The raw view inside a file or shell call's card (tool-views.tsx) is this detail without its own frame.
+	const inCard = useContext(InToolCard);
+	const frame = inCard
+		? ""
+		: ` mx-0 mt-1 mb-2 rounded-control border ${failed ? "border-status-error-line" : "border-border"}`;
 	return (
-		<div id={id} className="hb-tool-detail">
+		<div id={id} className={`hb-tool-detail flex min-w-0 flex-col gap-2.5 bg-panel px-3 py-2.5 ${frame}`}>
 			{images && (item.images?.length ?? 0) > 0 ? (
-				<div className="hb-tool-section">
-					<div className="hb-tool-section-label">{item.images?.length === 1 ? "Screenshot" : "Screenshots"}</div>
+				<div className={section}>
+					<div className={sectionLabel}>{item.images?.length === 1 ? "Screenshot" : "Screenshots"}</div>
 					<ToolImages item={item} />
 				</div>
 			) : null}
 			{args === undefined ? null : (
-				<div className="hb-tool-section">
-					<div className="hb-tool-section-label">{args.label}</div>
+				<div className={section}>
+					<div className={sectionLabel}>{args.label}</div>
 					{/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard. */}
-					<pre className="hb-tool-pre hb-selectable hb-focusable" tabIndex={0}>
+					<pre className={`${pre} text-fg`} tabIndex={0}>
 						<Code code={args.text} language={args.language} />
 					</pre>
 				</div>
 			)}
-			<div className="hb-tool-section">
-				<div className="hb-tool-section-label">
-					{running ? "Output so far" : item.status === "error" ? "Error" : "Output"}
-				</div>
+			<div className={section}>
+				<div className={sectionLabel}>{running ? "Output so far" : failed ? "Error" : "Output"}</div>
 				{output === "" ? (
-					<p className="hb-tool-empty">{running ? "Waiting for output" : "No output"}</p>
+					<p className="hb-tool-empty m-0 text-sm text-faint">{running ? "Waiting for output" : "No output"}</p>
 				) : (
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard.
-					<pre className="hb-tool-pre hb-tool-output hb-selectable hb-focusable" tabIndex={0}>
+					<pre className={`${pre} hb-tool-output ${failed ? "text-status-error" : "text-fg"}`} tabIndex={0}>
 						{running || item.status === "error" ? output : <Code code={output} language={outputLanguage(item)} />}
 					</pre>
 				)}
@@ -184,9 +239,19 @@ export type ToolImagesProps = { item: ToolItem; images?: readonly ToolImage[] };
  * watches the browser move. Each opens full size on click, as a link to the image itself.
  */
 export function ToolImages({ item, images = item.images ?? [] }: ToolImagesProps) {
+	return <Images item={item} images={images} grouped={false} />;
+}
+
+/**
+ * The images under a row, in line with its label; under a folded group's summary (`grouped`), in line with the
+ * summary's words. browser-panel.css takes the margin off in the browser panel.
+ */
+function Images({ item, images, grouped }: { item: ToolItem; images: readonly ToolImage[]; grouped: boolean }) {
 	if (images.length === 0) return null;
 	return (
-		<div className="hb-tool-images">
+		<div
+			className={`hb-tool-images mt-1 mr-0 mb-2 flex min-w-0 flex-wrap gap-2 ${grouped ? "ml-4" : "ml-[calc(var(--hb-icon-md)_+_var(--hb-step-2))]"}`}
+		>
 			{images.map((image, index) => {
 				const src = toolImageSrc(image);
 				return (
@@ -194,11 +259,18 @@ export function ToolImages({ item, images = item.images ?? [] }: ToolImagesProps
 						// biome-ignore lint/suspicious/noArrayIndexKey: a call's images never reorder.
 						key={index}
 						type="button"
-						className="hb-tool-image hb-focusable"
+						// Each opens the image full size; --hb-tool-image-width is set on the call (`call` above).
+						className="hb-tool-image hb-focusable block max-w-[min(100%,var(--hb-tool-image-width))] cursor-zoom-in overflow-hidden rounded-control border border-border-strong bg-panel p-0 hover:border-faint"
 						title="Open full size"
 						onClick={() => openImage(image)}
 					>
-						<img src={src} alt={imageAlt(item, index, images.length)} loading="lazy" decoding="async" />
+						<img
+							className="block h-auto w-full"
+							src={src}
+							alt={imageAlt(item, index, images.length)}
+							loading="lazy"
+							decoding="async"
+						/>
 					</button>
 				);
 			})}
@@ -256,22 +328,28 @@ export const ToolCallChip = memo(function ToolCallChip({
 	const label = renderer?.label?.(item) ?? item.label;
 	return (
 		<div
-			className={`hb-tool hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}${item.streaming ? " hb-tool-streaming" : ""}`}
+			className={`${call} hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}${item.streaming ? " hb-tool-streaming" : ""}`}
 			data-call={item.callId}
 		>
 			<button
 				type="button"
-				className="hb-tool-row hb-focusable"
+				className={row}
 				aria-expanded={open}
 				aria-controls={open ? id : undefined}
 				onClick={() => setOpen((value) => !value)}
 			>
-				<span className="hb-tool-icon">
+				<span
+					className={`hb-tool-icon inline-flex size-icon-md flex-none items-center justify-center ${iconTone(item.status)}`}
+				>
 					<Leading item={item} />
 				</span>
-				<span className="hb-tool-label">{label}</span>
-				<ClockTime at={item.at} className="hb-tool-stamp" />
-				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
+				<span className={`${labelBase}${labelTone(item.status)}`}>{label}</span>
+				<ClockTime at={item.at} className={stamp} />
+				{/* Always there, as in T3 Code: the one hint that a row opens. */}
+				<ChevronRightIcon
+					size="sm"
+					className={`hb-tool-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
+				/>
 			</button>
 			{browserView ?? (images === "inline" ? <ToolImages item={item} /> : null)}
 			{!open ? null : renderer?.detail === undefined ? (
@@ -354,7 +432,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 	);
 	if (folded) return null;
 	if (live || running || items.length === 0) {
-		return <div className="hb-tool-group">{items.map(chip)}</div>;
+		return <div className={toolGroup}>{items.map(chip)}</div>;
 	}
 	// A live browser view stays in view under the folded group, as the last screenshot would.
 	const viewed = [...items].reverse().find((item) => browserViews?.has(item.id) === true);
@@ -363,7 +441,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 	const lastWithImage = [...items].reverse().find((item) => !imagesAsCards(item) && (item.images?.length ?? 0) > 0);
 	const lastImage = lastWithImage?.images?.at(-1);
 	return (
-		<div className="hb-tool-group hb-tool-group-collapsible">
+		<div className={`${toolGroup} hb-tool-group-collapsible`}>
 			<Disclosure
 				className="hb-tool-group-summary"
 				summary={workSummary(items)}
@@ -375,7 +453,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 			</Disclosure>
 			{!open && view !== undefined ? view : null}
 			{!open && view === undefined && lastWithImage !== undefined && lastImage !== undefined ? (
-				<ToolImages item={lastWithImage} images={[lastImage]} />
+				<Images item={lastWithImage} images={[lastImage]} grouped />
 			) : null}
 		</div>
 	);

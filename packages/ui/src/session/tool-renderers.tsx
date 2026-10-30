@@ -2,7 +2,7 @@ import type { ToolItem } from "@harbour/protocol";
 import type { ReactNode } from "react";
 import { PresentedFiles } from "../presented/presented-file-card.tsx";
 import { GeneratedImages, ImagePlaceholders } from "./generated-image.tsx";
-import { ToolCallChip } from "./tool-call.tsx";
+import { ToolCallChip, toolGroup } from "./tool-call.tsx";
 import { type ToolInPlaceProps, type ToolRenderer, type ToolRenderers, toolRenderers } from "./tool-renderer-model.ts";
 import { codingToolRenderers } from "./tool-views.tsx";
 
@@ -13,7 +13,7 @@ import { codingToolRenderers } from "./tool-views.tsx";
 /** The generic tool-call row for one call, on its own: what a call rendered in place is while it has nothing else. */
 export function GenericToolCall({ item, linked = false }: { item: ToolItem; linked?: boolean }) {
 	return (
-		<div className="hb-tool-group">
+		<div className={toolGroup}>
 			<ToolCallChip item={item} linked={linked} />
 		</div>
 	);

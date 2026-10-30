@@ -2,7 +2,7 @@ import type { ToolItem } from "@harbour/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import { EXAMPLE_GENERATED_IMAGE } from "./fixture-generated-image.ts";
-import { GeneratedImages, ImagePlaceholder } from "./generated-image.tsx";
+import { GeneratedImages, generatedImagesFrame, ImagePlaceholder } from "./generated-image.tsx";
 
 export default { title: "Session/Generated images" } satisfies StoryDefault;
 
@@ -44,7 +44,7 @@ export const Placeholders: Story = () => (
 		intro="While generate_image runs: a frame the shape of each image to come, a light crossing it and its icon breathing. Transform and opacity only, so the compositor runs it; still under reduced motion."
 	>
 		<Section title="Square, landscape and portrait">
-			<div className="hb-generated-images">
+			<div className={generatedImagesFrame}>
 				<ImagePlaceholder aspect="square" />
 				<ImagePlaceholder aspect="landscape" />
 				<ImagePlaceholder aspect="portrait" />

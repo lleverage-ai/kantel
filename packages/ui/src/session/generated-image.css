@@ -1,36 +1,5 @@
-/* Generated images in the transcript: placeholders while `generate_image` runs, then each image as a tile with the
-   model that made it. Both sit in the image tiles' grid (`.hb-image-tiles`, presented-file-card.css), so a placeholder
-   is as wide as the tile its image becomes. */
-
-.hb-generated-images {
-	min-width: 0;
-	margin: var(--hb-step-2) 0 var(--hb-step-1);
-}
-
-/* A placeholder: a frame the shape of the image to come (gpt-image's 1024 square, 1536 by 1024 and 1024 by 1536), as
-   wide as its place in the grid. */
-.hb-image-placeholder {
-	position: relative;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 100%;
-	aspect-ratio: 1;
-	overflow: hidden;
-	border: var(--hb-hairline) solid var(--hb-border-strong);
-	/* As the tile the image becomes. */
-	border-radius: var(--hb-radius-bubble);
-	background: var(--hb-panel);
-	color: var(--hb-text-faint);
-}
-
-.hb-image-placeholder[data-aspect="landscape"] {
-	aspect-ratio: 3 / 2;
-}
-
-.hb-image-placeholder[data-aspect="portrait"] {
-	aspect-ratio: 2 / 3;
-}
+/* Generated images are styled with Tailwind utilities in generated-image.tsx. What stays here is the placeholder's
+   motion: a gradient band and two keyframe animations, which utilities would only spell out as long arbitrary values. */
 
 /* A soft band of light that crosses the frame and waits, again and again. It moves by transform alone, on its own
    layer, so the compositor runs it without the main thread: nothing repaints while it moves. */
@@ -52,9 +21,6 @@
 
 /* The icon breathes, as the working words do: opacity alone, in --hb-ease-breathe's steps. */
 .hb-image-placeholder-icon {
-	position: relative;
-	width: var(--hb-control-xs);
-	height: var(--hb-control-xs);
 	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
 }
 

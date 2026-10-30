@@ -1,6 +1,7 @@
 import { memo, type ReactNode } from "react";
 import { BrainIcon } from "../primitives/icons.tsx";
 import { Elapsed } from "../primitives/time.tsx";
+// Only the activity words' breathing (a keyframe animation) is left in CSS; see the file.
 import "./working-indicator.css";
 
 // A working turn's two live rows, after T3 Code's timeline (TimelineWorkGroupRows.tsx:277-309 and 360-420):
@@ -26,11 +27,11 @@ export const WorkingIndicator = memo(function WorkingIndicator({ since, label = 
 	const timed = since !== undefined;
 	return (
 		<div
-			className="hb-working-indicator"
+			className="hb-working-indicator flex min-h-control-xs min-w-0 items-center border-b border-border-strong pt-0.5 pb-2 text-sm leading-tight whitespace-nowrap text-muted tabular-nums"
 			{...(timed ? { role: "timer", "aria-label": label } : { role: "status" })}
 			data-working=""
 		>
-			<span className="hb-working-indicator-text">
+			<span className="hb-working-indicator-text min-w-0 overflow-hidden text-ellipsis">
 				{timed ? (
 					<>
 						{label} for <Elapsed since={since} />
@@ -57,9 +58,16 @@ export type LiveActivityProps = {
  */
 export const LiveActivity = memo(function LiveActivity({ label = "Thinking", icon }: LiveActivityProps) {
 	return (
-		<div className="hb-live-activity" role="status">
-			<span className="hb-live-activity-icon">{icon ?? <BrainIcon />}</span>
-			<span className="hb-live-activity-text">{label}</span>
+		<div
+			className="hb-live-activity flex min-h-control-xs min-w-0 items-center gap-2 py-0.5 text-sm leading-tight whitespace-nowrap text-muted"
+			role="status"
+		>
+			<span className="hb-live-activity-icon inline-flex size-icon-md flex-none items-center justify-center text-faint">
+				{icon ?? <BrainIcon />}
+			</span>
+			<span className="hb-live-activity-text min-w-0 overflow-hidden py-(--hb-trim-room) text-ellipsis [text-box:trim-both_cap_alphabetic]">
+				{label}
+			</span>
 		</div>
 	);
 });

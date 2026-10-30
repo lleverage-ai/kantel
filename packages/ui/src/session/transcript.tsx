@@ -70,7 +70,28 @@ import {
 } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
 import { LiveActivity, WorkingIndicator } from "./working-indicator.tsx";
+// The wide gutters, the folded rows' spacing, the linked turn's fade and the skeleton's bubble stay in CSS; see the
+// file.
 import "./transcript.css";
+
+/** The centred reading column (--hb-content-width, as T3 Code's chat column) inside each row. */
+const column = "hb-transcript-column mx-auto my-0 max-w-content min-w-0";
+/** "Loading earlier messages", or why they didn't load: a pill floating over the list's top, with the float shadow. */
+const olderPill =
+	"hb-transcript-older absolute top-2.5 left-1/2 z-(--hb-z-float) inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-raised py-1 text-xs whitespace-nowrap shadow-float";
+
+/**
+ * A row's space, above it only so two rows' paddings never add up (docs/spacing.md): every row a block under the one
+ * above; a line of work under another line of work, the first thing under the person's message and the working
+ * header within their block; the person's message a turn under what came before; the first row the gutter. The
+ * transcript marks the rows (`closeRows`) because virtua wraps each in its own element, where sibling selectors can't
+ * see the row above. From 900px the gutters widen, in transcript.css. Folded rows and rows with nothing to show are
+ * adjusted there too, by selectors that look inside the row.
+ */
+function rowSpace(space: "first" | "turn" | "close" | "block"): string {
+	const top = { first: "pt-gutter-narrow", turn: "pt-turn", close: "pt-within", block: "pt-between" }[space];
+	return `${top} px-gutter-narrow pb-0`;
+}
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
 // new output only while the reader is at the end, as T3 Code's thread does (transcript-follow.ts has the rules):
@@ -217,7 +238,9 @@ function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean;
 		<div className={`hb-disclosure hb-turn-fold${open ? " hb-disclosure-open" : ""}`}>
 			<button
 				type="button"
-				className="hb-disclosure-summary hb-focusable"
+				// As wide as its words, not the column: `!` because the Disclosure primitive's unlayered .hb-disclosure-summary
+				// sets width: 100%.
+				className="hb-disclosure-summary hb-focusable w-auto! max-w-full"
 				aria-expanded={open}
 				onClick={() => onToggle(fold.id)}
 			>
@@ -463,11 +486,11 @@ const Row = memo(function Row({
 	const kind = row.kind === "item" ? row.item.kind : row.kind;
 	return (
 		<div
-			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${close ? " hb-transcript-row-close" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}${fold === "closed" ? " hb-transcript-row-folded" : ""}${foldLine === undefined ? "" : " hb-transcript-row-fold-line"}`}
+			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${close ? " hb-transcript-row-close" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}${fold === "closed" ? " hb-transcript-row-folded" : ""}${foldLine === undefined ? "" : " hb-transcript-row-fold-line"} ${rowSpace(first ? "first" : turnStart ? "turn" : close ? "close" : "block")}`}
 			id={turnAnchor(row.id)}
 			data-row={row.id}
 		>
-			<div className="hb-transcript-column">
+			<div className={column}>
 				{foldLine === undefined ? null : (
 					<TurnFoldLine fold={foldLine} open={fold === "open"} onToggle={onToggleFold} />
 				)}
@@ -497,18 +520,21 @@ const Row = memo(function Row({
 	);
 });
 
-function LoadingRows() {
+function LoadingRows({ docked }: { docked: boolean }) {
 	return (
-		<div className="hb-transcript-loading" aria-busy="true">
+		<div
+			className={`hb-transcript-loading min-h-0 flex-1 overflow-hidden ${docked ? "px-4 pt-4 pb-(--hb-transcript-dock-height)" : "p-4"}`}
+			aria-busy="true"
+		>
 			<span className="hb-sr-only" role="status">
 				Loading messages
 			</span>
 			{[0, 1].map((turn) => (
-				<div key={turn} className="hb-transcript-column hb-transcript-skeleton-turn">
+				<div key={turn} className={`${column} hb-transcript-skeleton-turn flex flex-col gap-3 pb-8`}>
 					<div className="hb-transcript-skeleton-user">
 						<Skeleton width="45%" />
 					</div>
-					<div className="hb-transcript-skeleton-tools">
+					<div className="hb-transcript-skeleton-tools flex flex-col gap-1.5">
 						<Skeleton width="35%" />
 						<Skeleton width="28%" />
 					</div>
@@ -1142,8 +1168,8 @@ export function Transcript({
 		: {};
 
 	const workingHeader = (
-		<div className="hb-transcript-row hb-transcript-row-working">
-			<div className="hb-transcript-column">
+		<div className={`hb-transcript-row hb-transcript-row-working ${rowSpace("close")}`}>
+			<div className={column}>
 				<WorkingIndicator since={workingSince} {...(workingLabel === undefined ? {} : { label: workingLabel })} />
 			</div>
 		</div>
@@ -1152,27 +1178,33 @@ export function Transcript({
 	let body: ReactNode;
 	if (showList) {
 		body = (
-			<section className="hb-transcript-frame" aria-label="Transcript" ref={frame}>
+			<section className="hb-transcript-frame relative min-h-0 flex-1" aria-label="Transcript" ref={frame}>
 				<VList<Entry>
 					ref={list}
 					data={entries}
 					shift={prepended}
 					onScroll={onScroll}
-					className="hb-transcript-list hb-focusable"
+					className="hb-transcript-list hb-focusable absolute inset-0 overscroll-contain"
 					tabIndex={0}
 					bufferSize={BUFFER_PX}
 				>
 					{(entry, index) =>
 						"end" in entry ? (
-							<div key="end" className="hb-transcript-end" aria-hidden="true" />
+							<div
+								key="end"
+								// Docked, the end makes room for the composer floating over the list's foot, as tall as the dock is
+								// measured, plus the usual gap.
+								className={`hb-transcript-end ${docked ? "h-[calc(var(--hb-transcript-dock-height)+var(--hb-gap-between))]" : "h-turn"}`}
+								aria-hidden="true"
+							/>
 						) : "working" in entry ? (
 							<Fragment key="working">{workingHeader}</Fragment>
 						) : "activity" in entry ? (
 							<div
 								key="activity"
-								className={`hb-transcript-row hb-transcript-row-activity${activityClose ? " hb-transcript-row-close" : ""}`}
+								className={`hb-transcript-row hb-transcript-row-activity${activityClose ? " hb-transcript-row-close" : ""} ${rowSpace(activityClose ? "close" : "block")}`}
 							>
-								<div className="hb-transcript-column">
+								<div className={column}>
 									<LiveActivity />
 								</div>
 							</div>
@@ -1215,15 +1247,16 @@ export function Transcript({
 					}
 				</VList>
 				{loadingOlder ? (
-					<div className="hb-transcript-older" role="status">
+					<div className={`${olderPill} px-3 text-muted`} role="status">
 						<Spinner size="sm" />
 						Loading earlier messages
 					</div>
 				) : olderError && hasOlder ? (
-					<div className="hb-transcript-older hb-transcript-older-error" role="alert">
-						<span className="hb-transcript-older-text">{olderError}</span>
+					<div className={`${olderPill} hb-transcript-older-error pr-1 pl-3 text-fg`} role="alert">
+						<span className="hb-transcript-older-text max-w-popover overflow-hidden text-ellipsis">{olderError}</span>
 						{onLoadOlder === undefined ? null : (
-							<Button variant="ghost" size="sm" onClick={onLoadOlder}>
+							// A pill in the pill: `!` because the Button's unlayered .hb-button sets its own radius.
+							<Button variant="ghost" size="sm" className="rounded-full!" onClick={onLoadOlder}>
 								Try again
 							</Button>
 						)}
@@ -1231,7 +1264,10 @@ export function Transcript({
 				) : null}
 				{showEnd ? (
 					<Button
-						className="hb-transcript-scroll-end"
+						// Floats over the list; docked, just above the composer (T3 Code: the measured clearance plus 4px). `!` where
+						// the Button's unlayered .hb-button sets the same property (its radius and colour); the secondary variant's
+						// raised background and active hover are this button's own already.
+						className={`hb-transcript-scroll-end absolute left-1/2 z-(--hb-z-float) -translate-x-1/2 rounded-full! text-muted! shadow-float hover:enabled:text-fg! ${docked ? "bottom-[calc(var(--hb-transcript-dock-height)+var(--hb-step-1))]" : "bottom-4"}`}
 						variant="secondary"
 						icon={<ChevronDownIcon size="sm" />}
 						onClick={scrollToEnd}
@@ -1242,10 +1278,12 @@ export function Transcript({
 			</section>
 		);
 	} else if (loading) {
-		body = <LoadingRows />;
+		body = <LoadingRows docked={docked} />;
 	} else {
 		body = (
-			<div className="hb-transcript-empty">
+			<div
+				className={`hb-transcript-empty flex min-h-0 flex-1 items-center justify-center px-4 pt-0 ${docked ? "pb-(--hb-transcript-dock-height)" : "pb-0"}`}
+			>
 				{empty ?? <EmptyState title="No messages yet">Send a message to start the session.</EmptyState>}
 			</div>
 		);
@@ -1255,12 +1293,12 @@ export function Transcript({
 		// A file drop here is a pointer-only shortcut; the composer's paperclip is the keyboard's way.
 		<div
 			ref={root}
-			className={`hb-transcript${docked ? " hb-transcript-docked" : ""}${className ? ` ${className}` : ""}`}
+			className={`hb-transcript relative flex h-full min-h-0 flex-col${docked ? " hb-transcript-docked" : ""}${className ? ` ${className}` : ""}`}
 			{...dragHandlers}
 		>
 			{error ? (
-				<div className="hb-transcript-error">
-					<div className="hb-transcript-column">
+				<div className="hb-transcript-error flex-none px-4 pt-2 pb-0">
+					<div className={column}>
 						<Notice level="error">{error}</Notice>
 					</div>
 				</div>
@@ -1270,15 +1308,30 @@ export function Transcript({
 			</ToolRenderersContext.Provider>
 			{docked ? (
 				<ComposerDockContext.Provider value={dockContext}>
-					<div className="hb-transcript-dock" ref={dockElement}>
-						<div className="hb-transcript-dock-lane">{dock}</div>
+					<div
+						// The composer keeps the transcript's gutters at its sides and the window's at its foot (docs/spacing.md).
+						// The lane takes the pointer; the gutters beside it scroll the list.
+						className="hb-transcript-dock pointer-events-none absolute right-0 bottom-0 left-0 z-(--hb-z-float) px-gutter-narrow pt-1.5 pb-[calc(var(--hb-gutter-narrow)+env(safe-area-inset-bottom))] sm:pt-2 sm:pb-[calc(var(--hb-gutter)+env(safe-area-inset-bottom))]"
+						ref={dockElement}
+					>
+						<div className="hb-transcript-dock-lane pointer-events-auto mx-auto my-0 max-w-content">{dock}</div>
 					</div>
 				</ComposerDockContext.Provider>
 			) : null}
 			{dragging ? (
-				<div className="hb-transcript-drop" aria-hidden="true">
-					<span className="hb-transcript-drop-label">Drop files to attach</span>
-					{dropHint ? <span className="hb-transcript-drop-limits">{dropHint}</span> : null}
+				<div
+					// Files dragged over a docked transcript: a dashed frame and one line saying where they go.
+					className="hb-transcript-drop pointer-events-none absolute inset-2 z-(--hb-z-overlay) flex flex-col items-center justify-center gap-1.5 rounded-bubble border-dashed border-drop-line bg-drop-fill [border-width:var(--hb-ring)]"
+					aria-hidden="true"
+				>
+					<span className="hb-transcript-drop-label rounded-full bg-raised px-4 py-1.5 text-sm font-medium text-fg shadow-float">
+						Drop files to attach
+					</span>
+					{dropHint ? (
+						<span className="hb-transcript-drop-limits rounded-full bg-raised px-2.5 py-0.5 text-xs text-muted">
+							{dropHint}
+						</span>
+					) : null}
 				</div>
 			) : null}
 		</div>

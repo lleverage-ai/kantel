@@ -1,82 +1,8 @@
-/* A read-only code view: a gutter of line numbers held at the left and the code beside it, mono, never wrapping,
-   on the code surface. Collapsed, it is a window `--hb-code-lines` lines tall that scrolls, with "Show all" under it.
-   Token colours come from syntax.css, each a theme's --hb-syntax-* token. */
+/* The code view is styled with Tailwind utilities in code-view.tsx (shared with diff-view.tsx and terminal.tsx). What
+   stays here is the streaming caret's breathing: an animation on base.css's hb-pulse keyframes, with its reduced-motion
+   counterpart, which stays in CSS on its hb- class (docs/tailwind.md). Opacity only, as motion on a live row must be. */
 
-.hb-code-view {
-	--hb-code-line: calc(var(--hb-text-code) * var(--hb-leading));
-
-	display: flex;
-	flex-direction: column;
-	min-width: 0;
-	background: var(--hb-code);
-	color: var(--hb-syntax-text);
-}
-
-.hb-code-scroll {
-	min-width: 0;
-	overflow: auto;
-	overscroll-behavior: contain;
-	padding-block: var(--hb-space-4);
-}
-
-.hb-code-view-collapsed .hb-code-scroll {
-	max-height: calc(var(--hb-code-line) * var(--hb-code-lines) + var(--hb-space-4) * 2);
-}
-
-.hb-code-grid {
-	display: grid;
-	grid-template-columns: auto minmax(0, 1fr);
-	width: max-content;
-	min-width: 100%;
-}
-
-.hb-code-gutter,
-.hb-code-text {
-	margin: 0;
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
-	line-height: var(--hb-leading);
-	white-space: pre;
-}
-
-/* Held at the left while the code scrolls sideways; out of selection, so copying copies only the code. */
-.hb-code-gutter {
-	position: sticky;
-	left: 0;
-	z-index: 1;
-	padding: 0 var(--hb-space-5) 0 var(--hb-space-6);
-	background: var(--hb-code);
-	color: var(--hb-text-faint);
-	font-variant-numeric: tabular-nums;
-	text-align: right;
-	user-select: none;
-}
-
-.hb-code-text {
-	padding: 0 var(--hb-space-6) 0 var(--hb-space-2);
-	user-select: text;
-}
-
-/* The browser gives <code> its own monospace; one with other metrics than the gutter's would make every line a
-   little taller than its number. */
-.hb-code-text code {
-	font: inherit;
-}
-
-.hb-code-line {
-	display: inline;
-}
-
-/* The streaming caret, as an answer's: a soft block after the last character. */
 .hb-code-caret {
-	display: inline-block;
-	width: var(--hb-space-3);
-	height: 1.1em;
-	margin-left: var(--hb-space-1);
-	vertical-align: -0.2em;
-	border-radius: var(--hb-radius-xs);
-	background: var(--hb-accent-text);
-	opacity: 0.6;
 	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
 }
 
@@ -84,42 +10,4 @@
 	.hb-code-caret {
 		animation: none;
 	}
-}
-
-.hb-code-empty {
-	margin: 0;
-	padding: var(--hb-space-5) var(--hb-space-6);
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-sm);
-}
-
-.hb-code-cap {
-	margin: 0;
-	padding: var(--hb-space-3) var(--hb-space-6);
-	border-top: var(--hb-hairline) solid var(--hb-border);
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-}
-
-/* "Show all 240 lines": a quiet full-width bar under the window, as a code card's expander. */
-.hb-code-more {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: var(--hb-space-3);
-	width: 100%;
-	min-height: var(--hb-control-xs);
-	padding: var(--hb-space-2) var(--hb-space-6);
-	border: 0;
-	border-top: var(--hb-hairline) solid var(--hb-border);
-	background: none;
-	color: var(--hb-text-muted);
-	font: inherit;
-	font-size: var(--hb-text-xs);
-	cursor: pointer;
-}
-
-.hb-code-more:hover {
-	background: var(--hb-hover);
-	color: var(--hb-text);
 }

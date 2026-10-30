@@ -3,7 +3,20 @@ import { memo, useEffect, useId, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckCircleIcon, GlobeIcon, MinusCircleIcon } from "../primitives/icons.tsx";
 import { Panel } from "../primitives/surface.tsx";
-import "./cards.css";
+import {
+	cardAction,
+	cardActions,
+	cardDetail,
+	cardHead,
+	cardHeadIcon,
+	cardPanel,
+	cardQuestion,
+	cardQuiet,
+	cardQuietText,
+	cardText,
+} from "./question-card.tsx";
+
+// Styled with the question card's Tailwind classes (question-card.tsx): the two cards look alike.
 
 export type BrowserGrantCardProps = {
 	card: BrowserGrantCardData;
@@ -26,17 +39,17 @@ export const BrowserGrantCard = memo(function BrowserGrantCard({
 }: BrowserGrantCardProps) {
 	if (card.status === "granted") {
 		return (
-			<p className="hb-card-quiet" title={card.reason}>
-				<CheckCircleIcon size="sm" className="hb-card-icon-done" />
-				<span className="hb-card-quiet-text">Browser access allowed</span>
+			<p className={cardQuiet} title={card.reason}>
+				<CheckCircleIcon size="sm" className="hb-card-icon-done text-status-done" />
+				<span className={cardQuietText}>Browser access allowed</span>
 			</p>
 		);
 	}
 	if (card.status === "denied") {
 		return (
-			<p className="hb-card-quiet" title={card.reason}>
-				<MinusCircleIcon size="sm" className="hb-card-icon-quiet" />
-				<span className="hb-card-quiet-text">Browser access declined</span>
+			<p className={cardQuiet} title={card.reason}>
+				<MinusCircleIcon size="sm" className="hb-card-icon-quiet text-faint" />
+				<span className={cardQuietText}>Browser access declined</span>
 			</p>
 		);
 	}
@@ -64,20 +77,21 @@ function PendingGrant({
 	const decidable = onGrant !== undefined && onDeny !== undefined;
 
 	return (
-		<Panel className="hb-card hb-browser-card" tone="approval" aria-labelledby={titleId}>
-			<div className="hb-card-head">
-				<GlobeIcon className="hb-card-icon-approval" />
-				<div className="hb-card-text">
-					<p id={titleId} className="hb-card-question">
+		<Panel className={`${cardPanel} hb-browser-card`} tone="approval" aria-labelledby={titleId}>
+			<div className={cardHead}>
+				<GlobeIcon className={`hb-card-icon-approval text-status-approval ${cardHeadIcon}`} />
+				<div className={cardText}>
+					<p id={titleId} className={cardQuestion}>
 						Wants to use a browser
 					</p>
-					<p className="hb-card-detail">{card.reason}</p>
-					{decidable ? null : <p className="hb-card-detail">Waiting for a decision</p>}
+					<p className={cardDetail}>{card.reason}</p>
+					{decidable ? null : <p className={cardDetail}>Waiting for a decision</p>}
 				</div>
 			</div>
 			{decidable ? (
-				<div className="hb-card-actions">
+				<div className={cardActions}>
 					<Button
+						className={cardAction}
 						disabled={busy && spinning !== "deny"}
 						busy={spinning === "deny"}
 						onClick={() => {
@@ -89,6 +103,7 @@ function PendingGrant({
 					</Button>
 					<Button
 						variant="primary"
+						className={cardAction}
 						disabled={busy && spinning !== "grant"}
 						busy={spinning === "grant"}
 						onClick={() => {

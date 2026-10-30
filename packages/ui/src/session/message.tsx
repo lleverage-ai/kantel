@@ -9,11 +9,17 @@ import { SentAttachments } from "./attachment-card.tsx";
 import { Markdown } from "./markdown.tsx";
 import { MessageAction, MessageActions, MessageActionsContext, MessageEditor } from "./message-actions.tsx";
 import { LiveActivity } from "./working-indicator.tsx";
+// The answer's spacing between parts and its streaming caret stay in CSS; see the file.
 import "./message.css";
 
 // The transcript's messages, after T3 Code (TimelineUserMessageRow.tsx:432-459, TimelineAssistantRows.tsx:26-72):
 // the person's words in a right-aligned bubble, the agent's answer unboxed on the canvas. Each is memoised on its
 // item, so while one answer streams no other message renders again.
+
+/** The person's message: the bubble, right-aligned, with its caption, attachments and actions under one another. */
+const userMessage = "hb-user-message flex min-w-0 flex-col items-end gap-0.5";
+/** A thought, streaming or behind its disclosure: muted, a size down, its own line breaks kept. */
+const thought = "hb-assistant-message-thought m-0 text-sm leading-normal whitespace-pre-wrap text-muted wrap-anywhere";
 
 const viaCaption = { prompt: undefined, steer: "Steered", followUp: "Follow-up" } as const;
 
@@ -60,7 +66,7 @@ export const UserMessage = memo(function UserMessage({
 	const caption = viaCaption[item.via];
 	if (editing && edit !== undefined) {
 		return (
-			<div className="hb-user-message">
+			<div className={userMessage}>
 				<MessageEditor
 					text={item.text}
 					onCancel={() => setEditing(false)}
@@ -73,13 +79,15 @@ export const UserMessage = memo(function UserMessage({
 		);
 	}
 	return (
-		<div className="hb-user-message">
-			{caption === undefined ? null : <span className="hb-user-message-via">{caption}</span>}
+		<div className={userMessage}>
+			{caption === undefined ? null : <span className="hb-user-message-via px-1 text-xs text-faint">{caption}</span>}
 			{item.attachments === undefined || item.attachments.length === 0 ? null : (
 				<SentAttachments attachments={item.attachments} />
 			)}
 			{item.text === "" && (item.attachments?.length ?? 0) > 0 ? null : (
-				<div className="hb-user-message-bubble">{item.text}</div>
+				<div className="hb-user-message-bubble max-w-[80%] rounded-bubble bg-user-message px-3 py-2.5 text-md leading-normal whitespace-pre-wrap text-fg wrap-anywhere">
+					{item.text}
+				</div>
 			)}
 			{actions && delivery?.state === "failed" ? (
 				<MessageActions
@@ -124,10 +132,10 @@ export const UserMessage = memo(function UserMessage({
  */
 function ThinkingPreview({ thinking }: { thinking: string }) {
 	return (
-		<div className="hb-assistant-message-thinking-live">
+		<div className="hb-assistant-message-thinking-live flex min-w-0 flex-col gap-1">
 			<LiveActivity />
-			<div className="hb-assistant-message-thought-window">
-				<p className="hb-assistant-message-thought">{thinking}</p>
+			<div className="hb-assistant-message-thought-window ml-[calc(var(--hb-icon-md)+var(--hb-step-2))] flex max-h-[calc(4*var(--hb-text-sm)*var(--hb-leading))] flex-col justify-end overflow-hidden">
+				<p className={thought}>{thinking}</p>
 			</div>
 		</div>
 	);
@@ -178,13 +186,13 @@ export const AssistantMessage = memo(function AssistantMessage({
 		}
 	};
 	return (
-		<div className={`hb-assistant-message${streaming ? " hb-assistant-message-streaming" : ""}`}>
+		<div className={`hb-assistant-message flex min-w-0 flex-col ${streaming ? "hb-assistant-message-streaming" : ""}`}>
 			{thinking ? (
 				streaming && text === "" ? (
 					<ThinkingPreview thinking={thinking} />
 				) : (
 					<Disclosure className="hb-assistant-message-thinking" summary="Thought it through">
-						<p className="hb-assistant-message-thought">{thinking}</p>
+						<p className={thought}>{thinking}</p>
 					</Disclosure>
 				)
 			) : null}
@@ -231,7 +239,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 /** A notice from the host in the flow of the transcript: a reconnect, a call that may have partly run. */
 export const NoticeRow = memo(function NoticeRow({ item }: { item: NoticeItem }) {
 	return (
-		<div className="hb-notice-row">
+		<div className="hb-notice-row min-w-0">
 			<Notice level={item.level} announce={false}>
 				{item.text}
 			</Notice>
