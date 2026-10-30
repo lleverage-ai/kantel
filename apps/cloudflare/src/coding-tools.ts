@@ -79,9 +79,10 @@ export function createLsTool(): ToolRegistration<typeof lsSchema> {
 }
 
 /**
- * The tools, built once: they hold no session state (the session's environment comes with each call). A round with
- * `write`, `edit` or `bash` runs in the order the model made its calls, so a command sees a file written beside it; a
- * round of only `read` and `ls` runs at once (`IN_CALL_ORDER`, `@harbour/sandbox/coding-tools`).
+ * The tools, built once: they hold no session state (the session's environment comes with each call). Each call of
+ * `write`, `edit` or `bash` is a barrier in its round: it runs alone, after the calls before it and before those after
+ * it, so a command sees a file written before it. Consecutive `read` and `ls` calls run at once (`IN_CALL_ORDER`,
+ * `@harbour/sandbox/coding-tools`).
  */
 export function codingTools(): readonly ToolRegistration[] {
 	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()].map((tool) =>
