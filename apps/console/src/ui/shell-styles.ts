@@ -34,8 +34,8 @@ export function shellClasses({ narrow, collapsed, pane }: Shell) {
 		shell: `hb-app grid h-dvh ${columns}`,
 		// On a phone the sidebar is the list page, on the canvas with no edge. `!` because the Sidebar's own CSS sets
 		// its edge, background and display, unlayered, and would beat plain utilities.
-		sidebar: `min-h-0${narrow ? " border-r-0! bg-canvas!" : ""}${narrow && pane === "main" ? " hidden!" : ""}`,
-		main: `min-w-0 min-h-0${narrow && pane === "list" ? " hidden" : ""}`,
+		sidebar: `min-h-0 ${narrow ? "border-r-0! bg-canvas!" : ""} ${narrow && pane === "main" ? "hidden!" : ""}`,
+		main: `min-w-0 min-h-0 ${narrow && pane === "list" ? "hidden" : ""}`,
 		// Who the console acts as, at the foot of the sidebar, under the pages; centred on the rail.
 		actor: `flex items-center gap-1.5 pt-2 pb-0 border-t border-border text-muted text-xs ${collapsed ? "justify-center px-0" : "px-2.5"}`,
 	};
