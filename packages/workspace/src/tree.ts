@@ -275,6 +275,13 @@ export function projectScope(
 	};
 }
 
+/** An `org-files` ref names the caller's own organisation; any other is `not_found`. */
+export function checkOrgFilesRef(ctx: CallContext, ref: string): void {
+	if (typeof ref !== "string" || ref === "")
+		throw new HarbourError("invalid", "an org-files ref is an organisation ID");
+	if (ref !== ctx.organisationId) throw new HarbourError("not_found", "organisation files not found");
+}
+
 export function checkOwner(ctx: CallContext, owner: OwnerRef): void {
 	if (owner.kind !== "platform" && owner.organisationId !== ctx.organisationId) {
 		throw new HarbourError("forbidden", "a workspace's owner must be in the calling organisation");
@@ -420,7 +427,10 @@ export interface WorkspaceAccessChecks {
 	 * cached: a role revoked since the last read refuses the next one.
 	 */
 	requireMountRead(ctx: CallContext, record: WorkspaceRecord, mount: Mount): Promise<void>;
-	/** Requires viewer on the project each `project-files` mount names in its `ref`. */
+	/**
+	 * Requires viewer on the project each `project-files` mount names in its `ref`, and that each `org-files` mount names
+	 * the caller's organisation.
+	 */
 	requireMounts(
 		ctx: CallContext,
 		requests: Iterable<MountRequest>,
@@ -455,6 +465,9 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 			await access.require(ctx, { ...scope, needed, operation, subject });
 		},
 		async requireMountRead(ctx, record, mount) {
+			// Organisation files are open to the organisation's members: the workspace check above is the caller's, and
+			// the ref must still be the caller's organisation (docs/design/org-scope.md).
+			if (mount.source === "org-files") return checkOrgFilesRef(ctx, mount.ref);
 			if (access === undefined || mount.source !== "project-files") return;
 			await access.require(ctx, {
 				projectId: mount.ref,
@@ -464,9 +477,9 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 			});
 		},
 		async requireMounts(ctx, requests, subject) {
-			if (access === undefined) return;
 			for (const request of requests) {
-				if (request.source !== "project-files") continue;
+				if (request.source === "org-files") checkOrgFilesRef(ctx, request.ref);
+				if (access === undefined || request.source !== "project-files") continue;
 				await access.require(ctx, {
 					projectId: request.ref,
 					needed: "viewer",

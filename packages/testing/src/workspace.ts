@@ -31,6 +31,8 @@ export interface WorkspaceSubject {
 	readonly workspaces: Workspaces;
 	/** A `project-files` source registered with `workspaces`; it must implement `write`. */
 	readonly projectFiles: MountSource;
+	/** An `org-files` source registered with `workspaces`, with `write`. Needed for the `orgFiles` cases. */
+	readonly orgFiles?: MountSource;
 }
 
 /** Workspaces that also create under a caller-chosen ID, as `@harbour/workspace`'s `KeyedWorkspaces` do. */
@@ -53,6 +55,11 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	readonly seeding?: boolean;
 	/** Runs the fork cases: `subject.workspaces` must implement `fork` (docs/design/workspace-hydration.md). */
 	readonly fork?: boolean;
+	/**
+	 * Runs the organisation files cases (`/org`, docs/design/org-scope.md): the subject must give `orgFiles`. Needs
+	 * `projectAccess`.
+	 */
+	readonly orgFiles?: boolean;
 }
 
 /** The suite's dependencies, with the seeding fixture's seeders and status sink for the provider to wire. */
@@ -178,9 +185,11 @@ export function createWorkspaceConformance(options: {
 	cancellation?: boolean;
 	seeding?: boolean;
 	fork?: boolean;
+	orgFiles?: boolean;
 }): readonly ConformanceCase[] {
 	return [
 		...baseCases(options),
+		...(options.orgFiles === true ? orgFilesCases(options) : []),
 		...(options.seeding === true
 			? seedingCases({
 					assertions: options.assertions,
@@ -284,6 +293,152 @@ function forkCases(options: {
 		});
 	}
 	return cases;
+}
+
+/** A person with an organisation-wide operator role: the one kind of caller who writes organisation files. */
+const orgOperatorCtx: CallContext = contextFor(actors.human("user-olga"), WORKSPACE_FIXTURE.organisationId);
+/** The agent of an organisation session (no project). */
+const orgAgentCtx: CallContext = contextFor(actors.agent("agent-org", "sess-org"), WORKSPACE_FIXTURE.organisationId);
+
+/**
+ * Organisation files (`/org`): one tree per organisation, read by its members from any session's workspace and written
+ * only by people and services with an organisation-wide operator role, never by an agent.
+ */
+function orgFilesCases(options: {
+	assertions: ConformanceAssertions;
+	provider: WorkspaceConformanceProvider;
+}): ConformanceCase[] {
+	const a = options.assertions;
+	const { organisationId, otherOrganisationId, projectId } = WORKSPACE_FIXTURE;
+	const withOrgFiles =
+		(run: (subject: WorkspaceSubject & { orgFiles: MountSource }, deps: ConformanceDeps) => Promise<void>) =>
+		async () => {
+			const { deps } = workspaceDeps();
+			seedTenancy(deps);
+			deps.tenancy.bind(orgOperatorCtx.actor, organisationId, "operator");
+			deps.tenancy.session({ id: "sess-org", organisationId, agentId: "agent-org" });
+			await options.provider(deps, async (subject) => {
+				const { orgFiles } = subject;
+				a.ok(orgFiles !== undefined, "the subject gives an org-files source");
+				await run({ ...subject, orgFiles: orgFiles as MountSource }, deps);
+			});
+		};
+	const orgMount = (subject: { orgFiles: MountSource }, ref: string = organisationId) => ({
+		path: "/org",
+		source: subject.orgFiles.kind,
+		ref,
+	});
+	const write = (source: MountSource, callContext: CallContext, content: string, ref: string = organisationId) =>
+		writeProjectFiles(source, callContext, ref, [{ op: "put", path: "handbook.md", content }]);
+
+	return [
+		{
+			name: "organisation files: an organisation-wide operator writes them, and a project's workspace reads them at /org, pinned",
+			run: withOrgFiles(async (subject) => {
+				const pinned = await write(subject.orgFiles, orgOperatorCtx, "handbook v1");
+				const record = await subject.workspaces.create(ctx, {
+					owner,
+					sessionId: WORKSPACE_FIXTURE.sessionId,
+					mounts: [orgMount(subject)],
+				});
+				a.deepEqual(record.mounts, [{ ...orgMount(subject), version: pinned, readOnly: true }]);
+				for (const reader of [ctx, viewerCtx, agentCtx]) {
+					a.strictEqual(
+						text((await subject.workspaces.read(reader, record.id, "/org/handbook.md")).content),
+						"handbook v1",
+					);
+				}
+				a.deepEqual(
+					(await subject.workspaces.list(agentCtx, record.id, { path: "/org" })).items.map((item) => item.path),
+					["/org/handbook.md"],
+				);
+				const next = await write(subject.orgFiles, orgOperatorCtx, "handbook v2");
+				a.strictEqual(
+					text((await subject.workspaces.read(ctx, record.id, "/org/handbook.md")).content),
+					"handbook v1",
+					"the mount stays pinned",
+				);
+				const remounted = await subject.workspaces.remount(ctx, record.id, orgMount(subject));
+				a.partialDeepEqual(remounted.mounts[0], { path: "/org", version: next, readOnly: true });
+				a.strictEqual(text((await subject.workspaces.read(ctx, record.id, "/org/handbook.md")).content), "handbook v2");
+			}),
+		},
+		{
+			name: "organisation files: refuses writes from agents of either scope and from project-only roles, audited, changing nothing",
+			run: withOrgFiles(async (subject, deps) => {
+				const before = await write(subject.orgFiles, orgOperatorCtx, "handbook v1");
+				for (const writer of [orgAgentCtx, agentCtx, ctx, viewerCtx]) {
+					await assertAccessDenied(a, deps, write(subject.orgFiles, writer, "overwritten"), {
+						operation: "workspace.org-files.write",
+					});
+				}
+				a.strictEqual(await subject.orgFiles.latestVersion(orgOperatorCtx, organisationId), before);
+				// And not through a mount either: a commit under /org is refused like any mount's.
+				const record = await subject.workspaces.create(orgOperatorCtx, {
+					owner: { kind: "organisation", organisationId },
+					sessionId: "sess-org",
+					mounts: [orgMount(subject)],
+				});
+				await a.rejectsWithCode(
+					subject.workspaces.commit(orgAgentCtx, record.id, {
+						baseVersion: record.head,
+						changes: [{ op: "put", path: "/org/handbook.md", content: "overwritten" }],
+					}),
+					"refused",
+				);
+				a.strictEqual(
+					text((await subject.workspaces.read(orgAgentCtx, record.id, "/org/handbook.md")).content),
+					"handbook v1",
+				);
+			}),
+		},
+		{
+			name: "organisation files: another organisation's files are not_found, to mount and to write",
+			run: withOrgFiles(async (subject) => {
+				await a.rejectsWithCode(
+					subject.workspaces.create(ctx, { owner, mounts: [orgMount(subject, otherOrganisationId)] }),
+					"not_found",
+				);
+				const record = await subject.workspaces.create(ctx, { owner });
+				await a.rejectsWithCode(
+					subject.workspaces.remount(ctx, record.id, orgMount(subject, otherOrganisationId)),
+					"not_found",
+				);
+				await a.rejectsWithCode(write(subject.orgFiles, orgOperatorCtx, "x", otherOrganisationId), "not_found");
+				await a.rejectsWithCode(subject.orgFiles.latestVersion(ctx, otherOrganisationId), "not_found");
+				a.deepEqual((await subject.workspaces.get(ctx, record.id)).mounts, []);
+			}),
+		},
+		{
+			name: "organisation scope: an organisation session's agent reads /org in its workspace, and /project is forbidden on every read",
+			run: withOrgFiles(async (subject, deps) => {
+				await write(subject.orgFiles, orgOperatorCtx, "handbook v1");
+				await writeProjectFiles(subject.projectFiles, ctx, projectId, [
+					{ op: "put", path: "README.md", content: "project readme" },
+				]);
+				// An organisation-wide operator may mount a project's files into an organisation session's workspace; the
+				// agent still reads only what its scope reaches.
+				const record = await subject.workspaces.create(orgOperatorCtx, {
+					owner: { kind: "organisation", organisationId },
+					sessionId: "sess-org",
+					mounts: [orgMount(subject), { path: "/project", source: subject.projectFiles.kind, ref: projectId }],
+				});
+				a.strictEqual(
+					text((await subject.workspaces.read(orgAgentCtx, record.id, "/org/handbook.md")).content),
+					"handbook v1",
+				);
+				const denied = (call: Promise<unknown>) =>
+					assertAccessDenied(a, deps, call, { operation: "workspace.mount.read" });
+				await denied(subject.workspaces.read(orgAgentCtx, record.id, "/project/README.md"));
+				await denied(subject.workspaces.stat(orgAgentCtx, record.id, "/project/README.md"));
+				await denied(subject.workspaces.list(orgAgentCtx, record.id, { path: "/project" }));
+				// A project agent can't reach the organisation session's workspace at all.
+				await assertAccessDenied(a, deps, subject.workspaces.read(agentCtx, record.id, "/org/handbook.md"), {
+					operation: "workspace.read",
+				});
+			}),
+		},
+	];
 }
 
 /** A cancelled commit (a caller gone, a sandbox lease ended) leaves the head where it was. */
@@ -1150,6 +1305,7 @@ export function registerWorkspaceConformance(
 			...(options?.cancellation === undefined ? {} : { cancellation: options.cancellation }),
 			...(options?.seeding === undefined ? {} : { seeding: options.seeding }),
 			...(options?.fork === undefined ? {} : { fork: options.fork }),
+			...(options?.orgFiles === undefined ? {} : { orgFiles: options.orgFiles }),
 		}),
 	);
 }

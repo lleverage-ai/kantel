@@ -29,6 +29,7 @@ if (env !== undefined && pool !== undefined) {
 				keyed: true,
 				seeding: true,
 				fork: true,
+				orgFiles: true,
 			},
 		);
 	}

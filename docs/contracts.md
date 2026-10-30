@@ -88,7 +88,10 @@ These come from the plan and cannot be changed by a target.
   "Check the source project on every read." A `read`, `stat` or `list` under a `project-files` mount needs viewer on
   the project the files come from, as well as on the workspace's project. Nothing caches a past allow, so a role
   revoked between two reads refuses the second. A caller who may read the workspace but not the source project gets
-  `forbidden`, audited as `access.denied` (`workspace.mount.read`), with no secret.
+  `forbidden`, audited as `access.denied` (`workspace.mount.read`), with no secret. An `org-files` mount (`/org`) is
+  the organisation's: open to its members, so a read needs what reading the workspace needs and a ref naming the
+  caller's own organisation, checked on every read. Only people and services with an organisation-wide operator role
+  write organisation files; agents never do.
 - **Within an organisation, `forbidden` stays distinct from `not_found`.** Settled by Tom on 27 Oct 2026 (question
   12): "Keep forbidden distinct." This is deliberate: lookups find a record before checking access, so a caller in
   the same organisation can tell an existing ID it may not see (`forbidden`) from a missing one (`not_found`), and a
