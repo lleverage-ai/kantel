@@ -463,8 +463,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// adds no prompt of its own, so the listing is Pi's block of the skills a profile names, and recall is the memory
 	// store's rendering (the stack's recall renderer, Harbour's default one unless it is given another), both placed by
 	// the runtime before a session's first prompt. An API key with the `import` permission passes their
-	// organisation-wide check for an import, and only for one (`./import-access.ts`).
-	const storeAccess = withKeyImports(auditAccess, identity);
+	// organisation-wide check for an import, and only for one (`./import-access.ts`), under the resource's sharing policy.
+	const storeAccess = withKeyImports(auditAccess, identity, (ctx, organisationId, resource) =>
+		sharing.policyOf(ctx, organisationId, resource),
+	);
 	const skillObjects = storage.skillObjects;
 	const skills =
 		driver === undefined || skillObjects === undefined
