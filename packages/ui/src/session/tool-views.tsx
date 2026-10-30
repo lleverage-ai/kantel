@@ -10,13 +10,17 @@ import { CopyButton } from "../primitives/controls.tsx";
 import { EyeIcon } from "../primitives/icons.tsx";
 import { FileDiffIcon, FileWriteIcon, RawIcon, TerminalWindowIcon } from "../primitives/lucide.tsx";
 import { Badge } from "../primitives/status.tsx";
+import type { ToolDetailProps, ToolRenderer } from "./tool-renderer-model.ts";
 import {
 	type CommandEnd,
 	commandEnd,
 	type HarnessNote,
+	openByDefault,
 	readRange,
 	splitHarness,
 	type ToolView,
+	toolView,
+	toolViewLabel,
 } from "./tool-views-model.ts";
 import "./tool-views.css";
 
@@ -353,3 +357,30 @@ export const ToolViewCard = memo(function ToolViewCard({ item, view, raw, onRawC
 			return <BashCard {...props} view={view} />;
 	}
 });
+
+/** A file or shell call's detail: its card, or the raw arguments and output while its arguments make no card. */
+function ToolViewDetail({ item, raw, showRaw, onShowRawChange }: ToolDetailProps) {
+	// Recomputed only when the call's name or arguments change, so a card's views keep their memoised parts.
+	const view = useMemo(
+		() => toolView({ name: item.name, args: item.args, streaming: item.streaming }),
+		[item.name, item.args, item.streaming],
+	);
+	if (view === undefined) return raw;
+	return <ToolViewCard item={item} view={view} raw={showRaw} onRawChange={onShowRawChange} rawView={raw} />;
+}
+
+/**
+ * The file and shell tools' entry in the tool renderer registry (tool-renderer-model.ts): their calls keep the generic
+ * row, with words of their own ("Wrote notes/plan.py") and their card as its detail, open unless it is a read.
+ */
+export const codingToolRenderers: readonly ToolRenderer[] = [
+	{
+		tools: ["write", "read", "edit", "bash"],
+		label: (item) => {
+			const view = toolView(item);
+			return view === undefined ? item.label : toolViewLabel(view, item.status);
+		},
+		openByDefault: (item) => openByDefault(toolView(item)),
+		detail: (props) => <ToolViewDetail {...props} />,
+	},
+];

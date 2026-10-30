@@ -119,3 +119,86 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+/* Presented images, with a host that previews them: each as its picture with its name and kind under it, side by side
+   with the images next to it, wrapping. A card is as wide as its picture, within the widest and tallest an image is
+   shown in the transcript, so a portrait poster doesn't fill the screen. */
+.hb-presented-images {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: var(--hb-gap-within);
+	min-width: 0;
+}
+
+/* Three or more: smaller, so a set of portraits (an agent's variations) reads as one row, and never fewer than two to a
+   row in a narrow column (a phone). */
+.hb-presented-images[data-many] {
+	--hb-presented-image-size: var(--hb-presented-image-size-many);
+}
+
+.hb-presented-image {
+	display: flex;
+	flex-direction: column;
+	width: fit-content;
+	max-width: min(100%, var(--hb-presented-image-size));
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-raised);
+	color: var(--hb-text);
+	font: inherit;
+	text-align: left;
+}
+
+.hb-presented-images[data-many] > .hb-presented-image {
+	max-width: min(calc((100% - var(--hb-gap-within)) / 2), var(--hb-presented-image-size));
+}
+
+.hb-presented-image-button {
+	cursor: pointer;
+	transition:
+		background-color var(--hb-duration-fast) var(--hb-ease),
+		border-color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-presented-image-button:hover {
+	border-color: var(--hb-border-strong);
+	background: var(--hb-user-message);
+}
+
+.hb-presented-image-open {
+	border-color: var(--hb-accent);
+}
+
+.hb-presented-image-picture {
+	display: block;
+	max-width: 100%;
+	max-height: var(--hb-presented-image-size);
+	object-fit: contain;
+	background: var(--hb-panel);
+}
+
+/* While the host reads the image: a square frame the size of a picture, so the row doesn't jump twice. */
+.hb-presented-image-frame {
+	display: block;
+	width: var(--hb-presented-image-size);
+	max-width: 100%;
+	aspect-ratio: 1;
+	background: var(--hb-panel);
+}
+
+/* The caption takes the picture's width rather than giving the card its own: a long name is cut short, never widening
+   the card past its picture. */
+.hb-presented-image-caption {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-step-0_5);
+	min-width: 0;
+	contain: inline-size;
+	padding: var(--hb-step-2) var(--hb-step-3);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}

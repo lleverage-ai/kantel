@@ -7,6 +7,9 @@ import { isSubagentCall } from "./subagent-model.ts";
 // between two of its calls fold into it (they narrate the steps), so a browsing turn is one quiet line, not a call, a
 // sentence and a screenshot per step. The browser itself is the host's to show, in one place (a panel), not per call.
 // A subagent's call (the `subagent` tool) is a row of its own too, a card that opens its session, and ends a group.
+// So is a call whose tool renders in place (the renderer registry, tool-renderer-model.ts: `present_files`' cards):
+// it shows once, as itself, where it happened, never as a step of a group. A group's other calls stay in it; a call
+// rendered in place between two of them ends one group and the next call starts another.
 //
 // Rows are memoised on their object, so this reuses the previous call's row objects wherever their items are
 // unchanged (by identity). While one answer streams, only its row is a new object; every earlier row is the same
@@ -35,7 +38,9 @@ export type TranscriptRow =
 			readonly live: boolean;
 	  }
 	/** A subagent's call: a card of its own, keyed by the call's item. */
-	| { readonly kind: "subagent"; readonly id: string; readonly item: ToolItem };
+	| { readonly kind: "subagent"; readonly id: string; readonly item: ToolItem }
+	/** A call whose tool renders in place (`ToolRenderer.inPlace`): itself, not a step of a group. */
+	| { readonly kind: "call"; readonly id: string; readonly item: ToolItem };
 
 /** One step of a browsing row: a browser call, or what the agent said between two of them. */
 export type BrowsingStep = ToolItem | AssistantItem;
@@ -63,10 +68,14 @@ function sameTools<T>(a: readonly T[], b: readonly T[]): boolean {
  * their start: when an older page is put in front and ends with tool calls, those form their own group before the
  * existing one, rather than merging into it. Merging would change the group's key and could collapse calls the
  * reader is looking at into a summary, moving their place.
+ *
+ * `inPlace` says which calls render in place (the registry's `ToolRenderers.inPlace`): each is a row of its own. By
+ * default none is. It must go by the tool's name alone, so a call keeps its row from when it starts to when it ends.
  */
 export function groupTranscript(
 	items: readonly TranscriptItem[],
 	previous?: readonly TranscriptRow[],
+	inPlace: (item: ToolItem) => boolean = () => false,
 ): readonly TranscriptRow[] {
 	const before = new Map<string, TranscriptRow>();
 	if (previous !== undefined) for (const row of previous) before.set(row.id, row);
@@ -136,6 +145,14 @@ export function groupTranscript(
 			);
 			continue;
 		}
+		if (item.kind === "tool" && inPlace(item)) {
+			closeGroup(false);
+			const old = before.get(item.id);
+			rows.push(
+				old !== undefined && old.kind === "call" && old.item === item ? old : { kind: "call", id: item.id, item },
+			);
+			continue;
+		}
 		if (item.kind === "tool") {
 			if (tools.length > 0 && starts(item.id)) closeGroup(false);
 			tools.push(item);
@@ -178,7 +195,7 @@ export function rowOfTurn(
 	turn: string,
 ): { readonly row: TranscriptRow; readonly item: TranscriptItem } | undefined {
 	for (const row of rows) {
-		if (row.kind === "item" || row.kind === "subagent") {
+		if (row.kind === "item" || row.kind === "subagent" || row.kind === "call") {
 			if (isTurn(row.item, turn)) return { row, item: row.item };
 			continue;
 		}
@@ -233,6 +250,8 @@ export function activeBrowsingRow(rows: readonly TranscriptRow[]): string | unde
 function showsActivity(row: TranscriptRow | undefined): boolean {
 	if (row === undefined) return false;
 	if (row.kind === "tools") return row.live && row.items.some((item) => item.status === "running");
+	// A call rendered in place shows itself running (its generic row's spinner, or the renderer's own).
+	if (row.kind === "call") return row.item.status === "running";
 	// A browsing row's words sit between two of its calls, so only a call of it can be what runs now.
 	if (row.kind === "browsing")
 		return row.live && row.items.some((step) => step.kind === "tool" && step.status === "running");
@@ -246,7 +265,8 @@ function showsActivity(row: TranscriptRow | undefined): boolean {
  */
 export function isWorkLine(row: TranscriptRow): boolean {
 	if (row.kind === "tools" || row.kind === "browsing") return true;
-	if (row.kind === "subagent") return false;
+	// A call rendered in place (its files' cards, its images) is a block of its own, as a subagent's card is.
+	if (row.kind === "subagent" || row.kind === "call") return false;
 	const { item } = row;
 	return item.kind === "assistant" && item.text === "" && item.document === undefined && item.thinking !== undefined;
 }
@@ -319,7 +339,7 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 	for (let index = rows.length - 1; index >= 0; index--) {
 		const row = rows[index];
 		if (row === undefined) continue;
-		if (row.kind === "tools" || row.kind === "browsing" || row.kind === "subagent") {
+		if (row.kind === "tools" || row.kind === "browsing" || row.kind === "subagent" || row.kind === "call") {
 			workAfter = true;
 			continue;
 		}
@@ -350,10 +370,14 @@ export type TurnFold = {
 	readonly steps: number;
 };
 
-/** The tool calls in a row, a subagent counted as one. */
-function rowSteps(row: TranscriptRow): number {
+/**
+ * The tool calls in a row, a subagent counted as one. A call rendered in place isn't one while it shows as itself
+ * (`shows`): it is in view, not folded away.
+ */
+function rowSteps(row: TranscriptRow, shows: (item: ToolItem) => boolean): number {
 	if (row.kind === "item") return 0;
 	if (row.kind === "subagent") return 1;
+	if (row.kind === "call") return shows(row.item) ? 0 : 1;
 	return row.items.filter((step) => step.kind === "tool").length;
 }
 
@@ -366,9 +390,9 @@ export function repeatedImageFiles(rows: readonly TranscriptRow[]): ReadonlyMap<
 	const shown = new Set<string>();
 	const repeated = new Map<string, string>();
 	for (const row of rows) {
-		if (row.kind !== "tools") continue;
+		if (row.kind !== "tools" && row.kind !== "call") continue;
 		const keys: string[] = [];
-		for (const item of row.items) {
+		for (const item of row.kind === "call" ? [row.item] : row.items) {
 			if (item.status !== "done") continue;
 			for (const file of item.files ?? []) {
 				const key = `${file.workspaceId}:${file.path}`;
@@ -383,7 +407,7 @@ export function repeatedImageFiles(rows: readonly TranscriptRow[]): ReadonlyMap<
 
 /** When a row's work started, for a fold with no message of the person's loaded before it. */
 function rowStart(row: TranscriptRow): number {
-	if (row.kind === "item" || row.kind === "subagent") return row.item.at;
+	if (row.kind === "item" || row.kind === "subagent" || row.kind === "call") return row.item.at;
 	return row.items[0]?.at ?? 0;
 }
 
@@ -393,7 +417,7 @@ const foldable = (row: TranscriptRow): boolean => row.kind !== "item" || row.ite
 /** A row still doing something: a call running, or an answer streaming. Its turn isn't finished. */
 function busy(row: TranscriptRow): boolean {
 	if (row.kind === "item") return row.item.kind === "assistant" && row.item.streaming;
-	if (row.kind === "subagent") return row.item.status === "running";
+	if (row.kind === "subagent" || row.kind === "call") return row.item.status === "running";
 	return row.items.some((step) => (step.kind === "tool" ? step.status === "running" : step.streaming));
 }
 
@@ -407,11 +431,15 @@ const startsTurn = (row: TranscriptRow): boolean =>
  * unfolded, so what happened stays in view, as T3 Code leaves a failed run open. With `working`, the last turn is under
  * way and doesn't fold: its work streams at the top level until it ends. Pass the previous result as `previous` to keep
  * each unchanged fold's identity, so only the rows of a fold that changed render again.
+ *
+ * `shows` says which calls rendered in place show as themselves (the registry's `ToolRenderers.shows`): those stay in
+ * view in a closed fold and aren't steps. A turn whose work is only such calls has nothing to fold, so no line.
  */
 export function turnFolds(
 	rows: readonly TranscriptRow[],
 	working: boolean,
 	previous?: ReadonlyMap<string, TurnFold>,
+	shows: (item: ToolItem) => boolean = (item) => item.status === "done",
 ): ReadonlyMap<string, TurnFold> {
 	const folds = new Map<string, TurnFold>();
 	const starts: number[] = [];
@@ -432,16 +460,18 @@ export function turnFolds(
 		const members: string[] = [];
 		let unfinished = false;
 		let steps = 0;
+		let hides = false;
 		for (let index = start + 1; index < answer; index++) {
 			const row = rows[index];
 			if (row === undefined || !foldable(row)) continue;
 			if (busy(row)) unfinished = true;
-			steps += rowSteps(row);
+			steps += rowSteps(row, shows);
+			if (row.kind !== "call" || !shows(row.item)) hides = true;
 			members.push(row.id);
 		}
 		const first = rows[start + 1];
 		const answered = rows[answer];
-		if (unfinished || members.length === 0 || first === undefined || answered?.kind !== "item") continue;
+		if (unfinished || !hides || first === undefined || answered?.kind !== "item") continue;
 		const opened = start >= 0 ? rows[start] : undefined;
 		const began = opened?.kind === "item" ? opened.item.at : rowStart(first);
 		const id = members[0] as string;
@@ -526,7 +556,7 @@ export function browserViewSlots(
 		{ rowId: string; item: ToolItem; screenshot?: ToolImage; page?: BrowserCallPage; closed?: boolean }
 	>();
 	for (const row of rows) {
-		if (row.kind === "item" || row.kind === "subagent") continue;
+		if (row.kind === "item" || row.kind === "subagent" || row.kind === "call") continue;
 		for (const item of row.items) {
 			if (item.kind !== "tool") continue;
 			const id = item.browserSessionId;

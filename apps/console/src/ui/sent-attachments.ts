@@ -6,6 +6,7 @@ import type { PresentedFile, UserAttachment } from "@harbour/protocol";
 import type { SentAttachmentsHost } from "@harbour/ui";
 import { useEffect, useMemo, useState } from "react";
 import type { AttachmentContent, WorkspaceFile } from "../api/client.ts";
+import { createImageUrls } from "./image-urls.ts";
 
 /** The workspace an attachment opened in the panel names: none, as it isn't in one. */
 const ATTACHMENTS = "harbour:attachments";
@@ -33,38 +34,8 @@ type Read = (attachment: UserAttachment, signal: AbortSignal) => Promise<Attachm
  * open, and freed when it closes. A read that fails leaves the card its icon.
  */
 export function createThumbnails(read: Read) {
-	const urls = new Map<string, Promise<string | undefined>>();
-	const made: string[] = [];
-	let disposed = false;
-	return {
-		thumbnail(attachment: UserAttachment): Promise<string | undefined> {
-			let url = urls.get(attachment.id);
-			if (url === undefined) {
-				// Not aborted with the card: another card, or the same one after a re-render, takes the same read.
-				url = read(attachment, new AbortController().signal).then(
-					({ content, contentType }) => {
-						if (disposed || !contentType.startsWith("image/")) return undefined;
-						const objectUrl = URL.createObjectURL(
-							new Blob([content as Uint8Array<ArrayBuffer>], { type: contentType }),
-						);
-						made.push(objectUrl);
-						return objectUrl;
-					},
-					() => {
-						urls.delete(attachment.id);
-						return undefined;
-					},
-				);
-				urls.set(attachment.id, url);
-			}
-			return url;
-		},
-		dispose() {
-			disposed = true;
-			for (const url of made.splice(0)) URL.revokeObjectURL(url);
-			urls.clear();
-		},
-	};
+	const urls = createImageUrls((attachment: UserAttachment) => attachment.id, read);
+	return { thumbnail: urls.url, dispose: urls.dispose };
 }
 
 type Thumbnails = ReturnType<typeof createThumbnails>;

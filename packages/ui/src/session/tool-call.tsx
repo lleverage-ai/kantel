@@ -1,5 +1,5 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
-import { memo, type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { memo, type ReactNode, useContext, useEffect, useId, useState } from "react";
 import { Code, languageForPath } from "../code/code.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
@@ -20,8 +20,8 @@ import {
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { ClockTime } from "../primitives/time.tsx";
-import { ToolViewCard } from "./tool-views.tsx";
-import { openByDefault, toolView, toolViewLabel } from "./tool-views-model.ts";
+import { ToolRenderersContext, toolRenderers } from "./tool-renderer-model.ts";
+import { codingToolRenderers } from "./tool-views.tsx";
 import "./tool-call.css";
 
 // A tool call as one quiet work-log line, after T3 Code's work-log row (TimelineWorkEntryRow.tsx, WorkLog.tsx at
@@ -31,9 +31,12 @@ import "./tool-call.css";
 // are one tap away and rendered only while open; nothing about a call shouts while it runs, though its label is at
 // full strength (see tool-call.css) so the call happening now is read before the finished ones.
 //
-// The file and shell tools (write, read, edit, bash) open to a card of their own instead (`tool-views.tsx`): the file
-// as an editor shows it, the edit as a diff, the command as a terminal, growing as the model writes the call. Their
-// raw arguments and output stay one switch away.
+// A tool with an entry in the transcript's renderer registry (tool-renderer-model.ts) can have its own label, its own
+// detail and start open; one that renders in place never reaches a row here. The file and shell tools (write, read,
+// edit, bash) have one (`codingToolRenderers`, tool-views.tsx): they open to a card of their own, the file as an editor
+// shows it, the edit as a diff, the command as a terminal, growing as the model writes the call, with their raw
+// arguments and output one switch away. Outside a transcript (a story, a host's own list of calls) a row uses those.
+const OUTSIDE_A_TRANSCRIPT = toolRenderers(codingToolRenderers);
 
 type IconComponent = (props: IconProps) => ReactNode;
 
@@ -82,7 +85,7 @@ export function outputLanguage(item: Pick<ToolItem, "name" | "args" | "status">)
 	return typeof path === "string" ? languageForPath(path) : undefined;
 }
 
-const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
+export const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
 
 function Leading({ item }: { item: ToolItem }) {
 	switch (item.status) {
@@ -223,15 +226,12 @@ export const ToolCallChip = memo(function ToolCallChip({
 	images = "inline",
 }: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
-	// Recomputed only when the call's name or arguments change, so a card's views keep their memoised parts.
-	const view = useMemo(
-		() => toolView({ name: item.name, args: item.args, streaming: item.streaming }),
-		[item.name, item.args, item.streaming],
-	);
-	const [open, setOpen] = useState(defaultOpen || openByDefault(view));
+	const renderer = (useContext(ToolRenderersContext) ?? OUTSIDE_A_TRANSCRIPT).get(item.name);
+	const [open, setOpen] = useState(() => defaultOpen || renderer?.openByDefault?.(item) === true);
+	// The detail's switch to the raw arguments and output, kept here so it stays as left when the row closes and opens.
 	const [raw, setRaw] = useState(false);
 	const id = useId();
-	const label = view === undefined ? item.label : toolViewLabel(view, item.status);
+	const label = renderer?.label?.(item) ?? item.label;
 	return (
 		<div
 			className={`hb-tool hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}${item.streaming ? " hb-tool-streaming" : ""}`}
@@ -252,17 +252,16 @@ export const ToolCallChip = memo(function ToolCallChip({
 				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
 			</button>
 			{browserView ?? (images === "inline" ? <ToolImages item={item} /> : null)}
-			{!open ? null : view === undefined ? (
+			{!open ? null : renderer?.detail === undefined ? (
 				<Detail item={item} id={id} images={images === "detail"} />
 			) : (
 				<div id={id}>
-					<ToolViewCard
-						item={item}
-						view={view}
-						raw={raw}
-						onRawChange={setRaw}
-						rawView={<Detail item={item} images={images === "detail"} />}
-					/>
+					{renderer.detail({
+						item,
+						raw: <Detail item={item} images={images === "detail"} />,
+						showRaw: raw,
+						onShowRawChange: setRaw,
+					})}
 				</div>
 			)}
 		</div>
