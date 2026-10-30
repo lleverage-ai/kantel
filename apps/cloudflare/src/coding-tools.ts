@@ -28,6 +28,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import type { CallContext, Sandboxes, SessionId, SessionRecord, WorkspaceId } from "@harbour/contracts";
+import { IN_CALL_ORDER, inCallOrder } from "@harbour/sandbox/coding-tools";
 import { createSandboxExecutionEnv } from "@harbour/sandbox/pi-env";
 import type { KeyedWorkspaces } from "@harbour/workspace";
 
@@ -70,9 +71,15 @@ export function createLsTool(): ToolRegistration<typeof lsSchema> {
 	});
 }
 
-/** The tools, built once: they hold no session state (the session's environment comes with each call). */
+/**
+ * The tools, built once: they hold no session state (the session's environment comes with each call). A round with
+ * `write`, `edit` or `bash` runs in the order the model made its calls, so a command sees a file written beside it; a
+ * round of only `read` and `ls` runs at once (`IN_CALL_ORDER`, `@harbour/sandbox/coding-tools`).
+ */
 export function codingTools(): readonly ToolRegistration[] {
-	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()];
+	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()].map((tool) =>
+		IN_CALL_ORDER.has(tool.name) ? inCallOrder(tool) : tool,
+	);
 }
 
 /** The context a session's tools act in: its own agent, in its organisation. */
