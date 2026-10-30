@@ -32,7 +32,14 @@ import {
 	VaultIcon,
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
+import {
+	type ConsoleActor,
+	type ConsoleClient,
+	isOrganisationScope,
+	ORGANISATION_ENTRY,
+	type ProjectSummary,
+	type SessionListState,
+} from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
 import type { ConsoleModels } from "../api/models-http.ts";
 import type {
@@ -377,6 +384,13 @@ export function App({
 	const route = parseRoute(pathname);
 	const narrow = useMedia(NARROW_QUERY);
 	const { projects, error: projectsError } = useProjects(client);
+	// Where sessions run: the organisation, when the client serves organisation sessions, then the projects. The tree,
+	// New session's picker and a route's `projectId` take the organisation as one more project (`ORGANISATION_SCOPE`).
+	const scopes = useMemo(
+		() =>
+			projects === undefined || client.organisationSessions !== true ? projects : [ORGANISATION_ENTRY, ...projects],
+		[projects, client.organisationSessions],
+	);
 
 	const projectId =
 		route.name === "project" ||
@@ -389,7 +403,7 @@ export function App({
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
 	// A link to a session by its ID alone (a schedule's run): its project is read, then the link becomes its path.
 	const linkedSession = route.name === "session-link" ? route.sessionId : undefined;
-	const project = projects?.find((candidate) => candidate.id === projectId);
+	const project = scopes?.find((candidate) => candidate.id === projectId);
 	// The project the sidebar keeps open: the route's, or on a page outside projects (skills, the vault) the last one
 	// visited, or else the first, so a project's sessions are always a click away.
 	const [lastProjectId, setLastProjectId] = useState<string>();
@@ -399,8 +413,11 @@ export function App({
 	const treeProject =
 		project ??
 		(projectId === undefined
-			? (projects?.find((candidate) => candidate.id === lastProjectId) ?? projects?.[0])
+			? (scopes?.find((candidate) => candidate.id === lastProjectId) ?? projects?.[0])
 			: undefined);
+	// The Models page is a project's: the one open, or else the first.
+	const modelsProject = treeProject !== undefined && !isOrganisationScope(treeProject.id) ? treeProject : projects?.[0];
+	const inOrganisation = isOrganisationScope(treeProject?.id ?? projectId);
 	// The list starts with the page, beside the projects, rather than after them; an unknown project stops it.
 	const list = useSessionList(
 		client,
@@ -672,7 +689,7 @@ export function App({
 			<NewSessionScreen
 				client={client}
 				projectId={route.projectId}
-				projects={projectList}
+				projects={scopes ?? []}
 				{...(narrow ? { onBack: back } : {})}
 			/>
 		);
@@ -781,7 +798,9 @@ export function App({
 						<AgentNav
 							route={route}
 							agent={agent !== undefined}
-							modelsHref={models === undefined || treeProject === undefined ? undefined : modelsPath(treeProject.id)}
+							modelsHref={
+								models === undefined || modelsProject === undefined ? undefined : modelsPath(modelsProject.id)
+							}
 						/>
 						<OrganisationNav
 							route={route}
@@ -810,7 +829,7 @@ export function App({
 					</SidebarSection>
 				) : null}
 				<ProjectNav
-					projects={projectList}
+					projects={scopes ?? []}
 					current={treeProject?.id ?? projectId}
 					selected={route.name === "project"}
 					open={!sessionsHidden}
@@ -834,9 +853,15 @@ export function App({
 								onViewChange={sessionView.setView}
 								{...(menuActions !== undefined && start?.allowed === true ? { menuActions } : {})}
 								empty={
-									<EmptyState title="No sessions in this project yet">
-										Sessions started here, by you or a schedule, show up as they run.
-									</EmptyState>
+									inOrganisation ? (
+										<EmptyState title="No organisation-wide sessions yet">
+											A session here works across the organisation, with its skills, memory and files, in no project.
+										</EmptyState>
+									) : (
+										<EmptyState title="No sessions in this project yet">
+											Sessions started here, by you or a schedule, show up as they run.
+										</EmptyState>
+									)
 								}
 							/>
 						</>

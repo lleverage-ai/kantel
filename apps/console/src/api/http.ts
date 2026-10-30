@@ -51,6 +51,7 @@ import type {
 	WorkspaceShares,
 	WrittenFile,
 } from "./client.ts";
+import { ORGANISATION_SCOPE } from "./client.ts";
 import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
 
@@ -66,7 +67,10 @@ export const SUBAGENT_CALL_LABEL = "subagentCall";
 export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
 
-/** A session as the API lists it: the parts of `SessionRecord` (`@harbour/contracts`) the console reads. */
+/**
+ * A session as the console keeps it: the parts of `SessionRecord` (`@harbour/contracts`) it reads, with an
+ * organisation session's absent project as `ORGANISATION_SCOPE` (`recordOf`).
+ */
 type SessionRecord = {
 	readonly id: string;
 	readonly projectId: string;
@@ -83,6 +87,16 @@ type SessionRecord = {
 	readonly markedUnreadAt?: number;
 };
 type Page<T> = { readonly items: readonly T[]; readonly nextCursor?: string };
+/** A session as the API sends it: an organisation session has no `projectId`. */
+type ApiSessionRecord = Omit<SessionRecord, "projectId"> & { readonly projectId?: string };
+
+/** The console's record of a session the API sent: an organisation session's project is `ORGANISATION_SCOPE`. */
+export const consoleRecord = (record: ApiSessionRecord): SessionRecord =>
+	record.projectId === undefined ? { ...record, projectId: ORGANISATION_SCOPE } : (record as SessionRecord);
+
+/** How a call names the console's project key: the project, or the organisation's scope and no project. */
+export const scopeParams = (projectId: string): Record<string, string> =>
+	projectId === ORGANISATION_SCOPE ? { scope: "organisation" } : { projectId };
 
 export type ApiClientOptions = {
 	/** Where the session API is. Default `/v1`, on the console's own origin. */
@@ -146,13 +160,21 @@ async function errorOf(response: Response): Promise<ApiError> {
 /** Why a viewer sees New session dimmed. */
 export const VIEWER_REASON = "You can watch this project's sessions. Starting one needs the operator role.";
 
-/** Whether `roles` let someone start a session in the project: operator or above there, or across the organisation. */
+/** Why someone without an organisation-wide role sees an organisation session's New session dimmed. */
+export const ORGANISATION_REASON =
+	"Starting an organisation-wide session needs the operator role across the organisation.";
+
+/**
+ * Whether `roles` let someone start a session in the project: operator or above there, or across the organisation.
+ * An organisation session (`ORGANISATION_SCOPE`) needs operator across the organisation.
+ */
 export function startAccess(roles: readonly HeldRole[] | undefined, projectId: string): StartAccess {
 	if (roles === undefined) return { allowed: true };
 	const may = roles.some(
 		(held) => (held.projectId === undefined || held.projectId === projectId) && roleSatisfies(held.role, "operator"),
 	);
-	return may ? { allowed: true } : { allowed: false, reason: VIEWER_REASON };
+	if (may) return { allowed: true };
+	return { allowed: false, reason: projectId === ORGANISATION_SCOPE ? ORGANISATION_REASON : VIEWER_REASON };
 }
 
 /**
@@ -206,7 +228,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		if (read === undefined) {
 			read = (async () => {
 				try {
-					const record = await getJson<SessionRecord>(sessionUrl(sessionId));
+					const record = consoleRecord(await getJson<ApiSessionRecord>(sessionUrl(sessionId)));
 					records.set(record.id, record);
 					projectOfSession.set(record.id, record.projectId);
 					return record;
@@ -286,7 +308,8 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	): Promise<Page<SessionRecord>> => {
 		const query = new URLSearchParams({ ...filter, limit: String(limit) });
 		if (cursor !== undefined) query.set("cursor", cursor);
-		const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`);
+		const sent = await getJson<Page<ApiSessionRecord>>(`${base}/sessions?${query}`);
+		const page = { ...sent, items: sent.items.map(consoleRecord) };
 		for (const record of page.items) {
 			projectOfSession.set(record.id, record.projectId);
 			records.set(record.id, record);
@@ -477,7 +500,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(change),
 		});
-		const record = (await response.json()) as SessionRecord;
+		const record = consoleRecord((await response.json()) as ApiSessionRecord);
 		records.set(record.id, record);
 		// Marked read: whatever it has done so far has been seen.
 		if (change.unread === false) seen.set(record.id, Math.max(seen.get(record.id) ?? 0, record.updatedAt));
@@ -518,7 +541,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			let polls = 0;
 			/** Whether every page has been read since the list was first shown, so the first page alone keeps it current. */
 			let complete = false;
-			const filter = { projectId };
+			const filter = scopeParams(projectId);
 			const show = (next: readonly SessionRecord[], firstListing: boolean) => {
 				listed = removed.size === 0 ? next : next.filter((record) => !removed.has(record.id));
 				// A subagent's session is reached from its card in the thread that started it, not listed beside it.
@@ -683,9 +706,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				[`label.${SUBAGENT_CALL_LABEL}`]: callId,
 				limit: "1",
 			});
-			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`, signal);
-			const child = page.items[0];
-			if (child === undefined) return undefined;
+			const page = await getJson<Page<ApiSessionRecord>>(`${base}/sessions?${query}`, signal);
+			const sent = page.items[0];
+			if (sent === undefined) return undefined;
+			const child = consoleRecord(sent);
 			records.set(child.id, child);
 			projectOfSession.set(child.id, child.projectId);
 			return child.id;
@@ -696,7 +720,12 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		async startOptions(projectId, signal): Promise<StartOptions> {
 			const agent = agentFor(await listProfiles(signal), projectId);
 			if (agent === undefined) {
-				throw new ApiError("not_found", "No agent can run in this project yet. An admin needs to add one.");
+				throw new ApiError(
+					"not_found",
+					projectId === ORGANISATION_SCOPE
+						? "No agent runs organisation-wide yet. An admin needs to add one with no project."
+						: "No agent can run in this project yet. An admin needs to add one.",
+				);
 			}
 			return { agentId: agent.id, agentName: agent.name };
 		},
@@ -704,14 +733,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		branches: (projectId, repo, signal) =>
 			getJson<RepositoryBranches>(`${base}/git/branches?${new URLSearchParams({ projectId, repo })}`, signal),
 
-		async create({ repository, ...input }) {
+		organisationSessions: true,
+
+		async create({ repository, projectId, ...input }) {
+			// An organisation session starts on no repository: a seeded workspace is a project's.
+			if (repository !== undefined && projectId === ORGANISATION_SCOPE) {
+				throw new ApiError("invalid", "An organisation session can't start from a repository yet");
+			}
 			let workspaceId: string | undefined;
 			if (repository !== undefined) {
 				const seeded = await call(`${base}/workspaces`, {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({
-						projectId: input.projectId,
+						projectId,
 						seed: {
 							name: repository.repo,
 							sources: [{ kind: "git", repo: repository.repo, ref: repository.branch }],
@@ -725,11 +760,12 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
 					...input,
+					...scopeParams(projectId),
 					...(workspaceId === undefined ? {} : { workspaceId }),
 					...(repository === undefined ? {} : { labels: { repo: repository.repo, branch: repository.branch } }),
 				}),
 			});
-			const record = (await response.json()) as SessionRecord;
+			const record = consoleRecord((await response.json()) as ApiSessionRecord);
 			projectOfSession.set(record.id, record.projectId);
 			// Known at once, so the new session's lineage (none) is too, and the list shows it working without a request.
 			records.set(record.id, record);
@@ -742,13 +778,14 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			const path =
 				"sessionId" in target
 					? sessionUrl(target.sessionId, "/models")
-					: `${base}/profiles/${encodeURIComponent(target.start.agentId)}/models?${new URLSearchParams({ projectId: target.start.projectId })}`;
+					: `${base}/profiles/${encodeURIComponent(target.start.agentId)}/models?${new URLSearchParams(scopeParams(target.start.projectId))}`;
 			return modelChoicesOf(await getJson<SessionModelState>(path, signal));
 		},
 
 		// A file for a message: its bytes as the body, stored under the project (`POST /v1/attachments`).
 		async uploadAttachment(projectId, file, signal) {
-			const response = await call(`${base}/attachments?${new URLSearchParams({ projectId, name: file.name })}`, {
+			const query = new URLSearchParams({ ...scopeParams(projectId), name: file.name });
+			const response = await call(`${base}/attachments?${query}`, {
 				method: "POST",
 				headers: { "content-type": file.type === "" ? "application/octet-stream" : file.type },
 				body: file,
@@ -825,7 +862,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ itemId }),
 			});
-			const record = (await response.json()) as SessionRecord;
+			const record = consoleRecord((await response.json()) as ApiSessionRecord);
 			projectOfSession.set(record.id, record.projectId);
 			return record.id;
 		},
@@ -871,7 +908,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				// It was on screen until now, so whatever it did meanwhile has been seen, though the list may not have
 				// caught up. The session's own updatedAt, read now, is the mark; anything after it is unread.
 				count(leaving, sessionId, 1);
-				getJson<SessionRecord>(sessionUrl(sessionId))
+				getJson<ApiSessionRecord>(sessionUrl(sessionId))
 					.then((record) => markSeen(record.updatedAt))
 					.catch(() => {})
 					.finally(() => count(leaving, sessionId, -1));
@@ -879,7 +916,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		},
 
 		async workspace(sessionId) {
-			const record = await getJson<SessionRecord>(sessionUrl(sessionId));
+			const record = await getJson<ApiSessionRecord>(sessionUrl(sessionId));
 			return record.workspaceId === undefined ? undefined : workspaceFiles(record.workspaceId);
 		},
 	};

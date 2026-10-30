@@ -26,11 +26,18 @@
 //                                             replaced by its /projects/... path once the session's project is read
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
+//   /organisation, /organisation/new, /organisation/sessions/:sessionId[/files[/:path]]
+//                                             the same for sessions scoped to the organisation, in no project
+//                                             (docs/design/org-scope.md): their routes carry `ORGANISATION_SCOPE`
+//                                             as the project ID
 //
 // Query strings are kept as they are (?profile=1 turns on the profiler). A link's hash goes with it: a session at a
 // turn is `#turn=<id>`, as the audit log links one.
 
 import { useSyncExternalStore } from "react";
+import { ORGANISATION_SCOPE } from "../api/client.ts";
+
+export { isOrganisationScope, ORGANISATION_SCOPE } from "../api/client.ts";
 
 export type Route =
 	| { readonly name: "home" }
@@ -93,8 +100,23 @@ export function parseRoute(pathname: string): Route {
 		const sessionId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (sessionId !== undefined && parts.length === 2) return { name: "session-link", sessionId };
 	}
+	// The organisation's sessions: the project routes, one segment shorter, under the organisation's key.
+	if (parts[0] === "organisation") {
+		if (parts.length === 1) return { name: "project", projectId: ORGANISATION_SCOPE };
+		if (parts[1] === "new" && parts.length === 2) return { name: "new-session", projectId: ORGANISATION_SCOPE };
+		const sessionId = parts[2] === undefined ? undefined : segment(parts[2]);
+		if (parts[1] === "sessions" && sessionId !== undefined) {
+			if (parts.length === 3) return { name: "session", projectId: ORGANISATION_SCOPE, sessionId };
+			if (parts[3] === "files" && parts.length === 4)
+				return { name: "files", projectId: ORGANISATION_SCOPE, sessionId };
+			const path = parts[4] === undefined ? undefined : segment(parts[4]);
+			if (parts[3] === "files" && path !== undefined && parts.length === 5)
+				return { name: "files", projectId: ORGANISATION_SCOPE, sessionId, path };
+		}
+	}
 	if (parts[0] === "projects") {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
+		if (projectId === ORGANISATION_SCOPE) return { name: "not-found", path: pathname };
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
 		if (projectId !== undefined && parts[2] === "new" && parts.length === 3) return { name: "new-session", projectId };
 		if (projectId !== undefined && parts[2] === "models" && parts.length === 3) return { name: "models", projectId };
@@ -110,7 +132,9 @@ export function parseRoute(pathname: string): Route {
 	return { name: "not-found", path: pathname };
 }
 
-export const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
+/** A project's sessions, or the organisation's for `ORGANISATION_SCOPE`. */
+export const projectPath = (projectId: string): string =>
+	projectId === ORGANISATION_SCOPE ? "/organisation" : `/projects/${encodeURIComponent(projectId)}`;
 export const newSessionPath = (projectId: string): string => `${projectPath(projectId)}/new`;
 /** A project's Models page: its connectors' models, and the agent's image model. */
 export const modelsPath = (projectId: string): string => `${projectPath(projectId)}/models`;

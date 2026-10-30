@@ -7,8 +7,8 @@ import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionClient } from "../state/session-client.ts";
-import type { SessionListState } from "./client.ts";
-import { agentFor, createApiClient, startAccess, VIEWER_REASON } from "./http.ts";
+import { ORGANISATION_SCOPE, type SessionListState } from "./client.ts";
+import { agentFor, createApiClient, ORGANISATION_REASON, startAccess, VIEWER_REASON } from "./http.ts";
 import { readEvents } from "./sse.ts";
 
 const ORG = "org-console";
@@ -657,6 +657,43 @@ describe("the console on the session API", () => {
 		expect((await client.startOptions("proj-a")).agentId).toBe("worker");
 	});
 
+	it("starts an organisation-wide session in no project, with the organisation's agent, listed apart from the projects'", async () => {
+		const { client, create, memory, script, open } = await setUp();
+		await memory.profiles.put(ctx, { ...profile, id: "billing", name: "A billing agent", projectId: "proj-b" });
+		const inProject = await create("proj-a", "In a project");
+		const options = await client.startOptions(ORGANISATION_SCOPE);
+		expect(options).toEqual({ agentId: "worker", agentName: "Worker" });
+		const id = await client.create({ projectId: ORGANISATION_SCOPE, agentId: options.agentId, title: "Across teams" });
+		const record = await memory.directory.get(ctx, id);
+		expect(record.projectId).toBeUndefined();
+		expect(await client.projectOf(id)).toBe(ORGANISATION_SCOPE);
+		script.reply({ text: "Done across teams" });
+		await client.prompt(id, "Go");
+		const session = open(id);
+		await eventually(() => texts(session).includes("assistant:Done across teams"), "the answer");
+		const organisation: SessionListState[] = [];
+		const project: SessionListState[] = [];
+		cleanups.push(client.watchSessions(ORGANISATION_SCOPE, (state) => organisation.push(state)));
+		cleanups.push(client.watchSessions("proj-a", (state) => project.push(state)));
+		await eventually(() => organisation.length > 0 && project.length > 0, "both lists");
+		expect(organisation.at(-1)?.sessions.map((listed) => listed.id)).toEqual([id]);
+		expect(project.at(-1)?.sessions.map((listed) => listed.id)).toEqual([inProject]);
+		// The organisation is no project, so it isn't one of the projects listed.
+		expect((await client.projects()).map((listed) => listed.id)).toEqual(["proj-a"]);
+		expect(client.organisationSessions).toBe(true);
+	});
+
+	it("refuses to start an organisation-wide session from a repository", async () => {
+		const { client } = await setUp();
+		await expect(
+			client.create({
+				projectId: ORGANISATION_SCOPE,
+				agentId: "worker",
+				repository: { repo: "tvdavies/harbour", branch: "main" },
+			}),
+		).rejects.toThrow("can't start from a repository");
+	});
+
 	it("says when no agent can run in a project", async () => {
 		const client = createApiClient({
 			baseUrl: BASE,
@@ -683,6 +720,18 @@ describe("who may start a session", () => {
 			reason: VIEWER_REASON,
 		});
 		expect(startAccess([], "p1")).toEqual({ allowed: false, reason: VIEWER_REASON });
+	});
+
+	it("is an operator or above across the organisation for an organisation-wide session", () => {
+		expect(startAccess([{ role: "operator" }], ORGANISATION_SCOPE)).toEqual({ allowed: true });
+		expect(startAccess([{ role: "admin", projectId: "p1" }], ORGANISATION_SCOPE)).toEqual({
+			allowed: false,
+			reason: ORGANISATION_REASON,
+		});
+		expect(startAccess([{ role: "viewer" }], ORGANISATION_SCOPE)).toEqual({
+			allowed: false,
+			reason: ORGANISATION_REASON,
+		});
 	});
 
 	it("is anyone when the roles aren't known, and the API decides", () => {
