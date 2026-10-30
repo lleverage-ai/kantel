@@ -131,6 +131,17 @@ const SOURCE_PROJECT = "proj-source";
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array): string => decoder.decode(bytes);
 
+/**
+ * A record without its hydration progress. A lazily seeded workspace's background pass sets `hydrated` and
+ * `hydratedAt` whenever it finishes (docs/design/workspace-hydration.md), so two reads of one workspace a moment
+ * apart may differ there and nowhere else.
+ */
+function withoutHydrationProgress(record: WorkspaceRecord): unknown {
+	if (record.hydration === undefined) return record;
+	const { hydrated: _hydrated, hydratedAt: _hydratedAt, ...hydration } = record.hydration;
+	return { ...record, hydration };
+}
+
 /** Records the roles and agent sessions the cases use, whether or not the project-access cases run. */
 function seedTenancy(deps: ConformanceDeps): void {
 	const { organisationId, projectId, otherProjectId } = WORKSPACE_FIXTURE;
@@ -331,7 +342,7 @@ function keyedCases(options: {
 				a.strictEqual(first.id, "pf_conformance");
 				a.strictEqual(first.head, 1);
 				const again = await workspaces.ensure(ctx, "pf_conformance", { owner, seed: seed("second") });
-				a.deepEqual(again, first);
+				a.deepEqual(withoutHydrationProgress(again), withoutHydrationProgress(first));
 				a.strictEqual(text((await workspaces.read(ctx, first.id, "who.md")).content), "first");
 			}),
 		},
@@ -341,7 +352,10 @@ function keyedCases(options: {
 				const records = await Promise.all(
 					["a", "b", "c", "d"].map((who) => workspaces.ensure(ctx, "pf_race", { owner, seed: seed(who) })),
 				);
-				for (const record of records) a.deepEqual(record, records[0]);
+				// The winner returns its record as created; a loser reads it back, perhaps after its hydration finished.
+				for (const record of records) {
+					a.deepEqual(withoutHydrationProgress(record), withoutHydrationProgress(records[0]!));
+				}
 				const winner = text((await workspaces.read(ctx, "pf_race", "who.md")).content);
 				a.ok(["a", "b", "c", "d"].includes(winner), "one seed won");
 				a.strictEqual((await workspaces.history(ctx, "pf_race")).items.length, 2);
