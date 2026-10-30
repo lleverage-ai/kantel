@@ -35,6 +35,7 @@ import {
 import type { BrowserLive, BrowserLiveStore } from "./browser-live.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
 import { DocumentView, DraftDocumentView } from "./document-view.tsx";
+import { useImagePreviews } from "./image-previews.ts";
 import { createAutoOpen } from "./presented.ts";
 import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
@@ -253,6 +254,8 @@ export function SessionView({
 	const sentAttachments = useSentAttachments(readAttachment, openFile, onOpenFile);
 	const readOpen = useMemo(() => readOpenFile(readPresented, readAttachment), [readPresented, readAttachment]);
 	const openIsAttachment = openAttachmentId(openFile) !== undefined;
+	// A presented image shows as itself in the transcript, read from the workspace as its card mounts.
+	const previewImage = useImagePreviews(readPresented);
 
 	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
 	// saved document then opens there as its call finishes, starting from the draft's text.
@@ -387,6 +390,7 @@ export function SessionView({
 								{...(focusBrowser === undefined ? {} : { focusBrowser })}
 								{...(readPresented === undefined ? {} : { onOpenFile })}
 								{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+								{...(previewImage === undefined ? {} : { previewImage })}
 								dock={
 									<Composer
 										state={composerState(control, state.status, actions.sending)}

@@ -402,6 +402,35 @@ describe("presented files", () => {
 		expect(toolLabel("generate_image", { prompt: "x", reference_images: ["a.png"] })).toBe("Editing an image");
 	});
 
+	// The console renders a present_files call as its files' cards, with no tool-call row (its tool renderer registry,
+	// packages/ui/src/session/tool-renderer-model.ts). That is presentation only: what the API and the event stream
+	// carry is the call itself, for an app built on Harbour to show its own way.
+	it("keeps a presenting call in what the API sends as the call it was: its name, arguments and output", () => {
+		const projector = new ConversationProjector({ now: () => 1 });
+		const entries = [user(1, "Go", "prompt"), call(2, "present_files"), result(3, "c2", { presentedFiles: [file] })];
+		const ops = projector.project(view(entries));
+		const appended = ops.flatMap((op) => (op.op === "append" && op.item.kind === "tool" ? [op.item] : []));
+		// The stream appends the call as a tool item, as for any tool.
+		expect(appended).toHaveLength(1);
+		expect(appended[0]).toMatchObject({
+			kind: "tool",
+			callId: "c2",
+			name: "present_files",
+			args: { filepaths: [file.path] },
+		});
+		// And the session's transcript has it finished, with its output beside its files.
+		const items = replay(new ConversationProjector({ now: () => 1 }), [view(entries)]).items;
+		expect(items.find((item) => item.kind === "tool")).toMatchObject({
+			kind: "tool",
+			callId: "c2",
+			name: "present_files",
+			args: { filepaths: [file.path] },
+			status: "done",
+			output: "Presented 1 file",
+			files: [file],
+		});
+	});
+
 	it("ignores presented files from any other tool, and from a call that failed", () => {
 		const items = replay(new ConversationProjector({ now: () => 1 }), [
 			view([

@@ -31,7 +31,14 @@ import { type MessageActionHandlers, MessageActionsContext } from "./message-act
 import { QuestionCard } from "./question-card.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf, subagentStatus } from "./subagent-model.ts";
-import { imagesAsCards, ToolCallGroup } from "./tool-call.tsx";
+import { imagesAsCards, isFailed, ToolCallGroup } from "./tool-call.tsx";
+import {
+	type PreviewImage,
+	type ToolInPlaceProps,
+	type ToolRenderers,
+	ToolRenderersContext,
+} from "./tool-renderer-model.ts";
+import { DEFAULT_TOOL_RENDERERS, GenericToolCall } from "./tool-renderers.tsx";
 import {
 	FOLLOWING,
 	type Follow,
@@ -189,6 +196,10 @@ type RowProps = {
 	onToggleFold: (id: string) => void;
 	/** Files this row's calls present again that an earlier `generate_image` showed (`repeatedImageFiles`): no cards. */
 	repeated: string | undefined;
+	/** The transcript's tool renderers, for a call rendered in place. */
+	renderers: ToolRenderers;
+	/** The host's image previews, for the cards of presented images. */
+	previewImage: PreviewImage | undefined;
 };
 
 /** "Worked for 1m 12s, 6 steps": a finished turn's fold line, from the person's message to the answer. */
@@ -218,9 +229,25 @@ function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean;
 	);
 }
 
-/** Whether a row of tool calls presented the file with this key. */
+/** Whether a row's tool calls presented the file with this key. */
 function presents(row: TranscriptRow, key: string): boolean {
-	return row.kind === "tools" && row.items.some((item) => item.files?.some((file) => presentedKey(file) === key));
+	const has = (item: ToolItem) => item.files?.some((file) => presentedKey(file) === key) === true;
+	if (row.kind === "call") return has(row.item);
+	return row.kind === "tools" && row.items.some(has);
+}
+
+/** A call rendered in place: its renderer's own, or the generic row should its renderer have gone from the registry. */
+function InPlaceCall({
+	item,
+	renderers,
+	...props
+}: Omit<ToolInPlaceProps, "item"> & { item: ToolItem; renderers: ToolRenderers }) {
+	const Render = renderers.get(item.name)?.inPlace;
+	return Render === undefined ? (
+		<GenericToolCall item={item} linked={props.linked} />
+	) : (
+		<Render item={item} {...props} />
+	);
 }
 
 /** A subagent's card with nothing to open: what the call says, from the call alone. */
@@ -284,9 +311,32 @@ function rowBody(
 	delivery: RowProps["delivery"],
 	fold: RowProps["fold"],
 	repeated: RowProps["repeated"],
+	renderers: RowProps["renderers"],
+	previewImage: RowProps["previewImage"],
 ): ReactNode {
 	// A closed fold hides the agent's words before its answer and its subagents' cards.
 	if (fold === "closed" && (row.kind === "subagent" || row.kind === "item")) return null;
+	if (row.kind === "call") {
+		const { item } = row;
+		const shows = renderers.shows(item);
+		// As the generic row, the call is a step of the turn's work: a closed fold keeps it in view only if it failed.
+		if (fold === "closed" && !shows && !isFailed(item)) return null;
+		if (!shows) return <GenericToolCall item={item} linked={highlight === item.id} />;
+		// Files an earlier `generate_image` already showed as pictures get no second card.
+		const skip = new Set(repeated?.split("\n"));
+		const files = skip.size === 0 ? item.files : item.files?.filter((file) => !skip.has(presentedKey(file)));
+		if (files !== undefined && files.length === 0) return null;
+		return (
+			<InPlaceCall
+				item={files === item.files || files === undefined ? item : { ...item, files }}
+				renderers={renderers}
+				onOpenFile={onOpenFile}
+				openFile={openFile}
+				previewImage={previewImage}
+				linked={highlight === item.id}
+			/>
+		);
+	}
 	if (row.kind === "subagent") {
 		return renderSubagent === undefined ? <ReadOnlySubagent item={row.item} /> : renderSubagent(row.item);
 	}
@@ -315,6 +365,8 @@ function rowBody(
 				? undefined
 				: new Map(browserSlots.map((slot) => [slot.item.id, renderBrowserView(slot)] as const));
 		// The files the calls presented stay in view under the group, folded or not: a generated image as its picture.
+		// The library's presenting tools render in place, out of any group (tool-renderers.tsx); this is for a host's
+		// registry that leaves them out.
 		const skip = new Set(repeated?.split("\n"));
 		const presenting = row.items.flatMap((item) => {
 			if (item.status !== "done" || (item.files?.length ?? 0) === 0) return [];
@@ -339,9 +391,21 @@ function rowBody(
 				))}
 				{presenting.map((item) =>
 					imagesAsCards(item) ? (
-						<GeneratedImages key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+						<GeneratedImages
+							key={item.id}
+							item={item}
+							onOpen={onOpenFile}
+							openKey={openFile}
+							previewImage={previewImage}
+						/>
 					) : (
-						<PresentedFiles key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+						<PresentedFiles
+							key={item.id}
+							item={item}
+							onOpen={onOpenFile}
+							openKey={openFile}
+							previewImage={previewImage}
+						/>
 					),
 				)}
 			</>
@@ -386,6 +450,8 @@ const Row = memo(function Row({
 	fold,
 	onToggleFold,
 	repeated,
+	renderers,
+	previewImage,
 }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
@@ -422,6 +488,8 @@ const Row = memo(function Row({
 					delivery,
 					fold,
 					repeated,
+					renderers,
+					previewImage,
 				)}
 			</div>
 		</div>
@@ -500,6 +568,19 @@ export type TranscriptProps = {
 	onOpenFile?: (file: PresentedFile, item: ToolItem) => void;
 	/** The key (`presentedKey`) of the presented file open in the host's viewer: its card shows it is open. */
 	openFile?: string;
+	/**
+	 * A URL to show an image file a call presented as itself (an object URL of its bytes, say), or undefined when there is
+	 * none. Keep it stable and cache what it reads: each image card asks once as it mounts. Without it, an image is a
+	 * file's card with its icon.
+	 */
+	previewImage?: PreviewImage;
+	/**
+	 * How tools' calls render: which render in place of the generic tool-call row (out of any "Worked for" group, so
+	 * they show once) and which keep the row with a label or detail of their own. Default: the library's
+	 * (`defaultToolRenderers`); extend it with `toolRenderers([...defaultToolRenderers, ...yours])`, made once. Only
+	 * presentation: `items` keep every call as the session's API sent it.
+	 */
+	toolRenderers?: ToolRenderers;
 	/** The first page is loading: shows skeleton rows while there are no items. */
 	loading?: boolean;
 	/** What an empty transcript says. Defaults to "No messages yet". */
@@ -576,6 +657,8 @@ export function Transcript({
 	focusBrowser,
 	onOpenFile,
 	openFile,
+	previewImage,
+	toolRenderers: renderers = DEFAULT_TOOL_RENDERERS,
 	loading = false,
 	empty,
 	error,
@@ -599,10 +682,10 @@ export function Transcript({
 	// Rows keep their identity across renders wherever their items are unchanged.
 	const previousRows = useRef<readonly TranscriptRow[] | undefined>(undefined);
 	const rows = useMemo(() => {
-		const next = groupTranscript(items, previousRows.current);
+		const next = groupTranscript(items, previousRows.current, renderers.inPlace);
 		previousRows.current = next;
 		return next;
-	}, [items]);
+	}, [items, renderers]);
 	// A message's row is keyed by its requestId, so a message sent optimistically and the session's copy are one row.
 	const keys = useMemo(() => messageKeys(rows), [rows]);
 	// Each browser's live view, under its newest call. Rows keep their slots' identity while they don't change.
@@ -656,10 +739,10 @@ export function Transcript({
 	// person opened in this view are open. The turn under way streams at the top level and folds when it ends.
 	const previousFolds = useRef<ReadonlyMap<string, TurnFold> | undefined>(undefined);
 	const folds = useMemo(() => {
-		const next = turnFolds(rows, showWorking, previousFolds.current);
+		const next = turnFolds(rows, showWorking, previousFolds.current, renderers.shows);
 		previousFolds.current = next;
 		return next;
-	}, [rows, showWorking]);
+	}, [rows, showWorking, renderers]);
 	const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set());
 	const toggleFold = useCallback((id: string) => {
 		setOpenFolds((open) => {
@@ -1122,6 +1205,8 @@ export function Transcript({
 									fold={foldState(folds.get(entry.id), openFolds)}
 									onToggleFold={toggleFold}
 									repeated={repeated.get(entry.id)}
+									renderers={renderers}
+									previewImage={previewImage}
 								/>
 								{entry.id === headerRow ? workingHeader : null}
 							</Fragment>
@@ -1179,7 +1264,9 @@ export function Transcript({
 					</div>
 				</div>
 			) : null}
-			<MessageActionsContext.Provider value={actionHandlers}>{body}</MessageActionsContext.Provider>
+			<ToolRenderersContext.Provider value={renderers}>
+				<MessageActionsContext.Provider value={actionHandlers}>{body}</MessageActionsContext.Provider>
+			</ToolRenderersContext.Provider>
 			{docked ? (
 				<ComposerDockContext.Provider value={dockContext}>
 					<div className="hb-transcript-dock" ref={dockElement}>

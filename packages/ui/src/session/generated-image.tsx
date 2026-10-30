@@ -1,6 +1,6 @@
 import type { PresentedFile, ToolImage, ToolItem } from "@harbour/protocol";
 import { memo } from "react";
-import { PresentedFileCard } from "../presented/presented-file-card.tsx";
+import { PresentedImageCard, type PreviewImageSource } from "../presented/presented-file-card.tsx";
 import { presentedKey, presentedTitle } from "../presented/presented-file-model.ts";
 import { ImageIcon } from "../primitives/icons.tsx";
 import { toolImageSrc } from "./tool-call.tsx";
@@ -62,19 +62,25 @@ export type GeneratedImageCardProps = {
 	image: ToolImage | undefined;
 	onOpen?: ((file: PresentedFile) => void) | undefined;
 	open?: boolean;
+	/** The host's previews, for an image the call returned no picture of (too large to scale down). */
+	previewImage?: PreviewImageSource | undefined;
 };
 
 /**
  * One generated image as a card: the picture, and under it the file's name and the model that made it. Pressing it
- * opens the file in the host's viewer. Without a picture to show (the call returned none) it is a file's card.
+ * opens the file in the host's viewer. Without a picture from the call (the image was too large to scale down) it is
+ * the host's preview of the file, else a file's card.
  */
 export const GeneratedImageCard = memo(function GeneratedImageCard({
 	file,
 	image,
 	onOpen,
 	open = false,
+	previewImage,
 }: GeneratedImageCardProps) {
-	if (image === undefined) return <PresentedFileCard file={file} onOpen={onOpen} open={open} />;
+	if (image === undefined) {
+		return <PresentedImageCard file={file} onOpen={onOpen} open={open} previewImage={previewImage} />;
+	}
 	const title = presentedTitle(file);
 	const model = madeWith(file);
 	const body = (
@@ -115,10 +121,12 @@ export type GeneratedImagesProps = {
 	onOpen?: ((file: PresentedFile, item: ToolItem) => void) | undefined;
 	/** The key (`presentedKey`) of the file open in the viewer, if any. */
 	openKey?: string | undefined;
+	/** The host's previews, for an image the call returned no picture of. */
+	previewImage?: PreviewImageSource | undefined;
 };
 
 /** The images one `generate_image` call made, as cards side by side. */
-export function GeneratedImages({ item, onOpen, openKey }: GeneratedImagesProps) {
+export function GeneratedImages({ item, onOpen, openKey, previewImage }: GeneratedImagesProps) {
 	const files = item.status === "done" ? (item.files ?? []) : [];
 	if (files.length === 0) return null;
 	// The call's pictures are its files' only when there is one for each: an image too large to scale down has none.
@@ -132,6 +140,7 @@ export function GeneratedImages({ item, onOpen, openKey }: GeneratedImagesProps)
 						image={images?.[index]}
 						onOpen={onOpen === undefined ? undefined : (opened) => onOpen(opened, item)}
 						open={openKey === presentedKey(file)}
+						previewImage={previewImage}
 					/>
 				</li>
 			))}

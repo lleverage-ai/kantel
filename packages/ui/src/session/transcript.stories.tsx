@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Sheet } from "../workbench/specimen.tsx";
 import { EXAMPLE_GENERATED_IMAGE } from "./fixture-generated-image.ts";
+import { posterTurn, previewPoster } from "./fixture-presented-images.ts";
 import {
 	assistant,
 	browser,
@@ -283,6 +284,30 @@ export const WithAttachments: Story = () => (
 	</Sheet>
 );
 WithAttachments.storyName = "With attachments";
+
+export const PresentedImages: Story = () => (
+	<Sheet
+		title="Transcript with presented images"
+		intro="A turn that made four posters and presented them. present_files renders in place (the tool renderer registry): its images as pictures, with no 'Presenting 4 files' row and no 'Worked for' group of its own. The image calls before it stay folded."
+	>
+		<div className="hb-story-transcript-frame hb-story-transcript-frame-turn">
+			<Transcript items={posterTurn} previewImage={previewPoster} onOpenFile={() => {}} />
+		</div>
+	</Sheet>
+);
+PresentedImages.storyName = "With presented images";
+
+export const PresentedImagesNoPreview: Story = () => (
+	<Sheet
+		title="Transcript with presented images, no previews"
+		intro="The same turn with a host that can't read the images: each is a file's card with its icon, still with no row of its own."
+	>
+		<div className="hb-story-transcript-frame hb-story-transcript-frame-turn">
+			<Transcript items={posterTurn} onOpenFile={() => {}} />
+		</div>
+	</Sheet>
+);
+PresentedImagesNoPreview.storyName = "With presented images, no previews";
 
 export const ErrorState: Story = () => (
 	<Sheet

@@ -22,7 +22,8 @@ parent's height.
 ```
 
 Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `loading`, `empty`, `error`,
-`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `delivery`, `dock`, `className`.
+`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `delivery`, `dock`, `toolRenderers` and
+`previewImage` (see [Tool renderers](#tool-renderers)), `className`.
 
 `dock` floats a node, usually a `Composer`, over the transcript's foot, as T3 Code's thread does: the list scrolls
 under its glass, and the end of the list makes room for it (its measured height plus 16px). A docked `Composer`
@@ -83,11 +84,70 @@ on the list's content and its viewport keeps the end in view while following, in
 resized (a phone's keyboard opening). Docked, one more `ResizeObserver` measures the dock, and passive wheel, touch
 and key listeners on the list decide when the composer rests; none of them renders unless the resting state changes.
 
+### Tool renderers
+
+**For** giving a tool's calls a rendering of their own, in one place: the registry in
+`src/session/tool-renderer-model.ts`, with the library's entries in `src/session/tool-renderers.tsx`. A tool with no
+entry is the generic tool-call row (`ToolCallChip`), a step of the turn's work, folded under its "Worked for" line
+once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how they show, in one of two ways:
+
+- **In place** (`inPlace`, `shows`): the call renders as something of its own instead of the generic row, such as
+  `present_files`' file cards. The call is a row of its own (`{ kind: "call" }` from `groupTranscript`), where it
+  happened in the turn, ending any run of calls around it. While `shows(item)` says it has something of its own to
+  show (by default, once it is done), it is not a step: the turn's line doesn't count it, a closed fold keeps it in
+  view, and a turn whose work is only such calls has no line at all, so it shows exactly once. Otherwise (it is
+  running, or it failed) the transcript draws it as the generic row, which counts as a step and folds like any
+  other, a failure staying in view. The renderer gets the call, the host's `onOpenFile` and `openFile`,
+  `previewImage`, and `linked`. Whether a call renders in place goes by the tool's name alone, so a call keeps its
+  row from start to end.
+- **Within the row** (`label`, `detail`, `openByDefault`): the call keeps its generic row in its group, with its own
+  words, what it shows when opened (`detail({ item, raw, showRaw, onShowRawChange })`, where `raw` is the generic
+  arguments and output, to offer as a switch the row keeps), and whether it starts open. For calls that are steps of
+  the work but read better as more than JSON: a file as an editor shows it, a command as a terminal.
+
+The library's entries (`defaultToolRenderers`):
+
+- `present_files` and `create_document`, once done with files: their files' cards. With the host's `previewImage` an
+  image file is its picture (`PresentedImageCard`, at most `--hb-presented-image-size` wide and tall, smaller three or
+  more to a row, never fewer than two to a row on a phone), opening in the viewer like any card; without it, or when
+  the host has no picture for it, a file's card with its icon. Files an earlier `generate_image` already showed get
+  no second card (`repeatedImageFiles`); a call left with none takes no room.
+- `generate_image`: while it runs, its row with `ImagePlaceholders` under it; once done with files,
+  `GeneratedImages` (see Generated images), an image the call returned no picture of shown through `previewImage`.
+- `read`, `write`, `edit` and `bash` (`codingToolRenderers`, `tool-views.tsx`): within the row, their cards (see
+  Cards for read, write, edit and bash). A `ToolCallChip` outside any transcript (a story, a host's own list of
+  calls) has no registry, and uses these.
+
+A host adds or replaces entries with `toolRenderers([...defaultToolRenderers, ...mine])`, made once and passed as
+`toolRenderers`; a later entry for a tool replaces an earlier one.
+
+```tsx
+const renderers = toolRenderers([
+	...defaultToolRenderers,
+	{ tools: ["make_chart"], inPlace: ({ item }) => <Chart item={item} />, shows: (item) => item.status === "done" },
+	{ tools: ["bash"], label: commandLabel, detail: ({ item, raw }) => <TerminalCard item={item} raw={raw} /> },
+]);
+<Transcript items={items} toolRenderers={renderers} previewImage={previewImage} />;
+```
+
+**Presentation only.** The registry changes what the console draws, never the items: the session's API and event
+stream carry every call as it was made (`ToolItem`, with its name, arguments, output and files) whatever renders it,
+so an app built on Harbour shows calls its own way. `packages/runtime/test/project.test.ts` checks that a
+`present_files` call is still a tool item in what the API sends.
+
+**Not for** a run of calls that reads as one thing (a browsing run, `BrowsingGroup`) or a subagent's card
+(`renderSubagent`): those are rows of their own kinds.
+
+**Cost:** a lookup by name per call. The registry is a row prop and the context of every call: make it once, or every
+row renders when it changes. `previewImage` is asked once per image card as it mounts; cache what it reads (the
+console's `useImagePreviews` reads each file once and frees the object URLs when the session closes).
+
 ### groupTranscript
 
-**For** turning transcript items into rows: `groupTranscript(items, previous?)` returns
+**For** turning transcript items into rows: `groupTranscript(items, previous?, inPlace?)` returns
 `{ kind: "item"; id; item }` for every item that is not a tool call and `{ kind: "tools"; id; items; live }` for
-each run of consecutive tool calls. Any other item ends a run. A group's `id` is its first call's id, so its key is
+each run of consecutive tool calls. Any other item ends a run. A call `inPlace` says renders in place (the registry's
+`ToolRenderers.inPlace`) is `{ kind: "call"; id; item }`, ending any run. A group's `id` is its first call's id, so its key is
 stable as calls join it; a single call is still a group of one, for the same reason. Only a group that is the last
 row is `live`.
 
@@ -103,13 +163,15 @@ other items is one group.
 ### Turn folds (`turnFolds`)
 
 **For** folding a finished turn's work under one "Worked for 1m 12s, 6 steps" line, after T3 Code's turn folds
-(`deriveTurnFolds`, `MessagesTimeline.logic.ts`). `turnFolds(rows, working, previous?)` returns each fold
+(`deriveTurnFolds`, `MessagesTimeline.logic.ts`). `turnFolds(rows, working, previous?, shows?)` returns each fold
 (`{ id, rows, elapsed, steps }`) by the id of every row it folds. A turn runs from a message the person sent (a steer
 joins the turn under way) to the next. It folds once it has ended with an answer with words, after all its work: its
 tool calls, browsing runs, subagents and the agent's words before the answer go in the fold; the person's messages,
 the answer, notices and cards stay out. The time runs from the person's message to the answer. A turn that stopped
 without an answer (failed, stopped) stays unfolded, as T3 leaves a failed run open, and with `working` the last turn
-isn't folded: its work streams at the top level and folds when it ends.
+isn't folded: its work streams at the top level and folds when it ends. A call rendered in place that shows as itself
+(`shows`, the registry's `ToolRenderers.shows`) is in the fold but not a step, and stays in view while it is closed;
+a turn whose work is only such calls gets no line.
 
 The fold's rows stay rows of the virtualised list: the first carries the line (`TurnFoldLine`, which looks and works
 as a `Disclosure` summary), and while it is closed each row shows only what stays in view: the files its calls
@@ -132,7 +194,9 @@ portrait 2:3): a frame, a soft band of light crossing it by `transform` on its o
 the picture (the call's image, scaled down by the runtime when the file is too large), its name and "Made with
 gpt-image-1". The card is as wide as its picture, within `--hb-generated-image-width` and
 `--hb-generated-image-height`, and opens the file in the host's viewer, whose facts end with the model. Without a
-picture it is a `PresentedFileCard`, whose subtitle says "JPG image made with gpt-image-1". The call's chip doesn't
+picture it is the host's preview of the file (`previewImage`, a `PresentedImageCard`), else a `PresentedFileCard`,
+whose subtitle says "JPG image made with gpt-image-1". It renders in place through the tool renderer registry (see
+Tool renderers), so its call is not a step of the turn's work. The call's chip doesn't
 repeat the picture (`images="none"`), and a later `present_files` of the same file adds no second card
 (`repeatedImageFiles`).
 
@@ -211,7 +275,8 @@ slot, as an interrupted call's amber icon does, and a failure is plain at a glan
 **Cards for read, write, edit and bash** (`tool-views.tsx`, its pure model in `tool-views-model.ts`, stories in
 Session/Tool cards). These four open as a card made for what they do, instead of the Arguments and Output detail,
 which every other tool keeps (and which these fall back to when their arguments aren't what the card expects, such as
-a finished edit with no edits in it). `toolView(item)` says which card a call gets, from the coding tools' argument
+a finished edit with no edits in it). They are an entry in the tool renderer registry (`codingToolRenderers`, see
+Tool renderers), so a host can replace any of them. `toolView(item)` says which card a call gets, from the coding tools' argument
 shapes (`read { path, offset?, limit? }`, `write { path, content }`, `edit { path, edits: [{ oldText, newText }] }`
 or the older single `oldText`/`newText`, `bash { command, timeout? }`); the label is the card's own ("Writing
 notes/plan.py", "Ran pytest -q").

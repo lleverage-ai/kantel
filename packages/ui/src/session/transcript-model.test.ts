@@ -24,8 +24,8 @@ const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
 		row.kind === "item"
 			? `item ${row.id}`
-			: row.kind === "subagent"
-				? `subagent ${row.id}`
+			: row.kind === "subagent" || row.kind === "call"
+				? `${row.kind} ${row.id}`
 				: `${row.kind} ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
 	);
 
@@ -73,6 +73,61 @@ describe("groupTranscript", () => {
 		const turn = groupTranscript([user("u1", "Go"), assistant("a1", "On it"), done]);
 		expect(finalAnswerIds(turn).size).toBe(0);
 		expect(rowOfTurn(turn, done.callId)?.item).toBe(done);
+	});
+
+	describe("a call whose tool renders in place", () => {
+		const inPlace = (item: ToolItem) => item.name === "present_files";
+		const presenting = (id: string, status: ToolItem["status"] = "done") =>
+			tool(id, "present_files", "Presenting 4 files", { status, args: { filepaths: ["a.png"] } });
+
+		it("is a row of its own, with no group, when it is the only call", () => {
+			const rows = groupTranscript(
+				[user("u1", "Make posters"), presenting("p1"), assistant("a1", "Here they are.")],
+				undefined,
+				inPlace,
+			);
+			expect(shape(rows)).toEqual(["item u1", "call p1", "item a1"]);
+		});
+
+		it("comes out of a group where it happened, the calls around it staying grouped", () => {
+			const items: TranscriptItem[] = [
+				tool("x1", "bash", "Ran ls"),
+				tool("x2", "read", "Read a.md"),
+				presenting("p1"),
+				tool("x3", "bash", "Ran pwd"),
+				assistant("a1", "Done."),
+			];
+			expect(shape(groupTranscript(items, undefined, inPlace))).toEqual([
+				"tools x1 [x1,x2]",
+				"call p1",
+				"tools x3 [x3]",
+				"item a1",
+			]);
+			// No group counts it as a step.
+			const rows = groupTranscript(items, undefined, inPlace);
+			const steps = rows.flatMap((row) => (row.kind === "tools" ? row.items : []));
+			expect(steps.map((step) => step.id)).toEqual(["x1", "x2", "x3"]);
+		});
+
+		it("keeps its row from running to done, and holds the call exactly as it came", () => {
+			const running = presenting("p1", "running");
+			const first = groupTranscript([user("u1", "Go"), running], undefined, inPlace);
+			expect(shape(first)).toEqual(["item u1", "call p1"]);
+			const done = presenting("p1");
+			const after = groupTranscript([user("u1", "Go"), done], first, inPlace);
+			expect(shape(after)).toEqual(["item u1", "call p1"]);
+			const row = after[1];
+			expect(row?.kind === "call" ? row.item : undefined).toBe(done);
+			expect(rowOfTurn(after, done.callId)?.item).toBe(done);
+			// Running at the end, it shows the activity itself.
+			expect(workingPlacement(first).activity).toBe(false);
+		});
+
+		it("is grouped like any call when nothing renders it in place", () => {
+			expect(shape(groupTranscript([tool("x1", "bash", "Ran ls"), presenting("p1")]))).toEqual([
+				"tools x1 [x1,p1] live",
+			]);
+		});
 	});
 
 	it("returns no rows for no items", () => {
@@ -637,6 +692,49 @@ describe("turnFolds", () => {
 		const again = turnFolds(groupTranscript(finishedTurn, rows), false, first);
 		expect(again.get("t1")).toBe(first.get("t1"));
 	});
+
+	describe("with calls rendered in place", () => {
+		const inPlace = (item: Pick<ToolItem, "name">) => item.name === "present_files";
+		const shows = (item: ToolItem) => item.status === "done" && (item.files?.length ?? 0) > 0;
+		const file = { workspaceId: "ws", path: "images/a.png", name: "a.png", mimeType: "image/png", size: 1 };
+		const presenting = (status: ToolItem["status"] = "done"): ToolItem => ({
+			...tool("p1", "present_files", "Presenting a.png", { status, secondsAgo: 50 }),
+			...(status === "done" ? { files: [file] } : {}),
+		});
+		const inPlaceFolds = (items: readonly TranscriptItem[]) => [
+			...new Set(turnFolds(groupTranscript(items, undefined, inPlace), false, undefined, shows).values()),
+		];
+
+		it("folds the call with the turn's work, but doesn't count it as a step while it shows as itself", () => {
+			const items: TranscriptItem[] = [
+				user("u1", "Go", 100),
+				tool("t1", "bash", "Ran render.py", { secondsAgo: 90 }),
+				presenting(),
+				assistant("a1", "Here.", { secondsAgo: 28 }),
+			];
+			expect(inPlaceFolds(items).map(({ rows, steps }) => ({ rows, steps }))).toEqual([
+				{ rows: ["t1", "p1"], steps: 1 },
+			]);
+		});
+
+		it("draws no line over a turn whose only work is calls that show as themselves", () => {
+			const items: TranscriptItem[] = [
+				user("u1", "Go", 100),
+				presenting(),
+				assistant("a1", "Here.", { secondsAgo: 28 }),
+			];
+			expect(inPlaceFolds(items)).toEqual([]);
+		});
+
+		it("counts the call as a step once it is the generic row (it failed)", () => {
+			const items: TranscriptItem[] = [
+				user("u1", "Go", 100),
+				presenting("error"),
+				assistant("a1", "It failed.", { secondsAgo: 28 }),
+			];
+			expect(inPlaceFolds(items).map(({ steps }) => steps)).toEqual([1]);
+		});
+	});
 });
 
 describe("repeatedImageFiles", () => {
@@ -649,5 +747,9 @@ describe("repeatedImageFiles", () => {
 		};
 		const rows = groupTranscript([user("u1", "Go"), made, assistant("a1", "Here."), presented]);
 		expect([...repeatedImageFiles(rows)]).toEqual([["t2", "ws:images/a.png"]]);
+		// The same with both calls rendered in place, each a row of its own.
+		const inPlace = (item: Pick<ToolItem, "name">) => item.name === "present_files" || item.name === "generate_image";
+		const own = groupTranscript([user("u1", "Go"), made, presented], undefined, inPlace);
+		expect([...repeatedImageFiles(own)]).toEqual([["t2", "ws:images/a.png"]]);
 	});
 });

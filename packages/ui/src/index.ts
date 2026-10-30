@@ -124,6 +124,9 @@ export {
 	type PresentedFileCardProps,
 	PresentedFiles,
 	type PresentedFilesProps,
+	PresentedImageCard,
+	type PresentedImageCardProps,
+	type PreviewImageSource,
 } from "./presented/presented-file-card.tsx";
 export {
 	fileToOpen,
@@ -426,6 +429,17 @@ export {
 	toolIcon,
 	toolImageSrc,
 } from "./session/tool-call.tsx";
+// The tool renderer registry: which tools' calls render as something of their own, out of the generic row.
+export {
+	type PreviewImage,
+	type ToolDetailProps,
+	type ToolInPlaceProps,
+	type ToolRenderer,
+	type ToolRenderers,
+	toolRenderers,
+} from "./session/tool-renderer-model.ts";
+export { DEFAULT_TOOL_RENDERERS, defaultToolRenderers, GenericToolCall } from "./session/tool-renderers.tsx";
+export { codingToolRenderers } from "./session/tool-views.tsx";
 export {
 	type RowRenderPhase,
 	Transcript,

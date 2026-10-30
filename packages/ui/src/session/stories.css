@@ -16,6 +16,11 @@
 	height: calc(var(--hb-space-11) * 15);
 }
 
+/* A whole turn of presented images, so its screenshot shows the turn from the person's message to the answer. */
+.hb-story-transcript-frame-turn {
+	height: calc(var(--hb-step-12) * 16);
+}
+
 /* Room above a composer for its model picker, which opens upward. */
 .hb-story-picker-frame {
 	padding-top: var(--hb-popover-height);

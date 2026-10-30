@@ -80,6 +80,11 @@
 	margin-top: var(--hb-gap-between);
 }
 
+/* A call rendered in place with nothing to show (files an earlier generate_image already showed) takes no room either. */
+.hb-transcript-row-call:not(.hb-transcript-row-fold-line):not(:has(.hb-transcript-column > *)) {
+	padding-top: 0;
+}
+
 .hb-turn-fold > .hb-disclosure-summary {
 	width: auto;
 	max-width: 100%;
