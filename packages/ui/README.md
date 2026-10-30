@@ -18,10 +18,13 @@ import { Button, ListRow, StatusLabel } from "@harbour/ui";
 </div>;
 ```
 
-Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source and plain CSS
-that each component imports itself, so a Vite app needs no extra configuration and pays only for the components it
-uses. React 19 is a peer dependency. `src/index.ts` is listed in `sideEffects` because it imports the tokens and the
-base styles: keep it there, or a production build drops them while the dev server still shows them.
+Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source; components are
+styled with Tailwind v4 utilities (a few still import a .css file of their own while they move over), so a Vite app
+adds Tailwind's plugin, `@tailwindcss/vite`, to its `plugins` (see `apps/console/vite.config.ts`). React 19 is a
+peer dependency. `src/index.ts` is listed in `sideEffects` because it imports the tokens, the base styles and the
+Tailwind entry: keep it there, or a production build drops them while the dev server still shows them. Style
+components with the utilities mapped from the tokens ([docs/tailwind.md](docs/tailwind.md)); the token lint fails
+on an arbitrary raw value such as `p-[13px]`, as it does on one in CSS.
 
 `apps/console` is the reference host: its `src/ui/session-view.tsx` maps a session client's state onto
 `SessionHeader`, `Transcript` and `Composer`, and its only CSS is layout, in tokens. Lint a host's CSS and TSX
