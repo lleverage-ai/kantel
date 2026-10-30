@@ -38,11 +38,15 @@ Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token
 - **Status**: `status-working`, `status-waiting`, `status-approval`, `status-done`, `status-error` and
   `status-idle`, each at least 4.5:1 on canvas and panel, and no two closer than 0.08 apart in OKLab, so they stay
   distinguishable.
-- **Diff and effects**: `diff-add`, `diff-del`, the shadows and the composer's glass, all derived by default.
+- **Diff and effects**: `diff-add`, `diff-del`, their soft tints `diff-add-soft` and `diff-del-soft` (behind an
+  edit's changed lines), the shadows and the composer's glass, all derived by default.
 - **Syntax**: `syntax-comment`, `syntax-keyword`, `syntax-string`, `syntax-number`, `syntax-function`,
   `syntax-type` and `syntax-property`, and the derived `syntax-text`, `syntax-variable`, `syntax-operator`,
   `syntax-punctuation`, `syntax-tag`, `syntax-regexp`, `syntax-meta`, `syntax-inserted` and `syntax-deleted`. Each
   is at least 4.5:1 on `code`.
+- **Terminal**: `terminal`, `terminal-text`, `terminal-prompt`, `terminal-stderr` and the 16 ANSI colours
+  `ansi-0` to `ansi-15` (0-7 normal, 8-15 bright), for a bash call's inline terminal. Derived to a dark terminal in
+  every theme, as a terminal is; a theme can set its own.
 
 A *palette* token a theme leaves out comes from the theme it extends: Harbour for a dark theme, Harbour light for a
 light one. A *derived* token it leaves out is worked out in CSS from its own colours (a hover is its text at 5%), so
