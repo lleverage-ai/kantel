@@ -261,6 +261,36 @@ describe("using a connection", () => {
 		expect(env.provider.tokenRequests.filter((params) => params.get("grant_type") === "refresh_token")).toHaveLength(1);
 	});
 
+	it("cuts an echoed Basic header and its encoding out of the answer, and refuses a short key", async () => {
+		const connections = createMemoryConnections({
+			credentials: memoryCredentials(),
+			access: fakeAccess(["admin"]),
+			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			fetch: async (_url, init) =>
+				new Response(new Headers(init?.headers).get("authorization") ?? "", { headers: { echo: "x" } }),
+		});
+		await expect(
+			connections.connectKey(human("admin"), {
+				owner: { kind: "organisation", organisationId: ORG },
+				custom: { hosts: ["api.example.com"], injection: { kind: "bearer" }, kind: "http" },
+				value: "short",
+			}),
+		).rejects.toMatchObject({ code: "invalid" });
+		const connection = await connections.connectKey(human("admin"), {
+			owner: { kind: "organisation", organisationId: ORG },
+			custom: { hosts: ["api.example.com"], injection: { kind: "basic" }, kind: "http" },
+			value: "user:pa55word-long",
+			usage: { unattended: true, visibility: "shared" },
+		});
+		const response = await connections.send(SYSTEM, scope({ audience: { kind: "shared" } }), connection.id, {
+			method: "GET",
+			url: "https://api.example.com/",
+			kind: "http",
+		});
+		expect(response.body).toBe("[redacted]");
+		expect(response.body).not.toContain(btoa("user:pa55word-long"));
+	});
+
 	it("sends a key connection's key only to its hosts", async () => {
 		const sent: { url: string; headers: Headers }[] = [];
 		const credentials = memoryCredentials();

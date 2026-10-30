@@ -47,7 +47,7 @@ export function publicUrl(value: string, what: string, allowHttp = false): URL {
 	if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
 		throw new HarbourError("invalid", `${what} must be an https URL`);
 	}
-	if (!allowHttp && PRIVATE_HOST.test(url.hostname)) {
+	if (!allowHttp && (url.hostname.endsWith(".") || PRIVATE_HOST.test(url.hostname) || !url.hostname.includes("."))) {
 		throw new HarbourError("invalid", `${what} must be on a public host`);
 	}
 	if (url.username !== "" || url.password !== "") throw new HarbourError("invalid", `${what} must not carry a login`);
@@ -333,9 +333,16 @@ export async function tokenRequest(
 		parsed = Object.fromEntries(new URLSearchParams(text));
 	}
 	if (!response.ok || typeof parsed.access_token !== "string" || parsed.access_token.length === 0) {
-		const error = typeof parsed.error === "string" ? parsed.error : `status ${response.status}`;
+		// The provider's words, with nothing of what was sent: a server that echoes the code, refresh token or client
+		// secret back in its error must not put it in a message someone reads.
+		const sent = [...body.values(), client.clientSecret ?? ""].filter((value) => value.length >= 4);
+		const scrub = (text: string) => sent.reduce((out, value) => out.split(value).join("[redacted]"), text);
+		const error =
+			typeof parsed.error === "string" && /^[a-z0-9_.-]{1,64}$/i.test(parsed.error)
+				? parsed.error
+				: `status ${response.status}`;
 		const description =
-			typeof parsed.error_description === "string" ? `: ${parsed.error_description.slice(0, 200)}` : "";
+			typeof parsed.error_description === "string" ? `: ${scrub(parsed.error_description).slice(0, 200)}` : "";
 		throw new HarbourError(
 			error === "invalid_grant" ? "refused" : "unavailable",
 			`The token request failed (${error})${description}`,

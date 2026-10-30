@@ -174,6 +174,8 @@ interface StoredAttempt {
 	readonly plan?: ConnectPlan;
 	readonly verifier?: string;
 	readonly returnTo?: string;
+	/** Set when the provider's callback used the state up: the code is being exchanged, so no new sign-in starts. */
+	readonly exchanging?: true;
 }
 
 interface StoredClient {
@@ -217,6 +219,12 @@ const DROPPED_HEADERS = new Set([
 	"connection",
 	"transfer-encoding",
 ]);
+
+/** A key is a non-empty string long enough to find and cut out of an answer that echoes it. */
+function checkKey(value: unknown): void {
+	if (typeof value !== "string" || value.trim().length === 0) throw new HarbourError("invalid", "The key is empty");
+	if (value.trim().length < 8) throw new HarbourError("invalid", "The key is shorter than 8 characters");
+}
 
 /** Cuts every occurrence of each secret out of `text`. */
 function redact(text: string, secrets: readonly string[]): string {
@@ -1027,6 +1035,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				);
 			} catch (error) {
 				if (isHarbourError(error, "refused")) {
+					// Another gateway may have refreshed first with the same refresh token, which a rotating server then
+					// refuses from us: if the stored token has moved on since we read it, the connection is fine.
+					const latest = (await connectionRecord(connectionId)).value.connection.credential;
+					if (latest.updatedAt !== connection.credential.updatedAt) return;
 					await changeConnection(connectionId, (current) => ({
 						...current,
 						connection: { ...current.connection, status: "needs_reauth", updatedAt: clock.now() },
@@ -1144,6 +1156,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				connection.auth === "oauth2" ? { kind: "bearer" } : (injection ?? { kind: "bearer" }),
 				value,
 			);
+			// What went on the wire too, so an echo of a Basic header or an encoded value is cut out as well.
+			secretsSeen.push(encodeURIComponent(value), ...Object.values(injected.headers));
+			for (const sent of Object.values(injected.headers)) {
+				const space = sent.indexOf(" ");
+				if (space > 0) secretsSeen.push(sent.slice(space + 1));
+			}
 			Object.assign(headers, injected.headers);
 			if (injected.query !== undefined) target.searchParams.set(injected.query[0], injected.query[1]);
 		}
@@ -1504,9 +1522,17 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			}
 			const plan = found.value.plan;
 			if (plan === undefined) throw new HarbourError("conflict", "This connect needs no sign-in");
+			if (found.value.exchanging === true) throw new HarbourError("conflict", "This connect is finishing");
 			const state = randomToken(32);
 			const pkce = await pkcePair();
-			await settleAttempt(attemptId, (stored) => ({ ...stored, verifier: pkce.verifier }), await sha256(state));
+			await settleAttempt(
+				attemptId,
+				(stored) => {
+					if (stored.exchanging === true) throw new HarbourError("conflict", "This connect is finishing");
+					return { ...stored, verifier: pkce.verifier };
+				},
+				await sha256(state),
+			);
 			const url = new URL(plan.authorizationUrl);
 			url.searchParams.set("response_type", "code");
 			url.searchParams.set("client_id", plan.client.clientId);
@@ -1531,7 +1557,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				throw new HarbourError("refused", "This sign-in link is used up or unknown", { failure: "invalid_state" });
 			const attemptId = found.id;
 			// Use the state up first: whatever happens next, it never works twice.
-			if (!(await repo.update("attempt", attemptId, found.revision, found.value, null))) {
+			if (!(await repo.update("attempt", attemptId, found.revision, { ...found.value, exchanging: true }, null))) {
 				throw new HarbourError("refused", "This sign-in link is used up", { failure: "invalid_state" });
 			}
 			const stored = found.value;
@@ -1608,8 +1634,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		async connectKey(ctx, input: ConnectKeyInput) {
 			forbidAgent(ctx);
 			await requireManage(ctx, input.owner, "connections.connectKey");
-			if (typeof input.value !== "string" || input.value.trim().length === 0)
-				throw new HarbourError("invalid", "The key is empty");
+			checkKey(input.value);
 			if (input.usage !== undefined) validateUsage(input.usage);
 			let hosts: readonly string[];
 			let injection: KeyInjection;
@@ -1685,8 +1710,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (found.value.connection.auth !== "key" || found.value.secrets.key === undefined) {
 				throw new HarbourError("invalid", "Only a key connection has a key to replace");
 			}
-			if (typeof input.value !== "string" || input.value.trim().length === 0)
-				throw new HarbourError("invalid", "The key is empty");
+			checkKey(input.value);
 			await credentials.replace(found.value.secrets.key, input.value);
 			const updated = await changeConnection(connectionId, (current) => ({
 				...current,
