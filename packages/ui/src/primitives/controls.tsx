@@ -13,6 +13,28 @@ import { describedBy, FormField, type FormFieldLayout } from "./form-layout.tsx"
 import { CheckIcon, ChevronRightIcon, CopyIcon } from "./icons.tsx";
 import "./controls.css";
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
+
+/**
+ * What `font: inherit` did on a control, as longhands: the shorthand would also reset the font size and line height
+ * that the control sets in a utility of its own, and Tailwind's sort, not the class order, decides which wins.
+ */
+const inheritFont = "[font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit]";
+
+/** A Disclosure's frame. Exported, with the rest, for a row that draws a disclosure's summary itself (a turn fold). */
+export const disclosureClass = "hb-disclosure min-w-0";
+
+/** The summary button: a muted row, lit on hover, pulled left so the chevron hangs in the gutter. */
+export const disclosureSummaryClass = `hb-disclosure-summary hb-focusable -ml-1.5 flex min-h-control-xs w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left text-sm text-muted ${inheritFont} [line-height:inherit] hover:bg-hover hover:text-fg`;
+
+/** The chevron, turned down while the disclosure is open. */
+export function disclosureChevronClass(open: boolean) {
+	return `hb-disclosure-chevron flex-none text-faint transition-transform${open ? " rotate-90" : ""}`;
+}
+
+/** Trimmed to its capitals, as a Button's label is, so the chevron and the words share one centre. */
+export const disclosureTextClass = "hb-disclosure-text min-w-0 py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+
 /**
  * A summary row that shows and hides detail below it: tool output, a thought, an older group of steps. The summary is
  * a real button with aria-expanded, so Enter and Space work, and the detail is only rendered while open.
@@ -39,10 +61,10 @@ export function Disclosure({
 	const open = controlled ?? uncontrolled;
 	const id = useId();
 	return (
-		<div className={`hb-disclosure${open ? " hb-disclosure-open" : ""}${className ? ` ${className}` : ""}`}>
+		<div className={`${disclosureClass}${open ? " hb-disclosure-open" : ""}${className ? ` ${className}` : ""}`}>
 			<button
 				type="button"
-				className="hb-disclosure-summary hb-focusable"
+				className={disclosureSummaryClass}
 				aria-expanded={open}
 				aria-controls={id}
 				onClick={() => {
@@ -50,12 +72,12 @@ export function Disclosure({
 					onOpenChange?.(!open);
 				}}
 			>
-				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
-				<span className="hb-disclosure-text">{summary}</span>
+				<ChevronRightIcon size="sm" className={disclosureChevronClass(open)} />
+				<span className={disclosureTextClass}>{summary}</span>
 				{trailing}
 			</button>
 			{open ? (
-				<div id={id} className="hb-disclosure-detail">
+				<div id={id} className="hb-disclosure-detail min-w-0 pt-1 pr-0 pb-2 pl-4">
 					{children}
 				</div>
 			) : null}
@@ -116,9 +138,42 @@ type FieldProps = {
 	mono?: boolean;
 };
 
-function inputClass(base: string, width: FieldProps["width"], mono: boolean | undefined) {
-	return `${base}${width === "short" ? " hb-input-short" : ""}${mono ? " hb-input-mono" : ""} hb-focusable`;
+/**
+ * The frame every text control shares (labels, help and errors are FormField's): sunken, a hairline round it, red
+ * when invalid.
+ */
+const fieldFrame =
+	"hb-focusable min-w-0 rounded-control border border-border-input bg-sunken text-fg [font-feature-settings:inherit] [font-weight:inherit] placeholder:text-faint aria-[invalid=true]:border-status-error-line";
+
+/**
+ * Each control's height and padding. A single line is a control tall, and taller on touch; a text area's height
+ * follows its rows and the person can drag it taller; a select keeps less room at its end, by the browser's arrow.
+ */
+const fieldKind = {
+	input: "h-control-md px-2.5 py-0 [line-height:inherit] pointer-coarse:h-control-lg",
+	textarea: "h-auto min-h-control-md resize-y px-2.5 py-2 leading-normal",
+	select: "h-control-md cursor-pointer py-0 pr-2 pl-2.5 [line-height:inherit] pointer-coarse:h-control-lg",
+} as const;
+
+/** A short value (a number, a time, a date): one width everywhere, so short fields line up from form to form. */
+const fieldWidth = {
+	full: "w-full",
+	short: "w-[calc(var(--hb-control-lg)_*_5)] max-w-full",
+} as const;
+
+/** The words: the page's font, or code's. 16px on touch stops iOS zooming into the field. */
+const fieldFont = {
+	sans: "[font-family:inherit] text-md pointer-coarse:text-lg",
+	mono: "font-mono text-code pointer-coarse:text-lg",
+} as const;
+
+function fieldClass(kind: keyof typeof fieldKind, width: FieldProps["width"], mono: boolean | undefined) {
+	const hooks = `hb-input${kind === "input" ? "" : ` hb-${kind}`}${width === "short" ? " hb-input-short" : ""}${mono ? " hb-input-mono" : ""}`;
+	return `${hooks} ${fieldFrame} ${fieldKind[kind]} ${fieldWidth[width ?? "full"]} ${fieldFont[mono ? "mono" : "sans"]}`;
 }
+
+/** A plain single-line text input, full width, for one drawn outside TextField (a share popover's invite field). */
+export const inputClass = fieldClass("input", "full", false);
 
 /** A single-line text input with its label, an optional hint and an error, laid out by FormField. */
 export function TextField({
@@ -140,7 +195,7 @@ export function TextField({
 		<FormField id={id} label={label} htmlFor={id} {...{ hint, error, layout, hideLabel, extra, className }}>
 			<input
 				id={id}
-				className={inputClass("hb-input", width, mono)}
+				className={fieldClass("input", width, mono)}
 				aria-invalid={error !== undefined || undefined}
 				aria-describedby={describedBy(id, hint, error)}
 				{...rest}
@@ -173,7 +228,7 @@ export function TextAreaField({
 			<textarea
 				id={id}
 				rows={rows}
-				className={inputClass("hb-input hb-textarea", "full", mono)}
+				className={fieldClass("textarea", "full", mono)}
 				aria-invalid={error !== undefined || undefined}
 				aria-describedby={describedBy(id, hint, error)}
 				{...rest}
@@ -210,7 +265,7 @@ export function SelectField({
 		<FormField id={id} label={label} htmlFor={id} {...{ hint, error, layout, hideLabel, extra, className }}>
 			<select
 				id={id}
-				className={inputClass("hb-input hb-select", width, false)}
+				className={fieldClass("select", width, false)}
 				aria-invalid={error !== undefined || undefined}
 				aria-describedby={describedBy(id, hint, error)}
 				{...rest}
@@ -224,6 +279,11 @@ export function SelectField({
 		</FormField>
 	);
 }
+
+/** One on/off choice: the browser's checkbox in the accent colour, its label beside it, a hint under the label. */
+const checkboxField =
+	"hb-checkbox-field inline-grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 text-sm leading-normal text-fg";
+const checkboxClass = "hb-checkbox hb-focusable peer m-0 size-3.5 cursor-pointer accent-accent disabled:cursor-default";
 
 /**
  * One on/off choice that is part of a form or a decision and takes effect with it: "Let agents write" beside a Grant
@@ -240,19 +300,23 @@ export function CheckboxField({
 	const generatedId = useId();
 	const id = suppliedId ?? generatedId;
 	return (
-		<div className={`hb-checkbox-field${className === undefined ? "" : ` ${className}`}`}>
+		<div className={`${checkboxField}${className === undefined ? "" : ` ${className}`}`}>
 			<input
 				id={id}
 				type="checkbox"
-				className="hb-checkbox hb-focusable"
+				className={checkboxClass}
 				aria-describedby={describedBy(id, hint, undefined)}
 				{...rest}
 			/>
-			<label htmlFor={id} className="hb-checkbox-label">
+			{/* A disabled box's label greys out with it: the box is the label's peer. */}
+			<label
+				htmlFor={id}
+				className="hb-checkbox-label cursor-pointer peer-disabled:cursor-default peer-disabled:text-disabled"
+			>
 				{label}
 			</label>
 			{hint === undefined ? null : (
-				<span id={`${id}-hint`} className="hb-checkbox-hint">
+				<span id={`${id}-hint`} className="hb-checkbox-hint col-start-2 text-xs text-faint">
 					{hint}
 				</span>
 			)}
@@ -261,6 +325,12 @@ export function CheckboxField({
 }
 
 export type SegmentOption<T extends string> = { value: T; label: string; count?: number };
+
+/** The segments' sunken tray. */
+const segmentedClass = "hb-segmented inline-flex gap-0.5 rounded-control border border-border bg-sunken p-0.5";
+
+/** A segment: muted words, lit when it is the chosen one. */
+const segmentClass = `hb-segment hb-focusable inline-flex h-[calc(var(--hb-control-sm)_-_var(--hb-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:text-fg aria-checked:bg-active aria-checked:text-fg`;
 
 /**
  * A small set of mutually exclusive views or filters: "Unified" or "Split", "All", "Working" and "Done". A radio
@@ -295,7 +365,7 @@ export function SegmentedControl<T extends string>({
 		refs.current[next]?.focus();
 	};
 	return (
-		<div className="hb-segmented" role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
+		<div className={segmentedClass} role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
 			{options.map((option, index) => {
 				const checked = option.value === value;
 				return (
@@ -309,11 +379,13 @@ export function SegmentedControl<T extends string>({
 						role="radio"
 						aria-checked={checked}
 						tabIndex={checked ? 0 : -1}
-						className="hb-segment hb-focusable"
+						className={segmentClass}
 						onClick={() => onChange(option.value)}
 					>
 						{option.label}
-						{option.count === undefined ? null : <span className="hb-segment-count">{option.count}</span>}
+						{option.count === undefined ? null : (
+							<span className="hb-segment-count text-faint tabular-nums">{option.count}</span>
+						)}
 					</button>
 				);
 			})}

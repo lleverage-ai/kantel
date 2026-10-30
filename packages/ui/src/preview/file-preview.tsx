@@ -13,7 +13,7 @@ import {
 } from "react";
 import { ShareButton, SharePopover, type SharePopoverProps, shareAnchor } from "../documents/share-popover.tsx";
 import { IconButton } from "../primitives/button.tsx";
-import { Skeleton, Spinner } from "../primitives/spinner.tsx";
+import { Skeleton, Spinner, skeletonClass } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
 import {
@@ -166,7 +166,7 @@ function Placeholder({ renderer, title }: { renderer: PreviewRenderer; title: st
 	const shape =
 		renderer.kind === "image" || renderer.kind === "video" || renderer.kind === "pdf" ? (
 			<div className="grid h-full place-items-center bg-sunken p-gutter">
-				<span className="hb-skeleton block aspect-4/3 w-3/4 max-w-doc" />
+				<span className={`${skeletonClass} aspect-4/3 w-3/4 max-w-doc`} />
 			</div>
 		) : renderer.kind === "markdown" || renderer.kind === "docx" ? (
 			<div className="mx-auto flex w-full max-w-doc flex-col gap-3 px-gutter pt-8">

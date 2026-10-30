@@ -1,6 +1,6 @@
 import type { VaultApprovalCard as VaultApprovalCardData } from "@harbour/protocol";
 import { type KeyboardEvent, memo, useId, useLayoutEffect, useRef, useState } from "react";
-import { Button } from "../primitives/button.tsx";
+import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { CopyButton, Disclosure } from "../primitives/controls.tsx";
 import {
@@ -28,7 +28,6 @@ import {
 	vaultToneError,
 	vaultToneFaint,
 } from "./vault-styles.ts";
-import "../primitives/button.css";
 import "./vault-approval-card.css";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css); the pieces the vault page draws too (the binding code, the
@@ -62,12 +61,8 @@ const termSet = "hb-vault-term-set flex min-w-0 flex-col gap-1.5";
 const termSource = "hb-vault-term-source m-0 text-xs font-medium text-muted";
 /** Open in vault and Copy link; stacked at full width under 480px (vault-approval-card.css). */
 const actions = "hb-vault-card-actions flex flex-wrap items-center gap-2";
-/**
- * Open in vault: a link drawn as a primary Button. Without the underline a link has by default; the colours repeat
- * .hb-button-primary's (primitives/button.css), which wins anyway, being unlayered.
- */
-const openLink =
-	"hb-button hb-button-primary hb-button-sm hb-focusable hb-vault-open text-accent-fg no-underline hover:bg-accent-hover";
+/** Open in vault: a link drawn as a primary Button, without the underline a link has by default. */
+const openLink = `${buttonClass("primary", "sm")} hb-vault-open no-underline`;
 
 /** A settled card's row: icon, what happened, the code, and on an approved card its Terms. */
 const row = "hb-vault-row flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted";
@@ -301,7 +296,7 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 
 			<div className={actions}>
 				<a className={openLink} href={card.link} target="_blank" rel="noopener noreferrer">
-					<span className="hb-button-label">Open in vault</span>
+					<span className={buttonLabelClass}>Open in vault</span>
 					<span className="hb-sr-only">, opens in a new tab</span>
 				</a>
 				<CopyButton text={card.link} label="Copy link" />

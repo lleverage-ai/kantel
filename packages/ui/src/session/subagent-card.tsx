@@ -54,8 +54,8 @@ const cardLink =
 /**
  * Stop, after T3 Code's: a ghost square with a filled stop mark, red on hover. It is the avatar's height, so the head
  * keeps its height; on a touch screen it is taller and gives the difference back above and below, so the mark still
- * sits on the head's one centre. `!` on the hover: .hb-button-ghost's own (primitives/button.css) is unlayered and
- * would beat a plain utility.
+ * sits on the head's one centre. `!` on the hover: the ghost Button sets its own hover (buttonClass), and two
+ * utilities for one property resolve by Tailwind's order, not the class list's.
  */
 const stopButton =
 	"hb-subagent-stop relative z-1 flex-none hover:enabled:bg-status-error-soft! hover:enabled:text-status-error! pointer-coarse:my-[calc((var(--hb-control-xs)_-_var(--hb-control-lg))/2)]";

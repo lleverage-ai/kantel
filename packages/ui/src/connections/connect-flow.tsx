@@ -7,7 +7,7 @@
 // blocks it anyway, the page offers the URL as a link to open by hand.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "../primitives/button.tsx";
+import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { CheckIcon, XIcon } from "../primitives/icons.tsx";
 import { ExternalLinkIcon, ShieldCheckIcon } from "../primitives/lucide.tsx";
 import { type ConnectFailure, type Connection, type ConnectStart, FAILURE_TEXT } from "./connections-model.ts";
@@ -361,13 +361,13 @@ export function ConnectProgress({
 							</Button>
 						) : (
 							<a
-								className="hb-button hb-button-primary hb-button-sm hb-focusable no-underline"
+								className={`${buttonClass("primary", "sm")} no-underline`}
 								href={state.start.url}
 								target="harbour-connect"
 								rel="opener"
 							>
 								<ExternalLinkIcon size="sm" />
-								<span className="hb-button-label">Open sign-in</span>
+								<span className={buttonLabelClass}>Open sign-in</span>
 							</a>
 						)}
 						<Button variant="ghost" onClick={flow.cancel}>

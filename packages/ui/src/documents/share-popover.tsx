@@ -2,7 +2,7 @@ import { Check, ChevronDown, FileDown, FileText, Globe, Link, Lock, Share, X } f
 import { type FormEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { initials } from "../identity/signed-in-as.tsx";
 import { Button, IconButton } from "../primitives/button.tsx";
-import { SegmentedControl } from "../primitives/controls.tsx";
+import { inputClass, SegmentedControl } from "../primitives/controls.tsx";
 
 // Sharing a file the agent made, after Claude's Share popover: Share (invite people by email, who has access, general
 // access and the link) and Export (Markdown, PDF). Presentational: the host owns the share and its calls, and passes
@@ -193,9 +193,8 @@ function ShareTab({
 					</label>
 					<input
 						id={inviteId}
-						// `!`: .hb-input (primitives/controls.css) is unlayered, so it beats a plain utility. Drop it once controls.css
-						// is converted.
-						className="hb-input hb-focusable min-w-0 flex-1 h-control-lg! bg-canvas!"
+						// `!`: inputClass sets the field's own height and fill; these replace them, as one utility per property.
+						className={`${inputClass} flex-1 h-control-lg! bg-canvas!`}
 						type="email"
 						placeholder="Invite people by email"
 						autoComplete="off"

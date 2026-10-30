@@ -156,8 +156,9 @@ const noteLine =
 	"hb-composer-note m-0 mb-2 flex min-w-0 items-baseline gap-1.5 text-sm leading-normal wrap-anywhere [&>.hb-icon]:translate-y-(--hb-on-cap)";
 
 /**
- * The primary action: a circle. IconButton's own CSS (primitives/button.css) is unlayered and sets the radius, the
- * disabled look and the danger colours, so these are important until the primitive is on utilities.
+ * The primary action: a circle. IconButton's own utilities (buttonClass) set the radius, the disabled look and the
+ * colours too, and two utilities for one property resolve by Tailwind's order, not the class list's, so these are
+ * important.
  */
 const actionButton =
 	"hb-composer-action rounded-full! disabled:not-aria-busy:bg-active! disabled:not-aria-busy:text-faint! disabled:not-aria-busy:opacity-100! pointer-coarse:size-control-lg!";

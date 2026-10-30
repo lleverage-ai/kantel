@@ -1,3 +1,8 @@
+/* Each status's colour and tint, as --hb-status-current and --hb-status-current-soft, for whatever wears the class.
+   Plain CSS rather than utilities because it is a shared hook: the dot, the label and the badge (status.tsx) read the
+   two variables in their utilities, and other components put `hb-status-<status>` on their own elements (the subagent
+   card's avatar and status in session/subagent-card.tsx, among others) and read them in their own CSS. */
+
 .hb-status-working {
 	--hb-status-current: var(--hb-status-working);
 	--hb-status-current-soft: var(--hb-status-working-soft);
@@ -26,71 +31,4 @@
 .hb-status-idle {
 	--hb-status-current: var(--hb-status-idle);
 	--hb-status-current-soft: var(--hb-hover);
-}
-
-.hb-status-dot {
-	display: inline-block;
-	flex: none;
-	width: var(--hb-dot);
-	height: var(--hb-dot);
-	border-radius: var(--hb-radius-full);
-	background: var(--hb-status-current);
-}
-
-.hb-status-dot.hb-status-working {
-	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
-}
-
-/* The dot sits on the words' baseline, then moves up onto the middle of their capitals (see --hb-on-cap). */
-.hb-status-label {
-	display: inline-flex;
-	align-items: baseline;
-	gap: var(--hb-space-3);
-	min-width: 0;
-	color: var(--hb-status-current);
-	font-size: var(--hb-text-xs);
-	line-height: var(--hb-leading-tight);
-	white-space: nowrap;
-}
-
-.hb-status-label > .hb-status-dot {
-	translate: 0 var(--hb-on-cap);
-}
-
-/* The words are trimmed to their capitals and centred in the pill, so they look centred in any font. */
-.hb-badge {
-	display: inline-flex;
-	flex: none;
-	align-items: center;
-	height: calc(var(--hb-control-xs) - var(--hb-space-3));
-	padding: 0 var(--hb-space-3);
-	border-radius: var(--hb-radius-xs);
-	font-size: var(--hb-text-2xs);
-	font-weight: var(--hb-weight-medium);
-	line-height: 1;
-	white-space: nowrap;
-}
-
-.hb-badge-text {
-	text-box: trim-both cap alphabetic;
-}
-
-.hb-badge-neutral {
-	background: var(--hb-active);
-	color: var(--hb-text-muted);
-}
-
-.hb-badge-accent {
-	background: var(--hb-accent-soft);
-	color: var(--hb-accent-text);
-}
-
-.hb-badge.hb-status-working,
-.hb-badge.hb-status-waiting,
-.hb-badge.hb-status-approval,
-.hb-badge.hb-status-done,
-.hb-badge.hb-status-error,
-.hb-badge.hb-status-idle {
-	background: var(--hb-status-current-soft);
-	color: var(--hb-status-current);
 }

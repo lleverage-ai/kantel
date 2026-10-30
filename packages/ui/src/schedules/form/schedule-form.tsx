@@ -526,8 +526,8 @@ function CheckSettingsFields({
 		<Disclosure
 			summary="When findings are raised again"
 			defaultOpen={changed || wrong}
-			// Disclosure pads its own detail element in its unlayered CSS (primitives/controls.css), which beats a plain
-			// utility, hence `!`: flush with the form's fields rather than indented under the summary.
+			// Disclosure pads its own detail element with utilities (primitives/controls.tsx); `!` makes these win whatever
+			// the order: flush with the form's fields rather than indented under the summary.
 			className="[&_.hb-disclosure-detail]:px-0! [&_.hb-disclosure-detail]:pt-2.5! [&_.hb-disclosure-detail]:pb-1!"
 		>
 			<FormGrid role="group" aria-label="When findings are raised again">

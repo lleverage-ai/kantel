@@ -27,8 +27,8 @@ export const cardDetail = "hb-card-detail m-0 min-w-0 text-sm leading-normal tex
 /** The card's buttons, at its end. */
 export const cardActions = "hb-card-actions flex flex-wrap justify-end gap-2";
 /**
- * A button in the actions: on a phone the buttons share the row. `!`: .hb-button's own `flex: none`
- * (primitives/button.css) is unlayered and would beat a plain utility.
+ * A button in the actions: on a phone the buttons share the row. `!`: the Button's own `flex-none` utility sets the
+ * same property, and two utilities for one property resolve by Tailwind's order, not the class list's.
  */
 export const cardAction = "max-sm:flex-1!";
 

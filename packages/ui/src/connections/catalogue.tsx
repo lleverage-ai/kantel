@@ -4,6 +4,7 @@
 
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
+import { inputClass } from "../primitives/controls.tsx";
 import { KeyRoundIcon, LucideSearchIcon, PlugIcon, ServerIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -68,11 +69,11 @@ export function Catalogue({
 					<span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-faint">
 						<LucideSearchIcon />
 					</span>
-					{/* `!`: the input's own padding (primitives/controls.css) is unlayered and would beat a utility. */}
+					{/* `!`: inputClass sets the field's own height and padding; these replace them, one utility per property. */}
 					<input
 						id={searchId}
 						type="search"
-						className="hb-input hb-focusable h-control-lg! pl-9!"
+						className={`${inputClass} h-control-lg! pl-9!`}
 						placeholder="Search GitHub, Slack, Google Drive and more"
 						value={query}
 						autoComplete="off"

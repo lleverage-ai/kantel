@@ -1,6 +1,51 @@
 import { type ComponentProps, type ReactNode, type Ref, useId } from "react";
 import "./form-layout.css";
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). form-layout.css keeps the container
+// queries (the closed theme has no container sizes) and the form's rule on every paragraph inside it, on the hb- hooks
+// below.
+
+/** The component's own classes, then the caller's. */
+function withClass(base: string, className: string | undefined): string {
+	return className ? `${base} ${className}` : base;
+}
+
+/** The page's header: title and lede, its actions beside them, over a hairline. */
+const pageHeader =
+	"hb-page-header flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2.5 border-b border-border pb-3";
+
+/** A control that sizes itself (a segmented control) keeps its own width straight in a form or a section. */
+const ownWidth = "[&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start";
+
+/**
+ * The form's column. The same gap between fields whether they sit in a section or straight in the form; the actions a
+ * step lower.
+ */
+const formLayout = `hb-form-layout flex w-full min-w-0 flex-col gap-4 text-sm leading-normal text-fg [&>.hb-form-actions-frame]:mt-1 ${ownWidth}`;
+
+/** A section; one after another gets a hairline above it, with room either side of the line. */
+const formSection =
+	"hb-form-section flex min-w-0 flex-col gap-4 [.hb-form-section+&]:mt-2 [.hb-form-section+&]:border-t [.hb-form-section+&]:border-border [.hb-form-section+&]:pt-6";
+
+/**
+ * A field: label, control, then the help or the error, on one rhythm in every form. The inline layout's two tracks
+ * are a container query in form-layout.css.
+ */
+const formField = "grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-1";
+
+/** A control that sizes itself (a segmented control, a row of toggles) keeps its own width in the field. */
+const fieldControl =
+	"hb-form-field-control flex min-w-0 flex-col items-stretch gap-1 [&>:is(.hb-segmented,.hb-form-inline)]:max-w-full [&>:is(.hb-segmented,.hb-form-inline)]:self-start";
+
+/** Help or an error under a field. */
+const fieldNote = "m-0 text-xs leading-normal";
+
+/** A row of controls inside one field: checkboxes, toggles. Keeps its own width in a field, like a segmented control. */
+export const formInline = "hb-form-inline flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5";
+
+/** The actions' row and each of its two groups: wrapping, on one line while there's room. */
+const actionsRow = "flex min-w-0 flex-wrap items-center gap-2";
+
 /**
  * The header every config page opens with: its title, a line on what the page is for and the page's own actions
  * (New key, Export) on the right. The actions drop under the title when the page is narrow.
@@ -23,14 +68,21 @@ export function PageHeader({
 	className?: string;
 }) {
 	return (
-		<header className={`hb-page-header${className ? ` ${className}` : ""}`}>
-			<div className="hb-page-header-text">
-				<Title id={titleId} className="hb-page-header-title">
+		<header className={withClass(pageHeader, className)}>
+			<div className="hb-page-header-text flex min-w-0 flex-[1_1_calc(var(--hb-sidebar-width)_+_var(--hb-step-12))] flex-col gap-1">
+				<Title id={titleId} className="hb-page-header-title m-0 text-md font-strong leading-tight text-fg">
 					{title}
 				</Title>
-				{lede === undefined ? null : <p className="hb-page-header-lede">{lede}</p>}
+				{lede === undefined ? null : (
+					<p className="hb-page-header-lede m-0 text-sm leading-normal text-muted">{lede}</p>
+				)}
 			</div>
-			{actions === undefined ? null : <div className="hb-page-header-actions">{actions}</div>}
+			{/* The actions keep the title's first line: a button, a select or a status beside it, never stretched. */}
+			{actions === undefined ? null : (
+				<div className="hb-page-header-actions flex min-w-0 max-w-full flex-none flex-wrap items-center gap-2">
+					{actions}
+				</div>
+			)}
 		</header>
 	);
 }
@@ -40,7 +92,7 @@ export function PageHeader({
  * side column alike; the fields inside lay themselves out by the width this column gets, not the window's.
  */
 export function FormLayout({ className, ...rest }: ComponentProps<"div">) {
-	return <div className={`hb-form-layout${className ? ` ${className}` : ""}`} {...rest} />;
+	return <div className={withClass(formLayout, className)} {...rest} />;
 }
 
 /**
@@ -68,27 +120,37 @@ export function FormSection({
 	const headingId = `${generatedId}-title`;
 	const Heading = `h${level}` as const;
 	return (
-		<section className={`hb-form-section${className ? ` ${className}` : ""}`} aria-labelledby={headingId} {...rest}>
-			<div className="hb-form-section-head">
-				<div className="hb-form-section-text">
+		<section className={withClass(formSection, className)} aria-labelledby={headingId} {...rest}>
+			<div className="hb-form-section-head flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
+				<div className="hb-form-section-text flex min-w-0 flex-auto flex-col gap-1">
 					<Heading
 						id={headingId}
-						className="hb-form-section-title"
+						className="hb-form-section-title m-0 text-sm font-medium leading-tight text-fg wrap-anywhere focus:outline-none"
 						ref={headingRef}
 						tabIndex={headingRef ? -1 : undefined}
 					>
 						{title}
 					</Heading>
-					{description === undefined ? null : <p className="hb-form-section-description">{description}</p>}
+					{description === undefined ? null : (
+						<p className="hb-form-section-description m-0 text-xs leading-normal text-muted">{description}</p>
+					)}
 				</div>
-				{action === undefined ? null : <div className="hb-form-section-action">{action}</div>}
+				{action === undefined ? null : (
+					<div className="hb-form-section-action flex flex-none items-center gap-1.5">{action}</div>
+				)}
 			</div>
-			<div className="hb-form-section-body">{children}</div>
+			<div className={`hb-form-section-body flex min-w-0 flex-col gap-4 ${ownWidth}`}>{children}</div>
 		</section>
 	);
 }
 
 export type FormFieldLayout = "stacked" | "inline";
+
+/** The field's layout hook: form-layout.css lays out `hb-form-field-inline` as a settings row on a wide form. */
+const fieldLayout: Record<FormFieldLayout, string> = {
+	stacked: "hb-form-field hb-form-field-stacked",
+	inline: "hb-form-field hb-form-field-inline",
+};
 
 /**
  * One labelled field: its label, the control, and the help or the error under it. TextField, TextAreaField and
@@ -127,7 +189,7 @@ export function FormField({
 	children: ReactNode;
 }) {
 	const labelId = `${id}-label`;
-	const labelClass = `hb-form-field-label${hideLabel ? " hb-sr-only" : ""}`;
+	const labelClass = `hb-form-field-label${hideLabel ? " hb-sr-only" : ""} text-xs leading-normal text-muted`;
 	const labelElement =
 		htmlFor === undefined ? (
 			<span id={labelId} className={labelClass}>
@@ -140,29 +202,29 @@ export function FormField({
 		);
 	const note =
 		error !== undefined ? (
-			<p id={`${id}-error`} className="hb-form-field-error">
+			<p id={`${id}-error`} className={`hb-form-field-error ${fieldNote} text-status-error`}>
 				{error}
 			</p>
 		) : hint !== undefined ? (
-			<p id={`${id}-hint`} className="hb-form-field-hint">
+			<p id={`${id}-hint`} className={`hb-form-field-hint ${fieldNote} text-faint`}>
 				{hint}
 			</p>
 		) : null;
 	const control =
 		htmlFor === undefined ? (
 			// biome-ignore lint/a11y/useSemanticElements: a group of controls inside a form that may have its own fieldset.
-			<div className="hb-form-field-control" role="group" aria-labelledby={labelId}>
+			<div className={fieldControl} role="group" aria-labelledby={labelId}>
 				{children}
 			</div>
 		) : (
-			<div className="hb-form-field-control">{children}</div>
+			<div className={fieldControl}>{children}</div>
 		);
 	return (
-		<div className={`hb-form-field hb-form-field-${layout}${className ? ` ${className}` : ""}`}>
+		<div className={withClass(`${fieldLayout[layout]} ${formField}`, className)}>
 			{extra === undefined ? (
 				labelElement
 			) : (
-				<div className="hb-form-field-label-row">
+				<div className="hb-form-field-label-row flex min-h-control-xs min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 					{labelElement}
 					{extra}
 				</div>
@@ -178,6 +240,12 @@ export function describedBy(id: string, hint: unknown, error: unknown): string |
 	return error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
 }
 
+/** Two or three equal tracks. One column on a narrow frame is a container query in form-layout.css. */
+const gridTracks: Record<2 | 3, string> = {
+	2: "grid-cols-[repeat(2,minmax(0,1fr))]",
+	3: "grid-cols-[repeat(3,minmax(0,1fr))]",
+};
+
 /**
  * Short fields side by side on equal tracks, so their labels and inputs line up from row to row: Every, Minutes apart
  * and At; Projects and Jobs. Two or three columns while the form has room, one under another when it hasn't. A
@@ -185,8 +253,11 @@ export function describedBy(id: string, hint: unknown, error: unknown): string |
  */
 export function FormGrid({ columns = 3, className, children, ...rest }: ComponentProps<"div"> & { columns?: 2 | 3 }) {
 	return (
-		<div className={`hb-form-grid-frame${className ? ` ${className}` : ""}`} {...rest}>
-			<div className="hb-form-grid" data-columns={columns}>
+		<div className={withClass("hb-form-grid-frame min-w-0", className)} {...rest}>
+			<div
+				className={`hb-form-grid m-0 grid min-w-0 items-start gap-4 border-0 p-0 ${gridTracks[columns]}`}
+				data-columns={columns}
+			>
 				{children}
 			</div>
 		</div>
@@ -196,7 +267,7 @@ export function FormGrid({ columns = 3, className, children, ...rest }: Componen
 /**
  * A form's buttons: the primary action first, then the others, left aligned under the fields; `end` holds an action
  * that undoes or removes (End schedule, Revoke), pushed to the far side. On a narrow form each button takes the whole
- * width, at the touch size.
+ * width, at the touch size (a container query in form-layout.css).
  */
 export function FormActions({
 	end,
@@ -208,10 +279,10 @@ export function FormActions({
 	children?: ReactNode;
 }) {
 	return (
-		<div className={`hb-form-actions-frame${className ? ` ${className}` : ""}`}>
-			<div className="hb-form-actions">
-				<div className="hb-form-actions-main">{children}</div>
-				{end === undefined ? null : <div className="hb-form-actions-end">{end}</div>}
+		<div className={withClass("hb-form-actions-frame min-w-0", className)}>
+			<div className={`hb-form-actions justify-between ${actionsRow}`}>
+				<div className={`hb-form-actions-main ${actionsRow}`}>{children}</div>
+				{end === undefined ? null : <div className={`hb-form-actions-end ${actionsRow}`}>{end}</div>}
 			</div>
 		</div>
 	);

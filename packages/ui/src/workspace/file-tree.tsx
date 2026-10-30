@@ -21,7 +21,48 @@ import {
 	type TreeRow,
 	visibleRows,
 } from "./workspace-model.ts";
-import "./file-tree.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
+
+// The workspace file tree: compact rows in the list's type, indented one step per level, a chevron for directories
+// and a file icon for files in one leading column, the name truncating before a file's quiet size.
+
+const tree = "hb-file-tree flex min-w-0 flex-col";
+/**
+ * Every row, the skeleton's too: indented by --hb-file-tree-depth (set on each row, 0 for the root's children) times
+ * --hb-step-3. A coarse pointer gets the touch size. The left padding is each kind's own, below.
+ */
+const rowBase = "flex min-h-control-sm min-w-0 items-center gap-1.5 rounded-sm pr-2.5 pointer-coarse:min-h-control-lg";
+/** A row of the tree. `group/tree-item` lets a directory's chevron turn when the row is expanded. */
+const item = `hb-file-tree-item group/tree-item hb-focusable ${rowBase} pl-[calc(var(--hb-step-1_5)+var(--hb-file-tree-depth,0)*var(--hb-step-3))] leading-normal no-underline select-none focus-visible:-outline-offset-(--hb-ring)!`;
+/** A file or directory: chosen by a click, so a pointer and a hover. The selected one keeps its colour on hover. */
+const entryItem = "cursor-pointer text-sm text-fg";
+const entryIdle = "hover:bg-hover";
+const entrySelected = "bg-selected";
+/** Rows that stand in for a directory's children: quieter, and nothing to choose. */
+const placeholderItem = "cursor-default text-xs text-muted";
+/** The skeleton's bar starts where a row's name would. */
+const skeletonRow = `${rowBase} pl-[calc(var(--hb-step-1_5)*2+var(--hb-file-tree-depth,0)*var(--hb-step-3)+var(--hb-icon-md))]`;
+/**
+ * One line tall, with an invisible character for a baseline (written in the row, see TreeItem), as ListRow's leading
+ * slot: the icon sits on the name's baseline, then moves up onto the middle of its capitals (see --hb-on-cap). The
+ * line is the row's type: a placeholder's is smaller.
+ */
+const lead = "inline-flex w-icon-md flex-none items-baseline justify-center *:translate-y-(--hb-on-cap)";
+const entryLead = `${lead} h-[calc(var(--hb-text-sm)*var(--hb-leading))] text-faint`;
+const placeholderLead = `${lead} h-[calc(var(--hb-text-xs)*var(--hb-leading))] text-faint`;
+const errorLead = `${lead} h-[calc(var(--hb-text-xs)*var(--hb-leading))] text-status-error`;
+/** Turns a quarter when its directory is open. */
+const chevron = "transition-transform group-aria-expanded/tree-item:rotate-90";
+/** The name and a file's size share a baseline; the name gives way first. */
+const textClass = "flex min-w-0 flex-1 items-baseline gap-2";
+const nameClass = "min-w-0 flex-auto truncate";
+const sizeClass = "flex-none text-xs whitespace-nowrap text-faint tabular-nums";
+
+function leadClass(kind: TreeRow["kind"]): string {
+	if (kind === "file" || kind === "directory") return entryLead;
+	return kind === "error" ? errorLead : placeholderLead;
+}
 
 export type FileTreeProps = {
 	/** The tree's accessible name: "Files", "Project files". */
@@ -68,7 +109,7 @@ type TreeItemProps = {
 function leadFor(kind: TreeRow["kind"]): ReactNode {
 	switch (kind) {
 		case "directory":
-			return <ChevronRightIcon size="sm" className="hb-file-tree-chevron" />;
+			return <ChevronRightIcon size="sm" className={chevron} />;
 		case "file":
 			return <FileIcon size="sm" />;
 		case "loading":
@@ -87,16 +128,20 @@ function leadFor(kind: TreeRow["kind"]): ReactNode {
 const TreeItem = memo(
 	function TreeItem({ row, expanded, selected, tabbable, href, onClick, onKeyDown, onFocus }: TreeItemProps) {
 		const isEntry = row.kind === "file" || row.kind === "directory";
-		const className = `hb-file-tree-item hb-file-tree-${row.kind} hb-focusable${selected ? " hb-file-tree-selected" : ""}`;
+		const className = `${item} ${isEntry ? `${entryItem} ${selected ? entrySelected : entryIdle}` : placeholderItem}`;
 		const style = { "--hb-file-tree-depth": row.depth - 1 } as CSSProperties;
 		const body = (
 			<>
-				<span className="hb-file-tree-lead">{leadFor(row.kind)}</span>
-				<span className="hb-file-tree-text">
-					<span className="hb-file-tree-name" title={row.name}>
+				<span className={leadClass(row.kind)}>
+					{/* A zero-width space: the slot's baseline, which the icon sits on. */}
+					{"\u200b"}
+					{leadFor(row.kind)}
+				</span>
+				<span className={textClass}>
+					<span className={nameClass} title={row.name}>
 						{row.name}
 					</span>
-					{row.kind === "file" ? <span className="hb-file-tree-size">{formatBytes(row.size)}</span> : null}
+					{row.kind === "file" ? <span className={sizeClass}>{formatBytes(row.size)}</span> : null}
 				</span>
 			</>
 		);
@@ -179,14 +224,10 @@ const skeletonRows = [
 
 function TreeSkeleton() {
 	return (
-		<div className="hb-file-tree" aria-busy="true">
+		<div className={tree} aria-busy="true">
 			<span className="hb-sr-only">Loading files</span>
 			{skeletonRows.map((row) => (
-				<div
-					key={row.id}
-					className="hb-file-tree-skeleton-row"
-					style={{ "--hb-file-tree-depth": row.depth } as CSSProperties}
-				>
+				<div key={row.id} className={skeletonRow} style={{ "--hb-file-tree-depth": row.depth } as CSSProperties}>
 					<Skeleton width={row.width} />
 				</div>
 			))}
@@ -315,13 +356,13 @@ export function FileTree({
 	if (rootState === undefined || rootState.status === "loading") return <TreeSkeleton />;
 	if (rootState.status === "error") {
 		return (
-			<div className="hb-file-tree">
+			<div className={tree}>
 				<Notice level="error">{rootState.message}</Notice>
 			</div>
 		);
 	}
 	if (rows.length === 0) {
-		return <div className="hb-file-tree">{empty ?? <EmptyState title="This workspace has no files yet" />}</div>;
+		return <div className={tree}>{empty ?? <EmptyState title="This workspace has no files yet" />}</div>;
 	}
 
 	const tabStop =
@@ -332,7 +373,7 @@ export function FileTree({
 				: rows[0]?.path;
 
 	return (
-		<div ref={treeRef} role="tree" aria-label={label} className="hb-file-tree">
+		<div ref={treeRef} role="tree" aria-label={label} className={tree}>
 			{rows.map((row) => (
 				<TreeItem
 					key={row.path}

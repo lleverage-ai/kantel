@@ -138,7 +138,7 @@ describe("the tool renderer registry", () => {
 		expect(count(previewed, 'data-state="loading"')).toBe(4);
 		expect(count(previewed, "hb-presented-images")).toBe(1);
 		// Four images: one grid, two or more to a row.
-		expect(count(previewed, 'class="hb-image-tiles"')).toBe(1);
+		expect(count(previewed, 'class="hb-image-tiles ')).toBe(1);
 		expect(previewed).toContain("data-many");
 		expect(previewed).not.toContain("hb-presented-card");
 		const plain = render({ items: referenceTurn(presenting("p1")) });

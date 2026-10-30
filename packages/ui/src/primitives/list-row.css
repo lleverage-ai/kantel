@@ -1,191 +1,24 @@
-.hb-list-row {
-	position: relative;
-	display: flex;
-	align-items: stretch;
-	min-width: 0;
-	border-radius: var(--hb-radius-control);
-	color: var(--hb-text);
-}
-
-.hb-list-row:hover {
-	background: var(--hb-hover);
-}
-
-.hb-list-row-selected,
-.hb-list-row-selected:hover {
-	background: var(--hb-selected);
-}
-
-.hb-list-row-main {
-	display: flex;
-	flex: 1;
-	align-items: center;
-	gap: var(--hb-step-2);
-	min-width: 0;
-	padding: 0 var(--hb-step-2_5);
-	border: 0;
-	border-radius: inherit;
-	background: none;
-	color: inherit;
-	font: inherit;
-	text-align: left;
-	text-decoration: none;
-}
-
-button.hb-list-row-main,
-a.hb-list-row-main {
-	cursor: pointer;
-}
-
-.hb-list-row-main:focus-visible {
-	outline-offset: calc(var(--hb-ring) * -1);
-}
-
-.hb-list-row-compact .hb-list-row-main {
-	min-height: var(--hb-control-lg);
-}
-
-.hb-list-row-comfortable .hb-list-row-main {
-	align-items: flex-start;
-	padding-top: var(--hb-step-2);
-	padding-bottom: var(--hb-step-2);
-}
+/* ListRow is styled with Tailwind utilities in list-row.tsx. What is left here can't be said as well in a utility. */
 
 /*
- * One title line tall, with an invisible character in the title's type to give it the title's baseline. The dot or
- * icon sits on that baseline, then moves up onto the middle of the capitals (see --hb-on-cap).
+ * The leading slot's invisible character, in the title's type, that gives the slot the title's baseline. Kept here
+ * because the `\200b` escape in a `before:content-[…]` class doesn't survive the source scan and a JS string alike.
  */
-.hb-list-row-leading {
-	display: inline-flex;
-	flex: none;
-	align-items: baseline;
-	justify-content: center;
-	min-width: var(--hb-icon-md);
-	height: calc(var(--hb-text-md) * var(--hb-leading));
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-md);
-	line-height: var(--hb-leading);
-}
-
 .hb-list-row-leading::before {
 	content: "\200b";
 }
 
-.hb-list-row-leading > * {
-	translate: 0 var(--hb-on-cap);
-}
-
 /*
- * An icon is taller than the title's capitals, so on the baseline it would push the line, and that baseline, down past
- * the title's. Pulled up by its own height, it takes no room above the baseline and sits on the title's.
+ * A static row's actions always show (list-row.tsx), so its trailing slot stays beside them: hidden only while a menu
+ * opened from the actions is open and the row is neither hovered nor focused, shown (inline-flex) while it is. Hover
+ * and an open menu at once must show it, which two utilities on one property can't say without relying on the order
+ * Tailwind sorts their variants in.
  */
-.hb-list-row-leading > .hb-icon-sm {
-	margin-top: calc(-1 * var(--hb-icon-sm));
-}
-
-.hb-list-row-leading > .hb-icon-md {
-	margin-top: calc(-1 * var(--hb-icon-md));
-}
-
-.hb-list-row-text {
-	display: flex;
-	flex: 1;
-	flex-direction: column;
-	gap: var(--hb-step-0_5);
-	min-width: 0;
-}
-
-.hb-list-row-title,
-.hb-list-row-overline,
-.hb-list-row-meta {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.hb-list-row-title {
-	font-size: var(--hb-text-md);
-	line-height: var(--hb-leading);
-}
-
-.hb-list-row-overline,
-.hb-list-row-meta {
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-	line-height: var(--hb-leading-tight);
-}
-
-.hb-list-row-quiet .hb-list-row-title {
-	color: var(--hb-text-muted);
-}
-
-/* The row you're on is never quiet: a settled session that's open reads in full-strength text, not just a fill. */
-.hb-list-row-selected .hb-list-row-title,
-.hb-list-row-selected.hb-list-row-quiet .hb-list-row-title {
-	color: var(--hb-text);
-	font-weight: var(--hb-weight-medium);
-}
-
-.hb-list-row-side {
-	position: relative;
-	display: flex;
-	flex: none;
-	align-items: center;
-	padding-right: var(--hb-step-2_5);
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-	font-variant-numeric: tabular-nums;
-}
-
-.hb-list-row-comfortable .hb-list-row-side {
-	align-items: flex-start;
-	padding-top: var(--hb-step-2);
-}
-
-.hb-list-row-actions {
+.hb-list-row-static.hb-list-row-has-actions:has([aria-expanded="true"]) .hb-list-row-trailing {
 	display: none;
-	align-items: center;
-	gap: var(--hb-step-0_5);
-}
-
-/*
- * A static row has no focusable main target for Tab to land on and reveal its actions, so they always show, next to
- * whatever is trailing.
- */
-.hb-list-row-static .hb-list-row-actions {
-	display: inline-flex;
-}
-
-/* A menu opened from the actions floats outside the row, so an open one keeps them shown, and the row lit. */
-.hb-list-row-has-actions:hover .hb-list-row-actions,
-.hb-list-row-has-actions:focus-within .hb-list-row-actions,
-.hb-list-row-has-actions:has([aria-expanded="true"]) .hb-list-row-actions {
-	display: inline-flex;
-}
-
-.hb-list-row-has-actions:hover .hb-list-row-trailing,
-.hb-list-row-has-actions:focus-within .hb-list-row-trailing,
-.hb-list-row-has-actions:has([aria-expanded="true"]) .hb-list-row-trailing {
-	display: none;
-}
-
-.hb-list-row:has(.hb-list-row-actions [aria-expanded="true"]):not(.hb-list-row-selected) {
-	background: var(--hb-hover);
 }
 
 .hb-list-row-static.hb-list-row-has-actions:hover .hb-list-row-trailing,
 .hb-list-row-static.hb-list-row-has-actions:focus-within .hb-list-row-trailing {
 	display: inline-flex;
-}
-
-/* Touch has no hover: keep the actions in reach. */
-@media (pointer: coarse) {
-	.hb-list-row-actions {
-		display: inline-flex;
-	}
-
-	.hb-list-row-has-actions:not(.hb-list-row-static) .hb-list-row-trailing {
-		display: none;
-	}
 }

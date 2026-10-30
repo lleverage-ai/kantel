@@ -104,7 +104,7 @@
 }
 
 /* The loading skeleton's first line stands in for the person's bubble. Kept in CSS: it reaches into the Skeleton
-   primitive's own line (feedback.css's .hb-skeleton, unlayered), which takes no class. */
+   primitive's own line (.hb-skeleton, whose size is a utility this unlayered rule beats), which takes no class. */
 .hb-transcript-skeleton-user .hb-skeleton {
 	height: var(--hb-control-lg);
 	margin-left: auto;

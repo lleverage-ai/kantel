@@ -232,8 +232,7 @@ function SkillForm({
 					<TextAreaField
 						id={textId}
 						label="SKILL.md"
-						// 336px tall. `!` because the input's own rules (primitives/controls.css) are unlayered and would beat a
-						// utility; drop it once TextAreaField is on utilities.
+						// 336px tall. `!` so it replaces the text area's own height utility (primitives/controls.tsx) outright.
 						className="[&_.hb-input]:h-84!"
 						mono
 						spellCheck={false}

@@ -12,8 +12,8 @@ import {
 	rootFailed,
 	rootLoading,
 } from "./fixtures.ts";
+import { treeFrame } from "./story-frames.ts";
 import type { DirectoryState } from "./workspace-model.ts";
-import "./stories.css";
 
 export default { title: "Workspace/File tree" } satisfies StoryDefault;
 
@@ -65,12 +65,12 @@ export const Default: Story = () => (
 		intro="A workspace's files, directories first. Click a directory to open it, or use the arrow keys: Right opens and moves in, Left closes and moves out, Enter chooses a file. The tree is one Tab stop."
 	>
 		<Section title="One directory open, one file selected">
-			<div className="hb-story-tree-frame">
+			<div className={treeFrame}>
 				<TreeDemo directories={projectDirectories} open={["src"]} selected="src/app.ts" />
 			</div>
 		</Section>
 		<Section title="Files as links">
-			<div className="hb-story-tree-frame">
+			<div className={treeFrame}>
 				<TreeDemo
 					directories={projectDirectories}
 					open={["notes", "notes/empty"]}
@@ -84,7 +84,7 @@ export const Default: Story = () => (
 
 export const Loading: Story = () => (
 	<Sheet title="File tree: loading" intro="Placeholder rows while the workspace's root is listed.">
-		<div className="hb-story-tree-frame">
+		<div className={treeFrame}>
 			<FileTree label="Files" directories={rootLoading} expanded={nothingOpen} onToggle={ignore} />
 		</div>
 	</Sheet>
@@ -93,12 +93,12 @@ export const Loading: Story = () => (
 export const Empty: Story = () => (
 	<Sheet title="File tree: empty" intro="A workspace with no files yet, and the same with the host's own empty state.">
 		<Section title="Default">
-			<div className="hb-story-tree-frame">
+			<div className={treeFrame}>
 				<FileTree label="Files" directories={rootEmpty} expanded={nothingOpen} onToggle={ignore} />
 			</div>
 		</Section>
 		<Section title="From the host">
-			<div className="hb-story-tree-frame">
+			<div className={treeFrame}>
 				<FileTree
 					label="Notes"
 					directories={rootEmpty}
@@ -114,7 +114,7 @@ export const Empty: Story = () => (
 // Named ErrorState so the export doesn't shadow the global Error; the workbench shows it as "Error".
 export const ErrorState: Story = () => (
 	<Sheet title="File tree: error" intro="When the root can't be listed, the tree says why.">
-		<div className="hb-story-tree-frame">
+		<div className={treeFrame}>
 			<FileTree label="Files" directories={rootFailed} expanded={nothingOpen} onToggle={ignore} />
 		</div>
 	</Sheet>
@@ -126,7 +126,7 @@ export const InlineLoading: Story = () => (
 		title="File tree: a directory loading"
 		intro="An open directory whose listing hasn't arrived shows a Loading row under it. The rest of the tree works as usual."
 	>
-		<div className="hb-story-tree-frame">
+		<div className={treeFrame}>
 			<TreeDemo directories={projectWithLoadingDirectory} open={["src"]} />
 		</div>
 	</Sheet>
@@ -177,7 +177,7 @@ export const ListingOnOpen: Story = () => (
 		title="File tree: listing as you open"
 		intro="Each directory is listed the first time it opens, a second later. Focus a Loading row with the arrow keys: when the files arrive, focus moves to the first of them."
 	>
-		<div className="hb-story-tree-frame">
+		<div className={treeFrame}>
 			<ListingDemo />
 		</div>
 	</Sheet>
@@ -188,7 +188,7 @@ export const InlineError: Story = () => (
 		title="File tree: a directory that failed"
 		intro="An open directory that couldn't be listed shows a quiet error row with the reason, in place of its files."
 	>
-		<div className="hb-story-tree-frame">
+		<div className={treeFrame}>
 			<TreeDemo directories={projectWithFailedDirectory} open={["docs"]} />
 		</div>
 	</Sheet>
@@ -205,12 +205,12 @@ export const LongContent: Story = () => (
 		intro="A project mount, six nested directories with long names, forty files at the root and a truncated listing. Names truncate with the full name on hover; sizes keep their width."
 	>
 		<Section title="Deep and wide">
-			<div className="hb-story-tree-frame">
+			<div className={treeFrame}>
 				<TreeDemo directories={deep.directories} open={deepOpen} selected={deepSelected} />
 			</div>
 		</Section>
 		<Section title="Rooted at the project mount">
-			<div className="hb-story-tree-frame">
+			<div className={treeFrame}>
 				<TreeDemo directories={deep.directories} open={["/project/docs"]} root="/project" />
 			</div>
 		</Section>
