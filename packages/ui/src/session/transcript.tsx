@@ -44,6 +44,7 @@ import {
 import {
 	activeBrowsingRow,
 	type BrowserViewSlot,
+	browserEntrySlots,
 	browserViewSlots,
 	finalAnswerIds,
 	groupTranscript,
@@ -161,6 +162,8 @@ type RowProps = {
 	shownBrowser: string | undefined;
 	/** Where a browsing row's browser is, as the host knows; given to browsing rows only. */
 	browserState: BrowserEntryState | undefined;
+	/** A browsing row's browser card: the browser it opened, or `null` when another row has the card. */
+	browserEntry: BrowserViewSlot | null | undefined;
 	/** A browsing row that may still take steps: its turn is working and only the agent's words follow it. */
 	browsingActive: boolean;
 	report: (id: string, phase: RowRenderPhase) => void;
@@ -193,10 +196,22 @@ function ReadOnlySubagent({ item }: { item: ToolItem }) {
 function rowBrowserState(
 	row: TranscriptRow,
 	states: ReadonlyMap<string, BrowserEntryState> | undefined,
+	entry: BrowserViewSlot | null | undefined,
 ): BrowserEntryState | undefined {
-	if (states === undefined || row.kind !== "browsing") return undefined;
-	const browser = browsingBrowser(row.items.filter((step): step is ToolItem => step.kind === "tool"));
+	if (states === undefined || row.kind !== "browsing" || entry === null) return undefined;
+	const browser =
+		entry?.browserSessionId ?? browsingBrowser(row.items.filter((step): step is ToolItem => step.kind === "tool"));
 	return browser === undefined ? undefined : states.get(browser);
+}
+
+/** A browsing row's card for a host with a panel: its browser's slot where it opened one, else `null`. */
+function rowBrowserEntry(
+	row: TranscriptRow,
+	entries: ReadonlyMap<string, BrowserViewSlot>,
+	panel: boolean,
+): BrowserViewSlot | null | undefined {
+	if (!panel || row.kind !== "browsing") return undefined;
+	return entries.get(row.id) ?? null;
 }
 
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
@@ -212,6 +227,7 @@ function rowBody(
 	onShowBrowser: RowProps["onShowBrowser"],
 	shownBrowser: RowProps["shownBrowser"],
 	browserState: RowProps["browserState"],
+	browserEntry: RowProps["browserEntry"],
 	browsingActive: RowProps["browsingActive"],
 	highlight: RowProps["highlight"],
 	onOpenFile: RowProps["onOpenFile"],
@@ -232,6 +248,7 @@ function rowBody(
 				{...(onShowBrowser === undefined ? {} : { onShowBrowser })}
 				{...(shownBrowser === undefined ? {} : { shownBrowser })}
 				{...(browserState === undefined ? {} : { browserState })}
+				{...(browserEntry === undefined ? {} : { browserEntry })}
 				{...(highlight === undefined ? {} : { focus: highlight })}
 				active={browsingActive}
 			/>
@@ -285,6 +302,7 @@ const Row = memo(function Row({
 	onShowBrowser,
 	shownBrowser,
 	browserState,
+	browserEntry,
 	browsingActive,
 	report,
 	highlight,
@@ -315,6 +333,7 @@ const Row = memo(function Row({
 					onShowBrowser,
 					shownBrowser,
 					browserState,
+					browserEntry,
 					browsingActive,
 					highlight,
 					onOpenFile,
@@ -496,6 +515,13 @@ export function Transcript({
 	const slots = useMemo(() => {
 		const next = browserViewSlots(rows, previousSlots.current);
 		previousSlots.current = next;
+		return next;
+	}, [rows]);
+	// Each browser's timeline card, on the browsing row that opened it.
+	const previousEntries = useRef<ReadonlyMap<string, BrowserViewSlot> | undefined>(undefined);
+	const browserEntries = useMemo(() => {
+		const next = browserEntrySlots(rows, previousEntries.current);
+		previousEntries.current = next;
 		return next;
 	}, [rows]);
 	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
@@ -959,7 +985,12 @@ export function Transcript({
 									renderBrowserView={renderBrowserView}
 									onShowBrowser={onShowBrowser}
 									shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
-									browserState={rowBrowserState(entry, browserStates)}
+									browserState={rowBrowserState(
+										entry,
+										browserStates,
+										rowBrowserEntry(entry, browserEntries, onShowBrowser !== undefined),
+									)}
+									browserEntry={rowBrowserEntry(entry, browserEntries, onShowBrowser !== undefined)}
 									browsingActive={entry.id === activeBrowsing}
 									report={report}
 									highlight={highlight?.row === entry.id ? highlight.item : undefined}

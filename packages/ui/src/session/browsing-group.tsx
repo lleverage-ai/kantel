@@ -7,7 +7,7 @@ import { Spinner } from "../primitives/spinner.tsx";
 import { BrowserEntry, type BrowserEntryState } from "./browser-entry.tsx";
 import { AssistantMessage } from "./message.tsx";
 import { ToolCallChip } from "./tool-call.tsx";
-import { type BrowserCallPage, type BrowsingStep, browserPageOf } from "./transcript-model.ts";
+import { type BrowserCallPage, type BrowserViewSlot, type BrowsingStep, browserPageOf } from "./transcript-model.ts";
 import "./browsing-group.css";
 
 // A run of browser calls as one quiet line: "Browsing, 12 steps" and what the agent is doing now ("Scrolling the
@@ -15,7 +15,8 @@ import "./browsing-group.css";
 // place by the host (a panel beside the transcript, see `BrowserLiveView`), not as a screenshot per step. Opening the
 // line lists every step, with the words the agent said between them; a step's screenshots are in its own detail.
 // For a host with a panel, the browser the run used is a card under the line (`BrowserEntry`): the page it was on,
-// its last screenshot, live or replay; clicking it shows the browser in the panel.
+// its last screenshot, live or replay; clicking it shows the browser in the panel. A transcript gives each browser one
+// card, on the run that opened it (`browserEntrySlots`), with the browser's newest page.
 
 const isCall = (step: BrowsingStep): step is ToolItem => step.kind === "tool";
 const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
@@ -77,6 +78,11 @@ export type BrowsingGroupProps = {
 	 */
 	browserState?: BrowserEntryState;
 	/**
+	 * The browser's card, as the whole transcript knows it: its newest page and screenshot from every run. `null`: another
+	 * run has this browser's card, so this one shows none. Without it, the card goes by this run's calls alone.
+	 */
+	browserEntry?: BrowserViewSlot | null;
+	/**
 	 * A view of the browser under the line, for a host with no panel (usually a `BrowserLiveView`). It stays in the same
 	 * place however many steps the run takes.
 	 */
@@ -99,6 +105,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	onShowBrowser,
 	shownBrowser,
 	browserState,
+	browserEntry,
 	browserView,
 	focus,
 	active = false,
@@ -145,7 +152,15 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
 				</button>
 			</div>
-			{onShowBrowser === undefined || browser === undefined ? null : (
+			{onShowBrowser === undefined || browserEntry === null ? null : browserEntry !== undefined ? (
+				<SlotBrowser
+					slot={browserEntry}
+					busy={busy}
+					shown={browserEntry.browserSessionId === shownBrowser}
+					state={browserState}
+					onShow={() => onShowBrowser(browserEntry.browserSessionId)}
+				/>
+			) : browser === undefined ? null : (
 				<RunBrowser
 					calls={calls}
 					busy={busy}
@@ -187,6 +202,32 @@ function RunBrowser({
 		<BrowserEntry
 			page={page}
 			{...(screenshot === undefined ? {} : { screenshot })}
+			state={known}
+			shown={shown}
+			onShow={shown ? () => {} : onShow}
+		/>
+	);
+}
+
+/** A browser's card from what the whole transcript says of it: its newest page and screenshot, and where it is now. */
+function SlotBrowser({
+	slot,
+	busy,
+	shown,
+	state,
+	onShow,
+}: {
+	slot: BrowserViewSlot;
+	busy: boolean;
+	shown: boolean;
+	state: BrowserEntryState | undefined;
+	onShow: () => void;
+}) {
+	const known = state ?? (slot.closed === true ? "ended" : busy ? "live" : "unknown");
+	return (
+		<BrowserEntry
+			page={slot.page}
+			{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
 			state={known}
 			shown={shown}
 			onShow={shown ? () => {} : onShow}
