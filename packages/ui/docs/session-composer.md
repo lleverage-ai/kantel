@@ -96,7 +96,9 @@ uploading, while one has failed, or while there is an image and the chosen model
 1280px, docked, the expanded composer is 736 by 114px and the resting one 736 by 50px, as T3 Code's are. Where the
 browser supports `field-sizing: content` (Chromium 123 and later) CSS sizes the field and nothing is measured;
 elsewhere one layout effect sets its height from `scrollHeight`. Type is 14px, 16px under a coarse pointer so iOS
-doesn't zoom; the action is 32px, 36px under a coarse pointer.
+doesn't zoom; the action is 32px, 36px under a coarse pointer. When the toolbar is short of room, the pickers with a
+name (model, project, repository, branch) shorten it to an ellipsis down to `--hb-picker-min` (6rem), and then the
+row wraps onto another line; the pickers never overlap.
 
 #### Docked in a transcript
 

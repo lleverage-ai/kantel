@@ -122,14 +122,26 @@
 	padding: 0 var(--hb-space-7) var(--hb-space-7) var(--hb-space-4);
 }
 
+/*
+ * The pickers share the row and wrap onto another line rather than squeeze: a picker that has a name (the model, the
+ * project, the repository, the branch) shortens it to an ellipsis down to --hb-picker-min, and only once every
+ * picker is that short does the row wrap. Without the floor a narrow composer pressed them under their own icons and
+ * they overlapped.
+ */
 .hb-composer-controls {
 	display: flex;
 	flex: 1;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--hb-space-2);
 	min-width: 0;
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
+}
+
+.hb-composer-controls > .hb-model-picker {
+	flex: 1 1 var(--hb-picker-min);
+	max-width: max-content;
 }
 
 .hb-composer-actions {

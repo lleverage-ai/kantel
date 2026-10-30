@@ -118,6 +118,7 @@ body {
 }
 
 .console-main {
+	container: console-main / inline-size;
 	position: relative;
 	display: flex;
 	flex: 1;
@@ -131,14 +132,16 @@ body {
 	min-height: 0;
 }
 
-/* A presented file's viewer: beside the transcript on a wide screen, over it on a narrow one. */
+/* A presented file's viewer: beside the transcript in a wide main area, over it in a narrow one. Narrow goes by the
+   main area, not the screen: beside the sidebar a 1024px screen leaves 724px, and a 560px viewer beside the
+   transcript squeezed the transcript and its composer to about 140px. */
 .console-file-panel {
 	flex: 0 0 clamp(var(--hb-card-width), 48%, var(--hb-content-width));
 	min-width: 0;
 	min-height: 0;
 }
 
-@media (max-width: 900px) {
+@container console-main (max-width: 60rem) {
 	.console-file-panel {
 		position: absolute;
 		inset: 0;
