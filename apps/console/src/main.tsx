@@ -8,6 +8,7 @@ import { apiAgent } from "./api/agent-http.ts";
 import { apiAudit } from "./api/audit-http.ts";
 import { withLocalCache } from "./api/cached.ts";
 import type { ConsoleClient } from "./api/client.ts";
+import { apiConnections } from "./api/connections-http.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
@@ -16,6 +17,7 @@ import { apiModels, type ConsoleModels } from "./api/models-http.ts";
 import type {
 	ConsoleAgent,
 	ConsoleAudit,
+	ConsoleConnections,
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
@@ -29,6 +31,7 @@ import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
 import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
+import { createRecordedConnections } from "./recorded/connections.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
@@ -145,6 +148,7 @@ type Oversight = {
 	readonly members?: ConsoleMembers;
 	readonly schedules?: ConsoleSchedules;
 	readonly sharing?: ConsoleSharing;
+	readonly connections?: ConsoleConnections;
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
 	readonly rules?: ConsoleRules;
@@ -162,7 +166,8 @@ const recordedOversight: Promise<Oversight> | undefined =
 				proposals = made.proposals;
 				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
 				const rules = createRecordedRules({ organisationId: "org_recorded", viewer: "usr_recorded" });
-				return { vault: made.vault, audit: made.audit, schedules, sharing, agent, rules };
+				const connections = createRecordedConnections();
+				return { vault: made.vault, audit: made.audit, schedules, sharing, connections, agent, rules };
 			})
 		: undefined;
 
@@ -181,7 +186,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, sharing, agent, models, rules } = oversight;
+	const { vault, audit, keys, members, schedules, sharing, connections, agent, models, rules } = oversight;
 	return (
 		<App
 			client={client}
@@ -192,6 +197,7 @@ function Console({
 			{...(members === undefined ? {} : { members })}
 			{...(schedules === undefined ? {} : { schedules })}
 			{...(sharing === undefined ? {} : { sharing })}
+			{...(connections === undefined ? {} : { connections })}
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
 			{...(rules === undefined ? {} : { rules })}
@@ -389,8 +395,16 @@ function SignedInConsole({
 						return undefined;
 					},
 				),
+				// No Connections page on a gateway that doesn't serve /v1/connections yet, or for a host app's key.
+				apiConnections(state.me, { headers: state.headers, onUnauthenticated }).then(
+					(connections) => connections,
+					(error: unknown) => {
+						console.info("harbour: no connections page:", error instanceof Error ? error.message : error);
+						return undefined;
+					},
+				),
 			]).then(
-				([vault, schedules, sharing]): Oversight => ({
+				([vault, schedules, sharing, connections]): Oversight => ({
 					...(vault === undefined ? {} : { vault }),
 					audit: audit(vault !== undefined),
 					agent,
@@ -398,6 +412,7 @@ function SignedInConsole({
 					rules,
 					schedules,
 					...(sharing === undefined ? {} : { sharing }),
+					...(connections === undefined ? {} : { connections }),
 					...(keys === undefined ? {} : { keys }),
 					...(members === undefined ? {} : { members }),
 				}),

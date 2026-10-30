@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AUDIT_PATH,
 	browserFromHash,
+	CONNECTIONS_PATH,
 	filesPath,
 	KEYS_PATH,
 	MEMBERS_PATH,
@@ -116,6 +117,8 @@ describe("routes", () => {
 		expect(parseRoute("/members/usr_1")).toEqual({ name: "not-found", path: "/members/usr_1" });
 		expect(parseRoute(SHARING_PATH)).toEqual({ name: "sharing" });
 		expect(parseRoute("/sharing/share_1")).toEqual({ name: "not-found", path: "/sharing/share_1" });
+		expect(parseRoute(CONNECTIONS_PATH)).toEqual({ name: "connections" });
+		expect(parseRoute("/connections/github")).toEqual({ name: "not-found", path: "/connections/github" });
 	});
 
 	it("parses the schedules page, a new schedule and one schedule", () => {

@@ -4,6 +4,7 @@ import {
 	BookIcon,
 	Button,
 	ClockIcon,
+	ConnectionsPage,
 	type Crumb,
 	EmptyState,
 	FileTextIcon,
@@ -17,6 +18,7 @@ import {
 	NewSessionRow,
 	Notice,
 	PeopleIcon,
+	PlugIcon,
 	PlusIcon,
 	SessionList,
 	type SessionMenuActions,
@@ -46,6 +48,7 @@ import type { ConsoleModels } from "../api/models-http.ts";
 import type {
 	ConsoleAgent,
 	ConsoleAudit,
+	ConsoleConnections,
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
@@ -62,6 +65,7 @@ import { ModelsScreen } from "./models-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
+	CONNECTIONS_PATH,
 	filesPath,
 	interceptLinks,
 	KEYS_PATH,
@@ -272,6 +276,7 @@ function OrganisationNav({
 	route,
 	schedules,
 	sharing = false,
+	connections = false,
 	rules = false,
 	vault,
 	audit,
@@ -281,13 +286,14 @@ function OrganisationNav({
 	route: Route;
 	schedules: boolean;
 	sharing?: boolean;
+	connections?: boolean;
 	rules?: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
 	members?: boolean;
 }) {
-	if (!schedules && !sharing && !rules && !vault && !audit && !keys && !members) return null;
+	if (!schedules && !sharing && !connections && !rules && !vault && !audit && !keys && !members) return null;
 	return (
 		<SidebarSection label="Organisation">
 			{schedules ? (
@@ -296,6 +302,14 @@ function OrganisationNav({
 					label="Schedules"
 					href={schedulesPath()}
 					selected={route.name === "schedules"}
+				/>
+			) : null}
+			{connections ? (
+				<SidebarItem
+					icon={<PlugIcon />}
+					label="Connections"
+					href={CONNECTIONS_PATH}
+					selected={route.name === "connections"}
 				/>
 			) : null}
 			{sharing ? (
@@ -361,6 +375,7 @@ export function App({
 	agent,
 	schedules,
 	sharing,
+	connections,
 	models,
 	rules,
 	oversightPending = false,
@@ -386,6 +401,8 @@ export function App({
 	schedules?: ConsoleSchedules;
 	/** The sharing page's seam; without it there's no Sharing in the sidebar. */
 	sharing?: ConsoleSharing;
+	/** The Connections page's seam (#339); without it there's no Connections in the sidebar. */
+	connections?: ConsoleConnections;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
 	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
@@ -535,8 +552,17 @@ export function App({
 	const rulesRoute = rules !== undefined && route.name === "rules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
+	const connectionsRoute = connections !== undefined && route.name === "connections";
 	const organisationPage =
-		vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || sharingRoute || rulesRoute || agentRoute;
+		vaultRoute ||
+		auditRoute ||
+		keysRoute ||
+		membersRoute ||
+		schedulesRoute ||
+		sharingRoute ||
+		connectionsRoute ||
+		rulesRoute ||
+		agentRoute;
 	const organisationRoute =
 		route.name === "rules" ||
 		route.name === "vault" ||
@@ -546,6 +572,7 @@ export function App({
 		route.name === "members" ||
 		route.name === "schedules" ||
 		route.name === "sharing" ||
+		route.name === "connections" ||
 		route.name === "skills" ||
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
@@ -656,6 +683,19 @@ export function App({
 						? { initialProjectId: treeProject.id }
 						: {})}
 					{...(sharing.now === undefined ? {} : { now: sharing.now })}
+				/>
+			</div>
+		);
+	} else if (connectionsRoute && connections !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<ConnectionsPage
+					source={connections.source}
+					viewer={connections.viewer}
+					redirectUri={connections.redirectUri}
+					{...(connections.people === undefined ? {} : { people: connections.people })}
+					{...(connections.now === undefined ? {} : { now: connections.now })}
 				/>
 			</div>
 		);
@@ -827,6 +867,7 @@ export function App({
 							route={route}
 							schedules={schedules !== undefined}
 							sharing={sharing !== undefined}
+							connections={connections !== undefined}
 							rules={rules !== undefined}
 							vault={vault !== undefined}
 							audit={audit !== undefined}

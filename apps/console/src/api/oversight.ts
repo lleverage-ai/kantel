@@ -11,6 +11,8 @@ import type {
 	AuditSource,
 	AuditViewProps,
 	Choice,
+	ConnectionsSource,
+	ConnectionsViewer,
 	GrantSummary,
 	MemoryPageSource,
 	OwnerChoice,
@@ -118,6 +120,21 @@ export interface ConsoleSharing {
 	/** The projects the page shows sharing for, by name. */
 	readonly projects: readonly { readonly id: string; readonly name: string }[];
 	readonly directory: SharingDirectory;
+	/** The time the page measures from, for a fixture host. Default now. */
+	readonly now?: number;
+}
+
+/**
+ * The Connections page (#339) as the signed-in person sees it: `source` is one or two calls per `/v1/connections` route
+ * (`connections-http.ts`), or the UI's fixtures on `source=recorded`.
+ */
+export interface ConsoleConnections {
+	readonly source: ConnectionsSource;
+	readonly viewer: ConnectionsViewer;
+	/** People's names, for connections other people own. */
+	readonly people?: (userId: string) => string | undefined;
+	/** The redirect URI an OAuth client registers with its provider. */
+	readonly redirectUri: string;
 	/** The time the page measures from, for a fixture host. Default now. */
 	readonly now?: number;
 }
