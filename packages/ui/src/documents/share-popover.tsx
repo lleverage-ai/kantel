@@ -1,5 +1,5 @@
 import { Check, ChevronDown, FileDown, FileText, Globe, Link, Lock, Share, X } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { initials } from "../identity/signed-in-as.tsx";
 import { Button } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
@@ -267,6 +267,21 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 	const tab = sharing === undefined ? "export" : chosen;
 	const ref = useRef<HTMLDivElement>(null);
 	const titleId = useId();
+	// It hangs from its trigger's right edge, so on a narrow screen its width is what's left of that edge (the CSS takes
+	// a gutter off), not the whole viewport, or it runs off the left. Focus goes to its first control as it opens.
+	useLayoutEffect(() => {
+		const popover = ref.current;
+		const anchor = popover?.offsetParent;
+		if (popover === null || popover === undefined || !(anchor instanceof HTMLElement)) return;
+		const measure = () =>
+			popover.style.setProperty("--hb-share-room", `${Math.round(anchor.getBoundingClientRect().right)}px`);
+		measure();
+		window.addEventListener("resize", measure);
+		return () => window.removeEventListener("resize", measure);
+	}, []);
+	useEffect(() => {
+		ref.current?.querySelector<HTMLElement>(".hb-share-close")?.focus();
+	}, []);
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			if (event.key !== "Escape") return;

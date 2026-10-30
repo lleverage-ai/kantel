@@ -12,7 +12,8 @@
 	right: 0;
 	display: flex;
 	flex-direction: column;
-	width: min(var(--hb-share-width), calc(100vw - var(--hb-space-9)));
+	/* --hb-share-room: the trigger's right edge from the viewport's left, measured as it opens. */
+	width: min(var(--hb-share-width), calc(var(--hb-share-room, 100vw) - var(--hb-space-6)));
 	border-radius: var(--hb-radius-bubble);
 	background: var(--hb-raised);
 	box-shadow: var(--hb-shadow-float);
