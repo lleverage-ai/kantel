@@ -5338,6 +5338,1670 @@
 					}
 				}
 			}
+		},
+		"/connections/catalogue": {
+			"get": {
+				"operationId": "listCatalogue",
+				"summary": "List the provider catalogue",
+				"description": "The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "category",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/ProviderCategory"
+						}
+					},
+					{
+						"name": "authType",
+						"in": "query",
+						"required": false,
+						"description": "How a connection authenticates.",
+						"schema": {
+							"$ref": "#/components/schemas/ConnectionAuthType"
+						}
+					},
+					{
+						"name": "kind",
+						"in": "query",
+						"required": false,
+						"description": "`mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API.",
+						"schema": {
+							"$ref": "#/components/schemas/ConnectionKind"
+						}
+					},
+					{
+						"name": "q",
+						"in": "query",
+						"required": false,
+						"description": "Matches the name, ID, description and category.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of catalogue entries.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/CataloguePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/catalogue/{templateId}": {
+			"get": {
+				"operationId": "getProviderTemplate",
+				"summary": "Get a provider template",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProviderTemplate"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/discover": {
+			"post": {
+				"operationId": "discoverMcpServer",
+				"summary": "Inspect a remote MCP server",
+				"description": "Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Harbour would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration).",
+				"tags": ["connections"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["url"],
+								"properties": {
+									"url": {
+										"type": "string",
+										"minLength": 1,
+										"description": "The server's Streamable HTTP endpoint, https."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "What the server said about itself.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/McpDiscovery"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/connect": {
+			"post": {
+				"operationId": "startConnect",
+				"summary": "Start an OAuth connect",
+				"description": "Starts connecting a template or a remote MCP server for an owner (an organisation, a project or a person). Answers a pending attempt with a `connectUrl` on this deployment that expires after 15 minutes and works once; the person it is for opens it and signs in at the provider. An open server is connected at once (`completed`). `refused` with `no_client` when the template needs an OAuth app nobody has registered. Creating needs admin on the owner, or being the person for their own.",
+				"tags": ["connections"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["owner"],
+								"properties": {
+									"templateId": {
+										"type": "string",
+										"description": "A catalogue template. Give this or `mcpUrl`."
+									},
+									"mcpUrl": {
+										"type": "string",
+										"description": "A remote MCP server's endpoint, for a server with no template."
+									},
+									"owner": {
+										"$ref": "#/components/schemas/ConnectionOwner"
+									},
+									"name": {
+										"type": "string"
+									},
+									"scopeSets": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										},
+										"description": "Scope sets to ask for; default the template's default sets."
+									},
+									"scopes": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										},
+										"description": "Explicit scopes, added to the sets'."
+									},
+									"usage": {
+										"$ref": "#/components/schemas/ConnectionUsage"
+									},
+									"forUserId": {
+										"type": "string",
+										"description": "A handover link: the person who must complete it. Default the caller."
+									},
+									"connectionId": {
+										"type": "string",
+										"description": "Reconnect or widen this connection, keeping its ID."
+									},
+									"returnTo": {
+										"type": "string",
+										"description": "Where the final page sends the person afterwards."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The attempt.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectAttempt"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/connect/{attemptId}": {
+			"get": {
+				"operationId": "getConnectAttempt",
+				"summary": "Get a connect attempt",
+				"description": "Its status: pending, completed (with the connection), failed (with why) or expired.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "attemptId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The attempt.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectAttempt"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/keys": {
+			"post": {
+				"operationId": "connectKey",
+				"summary": "Connect with a key",
+				"description": "Stores a key connection for a template with a key auth type, or a custom service with its https hosts and how the key goes out. The key is write-only: no answer, event or log carries it.",
+				"tags": ["connections"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["owner", "value"],
+								"properties": {
+									"templateId": {
+										"type": "string",
+										"description": "A template with a key auth type. Give this or `custom`."
+									},
+									"custom": {
+										"type": "object",
+										"required": ["kind", "hosts", "injection"],
+										"properties": {
+											"kind": {
+												"$ref": "#/components/schemas/ConnectionKind"
+											},
+											"hosts": {
+												"type": "array",
+												"items": {
+													"type": "string"
+												},
+												"minItems": 1,
+												"description": "https hosts the key may be sent to."
+											},
+											"injection": {
+												"$ref": "#/components/schemas/KeyInjection"
+											},
+											"mcpUrl": {
+												"type": "string"
+											}
+										}
+									},
+									"owner": {
+										"$ref": "#/components/schemas/ConnectionOwner"
+									},
+									"name": {
+										"type": "string"
+									},
+									"value": {
+										"type": "string",
+										"minLength": 1,
+										"description": "The key. Write-only: never returned."
+									},
+									"usage": {
+										"$ref": "#/components/schemas/ConnectionUsage"
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Connection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/uses": {
+			"get": {
+				"operationId": "listConnectionUses",
+				"summary": "List connection uses",
+				"description": "Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "sessionId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of uses.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionUsePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/clients": {
+			"get": {
+				"operationId": "listOAuthClients",
+				"summary": "List OAuth clients",
+				"description": "The OAuth app registrations the caller may see: the deployment's, the organisation's, its projects' and their own. Each shows only whether a secret is set and its last four characters, and the redirect URI to register.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "tier",
+						"in": "query",
+						"required": false,
+						"description": "The tenancy level an OAuth client belongs to; `platform` is the deployment.",
+						"schema": {
+							"$ref": "#/components/schemas/OAuthClientTier"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of OAuth clients.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/OAuthClientPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createOAuthClient",
+				"summary": "Register an OAuth client",
+				"description": "Registers an OAuth app at a tenancy level, for a template or an authorisation server. The deployment's need a system or deployment operator, an organisation's its admin, a project's its admin, a person's that person.",
+				"tags": ["connections"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["owner", "label", "clientId"],
+								"properties": {
+									"owner": {
+										"$ref": "#/components/schemas/OwnerRef"
+									},
+									"templateId": {
+										"type": "string"
+									},
+									"issuer": {
+										"type": "string"
+									},
+									"label": {
+										"type": "string",
+										"minLength": 1
+									},
+									"clientId": {
+										"type": "string",
+										"minLength": 1
+									},
+									"clientSecret": {
+										"type": "string",
+										"minLength": 1,
+										"description": "Write-only. A public client has none."
+									},
+									"scopes": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"redirectDomain": {
+										"type": "string"
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The client.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/OAuthClient"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/clients/{oauthClientId}": {
+			"get": {
+				"operationId": "getOAuthClient",
+				"summary": "Get an OAuth client",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "oauthClientId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The client.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/OAuthClient"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateOAuthClient",
+				"summary": "Change an OAuth client",
+				"description": "Its label, scopes, redirect domain, secret (write-only) or whether it is disabled. Disabling stops new connections through it; connections pinned to it keep working and refreshing.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "oauthClientId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"label": {
+										"type": "string",
+										"minLength": 1
+									},
+									"clientSecret": {
+										"type": "string",
+										"minLength": 1,
+										"description": "Replaces the secret. Write-only."
+									},
+									"scopes": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"redirectDomain": {
+										"type": "string"
+									},
+									"disabled": {
+										"type": "boolean"
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The client.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/OAuthClient"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeOAuthClient",
+				"summary": "Remove an OAuth client",
+				"description": "`conflict`, naming how many, while any connection is pinned to it.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "oauthClientId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Removed."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections": {
+			"get": {
+				"operationId": "listConnections",
+				"summary": "List connections",
+				"description": "The connections the caller may see: the organisation's, its projects' and their own, with their owner, account, usage and credential state. Never a secret.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "ownerKind",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string",
+									"const": "organisation"
+								},
+								{
+									"type": "string",
+									"const": "project"
+								},
+								{
+									"type": "string",
+									"const": "user"
+								}
+							]
+						}
+					},
+					{
+						"name": "ownerId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "templateId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "kind",
+						"in": "query",
+						"required": false,
+						"description": "`mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API.",
+						"schema": {
+							"$ref": "#/components/schemas/ConnectionKind"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of connections.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}": {
+			"get": {
+				"operationId": "getConnection",
+				"summary": "Get a connection",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Connection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateConnection",
+				"summary": "Change a connection",
+				"description": "Its name, usage (where, by whom and in which sessions it may be used) or whether it is disabled. Takes effect on the next use. Needs admin on the owner, or being the person for their own.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"name": {
+										"type": "string",
+										"minLength": 1
+									},
+									"usage": {
+										"$ref": "#/components/schemas/ConnectionUsage"
+									},
+									"status": {
+										"anyOf": [
+											{
+												"type": "string",
+												"const": "active"
+											},
+											{
+												"type": "string",
+												"const": "disabled"
+											}
+										]
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Connection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeConnection",
+				"summary": "Remove a connection",
+				"description": "Deletes its stored credential at once; its uses stay in the record.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Removed."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}/key": {
+			"post": {
+				"operationId": "rotateConnectionKey",
+				"summary": "Replace a connection's key",
+				"description": "Replaces a key connection's value in place: its ID, usage and history stay. Write-only.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["value"],
+								"properties": {
+									"value": {
+										"type": "string",
+										"minLength": 1,
+										"description": "The new key. Write-only: never returned."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Connection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -5358,6 +7022,19 @@
 					}
 				},
 				"title": "AbortSessionBody"
+			},
+			"AccessKind": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "read"
+					},
+					{
+						"type": "string",
+						"const": "write"
+					}
+				],
+				"title": "AccessKind"
 			},
 			"AccessRequest": {
 				"type": "object",
@@ -5810,6 +7487,110 @@
 				},
 				"title": "CardItem"
 			},
+			"CatalogueEntry": {
+				"type": "object",
+				"required": [
+					"id",
+					"version",
+					"name",
+					"description",
+					"icon",
+					"docsUrl",
+					"category",
+					"kind",
+					"authTypes",
+					"source",
+					"setup"
+				],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"icon": {
+						"type": "string"
+					},
+					"docsUrl": {
+						"type": "string"
+					},
+					"category": {
+						"$ref": "#/components/schemas/ProviderCategory"
+					},
+					"kind": {
+						"$ref": "#/components/schemas/ConnectionKind"
+					},
+					"authTypes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionAuthType"
+						}
+					},
+					"mcpUrl": {
+						"type": "string"
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "shipped"
+							},
+							{
+								"type": "string",
+								"const": "deployment"
+							},
+							{
+								"type": "string",
+								"const": "organisation"
+							}
+						]
+					},
+					"setup": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "ready"
+							},
+							{
+								"type": "string",
+								"const": "needs_client"
+							}
+						],
+						"description": "`ready`: the caller can connect now. `needs_client`: it needs an OAuth app someone must register first."
+					},
+					"clientTiers": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/OAuthClientTier"
+						}
+					}
+				},
+				"title": "CatalogueEntry"
+			},
+			"CataloguePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/CatalogueEntry"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "CataloguePage"
+			},
 			"CheckSettings": {
 				"type": "object",
 				"properties": {
@@ -5834,6 +7615,24 @@
 					}
 				},
 				"title": "CheckSettings"
+			},
+			"ClientRegistration": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "client"
+					},
+					{
+						"type": "string",
+						"const": "cimd"
+					},
+					{
+						"type": "string",
+						"const": "dcr"
+					}
+				],
+				"title": "ClientRegistration",
+				"description": "How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`)."
 			},
 			"Concept": {
 				"type": "object",
@@ -6007,6 +7806,581 @@
 					}
 				],
 				"title": "ConceptStatus"
+			},
+			"ConnectAttempt": {
+				"type": "object",
+				"required": ["id", "organisationId", "status", "owner", "createdBy", "createdAt", "expiresAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The attempt's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "completed"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							},
+							{
+								"type": "string",
+								"const": "expired"
+							}
+						]
+					},
+					"connectUrl": {
+						"type": "string",
+						"description": "Open this to sign in. Present while pending; it expires and works once."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/ConnectionOwner"
+					},
+					"templateId": {
+						"type": "string"
+					},
+					"mcpUrl": {
+						"type": "string"
+					},
+					"forUserId": {
+						"type": "string"
+					},
+					"connectionId": {
+						"type": "string",
+						"description": "Set once completed."
+					},
+					"failure": {
+						"type": "object",
+						"required": ["code", "message"],
+						"properties": {
+							"code": {
+								"$ref": "#/components/schemas/ConnectFailureCode"
+							},
+							"message": {
+								"type": "string"
+							}
+						}
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"completedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectAttempt",
+				"description": "One OAuth sign-in in progress."
+			},
+			"ConnectFailureCode": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "user_mismatch"
+					},
+					{
+						"type": "string",
+						"const": "no_client"
+					},
+					{
+						"type": "string",
+						"const": "denied"
+					},
+					{
+						"type": "string",
+						"const": "invalid_state"
+					},
+					{
+						"type": "string",
+						"const": "exchange_failed"
+					},
+					{
+						"type": "string",
+						"const": "discovery_failed"
+					},
+					{
+						"type": "string",
+						"const": "registration_failed"
+					}
+				],
+				"title": "ConnectFailureCode"
+			},
+			"Connection": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"owner",
+					"name",
+					"kind",
+					"auth",
+					"hosts",
+					"scopes",
+					"usage",
+					"status",
+					"credential",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The connection's ID."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"owner": {
+						"$ref": "#/components/schemas/ConnectionOwner"
+					},
+					"name": {
+						"type": "string"
+					},
+					"templateId": {
+						"type": "string"
+					},
+					"templateVersion": {
+						"type": "integer"
+					},
+					"kind": {
+						"$ref": "#/components/schemas/ConnectionKind"
+					},
+					"auth": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "oauth2"
+							},
+							{
+								"type": "string",
+								"const": "key"
+							},
+							{
+								"type": "string",
+								"const": "none"
+							}
+						]
+					},
+					"mcp": {
+						"type": "object",
+						"required": ["url"],
+						"properties": {
+							"url": {
+								"type": "string"
+							},
+							"resource": {
+								"type": "string"
+							}
+						}
+					},
+					"hosts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Hosts the credential may be sent to."
+					},
+					"account": {
+						"$ref": "#/components/schemas/ConnectionAccount"
+					},
+					"scopes": {
+						"type": "object",
+						"required": ["requested", "granted"],
+						"properties": {
+							"requested": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							},
+							"granted": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"client": {
+						"$ref": "#/components/schemas/ConnectionClientRef"
+					},
+					"usage": {
+						"$ref": "#/components/schemas/ConnectionUsage"
+					},
+					"status": {
+						"$ref": "#/components/schemas/ConnectionStatus"
+					},
+					"credential": {
+						"$ref": "#/components/schemas/CredentialState"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Connection",
+				"description": "One authorisation against a provider or remote MCP server. No secret."
+			},
+			"ConnectionAccount": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"email": {
+						"type": "string"
+					}
+				},
+				"title": "ConnectionAccount"
+			},
+			"ConnectionAuthType": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "oauth2"
+					},
+					{
+						"type": "string",
+						"const": "oauth2_client_credentials"
+					},
+					{
+						"type": "string",
+						"const": "bearer"
+					},
+					{
+						"type": "string",
+						"const": "header"
+					},
+					{
+						"type": "string",
+						"const": "query"
+					},
+					{
+						"type": "string",
+						"const": "basic"
+					},
+					{
+						"type": "string",
+						"const": "header_template"
+					},
+					{
+						"type": "string",
+						"const": "none"
+					}
+				],
+				"title": "ConnectionAuthType",
+				"description": "How a connection authenticates."
+			},
+			"ConnectionClientRef": {
+				"type": "object",
+				"required": ["via", "clientId"],
+				"properties": {
+					"via": {
+						"$ref": "#/components/schemas/ClientRegistration"
+					},
+					"clientId": {
+						"type": "string"
+					},
+					"oauthClientId": {
+						"type": "string"
+					},
+					"tier": {
+						"$ref": "#/components/schemas/OAuthClientTier"
+					}
+				},
+				"title": "ConnectionClientRef",
+				"description": "The OAuth client a connection is pinned to."
+			},
+			"ConnectionKind": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "mcp"
+					},
+					{
+						"type": "string",
+						"const": "http"
+					}
+				],
+				"title": "ConnectionKind",
+				"description": "`mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API."
+			},
+			"ConnectionOwner": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "organisationId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "organisation"
+							},
+							"organisationId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId", "projectId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"organisationId": {
+								"type": "string"
+							},
+							"projectId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "organisationId", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "user"
+							},
+							"organisationId": {
+								"type": "string"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "ConnectionOwner",
+				"description": "Who owns a connection: an organisation, a project or a person."
+			},
+			"ConnectionPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Connection"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ConnectionPage"
+			},
+			"ConnectionStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "active"
+					},
+					{
+						"type": "string",
+						"const": "needs_reauth"
+					},
+					{
+						"type": "string",
+						"const": "failing_test"
+					},
+					{
+						"type": "string",
+						"const": "disabled"
+					}
+				],
+				"title": "ConnectionStatus"
+			},
+			"ConnectionUsage": {
+				"type": "object",
+				"required": ["unattended", "visibility"],
+				"properties": {
+					"projects": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Only sessions in these projects (an organisation's connection)."
+					},
+					"actingUsers": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Only sessions acting for these people."
+					},
+					"agents": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Only sessions of these agent profiles."
+					},
+					"unattended": {
+						"type": "boolean",
+						"description": "Whether sessions with no person behind them may use it."
+					},
+					"visibility": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "private"
+							},
+							{
+								"type": "string",
+								"const": "shared"
+							}
+						],
+						"description": "`private`: only in sessions nobody but the acting person can see."
+					}
+				},
+				"title": "ConnectionUsage",
+				"description": "Where a connection may be used, by whom and in which sessions."
+			},
+			"ConnectionUse": {
+				"type": "object",
+				"required": [
+					"id",
+					"connectionId",
+					"organisationId",
+					"sessionId",
+					"kind",
+					"method",
+					"host",
+					"path",
+					"audience",
+					"outcome",
+					"at"
+				],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"connectionId": {
+						"type": "string"
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"agentId": {
+						"type": "string"
+					},
+					"actingUserId": {
+						"type": "string"
+					},
+					"toolCallId": {
+						"type": "string",
+						"description": "The tool call (step) that used it."
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "mcp_tools"
+							},
+							{
+								"type": "string",
+								"const": "mcp_call"
+							},
+							{
+								"type": "string",
+								"const": "http"
+							}
+						]
+					},
+					"method": {
+						"$ref": "#/components/schemas/HttpMethod"
+					},
+					"host": {
+						"type": "string"
+					},
+					"path": {
+						"type": "string"
+					},
+					"tool": {
+						"type": "string"
+					},
+					"audience": {
+						"$ref": "#/components/schemas/SessionAudience"
+					},
+					"outcome": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allowed"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							}
+						]
+					},
+					"reason": {
+						"type": "string"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectionUse",
+				"description": "Which connection a session used, at which step, and who could see it."
+			},
+			"ConnectionUsePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionUse"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ConnectionUsePage"
 			},
 			"CreatedSession": {
 				"type": "object",
@@ -6208,6 +8582,32 @@
 				},
 				"title": "CreateSessionBody",
 				"description": "Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: \"run-42\" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`."
+			},
+			"CredentialState": {
+				"type": "object",
+				"required": ["set", "refreshable"],
+				"properties": {
+					"set": {
+						"type": "boolean"
+					},
+					"last4": {
+						"type": "string",
+						"description": "A key's or client secret's last four characters."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"refreshable": {
+						"type": "boolean"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "CredentialState",
+				"description": "A credential's state. Never its value."
 			},
 			"Cursor": {
 				"type": "string",
@@ -6435,6 +8835,31 @@
 				},
 				"title": "EmbedBrowserBody"
 			},
+			"EndpointHint": {
+				"type": "object",
+				"required": ["method", "path", "access"],
+				"properties": {
+					"method": {
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/HttpMethod"
+							},
+							{
+								"type": "string",
+								"const": "*"
+							}
+						]
+					},
+					"path": {
+						"type": "string",
+						"description": "`*` matches one segment; a trailing `/**` the rest."
+					},
+					"access": {
+						"$ref": "#/components/schemas/AccessKind"
+					}
+				},
+				"title": "EndpointHint"
+			},
 			"ErrorBody": {
 				"type": "object",
 				"required": ["error"],
@@ -6659,6 +9084,39 @@
 				},
 				"title": "HistoryPage"
 			},
+			"HttpMethod": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "GET"
+					},
+					{
+						"type": "string",
+						"const": "HEAD"
+					},
+					{
+						"type": "string",
+						"const": "POST"
+					},
+					{
+						"type": "string",
+						"const": "PUT"
+					},
+					{
+						"type": "string",
+						"const": "PATCH"
+					},
+					{
+						"type": "string",
+						"const": "DELETE"
+					},
+					{
+						"type": "string",
+						"const": "OPTIONS"
+					}
+				],
+				"title": "HttpMethod"
+			},
 			"ImportSkillBody": {
 				"type": "object",
 				"required": ["owner", "name", "description", "files", "source"],
@@ -6700,6 +9158,94 @@
 				"title": "JsonValue",
 				"description": "Any JSON value."
 			},
+			"KeyInjection": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "bearer"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "header"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "header"
+							},
+							"header": {
+								"type": "string"
+							},
+							"prefix": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "param"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "query"
+							},
+							"param": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "basic"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "header", "template"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "header_template"
+							},
+							"header": {
+								"type": "string"
+							},
+							"template": {
+								"type": "string",
+								"description": "Contains `{key}`."
+							}
+						}
+					}
+				],
+				"title": "KeyInjection",
+				"description": "How a key goes out on a request."
+			},
+			"KeyShape": {
+				"type": "object",
+				"required": ["label"],
+				"properties": {
+					"label": {
+						"type": "string"
+					},
+					"prefix": {
+						"type": "string"
+					},
+					"pattern": {
+						"type": "string"
+					}
+				},
+				"title": "KeyShape"
+			},
 			"Labels": {
 				"type": "object",
 				"patternProperties": {
@@ -6709,6 +9255,54 @@
 				},
 				"title": "Labels",
 				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+			},
+			"McpDiscovery": {
+				"type": "object",
+				"required": ["url", "auth", "registration"],
+				"properties": {
+					"url": {
+						"type": "string"
+					},
+					"auth": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "oauth"
+							},
+							{
+								"type": "string",
+								"const": "none"
+							},
+							{
+								"type": "string",
+								"const": "unknown"
+							}
+						]
+					},
+					"resource": {
+						"type": "string"
+					},
+					"authorizationServer": {
+						"type": "string"
+					},
+					"registration": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ClientRegistration"
+						}
+					},
+					"scopes": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"templateId": {
+						"type": "string"
+					}
+				},
+				"title": "McpDiscovery",
+				"description": "What Harbour learnt about a remote MCP server from its URL."
 			},
 			"MemorySearchBody": {
 				"type": "object",
@@ -7004,6 +9598,122 @@
 					}
 				},
 				"title": "NoticeItem"
+			},
+			"OAuthClient": {
+				"type": "object",
+				"required": [
+					"id",
+					"owner",
+					"label",
+					"clientId",
+					"secret",
+					"redirectUri",
+					"disabled",
+					"connections",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The OAuth client record's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"templateId": {
+						"type": "string"
+					},
+					"issuer": {
+						"type": "string",
+						"description": "An authorisation server's issuer, for a server with no template."
+					},
+					"label": {
+						"type": "string"
+					},
+					"clientId": {
+						"type": "string",
+						"description": "The public client ID."
+					},
+					"secret": {
+						"$ref": "#/components/schemas/CredentialState"
+					},
+					"scopes": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"redirectDomain": {
+						"type": "string"
+					},
+					"redirectUri": {
+						"type": "string",
+						"description": "The redirect URI to register with the provider."
+					},
+					"disabled": {
+						"type": "boolean"
+					},
+					"connections": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many connections are pinned to it."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "OAuthClient",
+				"description": "An OAuth app registration at a tenancy level. Its secret is write-only."
+			},
+			"OAuthClientPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/OAuthClient"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "OAuthClientPage"
+			},
+			"OAuthClientTier": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "platform"
+					},
+					{
+						"type": "string",
+						"const": "organisation"
+					},
+					{
+						"type": "string",
+						"const": "project"
+					},
+					{
+						"type": "string",
+						"const": "user"
+					}
+				],
+				"title": "OAuthClientTier",
+				"description": "The tenancy level an OAuth client belongs to; `platform` is the deployment."
 			},
 			"Occurrence": {
 				"type": "object",
@@ -7302,6 +10012,235 @@
 					}
 				},
 				"title": "PromptRuleList"
+			},
+			"ProviderCategory": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "developer"
+					},
+					{
+						"type": "string",
+						"const": "productivity"
+					},
+					{
+						"type": "string",
+						"const": "communication"
+					},
+					{
+						"type": "string",
+						"const": "knowledge"
+					},
+					{
+						"type": "string",
+						"const": "project_management"
+					},
+					{
+						"type": "string",
+						"const": "crm"
+					},
+					{
+						"type": "string",
+						"const": "payments"
+					},
+					{
+						"type": "string",
+						"const": "ai"
+					},
+					{
+						"type": "string",
+						"const": "cloud"
+					},
+					{
+						"type": "string",
+						"const": "data"
+					},
+					{
+						"type": "string",
+						"const": "design"
+					},
+					{
+						"type": "string",
+						"const": "other"
+					}
+				],
+				"title": "ProviderCategory"
+			},
+			"ProviderOAuth": {
+				"type": "object",
+				"required": ["discovery", "pkce", "registration"],
+				"properties": {
+					"discovery": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "static"
+							},
+							{
+								"type": "string",
+								"const": "mcp"
+							}
+						]
+					},
+					"authorizationUrl": {
+						"type": "string"
+					},
+					"tokenUrl": {
+						"type": "string"
+					},
+					"revocationUrl": {
+						"type": "string"
+					},
+					"scopeSeparator": {
+						"type": "string"
+					},
+					"extraAuthorizationParams": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						}
+					},
+					"pkce": {
+						"type": "boolean"
+					},
+					"refreshBufferSeconds": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"rotatesRefreshTokens": {
+						"type": "boolean"
+					},
+					"registration": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ClientRegistration"
+						}
+					}
+				},
+				"title": "ProviderOAuth"
+			},
+			"ProviderTemplate": {
+				"type": "object",
+				"required": [
+					"id",
+					"version",
+					"name",
+					"description",
+					"icon",
+					"docsUrl",
+					"category",
+					"kind",
+					"authTypes",
+					"apiHosts",
+					"scopeSets",
+					"endpointHints",
+					"source"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The template's ID, such as `github`."
+					},
+					"version": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"icon": {
+						"type": "string",
+						"description": "An https URL or a `data:image/svg+xml` URI."
+					},
+					"docsUrl": {
+						"type": "string"
+					},
+					"category": {
+						"$ref": "#/components/schemas/ProviderCategory"
+					},
+					"kind": {
+						"$ref": "#/components/schemas/ConnectionKind"
+					},
+					"authTypes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionAuthType"
+						}
+					},
+					"apiHosts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Hosts the credential may be sent to. Never empty."
+					},
+					"mcp": {
+						"type": "object",
+						"required": ["url"],
+						"properties": {
+							"url": {
+								"type": "string"
+							}
+						}
+					},
+					"oauth": {
+						"$ref": "#/components/schemas/ProviderOAuth"
+					},
+					"key": {
+						"type": "object",
+						"required": ["injection"],
+						"properties": {
+							"injection": {
+								"$ref": "#/components/schemas/KeyInjection"
+							},
+							"shapes": {
+								"type": "array",
+								"items": {
+									"$ref": "#/components/schemas/KeyShape"
+								}
+							}
+						}
+					},
+					"scopeSets": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ScopeSet"
+						}
+					},
+					"endpointHints": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EndpointHint"
+						}
+					},
+					"testRequest": {
+						"$ref": "#/components/schemas/TestRequest"
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "shipped"
+							},
+							{
+								"type": "string",
+								"const": "deployment"
+							},
+							{
+								"type": "string",
+								"const": "organisation"
+							}
+						]
+					}
+				},
+				"title": "ProviderTemplate",
+				"description": "A catalogue entry: how a service authenticates and where it is reached."
 			},
 			"PutPromptRuleBody": {
 				"type": "object",
@@ -8120,6 +11059,36 @@
 				],
 				"title": "ScheduleStatus"
 			},
+			"ScopeSet": {
+				"type": "object",
+				"required": ["id", "label", "access", "scopes"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"label": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"access": {
+						"$ref": "#/components/schemas/AccessKind"
+					},
+					"scopes": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"default": {
+						"type": "boolean",
+						"description": "Asked for when nobody picks."
+					}
+				},
+				"title": "ScopeSet",
+				"description": "A named group of scopes, marked read or write."
+			},
 			"ServerFrame": {
 				"anyOf": [
 					{
@@ -8204,6 +11173,35 @@
 				],
 				"title": "ServerFrame",
 				"description": "One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s."
+			},
+			"SessionAudience": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "private"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "shared"
+							}
+						}
+					}
+				],
+				"title": "SessionAudience",
+				"description": "Who could see a session: only the person it acts for (`private`), or more people (`shared`)."
 			},
 			"SessionDelta": {
 				"type": "object",
@@ -8973,6 +11971,34 @@
 				},
 				"title": "Submission",
 				"description": "A message the session accepted."
+			},
+			"TestRequest": {
+				"type": "object",
+				"required": ["method", "url"],
+				"properties": {
+					"method": {
+						"$ref": "#/components/schemas/HttpMethod"
+					},
+					"url": {
+						"type": "string",
+						"description": "An absolute https URL on one of the template's API hosts."
+					},
+					"account": {
+						"type": "object",
+						"properties": {
+							"id": {
+								"type": "string"
+							},
+							"name": {
+								"type": "string"
+							},
+							"email": {
+								"type": "string"
+							}
+						}
+					}
+				},
+				"title": "TestRequest"
 			},
 			"ThinkingLevel": {
 				"anyOf": [
