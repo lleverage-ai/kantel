@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Row, Section, Sheet } from "../workbench/specimen.tsx";
 import { Button, IconButton } from "./button.tsx";
-import { CopyButton, Disclosure, SegmentedControl, TextAreaField, TextField } from "./controls.tsx";
+import { CheckboxField, CopyButton, Disclosure, SegmentedControl, TextAreaField, TextField } from "./controls.tsx";
 import { DotsIcon, PlusIcon, ShieldIcon, StopIcon } from "./icons.tsx";
 import { ListRow } from "./list-row.tsx";
 import { Kbd, Skeleton, Spinner } from "./spinner.tsx";
@@ -155,6 +155,7 @@ export const Surfaces: Story = () => (
 function ControlsDemo() {
 	const [layout, setLayout] = useState<"unified" | "split">("unified");
 	const [filter, setFilter] = useState<"all" | "working" | "waiting" | "done">("all");
+	const [agentWrites, setAgentWrites] = useState(false);
 	return (
 		<Sheet title="Controls">
 			<Section title="Segmented control">
@@ -202,6 +203,22 @@ function ControlsDemo() {
 					</div>
 					<div style={{ width: "20em" }}>
 						<TextAreaField label="Prompt" rows={2} defaultValue="" error="Write what to ask the agent." />
+					</div>
+				</Row>
+			</Section>
+			<Section title="Checkbox">
+				<Row>
+					<CheckboxField
+						label="Let agents write"
+						checked={agentWrites}
+						onChange={(event) => setAgentWrites(event.target.checked)}
+					/>
+					<CheckboxField label="Let agents write" defaultChecked disabled />
+					<div style={{ width: "20em" }}>
+						<CheckboxField
+							label="Require a second person to publish"
+							hint="Whoever saved the draft can't publish it. Long hints wrap under the label, not the box."
+						/>
 					</div>
 				</Row>
 			</Section>

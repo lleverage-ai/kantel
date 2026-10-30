@@ -18,6 +18,7 @@ import {
 	granteeText,
 	grantInput,
 	kindLabel,
+	offersAgentWrites,
 	readAll,
 	readOverview,
 	readResourceSharing,
@@ -42,6 +43,25 @@ describe("the sharing model", () => {
 			permission: "use",
 			expiresAt: FIXTURE_NOW + DAY,
 			note: "ok",
+		});
+	});
+
+	it("lets agents write only on a grant that allows edit, and only when asked", () => {
+		const [request] = fixtureRequests();
+		if (request === undefined) throw new Error("fixture");
+		expect(offersAgentWrites("edit")).toBe(true);
+		expect(offersAgentWrites("approve")).toBe(true);
+		expect(offersAgentWrites("propose")).toBe(false);
+		expect(offersAgentWrites("use")).toBe(false);
+		expect(grantInput(request, { permission: "edit", agentWrites: true })).toEqual({
+			decision: "grant",
+			agentWrites: true,
+		});
+		expect(grantInput(request, { permission: "edit", agentWrites: false })).toEqual({ decision: "grant" });
+		// Ticked, then narrowed to a permission that can't carry it: it isn't sent.
+		expect(grantInput(request, { permission: "propose", agentWrites: true })).toEqual({
+			decision: "grant",
+			permission: "propose",
 		});
 	});
 
@@ -129,6 +149,26 @@ describe("the sharing view", () => {
 		expect(html).not.toContain('<option value="approve">');
 		expect(html).toContain(">Grant</span>");
 		expect(html).toContain(">Reject</span>");
+		// The request asks for edit, so the grant offers agent writes, off until ticked.
+		expect(html).toMatch(/<input[^>]*type="checkbox"(?![^>]*checked)[^>]*>/);
+		expect(html).toContain("Let agents write");
+	});
+
+	it("offers agent writes only for a request that can carry them", () => {
+		const [request] = fixtureRequests();
+		if (request === undefined) throw new Error("fixture");
+		const html = renderToStaticMarkup(
+			createElement(SharingView, {
+				overview: { inbox: [{ ...request, permission: "propose" }], outgoing: [], incoming: [], requests: [] },
+				directory,
+				now: FIXTURE_NOW,
+				onDecide: () => undefined,
+				onRevoke: () => undefined,
+				onWithdraw: () => undefined,
+			}),
+		);
+		expect(html).toContain(">Grant</span>");
+		expect(html).not.toContain("Let agents write");
 	});
 
 	it("lists what the project shares and what is shared with it", async () => {
@@ -138,6 +178,8 @@ describe("the sharing view", () => {
 		expect(html).toContain("6 days left");
 		expect(html).toContain("Workspace Refund playbooks");
 		expect(html).toContain("From Billing project");
+		// Only the workspace share lets agents write, and the list says so.
+		expect(html.match(/Agents can write/g)).toHaveLength(1);
 		expect(html).toContain(">Revoke</span>");
 		expect(html).toContain(">Detach</span>");
 		expect(html).toContain("No requests from this project");

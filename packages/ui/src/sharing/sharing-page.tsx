@@ -5,7 +5,7 @@
 import type { AccessRequest, ResourceShare, SharePermission } from "@harbour/contracts";
 import { useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { SelectField } from "../primitives/controls.tsx";
+import { CheckboxField, SelectField } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { ownerName } from "../primitives/owner.ts";
@@ -15,10 +15,12 @@ import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
 import { ClockTime } from "../primitives/time.tsx";
 import {
 	actorText,
+	agentWritesText,
 	expiryText,
 	grantablePermissions,
 	granteeText,
 	grantInput,
+	offersAgentWrites,
 	PERMISSION_HINTS,
 	PERMISSION_LABELS,
 	REQUEST_STATUS_LABELS,
@@ -228,6 +230,7 @@ export function InboxRow({
 	onDecide: SharingViewProps["onDecide"];
 }) {
 	const [permission, setPermission] = useState<SharePermission>(request.permission);
+	const [agentWrites, setAgentWrites] = useState(false);
 	const choices = grantablePermissions(request.permission);
 	return (
 		<li className="hb-sharing-row">
@@ -252,11 +255,20 @@ export function InboxRow({
 						onChange={(event) => setPermission(event.target.value as SharePermission)}
 					/>
 				) : null}
+				{offersAgentWrites(permission) ? (
+					<CheckboxField
+						label="Let agents write"
+						title="Agents in the grantee's sessions may change it too. Without this they only propose."
+						checked={agentWrites}
+						disabled={busy}
+						onChange={(event) => setAgentWrites(event.target.checked)}
+					/>
+				) : null}
 				<Button
 					size="sm"
 					variant="primary"
 					disabled={busy}
-					onClick={() => onDecide(request, grantInput(request, { permission }))}
+					onClick={() => onDecide(request, grantInput(request, { permission, agentWrites }))}
 				>
 					Grant
 				</Button>
@@ -330,6 +342,7 @@ export function ShareList({
 								</div>
 								<div className="hb-sharing-actions">
 									<Badge tone={state === "active" ? "accent" : "neutral"}>{PERMISSION_LABELS[share.permission]}</Badge>
+									{agentWritesText(share) === undefined ? null : <Badge>{agentWritesText(share)}</Badge>}
 									{state === "active" ? (
 										<Button size="sm" variant="ghost" disabled={busy === share.id} onClick={() => onRevoke(share)}>
 											{action}

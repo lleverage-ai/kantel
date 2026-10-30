@@ -143,6 +143,7 @@ export {
 } from "./primitives/button.tsx";
 export { clockListenerCounts, useNow } from "./primitives/clock.ts";
 export {
+	CheckboxField,
 	CopyButton,
 	Disclosure,
 	SegmentedControl,

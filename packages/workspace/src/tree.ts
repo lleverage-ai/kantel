@@ -437,7 +437,7 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 			if (access === undefined || scope === undefined) return;
 			const subject = { kind: "workspace", id: record.id } as const;
 			// A project's workspace not bound to a session may be shared (docs/design/sharing.md): reading needs `use`,
-			// anything more `edit`, which agents never hold.
+			// anything more `edit`, which an agent holds only through a share that lets agents write (`agentWrites`).
 			if (
 				record.owner.kind === "project" &&
 				record.sessionId === undefined &&

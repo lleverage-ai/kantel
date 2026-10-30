@@ -168,7 +168,9 @@ changes uses webhooks, later.
 Built: `/v1/sharing/…` (`sharingRoutes`, served by `@harbour/sharing/http`), one route per `Sharing` call: shares,
 access requests and their decisions, bindings, per-resource policy, host resource registration and a session's uses.
 The routes and their rules are in [sharing.md](sharing.md#public-api). A host's key acts as its service: it can read
-and request within its projects, and share or decide only where its role gives it authority over the resource.
+and request within its projects, and share or decide only where its role gives it authority over the resource. A host
+that lets agents write a shared resource sets `agentWrites: true` on an `edit` share, or on the grant that makes one;
+it is off otherwise.
 
 ## Vault approvals in a host app
 

@@ -275,4 +275,39 @@ describe("workspaces", () => {
 		});
 		a.strictEqual((await write()).version, 1);
 	});
+
+	it("lets an agent write another project's workspace only through an edit share that lets agents write", async () => {
+		const env = setup();
+		const workspace = await env.workspaces.create(ownerAdmin, { owner: owned });
+		const resource = { kind: "workspace", id: workspace.id } as const;
+		let version = 0;
+		const write = async (ctx: CallContext) => {
+			const committed = await env.workspaces.commit(ctx, workspace.id, {
+				baseVersion: version,
+				changes: [{ op: "put", path: "notes.md", content: `v${version + 1}` }],
+			});
+			version = committed.version;
+			return committed;
+		};
+		const plain = await env.sharing.createShare(ownerAdmin, {
+			resource,
+			grantee: { kind: "project", projectId: USER },
+			permission: "edit",
+		});
+		a.strictEqual((await env.workspaces.get(agent, workspace.id)).id, workspace.id, "an edit share reads");
+		await a.rejectsWithCode(write(agent), "forbidden", "but its agents don't write without the flag");
+		a.strictEqual((await write(userOperator)).version, 1, "its people do");
+		const writes = await env.sharing.createShare(ownerAdmin, {
+			resource,
+			grantee: { kind: "project", projectId: USER },
+			permission: "edit",
+			agentWrites: true,
+		});
+		a.strictEqual((await write(agent)).version, 2);
+		a.strictEqual((await write(later)).version, 3, "every session of the grantee project");
+		await env.sharing.revokeShare(ownerAdmin, writes.id);
+		await a.rejectsWithCode(write(agent), "forbidden", "revoking it stops the writes");
+		a.strictEqual((await write(userOperator)).version, 4, "the plain edit share still holds for people");
+		a.ok(plain.id !== writes.id);
+	});
 });

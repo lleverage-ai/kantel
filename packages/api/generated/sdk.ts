@@ -19,7 +19,7 @@ export interface AccessRequest {
 	readonly owner: OwnerRef;
 	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
 	readonly grantee: ShareGrantee;
-	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 	readonly permission: SharePermission;
 	readonly reason: string;
 	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
@@ -259,8 +259,10 @@ export interface CreateResourceShareBody {
 	readonly resource: ResourceSelector;
 	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
 	readonly grantee: ShareGrantee;
-	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 	readonly permission: SharePermission;
+	/** Let agents write through the share (default false). Only on an `edit` or `approve` share; a share passed on may turn it on only when the one held has it. */
+	readonly agentWrites?: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
 	/** Required of an agent: the share it passes on. */
@@ -313,8 +315,10 @@ export type Cursor = string;
 export interface DecideAccessRequestBody {
 	readonly decision: "grant" | "reject";
 	readonly note?: string;
-	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 	readonly permission?: SharePermission;
+	/** Let agents write through the share the grant makes (default false). Only when it grants `edit` or `approve`. */
+	readonly agentWrites?: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
 	/** Pins this revision. Without one, the share follows the latest. */
@@ -890,7 +894,7 @@ export interface RequestAccessBody {
 	readonly resource: ResourceSelector;
 	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
 	readonly grantee?: ShareGrantee;
-	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 	readonly permission?: SharePermission;
 	readonly reason: string;
 	/** Epoch milliseconds, UTC. */
@@ -959,8 +963,10 @@ export interface ResourceShare {
 	readonly owner: OwnerRef;
 	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
 	readonly grantee: ShareGrantee;
-	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 	readonly permission: SharePermission;
+	/** Whether agents covered by the share may write through it (`edit`, never `approve`). Off unless the granter turned it on. */
+	readonly agentWrites: boolean;
 	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
 	readonly grantedBy: Actor;
 	/** Epoch milliseconds, UTC. */
@@ -1224,7 +1230,7 @@ export interface ShareInviteBody {
 	readonly email: string;
 }
 
-/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 export type SharePermission = "use" | "propose" | "edit" | "approve";
 
 /** A resource a session used through a share: which revision, under which share. */
