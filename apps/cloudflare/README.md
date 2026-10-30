@@ -290,10 +290,13 @@ deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs 
 CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, called by
 `.github/workflows/main.yml` on every push to main that changes more than Markdown (or a manual run of it from main).
 Pull requests are gated only on `CI`'s install, typecheck and lint, so they stay quick on Harbour's two self-hosted
-runners; main runs the heavy checks only on its newest head: `CI` with the tests, `self-hosted` and `Sandbox image`.
-A newer push cancels them, even while they run, and skips the older commit's deploy. The deploy runs only once all
-three have passed on that same commit, so a failing check on main means nothing deploys; a deploy already going is
-never cancelled, and a newer one waits for it. A pull request that changes the Worker can dry-run it on demand with
+runners; main runs the heavy checks, `CI` with the tests, `self-hosted` and `Sandbox image`, once main has settled:
+a run first waits for 4 quiet minutes after its push, but never past the next 10-minute boundary of the clock, and a
+newer push cancels a run that is still waiting. A build that has started is never cancelled: a newer one waits for it
+and replaces any that is still pending, so a merge burst collapses into one or two builds and a steady stream of
+merges still deploys. The deploy runs only once all three have passed on that same commit, so a failing check on main
+means nothing deploys; a deploy already going is never cancelled, and a newer one waits for it. From a merge to its
+deploy takes about 20 minutes when main is quiet and at most about 40 when it isn't (main.yml has the sums). A pull request that changes the Worker can dry-run it on demand with
 `gh workflow run cloudflare-deploy.yml --ref <branch>`. The account side (the token, the Access application, the
 VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
 
