@@ -23,7 +23,12 @@ import {
 	WEEK,
 } from "./schedule-form-model.ts";
 import type { FormKind, ScheduleWrites } from "./schedule-writes.ts";
-import "./schedule-form.css";
+
+/** A line of faint help under the next runs. */
+const hint = "m-0 text-xs text-faint";
+/** A day of the week, as a toggle: sunken, or the accent once chosen. */
+const day =
+	"hb-focusable h-control-sm min-w-control-lg cursor-pointer rounded-control border border-border-input bg-sunken px-2 py-0 text-xs text-muted transition-colors duration-(--hb-duration-fast) [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit] hover:bg-hover hover:text-fg aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg";
 
 export interface ScheduleFormProps {
 	/** The schedules page's source, or any with its writes: `create`, `update` and `end`. */
@@ -217,11 +222,11 @@ export function ScheduleForm({
 
 	return (
 		<Panel
-			className="hb-schedule-form"
+			className="w-full max-w-content min-w-0 text-sm leading-normal text-fg"
 			aria-labelledby={titleId}
 			header={
-				<div className="hb-schedule-form-head">
-					<h2 id={titleId} className="hb-schedule-form-title">
+				<div className="flex min-w-0 items-center gap-2">
+					<h2 id={titleId} className="m-0 text-sm font-medium wrap-anywhere">
 						{editing ? `Edit ${schedule.title}` : "New schedule"}
 					</h2>
 					{editing ? <Badge>{draft.kind === "check" ? "Check" : "Task"}</Badge> : null}
@@ -482,14 +487,14 @@ function Weekdays({
 }) {
 	return (
 		<FormField id="hb-schedule-form-days" label="On" error={error}>
-			<div className="hb-schedule-form-days">
+			<div className="flex flex-wrap gap-1">
 				{WEEK.map((weekday) => {
 					const on = value.includes(weekday);
 					return (
 						<button
 							key={weekday}
 							type="button"
-							className="hb-schedule-form-day hb-focusable"
+							className={day}
 							aria-pressed={on}
 							aria-label={WEEKDAY_LABELS[weekday].long}
 							onClick={() => onChange(on ? value.filter((day) => day !== weekday) : [...value, weekday])}
@@ -521,7 +526,9 @@ function CheckSettingsFields({
 		<Disclosure
 			summary="When findings are raised again"
 			defaultOpen={changed || wrong}
-			className="hb-schedule-form-check"
+			// Disclosure pads its own detail element in its unlayered CSS (primitives/controls.css), which beats a plain
+			// utility, hence `!`: flush with the form's fields rather than indented under the summary.
+			className="[&_.hb-disclosure-detail]:px-0! [&_.hb-disclosure-detail]:pt-2.5! [&_.hb-disclosure-detail]:pb-1!"
 		>
 			<FormGrid role="group" aria-label="When findings are raised again">
 				<TextField
@@ -582,29 +589,30 @@ function NextRuns({
 	schedule: Schedule | undefined;
 }) {
 	return (
-		<section className="hb-schedule-form-preview" aria-labelledby="hb-schedule-form-preview-title">
-			<h3 id="hb-schedule-form-preview-title" className="hb-schedule-form-preview-title">
+		<section
+			className="flex flex-col gap-1.5 rounded-control border border-border bg-sunken px-4 py-3"
+			aria-labelledby="hb-schedule-form-preview-title"
+		>
+			<h3 id="hb-schedule-form-preview-title" className="m-0 flex items-center gap-1.5 text-xs font-medium text-muted">
 				<ClockIcon size="sm" />
 				Next runs
 			</h3>
 			{preview === undefined ? (
-				<p className="hb-schedule-form-hint">Fix the timing above to see when it runs.</p>
+				<p className={hint}>Fix the timing above to see when it runs.</p>
 			) : preview.length === 0 ? (
-				<p className="hb-schedule-form-hint">
+				<p className={hint}>
 					{schedule?.count !== undefined || schedule?.until !== undefined
 						? "Nothing more is due: it has reached its limit."
 						: "Nothing is due."}
 				</p>
 			) : (
 				<>
-					<ol className="hb-schedule-form-runs">
+					<ol className="m-0 flex list-none flex-col gap-0.5 p-0 tabular-nums">
 						{preview.map((at) => (
-							<li key={at} className="hb-schedule-form-run">
-								{dueText(at, timezone)}
-							</li>
+							<li key={at}>{dueText(at, timezone)}</li>
 						))}
 					</ol>
-					<p className="hb-schedule-form-hint">In {timezone.replaceAll("_", " ")} time.</p>
+					<p className={hint}>In {timezone.replaceAll("_", " ")} time.</p>
 				</>
 			)}
 		</section>
@@ -627,8 +635,12 @@ function EndConfirmation({
 	useEffect(() => cancel.current?.focus(), []);
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: a confirmation inside the form, not a form of its own.
-		<div className="hb-schedule-form-confirm" role="group" aria-label={`End ${schedule.title}`}>
-			<p className="hb-schedule-form-confirm-text">
+		<div
+			className="flex flex-col gap-2.5 rounded-control border border-status-error-line bg-status-error-soft px-4 py-3"
+			role="group"
+			aria-label={`End ${schedule.title}`}
+		>
+			<p className="m-0">
 				End {schedule.title}? Nothing more runs. It stays in the list as ended, with its run history. This can't be
 				undone.
 			</p>

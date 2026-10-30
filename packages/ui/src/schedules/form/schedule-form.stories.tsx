@@ -12,9 +12,11 @@ import {
 } from "../fixtures.ts";
 import { ScheduleForm } from "./schedule-form.tsx";
 import type { ScheduleWrites } from "./schedule-writes.ts";
-import "./stories.css";
 
 export default { title: "Schedules/Form" } satisfies StoryDefault;
+
+/** Story-only frame: the content column, as the console mounts the form, with what was saved above it. */
+const frame = "flex min-w-0 flex-col items-center gap-4 *:w-full *:max-w-content";
 
 type FormProps = Omit<ComponentProps<typeof ScheduleForm>, "writes" | "agents" | "owner" | "schedule" | "now">;
 
@@ -50,14 +52,18 @@ function FormStory({
 	if (ready === undefined) return null;
 	const { schedule } = ready;
 	return (
-		<div className="hb-story-schedule-form">
+		<div className={frame}>
 			{saved === undefined ? null : (
 				<Notice level="info">
 					{saved.how === "ended" ? "Ended" : "Saved"} {saved.schedule.title}.{" "}
-					<button type="button" className="hb-story-schedule-again hb-focusable" onClick={() => setSaved(undefined)}>
+					<button
+						type="button"
+						className="hb-focusable cursor-pointer border-0 bg-transparent p-0 text-accent-text [font:inherit]"
+						onClick={() => setSaved(undefined)}
+					>
 						Start again
 					</button>
-					<pre className="hb-story-schedule-json">
+					<pre className="mt-2 mb-0 font-mono text-code whitespace-pre-wrap wrap-anywhere">
 						{JSON.stringify(
 							{
 								kind: saved.schedule.kind,

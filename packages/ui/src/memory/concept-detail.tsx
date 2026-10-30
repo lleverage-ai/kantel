@@ -21,6 +21,19 @@ import {
 	WRITE_LABELS,
 	writeSentence,
 } from "./memory-model.ts";
+import {
+	conceptLink,
+	memoryFaint,
+	memoryLoading,
+	memoryNote,
+	memoryRows,
+	memorySection,
+	stackedLink,
+} from "./memory-styles.ts";
+
+/** The concept: its head, then a panel for each part. */
+const frame = "flex min-w-0 flex-col gap-4";
+const tags = "flex flex-wrap gap-1.5";
 
 export interface ConceptDetailProps {
 	readonly source: MemoryPageSource;
@@ -71,7 +84,8 @@ export function ConceptDetail({
 
 	const back =
 		onBack === undefined ? null : (
-			<div className="hb-memory-back">
+			// The ghost button's label lines up with the page's edge. Shown under 900px only (memory-page.css).
+			<div className="hb-memory-back -ml-2.5">
 				<Button size="sm" variant="ghost" onClick={onBack}>
 					All concepts
 				</Button>
@@ -80,10 +94,10 @@ export function ConceptDetail({
 
 	if (state.status !== "ready") {
 		return (
-			<div className="hb-concept">
+			<div className={frame}>
 				{back}
 				{state.status === "loading" ? (
-					<div className="hb-memory-loading" aria-busy="true">
+					<div className={memoryLoading} aria-busy="true">
 						<span className="hb-sr-only">Loading the concept</span>
 						<Skeleton width="45%" />
 						<Skeleton lines={3} />
@@ -108,18 +122,23 @@ export function ConceptDetail({
 	const { concept, history } = state.value;
 	const stale = isStale(concept, now);
 	return (
-		<article className="hb-concept" aria-labelledby="hb-concept-title">
+		<article className={frame} aria-labelledby="hb-concept-title">
 			{back}
-			<header className="hb-concept-head">
-				<div className="hb-concept-title-row">
-					<h2 id="hb-concept-title" className="hb-concept-title" ref={heading} tabIndex={-1}>
+			<header className="flex min-w-0 flex-col gap-1.5">
+				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+					<h2
+						id="hb-concept-title"
+						className="m-0 text-lg leading-tight font-strong wrap-anywhere focus:outline-none"
+						ref={heading}
+						tabIndex={-1}
+					>
 						{concept.title}
 					</h2>
 					{source.propose === undefined ||
 					source.decide === undefined ||
 					concept.status !== "active" ||
 					changing !== undefined ? null : (
-						<span className="hb-concept-actions">
+						<span className="inline-flex flex-wrap gap-1.5">
 							<Button size="sm" onClick={() => setChanging("correct")}>
 								Correct
 							</Button>
@@ -129,8 +148,8 @@ export function ConceptDetail({
 						</span>
 					)}
 				</div>
-				<p className="hb-concept-id hb-mono">{concept.id}</p>
-				<div className="hb-concept-tags">
+				<p className="m-0 font-mono text-xs text-faint wrap-anywhere">{concept.id}</p>
+				<div className={tags}>
 					<Badge>{scopeText(concept.scope, directory.project)}</Badge>
 					<Badge tone={SET_BY[concept.setBy].tone}>{SET_BY[concept.setBy].label}</Badge>
 					{concept.status === "active" ? null : (
@@ -181,11 +200,12 @@ export function ConceptDetail({
 				/>
 			)}
 
-			<Panel header={<h3 className="hb-memory-section">Statement</h3>}>
-				<p className="hb-concept-statement hb-selectable">{concept.statement}</p>
-				{concept.description === undefined ? null : <p className="hb-concept-description">{concept.description}</p>}
+			<Panel header={<h3 className={memorySection}>Statement</h3>}>
+				<p className="hb-selectable m-0 text-md leading-prose">{concept.statement}</p>
+				{/* A block under the statement: the panel's gap and this margin make 24px. */}
+				{concept.description === undefined ? null : <p className="m-0 mt-2.5 text-muted">{concept.description}</p>}
 				{concept.tags.length === 0 ? null : (
-					<div className="hb-concept-tags">
+					<div className={`${tags} mt-2.5`}>
 						{concept.tags.map((tag) => (
 							<Badge key={tag}>{tag}</Badge>
 						))}
@@ -193,16 +213,21 @@ export function ConceptDetail({
 				)}
 			</Panel>
 
-			<Panel header={<h3 className="hb-memory-section">Sources</h3>}>
-				<ul className="hb-concept-sources">
+			<Panel header={<h3 className={memorySection}>Sources</h3>}>
+				<ul className={memoryRows}>
 					{concept.sources.map((item) => {
 						const href = sourceHref(item);
 						return (
-							<li key={item} className="hb-mono">
+							<li key={item} className="py-0.5 font-mono text-xs wrap-anywhere">
 								{href === undefined ? (
 									item
 								) : (
-									<a className="hb-concept-link hb-focusable" href={href} target="_blank" rel="noreferrer">
+									<a
+										className={`${conceptLink} ${stackedLink} hb-focusable`}
+										href={href}
+										target="_blank"
+										rel="noreferrer"
+									>
 										{item}
 									</a>
 								)}
@@ -212,7 +237,7 @@ export function ConceptDetail({
 				</ul>
 			</Panel>
 
-			<Panel header={<h3 className="hb-memory-section">Details</h3>}>
+			<Panel header={<h3 className={memorySection}>Details</h3>}>
 				<FieldList>
 					<Field label="Version">{concept.version}</Field>
 					<Field label="Updated">
@@ -230,7 +255,7 @@ export function ConceptDetail({
 							) : (
 								<button
 									type="button"
-									className="hb-concept-link hb-mono hb-focusable"
+									className={`${conceptLink} hb-focusable`}
 									onClick={() => onOpen(concept.overrides!)}
 								>
 									{concept.overrides}
@@ -245,24 +270,24 @@ export function ConceptDetail({
 			</Panel>
 
 			{history === undefined ? null : (
-				<Panel header={<h3 className="hb-memory-section">History</h3>}>
+				<Panel header={<h3 className={memorySection}>History</h3>}>
 					{history.length === 0 ? (
-						<p className="hb-memory-note">No proposals changed it here. It may have come from a snapshot import.</p>
+						<p className={memoryNote}>No proposals changed it here. It may have come from a snapshot import.</p>
 					) : (
-						<ol className="hb-concept-history">
+						<ol className={memoryRows}>
 							{history.map((proposal) => (
-								<li key={proposal.id} className="hb-concept-event">
-									<span className="hb-concept-event-badge">
+								<li key={proposal.id} className="flex items-baseline gap-2 border-border py-1.5 not-first:border-t">
+									<span className="flex-none">
 										<Badge tone={PROPOSAL_STATUS[proposal.status].tone}>{WRITE_LABELS[proposal.write.op]}</Badge>
 									</span>
-									<span className="hb-concept-event-text">
+									<span className="flex min-w-0 flex-col gap-0.5 wrap-anywhere">
 										<span>
 											{actorName(proposal.proposedBy, directory)} proposed to {writeSentence(proposal.write)}
 										</span>
 										{proposal.write.op === "forget" ? (
-											<span className="hb-concept-event-meta">Because: {proposal.write.reason}</span>
+											<span className={memoryFaint}>Because: {proposal.write.reason}</span>
 										) : null}
-										<span className="hb-concept-event-meta">
+										<span className={memoryFaint}>
 											{proposal.status === "applied" ? "Applied" : "Rejected"}
 											{proposal.decidedBy === undefined ? "" : ` by ${actorName(proposal.decidedBy, directory)}`}
 											{proposal.decidedAt === undefined ? null : (

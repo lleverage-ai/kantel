@@ -13,6 +13,7 @@ import {
 	forgetWrite,
 	type MemoryPageSource,
 } from "./memory-model.ts";
+import { memoryNote, memorySection } from "./memory-styles.ts";
 
 export interface ConceptChangeProps {
 	readonly mode: "correct" | "forget";
@@ -82,7 +83,7 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 				header={
 					<h3
 						id="hb-concept-change-title"
-						className="hb-memory-section hb-concept-change-title"
+						className={`${memorySection} focus:outline-none`}
 						ref={heading}
 						tabIndex={-1}
 					>
@@ -116,16 +117,14 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 								mono
 								onChange={(event) => setDraft({ ...draft, sources: event.target.value })}
 							/>
-							<p className="hb-memory-note">
+							<p className={memoryNote}>
 								Saves version {concept.version + 1}.{" "}
 								{concept.setBy === "learned" ? "It becomes yours: agents can no longer change it." : ""}
 							</p>
 						</>
 					) : (
 						<>
-							<p className="hb-memory-note">
-								Recall stops showing it. It stays here, with its history, under Forgotten.
-							</p>
+							<p className={memoryNote}>Recall stops showing it. It stays here, with its history, under Forgotten.</p>
 							<TextField
 								label="Why"
 								value={reason}

@@ -17,6 +17,7 @@ import {
 	writeSentence,
 	writeTarget,
 } from "./memory-model.ts";
+import { conceptLink, memoryFaint, memoryRows, stackedLink } from "./memory-styles.ts";
 
 export interface MemoryProposalsProps {
 	readonly proposals: readonly MemoryProposal[];
@@ -66,13 +67,15 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 	};
 
 	return (
-		<div className="hb-memory-proposals">
+		// A notice in a proposal (it nearly repeats one; deciding failed) stands a block above what follows it, with the
+		// panel's gap. Notice takes no className, so the frame reaches it by its hook.
+		<div className="flex min-w-0 flex-col gap-4 [&_.hb-notice]:mb-3">
 			{pending.length === 0 ? (
 				<EmptyState title="Nothing waiting">
 					When an agent proposes something to remember or change, it waits here for a person to approve.
 				</EmptyState>
 			) : (
-				<ul className="hb-memory-proposal-list">
+				<ul className="m-0 flex list-none flex-col gap-4 p-0">
 					{pending.map((proposal) => {
 						const concept = writeConcept(proposal.write);
 						const target = writeTarget(proposal.write);
@@ -82,18 +85,21 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 									tone="approval"
 									aria-labelledby={`hb-proposal-${proposal.id}`}
 									header={
-										<div className="hb-memory-proposal-head">
+										<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5">
 											<Badge tone="approval">{WRITE_LABELS[proposal.write.op]}</Badge>
-											<h3 id={`hb-proposal-${proposal.id}`} className="hb-memory-proposal-title">
+											<h3
+												id={`hb-proposal-${proposal.id}`}
+												className="m-0 min-w-0 flex-1 text-sm font-medium wrap-anywhere"
+											>
 												{actorName(proposal.proposedBy, directory)} proposes to {writeSentence(proposal.write)}
 											</h3>
-											<span className="hb-memory-proposal-age">
+											<span className={memoryFaint}>
 												<ClockTime at={proposal.createdAt} now={now} />
 											</span>
 										</div>
 									}
 									footer={
-										<div className="hb-memory-proposal-actions">
+										<div className="flex flex-wrap gap-2">
 											<Button
 												variant="primary"
 												size="sm"
@@ -131,9 +137,9 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 										</Notice>
 									)}
 									{concept === undefined ? null : (
-										<div className="hb-memory-proposal-concept">
-											<p className="hb-memory-proposal-concept-title">{concept.title}</p>
-											<p className="hb-selectable">{concept.statement}</p>
+										<div className="mb-3 flex flex-col gap-1">
+											<p className="m-0 font-medium">{concept.title}</p>
+											<p className="hb-selectable m-0">{concept.statement}</p>
 										</div>
 									)}
 									<FieldList>
@@ -143,7 +149,7 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 										{proposal.write.op === "forget" ? <Field label="Because">{proposal.write.reason}</Field> : null}
 										{concept === undefined ? null : (
 											<Field label="Sources">
-												<span className="hb-memory-proposal-sources">
+												<span className="flex min-w-0 flex-col">
 													{concept.sources.map((item) => {
 														const href = sourceHref(item);
 														return href === undefined ? (
@@ -153,7 +159,7 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 														) : (
 															<a
 																key={item}
-																className="hb-concept-link hb-mono hb-focusable"
+																className={`${conceptLink} ${stackedLink} hb-focusable`}
 																href={href}
 																target="_blank"
 																rel="noreferrer"
@@ -174,11 +180,7 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 										)}
 										{proposal.write.op === "remember" || onOpen === undefined ? null : (
 											<Field label="Changes">
-												<button
-													type="button"
-													className="hb-concept-link hb-mono hb-focusable"
-													onClick={() => onOpen(target)}
-												>
+												<button type="button" className={`${conceptLink} hb-focusable`} onClick={() => onOpen(target)}>
 													{target}
 												</button>
 											</Field>
@@ -193,8 +195,8 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 			)}
 
 			{decided.length === 0 ? null : (
-				<Disclosure summary={`Decided (${decided.length})`} className="hb-memory-decided">
-					<ul className="hb-memory-rows">
+				<Disclosure summary={`Decided (${decided.length})`}>
+					<ul className={memoryRows}>
 						{decided.map((proposal) => (
 							<li key={proposal.id}>
 								<ListRow

@@ -13,7 +13,12 @@ import { ConceptDetail } from "./concept-detail.tsx";
 import { groupConcepts, isStale, type MemoryPageSource, readAll, SET_BY } from "./memory-model.ts";
 import { MemoryProposals } from "./memory-proposals.tsx";
 import { MemoryRecall } from "./memory-recall.tsx";
+import { memoryBadges, memoryFaint, memoryLoading, memoryRows } from "./memory-styles.ts";
+// Only the phone layout is left in CSS; see the file.
 import "./memory-page.css";
+
+/** Groups of rows by scope, or the search's count over its matches. */
+const groups = "flex min-w-0 flex-col gap-5";
 
 export type MemoryView = "concepts" | "recall" | "proposals";
 
@@ -121,7 +126,10 @@ export function MemoryPage({
 	);
 
 	return (
-		<div className="hb-memory" data-view={shown === "concepts" && selected !== undefined ? "detail" : "list"}>
+		<div
+			className="hb-memory flex w-full min-w-0 flex-col gap-5 text-sm leading-normal text-fg"
+			data-view={shown === "concepts" && selected !== undefined ? "detail" : "list"}
+		>
 			<PageHeader
 				className="hb-memory-head"
 				title="Memory"
@@ -136,7 +144,7 @@ export function MemoryPage({
 							actions: (
 								<SelectField
 									label="Space"
-									className="hb-memory-space"
+									className="w-[calc(var(--hb-sidebar-width)*0.75)] max-w-full"
 									options={spaces.map((item) => ({ value: item.id, label: item.name }))}
 									value={spaceId}
 									onChange={(event) => {
@@ -147,7 +155,7 @@ export function MemoryPage({
 							),
 						})}
 			/>
-			<div className="hb-memory-views">
+			<div className="hb-memory-views flex">
 				<SegmentedControl
 					label="View"
 					value={shown}
@@ -184,7 +192,7 @@ export function MemoryPage({
 				/>
 			) : shown === "proposals" ? (
 				proposals.state.status === "loading" ? (
-					<div className="hb-memory-loading">
+					<div className={memoryLoading}>
 						<span className="hb-sr-only">Loading proposals</span>
 						<Skeleton lines={3} />
 						<Skeleton lines={3} />
@@ -210,9 +218,10 @@ export function MemoryPage({
 					/>
 				)
 			) : (
-				<div className="hb-memory-body">
-					<section className="hb-memory-list" aria-label="Concepts">
-						<div className="hb-memory-controls">
+				<div className="hb-memory-body grid min-w-0 items-start gap-6">
+					<section className="hb-memory-list flex min-w-0 flex-col gap-4" aria-label="Concepts">
+						{/* The status filter keeps its own width above the search, as a segmented control does in a form. */}
+						<div className="flex min-w-0 max-w-content flex-col gap-4 [&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start">
 							<SegmentedControl label="Status" value={status} onChange={setStatus} options={STATUSES} />
 							<TextField
 								label="Search"
@@ -225,7 +234,7 @@ export function MemoryPage({
 						{term !== "" ? (
 							<SearchResults hits={hits.state} selected={selected} onOpen={open} retry={hits.reload} term={term} />
 						) : concepts.state.status === "loading" ? (
-							<div className="hb-memory-loading">
+							<div className={memoryLoading}>
 								<span className="hb-sr-only">Loading concepts</span>
 								<Skeleton lines={2} />
 								<Skeleton lines={2} />
@@ -249,13 +258,18 @@ export function MemoryPage({
 									: "Concepts move here when they are replaced or forgotten."}
 							</EmptyState>
 						) : (
-							<div className="hb-memory-groups">
+							<div className={groups}>
 								{groupConcepts(concepts.state.value, directory.project).map((group) => (
-									<section key={group.key} className="hb-memory-group" aria-labelledby={`hb-memory-${group.key}`}>
-										<h2 id={`hb-memory-${group.key}`} className="hb-memory-group-title">
+									<section
+										key={group.key}
+										className="flex min-w-0 flex-col gap-1.5"
+										aria-labelledby={`hb-memory-${group.key}`}
+									>
+										{/* Inset as the rows' text is. */}
+										<h2 id={`hb-memory-${group.key}`} className="m-0 px-2.5 text-xs font-medium text-muted">
 											{group.label}
 										</h2>
-										<ul className="hb-memory-rows">
+										<ul className={memoryRows}>
 											{group.concepts.map((concept) => (
 												<li key={concept.id}>
 													<ConceptRow
@@ -272,9 +286,9 @@ export function MemoryPage({
 							</div>
 						)}
 					</section>
-					<section className="hb-memory-detail" aria-label="Concept">
+					<section className="hb-memory-detail min-w-0" aria-label="Concept">
 						{selected === undefined ? (
-							<div className="hb-memory-placeholder">
+							<div className="pt-8">
 								<EmptyState title="Pick a concept">See its statement, its sources and how it changed.</EmptyState>
 							</div>
 						) : (
@@ -323,8 +337,8 @@ function ConceptRow({
 			title={concept.title}
 			meta={meta ?? concept.description ?? concept.statement}
 			trailing={
-				<span className="hb-memory-badges">
-					{extra === undefined ? null : <span className="hb-memory-score">{extra}</span>}
+				<span className={memoryBadges}>
+					{extra === undefined ? null : <span className="text-xs whitespace-nowrap text-faint">{extra}</span>}
 					{stale ? <Badge tone="waiting">Stale</Badge> : null}
 					{concept.setBy === "owner" ? <Badge tone={SET_BY.owner.tone}>Owner</Badge> : null}
 				</span>
@@ -351,7 +365,7 @@ function SearchResults({
 }) {
 	if (hits.status === "loading") {
 		return (
-			<div className="hb-memory-loading">
+			<div className={memoryLoading}>
 				<span className="hb-sr-only">Searching</span>
 				<Skeleton lines={2} />
 				<Skeleton lines={2} />
@@ -377,11 +391,11 @@ function SearchResults({
 		return <EmptyState title={`Nothing matches "${term}"`}>Try other words, or fewer.</EmptyState>;
 	}
 	return (
-		<div className="hb-memory-groups">
-			<p className="hb-memory-count" role="status">
+		<div className={groups}>
+			<p className={`m-0 ${memoryFaint}`} role="status">
 				{found.length === 1 ? "1 match" : `${found.length} matches`}, best first
 			</p>
-			<ul className="hb-memory-rows">
+			<ul className={memoryRows}>
 				{found.map((hit) => (
 					<li key={`${hit.concept.spaceId}:${hit.concept.id}`}>
 						<ConceptRow

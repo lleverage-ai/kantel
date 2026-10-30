@@ -9,6 +9,10 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
 import { type MemoryPageSource, manifestDetail, RECALL_REASON, recallScopes } from "./memory-model.ts";
+import { memoryBadges, memoryFaint, memoryLoading, memoryRows, memorySection } from "./memory-styles.ts";
+
+/** The view, and the result under the form: blocks a step apart. */
+const column = "flex min-w-0 flex-col gap-4";
 
 export interface MemoryRecallProps {
 	readonly source: MemoryPageSource;
@@ -81,8 +85,8 @@ export function MemoryRecall({
 	};
 
 	return (
-		<div className="hb-memory-recall">
-			<form className="hb-memory-recall-form" onSubmit={submit} aria-label="Recall">
+		<div className={column}>
+			<form className="max-w-content" onSubmit={submit} aria-label="Recall">
 				<FormLayout>
 					<TextField
 						label="Message"
@@ -124,7 +128,7 @@ export function MemoryRecall({
 					Write a message and recall: the profile, the matches and the exceptions, with why each came.
 				</EmptyState>
 			) : state.phase === "running" ? (
-				<div className="hb-memory-loading" aria-busy="true">
+				<div className={memoryLoading} aria-busy="true">
 					<span className="hb-sr-only">Recalling</span>
 					<Skeleton lines={2} />
 					<Skeleton lines={2} />
@@ -148,19 +152,19 @@ function RecallResult({ recall, onOpen }: { recall: Recall; onOpen?: (conceptId:
 	}
 	const titles = new Map(recall.concepts.map((concept) => [concept.id, concept.title]));
 	return (
-		<div className="hb-memory-recall-result">
+		<div className={column}>
 			<Panel
 				header={
-					<div className="hb-memory-section-row">
-						<h3 className="hb-memory-section">Recalled</h3>
-						<span className="hb-memory-count">
+					<div className="flex flex-1 flex-wrap items-baseline justify-between gap-x-2 gap-y-1.5">
+						<h3 className={memorySection}>Recalled</h3>
+						<span className={memoryFaint}>
 							{recall.manifest.length} {recall.manifest.length === 1 ? "concept" : "concepts"}
 							{recall.truncated ? ", more matched than the limits allow" : ""}
 						</span>
 					</div>
 				}
 			>
-				<ol className="hb-memory-rows">
+				<ol className={memoryRows}>
 					{recall.manifest.map((entry) => {
 						const reason = RECALL_REASON[entry.reason];
 						const detail = manifestDetail(entry);
@@ -172,7 +176,7 @@ function RecallResult({ recall, onOpen }: { recall: Recall; onOpen?: (conceptId:
 									title={titles.get(entry.conceptId) ?? entry.conceptId}
 									{...(detail === undefined ? {} : { meta: detail })}
 									trailing={
-										<span className="hb-memory-badges">
+										<span className={memoryBadges}>
 											{entry.stale ? <Badge tone="waiting">Stale</Badge> : null}
 											<Badge tone={reason.tone}>{reason.label}</Badge>
 										</span>
@@ -191,22 +195,25 @@ function RecallResult({ recall, onOpen }: { recall: Recall; onOpen?: (conceptId:
 			)}
 			{recall.skipped.length === 0 ? null : (
 				<Disclosure summary={`Matched but left out (${recall.skipped.length})`}>
-					<ul className="hb-memory-skipped">
+					<ul className={memoryRows}>
 						{recall.skipped.map((item) => (
-							<li key={item.conceptId}>
+							// Inset as the rows' text is.
+							<li key={item.conceptId} className="flex flex-wrap gap-x-2 gap-y-1 px-2.5 py-0.5">
 								<span className="hb-mono">{item.conceptId}</span>
-								<span className="hb-memory-skipped-reason">{item.reason}</span>
+								<span className={memoryFaint}>{item.reason}</span>
 							</li>
 						))}
 					</ul>
 				</Disclosure>
 			)}
 			<Disclosure summary="As the prompt carries it">
-				<div className="hb-memory-recall-text">
-					<div className="hb-memory-recall-copy">
+				<div className="flex flex-col gap-1.5">
+					<div className="flex justify-end">
 						<CopyButton text={recall.text} label="Copy recall text" size="sm" />
 					</div>
-					<pre className="hb-memory-code hb-selectable">{recall.text}</pre>
+					<pre className="hb-selectable m-0 max-h-96 overflow-auto rounded-panel border border-border bg-code-surface px-3 py-2.5 font-mono text-code leading-normal whitespace-pre-wrap wrap-anywhere">
+						{recall.text}
+					</pre>
 				</div>
 			</Disclosure>
 		</div>
