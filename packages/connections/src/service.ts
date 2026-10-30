@@ -146,6 +146,8 @@ interface ClientPlan {
 	/** A deployment client from configuration: its secret is read from there. */
 	readonly platform?: boolean;
 	readonly authMethod?: string;
+	/** A stored client registered on its own redirect domain: the redirect URI it was registered with. */
+	readonly redirectUri?: string;
 }
 
 interface ConnectPlan {
@@ -250,6 +252,17 @@ function validateUsage(usage: ConnectionUsage): void {
 	}
 }
 
+/** Base64 of a string's UTF-8 bytes: `btoa` alone throws on anything outside Latin-1. */
+function base64Utf8(text: string): string {
+	let binary = "";
+	for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+/**
+ * The headers (or query parameter) a key goes out in. For `basic` the key is `username:password`, split at the first
+ * colon as RFC 7617 says; a key with no colon is the user name with an empty password, as Stripe-style keys are sent.
+ */
 function injectionHeaders(
 	injection: KeyInjection,
 	value: string,
@@ -260,7 +273,7 @@ function injectionHeaders(
 		case "header":
 			return { headers: { [injection.header.toLowerCase()]: `${injection.prefix ?? ""}${value}` } };
 		case "basic":
-			return { headers: { authorization: `Basic ${btoa(value.includes(":") ? value : `${value}:`)}` } };
+			return { headers: { authorization: `Basic ${base64Utf8(value.includes(":") ? value : `${value}:`)}` } };
 		case "header_template":
 			return { headers: { [injection.header.toLowerCase()]: injection.template.split("{key}").join(value) } };
 		case "query":
@@ -394,16 +407,28 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		return found;
 	};
 
+	/** The redirect URI a stored client is registered with: on its own redirect domain, or the deployment's. */
+	const redirectUriOf = (client: Pick<OAuthClient, "redirectDomain">): string =>
+		client.redirectDomain === undefined ? redirectUri : `https://${client.redirectDomain}/v1/connections/callback`;
+
+	/** A connect's plan for a stored client: its ID, tier and secret, and the redirect URI it was registered with. */
+	const storedClientPlan = (stored: { readonly client: StoredClient["client"]; readonly secretRef?: string }) =>
+		({
+			via: "client",
+			clientId: stored.client.clientId,
+			oauthClientId: stored.client.id,
+			tier: stored.client.owner.kind,
+			...(stored.secretRef === undefined ? {} : { secretRef: stored.secretRef }),
+			...(stored.client.redirectDomain === undefined ? {} : { redirectUri: redirectUriOf(stored.client) }),
+		}) satisfies ClientPlan;
+
 	const clientView = async (stored: StoredClient): Promise<OAuthClient> => {
 		const pinned = (
 			await repo.list<StoredConnection>("connection", { organisationId: ownerOrganisation(stored.client.owner) ?? "" })
 		).filter((record) => record.value.connection.client?.oauthClientId === stored.client.id).length;
 		return {
 			...stored.client,
-			redirectUri:
-				stored.client.redirectDomain === undefined
-					? redirectUri
-					: `https://${stored.client.redirectDomain}/v1/connections/callback`,
+			redirectUri: redirectUriOf(stored.client),
 			connections: pinned,
 		};
 	};
@@ -597,13 +622,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const platform = platformClientFor({ templateId: entry.id });
 			let client: ClientPlan | undefined;
 			if (stored[0] !== undefined) {
-				client = {
-					via: "client",
-					clientId: stored[0].client.clientId,
-					oauthClientId: stored[0].client.id,
-					tier: stored[0].client.owner.kind,
-					...(stored[0].secretRef === undefined ? {} : { secretRef: stored[0].secretRef }),
-				};
+				client = storedClientPlan(stored[0]);
 			} else if (platform !== undefined) {
 				client = { via: "client", clientId: platform.clientId, tier: "platform", platform: true };
 			}
@@ -622,7 +641,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					extraParams: oauth.extraAuthorizationParams ?? {},
 					pkce: oauth.pkce,
 					client,
-					redirectUri,
+					redirectUri: client.redirectUri ?? redirectUri,
 					hosts: entry.apiHosts,
 					kind: entry.kind,
 					templateId: entry.id,
@@ -658,13 +677,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const stored = (await storedClientsFor(ctx.organisationId, owner, match))[0];
 			const platform = platformClientFor(match);
 			if (stored !== undefined) {
-				client = {
-					via: "client",
-					clientId: stored.client.clientId,
-					oauthClientId: stored.client.id,
-					tier: stored.client.owner.kind,
-					...(stored.secretRef === undefined ? {} : { secretRef: stored.secretRef }),
-				};
+				client = storedClientPlan(stored);
 			} else if (platform !== undefined) {
 				client = { via: "client", clientId: platform.clientId, tier: "platform", platform: true };
 			}
@@ -704,7 +717,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				extraParams: {},
 				pkce: true,
 				client,
-				redirectUri,
+				redirectUri: client.redirectUri ?? redirectUri,
 				hosts,
 				kind: "mcp",
 				mcpUrl: discovered.url,
@@ -872,29 +885,53 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		return connection;
 	};
 
-	/** Whose account a fresh token is, from the template's test request. Best effort; never fails a connect. */
-	const testAccount = async (plan: { readonly testRequest?: ProviderTemplate["testRequest"] }, token: string) => {
-		const test = plan.testRequest;
-		if (test?.account === undefined) return undefined;
+	/**
+	 * A template's test request with a credential, sent the way that credential goes out (a token as a bearer, a key by
+	 * its injection). Best effort: `refused` only when the service answered 401 or 403, never for a network error or
+	 * another status; `account` when it answered and the template says where the account is.
+	 */
+	const runTest = async (
+		test: NonNullable<ProviderTemplate["testRequest"]>,
+		injection: KeyInjection,
+		value: string,
+	): Promise<{ readonly refused: boolean; readonly account?: Connection["account"] }> => {
+		const injected = injectionHeaders(injection, value);
 		try {
-			const response = await fetch(test.url, {
+			const url = new URL(test.url);
+			if (injected.query !== undefined) url.searchParams.set(injected.query[0], injected.query[1]);
+			const response = await fetch(url.href, {
 				method: test.method,
-				headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": "Harbour" },
+				headers: { accept: "application/json", "user-agent": "Harbour", ...injected.headers },
 				redirect: "manual",
 			});
-			if (!response.ok) return undefined;
+			if (response.status === 401 || response.status === 403) {
+				await response.body?.cancel().catch(() => undefined);
+				return { refused: true };
+			}
+			if (!response.ok || test.account === undefined) {
+				await response.body?.cancel().catch(() => undefined);
+				return { refused: false };
+			}
 			const json = await response.json();
 			const id = pick(json, test.account.id);
 			const name = pick(json, test.account.name);
 			const email = pick(json, test.account.email);
-			return {
+			const account = {
 				...(id === undefined ? {} : { id }),
 				...(name === undefined ? {} : { name }),
 				...(email === undefined ? {} : { email }),
 			};
+			return { refused: false, ...(Object.keys(account).length === 0 ? {} : { account }) };
 		} catch {
-			return undefined;
+			return { refused: false };
 		}
+	};
+
+	/** Whose account a fresh token is, from the template's test request. Best effort; never fails a connect. */
+	const testAccount = async (plan: { readonly testRequest?: ProviderTemplate["testRequest"] }, token: string) => {
+		const test = plan.testRequest;
+		if (test?.account === undefined) return undefined;
+		return (await runTest(test, { kind: "bearer" }, token)).account;
 	};
 
 	// Attempts.
@@ -1674,7 +1711,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				value: input.value,
 				createdBy: ctx.actor,
 			});
-			const account = entry?.testRequest === undefined ? undefined : await testAccount(entry, input.value);
+			// The template's test request, with the key sent as it will be: a key the service refuses is stored, but as
+			// `failing_test`, so the page can say so straight away.
+			const test =
+				entry?.testRequest === undefined ? undefined : await runTest(entry.testRequest, injection, input.value);
+			const account = test?.account;
 			const connection: Connection = {
 				id: newId("conn"),
 				organisationId: ctx.organisationId,
@@ -1685,10 +1726,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				auth: "key",
 				...(mcpUrl === undefined ? {} : { mcp: { url: mcpUrl } }),
 				hosts: [...hosts],
-				...(account === undefined || Object.keys(account).length === 0 ? {} : { account }),
+				...(account === undefined ? {} : { account }),
 				scopes: { requested: [], granted: [] },
 				usage: input.usage ?? defaultConnectionUsage(input.owner),
-				status: "active",
+				status: test?.refused === true ? "failing_test" : "active",
 				credential: {
 					set: true,
 					...(last4(input.value) === undefined ? {} : { last4: last4(input.value) }),
@@ -1711,12 +1752,22 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				throw new HarbourError("invalid", "Only a key connection has a key to replace");
 			}
 			checkKey(input.value);
+			const entry =
+				found.value.connection.templateId === undefined
+					? undefined
+					: templateById(catalogue, found.value.connection.templateId);
+			const test =
+				entry?.testRequest === undefined
+					? undefined
+					: await runTest(entry.testRequest, found.value.injection ?? { kind: "bearer" }, input.value);
 			await credentials.replace(found.value.secrets.key, input.value);
 			const updated = await changeConnection(connectionId, (current) => ({
 				...current,
 				connection: {
 					...current.connection,
-					status: current.connection.status === "disabled" ? "disabled" : "active",
+					...(test?.account === undefined ? {} : { account: test.account }),
+					status:
+						current.connection.status === "disabled" ? "disabled" : test?.refused === true ? "failing_test" : "active",
 					credential: {
 						set: true,
 						...(last4(input.value) === undefined ? {} : { last4: last4(input.value) }),

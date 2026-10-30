@@ -42,6 +42,7 @@ export {
 	type ConnectionsViewer,
 	type ConnectStart,
 	type DisconnectResult,
+	FAILURE_TEXT as CONNECT_FAILURE_TEXT,
 	type KeyConnectionInput,
 	type KeyConnectionResult,
 	type McpServerInput,

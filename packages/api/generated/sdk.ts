@@ -2409,7 +2409,7 @@ export interface HarbourClient {
 			/** Who owns a connection: an organisation, a project or a person. */
 			readonly owner: ConnectionOwner;
 			readonly name?: string;
-			/** The key. Write-only: never returned. */
+			/** The key. Write-only: never returned. For `basic` injection, `username:password` (split at the first colon; no colon: the user name with an empty password). */
 			readonly value: string;
 			/** Where a connection may be used, by whom and in which sessions. */
 			readonly usage?: ConnectionUsage;
