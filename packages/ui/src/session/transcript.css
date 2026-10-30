@@ -137,7 +137,8 @@
 	right: 0;
 	bottom: 0;
 	left: 0;
-	padding: var(--hb-space-3) var(--hb-space-6) calc(var(--hb-space-7) + env(safe-area-inset-bottom));
+	/* The composer keeps the transcript's gutters at its sides and the window's at its foot (docs/spacing.md). */
+	padding: var(--hb-step-1_5) var(--hb-gutter-narrow) calc(var(--hb-gutter-narrow) + env(safe-area-inset-bottom));
 	/* The lane takes the pointer; the gutters beside it scroll the list. */
 	pointer-events: none;
 }
@@ -290,7 +291,7 @@
 
 @media (min-width: 640px) {
 	.hb-transcript-dock {
-		padding: var(--hb-space-4) var(--hb-space-7) calc(var(--hb-space-8) + env(safe-area-inset-bottom));
+		padding: var(--hb-step-2) var(--hb-gutter-narrow) calc(var(--hb-gutter) + env(safe-area-inset-bottom));
 	}
 }
 

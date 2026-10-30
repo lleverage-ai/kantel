@@ -1,13 +1,14 @@
-/* The session's top bar: breadcrumbs, then a few icon buttons, in one compact row with a hairline under it. */
+/* The session's top bar: breadcrumbs, then a few icon buttons, in one compact row with a hairline under it. Its sides
+   are the narrow gutter at every width, as the file viewer's bar beside it (docs/spacing.md). */
 
 .hb-session-header {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-5);
+	gap: var(--hb-step-2_5);
 	min-width: 0;
-	min-height: calc(var(--hb-control-md) + var(--hb-space-4) * 2);
-	padding: var(--hb-space-4) var(--hb-space-7);
-	padding-top: max(var(--hb-space-4), env(safe-area-inset-top));
+	min-height: calc(var(--hb-control-md) + var(--hb-step-2) * 2);
+	padding: var(--hb-step-2) var(--hb-gutter-narrow);
+	padding-top: max(var(--hb-step-2), env(safe-area-inset-top));
 	border-bottom: var(--hb-hairline) solid var(--hb-border);
 	background: var(--hb-canvas);
 }
@@ -75,8 +76,6 @@
 
 @media (max-width: 640px) {
 	.hb-session-header {
-		gap: var(--hb-space-3);
-		padding-right: var(--hb-space-6);
-		padding-left: var(--hb-space-6);
+		gap: var(--hb-step-1_5);
 	}
 }

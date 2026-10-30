@@ -1,13 +1,14 @@
-/* The top bar of the file and note viewers: one compact row with a hairline under it, the name over its folder. */
+/* The top bar of the file and note viewers: one compact row with a hairline under it, the name over its folder. Its
+   sides are the narrow gutter, as the session's top bar beside it (docs/spacing.md). */
 
 .hb-viewer-header {
 	display: flex;
 	flex: none;
 	align-items: center;
-	gap: var(--hb-space-4);
+	gap: var(--hb-step-2);
 	min-width: 0;
-	min-height: calc(var(--hb-control-md) + var(--hb-space-4) * 2);
-	padding: var(--hb-space-4) var(--hb-space-6);
+	min-height: calc(var(--hb-control-md) + var(--hb-step-2) * 2);
+	padding: var(--hb-step-2) var(--hb-gutter-narrow);
 	border-bottom: var(--hb-hairline) solid var(--hb-border);
 }
 

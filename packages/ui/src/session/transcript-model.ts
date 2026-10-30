@@ -259,19 +259,23 @@ export function endsInWorkLine(row: TranscriptRow): boolean {
 
 /**
  * The rows that sit close under the row before them rather than a block apart: a line of work right under another,
- * and whatever comes first under the person's message, whose actions row (Copy and the time, shown on hover) already
- * stands a block's room between them. The transcript spaces every other row a block apart, and a person's message a
- * turn apart.
+ * and whatever comes first under a message with an actions row (Copy and the time, shown on hover): the person's
+ * message, or a turn's final answer (`finalAnswers`) with a card or a notice after it. The actions row already stands
+ * a block's room between them. The transcript spaces every other row a block apart, and a person's message a turn
+ * apart.
  */
-export function closeRows(rows: readonly TranscriptRow[]): ReadonlySet<string> {
+export function closeRows(
+	rows: readonly TranscriptRow[],
+	finalAnswers: ReadonlySet<string> = new Set(),
+): ReadonlySet<string> {
 	const close = new Set<string>();
 	for (let index = 1; index < rows.length; index++) {
 		const row = rows[index];
 		const before = rows[index - 1];
 		if (row === undefined || before === undefined) continue;
-		const underMessage = before.kind === "item" && before.item.kind === "user";
+		const underActions = before.kind === "item" && (before.item.kind === "user" || finalAnswers.has(before.id));
 		const underWork = isWorkLine(row) && endsInWorkLine(before);
-		if (underMessage || underWork) close.add(row.id);
+		if (underActions || underWork) close.add(row.id);
 	}
 	return close;
 }

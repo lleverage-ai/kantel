@@ -276,6 +276,16 @@ describe("closeRows", () => {
 		expect([...closeRows(groupTranscript(items))]).toEqual(["a1", "a2", "x3"]);
 	});
 
+	it("keeps a card close under a final answer, whose actions row stands between them", () => {
+		const rows = groupTranscript([
+			user("u1", "Rotate the key."),
+			tool("x1", "read", "Read a.md"),
+			assistant("a1", "I've asked the vault."),
+			notice("n1", "info", "Waiting for approval."),
+		]);
+		expect([...closeRows(rows, finalAnswerIds(rows))]).toEqual(["x1", "n1"]);
+	});
+
 	it("keeps an answer with words a block apart, even after a thought", () => {
 		const rows = groupTranscript([tool("x1", "read", "Read a.md"), assistant("a1", "Done.", { thinking: "Hm." })]);
 		expect([...closeRows(rows)]).toEqual([]);

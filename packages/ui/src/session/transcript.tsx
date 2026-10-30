@@ -568,7 +568,7 @@ export function Transcript({
 	// these get Copy and their time, as in T3 Code; the words an agent says between tool calls don't.
 	const finalAnswers = useMemo(() => finalAnswerIds(rows), [rows]);
 	// A line of work right under another sits close to it; every other row is a block apart (docs/spacing.md).
-	const close = useMemo(() => closeRows(rows), [rows]);
+	const close = useMemo(() => closeRows(rows, finalAnswers), [rows, finalAnswers]);
 	const last = rows.at(-1);
 	const activityClose = last !== undefined && endsInWorkLine(last);
 

@@ -43,8 +43,8 @@ body {
 .shell-actor {
 	display: flex;
 	align-items: center;
-	gap: var(--hb-space-3);
-	padding: var(--hb-space-4) var(--hb-space-5) 0;
+	gap: var(--hb-step-1_5);
+	padding: var(--hb-step-2) var(--hb-step-2_5) 0;
 	border-top: var(--hb-hairline) solid var(--hb-border);
 	color: var(--hb-text-muted);
 	font-size: var(--hb-text-xs);
@@ -74,19 +74,19 @@ body {
 .shell-page {
 	box-sizing: border-box;
 	height: 100%;
-	padding: var(--hb-space-9) var(--hb-space-10);
+	padding: var(--hb-gutter);
 	overflow-y: auto;
 }
 
 .shell-page-bar {
-	margin: calc(var(--hb-space-5) * -1) 0 var(--hb-space-5) calc(var(--hb-space-3) * -1);
+	margin: calc(var(--hb-step-2_5) * -1) 0 var(--hb-step-2_5) calc(var(--hb-step-1_5) * -1);
 }
 
 .shell-empty {
 	display: grid;
 	height: 100%;
 	place-items: center;
-	padding: var(--hb-space-7);
+	padding: var(--hb-gutter-narrow);
 }
 
 /* A phone: one pane at a time, the list or the open session (with Back). */
@@ -101,7 +101,7 @@ body {
 	}
 
 	.shell-page {
-		padding: var(--hb-space-7) var(--hb-space-5);
+		padding: var(--hb-gutter-narrow);
 	}
 
 	.shell[data-pane="list"] .shell-main,
