@@ -188,6 +188,15 @@ export interface SeedSpec {
 	readonly prepare?: "on-change" | "never" | "eager";
 	/** Use a snapshot for an older commit of the same branch and fetch forward, if within this many commits. */
 	readonly staleWithin?: number;
+	/**
+	 * When `create` returns, relative to the seeded file bodies (docs/design/workspace-hydration.md):
+	 *  - `lazy`: as soon as the tree (paths, sizes, digests, modes) is stored. Bodies are staged in a few pack objects
+	 *    and copied out in the background; a read of a body not yet copied reads it from its pack, so only that read
+	 *    waits. The record's `hydration` says when every body is in place.
+	 *  - `eager`: once every body is stored, as before.
+	 * Absent: the host's default. A host that has no lazy hydration seeds eagerly whatever the spec says.
+	 */
+	readonly hydration?: "lazy" | "eager";
 }
 
 /**
@@ -377,8 +386,56 @@ export interface WorkspaceRecord {
 	readonly seedReadiness: SeedReadiness;
 	/** How the host seeded, once it has resolved the sources; absent before then and for a workspace with no seed. */
 	readonly seedReport?: SeedReport;
+	/**
+	 * Whether every file body of the workspace is in the host's object store yet. Absent: it always was (an eager seed,
+	 * no seed, or a host without lazy hydration). Every file is listable and readable either way; a read of a body not
+	 * yet in place waits for that body only.
+	 */
+	readonly hydration?: WorkspaceHydration;
+	/** The workspace this one was forked from (`Workspaces.fork`), and at which version. */
+	readonly forkedFrom?: { readonly workspaceId: WorkspaceId; readonly version: WorkspaceVersion };
 	readonly createdAt: Timestamp;
 	readonly updatedAt: Timestamp;
+}
+
+/**
+ * A lazily seeded (or forked) workspace's hydration, after boat.dev's `hydrated` flag: `hydrated` is the end signal,
+ * set once every body staged at create is in place, with `hydratedAt` and a `workspace.hydrated` event.
+ */
+export interface WorkspaceHydration {
+	readonly hydrated: boolean;
+	/** Files in the tree that was staged, and their bytes. */
+	readonly entriesTotal: number;
+	readonly bytesTotal: number;
+	readonly startedAt: Timestamp;
+	readonly hydratedAt?: Timestamp;
+}
+
+/**
+ * Sent once per workspace when its hydration ends: every body is in the object store, so reads no longer touch a
+ * staging pack. Carries no paths or contents.
+ */
+export interface WorkspaceHydratedEvent {
+	readonly type: "workspace.hydrated";
+	readonly workspaceId: WorkspaceId;
+	readonly organisationId: OrganisationId;
+	readonly sessionId?: SessionId;
+	readonly at: Timestamp;
+	/** Milliseconds from the start of hydration (the create or fork) to its end. */
+	readonly elapsedMs: number;
+	readonly entriesTotal: number;
+	readonly bytesTotal: number;
+}
+
+/** Receives hydration events. A sink that throws or rejects never fails the workspace. */
+export type WorkspaceHydrationSink = (event: WorkspaceHydratedEvent) => void | Promise<void>;
+
+/** `Workspaces.fork`'s input: who owns the new workspace, and which version of the source it starts from. */
+export interface ForkWorkspaceInput {
+	readonly owner: OwnerRef;
+	readonly sessionId?: SessionId;
+	/** The source's version to fork; its head when absent. */
+	readonly version?: WorkspaceVersion;
 }
 
 export type WorkspaceChange =
@@ -475,6 +532,15 @@ export interface Workspaces {
 	 * moves on; any other rejects with `conflict`. Optional: a host without dependency layers leaves seeds at `files`.
 	 */
 	recordDependencies?(ctx: CallContext, id: WorkspaceId, update: DependencyStageUpdate): Promise<WorkspaceRecord>;
+
+	/**
+	 * A new workspace whose version 1 is `id`'s tree at `input.version` (head when absent), sharing its file bodies: no
+	 * body is copied, so a fork costs the same whatever the workspace's size. It keeps the source's pinned mounts, seed
+	 * spec, readiness and report, and records `forkedFrom`. Needs viewer on the source (`workspace.fork`), and the
+	 * create and mount checks `create` makes for the new owner; an empty source version forks to a workspace at version
+	 * 0. A fork of a workspace still hydrating hydrates too, from the same staging packs. Optional.
+	 */
+	fork?(ctx: CallContext, id: WorkspaceId, input: ForkWorkspaceInput): Promise<WorkspaceRecord>;
 
 	/**
 	 * Files under `prefixes` (such as `notes/`) at head, for handing back to the host. With `maxBytes`, an export whose

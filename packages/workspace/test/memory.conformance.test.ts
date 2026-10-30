@@ -17,5 +17,5 @@ registerWorkspaceConformance(
 		});
 		await use({ workspaces, projectFiles });
 	},
-	{ projectAccess: true, keyed: true, seeding: true },
+	{ projectAccess: true, keyed: true, seeding: true, fork: true },
 );

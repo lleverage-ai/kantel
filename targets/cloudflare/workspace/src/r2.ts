@@ -27,7 +27,8 @@ import type { LoadedHead, StoredHead, StoredVersion, WorkspaceStore } from "@har
 
 /** The part of R2's `R2Bucket` the store uses; the Workers binding and Miniflare's both satisfy it. */
 export interface R2BucketLike {
-	get(key: string): Promise<R2ObjectBodyLike | null>;
+	/** With `range`, only those bytes (a lazy workspace's read out of a staging pack); a bucket may ignore it. */
+	get(key: string, options?: { range?: { offset: number; length: number } }): Promise<R2ObjectBodyLike | null>;
 	put(
 		key: string,
 		value: ArrayBuffer | Uint8Array | string,
@@ -253,6 +254,14 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		async getObject(key) {
 			const object = await bucket.get(at(key));
 			return object === null ? undefined : new Uint8Array(await object.arrayBuffer());
+		},
+
+		async getObjectRange(key, offset, length) {
+			const object = await bucket.get(at(key), { range: { offset, length } });
+			if (object === null) return undefined;
+			const bytes = new Uint8Array(await object.arrayBuffer());
+			// A bucket that ignored the range sent the whole object.
+			return bytes.byteLength === length ? bytes : bytes.slice(offset, offset + length);
 		},
 
 		async putObject(key, bytes) {

@@ -55,6 +55,8 @@ export type KnownAuditEventType =
 	| "sandbox.escalated"
 	| "workspace.committed"
 	| "workspace.write.refused"
+	| "workspace.forked"
+	| "workspace.hydrated"
 	| "vault.item.created"
 	| "vault.policy.created"
 	| "vault.policy.revoked"
