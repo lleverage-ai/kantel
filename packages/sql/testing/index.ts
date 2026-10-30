@@ -4,7 +4,6 @@
  * schema of its own (named `m1_be78_…`) that `close` drops. Node only, so it lives outside `src`.
  */
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { PGlite } from "@electric-sql/pglite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import pg from "pg";
@@ -33,6 +32,8 @@ export const pgliteDatabase: TestDatabaseKind = {
 export const nodeSqliteDatabase: TestDatabaseKind = {
 	name: "SQLite (node:sqlite)",
 	async open() {
+		// Imported here, not at the top: Bun has no `node:sqlite`, and Bun runs the self-hosted tests, which use the other kinds.
+		const { DatabaseSync } = await import("node:sqlite");
 		const database = new DatabaseSync(":memory:");
 		return {
 			driver: syncSqliteDriver(database),

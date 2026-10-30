@@ -16,7 +16,11 @@ import { createSqlUsageLedger, migrateUsage } from "@harbour/usage/sql";
 
 export interface UsageConfig {
 	/** ClickHouse to ship to; without it the rows stay in Postgres only. */
-	readonly clickhouse?: ClickHouseUsageSinkOptions & { readonly intervalMs: number };
+	readonly clickhouse?: ClickHouseUsageSinkOptions & {
+		readonly intervalMs: number;
+		/** How long a row waits in the ledger before it ships (the shipper's default, 10 s); tests set 0. */
+		readonly settleMs?: number;
+	};
 }
 
 /** `HARBOUR_USAGE`, `HARBOUR_CLICKHOUSE_*`: undefined when usage is off. */
@@ -71,7 +75,12 @@ export async function selfHostedUsage(
 
 	let migrated = false;
 	let failing = false;
-	const shipper = createUsageShipper({ ledger, sink: clickHouseUsageSink(clickhouse), name: CLICKHOUSE_USAGE_SINK });
+	const shipper = createUsageShipper({
+		ledger,
+		sink: clickHouseUsageSink(clickhouse),
+		name: CLICKHOUSE_USAGE_SINK,
+		...(clickhouse.settleMs === undefined ? {} : { settleMs: clickhouse.settleMs }),
+	});
 	const tick = async () => {
 		try {
 			if (!migrated) {
