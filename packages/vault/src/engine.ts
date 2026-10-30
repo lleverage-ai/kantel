@@ -156,12 +156,38 @@ interface Read<T> {
 	readonly value: T;
 }
 
-/** The project and session a record is scoped to; empty for an organisation's own records. */
-export type Scope = Pick<AccessCheck, "projectId" | "sessionId">;
+/**
+ * The project, session and user a record is scoped to; empty for an organisation's own records. A user's own item is
+ * scoped to its user (docs/design/org-scope.md, decision 6): only that user, a service with an organisation-wide role
+ * and agents whose session works for that user pass.
+ */
+export type Scope = Pick<AccessCheck, "projectId" | "sessionId" | "userId">;
 
-/** An item is in a project when a project owns it. */
+/** Where an owner puts its item: in a project for a project's, with its user for a user's, else the organisation's. */
+export function ownerScope(owner: OwnerRef): Scope {
+	if (owner.kind === "project") return { projectId: owner.projectId };
+	if (owner.kind === "user") return { userId: owner.userId };
+	return {};
+}
+
+/** An item is in a project when a project owns it, and its user's when a user does. */
 export function itemScope(item: VaultItem): Scope {
-	return item.owner.kind === "project" ? { projectId: item.owner.projectId } : {};
+	return ownerScope(item.owner);
+}
+
+/** The user an item belongs to, when a user owns it. */
+export function itemUser(item: VaultItem | undefined): string | undefined {
+	return item?.owner.kind === "user" ? item.owner.userId : undefined;
+}
+
+/**
+ * Who decides a proposal: for a user's own item, its user (no project's operator approves someone else's
+ * credential); otherwise operators on the proposal's project, or the organisation's for a proposal in none.
+ */
+export function decisionScope(proposal: Proposal, item: VaultItem | undefined): Scope {
+	const userId = itemUser(item);
+	if (userId !== undefined) return { userId };
+	return proposal.projectId === undefined ? {} : { projectId: proposal.projectId };
 }
 
 /** A proposal is in its `projectId` and its requester's session. */
@@ -182,7 +208,7 @@ export function selectorScope(selector: PolicySelector): Scope {
 
 /** Whether a record is in a project or session at all; one in neither is the organisation's own. */
 export function scoped(scope: Scope): boolean {
-	return scope.projectId !== undefined || scope.sessionId !== undefined;
+	return scope.projectId !== undefined || scope.sessionId !== undefined || scope.userId !== undefined;
 }
 
 interface Waiter {
@@ -402,6 +428,30 @@ export function createVault(options: VaultOptions): HarbourVault {
 
 	async function itemFor(organisationId: OrganisationId, itemId: string): Promise<VaultItem> {
 		return (await itemRecord(organisationId, itemId)).value.item;
+	}
+
+	/** The item a proposal names, if it names one that is still there. */
+	async function proposalItem(organisationId: OrganisationId, proposal: Proposal): Promise<VaultItem | undefined> {
+		const itemId = proposal.terms.itemId;
+		if (itemId === undefined) return undefined;
+		const found = await read<StoredItem>("items", itemId);
+		return found === undefined || found.row.organisationId !== organisationId ? undefined : found.value.item;
+	}
+
+	/**
+	 * Whether egress may use `item` for `request`. A user's own item only for a request whose agent's open session works
+	 * for that user, checked through `access` on every decision; without `access`, or without the request's agent and
+	 * session, never. Any other item as its grant or policy says.
+	 */
+	async function usableFor(request: EgressRequest, item: VaultItem): Promise<boolean> {
+		const userId = itemUser(item);
+		if (userId === undefined) return true;
+		if (access === undefined || request.agentId === undefined || request.sessionId === undefined) return false;
+		const ctx: CallContext = {
+			actor: { kind: "agent", agentId: request.agentId, sessionId: request.sessionId },
+			organisationId: request.organisationId,
+		};
+		return access.allows(ctx, { userId, sessionId: request.sessionId, needed: "operator" });
 	}
 
 	async function ceilingOf(organisationId: OrganisationId): Promise<VaultCeiling | undefined> {
@@ -752,9 +802,11 @@ export function createVault(options: VaultOptions): HarbourVault {
 				await requireSystem(ctx, "vault.putItem", { ...(audit === undefined ? {} : { audit }), clock });
 			} else if (owner.organisationId !== ctx.organisationId) {
 				throw new HarbourError("invalid", "An item must be owned within the caller's organisation");
+			} else if (owner.kind === "user" && owner.userId.trim() === "") {
+				throw new HarbourError("invalid", "A user's item must name its user");
 			} else if (access !== undefined) {
-				const scope: Scope = owner.kind === "project" ? { projectId: owner.projectId } : {};
-				await access.require(ctx, { ...scope, needed: "admin", operation: "vault.putItem" });
+				// A user's own item is made by that user, or a service acting for its users; never by another person.
+				await access.require(ctx, { ...ownerScope(owner), needed: "admin", operation: "vault.putItem" });
 			}
 			assertItemInput(input);
 			if (input.value !== undefined && input.value.length === 0) {
@@ -896,7 +948,17 @@ export function createVault(options: VaultOptions): HarbourVault {
 
 		async listPolicies(ctx, page) {
 			const own = (await readAll<StoredPolicy>("policies", ctx.organisationId)).map((found) => found.value.policy);
-			return paginate(await visibleOnly(ctx, own, (policy) => selectorScope(policy.selector)), page);
+			// A policy on a user's own item is that user's to see, as the item is.
+			const users = new Map<string, string>();
+			for (const { value } of await readAll<StoredItem>("items", ctx.organisationId)) {
+				const userId = itemUser(value.item);
+				if (userId !== undefined) users.set(value.item.id, userId);
+			}
+			const scopeOf = (policy: VaultPolicy): Scope => {
+				const userId = users.get(policy.itemId);
+				return { ...selectorScope(policy.selector), ...(userId === undefined ? {} : { userId }) };
+			};
+			return paginate(await visibleOnly(ctx, own, scopeOf), page);
 		},
 
 		async propose(ctx, proposed) {
@@ -914,11 +976,14 @@ export function createVault(options: VaultOptions): HarbourVault {
 			let projectId = ctx.projectId;
 			if (access !== undefined) {
 				const itemProject = named === undefined ? undefined : itemScope(named).projectId;
+				// A user's own item: only through a session that works for that user, or as that user.
+				const userId = itemUser(named);
 				// An agent acts through its own session; a human or service on the item's project, else the call's.
 				const checked = actor.kind === "agent" ? itemProject : (itemProject ?? ctx.projectId);
 				const scope: Scope = {
 					...(checked === undefined ? {} : { projectId: checked }),
 					...(actor.kind === "agent" ? { sessionId: actor.sessionId } : {}),
+					...(userId === undefined ? {} : { userId }),
 				};
 				const subject = named === undefined ? {} : { subject: { kind: "vault.item", id: named.id } };
 				if (
@@ -1001,10 +1066,17 @@ export function createVault(options: VaultOptions): HarbourVault {
 		},
 
 		async getProposal(ctx, proposalId) {
-			const scope = proposalScope(await proposalFor(ctx.organisationId, proposalId));
+			const found = await proposalFor(ctx.organisationId, proposalId);
+			const scope = proposalScope(found);
 			if (access !== undefined && scoped(scope)) {
+				// The user whose own item it names reads it too, to decide it, wherever the session runs.
+				const userId = itemUser(await proposalItem(ctx.organisationId, found));
+				const owner =
+					userId !== undefined &&
+					ctx.actor.kind !== "agent" &&
+					(await access.allows(ctx, { userId, needed: "viewer" }));
 				const subject = { kind: "vault.proposal", id: proposalId };
-				await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.getProposal", subject });
+				if (!owner) await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.getProposal", subject });
 			}
 			return proposalFor(ctx.organisationId, proposalId);
 		},
@@ -1031,7 +1103,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			forbidAgent(ctx, "open the approval view");
 			const found = await proposalFor(ctx.organisationId, proposalId);
 			if (access !== undefined) {
-				const scope: Scope = found.projectId === undefined ? {} : { projectId: found.projectId };
+				const scope = decisionScope(found, await proposalItem(ctx.organisationId, found));
 				const subject = { kind: "vault.proposal", id: proposalId };
 				await access.require(ctx, { ...scope, needed: "operator", operation: "vault.approvalView", subject });
 			}
@@ -1047,7 +1119,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			forbidAgent(ctx, "decide proposals");
 			const found = await proposalFor(ctx.organisationId, input.proposalId);
 			if (access !== undefined) {
-				const scope: Scope = found.projectId === undefined ? {} : { projectId: found.projectId };
+				const scope = decisionScope(found, await proposalItem(ctx.organisationId, found));
 				const subject = { kind: "vault.proposal", id: found.id };
 				await access.require(ctx, { ...scope, needed: "operator", operation: "vault.decide", subject });
 			}
@@ -1732,6 +1804,8 @@ export function createVault(options: VaultOptions): HarbourVault {
 				// A grant on another project's item is used only while the item is still shared into the session
 				// (docs/design/sharing.md). A policy is that item's project admin's own, so it stands as set.
 				if (candidate.grant !== undefined && !(await stillShared(request, stored.item))) continue;
+				// A user's own item goes out only for a session that works for its user.
+				if (!(await usableFor(request, stored.item))) continue;
 				const { item, sealed } = stored;
 				if (sealed === undefined) {
 					valueless ??= item;
@@ -1771,7 +1845,13 @@ export function createVault(options: VaultOptions): HarbourVault {
 					message: `Ask for the secret for ${valueless.name} to be pasted on the vault page.`,
 				});
 			}
-			const bound = items.find((found) => found.value.item.hosts.includes(host))?.value.item;
+			// The item the fix names: never another user's own, which the agent may not know of.
+			let bound: VaultItem | undefined;
+			for (const { value } of items) {
+				if (!value.item.hosts.includes(host) || !(await usableFor(request, value.item))) continue;
+				bound = value.item;
+				break;
+			}
 			return denyEgress(
 				request,
 				target,

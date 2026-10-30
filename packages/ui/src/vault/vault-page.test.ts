@@ -34,6 +34,7 @@ const expected: Record<FixtureState, ReturnType<typeof settledState>> = {
 	expired: "expired",
 	revoked: "revoked",
 	withdrawn: "withdrawn",
+	personal: "open",
 };
 
 const noop = async () => {
@@ -246,6 +247,31 @@ describe("a forwarded link", () => {
 		expect(refused("missing")).toMatchObject({ kind: "passkey", message: expect.stringMatching(/needs your passkey/) });
 		expect(refused("binding")).toMatchObject({ kind: "passkey", message: expect.stringMatching(/didn't match/) });
 		expect(refused().kind).toBe("code");
+	});
+
+	it("marks a personal item, and leaves only its owner to decide it, a project operator read-only", async () => {
+		const scenario = await createVaultScenario();
+		const own = await scenario.load(scenario.proposals.personal, people.tom);
+		expect(own.item?.personalTo).toBe(people.tom.userId);
+		expect(own.readOnly).toBeUndefined();
+		expect(render(own)).toContain("Your personal item");
+		const other = await scenario.load(scenario.proposals.personal, people.alex);
+		expect(other.readOnly).toBeDefined();
+		expect(other.codeChoices).toBeUndefined();
+		// Alex can't read the item at all, so the page says why it may be read-only without naming it.
+		expect(other.item).toBeUndefined();
+		expect(render(other, people.alex)).toContain("someone&#x27;s personal one");
+		const error = await scenario.vault
+			.decide(scenario.ctxFor(people.alex), {
+				proposalId: other.proposal.id,
+				outcome: "approve",
+				termsHash: other.proposal.termsHash,
+				pickedCode: other.proposal.bindingCode,
+			})
+			.catch((caught: unknown) => caught);
+		expect(isHarbourError(error, "forbidden")).toBe(true);
+		const names = (await scenario.vault.listItems(scenario.ctxFor(people.alex))).items.map((item) => item.name);
+		expect(names).not.toContain("Google Calendar token");
 	});
 
 	it("can't be opened at all by someone with no role on the project", async () => {

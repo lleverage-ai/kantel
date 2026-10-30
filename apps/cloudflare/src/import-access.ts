@@ -93,6 +93,8 @@ export function withKeyImports(
 				KEY_IMPORT_OPERATIONS.has(check.operation) &&
 				check.projectId === undefined &&
 				check.sessionId === undefined &&
+				// A user's own record is never the organisation's, so an import key gets nothing there.
+				check.userId === undefined &&
 				(await keyMayImport(identity, ctx))
 			) {
 				return { scope: { kind: "organisation" } };

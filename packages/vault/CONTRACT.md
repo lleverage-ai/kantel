@@ -230,7 +230,11 @@ each followed by a decision over the API), `durable waits:` and `races:`.
   reading of "the item to create"?
 - Settled 27 Oct 2026 (question 7): who may withdraw and revoke. The requesting agent, or an operator on the
   proposal's or grant's project (see Project access above).
-- An item owned by a user is treated like the organisation's: changing it needs an organisation-wide admin, and it is
-  readable as before. Should a user's own items be theirs to manage?
+- Settled 30 Oct 2026: an item owned by a user is its user's, never the organisation's (docs/design/org-scope.md,
+  decision 6). Checked as `AccessCheck.userId`: its user, or a service with an organisation-wide role, manages and sees
+  it; agents see and propose for it only through a session that works for its user (`SessionRecord.userId`), in a
+  project or the organisation; only its user (or such a service) opens the approval view and decides; egress injects
+  it only for a request whose agent's open session works for its user, within the ceiling. An organisation admin who
+  is not its user is `forbidden`. A model connector never reads one. The "user items:" cases cover it.
 - `getCeiling` is organisation-wide, so it needs an organisation-wide viewer and an agent cannot read it. Should agents
   see the ceiling their proposals are bound by?

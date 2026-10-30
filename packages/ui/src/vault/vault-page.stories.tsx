@@ -246,6 +246,12 @@ export const ForwardedWithoutRole: Story = () => <ScenarioPage state="proposed" 
 
 export const NoAccess: Story = () => <ScenarioPage state="proposed" viewer={people.bethan} />;
 
+/** A request for Tom's own (personal) item, which only Tom decides. */
+export const PersonalItem: Story = () => <ScenarioPage state="personal" />;
+
+/** The same request on a project operator's screen: read-only, as it isn't their credential. */
+export const PersonalItemForwarded: Story = () => <ScenarioPage state="personal" viewer={people.alex} />;
+
 const noop = async () => {
 	throw new globalThis.Error("The workbench has no vault here");
 };

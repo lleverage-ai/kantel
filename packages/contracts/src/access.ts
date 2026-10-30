@@ -21,6 +21,10 @@
  *   only through its own session (which resolves to its project), and an organisation agent no project's check.
  * - For an organisation check a human or service needs an organisation-wide binding; an API key, which holds roles
  *   only on its projects, never passes one.
+ * - A check that names a user owner (`userId`, a user's own record such as a personal vault item) passes a person
+ *   only as that user, never another person, an organisation admin included; a service as for an organisation check;
+ *   and an agent only when its own open session works for that user (`SessionRecord.userId`), in a project or the
+ *   organisation alike. A project or session the check also names must pass as above too.
  *
  * A refusal is `forbidden`, says the same thing whichever check failed, names no record beyond the project and holds no
  * secret, and is audited once as `access.denied`.
@@ -52,6 +56,7 @@ import {
 	scopeOf,
 	systemClock,
 	systemContext,
+	type UserId,
 } from "./common.ts";
 import { type IdentityDirectory, type Role, roleSatisfies } from "./identity.ts";
 import type { SessionDirectory, SessionRecord } from "./session.ts";
@@ -79,6 +84,12 @@ export interface AccessCheck {
 	 * must belong to it.
 	 */
 	readonly sessionId?: SessionId;
+	/**
+	 * The user the record belongs to (an owner of kind `user`). A person passes only as this user; a service needs
+	 * `needed` across the organisation; an agent's own session must work for this user (its `userId`), and then need not
+	 * be in the check's scope unless the check also names a project or session. See docs/design/org-scope.md, decision 6.
+	 */
+	readonly userId?: UserId;
 	readonly needed: Role;
 	/** The operation, dotted, such as `vault.propose` or `workspace.commit`. Audited on a refusal. */
 	readonly operation: string;
@@ -277,14 +288,24 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 			if (!roleSatisfies(AGENT_ROLE, check.needed)) return result(false, projectId);
 			const own = await sessionOf(ctx, actor.sessionId);
 			if (own === undefined || own.agentId !== actor.agentId || own.status === "done") return result(false, projectId);
+			// A user's own record: only through a session that works for that user, whatever its scope, unless the check
+			// also names a project or session.
+			const userOwned = check.userId !== undefined;
+			if (userOwned && own.userId !== check.userId) return result(false, projectId);
+			const scoped = check.projectId !== undefined || check.sessionId !== undefined;
 			// The agent's own session must be in the check's scope: the same project, or both the organisation. An
 			// organisation check that names no session is one only an organisation session's agent passes.
-			if (own.projectId !== projectId) return result(false, projectId);
+			if ((!userOwned || scoped) && own.projectId !== projectId) return result(false, projectId);
 			// An agent acts in its own session, or as the supervisor of a child session.
 			if (target !== undefined && target.id !== own.id && target.parentSessionId !== own.id) {
 				return result(false, projectId);
 			}
 			return result(true, projectId);
+		}
+		if (check.userId !== undefined && actor.kind === "human") {
+			// A person reaches a user's own record only as that user: no role, an organisation admin's included, stands in.
+			if (actor.userId !== check.userId) return result(false, projectId);
+			if (projectId === undefined) return result(true, projectId);
 		}
 		const held = await options.identity.roleOf(ACCESS_CONTEXT, actor, ctx.organisationId, projectId);
 		return result(held !== undefined && roleSatisfies(held, check.needed), projectId);
