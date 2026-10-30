@@ -254,8 +254,10 @@ export function SessionView({
 	const sentAttachments = useSentAttachments(readAttachment, openFile, onOpenFile);
 	const readOpen = useMemo(() => readOpenFile(readPresented, readAttachment), [readPresented, readAttachment]);
 	const openIsAttachment = openAttachmentId(openFile) !== undefined;
-	// A presented image shows as itself in the transcript, read from the workspace as its card mounts.
-	const previewImage = useImagePreviews(readPresented);
+	// A presented image shows as itself in the transcript, read from the workspace as its card mounts; opening it shows
+	// that same read in the panel.
+	const imagePreviews = useImagePreviews(readPresented);
+	const previewImage = imagePreviews?.url;
 
 	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
 	// saved document then opens there as its call finishes, starting from the draft's text.
@@ -487,6 +489,7 @@ export function SessionView({
 								sharesOf={openIsAttachment ? undefined : actions.sharesOf}
 								sharer={actions.sharer}
 								onClose={closeFile}
+								images={openIsAttachment ? undefined : imagePreviews}
 							/>
 						)}
 					</div>

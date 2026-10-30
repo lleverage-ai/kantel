@@ -23,7 +23,15 @@ export type FilePanelState =
 	| { readonly status: "loading" }
 	| { readonly status: "error"; readonly message: string }
 	| { readonly status: "too-large" }
-	| { readonly status: "ready"; readonly content: Uint8Array };
+	| {
+			readonly status: "ready";
+			readonly content: Uint8Array;
+			/**
+			 * An image's URL the host already has for these bytes (its card's picture): shown as it is, so opening the image
+			 * decodes nothing new. Without it the panel makes its own from `content`.
+			 */
+			readonly url?: string | undefined;
+	  };
 
 export type FilePanelProps = {
 	file: PresentedFile;
@@ -66,8 +74,9 @@ function TextBody({ text, label }: { text: string; label: string }) {
 	);
 }
 
-function ImageBody({ content, file }: { content: Uint8Array; file: PresentedFile }) {
-	const src = useObjectUrl(content, file.mimeType);
+function ImageBody({ content, url, file }: { content: Uint8Array; url: string | undefined; file: PresentedFile }) {
+	const own = useObjectUrl(url === undefined ? content : undefined, file.mimeType);
+	const src = url ?? own;
 	return (
 		<ViewerScroll label={`Image ${file.name}`} className="hb-file-panel-scroll hb-file-panel-image">
 			{src === undefined ? null : <img src={src} alt={file.name} decoding="async" />}
@@ -78,10 +87,12 @@ function ImageBody({ content, file }: { content: Uint8Array; file: PresentedFile
 function ReadyBody({
 	file,
 	content,
+	url,
 	renderers,
 }: {
 	file: PresentedFile;
 	content: Uint8Array;
+	url: string | undefined;
 	renderers: FilePanelProps["renderers"];
 }) {
 	const kind = presentedKind(file);
@@ -117,7 +128,7 @@ function ReadyBody({
 				</ViewerScroll>
 			);
 		case "image":
-			return <ImageBody content={content} file={file} />;
+			return <ImageBody content={content} url={url} file={file} />;
 		case "text":
 			return <TextBody text={text} label={`Contents of ${file.name}`} />;
 		case "csv":
@@ -160,7 +171,7 @@ function Body({ file, state, renderers }: Omit<FilePanelProps, "onClose" | "onDo
 				</EmptyState>
 			);
 		case "ready":
-			return <ReadyBody file={file} content={state.content} renderers={renderers} />;
+			return <ReadyBody file={file} content={state.content} url={state.url} renderers={renderers} />;
 	}
 }
 
