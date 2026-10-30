@@ -74,6 +74,47 @@ export function presentedKindLabel(kind: PresentedKind): string {
 	return LABELS[kind];
 }
 
+function extensionOf(name: string): string {
+	const dot = name.lastIndexOf(".");
+	return dot <= 0 ? "" : name.slice(dot + 1);
+}
+
+/** A presented file's title on its card: its name without the extension, as Claude's cards show it. */
+export function presentedTitle(file: Pick<PresentedFile, "name">): string {
+	const extension = extensionOf(file.name);
+	return extension === "" ? file.name : file.name.slice(0, -(extension.length + 1));
+}
+
+/**
+ * What a presented file is, in a few words, under its title on the card: "PDF document", "Word document", "PNG image".
+ * Plain words rather than Claude's "Document · PDF": Harbour's copy has no middle-dot meta strings.
+ */
+export function presentedSubtitle(file: Pick<PresentedFile, "name">, kind: PresentedKind): string {
+	const extension = extensionOf(file.name).toUpperCase();
+	switch (kind) {
+		case "pdf":
+			return "PDF document";
+		case "markdown":
+			return "Markdown document";
+		case "docx":
+			return "Word document";
+		case "xlsx":
+			return "Excel spreadsheet";
+		case "pptx":
+			return "PowerPoint presentation";
+		case "html":
+			return "HTML page";
+		case "csv":
+			return `${extension === "" ? "CSV" : extension} spreadsheet`;
+		case "image":
+			return extension === "" ? "Image" : `${extension} image`;
+		case "text":
+			return extension === "" || extension === "TXT" ? "Text file" : `${extension} file`;
+		case "other":
+			return extension === "" || extension.length > 5 ? "File" : `${extension} file`;
+	}
+}
+
 /** A presented file's key: the same file presented again opens the same viewer. */
 export const presentedKey = (file: Pick<PresentedFile, "workspaceId" | "path">): string =>
 	`${file.workspaceId}:${file.path}`;
