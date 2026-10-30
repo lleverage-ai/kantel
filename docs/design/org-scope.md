@@ -202,7 +202,9 @@ suites and must pass unchanged.
   project filter matches it. Existing rows are all project sessions and need nothing.
 - Rules: a new table (`<prefix>prompt_rules`), created by a migration in the rules store. No backfill: profile
   `promptLayers` stay where they are as the profile layer.
-- Organisation files: a workspace under a derived ID, created on first write. Nothing to migrate.
+- Organisation files: a workspace under a derived ID (`of_…`, as project files use `pf_…`), created on first use.
+  Nothing to migrate. Like `/project`, no target mounts `/org` into a session's workspace on its own yet: a host
+  registers the source with its workspaces and names the mount when it creates a workspace.
 
 ## Public API and console
 
@@ -222,8 +224,9 @@ Stacked, each with its base in its description:
 2. Contracts and the scope check, the reference runtime (memory and SQL) for organisation sessions, and the new
    conformance cases, with both targets passing.
 3. Public API and gateways for organisation sessions, and the console's Organisation entry and scope picker.
-4. Prompt rules: contract, reference and SQL store, suite, runtime layering, API and console screen.
-5. `/org` files.
+4. `/org` files: the `org-files` source and its workspace conformance cases (taken before prompt rules, being the
+   smaller change).
+5. Prompt rules: contract, reference and SQL store, suite, runtime layering, API and console screen.
 6. User-owned vault items, if it fits after review; otherwise a follow-up.
 
 ## Follow-ups

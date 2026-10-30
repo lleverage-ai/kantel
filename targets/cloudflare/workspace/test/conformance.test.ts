@@ -1,6 +1,6 @@
 import { registerWorkspaceConformance } from "@harbour/testing/workspace";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudflareWorkspaces, type R2BucketLike } from "../src/index.ts";
 import { localR2, memoryHeadCache } from "./r2.ts";
@@ -86,15 +86,16 @@ registerWorkspaceConformance(
 		const prefix = `m1-be23/${crypto.randomUUID()}`;
 		const trees = createCloudflareWorkspaces({ bucket, prefix, clock: deps.clock, access: deps.access });
 		const projectFiles = createWorkspaceProjectFiles({ workspaces: trees, access: deps.access });
+		const orgFiles = createWorkspaceOrgFiles({ workspaces: trees, access: deps.access });
 		const workspaces = createCloudflareWorkspaces({
 			bucket,
 			prefix,
 			clock: deps.clock,
 			audit: deps.audit,
 			access: deps.access,
-			sources: [projectFiles],
+			sources: [projectFiles, orgFiles],
 		});
-		await use({ workspaces, projectFiles });
+		await use({ workspaces, projectFiles, orgFiles });
 	},
-	{ projectAccess: true, keyed: true },
+	{ projectAccess: true, keyed: true, orgFiles: true },
 );

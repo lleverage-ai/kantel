@@ -241,7 +241,7 @@ client's `export` is a drop-in source for a remote host.
 
 ## Read-only mount sources (M1-BE3)
 
-`@harbour/workspace/mounts` has the two sources every target mounts, built on contracts rather than storage:
+`@harbour/workspace/mounts` has the sources every target mounts, built on contracts rather than storage:
 
 - `createWorkspaceProjectFiles({ workspaces, access? })` is the `project-files` source for `/project`. Each
   project's files are a tree in a workspace of the target's own store, under the derived ID
@@ -255,6 +255,16 @@ client's `export` is a drop-in source for a remote host.
   the first open question below for this source. The source uses a tree only when it is exactly the project's (owned
   by it, in no session, with no mounts): any other workspace under the ID is `conflict`, because the source reads it
   with Harbour's own authority.
+- `createWorkspaceOrgFiles({ workspaces, access? })` is the `org-files` source for `/org` (docs/design/org-scope.md).
+  One tree per organisation, under `orgFilesWorkspaceId(organisationId)` and owned by the organisation, kept as
+  project files are. A mount's `ref` is the organisation ID and must be the caller's own: another organisation's is
+  `not_found` to mount, remount, read through or write (`checkOrgFilesRef`). Organisation files are open to the
+  organisation's members, as its skills and memory are, so a read through the mount needs only what reading the
+  workspace needs, checked again on every read with nothing cached, plus the ref check. `write` needs operator on the
+  organisation scope (`workspace.org-files.write`): a person or service with an organisation-wide role. Agents never
+  write it, an organisation session's included (its check asks an agent for admin, which no agent holds, so the
+  refusal is audited as `access.denied` like any other). A project agent reads `/org` from its own session's
+  workspace; an organisation agent reads `/org` and is `forbidden` every read under a `/project` mount.
 - `createSkillsMountSource({ skills, visibility })` is the `skills` source for `/skills`; a mount's ref is the
   session ID. `latestVersion` pins the session's skills through `Skills.pinForSession` (once), and the version
   `skillsMountVersion(pins)` names the pinned revisions themselves (`pins:<skillId>@<revision>,…`), so it never changes
@@ -262,8 +272,13 @@ client's `export` is a drop-in source for a remote host.
   `getRevision` and `readFile` as the caller, so a forged pin to another project's skill is `forbidden`.
   `sessionSkillVisibility(sessions)` gives the session's own project as its visibility.
 
-Both are read-only like every mount: a commit under a mount point is `refused`. The workspace conformance suite runs a
-second time with `/project` served from workspace-backed trees (`test/mounts.conformance.test.ts`).
+All are read-only like every mount: a commit under a mount point is `refused`. The workspace conformance suite runs a
+second time with `/project` and `/org` served from workspace-backed trees (`test/mounts.conformance.test.ts`). With
+`orgFiles` the suite runs the organisation files cases: "organisation files: an organisation-wide operator writes
+them, and a project's workspace reads them at /org, pinned", "... refuses writes from agents of either scope and from
+project-only roles, audited, changing nothing", "... another organisation's files are not_found, to mount and to
+write", and "organisation scope: an organisation session's agent reads /org in its workspace, and /project is
+forbidden on every read". The stored, Cloudflare R2 and self-hosted (PGlite, Postgres + S3) suites run them.
 
 ## The in-memory implementation
 

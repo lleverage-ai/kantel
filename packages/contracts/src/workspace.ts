@@ -40,7 +40,7 @@ export interface FileEntry {
 	readonly version: WorkspaceVersion | string;
 }
 
-export type MountSourceKind = "project-files" | "skills" | (string & {});
+export type MountSourceKind = "project-files" | "org-files" | "skills" | (string & {});
 
 /** A read-only view of a source at a pinned version. `readOnly` is always true; there is no writable mount. */
 export interface Mount {

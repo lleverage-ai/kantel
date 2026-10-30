@@ -1,6 +1,6 @@
 import { registerWorkspaceConformance } from "@harbour/testing/workspace";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
 import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
 import { describe, expect, it } from "vitest";
 
@@ -54,14 +54,15 @@ registerWorkspaceConformance(
 		const store = createMemoryWorkspaceStore();
 		const trees = createStoredWorkspaces({ store, clock: deps.clock, access: deps.access });
 		const projectFiles = createWorkspaceProjectFiles({ workspaces: trees, access: deps.access });
+		const orgFiles = createWorkspaceOrgFiles({ workspaces: trees, access: deps.access });
 		const workspaces = createStoredWorkspaces({
 			store,
 			clock: deps.clock,
 			audit: deps.audit,
-			sources: [projectFiles],
+			sources: [projectFiles, orgFiles],
 			access: deps.access,
 		});
-		await use({ workspaces, projectFiles });
+		await use({ workspaces, projectFiles, orgFiles });
 	},
-	{ projectAccess: true, keyed: true },
+	{ projectAccess: true, keyed: true, orgFiles: true },
 );

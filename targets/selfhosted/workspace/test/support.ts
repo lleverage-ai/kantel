@@ -1,7 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import type { WorkspaceConformanceProvider } from "@harbour/testing/workspace";
 import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
 import {
 	createSelfHostedWorkspaces,
 	migrateWorkspaceStore,
@@ -62,12 +62,14 @@ export function providers(
 		"memory project files": async (deps, use) => {
 			const make = await open(deps);
 			const projectFiles = createMemoryProjectFiles({ access: deps.access });
-			await use({ workspaces: make([projectFiles]), projectFiles });
+			const orgFiles = createWorkspaceOrgFiles({ workspaces: make(), access: deps.access });
+			await use({ workspaces: make([projectFiles, orgFiles]), projectFiles, orgFiles });
 		},
 		"workspace-backed project files": async (deps, use) => {
 			const make = await open(deps);
 			const projectFiles = createWorkspaceProjectFiles({ workspaces: make(), access: deps.access });
-			await use({ workspaces: make([projectFiles]), projectFiles });
+			const orgFiles = createWorkspaceOrgFiles({ workspaces: make(), access: deps.access });
+			await use({ workspaces: make([projectFiles, orgFiles]), projectFiles, orgFiles });
 		},
 	};
 }
