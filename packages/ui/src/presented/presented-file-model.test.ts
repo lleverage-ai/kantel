@@ -64,6 +64,12 @@ describe("presentedTitle and presentedSubtitle", () => {
 		expect(card("Makefile")).toEqual(["Makefile", "Text file"]);
 		expect(card(".env")).toEqual([".env", "Text file"]);
 	});
+
+	it("titles a document with its own title, and calls it a document", () => {
+		const document = { ...file("documents/colours.md"), title: "The colours of the rainbow", document: true };
+		expect(presentedTitle(document)).toBe("The colours of the rainbow");
+		expect(presentedSubtitle(document, presentedKind(document))).toBe("Document");
+	});
 });
 
 describe("presentedFiles and fileToOpen", () => {

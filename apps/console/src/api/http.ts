@@ -47,6 +47,7 @@ import type {
 	StartOptions,
 	WorkspaceFiles,
 	WorkspaceListing,
+	WrittenFile,
 } from "./client.ts";
 import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
@@ -396,7 +397,28 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				} catch {
 					// Not the read API's header; the version is only shown.
 				}
-				return { content, version, contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+				const digest = (response.headers.get("etag") ?? "").replace(/^W\//, "").replace(/"/g, "");
+				return {
+					content,
+					version,
+					contentType: response.headers.get("content-type") ?? "application/octet-stream",
+					...(digest === "" ? {} : { digest }),
+				};
+			},
+			async write(path, content, ifMatch): Promise<WrittenFile> {
+				const response = await call(url("content", new URLSearchParams({ path })), {
+					method: "PUT",
+					headers: {
+						"content-type": "text/markdown; charset=utf-8",
+						...(ifMatch === undefined ? {} : { "if-match": `"${ifMatch}"` }),
+					},
+					body: content,
+				});
+				const written = (await response.json()) as { version: number; digest?: string | null };
+				return {
+					version: written.version,
+					...(typeof written.digest === "string" ? { digest: written.digest } : {}),
+				};
 			},
 		};
 	};

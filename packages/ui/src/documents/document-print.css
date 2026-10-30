@@ -1,0 +1,49 @@
+/* Printing a document (Export, PDF): only the copy of the document `printDocument` adds shows, as dark text on light
+   paper, whatever the console's theme. Off screen otherwise. */
+
+.hb-doc-print {
+	display: none;
+}
+
+@media print {
+	.hb-doc-printing,
+	.hb-doc-printing body {
+		height: auto;
+		overflow: visible;
+		background: Canvas;
+		color: CanvasText;
+		color-scheme: light;
+	}
+
+	.hb-doc-printing body > :not(.hb-doc-print) {
+		display: none;
+	}
+
+	.hb-doc-printing .hb-doc-print {
+		display: block;
+		color: CanvasText;
+	}
+
+	.hb-doc-print .hb-markdown,
+	.hb-doc-print .hb-markdown * {
+		color: CanvasText;
+	}
+
+	.hb-doc-print .hb-markdown a {
+		text-decoration: underline;
+	}
+
+	.hb-doc-print .hb-markdown pre,
+	.hb-doc-print .hb-markdown code,
+	.hb-doc-print .hb-markdown th {
+		background: transparent;
+	}
+
+	.hb-doc-print h1,
+	.hb-doc-print h2,
+	.hb-doc-print h3,
+	.hb-doc-print tr {
+		break-after: avoid;
+		break-inside: avoid;
+	}
+}

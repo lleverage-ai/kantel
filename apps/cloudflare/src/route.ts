@@ -33,7 +33,7 @@ import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/htt
 import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
 import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
-import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
+import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
 
 /** The one stack object's name. */
@@ -218,6 +218,12 @@ export async function routeRequest<StackId, VaultId>(
 	if (request.method === "POST" && path === WORKSPACES_PATH) {
 		// The same for creating a workspace: the stack refuses a caller without operator rights before it reads the seed.
 		const forwarded = await buffered(request, WORKSPACE_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	if (request.method === "PUT" && path.startsWith(`${WORKSPACES_PATH}/`)) {
+		// And for writing a file (a document the person edited): the stack refuses a viewer before it reads the bytes.
+		const forwarded = await buffered(request, DEFAULT_MAX_FILE_BODY_BYTES);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

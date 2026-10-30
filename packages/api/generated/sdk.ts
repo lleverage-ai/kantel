@@ -38,6 +38,8 @@ export interface AssistantItem {
 	/** True while tokens are still arriving. */
 	readonly streaming: boolean;
 	readonly thinking?: string;
+	/** The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done. */
+	readonly document?: DraftDocument;
 }
 
 /** How a session list groups the session: working, waiting on someone, or done. */
@@ -225,7 +227,7 @@ export type DeltaOp =
 			readonly op: "text";
 			readonly itemId: string;
 			readonly append: string;
-			readonly field?: "text" | "thinking";
+			readonly field?: "text" | "thinking" | "document";
 	  }
 	| {
 			readonly op: "status";
@@ -241,6 +243,15 @@ export type DeltaOp =
 			readonly op: "usage";
 			readonly usage: Usage;
 	  };
+
+/** The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done. */
+export interface DraftDocument {
+	/** The tool call writing it. */
+	readonly callId: string;
+	readonly title: string;
+	/** Its Markdown so far. */
+	readonly text: string;
+}
 
 export interface EmbedBrowserBody {
 	/** `live`: the open browser as it is now, watch-only. `replay`: its recording. */
@@ -482,6 +493,10 @@ export interface PresentedFile {
 	readonly size: number;
 	/** The first lines of a text file, for a preview card. */
 	readonly preview?: string;
+	/** A title to show rather than its name: a document's. */
+	readonly title?: string;
+	/** A document the agent wrote (`create_document`): Markdown the person edits. */
+	readonly document?: boolean;
 }
 
 export interface PreviewScheduleQuery {

@@ -43,6 +43,20 @@ export const AssistantItem = Type.Object(
 		text: Type.String(),
 		streaming: Type.Boolean({ description: "True while tokens are still arriving." }),
 		thinking: Type.Optional(Type.String()),
+		document: Type.Optional(
+			Type.Object(
+				{
+					callId: Type.String({ description: "The tool call writing it." }),
+					title: Type.String(),
+					text: Type.String({ description: "Its Markdown so far." }),
+				},
+				{
+					title: "DraftDocument",
+					description:
+						"The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done.",
+				},
+			),
+		),
 	},
 	{ title: "AssistantItem" },
 );
@@ -58,6 +72,10 @@ export const PresentedFile = Type.Object(
 		mimeType: Type.String({ description: 'Its media type, from its name: "application/pdf".' }),
 		size: Type.Integer({ description: "Its size in bytes when it was presented." }),
 		preview: Type.Optional(Type.String({ description: "The first lines of a text file, for a preview card." })),
+		title: Type.Optional(Type.String({ description: "A title to show rather than its name: a document's." })),
+		document: Type.Optional(
+			Type.Boolean({ description: "A document the agent wrote (`create_document`): Markdown the person edits." }),
+		),
 	},
 	{
 		title: "PresentedFile",
@@ -187,7 +205,7 @@ export const DeltaOp = Type.Union(
 			op: Type.Literal("text"),
 			itemId: Type.String(),
 			append: Type.String(),
-			field: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("thinking")])),
+			field: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("thinking"), Type.Literal("document")])),
 		}),
 		Type.Object({ op: Type.Literal("status"), status: SessionStatus, attention: Attention }),
 		Type.Object({ op: Type.Literal("title"), title: Type.String() }),

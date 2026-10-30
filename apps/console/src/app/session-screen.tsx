@@ -273,10 +273,11 @@ export function SessionScreen({
 		[edit, sessionId],
 	);
 
-	// A presented file is read from the session's own workspace, through the read API with the console's credentials.
-	const readPresented = useMemo(() => {
+	// A presented file is read from the session's own workspace, through the read API with the console's credentials;
+	// a document the person edits is written back the same way.
+	const { readPresented, writePresented } = useMemo(() => {
 		let files: Promise<WorkspaceFiles | undefined> | undefined;
-		return async (file: PresentedFile, signal: AbortSignal) => {
+		const workspaceOf = async (file: PresentedFile) => {
 			files ??= client.workspace(sessionId);
 			const workspace = await files.catch((reason: unknown) => {
 				files = undefined;
@@ -285,7 +286,16 @@ export function SessionScreen({
 			if (workspace === undefined || workspace.id !== file.workspaceId) {
 				throw new ApiError("not_found", "The file isn't in this session's workspace");
 			}
-			return workspace.read(file.path, signal);
+			return workspace;
+		};
+		return {
+			readPresented: async (file: PresentedFile, signal: AbortSignal) =>
+				(await workspaceOf(file)).read(file.path, signal),
+			writePresented: async (file: PresentedFile, markdown: string, ifMatch: string | undefined) => {
+				const workspace = await workspaceOf(file);
+				if (workspace.write === undefined) throw new ApiError("not_supported", "This console can't save files");
+				return workspace.write(file.path, markdown, ifMatch);
+			},
 		};
 	}, [client, sessionId]);
 	// Typing (or focusing the composer) warms the session's sandbox, so the agent's first command after a pause waits for
@@ -298,6 +308,7 @@ export function SessionScreen({
 
 	const actions: SessionActions = {
 		readPresented,
+		writePresented,
 		...(onFork === undefined ? {} : { onFork }),
 		...(onEngage === undefined ? {} : { onEngage }),
 		...(onEdit === undefined ? {} : { onEdit }),

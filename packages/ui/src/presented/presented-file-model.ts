@@ -79,8 +79,12 @@ function extensionOf(name: string): string {
 	return dot <= 0 ? "" : name.slice(dot + 1);
 }
 
-/** A presented file's title on its card: its name without the extension, as Claude's cards show it. */
-export function presentedTitle(file: Pick<PresentedFile, "name">): string {
+/**
+ * A presented file's title on its card: the title it was given (a document's), or its name without the extension, as
+ * Claude's cards show it.
+ */
+export function presentedTitle(file: Pick<PresentedFile, "name" | "title">): string {
+	if (file.title !== undefined && file.title.trim() !== "") return file.title.trim();
 	const extension = extensionOf(file.name);
 	return extension === "" ? file.name : file.name.slice(0, -(extension.length + 1));
 }
@@ -89,7 +93,8 @@ export function presentedTitle(file: Pick<PresentedFile, "name">): string {
  * What a presented file is, in a few words, under its title on the card: "PDF document", "Word document", "PNG image".
  * Plain words rather than Claude's "Document · PDF": Harbour's copy has no middle-dot meta strings.
  */
-export function presentedSubtitle(file: Pick<PresentedFile, "name">, kind: PresentedKind): string {
+export function presentedSubtitle(file: Pick<PresentedFile, "name" | "document">, kind: PresentedKind): string {
+	if (file.document === true) return "Document";
 	const extension = extensionOf(file.name).toUpperCase();
 	switch (kind) {
 		case "pdf":

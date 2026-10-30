@@ -2681,6 +2681,9 @@
 					},
 					"thinking": {
 						"type": "string"
+					},
+					"document": {
+						"$ref": "#/components/schemas/DraftDocument"
 					}
 				},
 				"title": "AssistantItem"
@@ -3222,6 +3225,10 @@
 									{
 										"type": "string",
 										"const": "thinking"
+									},
+									{
+										"type": "string",
+										"const": "document"
 									}
 								]
 							}
@@ -3272,6 +3279,25 @@
 				],
 				"title": "DeltaOp",
 				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's."
+			},
+			"DraftDocument": {
+				"type": "object",
+				"required": ["callId", "title", "text"],
+				"properties": {
+					"callId": {
+						"type": "string",
+						"description": "The tool call writing it."
+					},
+					"title": {
+						"type": "string"
+					},
+					"text": {
+						"type": "string",
+						"description": "Its Markdown so far."
+					}
+				},
+				"title": "DraftDocument",
+				"description": "The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done."
 			},
 			"EmbedBrowserBody": {
 				"type": "object",
@@ -3861,6 +3887,14 @@
 					"preview": {
 						"type": "string",
 						"description": "The first lines of a text file, for a preview card."
+					},
+					"title": {
+						"type": "string",
+						"description": "A title to show rather than its name: a document's."
+					},
+					"document": {
+						"type": "boolean",
+						"description": "A document the agent wrote (`create_document`): Markdown the person edits."
 					}
 				},
 				"title": "PresentedFile",
