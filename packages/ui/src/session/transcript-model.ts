@@ -209,7 +209,24 @@ export function workingPlacement(rows: readonly TranscriptRow[]): { headerAfter:
 			break;
 		}
 	}
-	return { headerAfter, activity: !showsActivity(rows.at(-1)) };
+	// A browsing run still under way already says the agent is working (its line spins between steps too), so no
+	// "Thinking" row comes and goes under it at every step.
+	return { headerAfter, activity: !showsActivity(rows.at(-1)) && activeBrowsingRow(rows) === undefined };
+}
+
+/**
+ * The browsing row that may still take steps while the session works: the last row other than the agent's words, when
+ * it is a browsing row. Words after a run's last call are rows of their own until the next call folds them in, so the
+ * run stays "Browsing" while the agent narrates or thinks between steps. Call it only while the session works.
+ */
+export function activeBrowsingRow(rows: readonly TranscriptRow[]): string | undefined {
+	for (let index = rows.length - 1; index >= 0; index--) {
+		const row = rows[index];
+		if (row === undefined) continue;
+		if (row.kind === "item" && row.item.kind === "assistant") continue;
+		return row.kind === "browsing" ? row.id : undefined;
+	}
+	return undefined;
 }
 
 /** The row already says what the agent is doing: an answer streaming, or a call still running. */

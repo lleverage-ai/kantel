@@ -18,11 +18,15 @@ import "./browsing-group.css";
 const isCall = (step: BrowsingStep): step is ToolItem => step.kind === "tool";
 const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
 
-/** "Browsing, 12 steps" while it runs; "Browsed for 48s, 12 steps" once every call has finished. */
-export function browsingSummary(calls: readonly ToolItem[]): string {
+/**
+ * "Browsing, 12 steps" while it runs; "Browsed for 48s, 12 steps" once every call has finished. `active`: the run may
+ * still take steps (its turn is working and nothing but the agent's words came after it), so it still reads as running
+ * between two calls, while the agent thinks or narrates.
+ */
+export function browsingSummary(calls: readonly ToolItem[], active = false): string {
 	const steps = calls.length === 1 ? "1 step" : `${calls.length} steps`;
 	if (calls.length === 0) return "Browsing";
-	if (calls.some((call) => call.status === "running")) return `Browsing, ${steps}`;
+	if (active || calls.some((call) => call.status === "running")) return `Browsing, ${steps}`;
 	let start = Number.POSITIVE_INFINITY;
 	let end = Number.NEGATIVE_INFINITY;
 	for (const call of calls) {
@@ -58,6 +62,11 @@ export type BrowsingGroupProps = {
 	browserView?: ReactNode;
 	/** The ID of the call a link names (`#turn=`): the run opens to show it, and it stands out briefly. */
 	focus?: string;
+	/**
+	 * The run may still take steps: its turn is working and only the agent's words came after it. It reads as running
+	 * between calls too, so the line doesn't flip between "Browsing" and "Browsed for" at every step.
+	 */
+	active?: boolean;
 };
 
 /**
@@ -70,6 +79,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	shownBrowser,
 	browserView,
 	focus,
+	active = false,
 }: BrowsingGroupProps) {
 	useRenderProbe("BrowsingGroup", items[0]?.id ?? "");
 	const [open, setOpen] = useState(focus !== undefined);
@@ -80,13 +90,14 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	const calls = items.filter(isCall);
 	const running = calls.findLast((call) => call.status === "running");
 	const current = running ?? calls.at(-1);
+	const busy = running !== undefined || active;
 	const browser = browsingBrowser(calls);
 	const failed = calls.filter(isFailed);
 	const chip = (call: ToolItem) => (
 		<ToolCallChip key={call.id} item={call} images="detail" linked={call.id === focus} />
 	);
 	return (
-		<div className={`hb-browsing${open ? " hb-browsing-open" : ""}${running ? " hb-browsing-running" : ""}`}>
+		<div className={`hb-browsing${open ? " hb-browsing-open" : ""}${busy ? " hb-browsing-running" : ""}`}>
 			<div className="hb-browsing-line">
 				<button
 					type="button"
@@ -96,7 +107,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 					onClick={() => setOpen((value) => !value)}
 				>
 					<span className="hb-browsing-icon">
-						{running ? (
+						{busy ? (
 							<>
 								<Spinner />
 								<span className="hb-sr-only">Running</span>
@@ -106,7 +117,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 						)}
 					</span>
 					<span className="hb-browsing-text">
-						<span className="hb-browsing-title">{browsingSummary(calls)}</span>
+						<span className="hb-browsing-title">{browsingSummary(calls, active)}</span>
 						{current === undefined ? null : <span className="hb-browsing-current">{current.label}</span>}
 					</span>
 					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
