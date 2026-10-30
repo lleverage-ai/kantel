@@ -2,6 +2,7 @@ import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
 import {
+	activeBrowsingRow,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
@@ -397,14 +398,39 @@ describe("workingPlacement", () => {
 		expect(place([user("u1", "Go"), assistant("a1", "Looking."), tool("t1", "bash", "Ran ls")]).activity).toBe(true);
 	});
 
-	it("leaves the activity to a browsing run's running step, and shows Thinking once its steps have finished", () => {
+	it("leaves the activity to a browsing run under way, between its steps too", () => {
 		const opened = tool("b1", "browser_open", "Opening example.com");
 		const said = assistant("a1", "Now scrolling.");
 		const scrolling = tool("b2", "browser_act", "Scrolling the page", { status: "running" });
 		expect(place([user("u1", "Go"), opened, said, scrolling])).toEqual({ headerAfter: 0, activity: false });
 		const scrolled = tool("b2", "browser_act", "Scrolled the page");
-		expect(place([user("u1", "Go"), opened, said, scrolled])).toEqual({ headerAfter: 0, activity: true });
+		expect(place([user("u1", "Go"), opened, said, scrolled])).toEqual({ headerAfter: 0, activity: false });
+		// The agent's words after the run's last call: the run may still go on.
+		expect(place([user("u1", "Go"), opened, said, scrolled, assistant("a2", "Next, Dronfield.")]).activity).toBe(false);
+		// Another kind of call after it: the run is over, and Thinking is back between steps.
+		expect(place([user("u1", "Go"), opened, scrolled, tool("t1", "bash", "Ran ls")]).activity).toBe(true);
 	});
+});
+
+describe("activeBrowsingRow", () => {
+	const active = (items: TranscriptItem[]) => activeBrowsingRow(groupTranscript(items));
+	const opened = tool("b1", "browser_open", "Opened example.com");
+	const scrolled = tool("b2", "browser_act", "Scrolled the page");
+
+	it("is the last browsing row while only the agent's words follow it", () => {
+		expect(active([user("u1", "Go"), opened, scrolled])).toBe("b1");
+		expect(active([user("u1", "Go"), opened, scrolled, assistant("a1", "Now Dronfield.")])).toBe("b1");
+	});
+
+	it("is none once anything else follows the run", () => {
+		expect(active([user("u1", "Go"), opened, tool("t1", "bash", "Ran ls")])).toBeUndefined();
+		expect(active([opened, scrolled, assistant("a1", "Done."), user("u2", "Close it")])).toBeUndefined();
+		expect(active([user("u1", "Go"), assistant("a1", "Hello.")])).toBeUndefined();
+	});
+});
+
+describe("workingPlacement, the header", () => {
+	const place = (items: TranscriptItem[]) => workingPlacement(groupTranscript(items));
 
 	it("keeps the header under the message that started the turn when the person steers it", () => {
 		const steer: TranscriptItem = { ...user("u2", "Also check b"), via: "steer" };

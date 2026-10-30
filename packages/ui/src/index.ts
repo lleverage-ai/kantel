@@ -324,6 +324,7 @@ export {
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
 export {
+	activeBrowsingRow,
 	type BrowserViewSlot,
 	type BrowsingStep,
 	browserViewSlots,

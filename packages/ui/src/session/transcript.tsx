@@ -30,6 +30,7 @@ import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent-model.ts";
 import { ToolCallGroup } from "./tool-call.tsx";
 import {
+	activeBrowsingRow,
 	type BrowserViewSlot,
 	browserViewSlots,
 	finalAnswerIds,
@@ -124,6 +125,8 @@ type RowProps = {
 	onShowBrowser: ((browserSessionId: string) => void) | undefined;
 	/** The browser the host's panel shows; given to browsing rows only, so other rows never re-render for it. */
 	shownBrowser: string | undefined;
+	/** A browsing row that may still take steps: its turn is working and only the agent's words follow it. */
+	browsingActive: boolean;
 	report: (id: string, phase: RowRenderPhase) => void;
 	/** The linked turn is in this row: the row is highlighted, and a tool call in it opens its group and stands out. */
 	highlight: string | undefined;
@@ -162,6 +165,7 @@ function rowBody(
 	renderBrowserView: RowProps["renderBrowserView"],
 	onShowBrowser: RowProps["onShowBrowser"],
 	shownBrowser: RowProps["shownBrowser"],
+	browsingActive: RowProps["browsingActive"],
 	highlight: RowProps["highlight"],
 	onOpenFile: RowProps["onOpenFile"],
 	openFile: RowProps["openFile"],
@@ -181,6 +185,7 @@ function rowBody(
 				{...(onShowBrowser === undefined ? {} : { onShowBrowser })}
 				{...(shownBrowser === undefined ? {} : { shownBrowser })}
 				{...(highlight === undefined ? {} : { focus: highlight })}
+				active={browsingActive}
 			/>
 		);
 	}
@@ -231,6 +236,7 @@ const Row = memo(function Row({
 	renderBrowserView,
 	onShowBrowser,
 	shownBrowser,
+	browsingActive,
 	report,
 	highlight,
 	onOpenFile,
@@ -259,6 +265,7 @@ const Row = memo(function Row({
 					renderBrowserView,
 					onShowBrowser,
 					shownBrowser,
+					browsingActive,
 					highlight,
 					onOpenFile,
 					openFile,
@@ -440,6 +447,7 @@ export function Transcript({
 	const atStart = paged && !hasOlder && rows.length > 0;
 	const showWorking = working !== undefined && working !== false;
 	const placement = useMemo(() => workingPlacement(rows), [rows]);
+	const activeBrowsing = useMemo(() => (showWorking ? activeBrowsingRow(rows) : undefined), [rows, showWorking]);
 	const { headerAfter, activity } = placement;
 	const entries = useMemo<Entry[]>(() => {
 		const head: Entry[] = atStart ? [START] : [];
@@ -779,6 +787,7 @@ export function Transcript({
 								renderBrowserView={renderBrowserView}
 								onShowBrowser={onShowBrowser}
 								shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
+								browsingActive={entry.id === activeBrowsing}
 								report={report}
 								highlight={highlight?.row === entry.id ? highlight.item : undefined}
 								onOpenFile={onOpenFile}
