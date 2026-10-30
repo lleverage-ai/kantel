@@ -1,5 +1,5 @@
 /* A browsing run as one quiet work-log line, the same height and colours as a tool call's row (tool-call.css): the
-   globe (a spinner while a step runs), "Browsing, 12 steps", what the agent is doing now, muted, and a chevron. The
+   globe (a spinner while a step runs), "Browsing", what the agent is doing now, muted, and a chevron. The
    line's height never changes while the agent works, so the transcript under the reader stays still. */
 
 .hb-browsing {

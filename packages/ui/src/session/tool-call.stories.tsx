@@ -272,7 +272,7 @@ const liveTools: ToolItem[] = [
 export const Group: Story = () => (
 	<Sheet
 		title="Tool call group"
-		intro="Consecutive calls. A finished group, however small, collapses to how long the work took (the calls carry no duration of their own); a failed step collapses with the rest, and the summary says how many failed. A live or running group shows every call."
+		intro="Consecutive calls. A finished group, however small, collapses to how long the work took (the calls carry no duration of their own), with no step count. A failed or interrupted step collapses with the rest, and the closed summary shows only an alert mark in the error colour (A step failed, for a screen reader); with nothing failed there is no mark. A live or running group shows every call."
 	>
 		<Section title="Collapsed">
 			<Column>

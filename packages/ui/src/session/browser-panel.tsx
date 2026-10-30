@@ -7,7 +7,7 @@ import "./browser-panel.css";
 // The session's browser in one place, beside the transcript: the agent works in one browser, so a person watches one
 // view of it, which stays put however many steps the agent takes. The view (usually a `BrowserLiveView`) is mounted
 // once and never moves, so its live page is never reloaded between steps; once the browser closes, the same place
-// plays its replay. The transcript keeps only a line per browsing run ("Browsing, 12 steps", `BrowsingGroup`).
+// plays its replay. The transcript keeps only a line per browsing run ("Browsing", `BrowsingGroup`).
 
 export type BrowserPanelProps = {
 	/** What the agent is doing in the browser now (the running call's label, "Scrolling the page"), or what it did last. */

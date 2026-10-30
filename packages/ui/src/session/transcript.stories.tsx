@@ -1,7 +1,7 @@
 import type { TranscriptItem } from "@harbour/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
-import { Sheet } from "../workbench/specimen.tsx";
+import { Section, Sheet } from "../workbench/specimen.tsx";
 import { EXAMPLE_GENERATED_IMAGE } from "./fixture-generated-image.ts";
 import { posterTurn, previewPoster } from "./fixture-presented-images.ts";
 import {
@@ -634,14 +634,27 @@ const helloTurn: TranscriptItem[] = [
 	),
 ];
 
+// The same turn with nothing failing: the first run works, so there is nothing to look into.
+const helloClean: TranscriptItem[] = [
+	...helloTurn.filter((item) => item.id !== "hb1" && item.id !== "ha1" && item.id !== "ha2"),
+	assistant("ha2", "`hello.py` prints **Hello, world!**. A subagent checked it against PEP 8.", { secondsAgo: 67 }),
+];
+
 export const WorkingSections: Story = () => (
 	<Sheet
 		title="Transcript with a failed step and a subagent"
-		intro="A finished turn whose work folds under its Worked for line: an editor card for the file it wrote, a terminal for each command (the first failed, exit 2), and a subagent. Closed, the line hides every step, the failed one too, and says how many failed; the subagent stays in view, out of the fold. Open, the cards sit in line with their rows, not indented."
+		intro="A finished turn whose work folds under its Worked for line: an editor card for the file it wrote, a terminal for each command (the first failed, exit 2), and a subagent. The line says only how long the turn took, never how many steps. Closed, it hides every step, the failed one too, and shows an alert mark in the error colour (A step failed, for a screen reader); with nothing failed there is no mark. The subagent stays in view, out of the fold. Open, the cards sit in line with their rows, not indented."
 	>
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
-			<Transcript items={helloTurn} />
-		</div>
+		<Section title="A step failed">
+			<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+				<Transcript items={helloTurn} />
+			</div>
+		</Section>
+		<Section title="Every step worked">
+			<div className="hb-story-transcript-frame">
+				<Transcript items={helloClean} />
+			</div>
+		</Section>
 	</Sheet>
 );
 WorkingSections.storyName = "Working sections";
@@ -649,14 +662,23 @@ WorkingSections.storyName = "Working sections";
 // The same work in a turn that ended without an answer: no fold, so its calls collapse to their own group's line.
 const helloUnanswered: TranscriptItem[] = helloTurn.filter((item) => item.id !== "ha2" && item.id !== "ha1");
 
+const helloUnansweredClean: TranscriptItem[] = helloClean.filter((item) => item.id !== "ha2");
+
 export const UnansweredGroup: Story = () => (
 	<Sheet
 		title="Transcript with a collapsed group holding a failed call"
-		intro="A turn that stopped without an answer isn't folded; its calls collapse to one Worked for group. Closed, the group hides its failed call too and says how many failed."
+		intro="A turn that stopped without an answer isn't folded; its calls collapse to one Worked for group, which says how long they took and no step count. Closed, the group hides its failed call too and shows only an alert mark in the error colour; with nothing failed there is no mark."
 	>
-		<div className="hb-story-transcript-frame">
-			<Transcript items={helloUnanswered} />
-		</div>
+		<Section title="A step failed">
+			<div className="hb-story-transcript-frame">
+				<Transcript items={helloUnanswered} />
+			</div>
+		</Section>
+		<Section title="Every step worked">
+			<div className="hb-story-transcript-frame">
+				<Transcript items={helloUnansweredClean} />
+			</div>
+		</Section>
 	</Sheet>
 );
 UnansweredGroup.storyName = "Unanswered group";

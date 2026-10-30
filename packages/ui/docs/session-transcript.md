@@ -94,10 +94,10 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
 - **In place** (`inPlace`, `shows`): the call renders as something of its own instead of the generic row, such as
   `present_files`' file cards. The call is a row of its own (`{ kind: "call" }` from `groupTranscript`), where it
   happened in the turn, ending any run of calls around it. While `shows(item)` says it has something of its own to
-  show (by default, once it is done), it is not a step: the turn's line doesn't count it, a closed fold keeps it in
+  show (by default, once it is done), it is not a step: it never marks the turn's line, a closed fold keeps it in
   view, and a turn whose work is only such calls has no line at all, so it shows exactly once. Otherwise (it is
-  running, or it failed) the transcript draws it as the generic row, which counts as a step and folds like any
-  other, a failure too (the turn's line counts it). The renderer gets the call, the host's `onOpenFile` and `openFile`,
+  running, or it failed) the transcript draws it as the generic row, which is a step and folds like any
+  other, a failure too (the turn's line carries the alert mark for it). The renderer gets the call, the host's `onOpenFile` and `openFile`,
   `previewImage`, and `linked`. Whether a call renders in place goes by the tool's name alone, so a call keeps its
   row from start to end.
 - **Within the row** (`label`, `detail`, `openByDefault`): the call keeps its generic row in its group, with its own
@@ -162,9 +162,9 @@ other items is one group.
 
 ### Turn folds (`turnFolds`)
 
-**For** folding a finished turn's work under one "Worked for 1m 12s, 6 steps" line, after T3 Code's turn folds
+**For** folding a finished turn's work under one "Worked for 1m 12s" line, after T3 Code's turn folds
 (`deriveTurnFolds`, `MessagesTimeline.logic.ts`). `turnFolds(rows, working, previous?, shows?)` returns each fold
-(`{ id, rows, elapsed, steps, failed }`) by the id of every row it folds. A turn runs from a message the person sent
+(`{ id, rows, elapsed, failed }`, `failed` a boolean) by the id of every row it folds. A turn runs from a message the person sent
 (a steer joins the turn under way) to the next. It folds once it has ended with an answer with words, after all its
 work (a subagent still working keeps it open): its tool calls, browsing runs and the agent's words before the answer
 go in the fold, failed calls included, as T3 Code's fold hides them too; the person's messages, the answer, notices,
@@ -180,8 +180,9 @@ a turn whose work is only such calls gets no line.
 The fold's rows stay rows of the virtualised list: the first carries the line (`TurnFoldLine`, which looks and works
 as a `Disclosure` summary), and while it is closed each row shows only what stays in view: the files its calls
 presented (and a generated image's card) and its browser's card (`ToolCallGroup` and `BrowsingGroup` take
-`folded`). Its failed and interrupted calls fold away with the rest; the closed line says how many (`failed`): "Worked
-for 23s, 3 steps", then an alert mark and "1 failed" in the error tone (`FailedSteps`). A folded row with nothing to show takes no room. So folding a turn never changes how
+`folded`). Its failed and interrupted calls fold away with the rest. The line never counts anything, steps or
+failures: closed, it reads "Worked for 23s", then, when a step it hides failed (`failed`), an alert mark in the error
+tone with no text (`StepFailed`: `role="img"`, aria-label and title "A step failed"). Nothing failed, no mark. A folded row with nothing to show takes no room. So folding a turn never changes how
 many rows the list has, which virtua sizes by index. Open, every call shows flat (each group as if live), so the
 turn's line is the one "Worked for" in it. Folds are closed by default on every load; the ones a person opened stay
 open for the view, and a linked call (`#turn=`) opens its fold.
@@ -251,7 +252,7 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   "Watch the replay"; "Showing" when the panel already does). It never grows while the agent works.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
-("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").
+("Worked for 8s"), as T3 says it once per turn ("Worked for 22s"). No header says how many steps it holds.
 
 Icons by name, checked in this order: vault (`VaultIcon`); read or view (`EyeIcon`); edit, write or patch
 (`PencilIcon`); bash, shell, exec or command (`TerminalIcon`); grep, glob, search or find (`SearchIcon`); fetch, web
@@ -321,15 +322,16 @@ time is formatted once per render and never ticks. The spinner is the only anima
 
 **For** consecutive tool calls in a turn. `ToolCallGroup({ items, live? })`. While any call is running, or the group
 is `live` (it is the last row and the turn may add to it), every call shows as a chip. Once all are finished,
-however few, the group collapses to one disclosure, "Worked for 8s, 4 steps" (from the first call's start to the
-last call's end; "1 step" for one), which expands to the chips. As in T3 Code, which folds a finished turn's work
+however few, the group collapses to one disclosure, "Worked for 8s" (from the first call's start to the
+last call's end; no step count), which expands to the chips. As in T3 Code, which folds a finished turn's work
 under "Worked for …" (`MessagesTimeline.logic.ts`), the calls carry no duration of their own, so this summary is
 the one place the time is told; collapsing only larger groups would leave a short one with no time at all.
 
-A failed or interrupted call collapses with the rest; the collapsed summary says how many failed (`FailedSteps`: an
-alert mark and "1 failed" in the error tone), so a failure is hidden but never unseen. Expanded, it is in its place
-among the others, and the count goes. T3 Code's collapsed work says nothing visible about a failure (its group
-header only tells a screen reader), so the count is Harbour's own. A `BrowsingGroup` does the same. The last image the group's calls
+A failed or interrupted call collapses with the rest; the collapsed summary carries an alert mark in the error tone
+and nothing more (`StepFailed`: no count, `role="img"` with aria-label and title "A step failed", as T3 Code labels a
+failed call's mark "Tool call failed"), so a failure is hidden but never unseen. Expanded, it is in its place among
+the others, and the mark goes. A `BrowsingGroup` does the same; its line reads "Browsing" while it runs and "Browsed
+for 48s" once done, with no step count either. The last image the group's calls
 returned (the page a browser ended on) also stays under the folded summary.
 
 **Not for** calls from different turns: the transcript ends a group at any other item.

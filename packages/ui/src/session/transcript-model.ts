@@ -368,31 +368,23 @@ export type TurnFold = {
 	readonly rows: readonly string[];
 	/** How long the turn took: from the person's message (else the first folded row) to the answer, in ms. */
 	readonly elapsed: number;
-	/** The tool calls it folds. */
-	readonly steps: number;
-	/** How many of those failed or were interrupted: the closed line says so, as they fold away with the rest. */
-	readonly failed: number;
+	/**
+	 * Whether a tool call it folds failed or was interrupted: the closed line carries an alert mark, as it folds away with
+	 * the rest. The line says neither how many steps it folds nor how many failed.
+	 */
+	readonly failed: boolean;
 };
 
 const failedCall = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
 
 /**
- * The tool calls in a row that fold away, and how many of them failed. A call rendered in place isn't one while it
- * shows as itself (`shows`): it is in view, not folded away.
+ * Whether a tool call in a row that folds away failed. A call rendered in place isn't one while it shows as itself
+ * (`shows`): it is in view, not folded away.
  */
-function rowSteps(row: TranscriptRow, shows: (item: ToolItem) => boolean): { steps: number; failed: number } {
-	if (row.kind === "item" || row.kind === "subagent") return { steps: 0, failed: 0 };
-	if (row.kind === "call") {
-		return shows(row.item) ? { steps: 0, failed: 0 } : { steps: 1, failed: failedCall(row.item) ? 1 : 0 };
-	}
-	let steps = 0;
-	let failed = 0;
-	for (const step of row.items) {
-		if (step.kind !== "tool") continue;
-		steps++;
-		if (failedCall(step)) failed++;
-	}
-	return { steps, failed };
+function rowFailed(row: TranscriptRow, shows: (item: ToolItem) => boolean): boolean {
+	if (row.kind === "item" || row.kind === "subagent") return false;
+	if (row.kind === "call") return !shows(row.item) && failedCall(row.item);
+	return row.items.some((step) => step.kind === "tool" && failedCall(step));
 }
 
 /**
@@ -479,8 +471,7 @@ export function turnFolds(
 		if (answer < 0) continue;
 		const members: string[] = [];
 		let unfinished = false;
-		let steps = 0;
-		let failed = 0;
+		let failed = false;
 		let hides = false;
 		for (let index = start + 1; index < answer; index++) {
 			const row = rows[index];
@@ -488,9 +479,7 @@ export function turnFolds(
 			// A subagent still working keeps the turn open, as any running call does.
 			if (busy(row)) unfinished = true;
 			if (!foldsAway(row)) continue;
-			const counted = rowSteps(row, shows);
-			steps += counted.steps;
-			failed += counted.failed;
+			if (rowFailed(row, shows)) failed = true;
 			if (row.kind !== "call" || !shows(row.item)) hides = true;
 			members.push(row.id);
 		}
@@ -506,12 +495,11 @@ export function turnFolds(
 			before !== undefined &&
 			before.id === id &&
 			before.elapsed === elapsed &&
-			before.steps === steps &&
 			before.failed === failed &&
 			before.rows.length === members.length &&
 			before.rows.every((row, index) => row === members[index])
 				? before
-				: { id, rows: members, elapsed, steps, failed };
+				: { id, rows: members, elapsed, failed };
 		for (const member of members) folds.set(member, fold);
 	}
 	return folds;

@@ -134,7 +134,7 @@ export const Window: Story = () => (
 
 const shot = { mimeType: "image/png", data: EXAMPLE_SCREENSHOT } as const;
 
-const run = (browser: string, running = false): ToolItem[] => [
+const run = (browser: string, running = false, failed = false): ToolItem[] => [
 	{
 		...tool(`${browser}-1`, "browser_open", "Opening example.com", {
 			args: { url: "https://example.com" },
@@ -149,6 +149,7 @@ const run = (browser: string, running = false): ToolItem[] => [
 			args: { action: "look" },
 			output: "URL: https://example.com/\nTitle: Example Domain",
 			...(running ? { status: "running" as const } : { seconds: 0.8 }),
+			...(failed ? { status: "error" as const, output: "The page didn't answer in 30s" } : {}),
 		}),
 		browserSessionId: browser,
 	},
@@ -167,6 +168,11 @@ export const Timeline: Story = () => (
 		<Section title="Closed, with a replay">
 			<Column>
 				<BrowsingGroup items={run("bs-replay")} onShowBrowser={() => {}} browserState="replay" />
+			</Column>
+		</Section>
+		<Section title="Closed, with a failed step">
+			<Column>
+				<BrowsingGroup items={run("bs-failed", false, true)} onShowBrowser={() => {}} browserState="replay" />
 			</Column>
 		</Section>
 		<Section title="Showing in the panel">

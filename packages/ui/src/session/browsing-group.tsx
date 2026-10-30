@@ -6,11 +6,11 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { BrowserEntry, type BrowserEntryState } from "./browser-entry.tsx";
 import { AssistantMessage } from "./message.tsx";
-import { FailedSteps, isFailed, ToolCallChip } from "./tool-call.tsx";
+import { isFailed, StepFailed, ToolCallChip } from "./tool-call.tsx";
 import { type BrowserCallPage, type BrowserViewSlot, type BrowsingStep, browserPageOf } from "./transcript-model.ts";
 import "./browsing-group.css";
 
-// A run of browser calls as one quiet line: "Browsing, 12 steps" and what the agent is doing now ("Scrolling the
+// A run of browser calls as one quiet line: "Browsing" and what the agent is doing now ("Scrolling the
 // page"). It never grows while the agent works, so the transcript stays still: the browser itself is shown in one
 // place by the host (a panel beside the transcript, see `BrowserLiveView`), not as a screenshot per step. Opening the
 // line lists every step, with the words the agent said between them; a step's screenshots are in its own detail.
@@ -21,21 +21,19 @@ import "./browsing-group.css";
 const isCall = (step: BrowsingStep): step is ToolItem => step.kind === "tool";
 
 /**
- * "Browsing, 12 steps" while it runs; "Browsed for 48s, 12 steps" once every call has finished. `active`: the run may
- * still take steps (its turn is working and nothing but the agent's words came after it), so it still reads as running
- * between two calls, while the agent thinks or narrates.
+ * "Browsing" while it runs; "Browsed for 48s" once every call has finished. It never says how many steps. `active`: the
+ * run may still take steps (its turn is working and nothing but the agent's words came after it), so it still reads as
+ * running between two calls, while the agent thinks or narrates.
  */
 export function browsingSummary(calls: readonly ToolItem[], active = false): string {
-	const steps = calls.length === 1 ? "1 step" : `${calls.length} steps`;
-	if (calls.length === 0) return "Browsing";
-	if (active || calls.some((call) => call.status === "running")) return `Browsing, ${steps}`;
+	if (calls.length === 0 || active || calls.some((call) => call.status === "running")) return "Browsing";
 	let start = Number.POSITIVE_INFINITY;
 	let end = Number.NEGATIVE_INFINITY;
 	for (const call of calls) {
 		start = Math.min(start, call.at);
 		end = Math.max(end, call.endedAt ?? call.at);
 	}
-	return `Browsed for ${duration(end - start)}, ${steps}`;
+	return `Browsed for ${duration(end - start)}`;
 }
 
 /** The page the run left its browser on, and the last screenshot it took, as far as its calls say. */
@@ -96,14 +94,14 @@ export type BrowsingGroupProps = {
 	/**
 	 * The run is in a finished turn whose work is folded under the turn's "Worked for" line (`TurnFold`), and that line
 	 * is closed: the run's own line goes, and only its browser's card stays (its failed calls fold away too; the turn's
-	 * line counts them).
+	 * line carries the alert mark for them).
 	 */
 	folded?: boolean;
 };
 
 /**
  * A browsing run, folded to one line by default, also while it runs. Failed and interrupted calls fold with the rest;
- * the line says how many failed (`FailedSteps`). Memoised on `items`.
+ * closed, the line carries an alert mark (`StepFailed`). Memoised on `items`.
  */
 export const BrowsingGroup = memo(function BrowsingGroup({
 	items,
@@ -127,7 +125,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	const current = running ?? calls.at(-1);
 	const busy = running !== undefined || active;
 	const browser = browsingBrowser(calls);
-	const failed = calls.filter(isFailed);
+	const failed = calls.some(isFailed);
 	const chip = (call: ToolItem) => (
 		<ToolCallChip key={call.id} item={call} images="detail" linked={call.id === focus} />
 	);
@@ -172,9 +170,10 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 					</span>
 					<span className="hb-browsing-text">
 						<span className="hb-browsing-title">{browsingSummary(calls, active)}</span>
+						{/* Beside the line's words, as on a "Worked for" line, not out by the chevron. */}
+						{open ? null : <StepFailed failed={failed} />}
 						{current === undefined ? null : <span className="hb-browsing-current">{current.label}</span>}
 					</span>
-					{open ? null : <FailedSteps count={failed.length} />}
 					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
 				</button>
 			</div>

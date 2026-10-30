@@ -641,10 +641,10 @@ describe("turnFolds", () => {
 			tool("t2", "present_files", "Presenting lighthouse.png", { secondsAgo: 50 }),
 			assistant("a3", "Here it is.", { secondsAgo: 28 }),
 		];
-		expect(folds(items)).toEqual([{ id: "a1", rows: ["a1", "t1", "a2", "t2"], elapsed: 72_000, steps: 2, failed: 0 }]);
+		expect(folds(items)).toEqual([{ id: "a1", rows: ["a1", "t1", "a2", "t2"], elapsed: 72_000, failed: false }]);
 	});
 
-	it("folds failed and interrupted calls with the rest, and counts them", () => {
+	it("folds failed and interrupted calls with the rest, and marks the fold failed", () => {
 		const items: TranscriptItem[] = [
 			user("u1", "Run it.", 100),
 			tool("t1", "write", "Wrote hello.py", { secondsAgo: 90 }),
@@ -656,10 +656,11 @@ describe("turnFolds", () => {
 		];
 		const [fold] = folds(items);
 		expect(fold?.rows).toEqual(["t1", "a1", "t3"]);
-		expect(fold).toMatchObject({ steps: 4, failed: 2 });
+		expect(fold).toMatchObject({ failed: true });
+		expect(fold).not.toHaveProperty("steps");
 	});
 
-	it("leaves a turn's subagents out of its fold, and doesn't count them as steps", () => {
+	it("leaves a turn's subagents out of its fold, and a failed one doesn't mark it failed", () => {
 		const items: TranscriptItem[] = [
 			user("u1", "Review it.", 100),
 			tool("t1", "read", "Read a.py", { secondsAgo: 90 }),
@@ -669,7 +670,7 @@ describe("turnFolds", () => {
 		];
 		const [fold] = folds(items);
 		expect(fold?.rows).not.toContain("s1");
-		expect(fold).toMatchObject({ steps: 2, failed: 0 });
+		expect(fold).toMatchObject({ failed: false });
 	});
 
 	it("doesn't fold a turn whose subagent is still working", () => {
@@ -743,15 +744,15 @@ describe("turnFolds", () => {
 			...new Set(turnFolds(groupTranscript(items, undefined, inPlace), false, undefined, shows).values()),
 		];
 
-		it("folds the call with the turn's work, but doesn't count it as a step while it shows as itself", () => {
+		it("folds the call with the turn's work while it shows as itself", () => {
 			const items: TranscriptItem[] = [
 				user("u1", "Go", 100),
 				tool("t1", "bash", "Ran render.py", { secondsAgo: 90 }),
 				presenting(),
 				assistant("a1", "Here.", { secondsAgo: 28 }),
 			];
-			expect(inPlaceFolds(items).map(({ rows, steps }) => ({ rows, steps }))).toEqual([
-				{ rows: ["t1", "p1"], steps: 1 },
+			expect(inPlaceFolds(items).map(({ rows, failed }) => ({ rows, failed }))).toEqual([
+				{ rows: ["t1", "p1"], failed: false },
 			]);
 		});
 
@@ -764,13 +765,15 @@ describe("turnFolds", () => {
 			expect(inPlaceFolds(items)).toEqual([]);
 		});
 
-		it("counts the call as a step once it is the generic row (it failed)", () => {
+		it("folds the call, and marks the fold failed, once it is the generic row (it failed)", () => {
 			const items: TranscriptItem[] = [
 				user("u1", "Go", 100),
 				presenting("error"),
 				assistant("a1", "It failed.", { secondsAgo: 28 }),
 			];
-			expect(inPlaceFolds(items).map(({ steps }) => steps)).toEqual([1]);
+			expect(inPlaceFolds(items).map(({ rows, failed }) => ({ rows, failed }))).toEqual([
+				{ rows: ["p1"], failed: true },
+			]);
 		});
 	});
 });
