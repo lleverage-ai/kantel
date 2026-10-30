@@ -323,6 +323,9 @@ function keyedCases(options: {
 		});
 	};
 	const seed = (who: string) => ({ name: who, sources: [{ kind: "files" as const, files: { "who.md": who } }] });
+	// A lazily hydrated seed's background pass may finish between one `ensure` and the next, and it rewrites only
+	// `hydration` (and `updatedAt`), so a later caller can see `hydrated: true` where the creator saw `false`.
+	const sameWorkspace = ({ hydration: _h, updatedAt: _u, ...record }: WorkspaceRecord) => record;
 	const cases: ConformanceCase[] = [
 		{
 			name: "keyed: ensure creates once under the given ID and returns the same record after",
@@ -331,7 +334,7 @@ function keyedCases(options: {
 				a.strictEqual(first.id, "pf_conformance");
 				a.strictEqual(first.head, 1);
 				const again = await workspaces.ensure(ctx, "pf_conformance", { owner, seed: seed("second") });
-				a.deepEqual(again, first);
+				a.deepEqual(sameWorkspace(again), sameWorkspace(first));
 				a.strictEqual(text((await workspaces.read(ctx, first.id, "who.md")).content), "first");
 			}),
 		},
@@ -341,7 +344,8 @@ function keyedCases(options: {
 				const records = await Promise.all(
 					["a", "b", "c", "d"].map((who) => workspaces.ensure(ctx, "pf_race", { owner, seed: seed(who) })),
 				);
-				for (const record of records) a.deepEqual(record, records[0]);
+				const [first] = records as [WorkspaceRecord, ...WorkspaceRecord[]];
+				for (const record of records) a.deepEqual(sameWorkspace(record), sameWorkspace(first));
 				const winner = text((await workspaces.read(ctx, "pf_race", "who.md")).content);
 				a.ok(["a", "b", "c", "d"].includes(winner), "one seed won");
 				a.strictEqual((await workspaces.history(ctx, "pf_race")).items.length, 2);
