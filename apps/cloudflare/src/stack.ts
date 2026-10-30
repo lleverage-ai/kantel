@@ -31,6 +31,14 @@
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import type { ConnectionsDeployment, CredentialStore, Fetch } from "@harbour/connections";
+import { type ConnectionsService, createConnections } from "@harbour/connections";
+import {
+	createMemoryConnectionsRepository,
+	createSqlConnectionsRepository,
+	migrateConnections,
+} from "@harbour/connections/repository";
+import { CONNECTION_TOOL_NAMES, connectionTools } from "@harbour/connections/tools";
 import {
 	type AgentProfile,
 	type AuditSink,
@@ -288,6 +296,20 @@ export interface StackOptions {
 	 * `defaultRecallRenderer`; a Sal deployment passes `salRecallRenderer()`.
 	 */
 	readonly recallRenderer?: RecallRenderer;
+	/**
+	 * Connections (epic #322): outside services and remote MCP servers people connect, with their tokens in the vault
+	 * (`credentials`, the VaultDO over RPC). With it the gateway serves `/v1/connections/…` and every session has the
+	 * connection tools (`@harbour/connections/tools`), which send from here, never from the sandbox.
+	 */
+	readonly connections?: StackConnections;
+}
+
+export interface StackConnections {
+	readonly credentials: CredentialStore;
+	readonly deployment: ConnectionsDeployment;
+	readonly fetch?: Fetch;
+	/** Every session acting for a person is that person's alone (a deployment with one person). Default off. */
+	readonly personal?: boolean;
 }
 
 export interface Stack {
@@ -320,6 +342,8 @@ export interface Stack {
 	 * `access` for every resource check.
 	 */
 	readonly sharing: SharingStore;
+	/** Connections (epic #322), when the stack has them (`StackOptions.connections`). */
+	readonly connections?: ConnectionsService;
 	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
 	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
@@ -373,6 +397,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateSchedules(driver);
 		await migrateFileShares(driver);
 		await migrateSharing(driver);
+		if (options.connections !== undefined) await migrateConnections(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -500,6 +525,24 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	};
 	const sharing =
 		driver === undefined ? createMemorySharing(sharingOptions) : createSqlSharing({ driver, ...sharingOptions });
+	// Connections: their records here (D1), their secrets in the vault. Their checks are the runtime's access.
+	const connections =
+		options.connections === undefined
+			? undefined
+			: createConnections({
+					repository:
+						driver === undefined ? createMemoryConnectionsRepository() : createSqlConnectionsRepository(driver),
+					credentials: options.connections.credentials,
+					deployment: options.connections.deployment,
+					access: lateAccess,
+					audit,
+					clock,
+					...(options.connections.fetch === undefined ? {} : { fetch: options.connections.fetch }),
+				});
+	const connectionToolsFor =
+		connections === undefined
+			? undefined
+			: connectionTools({ connections, ...(options.connections?.personal === true ? { personal: true } : {}) });
 	const renderer = options.recallRenderer ?? defaultRecallRenderer;
 	const memory =
 		driver === undefined
@@ -560,7 +603,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				options.presentFiles === true && record.workspaceId !== undefined
 					? [createPresentFilesTool(record.workspaceId), createDocumentTool(record.workspaceId)]
 					: [];
-			const tools = browser === undefined ? [...coding, ...present] : [...coding, ...present, ...browser.tools(record)];
+			const linked = connectionToolsFor === undefined ? [] : connectionToolsFor(record);
+			const tools =
+				browser === undefined
+					? [...coding, ...present, ...linked]
+					: [...coding, ...present, ...browser.tools(record), ...linked];
 			const codemode = options.codemode;
 			const withCodemode =
 				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
@@ -683,6 +730,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
 				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
 				...(options.subagents === true ? [SUBAGENT_TOOL] : []),
+				...(connections === undefined ? [] : CONNECTION_TOOL_NAMES),
 			],
 			// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
 			// until they set some.
@@ -770,6 +818,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			skills,
 			memory,
 			sharing,
+			...(connections === undefined ? {} : { connections }),
 			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],

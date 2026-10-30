@@ -357,6 +357,8 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			HARBOUR_ACCESS_TEAM_DOMAIN: values.accessTeamDomain,
 			HARBOUR_ACCESS_AUD: values.accessAud,
 			HARBOUR_ADMIN_EMAIL: values.adminEmail,
+			// Connections build their redirect URI and connect URLs from it (src/connections.ts).
+			HARBOUR_HOSTNAME: values.hostname,
 			...(values.locationHint === undefined ? {} : { HARBOUR_LOCATION_HINT: values.locationHint }),
 			...(values.browserProvider === undefined ? {} : { HARBOUR_BROWSER_PROVIDER: values.browserProvider }),
 			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),

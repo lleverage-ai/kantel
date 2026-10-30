@@ -14,6 +14,9 @@ import {
 	type CallContext,
 	type Clock,
 	CODE_REQUIRED_KINDS,
+	type ConnectionSecretCall,
+	type ConnectionSecretResult,
+	type ConnectionSecrets,
 	type ConnectorCredential,
 	type ConnectorCredentialRequest,
 	type ConnectorCredentials,
@@ -69,8 +72,11 @@ import {
 } from "./index.ts";
 import type { VaultRow, VaultStore, VaultTable, VaultWrite } from "./store.ts";
 
-/** The vault every target builds: the `Vault` contract and the connector credential read the model gateway makes. */
-export type HarbourVault = Vault & Required<ConnectorCredentials>;
+/**
+ * The vault every target builds: the `Vault` contract, the connector credential read the model gateway makes, and the
+ * connection secrets the connections service keeps (epic #322).
+ */
+export type HarbourVault = Vault & Required<ConnectorCredentials> & ConnectionSecrets;
 
 export interface VaultOptions {
 	/** Where every record is kept. Two vaults over one store behave as one. */
@@ -1944,7 +1950,120 @@ export function createVault(options: VaultOptions): HarbourVault {
 			};
 			return credential;
 		},
+
+		async connectionSecret(ctx, call) {
+			await requireSystem(ctx, "vault.connectionSecret", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				...(call?.op === "open" && typeof call.organisationId === "string"
+					? { organisationId: call.organisationId }
+					: {}),
+			});
+			return connectionSecret(call);
+		},
 	};
+
+	/** `ConnectionSecrets.connectionSecret`, for a caller already known to be system. Never logs or emits a value. */
+	async function connectionSecret(call: ConnectionSecretCall): Promise<ConnectionSecretResult> {
+		if (typeof call !== "object" || call === null)
+			throw new HarbourError("invalid", "A connection secret call is an object");
+		if (call.op === "put") {
+			if (typeof call.value !== "string" || call.value.length === 0) {
+				throw new HarbourError("invalid", "A connection secret cannot be empty");
+			}
+			const injection = { header: "Authorization", template: "Bearer {key}" };
+			assertItemInput({ name: call.name, hosts: call.hosts, injection });
+			const { item, write } = await newItem(
+				{
+					owner: call.owner,
+					name: call.name,
+					description: "A connection's secret (connections)",
+					hosts: call.hosts,
+					injection,
+				},
+				call.value,
+			);
+			await commit([write]);
+			await emit({
+				id: `vault:item:${item.id}:created`,
+				type: "vault.item.created",
+				actor: { kind: "system", component: "connections" },
+				organisationId: call.owner.kind === "platform" ? PLATFORM_ORGANISATION : call.owner.organisationId,
+				subject: { kind: "vault.item", id: item.id },
+				data: { name: item.name, hosts: [...item.hosts], hasValue: true, connection: true },
+			});
+			return { itemId: item.id };
+		}
+		if (typeof call.itemId !== "string" || call.itemId.length === 0) {
+			throw new HarbourError("invalid", "A connection secret call names its item");
+		}
+		if (call.op === "replace" || call.op === "clear") {
+			const value = call.op === "replace" ? call.value : undefined;
+			if (call.op === "replace" && (typeof value !== "string" || value.length === 0)) {
+				throw new HarbourError("invalid", "A connection secret cannot be empty");
+			}
+			for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+				const found = await read<StoredItem>("items", call.itemId);
+				if (found === undefined) {
+					if (call.op === "clear") return {};
+					throw new HarbourError("not_found", `No item ${call.itemId}`);
+				}
+				const { item } = found.value;
+				const valueVersion = item.valueVersion + 1;
+				const next: StoredItem = {
+					item: { ...item, hasValue: value !== undefined, valueVersion, updatedAt: clock.now() },
+					...(value === undefined ? {} : { sealed: await cipher.seal(value, { itemId: item.id, valueVersion }) }),
+				};
+				if (await store.commit([update("items", found.row, next)])) return { itemId: item.id };
+			}
+			throw new HarbourError(
+				"unavailable",
+				`The vault could not update item ${call.itemId}: too many concurrent changes`,
+			);
+		}
+		if (call.op !== "open") throw new HarbourError("invalid", "Unknown connection secret call");
+		const host = typeof call.host === "string" ? call.host.toLowerCase() : "";
+		const session = call.session;
+		const caller = {
+			organisationId: call.organisationId,
+			...(session?.projectId === undefined ? {} : { projectId: session.projectId }),
+			...(session?.agentId === undefined ? {} : { agentId: session.agentId }),
+			...(session === undefined ? {} : { sessionId: session.sessionId }),
+			method: "POST" as const,
+		};
+		const purpose = { connectionPurpose: String(call.purpose ?? "") };
+		const refuse = async (reason: string, itemId?: string): Promise<never> => {
+			await recordUse(
+				caller,
+				{ host, path: "/", ...(itemId === undefined ? {} : { itemId }), outcome: "denied", reason },
+				purpose,
+			);
+			throw new HarbourError("refused", reason);
+		};
+		const found = await read<StoredItem>("items", call.itemId);
+		const item = found?.value.item;
+		if (item === undefined) return refuse(`No item ${call.itemId}`);
+		const owned =
+			item.owner.kind === "platform"
+				? found!.row.organisationId === null
+				: found!.row.organisationId === call.organisationId;
+		// Recorded in the asking organisation, so it names nothing of the other's.
+		if (!owned) return refuse(`No item ${call.itemId}`);
+		if (!item.hosts.includes(host)) return refuse(`Item ${item.name} is not bound to ${host}`, item.id);
+		if (session !== undefined) {
+			const closed = sessionClosed(await sessionOf(call.organisationId, session.sessionId));
+			if (closed !== undefined) return refuse(closed, item.id);
+		}
+		const sealed = found!.value.sealed;
+		if (sealed === undefined) return refuse(`Item ${item.name} has no value`, item.id);
+		const value = await cipher.open(sealed, { itemId: item.id, valueVersion: item.valueVersion });
+		await recordUse(
+			caller,
+			{ host, path: "/", itemId: item.id, outcome: "injected", reason: String(call.purpose ?? "") },
+			purpose,
+		);
+		return { itemId: item.id, value };
+	}
 	options.sessionEnd?.register("vault", (ctx, end) => vault.endSession(ctx, end.sessionId, end.reason));
 	return vault;
 }

@@ -6,6 +6,9 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@harbour/browser/session";
+import type { ConnectionsService } from "@harbour/connections";
+import { createMemoryConnectionsRepository } from "@harbour/connections/repository";
+import { CONNECTION_TOOL_NAMES } from "@harbour/connections/tools";
 import type { Sandboxes, UsageWriter } from "@harbour/contracts";
 import {
 	type AuditSink,
@@ -44,6 +47,7 @@ import type { HarbourVault } from "@harbour/vault/engine";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
+import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
@@ -99,6 +103,11 @@ export interface GatewayComponents {
 	 * Absent without a browser provider.
 	 */
 	readonly browser?: SessionBrowser;
+	/**
+	 * Connections (epic #322, `connections.ts`): outside services and remote MCP servers people connect, their secrets in
+	 * the vault. Absent without `HARBOUR_PUBLIC_URL` or a vault.
+	 */
+	readonly connections?: ConnectionsService;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -202,6 +211,8 @@ export function createGatewayComponents(
 		readonly browserProvider?: BrowserProvider;
 		/** What `/v1/deployment` says backs the browser. */
 		readonly browserBinding?: string;
+		/** Connections (`connections.ts`). Without it, there are none. */
+		readonly connections?: GatewayConnectionsConfig;
 	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
@@ -236,6 +247,16 @@ export function createGatewayComponents(
 		if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
 		return workspaces;
 	};
+	const linked =
+		options.connections === undefined
+			? undefined
+			: gatewayConnections({
+					config: options.connections,
+					repository: createMemoryConnectionsRepository(),
+					audit,
+					access: () => auditAccess.access,
+				});
+	const browserTools = withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser);
 	const runtime = withOwnWorkspaces(
 		createMemoryRuntime({
 			audit,
@@ -243,7 +264,7 @@ export function createGatewayComponents(
 			sharing,
 			...models,
 			...gatewaySandboxes.runtimeOptions,
-			tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
+			tools: linked === undefined ? browserTools : linked.withTools(browserTools),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
 			rules,
 		}),
@@ -269,6 +290,7 @@ export function createGatewayComponents(
 	});
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
+	const connections = linked?.attach(vault);
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
@@ -285,8 +307,10 @@ export function createGatewayComponents(
 		vault,
 		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 		...(browser === undefined ? {} : { browser }),
+		...(connections === undefined ? {} : { connections }),
 		bindings: {
 			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
+			connections: connections === undefined ? "off" : "memory",
 			identity: "memory",
 			audit: "memory",
 			runtime:
@@ -498,7 +522,11 @@ export async function bootstrap(
 	// first command (`sandboxes.ts`).
 	// With a browser, its tools too (`browser.ts`): `browser_request` asks a person for sites first.
 	const coding = {
-		tools: [...CODING_TOOLS, ...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES)],
+		tools: [
+			...CODING_TOOLS,
+			...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES),
+			...(components.connections === undefined ? [] : CONNECTION_TOOL_NAMES),
+		],
 		skills: [],
 		sandbox: { tiers: ["isolate" as const] },
 		memoryScopes: [],

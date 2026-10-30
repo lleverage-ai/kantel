@@ -12,12 +12,14 @@
 		"./mcp": "./src/mcp.ts",
 		"./memory": "./src/memory.ts",
 		"./oauth": "./src/oauth.ts",
-		"./sql": "./src/sql.ts",
+		"./repository": "./src/repository.ts",
 		"./testing": "./src/testing.ts",
 		"./tools": "./src/tools.ts",
 		"./vault-store": "./src/vault-store.ts"
 	},
 	"dependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
 		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/sql": "workspace:*"

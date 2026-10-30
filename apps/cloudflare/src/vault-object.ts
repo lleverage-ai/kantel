@@ -8,6 +8,7 @@
  * - `decideEgress` and `readConnectorCredential`: the same calls over RPC, for code in this Worker that already holds a
  *   component's system context. `assertSessionOpen` too: the model gateway asks it before each call, so blocking a
  *   session stops its model calls at once.
+ * - `connectionSecret`: the connections service's tokens, keys and client secrets over RPC (epic #322).
  * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `HARBOUR_CPA_API_KEY` secret this object
  *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
  * - `approvalCall`: the vault approval API's calls over RPC, for `HarbourStack`, which serves that API to people
@@ -16,6 +17,8 @@
 import { DurableObject } from "cloudflare:workers";
 import type {
 	CallContext,
+	ConnectionSecretCall,
+	ConnectionSecretResult,
 	ConnectorCredential,
 	ConnectorCredentialRequest,
 	EgressDecision,
@@ -74,6 +77,11 @@ export class HarbourVault extends DurableObject<Env> {
 
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential> {
 		return this.vaultCore().readConnectorCredential(ctx, request);
+	}
+
+	/** The connections service's secrets (epic #322): tokens, keys and client secrets, kept and opened here. */
+	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult> {
+		return this.vaultCore().connectionSecret(ctx, call);
 	}
 
 	/** The model gateway's check before each call: refused for a session an operator blocked, or one that ended. */

@@ -22,6 +22,7 @@
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
  * | `/v1/sharing/…` | the sharing API (`@harbour/sharing/http`): resource shares, access requests, bindings, policy, uses |
+ * | `/v1/connections/…` | the connections API (`@harbour/connections/http`, epic #322), its connect and callback pages, and the client ID metadata document (no sign-in) |
  * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
@@ -36,6 +37,7 @@
  */
 import { createAuditQueryHandler } from "@harbour/audit/http";
 import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
+import { createConnectionsApi, isConnectionsPath } from "@harbour/connections/http";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
@@ -253,6 +255,12 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
 	// Every check is the sharing store's, through the stack's project access.
 	const sharing = createSharingApi({ sharing: stack.sharing, authenticate: callContext, basePath: API_BASE });
+	// Connections: the service's own rules decide who connects what; agents never do.
+	const connections =
+		stack.connections === undefined
+			? undefined
+			: createConnectionsApi({ connections: stack.connections, authenticate: callContext, basePath: API_BASE });
+	const CLIENT_METADATA_PATH = `${API_BASE}/connections/oauth/client-metadata.json`;
 	const shares =
 		stack.shares === undefined
 			? undefined
@@ -497,6 +505,17 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return (await schedules.fetch(request)) ?? notFound();
+			}
+			if (connections !== undefined && isConnectionsPath(path, API_BASE)) {
+				// The metadata document is public: authorisation servers fetch it to learn this deployment's client.
+				if (path !== CLIENT_METADATA_PATH) {
+					const refused = await signIn(request);
+					if (refused !== undefined) {
+						await request.body?.cancel().catch(() => undefined);
+						return refused;
+					}
+				}
+				return (await connections.fetch(request)) ?? notFound();
 			}
 			if (isSharingPath(path, API_BASE)) {
 				const refused = await signIn(request);
