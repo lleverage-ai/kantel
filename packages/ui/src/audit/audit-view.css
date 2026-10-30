@@ -23,12 +23,14 @@
 	font-variant-numeric: tabular-nums;
 }
 
-/* Filters: as many to a row as fit, each at least a select's comfortable width, with the fields' own gaps. */
+/* Filters: three equal tracks at the forms' measure, as FormGrid lays out short fields, so the usual six read as two
+   full rows that line up rather than five and one left over; two to a row on a phone. */
 .hb-audit-filters {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(calc(var(--hb-card-width) / 3), 1fr));
-	gap: var(--hb-space-6) var(--hb-space-7);
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: var(--hb-space-7);
 	align-items: end;
+	max-width: var(--hb-content-width);
 }
 
 .hb-audit-filter {
@@ -342,6 +344,7 @@ a.hb-audit-usage-when:hover {
 @media (max-width: 640px) {
 	.hb-audit-filters {
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		gap: var(--hb-space-6) var(--hb-space-7);
 	}
 
 	.hb-audit-row-main {

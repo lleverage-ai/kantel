@@ -37,8 +37,9 @@
 	gap: var(--hb-space-7);
 }
 
+/* Seen from and Filter on the forms' rhythm, the same gap as the memory page's status and search. */
 .hb-skills-controls {
-	gap: var(--hb-space-5);
+	gap: var(--hb-space-7);
 }
 
 .hb-skills-groups {
