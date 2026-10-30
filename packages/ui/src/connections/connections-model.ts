@@ -638,6 +638,16 @@ export function winningClient(clients: readonly OAuthClient[], templateId: strin
 	return undefined;
 }
 
+/**
+ * The templates an OAuth client can be registered for: an OAuth API, or a remote MCP server that signs in with OAuth.
+ * Slack's and GitHub's MCP servers offer no dynamic registration, so they only connect through a registered client.
+ */
+export function clientTemplates(catalogue: readonly ProviderTemplate[]): readonly ProviderTemplate[] {
+	return catalogue.filter(
+		(template) => template.authTypes.includes("oauth2") || template.authTypes.includes("mcp_oauth"),
+	);
+}
+
 /** The client secret's or key's presence in words: "Set, ends in 4f2a". */
 export function secretText(secret: SecretHint): string {
 	return `Set, ends in ${secret.last4}`;

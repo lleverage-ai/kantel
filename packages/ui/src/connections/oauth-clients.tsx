@@ -13,6 +13,7 @@ import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
 	type ConnectionsViewer,
+	clientTemplates,
 	type OAuthClient,
 	type OAuthClientInput,
 	type ProviderTemplate,
@@ -55,7 +56,7 @@ export function OAuthClients({
 	const [busy, setBusy] = useState<string>();
 	const [failure, setFailure] = useState<string>();
 	const [saved, setSaved] = useState<OAuthClient>();
-	const oauthTemplates = useMemo(() => catalogue.filter((t) => t.authTypes.includes("oauth2")), [catalogue]);
+	const oauthTemplates = useMemo(() => clientTemplates(catalogue), [catalogue]);
 	const byTemplate = useMemo(() => {
 		const groups = new Map<string, OAuthClient[]>();
 		for (const client of clients) groups.set(client.templateId, [...(groups.get(client.templateId) ?? []), client]);
@@ -87,8 +88,9 @@ export function OAuthClients({
 			<div className="flex min-w-0 items-start justify-between gap-4 max-sm:flex-col">
 				<p className="m-0 max-w-content text-sm text-muted">
 					The apps people sign in through. For a new connection Harbour uses the narrowest one set up: yours or your
-					project's, then {viewer.organisation}'s, then {viewer.host ?? "the host"}'s. A connection stays on the client
-					that made it, even when another is added later.
+					project's, then {viewer.organisation}'s, then{" "}
+					{viewer.host === undefined || viewer.host === viewer.organisation ? "the deployment" : viewer.host}'s. A
+					connection stays on the client that made it, even when another is added later.
 				</p>
 				{adding ? null : (
 					<Button variant="primary" icon={<AppWindowIcon size="sm" />} onClick={() => setAdding(true)}>

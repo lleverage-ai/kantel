@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	clientTemplates,
 	connectRoute,
 	detectKey,
 	groupConnections,
@@ -95,6 +96,16 @@ describe("ownership", () => {
 		// Two GitHub connections, each in its own group.
 		const github = groups.flatMap((g) => g.connections.filter((c) => c.templateId === "github").map(() => g.key));
 		expect(new Set(github).size).toBe(github.length);
+	});
+});
+
+describe("clientTemplates", () => {
+	it("offers OAuth APIs and OAuth MCP servers, not key-only services", () => {
+		const ids = clientTemplates(CATALOGUE).map((t) => t.id);
+		expect(ids).toContain("github");
+		expect(ids).toContain("linear");
+		expect(ids).toContain("notion");
+		expect(ids).not.toContain("openai");
 	});
 });
 
