@@ -380,6 +380,8 @@ export function SessionView({
 								file={openFile}
 								read={readPresented}
 								write={writePresented}
+								sharesOf={actions.sharesOf}
+								sharer={actions.sharer}
 								onClose={closeFile}
 								initialText={
 									lastDraft.current !== undefined && lastDraft.current.title === openFile.title
@@ -388,7 +390,14 @@ export function SessionView({
 								}
 							/>
 						) : (
-							<PresentedPanel key={presentedKey(openFile)} file={openFile} read={readPresented} onClose={closeFile} />
+							<PresentedPanel
+								key={presentedKey(openFile)}
+								file={openFile}
+								read={readPresented}
+								sharesOf={actions.sharesOf}
+								sharer={actions.sharer}
+								onClose={closeFile}
+							/>
 						)}
 					</div>
 				)}

@@ -154,6 +154,33 @@ export interface WorkspaceFiles {
 	 * digest `ifMatch` names; rejects with the code `conflict` when it changed. Absent on a client that can't write.
 	 */
 	write?(path: string, content: string, ifMatch: string | undefined): Promise<WrittenFile>;
+	/** Sharing the workspace's files (the shares API). Absent on a client that can't share. */
+	readonly shares?: WorkspaceShares;
+}
+
+/** A file's share as the shares API returns it. */
+export type FileShareRecord = {
+	readonly id: string;
+	readonly path: string;
+	readonly title?: string;
+	readonly access: "restricted" | "link";
+	/** The link's secret: the link is `/shared/<token>` on Harbour's hostname. */
+	readonly token: string;
+	readonly createdBy: string;
+	readonly invites: readonly { readonly email: string }[];
+};
+
+/** One workspace's shares: each file has at most one, made the first time it's shared. */
+export interface WorkspaceShares {
+	/** The file's live share, or undefined when it has none. */
+	find(path: string, signal?: AbortSignal): Promise<FileShareRecord | undefined>;
+	/** The file's share, made if it has none. */
+	share(path: string, title: string | undefined): Promise<FileShareRecord>;
+	setAccess(shareId: string, access: "restricted" | "link"): Promise<FileShareRecord>;
+	invite(shareId: string, email: string): Promise<FileShareRecord>;
+	uninvite(shareId: string, email: string): Promise<FileShareRecord>;
+	/** The link a share's token opens, on this host. */
+	link(share: FileShareRecord): string;
 }
 
 /** A watch-only live view of one of a session's browsers: the link to embed, and when it stops working (epoch ms). */

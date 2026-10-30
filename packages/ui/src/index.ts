@@ -120,6 +120,7 @@ export {
 	presentedKey,
 	presentedKind,
 	presentedKindLabel,
+	presentedTitle,
 } from "./presented/presented-file-model.ts";
 export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from "./primitives/breadcrumbs.tsx";
 export {

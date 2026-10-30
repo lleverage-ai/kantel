@@ -1,6 +1,6 @@
 import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
 import type { ComposerProps, ComposerState } from "@harbour/ui";
-import type { SessionControl, WorkspaceFile, WrittenFile } from "../api/client.ts";
+import type { SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
 /**
@@ -42,6 +42,10 @@ export type SessionActions = {
 	 * document opens read-only.
 	 */
 	writePresented?: (file: PresentedFile, markdown: string, ifMatch: string | undefined) => Promise<WrittenFile>;
+	/** The shares of a presented file's workspace, for the Share popover. Absent (or undefined), files have Export alone. */
+	sharesOf?: (file: PresentedFile) => Promise<WorkspaceShares | undefined>;
+	/** The signed-in person, the owner a new share names. */
+	sharer?: { readonly name: string; readonly email?: string };
 	/** The composer's model and thinking pickers, when the session offers a choice. */
 	pickers?: Pick<
 		ComposerProps,

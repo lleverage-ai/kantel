@@ -37,6 +37,7 @@ import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
 	ConsoleClient,
+	FileShareRecord,
 	ModelChoices,
 	ProjectSummary,
 	RepositoryBranches,
@@ -47,6 +48,7 @@ import type {
 	StartOptions,
 	WorkspaceFiles,
 	WorkspaceListing,
+	WorkspaceShares,
 	WrittenFile,
 } from "./client.ts";
 import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
@@ -420,6 +422,36 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 					...(typeof written.digest === "string" ? { digest: written.digest } : {}),
 				};
 			},
+			shares: workspaceShares(id),
+		};
+	};
+
+	/** A workspace's shares over the shares API. */
+	const workspaceShares = (id: string): WorkspaceShares => {
+		const send = async (path: string, method: string, body?: unknown): Promise<FileShareRecord> =>
+			(await (
+				await call(path, {
+					method,
+					...(body === undefined
+						? {}
+						: { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+				})
+			).json()) as FileShareRecord;
+		const ofWorkspace = `${base}/workspaces/${encodeURIComponent(id)}/shares`;
+		const share = (shareId: string, rest = "") => `${base}/shares/${encodeURIComponent(shareId)}${rest}`;
+		return {
+			async find(path, signal) {
+				const page = await getJson<{ items: FileShareRecord[] }>(
+					`${ofWorkspace}?${new URLSearchParams({ path })}`,
+					signal,
+				);
+				return page.items[0];
+			},
+			share: (path, title) => send(ofWorkspace, "POST", { path, ...(title === undefined ? {} : { title }) }),
+			setAccess: (shareId, access) => send(share(shareId), "PATCH", { access }),
+			invite: (shareId, email) => send(share(shareId, "/invites"), "POST", { email }),
+			uninvite: (shareId, email) => send(share(shareId, "/invites/remove"), "POST", { email }),
+			link: (record) => new URL(`/shared/${record.token}`, globalThis.location?.href ?? "https://harbour.invalid").href,
 		};
 	};
 

@@ -2572,6 +2572,562 @@
 					}
 				}
 			}
+		},
+		"/workspaces/{workspaceId}/shares": {
+			"get": {
+				"operationId": "listShares",
+				"summary": "List a workspace's shares",
+				"description": "The live shares of the workspace's files, or of one file, with their invites. Needs viewer on it.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "workspaceId",
+						"in": "path",
+						"required": true,
+						"description": "The workspace's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "path",
+						"in": "query",
+						"required": false,
+						"description": "Only this file's share.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The shares, oldest first.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileSharePage"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "shareFile",
+				"summary": "Share a file",
+				"description": "The file's share, made if it has none: a file has one live share, and sharing it again returns that one unchanged. A new share is `restricted` unless `access` says otherwise. Needs operator on the workspace's project, as a person (never an agent or an API key). Audited as `workspace.share.created`, without the token.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "workspaceId",
+						"in": "path",
+						"required": true,
+						"description": "The workspace's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ShareFileBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The file's share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/shares/{shareId}": {
+			"get": {
+				"operationId": "getShare",
+				"summary": "Get a share",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateShare",
+				"summary": "Set a share's general access",
+				"description": "`link` lets anyone with the link read the file; `restricted` stops the link at once, and `link` again restarts the same link. Needs operator, as a person. Audited as `workspace.share.changed`.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateShareBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The share as changed.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "revokeShare",
+				"summary": "Revoke a share",
+				"description": "Its link stops for good; sharing the file again makes a new link. Needs operator, as a person. Audited as `workspace.share.revoked`.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The revoked share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/shares/{shareId}/invites": {
+			"post": {
+				"operationId": "inviteToShare",
+				"summary": "Invite someone by email",
+				"description": "Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ShareInviteBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The share with its invites.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/shares/{shareId}/invites/remove": {
+			"post": {
+				"operationId": "removeShareInvite",
+				"summary": "Remove an invite",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ShareInviteBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The share with its invites.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -3399,6 +3955,90 @@
 					}
 				],
 				"title": "ErrorCode"
+			},
+			"FileShare": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"workspaceId",
+					"path",
+					"access",
+					"token",
+					"createdBy",
+					"createdAt",
+					"updatedAt",
+					"invites"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The share's ID."
+					},
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"workspaceId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The workspace the file is in."
+					},
+					"path": {
+						"type": "string",
+						"description": "The file's path in the workspace."
+					},
+					"title": {
+						"type": "string",
+						"description": "What the link's page calls the file."
+					},
+					"access": {
+						"$ref": "#/components/schemas/ShareAccess"
+					},
+					"token": {
+						"type": "string",
+						"description": "The link's secret: the link is `/shared/<token>` on the deployment's hostname. Treat it as one."
+					},
+					"createdBy": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The person who shared the file, its owner."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"invites": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ShareInvite"
+						}
+					},
+					"revokedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "FileShare"
+			},
+			"FileSharePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/FileShare"
+						}
+					}
+				},
+				"title": "FileSharePage"
 			},
 			"FirstMessage": {
 				"type": "object",
@@ -4690,6 +5330,73 @@
 				},
 				"title": "SessionWarmth"
 			},
+			"ShareAccess": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "restricted"
+					},
+					{
+						"type": "string",
+						"const": "link"
+					}
+				],
+				"title": "ShareAccess",
+				"description": "`restricted`: only those who can see the session's workspace. `link`: anyone with the link."
+			},
+			"ShareFileBody": {
+				"type": "object",
+				"required": ["path"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The file's path in the workspace."
+					},
+					"title": {
+						"type": "string",
+						"maxLength": 200,
+						"description": "What the link's page calls it."
+					},
+					"access": {
+						"$ref": "#/components/schemas/ShareAccess"
+					}
+				},
+				"title": "ShareFileBody"
+			},
+			"ShareInvite": {
+				"type": "object",
+				"required": ["email", "invitedBy", "invitedAt"],
+				"properties": {
+					"email": {
+						"type": "string",
+						"description": "As invited. Harbour sends no email."
+					},
+					"invitedBy": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The person who invited them."
+					},
+					"invitedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ShareInvite"
+			},
+			"ShareInviteBody": {
+				"type": "object",
+				"required": ["email"],
+				"properties": {
+					"email": {
+						"type": "string",
+						"minLength": 3,
+						"maxLength": 254,
+						"description": "Who to invite."
+					}
+				},
+				"title": "ShareInviteBody"
+			},
 			"SkillFile": {
 				"type": "object",
 				"required": ["path", "content"],
@@ -5187,6 +5894,20 @@
 				},
 				"title": "UpdateScheduleBody",
 				"description": "The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create."
+			},
+			"UpdateShareBody": {
+				"type": "object",
+				"properties": {
+					"access": {
+						"$ref": "#/components/schemas/ShareAccess"
+					},
+					"title": {
+						"type": "string",
+						"maxLength": 200
+					}
+				},
+				"title": "UpdateShareBody",
+				"description": "The fields to change; one left out stays as it is."
 			},
 			"Usage": {
 				"type": "object",

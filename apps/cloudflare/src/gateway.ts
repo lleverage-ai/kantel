@@ -20,6 +20,8 @@
  * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
+ * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
+ * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -49,6 +51,12 @@ import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
+import {
+	createSharedLinkHandler,
+	createSharesApi,
+	isSharesPath,
+	SHARED_LINK_BASE,
+} from "@harbour/workspace/shares-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
 import { sessionWorkspaceId } from "./coding-tools.ts";
 import {
@@ -59,6 +67,7 @@ import {
 	type PlacementProbe,
 } from "./measure.ts";
 import { readLimited } from "./route.ts";
+import { renderMissingShare, renderSharedPage } from "./shared-page.ts";
 import type { Stack } from "./stack.ts";
 
 /** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"?, "tools"? }`: a few bytes. */
@@ -227,6 +236,19 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
+	const shares =
+		stack.shares === undefined
+			? undefined
+			: createSharesApi({ shares: stack.shares, authenticate: callContext, basePath: API_BASE });
+	const sharedLinks =
+		stack.shares === undefined
+			? undefined
+			: createSharedLinkHandler({
+					shares: stack.shares,
+					workspaces: stack.workspaces,
+					renderPage: renderSharedPage,
+					renderMissing: renderMissingShare,
+				});
 	const browsers =
 		stack.browser === undefined
 			? undefined
@@ -362,6 +384,19 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
+			if (sharedLinks !== undefined && under(path, SHARED_LINK_BASE)) {
+				// No sign-in: the link's token is its only credential, and it opens one file read-only.
+				return (await sharedLinks(request)) ?? renderMissingShare();
+			}
+			if (isSharesPath(path, API_BASE)) {
+				if (shares === undefined) return notFound();
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await shares(request)) ?? notFound();
+			}
 			if (BROWSER_CONSOLE_PATHS.has(path) || BROWSER_EMBED_PATH.test(path)) {
 				if (browsers === undefined) {
 					return Response.json(

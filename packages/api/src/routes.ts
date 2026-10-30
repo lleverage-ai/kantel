@@ -18,10 +18,13 @@ import {
 	CreateScheduleBody,
 	CreateSessionBody,
 	EmbedBrowserBody,
+	FileShare,
+	FileSharePage,
 	ImportSkillBody,
 	ListConceptsQuery,
 	ListSchedulesQuery,
 	ListSessionsQuery,
+	ListSharesQuery,
 	ListSkillsQuery,
 	MemorySearchBody,
 	MemorySearchResult,
@@ -43,6 +46,9 @@ import {
 	SessionPath,
 	SessionRecord,
 	SessionWarmth,
+	ShareFileBody,
+	ShareInviteBody,
+	SharePath,
 	SkillFileContent,
 	SkillFileQuery,
 	SkillListingPage,
@@ -53,6 +59,8 @@ import {
 	SkillRevisionPath,
 	Submission,
 	UpdateScheduleBody,
+	UpdateShareBody,
+	WorkspaceSharesPath,
 } from "./schema.ts";
 
 /** The version's base path, before every route's own path. */
@@ -549,6 +557,119 @@ export const embedBrowserSession = defineRoute({
 /** The browsers' routes, served by `@harbour/browser/http`. */
 export const browserRoutes = { embedBrowserSession } as const;
 
+// Sharing (`FileShares`): a file an agent made, shared after Claude's Share popover. The link's page is
+// `/shared/<token>`, outside the API: it needs no sign-in and reads that one file only.
+
+const shareErrors = ["forbidden", "not_found"] as const;
+const shareChangeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
+
+export const listShares = defineRoute({
+	operationId: "listShares",
+	method: "GET",
+	path: "/workspaces/{workspaceId}/shares",
+	tag: "shares",
+	summary: "List a workspace's shares",
+	description: "The live shares of the workspace's files, or of one file, with their invites. Needs viewer on it.",
+	params: WorkspaceSharesPath,
+	query: ListSharesQuery,
+	answer: { status: 200, description: "The shares, oldest first.", schema: FileSharePage },
+	errors: shareErrors,
+});
+
+export const shareFile = defineRoute({
+	operationId: "shareFile",
+	method: "POST",
+	path: "/workspaces/{workspaceId}/shares",
+	tag: "shares",
+	summary: "Share a file",
+	description:
+		"The file's share, made if it has none: a file has one live share, and sharing it again returns that one unchanged. " +
+		"A new share is `restricted` unless `access` says otherwise. Needs operator on the workspace's project, as a person " +
+		"(never an agent or an API key). Audited as `workspace.share.created`, without the token.",
+	params: WorkspaceSharesPath,
+	body: ShareFileBody,
+	answer: { status: 200, description: "The file's share.", schema: FileShare },
+	errors: shareChangeErrors,
+});
+
+export const getShare = defineRoute({
+	operationId: "getShare",
+	method: "GET",
+	path: "/shares/{shareId}",
+	tag: "shares",
+	summary: "Get a share",
+	params: SharePath,
+	answer: { status: 200, description: "The share.", schema: FileShare },
+	errors: shareErrors,
+});
+
+export const updateShare = defineRoute({
+	operationId: "updateShare",
+	method: "PATCH",
+	path: "/shares/{shareId}",
+	tag: "shares",
+	summary: "Set a share's general access",
+	description:
+		"`link` lets anyone with the link read the file; `restricted` stops the link at once, and `link` again restarts " +
+		"the same link. Needs operator, as a person. Audited as `workspace.share.changed`.",
+	params: SharePath,
+	body: UpdateShareBody,
+	answer: { status: 200, description: "The share as changed.", schema: FileShare },
+	errors: shareChangeErrors,
+});
+
+export const revokeShare = defineRoute({
+	operationId: "revokeShare",
+	method: "DELETE",
+	path: "/shares/{shareId}",
+	tag: "shares",
+	summary: "Revoke a share",
+	description:
+		"Its link stops for good; sharing the file again makes a new link. Needs operator, as a person. Audited as " +
+		"`workspace.share.revoked`.",
+	params: SharePath,
+	answer: { status: 200, description: "The revoked share.", schema: FileShare },
+	errors: shareErrors,
+});
+
+export const inviteToShare = defineRoute({
+	operationId: "inviteToShare",
+	method: "POST",
+	path: "/shares/{shareId}/invites",
+	tag: "shares",
+	summary: "Invite someone by email",
+	description:
+		"Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but " +
+		"sends no email, and an invite grants no access of its own. Needs operator, as a person.",
+	params: SharePath,
+	body: ShareInviteBody,
+	answer: { status: 200, description: "The share with its invites.", schema: FileShare },
+	errors: shareChangeErrors,
+});
+
+export const removeShareInvite = defineRoute({
+	operationId: "removeShareInvite",
+	method: "POST",
+	path: "/shares/{shareId}/invites/remove",
+	tag: "shares",
+	summary: "Remove an invite",
+	params: SharePath,
+	body: ShareInviteBody,
+	answer: { status: 200, description: "The share with its invites.", schema: FileShare },
+	errors: shareChangeErrors,
+});
+
+/** The shares' routes, served by `@harbour/workspace/shares-api`. */
+export const shareRoutes = {
+	listShares,
+	shareFile,
+	getShare,
+	updateShare,
+	revokeShare,
+	inviteToShare,
+	removeShareInvite,
+} as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
 export const routes = {
 	...sessionRoutes,
@@ -556,6 +677,7 @@ export const routes = {
 	...memoryRoutes,
 	...scheduleRoutes,
 	...browserRoutes,
+	...shareRoutes,
 } as const;
 
 export type Routes = typeof routes;

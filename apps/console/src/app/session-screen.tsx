@@ -275,7 +275,7 @@ export function SessionScreen({
 
 	// A presented file is read from the session's own workspace, through the read API with the console's credentials;
 	// a document the person edits is written back the same way.
-	const { readPresented, writePresented } = useMemo(() => {
+	const { readPresented, writePresented, sharesOf } = useMemo(() => {
 		let files: Promise<WorkspaceFiles | undefined> | undefined;
 		const workspaceOf = async (file: PresentedFile) => {
 			files ??= client.workspace(sessionId);
@@ -296,6 +296,7 @@ export function SessionScreen({
 				if (workspace.write === undefined) throw new ApiError("not_supported", "This console can't save files");
 				return workspace.write(file.path, markdown, ifMatch);
 			},
+			sharesOf: async (file: PresentedFile) => (await workspaceOf(file)).shares,
 		};
 	}, [client, sessionId]);
 	// Typing (or focusing the composer) warms the session's sandbox, so the agent's first command after a pause waits for
@@ -309,6 +310,8 @@ export function SessionScreen({
 	const actions: SessionActions = {
 		readPresented,
 		writePresented,
+		sharesOf,
+		sharer: { name: client.actor.name, ...(client.actor.email === undefined ? {} : { email: client.actor.email }) },
 		...(onFork === undefined ? {} : { onFork }),
 		...(onEngage === undefined ? {} : { onEngage }),
 		...(onEdit === undefined ? {} : { onEdit }),

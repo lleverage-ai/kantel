@@ -40,6 +40,10 @@ import { isVaultPath } from "./vault.ts";
 export const STACK_NAME = "m1";
 /** Where a host creates a seeded workspace. */
 const WORKSPACES_PATH = "/v1/workspaces";
+/** The shares API (`@harbour/workspace/shares-api`), besides a workspace's own `/shares`. */
+const SHARES_PATH = "/v1/shares";
+/** A share or an invite is a small JSON body. */
+const SHARE_BODY_LIMIT = 8 * 1024;
 /** The one vault object's name. Platform items live outside every organisation, so the deployment has one vault. */
 export const VAULT_NAME = "vault";
 
@@ -220,6 +224,19 @@ export async function routeRequest<StackId, VaultId>(
 		const forwarded = await buffered(request, WORKSPACE_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
+	}
+	if (
+		(request.method === "POST" || request.method === "PATCH") &&
+		(path.startsWith(`${SHARES_PATH}/`) || (path.startsWith(`${WORKSPACES_PATH}/`) && path.endsWith("/shares")))
+	) {
+		// And for sharing a file or changing a share: a stranger is refused before the small JSON body is read.
+		const forwarded = await buffered(request, SHARE_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	// A share link's page, without sign-in (the stack checks the token).
+	if (path.startsWith("/shared/")) {
+		return stack().fetch(new Request(request.url, { method: request.method, headers: request.headers }));
 	}
 	if (request.method === "PUT" && path.startsWith(`${WORKSPACES_PATH}/`)) {
 		// And for writing a file (a document the person edited): the stack refuses a viewer before it reads the bytes.

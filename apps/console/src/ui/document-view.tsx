@@ -8,8 +8,9 @@ import {
 	type ShareExport,
 } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { WorkspaceFile, WrittenFile } from "../api/client.ts";
+import type { WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
+import { type Sharer, useFileShare } from "./use-file-share.ts";
 
 // A document the agent wrote (`create_document`) in the session screen's right-hand panel. While the answer streams,
 // the draft from the transcript fills the page; once the call has saved it, the file is read through the workspace
@@ -55,7 +56,11 @@ export function DocumentView({
 	write,
 	onClose,
 	initialText,
+	sharesOf,
+	sharer,
 }: {
+	sharesOf?: ((file: PresentedFile) => Promise<WorkspaceShares | undefined>) | undefined;
+	sharer?: Sharer | undefined;
 	file: PresentedFile;
 	read: (file: PresentedFile, signal: AbortSignal) => Promise<WorkspaceFile>;
 	write: ((file: PresentedFile, markdown: string, ifMatch: string | undefined) => Promise<WrittenFile>) | undefined;
@@ -145,6 +150,7 @@ export function DocumentView({
 		useCallback(() => latest.current, []),
 		useCallback(() => page.current, []),
 	);
+	const sharing = useFileShare(file, title, sharesOf, sharer);
 	const setPage = useCallback((element: HTMLDivElement | null) => {
 		page.current = element;
 	}, []);
@@ -157,7 +163,7 @@ export function DocumentView({
 			error={error}
 			{...(write === undefined || status !== "ready" ? {} : { onChange, saveState })}
 			onClose={onClose}
-			share={{ exports }}
+			share={{ exports, sharing }}
 			pageRef={setPage}
 		/>
 	);

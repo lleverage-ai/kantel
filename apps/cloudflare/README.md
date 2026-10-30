@@ -260,6 +260,12 @@ Project access asks identity for the caller's role on every item a list returns,
 queries, so the runtime's directory looks a role up once per request (`src/role-memo.ts`): memoised per signed-in
 actor object, which the authenticator makes afresh for each request, and for at most 1 s.
 
+Share links are the exception: `/shared/<token>` (a shared file's read-only page) and `/shared/<token>/raw` (its bytes)
+ask for no sign-in. The token, made when the file is first shared, is their only credential and opens that one file,
+only while its share's general access is `link` (`@harbour/workspace/shares-api`, `src/shared-page.ts`). Behind
+Access they open only for someone Access lets through; for anyone with the link to open them, the Access application
+needs a Bypass policy on `<hostname>/shared/*`. That is a deployment setting for Tom; nothing here changes it.
+
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
 

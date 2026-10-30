@@ -60,7 +60,7 @@ export type SharePopoverProps = {
 };
 
 const ACCESS: { readonly [access in ShareAccess]: { label: string; hint: string } } = {
-	restricted: { label: "Only you", hint: "Only you and people you invite can open this link" },
+	restricted: { label: "Only you", hint: "Only people who can see this session can open the link" },
 	link: { label: "Anyone with the link", hint: "Anyone with the link can view" },
 };
 
