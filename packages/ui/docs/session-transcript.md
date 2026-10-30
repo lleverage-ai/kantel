@@ -208,6 +208,39 @@ muted, a small red X at the end); all three judges preferred Harbour's, because 
 slot, as an interrupted call's amber icon does, and a failure is plain at a glance. Tom chose to keep it on 27 Oct
 2026. Don't change it to match T3.
 
+**Cards for read, write, edit and bash** (`tool-views.tsx`, its pure model in `tool-views-model.ts`, stories in
+Session/Tool cards). These four open as a card made for what they do, instead of the Arguments and Output detail,
+which every other tool keeps (and which these fall back to when their arguments aren't what the card expects, such as
+a finished edit with no edits in it). `toolView(item)` says which card a call gets, from the coding tools' argument
+shapes (`read { path, offset?, limit? }`, `write { path, content }`, `edit { path, edits: [{ oldText, newText }] }`
+or the older single `oldText`/`newText`, `bash { command, timeout? }`); the label is the card's own ("Writing
+notes/plan.py", "Ran pytest -q").
+
+- **write**: the file in a `CodeView` (`src/code/code-view.tsx`): the path as the header (directory muted, file name
+  at full strength), the language by the file's extension, numbered lines, highlighted with the transcript's
+  highlighter (`src/code/lines.ts` cuts highlight.js's HTML into lines, so each line is memoised on its own). While
+  the model is still writing the call (`item.streaming`, fed by the protocol's `args` delta), the content grows with
+  a caret at its end and the window follows the newest line unless the reader has scrolled up. Then the tool's answer
+  under it, an error in the error tone.
+- **read**: what it returned, in the same code view, numbered from `offset`; the header says the range ("Lines
+  41–49") when the read was partial. The harness's "more lines in file" note becomes a footer note, not text in the file. Closed by default: a
+  read is context, not a change.
+- **edit**: each replacement as a unified diff (`DiffView`, `src/code/diff-view.tsx`, a line diff in
+  `src/code/diff.ts`): removed lines on `--hb-diff-del-soft` with a minus, added on `--hb-diff-add-soft` with a
+  plus, highlighted; "+3 −2" in the header. Streams as write does.
+- **bash**: an inline `Terminal` (`src/code/terminal.tsx`): `$` and the command, typed in as it streams, then the
+  output in the terminal's dark well with ANSI colours honoured (`src/code/ansi.ts`: SGR colours and styles kept,
+  cursor and title sequences dropped, a carriage return redrawing its line as a progress bar does). Collapsed, it
+  shows the last 10 lines, where a command says how it ended. The harness's `<harness>[error] Command exited with
+  code 2</harness>` becomes an "Exit 2" badge and a footer note, a timeout "Timed out", an interrupted call
+  "Interrupted"; the tags never show in the output.
+- **Raw**: each card has a Raw toggle that shows the generic Arguments and Output detail in its place, and a copy
+  button for the file, the new text or the command.
+
+Write, edit and bash cards open by default, as their content is the change; long content collapses to a window with
+"Show all 240 lines". Highlighting loads with the transcript's highlighter, so code shows plain until it has loaded;
+over `HIGHLIGHT_LIMIT` characters it stays plain, and a view renders at most 5,000 lines.
+
 **Keyboard:** the row is a button with `aria-expanded`: Enter or Space opens and closes it. The argument and output
 blocks are focusable, so a long output can be scrolled from the keyboard.
 

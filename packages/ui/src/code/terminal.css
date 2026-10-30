@@ -15,15 +15,16 @@
 	line-height: var(--hb-leading);
 }
 
+/* A command wraps rather than scrolls, as a terminal wraps a long line: all of it is read without scrolling. */
 .hb-terminal-command {
 	padding: var(--hb-space-5) var(--hb-space-6) var(--hb-space-2);
-	overflow-x: auto;
 }
 
 .hb-terminal-prompt-line {
 	display: flex;
 	gap: var(--hb-space-4);
-	white-space: pre;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 
 .hb-terminal-prompt {

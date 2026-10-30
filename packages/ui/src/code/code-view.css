@@ -46,7 +46,7 @@
 	z-index: 1;
 	padding: 0 var(--hb-space-5) 0 var(--hb-space-6);
 	background: var(--hb-code);
-	color: var(--hb-text-disabled);
+	color: var(--hb-text-faint);
 	font-variant-numeric: tabular-nums;
 	text-align: right;
 	user-select: none;

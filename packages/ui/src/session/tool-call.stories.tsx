@@ -18,8 +18,8 @@ const kinds: ToolItem[] = [
 		seconds: 0.2,
 	}),
 	tool("k2", "edit", "Edited src/billing/retry.ts", {
-		args: { path: "src/billing/retry.ts", old: "attempt()", new: "attempt(key)" },
-		output: "@@ -38,7 +38,9 @@",
+		args: { path: "src/billing/retry.ts", edits: [{ oldText: "attempt()", newText: "attempt(key)" }] },
+		output: "Successfully replaced 1 block(s) in src/billing/retry.ts.",
 		seconds: 0.1,
 	}),
 	tool("k3", "bash", "Ran pnpm test billing", {
