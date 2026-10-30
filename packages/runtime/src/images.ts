@@ -17,12 +17,7 @@
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import type {
-	ModelGatewayModel,
-	ModelImage,
-	ModelImagesRequest,
-	ModelImagesResult,
-} from "@harbour/contracts";
+import type { ModelGatewayModel, ModelImage, ModelImagesRequest, ModelImagesResult } from "@harbour/contracts";
 
 /** The tool's name. */
 export const GENERATE_IMAGE_TOOL = "generate_image";

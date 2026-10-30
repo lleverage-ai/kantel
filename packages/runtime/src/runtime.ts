@@ -69,7 +69,6 @@ import {
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
 import { type PromptAttachments, type ReadAttachments, userInputOf } from "./attachments.ts";
-import { createGenerateImageTool, type SessionImages } from "./images.ts";
 import { ACTIVE_CONVERSATION, copyEntries, entryBefore, FORK_SKILLS } from "./branching.ts";
 import {
 	contextEntryOf,
@@ -83,6 +82,7 @@ import {
 	sessionContextEntry,
 } from "./context.ts";
 import { historyAnchor, historyLimit, readHistory } from "./history.ts";
+import { createGenerateImageTool, type SessionImages } from "./images.ts";
 import {
 	ConversationProjector,
 	createSessionEndHook,

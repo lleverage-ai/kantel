@@ -104,7 +104,11 @@ describe("generate_image", () => {
 			await service.profiles.put(ctx, profile({ route: "images" }));
 			const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "artist" });
 			script.reply(
-				{ toolCalls: [{ name: GENERATE_IMAGE_TOOL, args: { prompt: "A red lighthouse", aspect: "landscape", count: 2 } }] },
+				{
+					toolCalls: [
+						{ name: GENERATE_IMAGE_TOOL, args: { prompt: "A red lighthouse", aspect: "landscape", count: 2 } },
+					],
+				},
 				{ text: "Done" },
 			);
 			const submission = await service.runtime.prompt(ctx, session.id, { text: "Draw one" });
@@ -135,7 +139,10 @@ describe("generate_image", () => {
 	it("sends reference images from the session's files for an edit", async () => {
 		const { service, script, calls, files } = setUp([gatewayModel("scripted-1", ["image"])]);
 		try {
-			files.set("images/cat.png", Uint8Array.from(atob(PIXEL), (char) => char.charCodeAt(0)));
+			files.set(
+				"images/cat.png",
+				Uint8Array.from(atob(PIXEL), (char) => char.charCodeAt(0)),
+			);
 			await service.profiles.put(ctx, profile({ route: "images" }));
 			const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "artist" });
 			script.reply(

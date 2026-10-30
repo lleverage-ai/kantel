@@ -20,10 +20,10 @@ import { createModels, type Provider } from "@earendil-works/pi-ai/models";
 import { getRadiusModelsFromConfig, type RadiusGatewayConfig } from "@earendil-works/pi-ai/providers/radius-config";
 import {
 	type Clock,
+	type ErrorCode,
 	type HARBOUR_MODEL_API,
 	HARBOUR_MODEL_PROVIDER,
 	HarbourError,
-	type ErrorCode,
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
 	type ModelChoice,
@@ -211,20 +211,24 @@ export function harbourImages(options: HarbourModelsOptions): (session: SessionR
 				return (await loadGatewayConfig(gateway, await token(), signal)).models;
 			},
 			async generate(request, signal) {
-				const response = await (gateway.fetch ?? globalThis.fetch)(gatewayUrl(gateway.baseUrl, MODEL_GATEWAY_PATHS.images), {
-					method: "POST",
-					headers: {
-						accept: "application/json",
-						"content-type": "application/json",
-						authorization: `Bearer ${await token()}`,
+				const response = await (gateway.fetch ?? globalThis.fetch)(
+					gatewayUrl(gateway.baseUrl, MODEL_GATEWAY_PATHS.images),
+					{
+						method: "POST",
+						headers: {
+							accept: "application/json",
+							"content-type": "application/json",
+							authorization: `Bearer ${await token()}`,
+						},
+						body: JSON.stringify(request),
+						...(signal === undefined ? {} : { signal }),
 					},
-					body: JSON.stringify(request),
-					...(signal === undefined ? {} : { signal }),
-				});
+				);
 				const body: unknown = await response.json().catch(() => undefined);
 				if (!response.ok) {
 					const error = (body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
-					const message = typeof error?.message === "string" ? error.message : `${response.status} ${response.statusText}`;
+					const message =
+						typeof error?.message === "string" ? error.message : `${response.status} ${response.statusText}`;
 					throw new HarbourError(isErrorCode(error?.code) ? error.code : "unavailable", message);
 				}
 				return body as ModelImagesResult;

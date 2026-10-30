@@ -292,6 +292,17 @@ function validProfile(profile: Partial<AgentProfile>): AgentProfile {
 	) {
 		problems.push("model");
 	}
+	const { imageModel } = profile;
+	if (
+		imageModel !== undefined &&
+		(typeof imageModel !== "object" ||
+			imageModel === null ||
+			typeof imageModel.route !== "string" ||
+			imageModel.route === "" ||
+			!isOptionalString(imageModel.modelId))
+	) {
+		problems.push("imageModel");
+	}
 	if (
 		!Array.isArray(promptLayers) ||
 		!promptLayers.every(
