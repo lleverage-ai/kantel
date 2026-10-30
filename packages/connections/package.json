@@ -1,0 +1,31 @@
+{
+	"name": "@harbour/connections",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Connections: the provider catalogue, OAuth and key connections to services and remote MCP servers, their OAuth clients and uses, with secrets in the vault",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./catalogue": "./src/catalogue.ts",
+		"./http": "./src/http.ts",
+		"./mcp": "./src/mcp.ts",
+		"./memory": "./src/memory.ts",
+		"./oauth": "./src/oauth.ts",
+		"./sql": "./src/sql.ts",
+		"./testing": "./src/testing.ts",
+		"./tools": "./src/tools.ts",
+		"./vault-store": "./src/vault-store.ts"
+	},
+	"dependencies": {
+		"@harbour/api": "workspace:*",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*"
+	},
+	"devDependencies": {
+		"@electric-sql/pglite": "0.5.12",
+		"@harbour/testing": "workspace:*",
+		"@harbour/vault": "workspace:*",
+		"miniflare": "5.20261023.0-beta"
+	}
+}
