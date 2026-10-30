@@ -116,12 +116,27 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   view under its summary. The host renders a `BrowserLiveView` with a source, which knows no provider
   (`BrowserLiveSource`): an `embed` page (a watch-only share link, or a browser runtime's own embed page, with the
   message it posts to its parent when its stream is over) or `frames` pushed to it (a screencast, or a recording
-  played back, `mode: "replay"`). It is the column's width at the browser's 16 by 9, a "Live" (or "Replay") label
-  with "Watch only", and "Open in a new tab" for an embed. Before the source arrives it shows the last screenshot,
+  played back, `mode: "replay"`). It is drawn as a browser window (`BrowserWindow`, below) at the column's width
+  and the browser's 16 by 10: a tab for the page (its title, else its host, from the newest call's `page`) or the
+  host's own tabs (`tabs`), a "Live" (or "Replay") label with "Watch only", and "Open in a new tab" for an embed. An
+  embedded view page draws its own address bar and replay controls inside the window, following the page as it
+  navigates; otherwise the window's address bar shows `page`. Before the source arrives it shows the last screenshot,
   dimmed, with "Connecting to the live view"; once the source ends (`onEnded`) the host asks again or settles on
-  ended, "The browser has closed" over the last screenshot. With no view to have (`unavailable`) it is the screenshot
-  alone, as without a live view. An embed is sandboxed and sends no referrer; either kind is unmounted, and a frames
+  ended, "Closed" over the last screenshot. With no view to have (`unavailable`) it is the screenshot alone in the
+  window, as without a live view. An embed is sandboxed and sends no referrer; either kind is unmounted, and a frames
   source unsubscribed, when it scrolls away, so it costs a stream only while on screen.
+- **Browser window pieces** (`browser-window.tsx`, stories in Session/Browser window): `BrowserWindow` (tabs, a
+  toolbar, the page, a footer), `BrowserTabs` (a tab list, arrow keys between tabs, each tab its page's host
+  initial, title or host, a spinner while busy), `BrowserAddressBar` (read-only: a lock for https, the host in full
+  colour and the rest quieter, the whole address as its title), `PlayerControls` (play, pause or play again as an
+  `IconButton`, a `Scrubber` drawn in Harbour's colours over a range input, the time, and a speed button) and the
+  helpers `pageLabel`, `pageHost`, `addressParts` and `playerClock`. The window never fetches anything, not even a
+  favicon. Not for a browser a person drives: everything in it is watch-only.
+- **Browser in the timeline:** a browsing run (`BrowsingGroup`) in a host with a panel (`onShowBrowser`) carries its
+  browser as a `BrowserEntry` card under its line: the page the run left it on (`browsingPage`: its title and
+  address, from the calls' `URL:` and `Title:` lines), the run's last screenshot as a thumbnail, "Live", "Replay"
+  or "Closed" (the host's `browserStates`, else the calls), and a click that shows it in the panel ("Watch live",
+  "Watch the replay"; "Showing" when the panel already does). It never grows while the agent works.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s, 4 steps"), as T3 says it once per turn ("Worked for 22s").

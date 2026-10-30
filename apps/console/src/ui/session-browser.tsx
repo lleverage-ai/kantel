@@ -1,5 +1,5 @@
 import type { TranscriptItem } from "@harbour/protocol";
-import { type BrowserViewSlot, Button, type SessionBrowsers, sessionBrowsers } from "@harbour/ui";
+import { BrowserTabs, type BrowserViewSlot, type SessionBrowsers, sessionBrowsers } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Which of the session's browsers its panel shows: the one the agent used last, unless a person picked another (a
@@ -13,8 +13,13 @@ export type SessionBrowserView = {
 	readonly step: string | undefined;
 	/** A browser call is running on it. */
 	readonly running: boolean;
-	/** Buttons to switch between the session's browsers, when it used more than one. */
-	readonly picker: ReactNode | undefined;
+	/**
+	 * The window's tabs, one per browser the session used, to switch between them (with `end` at the strip's end), when
+	 * it used more than one. Each says its page's title or host, as far as the agent's calls said.
+	 */
+	readonly tabs: ((end: ReactNode) => ReactNode) | undefined;
+	/** Every browser the session used, in order of first use. */
+	readonly browsers: readonly BrowserViewSlot[];
 	readonly show: (browserSessionId: string) => void;
 	readonly hide: () => void;
 };
@@ -58,26 +63,27 @@ export function useSessionBrowser(items: readonly TranscriptItem[], focusBrowser
 	const step = running ? browsers.running?.label : slot?.item.label;
 
 	const count = browsers.browsers.length;
-	const picker = useMemo(
+	const runningOn = running ? slot?.browserSessionId : undefined;
+	const tabs = useMemo(
 		() =>
 			count < 2
 				? undefined
-				: browsers.browsers.map((each, index) => {
-						const current = each.browserSessionId === slot?.browserSessionId;
-						return (
-							<Button
-								key={each.browserSessionId}
-								variant={current ? "secondary" : "ghost"}
-								size="xs"
-								aria-pressed={current}
-								onClick={() => show(each.browserSessionId)}
-							>
-								{`Browser ${index + 1}`}
-							</Button>
-						);
-					}),
-		[count, browsers.browsers, slot?.browserSessionId, show],
+				: (end: ReactNode) => (
+						<BrowserTabs
+							label="The session's browsers"
+							tabs={browsers.browsers.map((each) => ({
+								id: each.browserSessionId,
+								url: each.page?.url,
+								title: each.page?.title,
+								busy: each.browserSessionId === runningOn,
+							}))}
+							active={slot?.browserSessionId}
+							onSelect={show}
+							end={end}
+						/>
+					),
+		[count, browsers.browsers, slot?.browserSessionId, runningOn, show],
 	);
 
-	return { panel: hidden ? undefined : slot, step, running, picker, show, hide };
+	return { panel: hidden ? undefined : slot, step, running, tabs, browsers: browsers.browsers, show, hide };
 }

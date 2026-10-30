@@ -5,6 +5,7 @@ import {
 	Check,
 	ChevronRight,
 	Ellipsis,
+	ExternalLink,
 	Eye,
 	EyeOff,
 	File,
@@ -14,9 +15,12 @@ import {
 	FileText,
 	ListFilter,
 	type LucideIcon,
+	Pause,
 	Pencil,
 	Pin,
 	PinOff,
+	Play,
+	RotateCcw,
 	Trash2,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
@@ -58,6 +62,11 @@ export const UnpinIcon = lucide(PinOff, "UnpinIcon");
 export const TrashIcon = lucide(Trash2, "TrashIcon");
 /** A subagent: the bot in T3 Code's subagent avatar. */
 export const BotIcon = lucide(Bot, "BotIcon");
+// A player's controls (a browser's replay) and a link that opens in a new tab.
+export const PlayIcon = lucide(Play, "PlayIcon");
+export const PauseIcon = lucide(Pause, "PauseIcon");
+export const ReplayIcon = lucide(RotateCcw, "ReplayIcon");
+export const ExternalLinkIcon = lucide(ExternalLink, "ExternalLinkIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");
 export const FileTextIcon = lucide(FileText, "FileTextIcon");

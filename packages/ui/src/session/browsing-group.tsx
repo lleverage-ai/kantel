@@ -1,19 +1,21 @@
-import type { AssistantItem, ToolItem } from "@harbour/protocol";
+import type { AssistantItem, ToolImage, ToolItem } from "@harbour/protocol";
 import { memo, type ReactNode, useEffect, useId, useState } from "react";
-import { Button } from "../primitives/button.tsx";
 import { duration } from "../primitives/format.ts";
 import { ChevronRightIcon, GlobeIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
+import { BrowserEntry, type BrowserEntryState } from "./browser-entry.tsx";
 import { AssistantMessage } from "./message.tsx";
 import { ToolCallChip } from "./tool-call.tsx";
-import type { BrowsingStep } from "./transcript-model.ts";
+import { type BrowserCallPage, type BrowsingStep, browserPageOf } from "./transcript-model.ts";
 import "./browsing-group.css";
 
 // A run of browser calls as one quiet line: "Browsing, 12 steps" and what the agent is doing now ("Scrolling the
 // page"). It never grows while the agent works, so the transcript stays still: the browser itself is shown in one
 // place by the host (a panel beside the transcript, see `BrowserLiveView`), not as a screenshot per step. Opening the
 // line lists every step, with the words the agent said between them; a step's screenshots are in its own detail.
+// For a host with a panel, the browser the run used is a card under the line (`BrowserEntry`): the page it was on,
+// its last screenshot, live or replay; clicking it shows the browser in the panel.
 
 const isCall = (step: BrowsingStep): step is ToolItem => step.kind === "tool";
 const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
@@ -36,6 +38,20 @@ export function browsingSummary(calls: readonly ToolItem[], active = false): str
 	return `Browsed for ${duration(end - start)}, ${steps}`;
 }
 
+/** The page the run left its browser on, and the last screenshot it took, as far as its calls say. */
+export function browsingPage(calls: readonly ToolItem[]): {
+	page: BrowserCallPage | undefined;
+	screenshot: ToolImage | undefined;
+} {
+	let page: BrowserCallPage | undefined;
+	let screenshot: ToolImage | undefined;
+	for (const call of calls) {
+		page = browserPageOf(call) ?? page;
+		screenshot = call.images?.at(-1) ?? screenshot;
+	}
+	return { page, screenshot };
+}
+
 /** The browser the run's calls used most recently, if any has said. */
 export function browsingBrowser(calls: readonly ToolItem[]): string | undefined {
 	for (let index = calls.length - 1; index >= 0; index--) {
@@ -53,8 +69,13 @@ export type BrowsingGroupProps = {
 	 * Without it, the line has none.
 	 */
 	onShowBrowser?: (browserSessionId: string) => void;
-	/** The browser the host's panel shows now: when it is this run's, the line has no "Show browser". */
+	/** The browser the host's panel shows now: when it is this run's, its card says it is showing. */
 	shownBrowser?: string;
+	/**
+	 * Where this run's browser is, as the host knows (live, or closed with a replay): what its card says and offers.
+	 * Without it, the card goes by the calls: closed after a `browser_close`, live while the run is running.
+	 */
+	browserState?: BrowserEntryState;
 	/**
 	 * A view of the browser under the line, for a host with no panel (usually a `BrowserLiveView`). It stays in the same
 	 * place however many steps the run takes.
@@ -77,6 +98,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	items,
 	onShowBrowser,
 	shownBrowser,
+	browserState,
 	browserView,
 	focus,
 	active = false,
@@ -122,12 +144,16 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 					</span>
 					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
 				</button>
-				{onShowBrowser === undefined || browser === undefined || browser === shownBrowser ? null : (
-					<Button variant="ghost" size="xs" className="hb-browsing-show" onClick={() => onShowBrowser(browser)}>
-						Show browser
-					</Button>
-				)}
 			</div>
+			{onShowBrowser === undefined || browser === undefined ? null : (
+				<RunBrowser
+					calls={calls}
+					busy={busy}
+					shown={browser === shownBrowser}
+					state={browserState}
+					onShow={() => onShowBrowser(browser)}
+				/>
+			)}
 			{open ? (
 				<div id={id} className="hb-browsing-steps">
 					{items.map((step) => (isCall(step) ? chip(step) : <BrowsingNote key={step.id} item={step} />))}
@@ -139,6 +165,34 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 		</div>
 	);
 });
+
+/** The run's browser as a card: its page and last screenshot from the run's calls, and where it is now. */
+function RunBrowser({
+	calls,
+	busy,
+	shown,
+	state,
+	onShow,
+}: {
+	calls: readonly ToolItem[];
+	busy: boolean;
+	shown: boolean;
+	state: BrowserEntryState | undefined;
+	onShow: () => void;
+}) {
+	const { page, screenshot } = browsingPage(calls);
+	const closed = calls.some((call) => call.name === "browser_close" && call.status === "done");
+	const known = state ?? (closed ? "ended" : busy ? "live" : "unknown");
+	return (
+		<BrowserEntry
+			page={page}
+			{...(screenshot === undefined ? {} : { screenshot })}
+			state={known}
+			shown={shown}
+			onShow={shown ? () => {} : onShow}
+		/>
+	);
+}
 
 /** What the agent said between two steps, as it said it, quieter than an answer. */
 function BrowsingNote({ item }: { item: AssistantItem }) {

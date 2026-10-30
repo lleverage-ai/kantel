@@ -83,7 +83,9 @@ whatever link the provider gives, so it works for brwsr and harbour alike, and t
 brwsr's decided approach (Browserbase's): the recorder in the container screencasts each page and keeps a frame only
 when Chrome draws something new, appending JPEGs with their real timestamps to Matroska chunks; nothing is encoded in
 the browser container. The coordinator moves each closed chunk to the blob store under
-`recordings/<browserSessionId>/<page>/<chunk>.mkv` with a small manifest.
+`recordings/<browserSessionId>/<page>/<chunk>.mkv` with a small manifest. Each page in the manifest also keeps its
+navigations (`{ atMs, url, title }` by the page's own clock, from `Target.targetInfoChanged`, at most 200), so the
+replay's address bar and tabs follow the page as it plays; recordings made before this have none and show no address.
 
 Replay in the session plays those frames directly: the viewer reads the chunks (`/v1/browser/view/<browserSessionId>/…`,
 with the token as a bearer header) and draws each JPEG at its time on

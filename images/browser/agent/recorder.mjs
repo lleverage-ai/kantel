@@ -1,5 +1,6 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/recorder.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: none.
+// (docs/design/browser-runtime.md). Harbour changes: each page's listing keeps its navigations (url and title by page
+// time, from Target.targetInfoChanged), for the replay's address bar.
 // Session recording, the browser container's half: capture frames, nothing
 // else. Nothing resembling video encoding runs here (Browserbase's rule: "the
 // browser does one thing: render pages"). Encoding to H.264 happens later, in
@@ -61,6 +62,11 @@ import { CDP } from "./cdp.mjs";
 import { mkvHeader, mkvFrame, jpegSize } from "./mkv.mjs";
 
 export const chunkName = (index) => `${String(index).padStart(5, "0")}.mkv`;
+
+// A page's navigations kept for the replay's address bar: how many, and how long a URL or title.
+const MAX_NAVIGATIONS = 200;
+const MAX_URL = 2048;
+const MAX_TITLE = 300;
 
 class Chunk {
   constructor(page, index) {
@@ -141,6 +147,22 @@ class PageRecording {
     this.lastTs = null; // timestamp (s) and source of the last frame kept
     this.lastSource = null;
     this.shared = { frames: 0, smaller: 0, minWidth: 0, minHeight: 0 };
+    // Where the page went, by page time (ms, 0 before its first frame), for a replay's address bar: from the target's
+    // url and title as Chrome reports them (Target.targetInfoChanged), at most MAX_NAVIGATIONS, oldest first.
+    this.navigations = [];
+  }
+
+  /** The page's target says it is at `url`, titled `title`: kept when either changed. */
+  navigated(url, title) {
+    if (this.ended || typeof url !== "string" || url === "" || url.startsWith("devtools://")) return;
+    const last = this.navigations.at(-1);
+    const name = typeof title === "string" && title !== "" && title !== url ? title.slice(0, MAX_TITLE) : undefined;
+    if (last && last.url === url.slice(0, MAX_URL) && last.title === name) return;
+    const atMs = Math.max(0, this.nowMs(), last?.atMs ?? 0);
+    const entry = { atMs, url: url.slice(0, MAX_URL), ...(name === undefined ? {} : { title: name }) };
+    // The same address, its title now known (or changed): the newest says it.
+    if (last && last.url === entry.url) this.navigations[this.navigations.length - 1] = { ...entry, atMs: last.atMs };
+    else if (this.navigations.length < MAX_NAVIGATIONS) this.navigations.push(entry);
   }
 
   /** Page time now (ms), from the wall clock: for rolling chunks over while no frames arrive. */
@@ -274,6 +296,7 @@ class PageRecording {
       done: this.ended,
       // Frames taken from the live view's screencast while someone watched, how many of them were smaller than the recording, and the smallest.
       shared: { ...this.shared },
+      navigations: this.navigations.map((n) => ({ ...n })),
     };
   }
 }
@@ -521,14 +544,14 @@ export class Recorder {
     this.tick.unref();
     await this.cdp.send("Target.setDiscoverTargets", { discover: true });
     const { targetInfos } = await this.cdp.send("Target.getTargets");
-    for (const t of targetInfos) if (this.wanted(t)) await this.attach(t.targetId).catch(() => {});
+    for (const t of targetInfos) if (this.wanted(t)) await this.attach(t.targetId, t).catch(() => {});
   }
 
   wanted(t) {
     return t.type === "page" && !t.url.startsWith("devtools://");
   }
 
-  async attach(targetId) {
+  async attach(targetId, info) {
     if (this.stopped || this.pages.has(targetId)) return;
     if (this.pages.size >= this.maxPages) {
       this.skipped++;
@@ -536,6 +559,7 @@ export class Recorder {
     }
     const page = new PageRecording(this, this.pages.size, targetId);
     this.pages.set(targetId, page);
+    if (info) page.navigated(info.url, info.title);
     const { sessionId } = await this.cdp.send("Target.attachToTarget", { targetId, flatten: true });
     page.sessionId = sessionId;
     this.bySession.set(sessionId, page);
@@ -629,7 +653,10 @@ export class Recorder {
       }
       page.frame(Buffer.from(m.params.data, "base64"), m.params.metadata.timestamp ?? Date.now() / 1000, "own");
     } else if (m.method === "Target.targetCreated") {
-      if (this.wanted(m.params.targetInfo)) this.attach(m.params.targetInfo.targetId).catch(() => {});
+      if (this.wanted(m.params.targetInfo)) this.attach(m.params.targetInfo.targetId, m.params.targetInfo).catch(() => {});
+    } else if (m.method === "Target.targetInfoChanged") {
+      const info = m.params.targetInfo;
+      this.pages.get(info?.targetId)?.navigated(info.url, info.title);
     } else if (m.method === "Target.targetDestroyed") {
       this.pages.get(m.params.targetId)?.end();
     } else if (m.method === "Target.detachedFromTarget") {
