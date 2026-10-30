@@ -10,14 +10,19 @@
  *   environment) under `images/`, and reference images for an edit are read from there by path, so the model can edit an
  *   image it made or one a person put in the workspace. A session with no environment still gets its images, unsaved.
  * - **What the model gets back.** The images as image content when the chat model reads images, else their paths only.
- *   The transcript shows them inline either way: as the result's content, or in its UI details (`details.images`).
- *   Each image shown or sent is held to `MAX_INLINE_IMAGE_CHARS` of base64 (a conversation row holds at most 2 MB);
- *   a larger one is only saved, and the result says so.
+ *   The transcript shows them either way: as the result's content, or in its UI details (`details.images`).
+ *   Each image shown or sent is held to `MAX_INLINE_IMAGE_CHARS` of base64 (a conversation row holds at most 2 MB):
+ *   a larger one goes in scaled down (`./image-preview.ts`), so the model can still check what it made, and the
+ *   saved file stays full size. One that can't be scaled down is only saved, and the result says so.
+ * - **What the person sees.** The saved images are presented, as `present_files` presents files (`details.
+ *   presentedFiles`), each with the model that made it, so the transcript shows them as image cards that open in the
+ *   viewer. The transcript carries the model as data; it never reads it from the result's text.
  * - **Replay.** Not replay-safe: each call costs money, so a call cut short by a restart is not run again.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ModelGatewayModel, ModelImage, ModelImagesRequest, ModelImagesResult } from "@harbour/contracts";
+import { previewImage } from "./image-preview.ts";
 
 /** The tool's name. */
 export const GENERATE_IMAGE_TOOL = "generate_image";
@@ -103,11 +108,24 @@ function fromBase64(data: string): Uint8Array {
 	return bytes;
 }
 
+/** A saved image, presented to the person as `present_files` presents a file (`PresentedFile` in `@harbour/protocol`). */
+export type GeneratedImageFile = {
+	readonly workspaceId: string;
+	readonly path: string;
+	readonly name: string;
+	readonly mimeType: string;
+	readonly size: number;
+	/** The model that made it. */
+	readonly model: string;
+};
+
 /** The UI details of a call: what the transcript shows, and where each image went. */
 export type GenerateImageDetails = {
 	readonly images?: readonly { readonly mimeType: string; readonly data: string }[];
 	readonly files: readonly string[];
 	readonly model: string;
+	/** The saved images, for the transcript's cards; only for a session with a workspace. */
+	readonly presentedFiles?: readonly GeneratedImageFile[];
 };
 
 export interface GenerateImageToolOptions {
@@ -116,6 +134,8 @@ export interface GenerateImageToolOptions {
 	readonly modelId: string;
 	/** For file names: the time each call starts. Default `Date.now`. */
 	readonly now?: () => number;
+	/** The session's workspace, where its files are: the saved images are presented from it. */
+	readonly workspaceId?: string;
 }
 
 /** `generate_image` for one session. */
@@ -156,6 +176,7 @@ export function createGenerateImageTool(
 
 			const stem = `${imageStem(args.prompt)}-${now().toString(36)}`;
 			const files: string[] = [];
+			const presented: GeneratedImageFile[] = [];
 			const unsaved: string[] = [];
 			for (const [index, image] of result.images.entries()) {
 				const name = `${stem}${result.images.length === 1 ? "" : `-${index + 1}`}.${EXTENSIONS[image.mimeType] ?? "png"}`;
@@ -164,12 +185,29 @@ export function createGenerateImageTool(
 					unsaved.push(name);
 					continue;
 				}
-				const written = await env.writeFile(path, fromBase64(image.data), context);
-				if (written.ok) files.push(path);
-				else unsaved.push(`${name} (${written.error.message})`);
+				const bytes = fromBase64(image.data);
+				const written = await env.writeFile(path, bytes, context);
+				if (!written.ok) {
+					unsaved.push(`${name} (${written.error.message})`);
+					continue;
+				}
+				files.push(path);
+				if (options.workspaceId !== undefined) {
+					presented.push({
+						workspaceId: options.workspaceId,
+						path,
+						name,
+						mimeType: image.mimeType,
+						size: bytes.length,
+						model: result.modelId,
+					});
+				}
 			}
 
-			const inline = result.images.filter((image) => image.data.length <= MAX_INLINE_IMAGE_CHARS);
+			// Each image as it can go into the conversation: itself, or scaled down to fit.
+			const previews = await Promise.all(result.images.map((image) => previewImage(image, MAX_INLINE_IMAGE_CHARS)));
+			const inline = previews.filter((image) => image !== undefined);
+			const scaled = previews.filter((image) => image !== undefined && "sourceWidth" in image);
 			const agent = await api.agent(context);
 			// The chat model the session runs with now: whether it reads images decides what the result carries.
 			const chat =
@@ -181,6 +219,23 @@ export function createGenerateImageTool(
 			];
 			if (files.length > 0) lines.push("Saved in the session's files:", ...files);
 			if (unsaved.length > 0) lines.push("Not saved:", ...unsaved);
+			if (presented.length > 0) {
+				lines.push(
+					presented.length === 1
+						? "The person sees it in the conversation already."
+						: "The person sees them in the conversation already.",
+				);
+			}
+			if (seesImages && scaled.length > 0) {
+				const first = scaled[0];
+				const size =
+					first !== undefined && "sourceWidth" in first
+						? ` (${first.width}x${first.height} of ${first.sourceWidth}x${first.sourceHeight})`
+						: "";
+				lines.push(
+					`${scaled.length === 1 ? "1 is" : `${scaled.length} are`} shown here scaled down${size}; the saved file is full size.`,
+				);
+			}
 			if (inline.length < result.images.length) {
 				lines.push(`${result.images.length - inline.length} too large to show here; open the saved file instead.`);
 			}
@@ -199,6 +254,7 @@ export function createGenerateImageTool(
 					...(seesImages || shown.length === 0 ? {} : { images: shown }),
 					files,
 					model: result.modelId,
+					...(presented.length === 0 ? {} : { presentedFiles: presented }),
 				} satisfies GenerateImageDetails,
 			};
 		},

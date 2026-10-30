@@ -62,6 +62,29 @@
 	padding-top: var(--hb-space-9);
 }
 
+/* A finished turn's work, folded under its "Worked for" line (TurnFoldLine). A folded row that shows nothing (the agent's
+   words before its answer, a run of calls that presented nothing) takes no room; one that keeps something in view
+   (presented files, a browser's card, a failed call) is spaced as a row of calls. */
+.hb-transcript-row-folded:not(.hb-transcript-row-fold-line) {
+	padding-top: 0;
+	padding-bottom: 0;
+}
+
+.hb-transcript-row-folded:not(.hb-transcript-row-fold-line):has(.hb-transcript-column > *) {
+	padding-top: var(--hb-space-1);
+	padding-bottom: var(--hb-space-1);
+}
+
+.hb-transcript-row-fold-line {
+	padding-top: var(--hb-space-1);
+	padding-bottom: var(--hb-space-1);
+}
+
+.hb-turn-fold > .hb-disclosure-summary {
+	width: auto;
+	max-width: 100%;
+}
+
 .hb-transcript-column {
 	min-width: 0;
 	max-width: var(--hb-content-width);

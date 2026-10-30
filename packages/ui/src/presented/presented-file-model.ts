@@ -91,9 +91,18 @@ export function presentedTitle(file: Pick<PresentedFile, "name" | "title">): str
 
 /**
  * What a presented file is, in a few words, under its title on the card: "PDF document", "Word document", "PNG image".
- * Plain words rather than Claude's "Document · PDF": Harbour's copy has no middle-dot meta strings.
+ * Plain words rather than Claude's "Document · PDF": Harbour's copy has no middle-dot meta strings. A file a model made
+ * says which: "JPEG image made with gpt-image-1".
  */
-export function presentedSubtitle(file: Pick<PresentedFile, "name" | "document">, kind: PresentedKind): string {
+export function presentedSubtitle(
+	file: Pick<PresentedFile, "name" | "document" | "model">,
+	kind: PresentedKind,
+): string {
+	const what = presentedWhat(file, kind);
+	return file.model === undefined ? what : `${what} made with ${file.model}`;
+}
+
+function presentedWhat(file: Pick<PresentedFile, "name" | "document">, kind: PresentedKind): string {
 	if (file.document === true) return "Document";
 	const extension = extensionOf(file.name).toUpperCase();
 	switch (kind) {

@@ -97,6 +97,11 @@ export const PresentedFile = Type.Object(
 		document: Type.Optional(
 			Type.Boolean({ description: "A document the agent wrote (`create_document`): Markdown the person edits." }),
 		),
+		model: Type.Optional(
+			Type.String({
+				description: 'The model that made the file: an image `generate_image` made, such as "gpt-image-1".',
+			}),
+		),
 	},
 	{
 		title: "PresentedFile",
@@ -123,7 +128,8 @@ export const ToolItem = Type.Object(
 		output: Type.Optional(Type.String()),
 		files: Type.Optional(
 			Type.Array(PresentedFile, {
-				description: "The files the call presented to the person (`present_files`), the most relevant first.",
+				description:
+					"The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first.",
 			}),
 		),
 		tier: Type.Optional(Type.Union([Type.Literal("isolate"), Type.Literal("container")])),

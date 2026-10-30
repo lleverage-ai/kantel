@@ -1,5 +1,6 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { useEffect, useState } from "react";
+import { EXAMPLE_GENERATED_IMAGE } from "../session/fixture-generated-image.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { FilePanel, type FilePanelState } from "./file-panel.tsx";
@@ -102,6 +103,11 @@ export const Cards: Story = () => (
 				<PresentedFileCard file={presentedReport} />
 			</Column>
 		</Section>
+		<Section title="A generated image with no picture to show (too large to scale down)">
+			<Column>
+				<PresentedFileCard file={generatedImage} onOpen={() => {}} />
+			</Column>
+		</Section>
 	</Sheet>
 );
 
@@ -162,6 +168,35 @@ export const PowerPoint: Story = () => (
 		intro="Slide under slide with pptx-renderer, charts included; external media blocked."
 	>
 		<Viewer file={presentedDeck} />
+	</Sheet>
+);
+
+/** An image generate_image made: the viewer's facts say which model made it. */
+const generatedImage: PresentedFile = {
+	workspaceId: "ws_1",
+	path: "images/a-man-on-a-pogo-stick-mhd0k2pq.jpg",
+	name: "a-man-on-a-pogo-stick-mhd0k2pq.jpg",
+	mimeType: "image/jpeg",
+	size: Math.floor((EXAMPLE_GENERATED_IMAGE.length * 3) / 4),
+	model: "gpt-image-2.5-flare",
+};
+
+export const GeneratedImage: Story = () => (
+	<Sheet
+		title="Viewer: a generated image"
+		intro="An image generate_image made, fitted to the viewer; its facts end with the model that made it."
+	>
+		<div className="hb-story-viewer-frame hb-story-viewer-frame-tall">
+			<FilePanel
+				file={generatedImage}
+				state={{
+					status: "ready",
+					content: Uint8Array.from(atob(EXAMPLE_GENERATED_IMAGE), (char) => char.charCodeAt(0)),
+				}}
+				onClose={close}
+				onDownload={download}
+			/>
+		</div>
 	</Sheet>
 );
 
