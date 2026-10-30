@@ -113,7 +113,8 @@ export class FakeSandboxContainer implements SandboxContainer {
 	async ended(args: { readonly leaseId: string; readonly discard: boolean }): Promise<void> {
 		this.#fences.set(args.leaseId, "ended");
 		if (this.#owner?.leaseId !== args.leaseId) return;
-		if (args.discard && this.running) this.#reset();
+		// An expired lease's container stops, as the object destroys it.
+		if (args.discard && this.running) this.stop();
 		this.#owner = { ...this.#owner, leaseId: "" };
 	}
 

@@ -285,9 +285,9 @@ describe("the stack's sandboxes", () => {
 });
 
 describe("the container tier", () => {
-	async function withContainers() {
+	async function withContainers(options: { clock?: ReturnType<typeof manualClock>["clock"] } = {}) {
 		const fakes = fakeSandboxContainers(fakePrograms);
-		const set = await setup({ sandboxContainers: fakes.containers });
+		const set = await setup({ sandboxContainers: fakes.containers, ...options });
 		const workspaceId = await set.workspace();
 		await set.stack.workspaces.commit(set.stack.admin, workspaceId, {
 			baseVersion: (await set.stack.workspaces.get(set.stack.admin, workspaceId)).head,
@@ -340,6 +340,23 @@ describe("the container tier", () => {
 		expect(after).toMatchObject({ tier: "container", exitCode: 0, stdout: "built: v1Linux\n" });
 		expect(container().starts).toBe(2);
 		expect(await text("build/out.txt")).toBe("built: v1");
+	});
+
+	it("stops the container when its lease expires, and a warm-up starts it again with the workspace", async () => {
+		const time = manualClock();
+		const { stack, run, warm, container } = await withContainers({ clock: time.clock });
+		await run("make");
+		expect(container().running).toBe(true);
+		// The lease's 15 minutes pass without a command: the sweep ends it, and the container goes with it.
+		time.advance(16 * 60_000);
+		const swept = await stack.sandboxes.sweep(systemContext("session"));
+		expect(swept.map((lease) => [lease.tier, lease.endReason])).toEqual([["container", "expired"]]);
+		expect(container().running).toBe(false);
+
+		expect((await warm()).container).toBe("started");
+		const after = await run("cat build/out.txt && uname");
+		expect(after).toMatchObject({ tier: "container", exitCode: 0, stdout: "built: v1Linux\n" });
+		expect(container().starts).toBe(2);
 	});
 
 	it("sends a large sync in batches, each but the last staged ahead of the command", async () => {
