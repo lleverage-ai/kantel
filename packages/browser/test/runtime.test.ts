@@ -31,7 +31,7 @@ const SEAL_KEY = "test-browser-seal-key-0123456789abcdef";
 type Call = { readonly method: string; readonly path: string; readonly body: string; readonly token: string | null };
 
 /** The agent in images/browser, as far as the coordinator uses it. */
-function fakeAgent(options: { domainsFail?: boolean; recording?: boolean } = {}) {
+function fakeAgent(options: { domainsFail?: boolean; recording?: boolean; busyPage?: boolean } = {}) {
 	const calls: Call[] = [];
 	let token: string | undefined;
 	let running = false;
@@ -112,6 +112,15 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean } = {})
 				}
 				return new Response(found.bytes as Uint8Array<ArrayBuffer>);
 			}
+			// A page still busy loading: Reflex never answers (until the coordinator gives up), and no frame is drawn.
+			if (options.busyPage === true && path.startsWith("/reflex/")) {
+				return await new Promise<Response>((_, reject) => {
+					init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+				});
+			}
+			if (options.busyPage === true && path.startsWith("/screenshot")) {
+				return Response.json({ error: "no page to capture" }, { status: 404 });
+			}
 			if (path === "/reflex/act") {
 				return Response.json({ success: true, did: "Clicked", page: { url: "https://example.com/", title: "Ex" } });
 			}
@@ -136,7 +145,9 @@ function memoryBlobs(): BlobStore & { readonly keys: () => string[]; readonly ra
 	};
 }
 
-function setup(options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<typeof memoryBlobs> } = {}) {
+function setup(
+	options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<typeof memoryBlobs>; agentTimeoutMs?: number } = {},
+) {
 	let clock = 1_000_000;
 	const agent = fakeAgent(options);
 	const blobs = options.blobs ?? memoryBlobs();
@@ -153,6 +164,7 @@ function setup(options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<t
 		sealer,
 		now: () => clock,
 		recordingRetentionMs: 60_000,
+		...(options.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: options.agentTimeoutMs }),
 	});
 	const call = (method: string, path: string, body?: unknown) =>
 		coordinator.handle(
@@ -218,6 +230,19 @@ describe("browser coordinator", () => {
 		const reflex = t.agent.calls.find((call) => call.path === "/reflex/act")!;
 		expect(JSON.parse(reflex.body)).toEqual({ verb: "fill", element: "3", value: "hello" });
 		expect((await t.call("POST", "/act", { action: { kind: "evaluate", script: "1" } })).status).toBe(400);
+	});
+
+	it("says a busy page is still loading, not that the browser is gone, when a step or a screenshot times out", async () => {
+		const t = setup({ busyPage: true, agentTimeoutMs: 50 });
+		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
+		const acted = await t.call("POST", "/act", { action: { kind: "wait" } });
+		expect(acted.status).toBe(503);
+		const actError = JSON.stringify(await acted.json());
+		expect(actError).toContain("The page did not answer within");
+		expect(actError).toContain("it may still be loading. The browser is still open");
+		const shot = await t.call("GET", "/screenshot");
+		expect(shot.status).toBe(503);
+		expect(JSON.stringify(await shot.json())).toContain("it may still be loading. The browser is still open");
 	});
 
 	it("moves closed chunks into the blob store, sealed, and serves them back", async () => {

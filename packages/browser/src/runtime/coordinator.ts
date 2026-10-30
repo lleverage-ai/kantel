@@ -257,7 +257,16 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			});
 		} catch (error) {
 			if (error instanceof HarbourError) throw error;
-			throw new HarbourError("unavailable", `The browser did not answer ${path.split("?")[0]}`);
+			const route = path.split("?")[0] ?? path;
+			// A step or a look that times out is almost always a page still busy loading, not a dead browser: say so, so
+			// the caller looks again rather than opening another browser (Kayak's results page has held its main thread that long).
+			if (timeout.aborted && route.startsWith("/reflex/")) {
+				throw new HarbourError(
+					"unavailable",
+					`The page did not answer within ${Math.round(agentTimeoutMs / 1000)} s; it may still be loading. The browser is still open`,
+				);
+			}
+			throw new HarbourError("unavailable", `The browser did not answer ${route}`);
 		}
 	};
 
@@ -505,7 +514,11 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		const response = await agent(`/screenshot?width=${viewport.width}`);
 		if (!response.ok) {
 			await response.body?.cancel();
-			throw new HarbourError("unavailable", "The browser has no page to capture");
+			// The agent gives up after 6 s without a frame: a page still busy loading, while the browser itself is fine.
+			throw new HarbourError(
+				"unavailable",
+				"The page did not draw a screenshot within 6 s; it may still be loading. The browser is still open",
+			);
 		}
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		let binary = "";
