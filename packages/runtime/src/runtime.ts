@@ -94,6 +94,7 @@ import {
 	piContext,
 	type ResolvedModel,
 	runResultOf,
+	UsageTally,
 } from "./index.ts";
 import {
 	clampThinking,
@@ -312,6 +313,8 @@ interface OpenSession {
 	unsubscribeView: () => void;
 	stream: MemorySessionStream;
 	projector: ConversationProjector;
+	/** The session's model usage, which every projection of it shares: a fork or an edit keeps what came before. */
+	readonly usage: UsageTally;
 	/** Every `watch` of the session, so an edit can move each onto the new stream. */
 	readonly watchers: Set<Watcher>;
 	/** An edit in progress: a second one is refused until it is in. */
@@ -821,6 +824,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await harness.close(context).catch(() => undefined);
 			throw error;
 		}
+		const usage = new UsageTally();
 		const session: OpenSession = {
 			record,
 			profile,
@@ -833,7 +837,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			view,
 			unsubscribeView: () => {},
 			stream: newStream(record),
-			projector: new ConversationProjector({ now: () => clock.now() }),
+			projector: new ConversationProjector({ now: () => clock.now(), usage }),
+			usage,
 			watchers: new Set(),
 			editing: false,
 			publishing: Promise.resolve(),
@@ -1420,7 +1425,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		session.view.dispose();
 		session.conversation = conversation;
 		session.view = view;
-		session.projector = new ConversationProjector({ now: () => clock.now() });
+		session.projector = new ConversationProjector({ now: () => clock.now(), usage: session.usage });
 		session.stream = newStream(session.record);
 		session.generation = crypto.randomUUID().slice(0, 8);
 		session.unsubscribeView = view.subscribe(() => sync(session));

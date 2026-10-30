@@ -24,10 +24,17 @@ export type Attention = "working" | "waiting" | "done";
 
 export type SandboxTierName = "isolate" | "container";
 
+/**
+ * Model token usage and cost. On a snapshot and in a `usage` op it is the session's running total over every model
+ * response so far; on a run result it is the run's answer. `inputTokens` excludes cached input: a prompt served from
+ * the provider's cache counts under `cacheReadTokens`, one written to it under `cacheWriteTokens`.
+ */
 export interface Usage {
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly cacheReadTokens?: number;
+	readonly cacheWriteTokens?: number;
+	/** Zero when the connector reports no cost and computes none (CLIProxyAPI records tokens only). */
 	readonly costUsd?: number;
 }
 

@@ -24,6 +24,7 @@ import {
 	type ToolImage,
 	type ToolItem,
 	type ToolItemStatus,
+	type Usage,
 	type UserAttachment,
 	type UserItem,
 	type UserItemVia,
@@ -321,13 +322,57 @@ function userContentOf(
 	return { text: textOf(content.slice(skip)), attachments };
 }
 
+const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/**
+ * A session's model usage so far: every model response's `usage` (a `pi.assistant` entry, failed ones included),
+ * summed once per entry. A session shares one tally across its projections, so a fork or an edit, which projects a new
+ * conversation, still counts what the earlier conversation used; entries the conversations share count once.
+ */
+export class UsageTally {
+	readonly #counted = new Set<string>();
+	#usage: Usage | undefined;
+	#revision = 0;
+
+	/** The running total, or undefined before any response reported usage. */
+	get usage(): Usage | undefined {
+		return this.#usage;
+	}
+
+	/** Goes up each time the total changes. */
+	get revision(): number {
+		return this.#revision;
+	}
+
+	/** Counts `message`'s usage under `entryId`, unless that entry was counted already or carries none. */
+	add(entryId: string, message: AssistantMessage): void {
+		const usage = (message as { readonly usage?: unknown }).usage;
+		if (typeof usage !== "object" || usage === null || this.#counted.has(entryId)) return;
+		this.#counted.add(entryId);
+		const fields = usage as { readonly [key: string]: unknown };
+		const cost = typeof fields.cost === "object" && fields.cost !== null ? (fields.cost as { total?: unknown }) : {};
+		const before = this.#usage;
+		this.#usage = {
+			inputTokens: (before?.inputTokens ?? 0) + count(fields.input),
+			outputTokens: (before?.outputTokens ?? 0) + count(fields.output),
+			cacheReadTokens: (before?.cacheReadTokens ?? 0) + count(fields.cacheRead),
+			cacheWriteTokens: (before?.cacheWriteTokens ?? 0) + count(fields.cacheWrite),
+			costUsd: (before?.costUsd ?? 0) + count(cost.total),
+		};
+		this.#revision += 1;
+	}
+}
+
 /**
  * Turns successive views of one conversation into delta ops. New entries append items; a streamed answer grows one
  * assistant item with `text` ops; a tool call is a `tool` item replaced when its result lands; status changes become
- * `status` ops.
+ * `status` ops; the session's usage total, after each response that reports usage, a `usage` op.
  */
 export class ConversationProjector {
 	readonly #now: () => Timestamp;
+	readonly #usage: UsageTally;
+	/** The tally's revision the last `usage` op showed. */
+	#shownUsage = 0;
 	readonly #seenEntries = new Set<string>();
 	/** Tool items by Pi tool call ID, while their result is outstanding. */
 	readonly #runningTools = new Map<string, ToolItem>();
@@ -339,8 +384,10 @@ export class ConversationProjector {
 	#lastRunFailed = false;
 	#closed = false;
 
-	constructor(options: { readonly now: () => Timestamp }) {
+	/** `usage` is the session's tally, shared by its projections; by default this projection's own. */
+	constructor(options: { readonly now: () => Timestamp; readonly usage?: UsageTally }) {
 		this.#now = options.now;
+		this.#usage = options.usage ?? new UsageTally();
 	}
 
 	get status(): SessionStatus {
@@ -365,6 +412,11 @@ export class ConversationProjector {
 			if (this.#seenEntries.has(id)) continue;
 			this.#seenEntries.add(id);
 			this.#projectEntry(entry, ops);
+		}
+		const usage = this.#usage.usage;
+		if (usage !== undefined && this.#usage.revision !== this.#shownUsage) {
+			this.#shownUsage = this.#usage.revision;
+			ops.push({ op: "usage", usage });
 		}
 		const live = view.docs["pi.live"] as LiveState | undefined;
 		this.#projectPartial(live, ops);
@@ -406,6 +458,7 @@ export class ConversationProjector {
 	}
 
 	#projectAssistant(entry: EntryRecord, message: AssistantMessage, ops: DeltaOp[]): void {
+		this.#usage.add(String(entry.id), message);
 		const text = textOf(message.content);
 		const thinking = thinkingOf(message.content);
 		const streaming = this.#streaming;

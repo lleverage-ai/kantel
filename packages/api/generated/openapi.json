@@ -5922,11 +5922,15 @@
 					"cacheReadTokens": {
 						"type": "integer"
 					},
+					"cacheWriteTokens": {
+						"type": "integer"
+					},
 					"costUsd": {
 						"type": "number"
 					}
 				},
-				"title": "Usage"
+				"title": "Usage",
+				"description": "Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache."
 			},
 			"UserAttachment": {
 				"type": "object",

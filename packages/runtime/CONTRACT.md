@@ -207,7 +207,11 @@ is `createSessionRuntime` over `createMemorySessionStore()`, with one Harness pe
 section, and are the whole of it: Harbour adds no text of its own, so a profile with no layers sends no system prompt; and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
 placed as a `harbour.user` entry recording how it was sent. `ConversationProjector` (`project.ts`) diffs Pi's committed
 view into protocol ops on a `createMemorySessionStream`; status is `running` while Pi has a run, `failed` after a model
-error, `idle` otherwise and `done` after close. Audit: `session.created`, `session.prompted`, `session.steered`,
+error, `idle` otherwise and `done` after close. After each model response that reports usage (failed ones included)
+it publishes the session's running total as a `usage` op, so the snapshot's `usage` is the session's tokens and cost so
+far: one `UsageTally` per open session, shared by its projections, counts each `pi.assistant` entry once, so an edit
+keeps what the abandoned branch used while the session stays open. Rebuilt on reopen from the active conversation's
+entries; the per-call `model.call` audit events stay the record of truth. Audit: `session.created`, `session.prompted`, `session.steered`,
 `session.aborted`, `session.tool.started`, `session.tool.finished`, with stable ids. `createScriptedModel()` from
 `@harbour/runtime/testing` scripts pi-ai's faux provider for the suite.
 
@@ -217,7 +221,7 @@ map, and exposes that check as `access` for components to share. It exposes its 
 `createMemoryCapabilityRegistry` and `createMemoryVault`. The older `sandboxes` option registers the sandbox's
 `releaseSession` as the `sandbox` teardown, so don't pass both.
 
-It leaves out: persistence across restarts, workspaces and sandbox routing beyond `releaseSession`, usage totals in snapshots, history paging through
+It leaves out: persistence across restarts, workspaces and sandbox routing beyond `releaseSession`, history paging through
 `watch`, and session titles changing after creation.
 
 ## Over HTTP
