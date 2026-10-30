@@ -21,7 +21,7 @@ import "./theme-picker.css";
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css): a raised panel near the top of the window over the page,
 // with no dimming, because the page behind it is the preview. A search field, then one row per theme: its swatch, its
-// name, Dark or Light, and a tick on the one that's chosen. Rows are a menu's (menu.css): baseline-aligned, the swatch
+// name, Dark or Light, and a tick on the one that's chosen. Rows are a menu's (menu.tsx): baseline-aligned, the swatch
 // and the tick moved up onto the middle of the label's capitals. The swatch's backgrounds, the zero-width baselines
 // and the opening animation stay in theme-picker.css. The hb-theme-picker classes are hooks for that file and for
 // loop/measure.ts.

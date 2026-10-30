@@ -10,7 +10,8 @@ import {
 	presentedSubtitle,
 	presentedTitle,
 } from "./presented-file-model.ts";
-import "./presented-file-card.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
 
 // A file the agent presented (`present_files`), as a card that stays in the transcript, after Claude's: a lucide icon
 // for the kind of file in a square tinted to match, the file's title and, muted under it, what kind of file it is.
@@ -29,6 +30,55 @@ const ICONS: { readonly [kind in PresentedKind]: LucideIcon } = {
 	pptx: Presentation,
 	other: File,
 };
+
+/**
+ * The cards' list: one block, the cards close to each other, a block apart from the work above and the words below
+ * (docs/spacing.md). session/transcript.css drops the top margin for the first thing in a folded row, through the
+ * `hb-presented-files` hook. Exported for the draft card a streaming answer writes in the same wrappers
+ * (session/message.tsx).
+ */
+export const presentedFilesClass =
+	"hb-presented-files mx-0 mt-between mb-0 flex list-none flex-col items-stretch gap-within p-0";
+/** A card's row in the list, no wider than a card. */
+export const presentedFilesItemClass = "hb-presented-files-item flex min-w-0 max-w-card";
+
+/** The square the icon sits in, tinted for the kind of file (as primitives/file-icons.ts's fileTileClass tiles are). */
+const iconSquare = "inline-flex size-control-lg flex-none items-center justify-center rounded-control";
+
+/** Each kind's tint: its status colour on that colour's soft ground; text and other files stay neutral. */
+const TINTS: { readonly [kind in PresentedKind]: string } = {
+	pdf: "bg-status-error-soft text-status-error",
+	html: "bg-status-working-soft text-status-working",
+	docx: "bg-accent-soft text-accent-text",
+	markdown: "bg-accent-soft text-accent-text",
+	xlsx: "bg-status-done-soft text-status-done",
+	csv: "bg-status-done-soft text-status-done",
+	pptx: "bg-status-approval-soft text-status-approval",
+	image: "bg-status-waiting-soft text-status-waiting",
+	text: "bg-active text-muted",
+	other: "bg-active text-muted",
+};
+
+/**
+ * A card: a rounded, quiet panel with the icon, then the title over its kind. `[font:inherit]` as it may be a button;
+ * the border's colour is set by whether it's open (`cardBorder`).
+ */
+const card =
+	"flex w-full min-w-0 items-center gap-3 rounded-bubble border bg-raised py-pad-card pr-4 pl-pad-card text-left text-fg [font:inherit]";
+
+/** A card or tile that opens the file: it lifts on hover. */
+const pressable =
+	"cursor-pointer transition-colors duration-(--hb-duration-fast) hover:border-border-strong hover:bg-user-message";
+
+/** The border of a card or tile: the accent while its file is open in the viewer. */
+const cardBorder = (open: boolean) => (open ? "border-accent" : "border-border");
+
+/** The title over its kind. */
+const cardText = "flex min-w-0 flex-1 flex-col gap-0.5";
+/** The file's title, cut short with an ellipsis. */
+const cardName = "truncate text-md leading-tight font-medium";
+/** What kind of file it is, muted, under the title. */
+const cardFacts = "truncate text-sm leading-tight text-muted";
 
 export type PresentedFileCardProps = {
 	file: PresentedFile;
@@ -49,23 +99,23 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
 	const body = (
 		<>
-			<span className="hb-presented-icon" data-kind={kind}>
+			<span className={`${iconSquare} ${TINTS[kind]}`} data-kind={kind}>
 				<Icon className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
 			</span>
-			<span className="hb-presented-text">
-				<span className="hb-presented-name" title={file.path}>
+			<span className={cardText}>
+				<span className={cardName} title={file.path}>
 					{presentedTitle(file)}
 				</span>
-				<span className="hb-presented-facts">{presentedSubtitle(file, kind)}</span>
+				<span className={cardFacts}>{presentedSubtitle(file, kind)}</span>
 			</span>
 		</>
 	);
 	return onOpen === undefined ? (
-		<div className="hb-presented-card">{body}</div>
+		<div className={`hb-presented-card ${card} ${cardBorder(false)}`}>{body}</div>
 	) : (
 		<button
 			type="button"
-			className={`hb-presented-card hb-presented-card-button hb-focusable${open ? " hb-presented-card-open" : ""}`}
+			className={`hb-presented-card hb-focusable ${card} ${pressable} ${cardBorder(open)}`}
 			aria-label={`Open ${presentedTitle(file)}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
@@ -79,13 +129,13 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 /** A document the agent is still writing (`create_document` streaming in), as the card it becomes. */
 export const DraftDocumentCard = memo(function DraftDocumentCard({ title }: { title: string }) {
 	return (
-		<div className="hb-presented-card hb-presented-card-draft" aria-live="polite">
-			<span className="hb-presented-icon" data-kind="markdown">
+		<div className={`hb-presented-card hb-presented-card-draft ${card} ${cardBorder(false)}`} aria-live="polite">
+			<span className={`${iconSquare} ${TINTS.markdown}`} data-kind="markdown">
 				<FileText className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
 			</span>
-			<span className="hb-presented-text">
-				<span className="hb-presented-name">{title}</span>
-				<span className="hb-presented-facts">Writing the document</span>
+			<span className={cardText}>
+				<span className={cardName}>{title}</span>
+				<span className={cardFacts}>Writing the document</span>
 			</span>
 		</div>
 	);
@@ -138,6 +188,19 @@ export type ImageTileProps = PresentedFileCardProps & {
  * picture, so a picture that has not loaded (or an engine that sizes it late, as iOS Safari did) can't squash it.
  * Pressing it opens the file in the host's viewer.
  */
+/**
+ * A tile: the picture as a square, then the name and what it is, in a card as wide as its place. `[font:inherit]` as
+ * it may be a button.
+ */
+const imageTile =
+	"m-0 flex w-full min-w-0 flex-col overflow-hidden rounded-bubble border bg-raised p-0 text-left text-fg [font:inherit]";
+
+/**
+ * The picture fills a square, cropped rather than squeezed; the viewer shows it whole. The frame before it (and in
+ * place of a picture the host has none of) is the same square.
+ */
+const imageTileSquare = "aspect-square h-auto w-full bg-panel object-cover";
+
 export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = false }: ImageTileProps) {
 	const [failed, setFailed] = useState<string>();
 	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
@@ -146,32 +209,42 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 	const body = (
 		<>
 			{shown === "loading" || shown === "none" ? (
-				<span className="hb-image-tile-picture hb-image-tile-frame" data-state={shown} aria-hidden="true">
-					<ImageIcon size="md" className="hb-image-tile-icon" />
+				<span
+					className={`hb-image-tile-picture hb-image-tile-frame ${imageTileSquare} group/frame flex items-center justify-center text-faint`}
+					data-state={shown}
+					aria-hidden="true"
+				>
+					<ImageIcon
+						size="md"
+						// The icon a little larger than md; `!` because icons.css's .hb-icon-md is unlayered. While the host reads the
+						// picture it breathes: opacity alone, as the placeholders' does (hb-pulse is in base.css).
+						className="size-control-xs! group-data-[state=loading]/frame:animate-[hb-pulse_var(--hb-duration-pulse)_var(--hb-ease-breathe)_infinite]"
+					/>
 				</span>
 			) : (
 				<img
-					className="hb-image-tile-picture"
+					className={`hb-image-tile-picture block ${imageTileSquare}`}
 					src={shown}
 					alt={title}
 					decoding="async"
 					onError={() => setFailed(shown)}
 				/>
 			)}
-			<span className="hb-image-tile-caption">
-				<span className="hb-presented-name" title={file.path}>
+			{/* The caption is as wide as the tile: a long name is cut short. */}
+			<span className="flex min-w-0 flex-col gap-0.5 border-t border-border px-3 py-2">
+				<span className={cardName} title={file.path}>
 					{title}
 				</span>
-				<span className="hb-presented-facts">{presentedSubtitle(file, "image")}</span>
+				<span className={cardFacts}>{presentedSubtitle(file, "image")}</span>
 			</span>
 		</>
 	);
 	return onOpen === undefined ? (
-		<figure className="hb-image-tile">{body}</figure>
+		<figure className={`hb-image-tile ${imageTile} ${cardBorder(false)}`}>{body}</figure>
 	) : (
 		<button
 			type="button"
-			className={`hb-image-tile hb-image-tile-button hb-focusable${open ? " hb-image-tile-open" : ""}`}
+			className={`hb-image-tile hb-focusable ${imageTile} ${pressable} ${cardBorder(open)}`}
 			aria-label={`Open ${title}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
@@ -185,10 +258,18 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 /**
  * Image tiles side by side, wrapping: one alone up to `--hb-presented-image-size` (the column's width on a phone), two
  * or more up to `--hb-presented-image-size-many` each, and never fewer than two to a row. Each child is one tile.
+ *
+ * Each place has a set width, so a tile never takes its size from its picture: a picture that hasn't loaded, or one an
+ * engine sizes late (iOS Safari shrank `width: fit-content` cards round a `max-width: 100%` image to their caption's
+ * padding), can't squash it. The places read data-many through `group/tiles` (ImageTilesItem).
  */
 export function ImageTiles({ label, children }: { label: string; children: readonly ReactNode[] }) {
 	return (
-		<ul className="hb-image-tiles" aria-label={label} {...(children.length >= 2 ? { "data-many": "" } : {})}>
+		<ul
+			className="hb-image-tiles group/tiles m-0 flex min-w-0 list-none flex-wrap items-start gap-within p-0"
+			aria-label={label}
+			{...(children.length >= 2 ? { "data-many": "" } : {})}
+		>
 			{children}
 		</ul>
 	);
@@ -196,7 +277,15 @@ export function ImageTiles({ label, children }: { label: string; children: reado
 
 /** One tile's place in `ImageTiles`. */
 export function ImageTilesItem({ children }: { children: ReactNode }) {
-	return <li className="hb-image-tiles-item">{children}</li>;
+	return (
+		<li
+			// One alone up to --hb-presented-image-size (the column's width on a phone); two or more smaller, four to a row
+			// in the content column and two on a phone, never fewer.
+			className="hb-image-tiles-item w-[min(100%,var(--hb-presented-image-size))] min-w-0 flex-none group-data-many/tiles:w-[min(calc((100%_-_var(--hb-gap-within))/2),var(--hb-presented-image-size-many))]"
+		>
+			{children}
+		</li>
+	);
 }
 
 /**
@@ -250,18 +339,18 @@ export function PresentedFiles({ item, onOpen, openKey, previewImage }: Presente
 	if (files.length === 0) return null;
 	const open = onOpen === undefined ? undefined : (opened: PresentedFile) => onOpen(opened, item);
 	return (
-		<ul className="hb-presented-files" aria-label={files.length === 1 ? "Presented file" : "Presented files"}>
+		<ul className={presentedFilesClass} aria-label={files.length === 1 ? "Presented file" : "Presented files"}>
 			{runs(files, previewImage !== undefined).map((run) => {
 				const first = run[0] as PresentedFile;
 				if (previewImage === undefined || presentedKind(first) !== "image") {
 					return (
-						<li key={presentedKey(first)} className="hb-presented-files-item">
+						<li key={presentedKey(first)} className={presentedFilesItemClass}>
 							<PresentedFileCard file={first} onOpen={open} open={openKey === presentedKey(first)} />
 						</li>
 					);
 				}
 				return (
-					<li key={presentedKey(first)} className="hb-presented-images">
+					<li key={presentedKey(first)} className="hb-presented-images min-w-0">
 						<ImageTiles label={run.length === 1 ? "Image" : "Images"}>
 							{run.map((file) => (
 								<ImageTilesItem key={presentedKey(file)}>

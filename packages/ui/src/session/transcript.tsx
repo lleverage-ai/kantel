@@ -15,6 +15,12 @@ import { VList, type VListHandle } from "virtua";
 import { PresentedFiles } from "../presented/presented-file-card.tsx";
 import { presentedKey } from "../presented/presented-file-model.ts";
 import { Button } from "../primitives/button.tsx";
+import {
+	disclosureChevronClass,
+	disclosureClass,
+	disclosureSummaryClass,
+	disclosureTextClass,
+} from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
 import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -235,17 +241,17 @@ export function turnFoldSummary(fold: Pick<TurnFold, "elapsed">): string {
  */
 function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean; onToggle: (id: string) => void }) {
 	return (
-		<div className={`hb-disclosure hb-turn-fold${open ? " hb-disclosure-open" : ""}`}>
+		<div className={`${disclosureClass} hb-turn-fold${open ? " hb-disclosure-open" : ""}`}>
 			<button
 				type="button"
-				// As wide as its words, not the column: `!` because the Disclosure primitive's unlayered .hb-disclosure-summary
-				// sets width: 100%.
-				className="hb-disclosure-summary hb-focusable w-auto! max-w-full"
+				// As wide as its words, not the column: `!` because the Disclosure summary's own w-full is a utility on the same
+				// property, and two utilities for one property are ordered by Tailwind's sort, not by which comes later.
+				className={`${disclosureSummaryClass} w-auto! max-w-full`}
 				aria-expanded={open}
 				onClick={() => onToggle(fold.id)}
 			>
-				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
-				<span className="hb-disclosure-text">{turnFoldSummary(fold)}</span>
+				<ChevronRightIcon size="sm" className={disclosureChevronClass(open)} />
+				<span className={disclosureTextClass}>{turnFoldSummary(fold)}</span>
 				{open ? null : <StepFailed failed={fold.failed} />}
 			</button>
 		</div>
@@ -1255,7 +1261,7 @@ export function Transcript({
 					<div className={`${olderPill} hb-transcript-older-error pr-1 pl-3 text-fg`} role="alert">
 						<span className="hb-transcript-older-text max-w-popover overflow-hidden text-ellipsis">{olderError}</span>
 						{onLoadOlder === undefined ? null : (
-							// A pill in the pill: `!` because the Button's unlayered .hb-button sets its own radius.
+							// A pill in the pill: `!` because the Button's own utilities set its radius too.
 							<Button variant="ghost" size="sm" className="rounded-full!" onClick={onLoadOlder}>
 								Try again
 							</Button>
@@ -1265,7 +1271,7 @@ export function Transcript({
 				{showEnd ? (
 					<Button
 						// Floats over the list; docked, just above the composer (T3 Code: the measured clearance plus 4px). `!` where
-						// the Button's unlayered .hb-button sets the same property (its radius and colour); the secondary variant's
+						// the Button's own utilities set the same property (its radius and colour); the secondary variant's
 						// raised background and active hover are this button's own already.
 						className={`hb-transcript-scroll-end absolute left-1/2 z-(--hb-z-float) -translate-x-1/2 rounded-full! text-muted! shadow-float hover:enabled:text-fg! ${docked ? "bottom-[calc(var(--hb-transcript-dock-height)+var(--hb-step-1))]" : "bottom-4"}`}
 						variant="secondary"

@@ -1,6 +1,6 @@
 import type { AssistantItem, NoticeItem, UserItem } from "@harbour/protocol";
 import { memo, useContext, useState } from "react";
-import { DraftDocumentCard } from "../presented/presented-file-card.tsx";
+import { DraftDocumentCard, presentedFilesClass, presentedFilesItemClass } from "../presented/presented-file-card.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
 import { ForkIcon, PencilIcon, RetryIcon, RewindIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -202,8 +202,8 @@ export const AssistantMessage = memo(function AssistantMessage({
 				<LiveActivity />
 			) : null}
 			{streaming && item.document !== undefined ? (
-				<div className="hb-presented-files">
-					<div className="hb-presented-files-item">
+				<div className={presentedFilesClass}>
+					<div className={presentedFilesItemClass}>
 						<DraftDocumentCard title={item.document.title} />
 					</div>
 				</div>

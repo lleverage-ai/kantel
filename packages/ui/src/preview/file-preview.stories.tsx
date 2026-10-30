@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ShareAccess, ShareControls, ShareState } from "../documents/share-popover.tsx";
-import { DraftDocumentCard, PresentedFileCard } from "../presented/presented-file-card.tsx";
+import { DraftDocumentCard, PresentedFileCard, presentedFilesItemClass } from "../presented/presented-file-card.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Sheet } from "../workbench/specimen.tsx";
 import { FilePreview } from "./file-preview.tsx";
@@ -77,7 +77,7 @@ export const SlideIn: Story = () => {
 			<div className={frame}>
 				<div className={side}>
 					{fixtures.map((each) => (
-						<div key={each.file.key} className="hb-presented-files-item">
+						<div key={each.file.key} className={presentedFilesItemClass}>
 							<PresentedFileCard
 								file={asPresented(each.file)}
 								open={each.file.key === open}
@@ -171,7 +171,7 @@ export const StreamingDocument: Story = () => {
 		>
 			<div className={frame}>
 				<div className={side}>
-					<div className="hb-presented-files-item">
+					<div className={presentedFilesItemClass}>
 						<DraftDocumentCard title="The colours of the rainbow" />
 					</div>
 				</div>

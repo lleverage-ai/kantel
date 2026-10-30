@@ -52,7 +52,7 @@ const rowsItem =
 /**
  * A working session's status, after T3 Code's (text-info-foreground, a 16px spinner, gap 1): the spinner, "Working"
  * and its time in the accent's blue, medium weight, with tabular numbers so the row doesn't shift as it counts. The
- * spinner's moving arc takes the same blue (`!` beats feedback.css's .hb-spinner border-top-color).
+ * spinner's moving arc takes the same blue (`!` beats the Spinner's own border-top-color utility).
  */
 const working =
 	"hb-session-working inline-flex items-center gap-1 text-xs leading-tight font-medium whitespace-nowrap text-accent-text tabular-nums [&>.hb-spinner]:[border-top-color:currentcolor]!";

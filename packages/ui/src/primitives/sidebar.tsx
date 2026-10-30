@@ -3,15 +3,83 @@ import { IconButton } from "./button.tsx";
 import { ChevronDownIcon, ChevronRightIcon, FolderIcon, SidebarIcon } from "./icons.tsx";
 import "./sidebar.css";
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). The rail is a named group: the root is
+// `group/sidebar` and carries `data-collapsed`, and what changes on the rail says so with a
+// `group-data-collapsed/sidebar:` variant. sidebar.css keeps only the rail's rules on SignedInAs, another component.
+// Every hb- class stays as a hook.
+
 // The app's sidebar, after T3 Code's: a head with the product's name and the collapse button, a body that scrolls on
 // its own with the projects and each project's sessions nested under it, and a foot that stays put with the pages
 // that belong to no project and who is signed in. Collapsed, it is a rail of icons: every item keeps its accessible
-// name and shows it as a tooltip.
+// name and shows it as a tooltip. Every row shares one inset (step 1.5 from the edge, step 2.5 inside the row), so
+// icons, names and headings line up down the column.
 
 const Collapsed = createContext(false);
 
 /** Whether the sidebar around this component is collapsed to its rail. */
 export const useSidebarCollapsed = (): boolean => useContext(Collapsed);
+
+/** The component's own classes, then the caller's. */
+function withClass(base: string, className: string | undefined): string {
+	return className ? `${base} ${className}` : base;
+}
+
+/** The frame: a column that fills its cell, on the panel colour, a hairline on its right. */
+const sidebarFrame =
+	"hb-sidebar group/sidebar flex h-full min-h-0 min-w-0 flex-col border-r border-border bg-panel text-fg";
+
+/**
+ * The head: the brand and the toggle, the brand on the rows' inset (step 1.5 plus 2.5). On the rail only the toggle
+ * shows, centred.
+ */
+const sidebarHead =
+	"hb-sidebar-head flex min-h-control-lg flex-none items-center justify-between gap-2 py-2 pr-1.5 pl-[calc(var(--hb-step-1_5)_+_var(--hb-step-2_5))] group-data-collapsed/sidebar:justify-center group-data-collapsed/sidebar:pr-0 group-data-collapsed/sidebar:pl-0";
+
+/** The body scrolls on its own, without handing the scroll on to the page. Closer together on the rail. */
+const sidebarBody =
+	"hb-sidebar-body flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-1.5 pt-1 pb-4 group-data-collapsed/sidebar:gap-2.5";
+
+/** The foot stays put under a hairline. */
+const sidebarFoot = "hb-sidebar-foot flex flex-none flex-col gap-2.5 border-t border-border px-1.5 pt-2.5 pb-2";
+
+/**
+ * A link's focus ring sits inside its fill, so neighbouring rows don't clip it. `!`: base.css's `.hb-focusable` offset
+ * is unlayered and would beat a utility.
+ */
+const ringInside = "focus-visible:-outline-offset-(--hb-ring)!";
+
+/**
+ * A page link: muted until it is the page shown, which is filled and in full-strength text. On the rail, the icon
+ * alone, centred.
+ */
+const item = `hb-sidebar-item hb-focusable flex min-h-control-md min-w-0 items-center gap-2 rounded-control px-2.5 py-0 text-sm leading-tight no-underline group-data-collapsed/sidebar:justify-center group-data-collapsed/sidebar:px-0 ${ringInside}`;
+
+/**
+ * The link's state. A row that isn't selected is the hover group its icon brightens in (`group-hover/item:` on the
+ * icon); a selected row isn't one, and puts its icon in full-strength text, so the two never compete for the icon.
+ */
+const itemState = {
+	selected: "hb-sidebar-item-selected bg-selected font-medium text-fg [&>.hb-sidebar-item-icon]:text-fg",
+	idle: "group/item text-muted hover:bg-hover hover:text-fg",
+};
+
+/**
+ * The project's chevron, hidden on the rail. As a button (the current project's) it fills under the pointer; the
+ * button's own cursor and hover are added in SidebarProject.
+ */
+const projectToggle =
+	"hb-sidebar-project-toggle ml-1 inline-grid size-control-xs flex-none place-items-center rounded-sm border-0 bg-transparent p-0 text-faint group-data-collapsed/sidebar:hidden";
+
+/** The project's link: folder and name; on the rail, the mark alone, centred. */
+const projectMain = `hb-sidebar-project-main hb-focusable flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-[inherit] py-0 pr-2.5 pl-1 text-md leading-tight no-underline group-data-collapsed/sidebar:justify-center group-data-collapsed/sidebar:pr-0 group-data-collapsed/sidebar:pl-0 ${ringInside}`;
+
+/** Its first letter in a small square, on the rail only. */
+const projectMark =
+	"hb-sidebar-project-mark hidden size-control-xs place-items-center rounded-sm border bg-raised text-xs font-strong leading-none group-data-collapsed/sidebar:inline-grid";
+
+/** The guide line runs down from the chevron's centre, so it's plain which project the sessions belong to. */
+const projectChildren =
+	"hb-sidebar-project-children mt-1 mr-0 mb-2 ml-[calc(var(--hb-step-1)_+_var(--hb-control-xs)*0.5)] flex min-w-0 flex-col gap-2 border-l border-border-strong pl-1.5";
 
 export type SidebarProps = Omit<ComponentProps<"div">, "children"> & {
 	/** A rail of icons, `--hb-rail-width` wide, instead of the full sidebar. */
@@ -32,14 +100,10 @@ export type SidebarProps = Omit<ComponentProps<"div">, "children"> & {
 export function Sidebar({ collapsed = false, head, foot, children, className, ...rest }: SidebarProps) {
 	return (
 		<Collapsed.Provider value={collapsed}>
-			<div
-				{...rest}
-				className={`hb-sidebar${className ? ` ${className}` : ""}`}
-				data-collapsed={collapsed ? "" : undefined}
-			>
-				<div className="hb-sidebar-head">{head}</div>
-				<div className="hb-sidebar-body">{children}</div>
-				{foot === undefined ? null : <div className="hb-sidebar-foot">{foot}</div>}
+			<div {...rest} className={withClass(sidebarFrame, className)} data-collapsed={collapsed ? "" : undefined}>
+				<div className={sidebarHead}>{head}</div>
+				<div className={sidebarBody}>{children}</div>
+				{foot === undefined ? null : <div className={sidebarFoot}>{foot}</div>}
 			</div>
 		</Collapsed.Provider>
 	);
@@ -47,7 +111,11 @@ export function Sidebar({ collapsed = false, head, foot, children, className, ..
 
 /** The head's product name. Hidden on the rail, where only the toggle shows. */
 export function SidebarBrand({ children }: { children: ReactNode }) {
-	return <span className="hb-sidebar-brand">{children}</span>;
+	return (
+		<span className="hb-sidebar-brand min-w-0 truncate text-md font-strong group-data-collapsed/sidebar:hidden">
+			{children}
+		</span>
+	);
 }
 
 export type SidebarToggleProps = {
@@ -65,6 +133,7 @@ export function SidebarToggle({ collapsed, onToggle, controls, shortcut }: Sideb
 	const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
 	return (
 		<IconButton
+			// A hook only: the ghost button's own muted text is the toggle's colour.
 			className="hb-sidebar-toggle"
 			variant="ghost"
 			label={label}
@@ -90,8 +159,14 @@ export type SidebarSectionProps = {
 export function SidebarSection({ label, heading = true, children }: SidebarSectionProps) {
 	return (
 		<nav className="hb-sidebar-section" aria-label={label}>
-			{heading ? <h2 className="hb-sidebar-heading">{label}</h2> : null}
-			<ul className="hb-sidebar-items">{children}</ul>
+			{/* Small and muted, like the session list's group headings: a shelf label, not a banner. Read, not shown, on
+			    the rail. */}
+			{heading ? (
+				<h2 className="hb-sidebar-heading mx-0 mt-0 mb-1 px-2.5 py-0 text-xs font-medium leading-tight text-faint group-data-collapsed/sidebar:sr-only">
+					{label}
+				</h2>
+			) : null}
+			<ul className="hb-sidebar-items m-0 flex min-w-0 list-none flex-col gap-0.5 p-0">{children}</ul>
 		</nav>
 	);
 }
@@ -112,16 +187,31 @@ export type SidebarItemProps = {
 export function SidebarItem({ icon, label, href, selected = false, trailing }: SidebarItemProps) {
 	const collapsed = useSidebarCollapsed();
 	return (
-		<li className="hb-sidebar-item-slot">
+		<li className="hb-sidebar-item-slot min-w-0">
 			<a
-				className={`hb-sidebar-item hb-focusable${selected ? " hb-sidebar-item-selected" : ""}`}
+				className={`${item} ${selected ? itemState.selected : itemState.idle}`}
 				href={href}
 				aria-current={selected ? "page" : undefined}
 				title={collapsed ? label : undefined}
 			>
-				<span className="hb-sidebar-item-icon">{icon}</span>
-				<span className="hb-sidebar-item-label">{label}</span>
-				{trailing === undefined ? null : <span className="hb-sidebar-item-trailing">{trailing}</span>}
+				{/*
+				 * An icon beside a label sits on the middle of the label's capitals, as ListRow's leading slot does
+				 * (components.md, "Centring on text"): the slot is one line of the label's type with an invisible character
+				 * for a baseline, the icon rests on that baseline taking no room above it, then moves up by --hb-on-cap.
+				 * Written out in full (and in SidebarProject) because `\200b` must reach Tailwind as it is in the DOM: a JSX
+				 * attribute keeps the backslash, a JS string would need it escaped.
+				 */}
+				<span className="hb-sidebar-item-icon inline-flex h-[calc(1em*var(--hb-leading-tight))] min-w-icon-md flex-none items-baseline justify-center leading-tight text-faint group-hover/item:text-muted before:content-['\200b'] [&>.hb-icon-md]:-mt-icon-md [&>.hb-icon-md]:translate-y-(--hb-on-cap)">
+					{icon}
+				</span>
+				<span className="hb-sidebar-item-label min-w-0 flex-1 truncate group-data-collapsed/sidebar:sr-only">
+					{label}
+				</span>
+				{trailing === undefined ? null : (
+					<span className="hb-sidebar-item-trailing flex-none text-xs text-faint tabular-nums group-data-collapsed/sidebar:hidden">
+						{trailing}
+					</span>
+				)}
 			</a>
 		</li>
 	);
@@ -165,19 +255,28 @@ export function SidebarProject({
 	const collapsed = useSidebarCollapsed();
 	const chevron = open ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" />;
 	const showChildren = open && !collapsed && children !== undefined;
+	const projectClass = [
+		"hb-sidebar-project flex min-w-0 flex-col",
+		// The project you're in reads as the heading of the sessions under it: its folder a step brighter too.
+		current ? "hb-sidebar-project-current [&_.hb-sidebar-project-icon]:text-muted" : undefined,
+		selected ? "hb-sidebar-project-selected" : undefined,
+	]
+		.filter(Boolean)
+		.join(" ");
 	return (
-		<li
-			className={`hb-sidebar-project${current ? " hb-sidebar-project-current" : ""}${selected ? " hb-sidebar-project-selected" : ""}`}
-		>
-			<div className="hb-sidebar-project-row">
+		<li className={projectClass}>
+			{/* The row is the hover group for the link's text and the action. */}
+			<div
+				className={`hb-sidebar-project-row group/project flex min-h-control-lg min-w-0 items-center rounded-control ${selected ? "bg-selected" : "hover:bg-hover"}`}
+			>
 				{onToggle === undefined ? (
-					<span className="hb-sidebar-project-toggle" aria-hidden="true">
+					<span className={projectToggle} aria-hidden="true">
 						{chevron}
 					</span>
 				) : (
 					<button
 						type="button"
-						className="hb-sidebar-project-toggle hb-focusable"
+						className={`${projectToggle} hb-focusable cursor-pointer hover:bg-active hover:text-fg`}
 						aria-expanded={open}
 						aria-label={open ? `Hide ${name}'s sessions` : `Show ${name}'s sessions`}
 						title={open ? "Hide sessions" : "Show sessions"}
@@ -187,22 +286,36 @@ export function SidebarProject({
 					</button>
 				)}
 				<a
-					className="hb-sidebar-project-main hb-focusable"
+					className={`${projectMain} ${current ? "font-medium text-fg" : "text-muted group-hover/project:text-fg"}`}
 					href={href}
 					aria-current={selected ? "page" : undefined}
 					title={collapsed ? name : undefined}
 				>
-					<span className="hb-sidebar-project-mark" aria-hidden="true">
+					<span
+						className={`${projectMark} ${current ? "border-faint text-fg" : "border-border-strong text-muted"}`}
+						aria-hidden="true"
+					>
 						{monogram(name)}
 					</span>
-					<span className="hb-sidebar-project-icon">
+					{/* On the label's capitals, as SidebarItem's icon. Hidden on the rail, where the mark stands in. */}
+					<span className="hb-sidebar-project-icon inline-flex h-[calc(1em*var(--hb-leading-tight))] min-w-icon-md flex-none items-baseline justify-center leading-tight text-faint before:content-['\200b'] group-data-collapsed/sidebar:hidden [&>.hb-icon-md]:-mt-icon-md [&>.hb-icon-md]:translate-y-(--hb-on-cap)">
 						<FolderIcon />
 					</span>
-					<span className="hb-sidebar-project-name">{name}</span>
+					<span className="hb-sidebar-project-name min-w-0 flex-1 truncate group-data-collapsed/sidebar:sr-only">
+						{name}
+					</span>
 				</a>
-				{action === undefined ? null : <span className="hb-sidebar-project-action">{action}</span>}
+				{/* The action shows with the pointer or focus on the row, on a touch screen, and always on the current
+				    project. Hidden on the rail. */}
+				{action === undefined ? null : (
+					<span
+						className={`hb-sidebar-project-action inline-flex flex-none items-center pr-1 group-data-collapsed/sidebar:hidden ${current ? "visible" : "invisible group-focus-within/project:visible group-hover/project:visible pointer-coarse:visible"}`}
+					>
+						{action}
+					</span>
+				)}
 			</div>
-			{showChildren ? <div className="hb-sidebar-project-children">{children}</div> : null}
+			{showChildren ? <div className={projectChildren}>{children}</div> : null}
 		</li>
 	);
 }

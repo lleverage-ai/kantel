@@ -77,7 +77,11 @@ describe("vault page fixtures", () => {
 
 	it("keeps Approve disabled until a code is picked for a write, route grant or paste, and not for a read", async () => {
 		const scenario = await createVaultScenario();
-		const approveButton = (html: string) => html.match(/<button[^>]*>(?:(?!<\/button>).)*with passkey/s)?.[0] ?? "";
+		// The button's opening tag only: its class list has `disabled:` variants, so look for the attribute itself.
+		const approveButton = (html: string) =>
+			(html.match(/<button[^>]*>(?:(?!<\/button>).)*with passkey/s)?.[0] ?? "")
+				.match(/^<button[^>]*>/)?.[0]
+				.replace(/class="[^"]*"/, "") ?? "";
 		for (const state of ["proposed", "route", "secret"] as const) {
 			const request = await scenario.load(scenario.proposals[state]);
 			expect(request.codeRequired, state).toBe(true);

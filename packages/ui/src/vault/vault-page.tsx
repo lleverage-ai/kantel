@@ -3,7 +3,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { SegmentedControl, TextField } from "../primitives/controls.tsx";
-import { FormActions, FormField, FormLayout, PageHeader } from "../primitives/form-layout.tsx";
+import { FormActions, FormField, FormLayout, formInline, PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge, timeLeft } from "../primitives/format.ts";
 import {
 	AlertIcon,
@@ -52,7 +52,6 @@ import {
 	type VaultRequest,
 	type Viewer,
 } from "./vault-page-model.ts";
-import "../primitives/button.css";
 import "../session/vault-approval-card.css";
 import "./vault-page.css";
 
@@ -217,8 +216,8 @@ function EditableTerms({
 	return (
 		// Editable terms: settings rows (FormField, inline), the label and its Proposed or Narrowed tag beside each value
 		// or control, on one pair of tracks so the values line up. A read-only value sits on the control's line. 12px apart:
-		// `!` because the form's own gap (primitives/form-layout.css) is unlayered and would beat a utility; drop it once
-		// FormLayout is on utilities.
+		// `!` because FormLayout sets its own gap with a utility on the same element, and two utilities for one property
+		// are ordered by Tailwind's sort, not by which comes later in the class.
 		<FormLayout className="gap-3!">
 			<Term label="Host">
 				<code className="hb-mono hb-selectable">{route.host}</code>
@@ -227,7 +226,7 @@ function EditableTerms({
 				{locked ? (
 					<code className="hb-mono hb-selectable">{route.methods.join(", ")}</code>
 				) : (
-					<fieldset className="hb-form-inline m-0 min-w-0 border-0 p-0">
+					<fieldset className={`${formInline} m-0 border-0 p-0`}>
 						<legend className="hb-sr-only">Methods the agent may use</legend>
 						{route.methods.map((method) => (
 							<label key={method} className="inline-flex min-h-control-sm cursor-pointer items-center gap-1.5">

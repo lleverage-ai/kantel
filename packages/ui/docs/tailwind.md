@@ -105,12 +105,33 @@ and linked-turn rules (`:has()`, keyframes on other components' elements) and it
 (session/markdown.css, also used by documents and notes); the assistant message's child spacing and streaming caret;
 the working row's shimmer; the generated-image placeholder's sweep; the tool group's reach into `Disclosure`'s
 parts; a browsing run's margin on the live view under it; the code view's caret; the terminal's ANSI colours; and syntax.css.
+The primitives, presented files, workspace and workbench followed.
+
+## The primitives
+
+The primitives are utilities on their own elements. Where other code writes a primitive's markup itself (a link that
+looks like a button, a hand-written disclosure, a placeholder of another shape), it takes the primitive's classes
+rather than its hook names: `buttonClass(variant, size)` and `buttonLabelClass` (button.tsx), `disclosureClass`,
+`disclosureSummaryClass`, `disclosureChevronClass(open)` and `disclosureTextClass`, and `inputClass` (controls.tsx),
+`skeletonClass` (spinner.tsx), `fileTileClass` (file-icons.ts), and `presentedFilesClass` and
+`presentedFilesItemClass` (presented/presented-file-card.tsx). A bare `hb-button` class styles nothing now.
+
+Their .css files keep only what utilities can't say, each with a comment:
+
+- shared hooks other components wear on their own elements: `.hb-icon`, `.hb-icon-sm` and `.hb-icon-md` (icons.css,
+  on raw lucide-react icons too), and the six `.hb-status-<status>` classes that set `--hb-status-current` and
+  `--hb-status-current-soft` (status.css);
+- container queries at sizes the theme has no name for (breadcrumbs.css, form-layout.css);
+- state on another component's elements (sidebar.css reaching `SignedInAs` on the rail) and `:has()` rules
+  (list-row.css);
+- an `\200b` `content` the scanner can't take from a class (list-row.css, menu.css), an `@property` (surface.css),
+  and a focus ring that must beat base.css's unlayered `.hb-focusable` rule (controls.css);
+- HTML the component doesn't write: docx-preview's pages (presented/office-view.css).
 
 What caught those conversions out:
 
-- Utilities are in a layer, and the primitives' CSS isn't yet, so a primitive's own rule beats a utility on the
-  same property. Override it with `!` (`gap-3!` on a `FormLayout`) and say why beside it, until the primitive is
-  converted too.
+- Utilities are in a layer, and the primitives' remaining CSS isn't, so one of its rules (an icon's size, say) beats
+  a utility on the same property. Override it with `!` (`size-control-xs!` on an icon) and say why beside it.
 - A page-wide `p { margin: 0 }` used to win over rendered Markdown's paragraph spacing; as `[&_p]:m-0` it is in
   the utilities layer and no longer does, so Markdown inside the page keeps its own spacing.
 - With preflight off, `border-dashed` (or `-dotted`) styles every side, and the others show at the browser's

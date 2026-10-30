@@ -24,9 +24,8 @@ const address = "font-medium text-fg";
 /** The field and its button, full width. */
 const form = "flex flex-col gap-3 [&>.hb-button]:w-full";
 /**
- * The code: larger and monospace, so six digits read as one code and a mistyped one is easy to see. `!` because the
- * input's own rules (primitives/controls.css) are unlayered and would beat a utility; drop it once TextField is on
- * utilities.
+ * The code: larger and monospace, so six digits read as one code and a mistyped one is easy to see. `!` so these
+ * replace the input's own height, font and colour utilities (primitives/controls.tsx) outright.
  */
 const codeField =
 	"[&_.hb-input]:h-control-lg! [&_.hb-input]:font-mono! [&_.hb-input]:text-lg! [&_.hb-input]:tabular-nums [&_.hb-input:disabled]:text-disabled!";

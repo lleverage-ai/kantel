@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type { IconProps } from "./icons.tsx";
 import { FileCodeIcon, FileImageIcon, FileSpreadsheetIcon, FileTextIcon, LucideFileIcon } from "./lucide.tsx";
-import "./file-tile.css";
 
 // Which Lucide file icon, and which short type, an attachment card shows for a file, as Claude's file cards do.
 
@@ -44,6 +43,15 @@ const ICONS: { readonly [kind in FileTypeKind]: (props: IconProps) => ReactNode 
 	image: FileImageIcon,
 	other: LucideFileIcon,
 };
+
+/**
+ * A file type's icon tile: the icon on a square tinted for its kind (`fileTypeKind`, on the tile as `data-kind`), the
+ * same tints as a presented file's card: PDFs red, documents accent, code working blue, sheets green, images amber,
+ * anything else neutral. The renderer sets the tile's size and shape (session/attachment-card.tsx). Keeps the
+ * `hb-file-tile` hook, which attachment-card.css selects to tint a failed upload's tile red.
+ */
+export const fileTileClass =
+	"hb-file-tile bg-active text-muted data-[kind=pdf]:bg-status-error-soft data-[kind=pdf]:text-status-error data-[kind=text]:bg-accent-soft data-[kind=text]:text-accent-text data-[kind=code]:bg-status-working-soft data-[kind=code]:text-status-working data-[kind=sheet]:bg-status-done-soft data-[kind=sheet]:text-status-done data-[kind=image]:bg-status-waiting-soft data-[kind=image]:text-status-waiting";
 
 /** The Lucide icon for a file, by its type and name: file-image, file-spreadsheet, file-code, file-text or file. */
 export function fileTypeIcon(file: { name: string; type: string }): (props: IconProps) => ReactNode {

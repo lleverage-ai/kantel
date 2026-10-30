@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { DraftDocumentCard, PresentedFileCard } from "../presented/presented-file-card.tsx";
+import { DraftDocumentCard, PresentedFileCard, presentedFilesItemClass } from "../presented/presented-file-card.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Sheet } from "../workbench/specimen.tsx";
 import { type ShareAccess, type ShareControls, SharePopover, type ShareState } from "./share-popover.tsx";
-import "../workspace/stories.css";
 
 // The document itself opens in the file preview (preview/file-preview.stories.tsx: Streaming document).
 export default { title: "Documents/Sharing" } satisfies StoryDefault;
@@ -70,10 +69,10 @@ export const Cards: Story = () => (
 		intro="While it streams the answer shows the card the document becomes; once saved, the call's card opens it in the panel."
 	>
 		<Column>
-			<div className="hb-presented-files-item">
+			<div className={presentedFilesItemClass}>
 				<DraftDocumentCard title="The colours of the rainbow" />
 			</div>
-			<div className="hb-presented-files-item">
+			<div className={presentedFilesItemClass}>
 				<PresentedFileCard
 					file={{
 						workspaceId: "ws-1",

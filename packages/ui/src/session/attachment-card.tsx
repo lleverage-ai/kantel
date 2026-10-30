@@ -1,6 +1,6 @@
 import type { UserAttachment } from "@harbour/protocol";
 import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
-import { fileTypeIcon, fileTypeKind, fileTypeLabel } from "../primitives/file-icons.ts";
+import { fileTileClass, fileTypeIcon, fileTypeKind, fileTypeLabel } from "../primitives/file-icons.ts";
 import { formatBytes } from "../workspace/workspace-model.ts";
 
 // An attached file as a card, after Claude's: one size whatever its name, the image itself for a photo and the file
@@ -91,9 +91,8 @@ export function AttachmentCard({
 		<>
 			{shown === undefined ? (
 				<span
-					// `!` when failed: .hb-file-tile's tint by kind (primitives/file-tile.css) is unlayered and would beat a plain
-					// utility.
-					className={`${tile} hb-file-tile grid ${failed ? "bg-status-error-soft! text-status-error!" : ""}`}
+					// `!` when failed: fileTileClass tints by kind with `data-[kind=…]:` utilities, which would beat a plain one.
+					className={`${tile} ${fileTileClass} grid ${failed ? "bg-status-error-soft! text-status-error!" : ""}`}
 					data-kind={fileTypeKind(file)}
 				>
 					<Icon />
