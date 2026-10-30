@@ -91,6 +91,11 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean; busyPa
 							width: 1280,
 							height: 800,
 							frames: 30,
+							navigations: [
+								{ atMs: 0, url: "about:blank" },
+								{ atMs: 1_200, url: "https://example.com/", title: "Example Domain" },
+								{ atMs: "soon", url: "https://bad.example/" },
+							],
 							chunks: chunks.map((chunk) => ({
 								name: chunk.name,
 								index: chunk.index,
@@ -268,6 +273,11 @@ describe("browser coordinator", () => {
 		expect(manifest).toMatchObject({ status: "complete", browserId: "b1" });
 		expect(manifest.pages[0]).toMatchObject({ pageId: "1", startMs: 500, width: 1280 });
 		expect(manifest.pages[0]!.chunks.map((chunk) => chunk.index)).toEqual([0, 1]);
+		// Where the page went, for the replay's address bar: only well-formed entries are kept.
+		expect(manifest.pages[0]!.navigations).toEqual([
+			{ atMs: 0, url: "about:blank" },
+			{ atMs: 1_200, url: "https://example.com/", title: "Example Domain" },
+		]);
 		const profileKey = blobKeys.context("ctx-1");
 		expect(t.blobs.keys()).toContain(profileKey);
 		expect(await t.sealer.open(profileKey, t.blobs.raw(profileKey))).toEqual(new Uint8Array([9, 9, 9]));

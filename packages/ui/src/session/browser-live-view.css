@@ -1,10 +1,12 @@
-/* A browser's live view, under the newest call on it, in line with the call's label as its screenshots are. The frame
-   takes the transcript column's width, at the browser's own shape (brwsr's default 1280 by 720), so the page is
-   readable without opening it. */
+/* A browser's view, in a browser window (browser-window.css): in the session's browser panel, or in the transcript under
+   the newest call on it, in line with the call's label as its screenshots are. The page keeps the browser's own shape
+   (Harbour's browsers start at 1280 by 800) at the width it has. An embedded view page draws its own address bar, and a
+   replay its controls, inside the window: the page's box is that much taller, so the page itself keeps its shape. */
 .hb-browser-live {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-3);
+	--hb-browser-live-shape: 10 / 16;
+	--hb-browser-live-bar: calc(var(--hb-control-sm) + var(--hb-space-3) * 2 + var(--hb-hairline));
+	--hb-browser-live-player: calc(var(--hb-control-sm) + var(--hb-space-2) * 2 + var(--hb-hairline));
+	container-type: inline-size;
 	min-width: 0;
 	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
 }
@@ -13,90 +15,79 @@
 	margin-left: var(--hb-space-7);
 }
 
-/* Ended: the screenshot under it already has its own margin, in line with the caption. */
-.hb-browser-live-ended {
-	gap: 0;
-}
-
-.hb-browser-live-ended > .hb-tool-images {
-	margin-left: 0;
-}
-
-.hb-browser-live-caption {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--hb-space-4);
-	min-width: 0;
-	margin: 0;
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	line-height: var(--hb-leading-tight);
-}
-
-.hb-browser-live-note {
-	color: var(--hb-text-faint);
-}
-
-.hb-browser-live-wait {
-	display: inline-flex;
-	align-items: center;
-	gap: var(--hb-space-3);
-}
-
-/* A whole control's height, so it is a touch target of its own beside the tool rows above it. */
-.hb-browser-live-open {
-	display: inline-flex;
-	align-items: center;
-	min-height: var(--hb-control-xs);
-	margin-left: auto;
-	border-radius: var(--hb-radius-xs);
-	color: var(--hb-text-muted);
-	text-decoration: underline;
-	text-decoration-color: var(--hb-border-strong);
-	text-underline-offset: var(--hb-space-1);
-}
-
-.hb-browser-live-open:hover {
-	color: var(--hb-text);
-}
-
-.hb-browser-live-frame {
+/* The page's box: the browser's shape at the window's width. */
+.hb-browser-live-page {
 	position: relative;
 	width: 100%;
-	aspect-ratio: 16 / 9;
+	height: calc(100cqi * var(--hb-browser-live-shape));
 	overflow: hidden;
-	border: var(--hb-hairline) solid var(--hb-border-strong);
-	border-radius: var(--hb-radius-control);
-	background: var(--hb-sunken);
 }
 
-.hb-browser-live-frame > iframe,
-.hb-browser-live-frame > img {
+.hb-browser-live-embed {
+	height: calc(100cqi * var(--hb-browser-live-shape) + var(--hb-browser-live-bar));
+}
+
+.hb-browser-live-embed-replay {
+	height: calc(100cqi * var(--hb-browser-live-shape) + var(--hb-browser-live-bar) + var(--hb-browser-live-player));
+}
+
+.hb-browser-live-page > iframe,
+.hb-browser-live-page > img {
 	display: block;
 	width: 100%;
 	height: 100%;
 	border: 0;
 }
 
-.hb-browser-live-frame > img {
+.hb-browser-live-page > img {
 	object-fit: contain;
 }
 
-/* A replay's frame has its player's controls under the page: a little taller than the page's own shape. */
-.hb-browser-live-frame-replay {
-	aspect-ratio: auto;
-	height: calc(100cqi * 9 / 16 + var(--hb-space-11));
-	min-height: calc(var(--hb-space-11) * 4);
+/* Connecting, closed, and a replay waiting behind Play: the last screenshot, dimmed. */
+.hb-browser-live-connecting .hb-browser-live-page > img,
+.hb-browser-live-ended .hb-browser-live-page > img,
+.hb-browser-live-page > .hb-browser-live-poster {
+	opacity: 0.55;
 }
 
-.hb-browser-live-replay {
-	container-type: inline-size;
+.hb-browser-live-caption {
+	position: absolute;
+	inset: auto var(--hb-space-4) var(--hb-space-4);
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading-tight);
+	text-align: center;
 }
 
-/* A replay waits behind Play, over the last screenshot (dimmed), until a person asks for it. */
-.hb-browser-live-frame-replay > img {
-	opacity: 0.6;
+.hb-browser-live-note {
+	color: var(--hb-text-faint);
+	white-space: nowrap;
+}
+
+.hb-browser-live-wait {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--hb-space-3);
+	white-space: nowrap;
+}
+
+/* A whole control's height, so it is a touch target of its own. */
+.hb-browser-live-open {
+	display: inline-grid;
+	place-items: center;
+	width: var(--hb-control-xs);
+	height: var(--hb-control-xs);
+	border-radius: var(--hb-radius-sm);
+	color: var(--hb-text-muted);
+	transition:
+		background-color var(--hb-duration-fast) var(--hb-ease),
+		color var(--hb-duration-fast) var(--hb-ease);
+}
+
+.hb-browser-live-open:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
 }
 
 .hb-browser-live-play {
@@ -106,7 +97,9 @@
 	transform: translate(-50%, -50%);
 }
 
-/* Connecting: the last screenshot, dimmed, holds the frame's place until the live page arrives. */
-.hb-browser-live-connecting .hb-browser-live-frame > img {
-	opacity: 0.6;
+/* Narrow: the tabs keep the room; "Watch only" goes first. */
+@container (max-width: 30rem) {
+	.hb-browser-live .hb-browser-live-note {
+		display: none;
+	}
 }

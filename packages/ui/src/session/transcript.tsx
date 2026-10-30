@@ -19,8 +19,9 @@ import { ChevronDownIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import type { BrowserEntryState } from "./browser-entry.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
-import { BrowsingGroup } from "./browsing-group.tsx";
+import { BrowsingGroup, browsingBrowser } from "./browsing-group.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
@@ -158,6 +159,8 @@ type RowProps = {
 	onShowBrowser: ((browserSessionId: string) => void) | undefined;
 	/** The browser the host's panel shows; given to browsing rows only, so other rows never re-render for it. */
 	shownBrowser: string | undefined;
+	/** Where a browsing row's browser is, as the host knows; given to browsing rows only. */
+	browserState: BrowserEntryState | undefined;
 	/** A browsing row that may still take steps: its turn is working and only the agent's words follow it. */
 	browsingActive: boolean;
 	report: (id: string, phase: RowRenderPhase) => void;
@@ -186,6 +189,16 @@ function ReadOnlySubagent({ item }: { item: ToolItem }) {
 	);
 }
 
+/** Where a browsing row's browser is, from the host's states: `undefined` for other rows and unknown browsers. */
+function rowBrowserState(
+	row: TranscriptRow,
+	states: ReadonlyMap<string, BrowserEntryState> | undefined,
+): BrowserEntryState | undefined {
+	if (states === undefined || row.kind !== "browsing") return undefined;
+	const browser = browsingBrowser(row.items.filter((step): step is ToolItem => step.kind === "tool"));
+	return browser === undefined ? undefined : states.get(browser);
+}
+
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
 export type RowRenderPhase = "mount" | "update";
 
@@ -198,6 +211,7 @@ function rowBody(
 	renderBrowserView: RowProps["renderBrowserView"],
 	onShowBrowser: RowProps["onShowBrowser"],
 	shownBrowser: RowProps["shownBrowser"],
+	browserState: RowProps["browserState"],
 	browsingActive: RowProps["browsingActive"],
 	highlight: RowProps["highlight"],
 	onOpenFile: RowProps["onOpenFile"],
@@ -217,6 +231,7 @@ function rowBody(
 				{...(views === undefined ? {} : { browserView: views })}
 				{...(onShowBrowser === undefined ? {} : { onShowBrowser })}
 				{...(shownBrowser === undefined ? {} : { shownBrowser })}
+				{...(browserState === undefined ? {} : { browserState })}
 				{...(highlight === undefined ? {} : { focus: highlight })}
 				active={browsingActive}
 			/>
@@ -269,6 +284,7 @@ const Row = memo(function Row({
 	renderBrowserView,
 	onShowBrowser,
 	shownBrowser,
+	browserState,
 	browsingActive,
 	report,
 	highlight,
@@ -298,6 +314,7 @@ const Row = memo(function Row({
 					renderBrowserView,
 					onShowBrowser,
 					shownBrowser,
+					browserState,
 					browsingActive,
 					highlight,
 					onOpenFile,
@@ -361,8 +378,13 @@ export type TranscriptProps = {
 	renderBrowserView?: (slot: BrowserViewSlot) => ReactNode;
 	/** Shows a browser in the host's panel: a browsing run's "Show browser" calls it with the browser the run used. */
 	onShowBrowser?: (browserSessionId: string) => void;
-	/** The browser the host's panel shows now: a browsing run on it has no "Show browser". */
+	/** The browser the host's panel shows now: a browsing run on it says it is showing. */
 	shownBrowser?: string;
+	/**
+	 * Where each browser is, by its id, as the host knows (live, or closed with a replay): what a browsing run's card
+	 * says and offers. Browsers not in it go by their calls.
+	 */
+	browserStates?: ReadonlyMap<string, BrowserEntryState>;
 	/**
 	 * A browser session to show (an audit link's `#browser=<id>`): once its view is in the loaded transcript, the list
 	 * scrolls to it, once per ID, and stops following the end.
@@ -439,6 +461,7 @@ export function Transcript({
 	renderBrowserView,
 	onShowBrowser,
 	shownBrowser,
+	browserStates,
 	focusBrowser,
 	onOpenFile,
 	openFile,
@@ -936,6 +959,7 @@ export function Transcript({
 									renderBrowserView={renderBrowserView}
 									onShowBrowser={onShowBrowser}
 									shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
+									browserState={rowBrowserState(entry, browserStates)}
 									browsingActive={entry.id === activeBrowsing}
 									report={report}
 									highlight={highlight?.row === entry.id ? highlight.item : undefined}

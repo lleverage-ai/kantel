@@ -234,6 +234,11 @@ export {
 	type ComposerAccessOption,
 	chosenAccess,
 } from "./session/access-picker.tsx";
+export {
+	BrowserEntry,
+	type BrowserEntryProps,
+	type BrowserEntryState,
+} from "./session/browser-entry.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export {
@@ -247,9 +252,29 @@ export {
 } from "./session/browser-live-view.tsx";
 export { BrowserPanel, type BrowserPanelProps } from "./session/browser-panel.tsx";
 export {
+	addressParts,
+	BrowserAddressBar,
+	type BrowserAddressBarProps,
+	type BrowserPageInfo,
+	type BrowserTabItem,
+	BrowserTabs,
+	type BrowserTabsProps,
+	BrowserWindow,
+	type BrowserWindowProps,
+	PageIcon,
+	PlayerControls,
+	type PlayerControlsProps,
+	pageHost,
+	pageLabel,
+	playerClock,
+	Scrubber,
+	type ScrubberProps,
+} from "./session/browser-window.tsx";
+export {
 	BrowsingGroup,
 	type BrowsingGroupProps,
 	browsingBrowser,
+	browsingPage,
 	browsingSummary,
 } from "./session/browsing-group.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
@@ -379,8 +404,10 @@ export {
 } from "./session/transcript.tsx";
 export {
 	activeBrowsingRow,
+	type BrowserCallPage,
 	type BrowserViewSlot,
 	type BrowsingStep,
+	browserPageOf,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,

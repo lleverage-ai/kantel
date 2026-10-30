@@ -1,5 +1,6 @@
 import type { Cursor, DraftDocument, PresentedFile, ToolItem } from "@harbour/protocol";
 import {
+	type BrowserEntryState,
 	BrowserLiveView,
 	BrowserPanel,
 	type BrowserViewSlot,
@@ -16,7 +17,7 @@ import {
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
@@ -27,7 +28,7 @@ import {
 	type SessionActions,
 	transcriptWorking,
 } from "./actions.ts";
-import type { BrowserLiveStore } from "./browser-live.ts";
+import type { BrowserLive, BrowserLiveStore } from "./browser-live.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
 import { DocumentView, DraftDocumentView } from "./document-view.tsx";
 import { createAutoOpen } from "./presented.ts";
@@ -75,7 +76,62 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 }
 
 /** A browser's live view, as the session screen's link store has it. */
-function LiveBrowser({ store, slot }: { store: BrowserLiveStore | undefined; slot: BrowserViewSlot }) {
+type Tabs = ((end: ReactNode) => ReactNode) | undefined;
+
+/** A browser's view as the timeline's card says it: live, a replay, closed with none, or not known yet. */
+export function entryStateOf(view: BrowserLive): BrowserEntryState | undefined {
+	if (view.status === "ended") return "ended";
+	if (view.status !== "live") return undefined;
+	return view.source?.mode === "replay" ? "replay" : "live";
+}
+
+/**
+ * Where each of the session's browsers is, from the live store, for the timeline's cards: asking for each browser's
+ * link (not its stream, which only an open view costs). `undefined` with no store (a recorded session).
+ */
+function useBrowserStates(
+	store: BrowserLiveStore | undefined,
+	browsers: readonly BrowserViewSlot[],
+): ReadonlyMap<string, BrowserEntryState> | undefined {
+	const ids = browsers.map((slot) => slot.browserSessionId).join("\n");
+	const subscribe = useCallback(
+		(listener: () => void) => {
+			if (store === undefined || ids === "") return () => {};
+			const stops = ids.split("\n").map((id) => store.subscribe(id, listener));
+			return () => {
+				for (const stop of stops) stop();
+			};
+		},
+		[store, ids],
+	);
+	const key = useSyncExternalStore(subscribe, () =>
+		store === undefined || ids === ""
+			? ""
+			: ids
+					.split("\n")
+					.map((id) => `${id}\t${entryStateOf(store.get(id)) ?? ""}`)
+					.join("\n"),
+	);
+	return useMemo(() => {
+		if (store === undefined) return undefined;
+		const states = new Map<string, BrowserEntryState>();
+		for (const line of key === "" ? [] : key.split("\n")) {
+			const [id, state] = line.split("\t");
+			if (id !== undefined && state !== undefined && state !== "") states.set(id, state as BrowserEntryState);
+		}
+		return states;
+	}, [store, key]);
+}
+
+function LiveBrowser({
+	store,
+	slot,
+	tabs,
+}: {
+	store: BrowserLiveStore | undefined;
+	slot: BrowserViewSlot;
+	tabs: Tabs;
+}) {
 	if (store === undefined) {
 		// No live links here (a recorded session): the last screenshot the browser left.
 		return (
@@ -83,13 +139,15 @@ function LiveBrowser({ store, slot }: { store: BrowserLiveStore | undefined; slo
 				status="unavailable"
 				item={slot.item}
 				{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+				{...(slot.page === undefined ? {} : { page: slot.page })}
+				{...(tabs === undefined ? {} : { tabs })}
 			/>
 		);
 	}
-	return <StoredBrowser store={store} slot={slot} />;
+	return <StoredBrowser store={store} slot={slot} tabs={tabs} />;
 }
 
-function StoredBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserViewSlot }) {
+function StoredBrowser({ store, slot, tabs }: { store: BrowserLiveStore; slot: BrowserViewSlot; tabs: Tabs }) {
 	const id = slot.browserSessionId;
 	const live = useSyncExternalStore(
 		useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]),
@@ -101,6 +159,8 @@ function StoredBrowser({ store, slot }: { store: BrowserLiveStore; slot: Browser
 			item={slot.item}
 			{...(live.source === undefined ? {} : { source: live.source })}
 			{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+			{...(slot.page === undefined ? {} : { page: slot.page })}
+			{...(tabs === undefined ? {} : { tabs })}
 			onEnded={() => store.disconnected(id)}
 		/>
 	);
@@ -206,6 +266,7 @@ export function SessionView({
 		[showPanelBrowser],
 	);
 	const browserPanel = panelOpen ? undefined : browser.panel;
+	const browserStates = useBrowserStates(browserLive, browser.browsers);
 	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
 	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
@@ -298,6 +359,7 @@ export function SessionView({
 							messageActions={messageActions}
 							onShowBrowser={onShowBrowser}
 							{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+							{...(browserStates === undefined ? {} : { browserStates })}
 							{...(renderSubagent === undefined ? {} : { renderSubagent })}
 							{...(turn === undefined ? {} : { turn })}
 							{...(focusBrowser === undefined ? {} : { focusBrowser })}
@@ -408,10 +470,14 @@ export function SessionView({
 						{...(browser.step === undefined ? {} : { step: browser.step })}
 						running={browser.running}
 						onHide={browser.hide}
-						{...(browser.picker === undefined ? {} : { picker: browser.picker })}
 					>
 						{/* Keyed by browser: the same browser's view stays mounted, so its live page never reloads. */}
-						<LiveBrowser key={browserPanel.browserSessionId} store={browserLive} slot={browserPanel} />
+						<LiveBrowser
+							key={browserPanel.browserSessionId}
+							store={browserLive}
+							slot={browserPanel}
+							tabs={browser.tabs}
+						/>
 					</BrowserPanel>
 				)}
 			</div>

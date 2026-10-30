@@ -1,5 +1,5 @@
-import { Button, Spinner } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrowserAddressBar, type BrowserTabItem, BrowserTabs, PlayerControls, Spinner, StatusLabel } from "@harbour/ui";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameAt, framePainter, type ReplayFrame, readFrames } from "./mkv.ts";
 import "./viewer.css";
 
@@ -14,6 +14,12 @@ import "./viewer.css";
 //   sending, and the canvas's size goes up so frames are no bigger than shown. A watch-only link sends nothing else.
 // - Replay: the recording's manifest, then its chunks (JPEG frames in Matroska, `mkv.ts`) as playing reaches them, each
 //   frame drawn at its time. Pages (tabs) play one after another, on one timeline from the browser's start.
+//
+// Both are drawn as a browser window's inside: an address bar with the page's URL over the page, and a replay's
+// controls under it. Live, the URL (and each tab's title) comes from the live socket's `targets` messages, sent as the
+// browser's pages navigate. In a replay it comes from the navigations the recording kept with each page
+// (`RecordingPage.navigations`), so the bar follows the page as the replay plays. Tabs show when the browser has more
+// than one page, or when the page is opened on its own rather than inside the console's window, which draws its own.
 //
 // When the browser has gone or the link has run out, it tells its parent: the end message Harbour's view links carry
 // (`HARBOUR_VIEW_END_MESSAGE` in @harbour/browser's runtime), brwsr's own `browserbase-disconnected`, which the
@@ -53,7 +59,54 @@ type Manifest = {
 		readonly width: number;
 		readonly height: number;
 		readonly chunks: readonly { readonly index: number; readonly startMs: number; readonly durationMs: number }[];
+		/** Where the page went, by its own clock: kept by recordings since the browser image recorded them. */
+		readonly navigations?: readonly Navigation[];
 	}[];
+};
+
+/** The page went to `url` (and its title became `title`) `atMs` into its recording. */
+export type Navigation = { readonly atMs: number; readonly url: string; readonly title?: string };
+
+/** A page target as the live socket's `targets` message names it. */
+type LiveTarget = { readonly id: string; readonly url?: string; readonly title?: string };
+
+/** The page's address and title at a point on its own clock: its last navigation at or before it. */
+export function pageAt(navigations: readonly Navigation[] | undefined, pageMs: number): Navigation | undefined {
+	let found: Navigation | undefined;
+	for (const navigation of navigations ?? []) {
+		if (navigation.atMs > pageMs) break;
+		found = navigation;
+	}
+	return found ?? navigations?.[0];
+}
+
+/** The live socket's page targets, from a `targets` message: `undefined` for any other message. */
+export function liveTargets(
+	message: unknown,
+): { readonly active: string | undefined; readonly targets: readonly LiveTarget[] } | undefined {
+	if (typeof message !== "object" || message === null) return undefined;
+	const { type, active, targets } = message as { type?: unknown; active?: unknown; targets?: unknown };
+	if (type !== "targets" || !Array.isArray(targets)) return undefined;
+	const out: LiveTarget[] = [];
+	for (const target of targets) {
+		const { id, url, title } = (target ?? {}) as { id?: unknown; url?: unknown; title?: unknown };
+		if (typeof id !== "string") continue;
+		out.push({
+			id,
+			...(typeof url === "string" ? { url } : {}),
+			...(typeof title === "string" ? { title } : {}),
+		});
+	}
+	return { active: typeof active === "string" ? active : undefined, targets: out };
+}
+
+/** The page is on its own (a new tab, a link), not inside another page's window: it draws its own tabs. */
+const topLevel = () => {
+	try {
+		return window.parent === window;
+	} catch {
+		return false;
+	}
 };
 
 /** The view in `/browser/<browser>#<token>`, or `undefined` on any other page. */
@@ -105,29 +158,65 @@ export function BrowserViewerPage({ view }: { view: View }) {
 
 	if (info === undefined) {
 		return (
-			<main className="hb-viewer hb-viewer-wait">
+			<main className="hb-viewer hb-app hb-viewer-wait">
 				<Spinner size="sm" /> Opening the browser
 			</main>
 		);
 	}
 	if (info === "expired") {
 		return (
-			<main className="hb-viewer">
+			<main className="hb-viewer hb-app">
 				<Ended title="This link has expired" detail="Ask for a new one where you found it." />
 			</main>
 		);
 	}
 	if (info === "failed") {
 		return (
-			<main className="hb-viewer">
+			<main className="hb-viewer hb-app">
 				<Ended title="Harbour didn't answer" detail="Check your connection and reload the page." />
 			</main>
 		);
 	}
 	return (
-		<main className="hb-viewer">
+		<main className="hb-viewer hb-app">
 			{info.mode === "live" ? <LiveView view={view} info={info} /> : <Replay view={view} />}
 		</main>
+	);
+}
+
+/**
+ * The window's top: tabs, when there are several pages or the page is on its own, then the address bar. `status` goes
+ * at the tabs' end, or the bar's when there are no tabs.
+ */
+function Chrome({
+	tabs,
+	active,
+	url,
+	status,
+	onSelect,
+}: {
+	tabs: readonly BrowserTabItem[];
+	active: string | undefined;
+	url: string | undefined;
+	status: ReactNode;
+	onSelect?: (id: string) => void;
+}) {
+	// Inside the console's window, which says whether it is live and draws the session's tabs, only the page's own.
+	const own = topLevel();
+	const showTabs = tabs.length > 1 || own;
+	return (
+		<div className="hb-viewer-chrome">
+			{showTabs ? (
+				<BrowserTabs
+					label="The browser's tabs"
+					tabs={tabs.length === 0 ? [{ id: "page" }] : tabs}
+					active={tabs.length === 0 ? "page" : active}
+					{...(own ? { end: status } : {})}
+					{...(onSelect === undefined ? {} : { onSelect })}
+				/>
+			) : null}
+			<BrowserAddressBar url={url} placeholder="No page yet" />
+		</div>
 	);
 }
 
@@ -137,6 +226,11 @@ function LiveView({ view, info }: { view: View; info: ViewInfo }) {
 	const [state, setState] = useState<"connecting" | "live" | "ended" | "expired">(
 		info.status === "running" ? "connecting" : "ended",
 	);
+	// The browser's pages and the one on view, as the socket's `targets` messages say: each navigation sends them again.
+	const [pages, setPages] = useState<{ active: string | undefined; targets: readonly LiveTarget[] }>({
+		active: undefined,
+		targets: [],
+	});
 	useEffect(() => {
 		if (state === "ended" || state === "expired") tellParent();
 	}, [state]);
@@ -187,6 +281,8 @@ function LiveView({ view, info }: { view: View; info: ViewInfo }) {
 			try {
 				const message = JSON.parse(event.data) as { type?: string };
 				if (message.type === "ended") setState("ended");
+				const targets = liveTargets(message);
+				if (targets !== undefined) setPages(targets);
 			} catch {}
 		};
 		ws.onclose = (event) => setState(event.code === 4001 ? "expired" : "ended");
@@ -205,8 +301,21 @@ function LiveView({ view, info }: { view: View; info: ViewInfo }) {
 		};
 	}, [view, info.status]);
 
+	const active = pages.targets.find((target) => target.id === pages.active) ?? pages.targets[0];
 	return (
 		<div className="hb-viewer-live" data-state={state}>
+			<Chrome
+				tabs={pages.targets}
+				active={active?.id}
+				url={active?.url}
+				status={
+					state === "live" || state === "connecting" ? (
+						<StatusLabel status="working">Live</StatusLabel>
+					) : (
+						<StatusLabel status="idle">Closed</StatusLabel>
+					)
+				}
+			/>
 			<div className="hb-viewer-stage" ref={stage}>
 				<canvas ref={canvas} className="hb-viewer-canvas" aria-label="The browser, live" />
 				{state === "connecting" ? (
@@ -233,6 +342,8 @@ type Track = {
 	readonly from: number;
 	readonly to: number;
 	readonly chunks: readonly { readonly index: number; readonly startMs: number; readonly durationMs: number }[];
+	/** Where the page went, by its own clock, oldest first. */
+	readonly navigations: readonly Navigation[];
 };
 
 /** The replay's timeline: each page after the last, without the gaps between them (an idle browser shows nothing). */
@@ -242,16 +353,14 @@ export function timeline(manifest: Manifest): { readonly tracks: readonly Track[
 	for (const page of [...manifest.pages].sort((a, b) => a.startMs - b.startMs)) {
 		if (page.chunks.length === 0) continue;
 		const length = Math.max(page.durationMs, ...page.chunks.map((chunk) => chunk.startMs + chunk.durationMs));
-		tracks.push({ pageId: page.pageId, from: at, to: at + length, chunks: page.chunks });
+		const navigations = (page.navigations ?? [])
+			.filter((each) => typeof each?.url === "string" && Number.isFinite(each.atMs))
+			.sort((a, b) => a.atMs - b.atMs);
+		tracks.push({ pageId: page.pageId, from: at, to: at + length, chunks: page.chunks, navigations });
 		at += length;
 	}
 	return { tracks, duration: at };
 }
-
-const clock = (ms: number) => {
-	const seconds = Math.max(0, Math.floor(ms / 1000));
-	return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-};
 
 function Replay({ view }: { view: View }) {
 	const [manifest, setManifest] = useState<Manifest | "expired" | "none" | "failed" | undefined>();
@@ -394,8 +503,30 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 
 	if (tracks.length === 0) return <Ended title="Nothing was recorded" detail="The browser showed no page." />;
 	const current = locate(position);
+	// Each page as a tab, at where it is at this point of the replay: the one playing now at the position, the others
+	// where they were last (or will be first).
+	const tabs = tracks.map((track): BrowserTabItem => {
+		const at = track === current?.track ? current.pageMs : position < track.from ? 0 : Number.POSITIVE_INFINITY;
+		const page = pageAt(track.navigations, at);
+		return {
+			id: track.pageId,
+			...(page === undefined ? {} : { url: page.url }),
+			...(page?.title === undefined ? {} : { title: page.title }),
+		};
+	});
+	const here = current === undefined ? undefined : tabs[tracks.indexOf(current.track)];
 	return (
 		<div className="hb-viewer-replay">
+			<Chrome
+				tabs={tabs}
+				active={current?.track.pageId}
+				url={here?.url}
+				status={<StatusLabel status="idle">Replay</StatusLabel>}
+				onSelect={(pageId) => {
+					const track = tracks.find((each) => each.pageId === pageId);
+					if (track !== undefined) setPosition(track.from);
+				}}
+			/>
 			<div className="hb-viewer-stage">
 				<canvas ref={canvas} className="hb-viewer-canvas" aria-label="The browser, replayed" />
 				{waiting ? (
@@ -404,43 +535,18 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 					</div>
 				) : null}
 			</div>
-			<div className="hb-viewer-controls">
-				<Button
-					size="sm"
-					variant="secondary"
-					onClick={() => {
-						if (position >= duration) setPosition(0);
-						setPlaying((on) => !on);
-					}}
-				>
-					{playing ? "Pause" : position >= duration ? "Replay" : "Play"}
-				</Button>
-				<input
-					className="hb-viewer-scrub"
-					type="range"
-					min={0}
-					max={Math.max(1, Math.round(duration))}
-					value={Math.round(position)}
-					aria-label="Position in the recording"
-					onChange={(event) => setPosition(Number(event.currentTarget.value))}
-				/>
-				<span className="hb-viewer-time">
-					{clock(position)} / {clock(duration)}
-				</span>
-				<Button
-					size="sm"
-					variant="ghost"
-					aria-label="Playback speed"
-					onClick={() => setSpeed((now) => SPEEDS[(SPEEDS.indexOf(now) + 1) % SPEEDS.length]!)}
-				>
-					{speed}×
-				</Button>
-				{tracks.length > 1 && current !== undefined ? (
-					<span className="hb-viewer-time">
-						Tab {tracks.indexOf(current.track) + 1} of {tracks.length}
-					</span>
-				) : null}
-			</div>
+			<PlayerControls
+				playing={playing}
+				position={position}
+				duration={duration}
+				onToggle={() => {
+					if (position >= duration) setPosition(0);
+					setPlaying((on) => !on);
+				}}
+				onSeek={setPosition}
+				speed={speed}
+				onSpeed={() => setSpeed((now) => SPEEDS[(SPEEDS.indexOf(now) + 1) % SPEEDS.length]!)}
+			/>
 		</div>
 	);
 }

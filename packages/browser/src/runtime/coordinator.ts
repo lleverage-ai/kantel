@@ -84,6 +84,32 @@ export interface RecordingPage {
 	readonly height: number;
 	readonly frames: number;
 	readonly chunks: readonly RecordingChunk[];
+	/**
+	 * Where the page went, by its own clock (ms from its first frame), oldest first: for a replay's address bar. Absent
+	 * from recordings made before the browser image kept them.
+	 */
+	readonly navigations?: readonly RecordingNavigation[];
+}
+
+export interface RecordingNavigation {
+	readonly atMs: number;
+	readonly url: string;
+	readonly title?: string;
+}
+
+/** A page listing's navigations, as the browser's recorder sends them: bounded, and only well-formed entries. */
+export function recordingNavigations(raw: unknown): RecordingNavigation[] {
+	const out: RecordingNavigation[] = [];
+	for (const item of Array.isArray(raw) ? raw.slice(0, 200) : []) {
+		const { atMs, url, title } = record(item);
+		if (typeof atMs !== "number" || !Number.isFinite(atMs) || typeof url !== "string" || url === "") continue;
+		out.push({
+			atMs: Math.max(0, Math.round(atMs)),
+			url: url.slice(0, 2048),
+			...(typeof title === "string" && title !== "" ? { title: title.slice(0, 300) } : {}),
+		});
+	}
+	return out;
 }
 
 export interface RecordingManifest {
@@ -439,7 +465,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 				changed = true;
 			}
 			chunks.sort((a, b) => a.index - b.index);
-			const page: RecordingPage = {
+			let page: RecordingPage = {
 				pageId,
 				startMs: Math.max(0, lp.startedAt - state.startedAt),
 				durationMs: Number(lp.durationMs) || 0,
@@ -448,6 +474,8 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 				frames: Number(lp.frames) || 0,
 				chunks,
 			};
+			const navigations = recordingNavigations(lp.navigations);
+			if (navigations.length > 0) page = { ...page, navigations };
 			if (JSON.stringify(before) !== JSON.stringify(page)) changed = true;
 			pages.set(pageId, page);
 		}
