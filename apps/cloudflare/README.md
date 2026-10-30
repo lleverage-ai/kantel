@@ -120,8 +120,7 @@ With the `HARBOUR_BRWSR_API_KEY` Worker secret (a brwsr project key), the defaul
 
 Under `wrangler dev --env dev`, put `HARBOUR_BRWSR_API_KEY` in `apps/cloudflare/.dev.vars` (ignored by git). With no
 model gateway, a message `browse <url>` makes the dev model ask for a browser, open the URL once you allow it and
-take a screenshot (`src/dev-browser-model.ts`). If the console's dev server leaves a session on Connecting, open it
-with `?transport=sse`.
+take a screenshot (`src/dev-browser-model.ts`).
 
 ## Code mode
 
