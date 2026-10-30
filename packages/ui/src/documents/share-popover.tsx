@@ -279,8 +279,16 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 		window.addEventListener("resize", measure);
 		return () => window.removeEventListener("resize", measure);
 	}, []);
+	// As it closes, focus goes back to what opened it, unless the person has moved it elsewhere (clicked outside).
 	useEffect(() => {
-		ref.current?.querySelector<HTMLElement>(".hb-share-close")?.focus();
+		const popover = ref.current;
+		const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		popover?.querySelector<HTMLElement>(".hb-share-close")?.focus();
+		return () => {
+			const active = document.activeElement;
+			const lost = active === null || active === document.body || (popover?.contains(active) ?? false);
+			if (lost && opener?.isConnected === true) opener.focus();
+		};
 	}, []);
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
