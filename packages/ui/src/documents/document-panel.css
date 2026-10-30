@@ -25,7 +25,7 @@
 /* The page's type: the transcript's Markdown, set larger, as a document. Rendered HTML, so plain CSS. */
 .hb-doc-prose,
 .hb-doc-streaming .hb-markdown {
-	padding-top: var(--hb-space-8);
+	padding-top: var(--hb-step-5);
 	font-size: var(--hb-doc-text);
 	line-height: var(--hb-leading-prose);
 	outline: none;
@@ -33,7 +33,7 @@
 
 .hb-doc-prose h1,
 .hb-doc-streaming .hb-markdown h1 {
-	margin: var(--hb-space-9) 0 var(--hb-space-5);
+	margin: var(--hb-step-6) 0 var(--hb-step-2_5);
 	font-size: var(--hb-doc-h1);
 	font-weight: var(--hb-weight-strong);
 	line-height: var(--hb-leading-tight);
@@ -41,7 +41,7 @@
 
 .hb-doc-prose h2,
 .hb-doc-streaming .hb-markdown h2 {
-	margin: var(--hb-space-9) 0 var(--hb-space-4);
+	margin: var(--hb-step-6) 0 var(--hb-step-2);
 	font-size: var(--hb-doc-h2);
 	font-weight: var(--hb-weight-strong);
 	line-height: var(--hb-leading-tight);
@@ -49,7 +49,7 @@
 
 .hb-doc-prose h3,
 .hb-doc-streaming .hb-markdown h3 {
-	margin: var(--hb-space-8) 0 var(--hb-space-3);
+	margin: var(--hb-step-5) 0 var(--hb-step-1_5);
 	font-size: var(--hb-doc-h3);
 	font-weight: var(--hb-weight-strong);
 	line-height: var(--hb-leading-tight);
@@ -81,9 +81,9 @@
 .hb-doc-prose .column-resize-handle {
 	position: absolute;
 	top: 0;
-	right: calc(var(--hb-space-1) * -1);
+	right: calc(var(--hb-step-0_5) * -1);
 	bottom: 0;
-	width: var(--hb-space-2);
+	width: var(--hb-step-1);
 	background: var(--hb-accent);
 	pointer-events: none;
 }

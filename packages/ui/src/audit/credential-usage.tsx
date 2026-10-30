@@ -82,7 +82,7 @@ export function CredentialUsagePanel({
 
 	return (
 		<section
-			className="flex flex-col gap-2.5 rounded-panel border border-border bg-panel p-3"
+			className="flex flex-col gap-within rounded-panel border border-border bg-panel p-pad-card"
 			aria-labelledby="hb-audit-usage-title"
 		>
 			<h2

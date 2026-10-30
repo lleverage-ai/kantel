@@ -52,7 +52,7 @@ const rowToggle =
 	"hb-focusable inline-flex size-control-xs cursor-pointer items-center justify-center self-center rounded-sm border-0 bg-transparent p-0 text-faint hover:bg-hover hover:text-fg";
 /** Under the toggle's column on a desktop, so the details line up with the time. */
 const rowDetails =
-	"flex flex-col gap-2 pr-3 pb-2.5 pl-[calc(var(--hb-control-xs)+var(--hb-space-3)+var(--hb-space-4))] max-sm:pl-3";
+	"flex flex-col gap-2 pr-3 pb-2.5 pl-[calc(var(--hb-control-xs)+var(--hb-step-1_5)+var(--hb-step-2))] max-sm:pl-3";
 const dt = "text-muted";
 const dd = "hb-mono m-0 wrap-anywhere";
 

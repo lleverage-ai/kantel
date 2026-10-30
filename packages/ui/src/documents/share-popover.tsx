@@ -82,7 +82,8 @@ const who = "flex min-w-0 flex-1 flex-col gap-0.5";
 const name = "truncate leading-tight";
 const secondary = "truncate text-sm leading-tight text-muted";
 const heading = "m-0 text-sm font-regular text-muted";
-const section = "flex flex-col gap-2.5";
+/** A heading over its people or setting: one block, so within-block spacing (docs/spacing.md). */
+const section = "flex flex-col gap-within";
 
 function GeneralAccess({ access, onChange }: { access: ShareAccess; onChange: (access: ShareAccess) => void }) {
 	const id = useId();
@@ -213,7 +214,7 @@ function ShareTab({
 				</form>
 				<section className={section} aria-label="People with access">
 					<h3 className={heading}>People with access</h3>
-					<ul className="m-0 flex list-none flex-col gap-2.5 p-0">
+					<ul className="m-0 flex list-none flex-col gap-within p-0">
 						<li className="flex min-w-0 items-center gap-3">
 							<span className={`${mark} rounded-full bg-status-done-soft text-status-done`} aria-hidden="true">
 								{initials(share.owner.name)}
@@ -345,7 +346,7 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 		<div
 			ref={ref}
 			// --hb-share-room: the trigger's right edge from the viewport's left, measured as it opens, less a gutter.
-			className="hb-share-popover absolute top-[calc(100%+var(--hb-space-3))] right-0 z-(--hb-z-overlay) flex w-[min(var(--hb-share-width),calc(var(--hb-share-room,100vw)_-_var(--hb-space-6)))] flex-col rounded-bubble bg-raised text-left text-md text-fg shadow-float"
+			className="hb-share-popover absolute top-[calc(100%+var(--hb-step-1_5))] right-0 z-(--hb-z-overlay) flex w-[min(var(--hb-share-width),calc(var(--hb-share-room,100vw)_-_var(--hb-step-3)))] flex-col rounded-bubble bg-raised text-left text-md text-fg shadow-float"
 			role="dialog"
 			aria-labelledby={titleId}
 		>
