@@ -35,32 +35,36 @@ export interface TestDatabaseKind {
 const SLOW_FIXTURE_TIMEOUT_MS = 30_000;
 
 /**
- * A data directory fresh from initdb, made once per test file (module) and loaded by every PGlite `open` after.
- * initdb is most of a PGlite open's cost: 3–5 s on a loaded host, against about 0.5 s to load the 40 MB template. Each
- * open still gets a database of its own, empty and in memory; the template is a tarball, never a shared directory.
+ * The data directory of the first PGlite opened in this test file (module), dumped fresh from initdb before anything
+ * ran on it, for every `open` after to load. initdb is most of a PGlite open's cost: 3–5 s on a loaded host, against
+ * about 0.5 s to load the 40 MB template. Each open still gets a database of its own, empty and in memory: the template
+ * is a tarball, never a shared directory.
  */
 let pgliteTemplate: Promise<Blob> | undefined;
 
-function pgliteDataDirTemplate(): Promise<Blob> {
-	pgliteTemplate ??= (async () => {
-		const database = await PGlite.create();
-		try {
-			return await database.dumpDataDir("none");
-		} finally {
-			await database.close();
-		}
-	})().catch((error: unknown) => {
-		pgliteTemplate = undefined;
-		throw error;
+async function openPglite(): Promise<PGlite> {
+	if (pgliteTemplate !== undefined) return PGlite.create({ loadDataDir: await pgliteTemplate });
+	const created = PGlite.create();
+	const template = created.then((database) => database.dumpDataDir("none"));
+	pgliteTemplate = template;
+	template.catch(() => {
+		if (pgliteTemplate === template) pgliteTemplate = undefined;
 	});
-	return pgliteTemplate;
+	const database = await created;
+	try {
+		await template;
+	} catch (error) {
+		await database.close();
+		throw error;
+	}
+	return database;
 }
 
 export const pgliteDatabase: TestDatabaseKind = {
 	name: "Postgres (PGlite)",
 	testTimeoutMs: SLOW_FIXTURE_TIMEOUT_MS,
 	async open() {
-		const database = await PGlite.create({ loadDataDir: await pgliteDataDirTemplate() });
+		const database = await openPglite();
 		return { driver: postgresTransactionalDriver(database), close: () => database.close() };
 	},
 };

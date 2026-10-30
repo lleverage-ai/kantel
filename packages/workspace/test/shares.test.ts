@@ -52,7 +52,8 @@ for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
 				audit: deps.audit,
 				clock: deps.clock,
 			});
-		});
+			// The suite's `timeout` covers its tests but not its hooks, and this hook opens the database.
+		}, kind.testTimeoutMs);
 		afterEach(async () => {
 			await database.close();
 		});
