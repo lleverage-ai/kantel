@@ -27,11 +27,14 @@ import type {
 	ContainerWarmed,
 	SandboxContainer,
 } from "./container-backend.ts";
+import { startContainer } from "./sandbox-start.ts";
 
 const PORT = 8080;
 /** How long a container waits for a call before it stops. A warm-up on typing covers coming back later. */
 const INACTIVITY_MS = 10 * 60_000;
 const READY_TIMEOUT_MS = 60_000;
+/** How long a start keeps asking for an instance while Cloudflare has none free (src/sandbox-start.ts). */
+const INSTANCE_WAIT_MS = 20_000;
 const ENTRYPOINT = ["bun", "/opt/harbour/agent.ts"];
 /**
  * The agent's own environment. The image's HOME is /workspace (the self-hosted tier's), where Bun would keep its
@@ -52,6 +55,15 @@ const fenceKey = (leaseId: string) => `fence:${leaseId}`;
 
 export class HarbourSandboxBase extends DurableObject implements SandboxContainer {
 	#queue: Promise<unknown> = Promise.resolve();
+
+	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
+		super(ctx, env);
+		// An object that restarts (a deploy) starts without its container's inactivity timeout, and without one Cloudflare
+		// stops a running container as soon as the object is idle: set it again, as for a new start.
+		const container = ctx.container;
+		if (container?.running === true)
+			void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(INACTIVITY_MS));
+	}
 
 	#serial<T>(work: () => Promise<T>): Promise<T> {
 		const next = this.#queue.then(work, work);
@@ -131,8 +143,11 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 			await this.ctx.storage.put(fenceKey(args.leaseId), "ended" satisfies Fence);
 			const owner = await this.ctx.storage.get<Owner>("owner");
 			if (owner?.leaseId !== args.leaseId) return;
-			// An expired lease is never committed: its working copy goes. A released one stays, warm, for the next lease.
-			if (args.discard && this.#running()) await this.#post("/reset");
+			// An expired lease is never committed: its working copy goes, and so does the container. The lease went 15
+			// minutes without a command, past the 10-minute inactivity stop, so a container still running then (one whose
+			// object restarted without its timeout, say) stops here rather than running on reset. A released lease's
+			// container stays, warm, for the next lease.
+			if (args.discard && this.#running()) await this.#container()?.destroy();
 			await this.ctx.storage.put("owner", { ...owner, leaseId: "" } satisfies Owner);
 		});
 	}
@@ -220,31 +235,16 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 		return {};
 	}
 
-	async #start(container: Container): Promise<Record<string, number>> {
-		const timings: Record<string, number> = {};
-		let at = performance.now();
-		container.start({ enableInternet: false, entrypoint: ENTRYPOINT, env: AGENT_ENV });
-		this.ctx.waitUntil(
-			container
-				.monitor()
-				.catch((error) => console.error(JSON.stringify({ message: "sandbox container exited", error: String(error) }))),
-		);
-		await container.setInactivityTimeout(INACTIVITY_MS);
-		timings["container.start"] = round(performance.now() - at);
-		at = performance.now();
-		const port = container.getTcpPort(PORT);
-		for (let attempt = 0; ; attempt++) {
-			try {
-				const response = await port.fetch("http://sandbox/health");
-				if (response.ok) break;
-			} catch {
-				// Not listening yet.
-			}
-			if (performance.now() - at > READY_TIMEOUT_MS) throw new Error("the sandbox container did not start in 60 s");
-			await new Promise((resolve) => setTimeout(resolve, attempt < 40 ? 50 : 250));
-		}
-		timings["container.ready"] = round(performance.now() - at);
-		return timings;
+	#start(container: Container): Promise<Record<string, number>> {
+		// No `monitor()`: a pending one keeps this object busy for up to 15 minutes, which holds off the inactivity
+		// timeout (src/sandbox-start.ts).
+		return startContainer(container, {
+			startup: { enableInternet: false, entrypoint: ENTRYPOINT, env: AGENT_ENV },
+			port: PORT,
+			inactivityMs: INACTIVITY_MS,
+			readyTimeoutMs: READY_TIMEOUT_MS,
+			instanceWaitMs: INSTANCE_WAIT_MS,
+		});
 	}
 
 	async #get(path: string): Promise<Response> {
