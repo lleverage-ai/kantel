@@ -6,6 +6,7 @@ import {
 	KEYS_PATH,
 	MEMBERS_PATH,
 	memoryPath,
+	modelsPath,
 	NEW_SCHEDULE_PATH,
 	newSessionPath,
 	parseRoute,
@@ -48,6 +49,7 @@ describe("routes", () => {
 	it("parses a project's new session page", () => {
 		expect(newSessionPath("my project")).toBe("/projects/my%20project/new");
 		expect(parseRoute(newSessionPath("my project"))).toEqual({ name: "new-session", projectId: "my project" });
+		expect(parseRoute(modelsPath("my project"))).toEqual({ name: "models", projectId: "my project" });
 		expect(parseRoute("/projects/sal/new/extra")).toMatchObject({ name: "not-found" });
 	});
 

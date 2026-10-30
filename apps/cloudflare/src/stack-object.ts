@@ -38,7 +38,7 @@ import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } fro
 import { createGateway, type Gateway } from "./gateway.ts";
 import type { IsolatePort } from "./isolate/runner.ts";
 import type { Placement } from "./measure.ts";
-import { cpaKey, createGatewayModels, defaultModel, type ModelsVars } from "./models.ts";
+import { cpaKey, createGatewayModels, defaultModel, imageModel, type ModelsVars } from "./models.ts";
 import { type RecallVars, recallRendererFrom } from "./recall-renderer.ts";
 import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
@@ -299,20 +299,28 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 
 	/**
 	 * Sessions on the model gateway when the Worker has the `MODELS` binding and CPA's key; `undefined` (the echo model)
-	 * otherwise. Throws (`invalid`) on a bad `HARBOUR_DEFAULT_MODEL`.
+	 * otherwise. Throws (`invalid`) on a bad `HARBOUR_DEFAULT_MODEL` or
+	 * `HARBOUR_IMAGE_MODEL`.
 	 */
-	protected stackModels(): StackOptions["models"] {
+	/** How the gateway reaches CPA: the `MODELS` VPC service. The dev entry point can stand a fake in. */
+	protected modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
 		const upstream = this.env.MODELS;
+		return upstream === undefined ? undefined : (request) => upstream.fetch(request);
+	}
+
+	protected stackModels(): StackOptions["models"] {
+		const upstream = this.modelsUpstream();
 		if (upstream === undefined || cpaKey(this.env) === undefined) {
 			console.warn("harbour: no MODELS binding or HARBOUR_CPA_API_KEY; sessions run on the echo model");
 			return undefined;
 		}
 		const modelId = defaultModel(this.env);
+		const imageModelId = imageModel(this.env);
 		const vault = namedObject(this.env.VAULTS, VAULT_NAME, this.env) as unknown as VaultRpc;
 		return ({ audit, clock, usage }) =>
 			createGatewayModels({
 				...(usage === undefined ? {} : { usage }),
-				upstream: (request) => upstream.fetch(request),
+				upstream,
 				vault: {
 					cpaItem: () => vault.cpaItem(),
 					// An AbortSignal can't cross RPC, so the read goes without one: it is one call to the vault object.
@@ -322,6 +330,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				audit,
 				clock,
 				modelId,
+				...(imageModelId === undefined ? {} : { imageModelId }),
 			});
 	}
 
