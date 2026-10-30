@@ -59,6 +59,43 @@ describe("createProjectAccess", () => {
 		expect(await allows(as(parent), { sessionId: "sess-child", needed: "viewer" })).toBe(false);
 	});
 
+	it("lets only the user, an organisation-wide service and the user's own sessions' agents through a user owner", async () => {
+		const { deps, owner, reader, ci, parent, as, allows } = setUp();
+		const mine = { kind: "human", userId: "mine" } as const;
+		const host = { kind: "service", serviceId: "host" } as const;
+		deps.tenancy.bind(mine, ORG, "viewer", "proj-a");
+		deps.tenancy.bind(host, ORG, "admin");
+		const inProject = deps.tenancy.session({
+			id: "sess-mine",
+			organisationId: ORG,
+			projectId: "proj-a",
+			agentId: "m",
+			userId: "mine",
+		});
+		const inOrganisation = deps.tenancy.session({ id: "sess-org", organisationId: ORG, agentId: "o", userId: "mine" });
+		const user = { userId: "mine" };
+		// The user, with no organisation-wide role at all; never another person, the organisation's admin included.
+		expect(await allows(as(mine), { ...user, needed: "admin" })).toBe(true);
+		expect(await allows(as(owner), { ...user, needed: "viewer" })).toBe(false);
+		expect(await allows(as(reader), { ...user, needed: "viewer" })).toBe(false);
+		// A project the check names still needs the role there.
+		expect(await allows(as(mine), { ...user, projectId: "proj-a", needed: "viewer" })).toBe(true);
+		expect(await allows(as(mine), { ...user, projectId: "proj-a", needed: "operator" })).toBe(false);
+		// A service needs the role across the organisation.
+		expect(await allows(as(host), { ...user, needed: "admin" })).toBe(true);
+		expect(await allows(as(ci), { ...user, needed: "viewer" })).toBe(false);
+		// An agent through a session that works for the user, in a project or the organisation, as an operator at most.
+		expect(await allows(as(inProject), { ...user, needed: "operator" })).toBe(true);
+		expect(await allows(as(inOrganisation), { ...user, needed: "operator" })).toBe(true);
+		expect(await allows(as(inOrganisation), { ...user, sessionId: "sess-org", needed: "operator" })).toBe(true);
+		expect(await allows(as(inProject), { ...user, needed: "admin" })).toBe(false);
+		expect(await allows(as(inOrganisation), { ...user, sessionId: "sess-mine", needed: "viewer" })).toBe(false);
+		expect(await allows(as(inOrganisation), { ...user, projectId: "proj-a", needed: "viewer" })).toBe(false);
+		expect(await allows(as(parent), { ...user, needed: "viewer" })).toBe(false);
+		deps.tenancy.close("sess-org");
+		expect(await allows(as(inOrganisation), { ...user, needed: "viewer" })).toBe(false);
+	});
+
 	it("refuses with one generic forbidden and audits it once, with no secret", async () => {
 		const { deps, reader, as } = setUp();
 		const refusal = deps.access.require(as(reader), {

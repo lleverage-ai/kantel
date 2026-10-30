@@ -31,6 +31,7 @@ import {
 	type SystemContext,
 	systemContext,
 	type Timestamp,
+	type UserId,
 } from "@harbour/contracts";
 
 export type ExpectLike = (actual: unknown, message?: string) => unknown;
@@ -205,6 +206,8 @@ export class TenancyFixture {
 		readonly projectId?: ProjectId;
 		readonly agentId: AgentId;
 		readonly parentSessionId?: SessionId;
+		/** The person the session works for (`SessionRecord.userId`). */
+		readonly userId?: UserId;
 	}): Actor {
 		const now = this.#clock.now();
 		this.#sessions.set(input.id, {
@@ -213,6 +216,7 @@ export class TenancyFixture {
 			...(input.projectId === undefined ? {} : { projectId: input.projectId }),
 			agentId: input.agentId,
 			...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
+			...(input.userId === undefined ? {} : { userId: input.userId }),
 			status: "idle",
 			labels: {},
 			createdBy: { kind: "system", component: "conformance" },

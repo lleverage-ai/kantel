@@ -87,6 +87,7 @@ async function itemFor(vault: VaultPageApi, ctx: CallContext, proposal: Proposal
 			name: item.name,
 			...(item.description === undefined ? {} : { description: item.description }),
 			injection: `${item.injection.header}: ${item.injection.template}`,
+			...(item.owner.kind === "user" ? { personalTo: item.owner.userId } : {}),
 		};
 	} catch (error) {
 		if (isHarbourError(error, "forbidden") || isHarbourError(error, "not_found")) return undefined;

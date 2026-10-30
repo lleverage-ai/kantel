@@ -152,8 +152,11 @@ contract). From this PR it is its user's:
   every decision; without project access, or without the request's agent and session, it is never injected. The
   organisation's ceiling still bounds every route. A model connector never reads one.
 - **Unchanged.** Grants stay the session's records (project operators may still stop one), new secrets proposed by an
-  agent are still the organisation's or the project's, and the 49 existing vault cases are unchanged. Storage needs
+  agent are still the organisation's or the project's, and the existing vault cases are unchanged. Storage needs
   no migration: the owner is in each item's JSON, and the row's organisation column is the user's organisation.
+- **Console.** Items are made by host apps (no console screen creates one), so the console change is on the approval
+  page: a request for a personal item carries a "Your personal item" badge for its owner ("Personal item" for anyone
+  else, who sees it read-only), and the fixture gains an open proposal for one.
 
 With the sharing primitive (docs/design/sharing.md in that stack), `ResourceCheck.owner` of kind `user` is the same
 owner. Its owner rule should take this one: an agent passes `use` through a session that works for the user, and a
@@ -190,6 +193,12 @@ Existing cases are not changed; new ones are added under an `organisation scope:
 - workspace: `/org` reads, with the source checked on every read, and a commit under `/org` refused.
 - rules: a new `registerRulesConformance` suite (writes by owner, agents refused, resolve order, the organisation
   session has no project layer, audit without text).
+- vault, under a `user items:` prefix: only the user or an organisation-wide service makes one, an organisation admin
+  and another person are refused and don't see it listed; agents see and propose for it only through a session working
+  for its user (project or organisation); only its user opens the approval view and decides, a project operator and an
+  organisation admin are refused; egress injects it only for its user's open sessions and never names it in another
+  session's fix, under the ceiling; its policies are its user's to list and revoke; a model connector never reads it.
+  The access unit test covers `AccessCheck.userId` for each actor kind.
 
 The in-memory reference implementations pass all of them; the Cloudflare and self-hosted targets register the same
 suites and must pass unchanged.
@@ -228,7 +237,8 @@ Stacked, each with its base in its description:
 4. `/org` files: the `org-files` source and its workspace conformance cases (taken before prompt rules, being the
    smaller change).
 5. Prompt rules: contract, reference and SQL store, suite, runtime layering, API and console screen.
-6. User-owned vault items, if it fits after review; otherwise a follow-up.
+6. User-owned vault items: `AccessCheck.userId`, the vault's user scope, the `user items:` cases, and the approval
+   page's personal badge.
 
 ## Follow-ups
 
@@ -242,5 +252,6 @@ Out of scope here:
 - Organisation-wide API keys: a key that can act at organisation scope (create organisation sessions, write
   organisation rules) for host apps. Today a key holds roles only on its projects, and #253 is adding key permissions;
   the two should be designed together.
-- User-owned vault items, if not done in PR 6.
+- A personal secret paste: a `secret` proposal that creates an item owned by the session's user, not the
+  organisation or project. Today an agent's new secret is still the organisation's or the project's.
 - Schedules owned by an organisation that start organisation sessions.

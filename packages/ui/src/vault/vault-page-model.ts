@@ -36,6 +36,11 @@ export interface RequestItem {
 	readonly description?: string;
 	/** The header template, such as `Authorization: Bearer {key}`. */
 	readonly injection: string;
+	/**
+	 * The person a user's own (personal) item belongs to. Only that person decides a request for it, and only sessions
+	 * working for them may use it (docs/design/org-scope.md, decision 6).
+	 */
+	readonly personalTo?: string;
 }
 
 /** Everything the vault page shows for one proposal. Built by `loadVaultRequest` from any `Vault`. */

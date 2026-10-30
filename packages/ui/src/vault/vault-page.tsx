@@ -744,6 +744,11 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 						{state === "open" ? "Needs approval" : "Settled"}
 					</Badge>
 					<Badge tone={proposal.kind === "read" ? "neutral" : "accent"}>{kindLabel[proposal.kind]}</Badge>
+					{request.item?.personalTo === undefined ? null : (
+						<Badge tone="neutral">
+							{request.item.personalTo === viewer.userId ? "Your personal item" : "Personal item"}
+						</Badge>
+					)}
 				</div>
 				<h1 id={titleId} className="m-0 text-lg font-strong leading-tight wrap-anywhere">
 					{name} <span className="font-regular text-muted">for</span>{" "}

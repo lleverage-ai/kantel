@@ -1758,12 +1758,242 @@ export function createVaultConformance(options: {
 		}),
 	];
 
+	/**
+	 * User-owned items (docs/design/org-scope.md, decision 6). `user-a` owns the item; `agent-u1` (a project session) and
+	 * `agent-u2` (an organisation session) work for `user-a`, `agent-u3` for `user-b`. `human` is an organisation admin.
+	 */
+	const userA = contextFor(actors.human("user-a"), ORG, PROJECT);
+	const userB = contextFor(actors.human("user-b"), ORG, PROJECT);
+	const hostApp = contextFor(actors.service("host-app"), ORG);
+	const userAgent = contextFor(actors.agent("agent-u1", "session-u1"), ORG, PROJECT);
+	const userOrgAgent = contextFor(actors.agent("agent-u2", "session-u2"), ORG);
+	const otherUserAgent = contextFor(actors.agent("agent-u3", "session-u3"), ORG, PROJECT);
+	const MAIL_HOST = "gmail.googleapis.com";
+
+	function seedUsers(deps: ConformanceDeps): void {
+		deps.tenancy.bind(userA.actor, ORG, "operator", PROJECT);
+		deps.tenancy.bind(userB.actor, ORG, "operator", PROJECT);
+		deps.tenancy.bind(hostApp.actor, ORG, "admin");
+		const session = { organisationId: ORG, projectId: PROJECT };
+		deps.tenancy.session({ ...session, id: "session-u1", agentId: "agent-u1", userId: "user-a" });
+		deps.tenancy.session({ id: "session-u2", organisationId: ORG, agentId: "agent-u2", userId: "user-a" });
+		deps.tenancy.session({ ...session, id: "session-u3", agentId: "agent-u3", userId: "user-b" });
+	}
+
+	function putMailToken(vault: Vault, ctx: CallContext = userA, withValue = true): Promise<VaultItem> {
+		return vault.putItem(ctx, {
+			owner: { kind: "user", organisationId: ORG, userId: "user-a" },
+			name: "gmail-token",
+			hosts: [MAIL_HOST],
+			injection: { header: "Authorization", template: "Bearer {key}" },
+			...(withValue ? { value: CANARY_SECRET } : {}),
+		});
+	}
+
+	const mailTerms = (itemId: string): ProposalTerms => ({
+		itemId,
+		route: { host: MAIL_HOST, methods: ["GET"], pathPrefix: "/gmail/" },
+		lifetime: { maxUses: 5 },
+		reason: "Read my inbox",
+	});
+
+	const mailEgress = (agentId: string, sessionId: string, projectId?: string): EgressRequest => ({
+		organisationId: ORG,
+		...(projectId === undefined ? {} : { projectId }),
+		agentId,
+		sessionId,
+		method: "GET",
+		url: `https://${MAIL_HOST}/gmail/v1/users/me/messages`,
+	});
+
+	const userTest = (
+		name: string,
+		body: (vault: HarbourVaultUnderTest, deps: ConformanceDeps) => Promise<void>,
+	): ConformanceCase =>
+		test(name, async (vault, deps) => {
+			seedUsers(deps);
+			await body(vault, deps);
+		});
+
+	const userItemCases: ConformanceCase[] = [
+		userTest(
+			"user items: only the user, or a service acting for its users, makes one, and no one else sees it",
+			async (vault, deps) => {
+				const item = await putMailToken(vault);
+				assert.partialDeepEqual(item, { owner: { kind: "user", userId: "user-a" }, hasValue: true });
+				const made = await putMailToken(vault, hostApp, false);
+				assert.partialDeepEqual(made, { owner: { kind: "user", userId: "user-a" }, hasValue: false });
+				for (const [ctx, label] of [
+					[human, "an organisation admin"],
+					[userB, "another person"],
+				] as const) {
+					await assertAccessDenied(assert, deps, putMailToken(vault, ctx), {
+						operation: "vault.putItem",
+						message: `${label} making one`,
+					});
+					await assertAccessDenied(assert, deps, vault.getItem(ctx, item.id), {
+						operation: "vault.getItem",
+						message: `${label} reading one`,
+					});
+					const listed = (await vault.listItems(ctx)).items.map((found) => found.id);
+					assert.ok(!listed.includes(item.id), `${label} doesn't see it listed`);
+				}
+				await assert.rejectsWithCode(putMailToken(vault, userAgent), "forbidden", "an agent never makes one");
+				const blank = vault.putItem(userA, {
+					owner: { kind: "user", organisationId: ORG, userId: " " },
+					name: "nobody's",
+					hosts: [MAIL_HOST],
+					injection: { header: "Authorization", template: "Bearer {key}" },
+				});
+				await assert.rejectsWithCode(blank, "invalid", "a user's item names its user");
+				assert.strictEqual((await vault.getItem(userA, item.id)).id, item.id, "its user reads it");
+				const own = (await vault.listItems(userA)).items.map((found) => found.id);
+				assert.deepEqual(own.sort(), [item.id, made.id].sort(), "its user lists both");
+				assert.strictEqual((await vault.listItems(hostApp)).items.length, 2, "the host app lists them");
+				assert.strictEqual(containsCanary(await vault.listItems(userA)), false, "no read carries the value");
+			},
+		),
+
+		userTest(
+			"user items: an agent sees one and proposes for it only through a session that works for its user, in a project or the organisation",
+			async (vault, deps) => {
+				const item = await putMailToken(vault);
+				for (const ctx of [userAgent, userOrgAgent]) {
+					const listed = (await vault.listItems(ctx)).items.map((found) => found.id);
+					assert.ok(listed.includes(item.id), `${ctx.actor.kind} working for its user sees it`);
+				}
+				for (const ctx of [otherUserAgent, agent]) {
+					const listed = (await vault.listItems(ctx)).items.map((found) => found.id);
+					assert.ok(!listed.includes(item.id), "an agent working for someone else, or no one, doesn't");
+				}
+				const inProject = await vault.propose(userAgent, mailTerms(item.id));
+				assert.partialDeepEqual(inProject, { projectId: PROJECT, requester: { sessionId: "session-u1" } });
+				const inOrganisation = await vault.propose(userOrgAgent, mailTerms(item.id));
+				assert.strictEqual(inOrganisation.projectId, undefined, "an organisation session's proposal has no project");
+				for (const ctx of [otherUserAgent, agent]) {
+					await assertAccessDenied(assert, deps, vault.propose(ctx, mailTerms(item.id)), {
+						operation: "vault.propose",
+						message: "an agent working for someone else proposing for it",
+					});
+				}
+				await assertAccessDenied(assert, deps, vault.propose(userB, mailTerms(item.id)), {
+					operation: "vault.propose",
+					message: "another person proposing for it",
+				});
+			},
+		),
+
+		userTest(
+			"user items: only its user decides a proposal for it, never a project operator or an organisation admin",
+			async (vault, deps) => {
+				const item = await putMailToken(vault);
+				const proposal = await vault.propose(userOrgAgent, mailTerms(item.id));
+				for (const [ctx, label] of [
+					[projectOperator, "a project operator"],
+					[human, "an organisation admin"],
+					[userB, "another person"],
+				] as const) {
+					await assertAccessDenied(assert, deps, vault.approvalView(ctx, proposal.id), {
+						operation: "vault.approvalView",
+						message: `${label} opening the approval view`,
+					});
+					await assertAccessDenied(assert, deps, vault.decide(ctx, approval(proposal)), {
+						operation: "vault.decide",
+						message: `${label} deciding`,
+					});
+				}
+				assert.strictEqual(
+					(await vault.getProposal(userA, proposal.id)).id,
+					proposal.id,
+					"its user reads the proposal",
+				);
+				const view = await vault.approvalView(userA, proposal.id);
+				assert.ok(view.codeChoices.includes(proposal.bindingCode), "its user sees the binding code among the choices");
+				const decision = await vault.decide(userA, approval(proposal));
+				assert.strictEqual(decision.outcome, "approved");
+				const allowed = await vault.decideEgress(WORKER, mailEgress("agent-u2", "session-u2"));
+				assert.partialDeepEqual(allowed, { allow: true, grantId: decision.grantId });
+				assert.strictEqual(allowed.inject?.value, `Bearer ${CANARY_SECRET}`, "the grant injects it");
+			},
+		),
+
+		userTest(
+			"user items: egress injects one only for a session that works for its user, within the ceiling",
+			async (vault, deps) => {
+				const item = await putMailToken(vault);
+				const route = { host: MAIL_HOST, methods: ["GET"] as HttpMethod[], pathPrefix: "/gmail/" };
+				await assertAccessDenied(
+					assert,
+					deps,
+					vault.putPolicy(human, { itemId: item.id, selector: { organisationId: ORG }, route }),
+					{ operation: "vault.putPolicy", message: "an organisation admin setting a policy on it" },
+				);
+				const policy = await vault.putPolicy(userA, { itemId: item.id, selector: { organisationId: ORG }, route });
+				for (const [request, label] of [
+					[mailEgress("agent-u1", "session-u1", PROJECT), "its user's project session"],
+					[mailEgress("agent-u2", "session-u2"), "its user's organisation session"],
+				] as const) {
+					const decision = await vault.decideEgress(WORKER, request);
+					assert.partialDeepEqual(decision, { allow: true, policyId: policy.id }, `${label} is allowed`);
+				}
+				const { sessionId: _session, agentId: _agent, ...anonymous } = mailEgress("agent-u1", "session-u1", PROJECT);
+				for (const [request, label] of [
+					[mailEgress("agent-u3", "session-u3", PROJECT), "another user's session"],
+					[mailEgress("agent-1", "session-1", PROJECT), "a session working for no one"],
+					[mailEgress("agent-2", "session-u1", PROJECT), "another agent claiming the session"],
+					[anonymous, "a request naming no session"],
+				] as const) {
+					const decision = await vault.decideEgress(WORKER, request);
+					assert.strictEqual(decision.allow, false, `${label} is denied`);
+					assert.strictEqual(decision.inject, undefined, `${label} gets no credential`);
+					assert.ok(!JSON.stringify(decision.fix).includes(item.name), `${label}'s fix doesn't name the item`);
+				}
+				deps.tenancy.close("session-u1");
+				const closed = await vault.decideEgress(WORKER, mailEgress("agent-u1", "session-u1", PROJECT));
+				assert.strictEqual(closed.allow, false, "a closed session is denied");
+				await vault.setCeiling(human, [{ host: HOST, methods: ["GET"], pathPrefix: "/" }]);
+				const outside = await vault.decideEgress(WORKER, mailEgress("agent-u2", "session-u2"));
+				assert.partialDeepEqual(outside, { allow: false, fix: { action: "none" } }, "the ceiling still bounds it");
+				assert.strictEqual(containsCanary(deps.audit.events), false, "no audit event carries the value");
+			},
+		),
+
+		userTest("user items: the policies on one are its user's to see and revoke", async (vault, deps) => {
+			const item = await putMailToken(vault);
+			const route = { host: MAIL_HOST, methods: ["GET"] as HttpMethod[], pathPrefix: "/" };
+			const policy = await vault.putPolicy(userA, { itemId: item.id, selector: { organisationId: ORG }, route });
+			const ids = async (ctx: CallContext) => (await vault.listPolicies(ctx)).items.map((found) => found.id);
+			assert.deepEqual(await ids(userA), [policy.id], "its user lists it");
+			assert.deepEqual(await ids(human), [], "an organisation admin doesn't");
+			assert.deepEqual(await ids(userB), [], "another person doesn't");
+			for (const ctx of [human, userB]) {
+				await assertAccessDenied(assert, deps, vault.revokePolicy(ctx, policy.id), {
+					operation: "vault.revokePolicy",
+					message: "someone else revoking it",
+				});
+			}
+			await vault.revokePolicy(userA, policy.id);
+			assert.ok((await vault.listPolicies(userA)).items[0]?.revokedAt !== undefined, "its user revoked it");
+		}),
+
+		userTest("user items: a model connector never reads one", async (vault, deps) => {
+			const item = await vault.putItem(userA, {
+				owner: { kind: "user", organisationId: ORG, userId: "user-a" },
+				name: "my-model-key",
+				hosts: [MODEL_HOST],
+				injection: { header: "Authorization", template: "Bearer {key}" },
+				value: CANARY_SECRET,
+			});
+			await assertConnectorRefused(vault, deps, connectorRequest(item.id), "refused", "a user's item");
+		}),
+	];
+
 	return [
 		...cases,
 		...sessionEndCases,
 		...sessionCredentialCases,
 		...platformAndConnectorCases,
-		...(options.projectAccess === true ? projectAccessCases : []),
+		...(options.projectAccess === true ? [...projectAccessCases, ...userItemCases] : []),
 	];
 }
 

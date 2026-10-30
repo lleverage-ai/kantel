@@ -46,7 +46,9 @@ export type FixtureState =
 	| "denied"
 	| "expired"
 	| "revoked"
-	| "withdrawn";
+	| "withdrawn"
+	/** Open, for Tom's own (personal) item: only Tom decides it. */
+	| "personal";
 
 export const people = {
 	/** Admin across the organisation; the person behind the billing and ops sessions. */
@@ -113,6 +115,19 @@ function fixtureAccess(): ProjectAccess {
 		check: Omit<AccessCheck, "operation" | "subject">,
 	): ProjectId | undefined | false => {
 		const actor = ctx.actor;
+		// A user's own record: that user, or an agent whose own session works for them (docs/design/org-scope.md).
+		if (check.userId !== undefined) {
+			if (actor.kind === "human" && actor.userId !== check.userId) return false;
+			if (actor.kind === "agent") {
+				const own = sessions[actor.sessionId];
+				if (own === undefined || own.agentId !== actor.agentId) return false;
+				if (people[own.person].userId !== check.userId) return false;
+				if (check.projectId === undefined && check.sessionId === undefined) {
+					return roleSatisfies("operator", check.needed) ? undefined : false;
+				}
+			}
+			if (actor.kind === "human" && check.projectId === undefined && check.sessionId === undefined) return undefined;
+		}
 		const session = check.sessionId === undefined ? undefined : sessions[check.sessionId];
 		if (check.sessionId !== undefined && session === undefined) return false;
 		if (session !== undefined && check.projectId !== undefined && session.projectId !== check.projectId) return false;
@@ -274,6 +289,15 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		injection: { header: "X-Admin-Key", template: "{key}" },
 		value: "stg_canary_44d0",
 	});
+	// Tom's own: only Tom, and sessions working for him, see or use it.
+	const calendar = await vault.putItem(admin, {
+		owner: { kind: "user", organisationId: ORGANISATION, userId: people.tom.userId },
+		name: "Google Calendar token",
+		description: "Tom's own calendar.",
+		hosts: ["www.googleapis.com"],
+		injection: { header: "Authorization", template: "Bearer {key}" },
+		value: "ya29_canary_c41e",
+	});
 
 	const at = (offset: number) => clock.set(base + offset);
 	const propose = async (sessionId: SessionId, offset: number, terms: ProposalTerms) => {
@@ -411,6 +435,12 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		lifetime: { ttlMs: HOUR, maxUses: 1 },
 		reason: "To list last week's merged pull requests for the release notes.",
 	});
+	const personal = await propose("ses_ops", -90_000, {
+		itemId: calendar.id,
+		route: route("www.googleapis.com", ["GET"], "/calendar/v3/"),
+		lifetime: { ttlMs: HOUR },
+		reason: "To find a free hour tomorrow for the staging post-mortem.",
+	});
 	const proposed = await propose("ses_billing", -40_000, {
 		itemId: linear.id,
 		route: route("api.linear.app", ["POST"], "/graphql"),
@@ -433,6 +463,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		expired: expired.id,
 		revoked: revoked.id,
 		withdrawn: withdrawn.id,
+		personal: personal.id,
 	};
 
 	const decider = (decision: Decision) =>
