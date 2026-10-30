@@ -444,7 +444,15 @@ export function createCredentialCache(
 		async key(connector, scope, signal) {
 			sweep();
 			const hit = entryOf(connector);
-			if (hit !== undefined) return hit.value;
+			if (hit !== undefined) {
+				// The key is the connector's, not the session's, so a cached one would outlive the session's block or end:
+				// asked of the vault on every hit (a read asks it already).
+				await credentials.assertSessionOpen?.(
+					{ ...GATEWAY_CONTEXT, organisationId: scope.organisationId, ...(signal === undefined ? {} : { signal }) },
+					scope,
+				);
+				return hit.value;
+			}
 			const credential = await credentials.readConnectorCredential(
 				{ ...GATEWAY_CONTEXT, organisationId: scope.organisationId, ...(signal === undefined ? {} : { signal }) },
 				{

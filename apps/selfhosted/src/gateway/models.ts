@@ -291,7 +291,10 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 				createModelGatewayApp({
 					config: modelGatewayConfig(options.cpa, await options.item),
 					tokenKey,
-					credentials: { readConnectorCredential: (ctx, request) => vault().readConnectorCredential(ctx, request) },
+					credentials: {
+						readConnectorCredential: (ctx, request) => vault().readConnectorCredential(ctx, request),
+						assertSessionOpen: (ctx, scope) => vault().assertSessionOpen(ctx, scope),
+					},
 					audit: options.audit,
 					fetch: cpaOnly(options.cpa, options.upstream),
 					...(options.clock === undefined ? {} : { clock: options.clock }),
