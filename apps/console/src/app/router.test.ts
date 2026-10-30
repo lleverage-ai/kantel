@@ -10,6 +10,7 @@ import {
 	modelsPath,
 	NEW_SCHEDULE_PATH,
 	newSessionPath,
+	ONBOARDING_PATH,
 	ORGANISATION_SCOPE,
 	parseRoute,
 	projectPath,
@@ -127,6 +128,12 @@ describe("routes", () => {
 		expect(schedulesPath("sch_1/x")).toBe("/schedules/sch_1%2Fx");
 		expect(parseRoute(schedulesPath("sch_1/x"))).toEqual({ name: "schedules", scheduleId: "sch_1/x" });
 		expect(parseRoute("/schedules/sch_1/runs")).toMatchObject({ name: "not-found" });
+	});
+
+	it("parses onboarding, and nothing under it", () => {
+		expect(ONBOARDING_PATH).toBe("/welcome");
+		expect(parseRoute(ONBOARDING_PATH)).toEqual({ name: "onboarding" });
+		expect(parseRoute("/welcome/models")).toMatchObject({ name: "not-found" });
 	});
 
 	it("parses the rules page, and nothing under it", () => {

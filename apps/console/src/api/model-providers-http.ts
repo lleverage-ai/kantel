@@ -48,8 +48,7 @@ export function createModelProvidersHttp(options: ModelProvidersHttpOptions = {}
 	return {
 		list: async (signal) =>
 			(await api.listModelProviders(signal === undefined ? undefined : { signal })) as ModelProviderList,
-		connectKey: async (providerId, input) =>
-			(await api.connectModelProviderKey(providerId, input)) as ModelProvider,
+		connectKey: async (providerId, input) => (await api.connectModelProviderKey(providerId, input)) as ModelProvider,
 		startSignIn: async (providerId) => (await api.startModelSignIn(providerId)) as ModelSignIn,
 		signInStatus: async (providerId, signInId) => (await api.getModelSignIn(providerId, signInId)) as ModelSignIn,
 		finishSignIn: async (providerId, signInId, redirectUrl) =>

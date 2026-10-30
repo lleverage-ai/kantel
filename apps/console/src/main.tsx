@@ -14,6 +14,7 @@ import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } 
 import { apiKeys } from "./api/keys.ts";
 import { apiMembers, type ConsoleMembers } from "./api/members.ts";
 import { apiModels, type ConsoleModels } from "./api/models-http.ts";
+import { apiOnboarding, type ConsoleOnboardingSeam } from "./api/onboarding-seam.ts";
 import type {
 	ConsoleAgent,
 	ConsoleAudit,
@@ -153,6 +154,7 @@ type Oversight = {
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
 	readonly rules?: ConsoleRules;
+	readonly onboarding?: ConsoleOnboardingSeam;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -187,7 +189,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, sharing, connections, agent, models, rules } = oversight;
+	const { vault, audit, keys, members, schedules, sharing, connections, agent, models, rules, onboarding } = oversight;
 	return (
 		<App
 			client={client}
@@ -202,6 +204,7 @@ function Console({
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
 			{...(rules === undefined ? {} : { rules })}
+			{...(onboarding === undefined ? {} : { onboarding })}
 			onOpen={onOpen}
 		/>
 	);
@@ -368,6 +371,9 @@ function SignedInConsole({
 		};
 		const models = apiModels({ headers: state.headers, onUnauthenticated });
 		const rules = apiRules(state.me, { headers: state.headers, onUnauthenticated });
+		// First-run onboarding (`/v1/onboarding`, `/v1/model-providers`, `/v1/connections`): the root opens it for an admin
+		// while it is active.
+		const onboarding = apiOnboarding(state.me, { headers: state.headers, onUnauthenticated });
 		return {
 			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
 			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
@@ -375,6 +381,7 @@ function SignedInConsole({
 				agent,
 				models,
 				rules,
+				onboarding,
 				...(keys === undefined ? {} : { keys }),
 				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
@@ -411,6 +418,7 @@ function SignedInConsole({
 					agent,
 					models,
 					rules,
+					onboarding,
 					schedules,
 					...(sharing === undefined ? {} : { sharing }),
 					...(connections === undefined ? {} : { connections }),

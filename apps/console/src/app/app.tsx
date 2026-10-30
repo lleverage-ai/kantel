@@ -17,6 +17,7 @@ import {
 	MembersPage,
 	NewSessionRow,
 	Notice,
+	OnboardingPage,
 	PeopleIcon,
 	PlugIcon,
 	PlusIcon,
@@ -31,6 +32,7 @@ import {
 	SidebarSection,
 	SidebarToggle,
 	SignedInAs,
+	SparkIcon,
 	Spinner,
 	VaultIcon,
 } from "@harbour/ui";
@@ -45,6 +47,7 @@ import {
 } from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
 import type { ConsoleModels } from "../api/models-http.ts";
+import { type ConsoleOnboardingSeam, onboardingApi } from "../api/onboarding-seam.ts";
 import type {
 	ConsoleAgent,
 	ConsoleAudit,
@@ -75,6 +78,7 @@ import {
 	modelsPath,
 	navigate,
 	newSessionPath,
+	ONBOARDING_PATH,
 	parseRoute,
 	projectPath,
 	type Route,
@@ -283,6 +287,7 @@ function OrganisationNav({
 	audit,
 	keys,
 	members = false,
+	setup = false,
 }: {
 	route: Route;
 	schedules: boolean;
@@ -293,10 +298,15 @@ function OrganisationNav({
 	audit: boolean;
 	keys: boolean;
 	members?: boolean;
+	/** First-run setup, to open again: for an organisation admin. */
+	setup?: boolean;
 }) {
-	if (!schedules && !sharing && !connections && !rules && !vault && !audit && !keys && !members) return null;
+	if (!schedules && !sharing && !connections && !rules && !vault && !audit && !keys && !members && !setup) return null;
 	return (
 		<SidebarSection label="Organisation">
+			{setup ? (
+				<SidebarItem icon={<SparkIcon />} label="Setup" href={ONBOARDING_PATH} selected={route.name === "onboarding"} />
+			) : null}
 			{schedules ? (
 				<SidebarItem
 					icon={<ClockIcon />}
@@ -381,6 +391,7 @@ export function App({
 	connections,
 	models,
 	rules,
+	onboarding,
 	oversightPending = false,
 	onOpen,
 }: {
@@ -410,6 +421,11 @@ export function App({
 	models?: ConsoleModels;
 	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
 	rules?: ConsoleRules;
+	/**
+	 * First-run onboarding's seam. While the organisation's onboarding is active, the console's root opens it for an
+	 * admin; Setup in the sidebar opens it again later.
+	 */
+	onboarding?: ConsoleOnboardingSeam;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -511,11 +527,35 @@ export function App({
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
 
-	// The home page is the first project.
+	// Whether onboarding is offered: asked once, for an admin. Until it answers the root waits, so a fresh install opens
+	// on onboarding rather than flashing the first project.
+	const [offered, setOffered] = useState<boolean | undefined>(onboarding?.canChange === true ? undefined : false);
 	useEffect(() => {
+		if (onboarding?.canChange !== true) return;
+		const controller = new AbortController();
+		onboarding.state.get(controller.signal).then(
+			(found) => setOffered(found.status === "active"),
+			() => !controller.signal.aborted && setOffered(false),
+		);
+		return () => controller.abort();
+	}, [onboarding]);
+
+	// The home page is onboarding while it is offered, else the first project.
+	useEffect(() => {
+		if (route.name !== "home" || offered === undefined) return;
+		if (offered) {
+			navigate(ONBOARDING_PATH, { replace: true });
+			return;
+		}
 		const first = projects?.[0];
-		if (route.name === "home" && first !== undefined) navigate(projectPath(first.id), { replace: true });
-	}, [route.name, projects]);
+		if (first !== undefined) navigate(projectPath(first.id), { replace: true });
+	}, [route.name, projects, offered]);
+
+	// The onboarding page's calls; it reopens a finished onboarding when someone comes to it from the sidebar.
+	const setup = useMemo(
+		() => (onboarding === undefined ? undefined : onboardingApi(onboarding, client, offered === false)),
+		[onboarding, client, offered],
+	);
 
 	// A session linked by its ID alone goes to its path once its project is known.
 	useEffect(() => {
@@ -582,6 +622,7 @@ export function App({
 	const organisationWaiting = organisationRoute && !organisationPage && oversightPending;
 	const missing =
 		route.name === "not-found" ||
+		(route.name === "onboarding" && onboarding === undefined) ||
 		(linkedSession !== undefined && sessionProject === undefined) ||
 		(organisationRoute && !organisationPage && !oversightPending);
 	const unknownSession =
@@ -605,7 +646,27 @@ export function App({
 	) : null;
 
 	let main: ReactNode;
-	if (vaultRoute && vault !== undefined) {
+	if (route.name === "onboarding" && setup !== undefined && onboarding !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<OnboardingPage
+					api={setup}
+					projects={projectList.filter((candidate) => !isOrganisationScope(candidate.id))}
+					product="Partan"
+					canChange={onboarding.canChange}
+					onLeave={() => {
+						setOffered(false);
+						navigate(way === undefined ? "/" : projectPath(way.id));
+					}}
+					onSessionStarted={(sessionProjectId, startedId) => {
+						setOffered(false);
+						navigate(sessionPath(sessionProjectId, startedId));
+					}}
+				/>
+			</div>
+		);
+	} else if (vaultRoute && vault !== undefined) {
 		main = (
 			<div className={page}>
 				{pageBar}
@@ -878,6 +939,7 @@ export function App({
 							audit={audit !== undefined}
 							keys={keys !== undefined}
 							members={members !== undefined}
+							setup={onboarding?.canChange === true}
 						/>
 						<div className={classes.actor}>
 							<Actor actor={client.actor} />

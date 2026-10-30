@@ -26,23 +26,25 @@ const OPERATOR: CallContext = {
 	organisationId: ORGANISATION,
 };
 
-const svg = (letter: string, colour: string) =>
+// A stand-in for a provider's logo, which the catalogue serves as an image (`CatalogueEntry.icon`): its initial on a
+// tile of the given hue. It is the provider's content, not the console's styling, so it takes no theme token.
+const svg = (letter: string, hue: number) =>
 	`data:image/svg+xml,${encodeURIComponent(
-		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="${colour}"/><text x="12" y="16.5" font-family="sans-serif" font-size="12" font-weight="700" text-anchor="middle" fill="#fff">${letter}</text></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" style="fill:hsl(${hue} 45% 38%)"/><text x="12" y="16.5" font-family="sans-serif" font-size="12" font-weight="700" text-anchor="middle" style="fill:hsl(0 0% 100%)">${letter}</text></svg>`,
 	)}`;
 
 const entry = (
 	id: string,
 	name: string,
 	description: string,
-	colour: string,
+	hue: number,
 	extra: Partial<CatalogueEntry> = {},
 ): CatalogueEntry => ({
 	id,
 	version: 1,
 	name,
 	description,
-	icon: svg(name.slice(0, 1), colour),
+	icon: svg(name.slice(0, 1), hue),
 	docsUrl: `https://docs.example.com/${id}`,
 	category: "developer",
 	kind: "mcp",
@@ -53,23 +55,23 @@ const entry = (
 });
 
 export const FIXTURE_CATALOGUE: readonly CatalogueEntry[] = [
-	entry("github", "GitHub", "Repositories, issues and pull requests.", "#24292f"),
-	entry("linear", "Linear", "Issues, projects and cycles.", "#5e6ad2", { category: "project_management" }),
-	entry("notion", "Notion", "Pages and databases in your workspace.", "#191919", { category: "knowledge" }),
-	entry("slack", "Slack", "Read and post in the channels you choose.", "#4a154b", { category: "communication" }),
-	entry("google-drive", "Google Drive", "Docs, Sheets and files in your Drive.", "#1a73e8", {
+	entry("github", "GitHub", "Repositories, issues and pull requests.", 220),
+	entry("linear", "Linear", "Issues, projects and cycles.", 235, { category: "project_management" }),
+	entry("notion", "Notion", "Pages and databases in your workspace.", 30, { category: "knowledge" }),
+	entry("slack", "Slack", "Read and post in the channels you choose.", 300, { category: "communication" }),
+	entry("google-drive", "Google Drive", "Docs, Sheets and files in your Drive.", 215, {
 		category: "productivity",
 	}),
-	entry("sentry", "Sentry", "Errors and performance issues.", "#362d59", {
+	entry("sentry", "Sentry", "Errors and performance issues.", 260, {
 		authTypes: ["bearer"],
 		kind: "http",
 	}),
-	entry("stripe", "Stripe", "Payments, customers and invoices.", "#635bff", {
+	entry("stripe", "Stripe", "Payments, customers and invoices.", 248, {
 		category: "payments",
 		authTypes: ["bearer"],
 		kind: "http",
 	}),
-	entry("salesforce", "Salesforce", "Accounts, contacts and opportunities.", "#00a1e0", {
+	entry("salesforce", "Salesforce", "Accounts, contacts and opportunities.", 195, {
 		category: "crm",
 		setup: "needs_client",
 		clientTiers: ["organisation"],
@@ -77,7 +79,10 @@ export const FIXTURE_CATALOGUE: readonly CatalogueEntry[] = [
 ];
 
 export interface FixtureOptions {
-	/** The deployment's own `default` route, as a self-hosted gateway on CLIProxyAPI seeds it. Default none. */
+	/**
+	 * The deployment's CLIProxyAPI connector and its `default` route, as a self-hosted gateway seeds them. Default: when
+	 * subscriptions are, since signing in needs CLIProxyAPI.
+	 */
 	readonly platformDefault?: boolean;
 	/** Whether the deployment can sign in to subscriptions. Default true. */
 	readonly subscriptions?: boolean;
@@ -212,7 +217,8 @@ async function seedPlatform(connectors: ModelConnectors) {
 export function createFixtureOnboardingApi(options: FixtureOptions = {}): OnboardingApi {
 	const onboarding = createMemoryOnboarding();
 	const connectors = createMemoryModelConnectors();
-	const seeded = options.platformDefault === true ? seedPlatform(connectors) : Promise.resolve();
+	const platform = options.platformDefault ?? options.subscriptions !== false;
+	const seeded = platform ? seedPlatform(connectors) : Promise.resolve();
 	let items = 0;
 	const providers = createModelProviders({
 		connectors,

@@ -1,10 +1,10 @@
 import {
 	type CatalogueEntry,
 	type Connection,
-	ONBOARDING_STEPS,
 	type ModelProvider,
 	type ModelProviderList,
 	type ModelSignIn,
+	ONBOARDING_STEPS,
 	type Onboarding,
 	type OnboardingStepId,
 	type OnboardingStepStatus,
@@ -14,8 +14,8 @@ import { Button } from "../primitives/button.tsx";
 import { Disclosure, SelectField, TextAreaField, TextField } from "../primitives/controls.tsx";
 import { FormActions } from "../primitives/form-layout.tsx";
 import { CheckIcon, KeyIcon, SparkIcon } from "../primitives/icons.tsx";
-import { ExternalLinkIcon } from "../primitives/lucide.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
+import { ExternalLinkIcon } from "../primitives/lucide.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
@@ -248,12 +248,7 @@ export function OnboardingPage({
 						</Button>
 					) : null
 				) : (
-					<Button
-						variant="primary"
-						onClick={() => void settle(current, "done")}
-						busy={moving}
-						disabled={!canChange}
-					>
+					<Button variant="primary" onClick={() => void settle(current, "done")} busy={moving} disabled={!canChange}>
 						Continue
 					</Button>
 				)}
@@ -451,6 +446,20 @@ function DefaultRoute({ providers }: { providers: ModelProviderList }) {
 		return (
 			<Notice level="warning">
 				Nothing serves sessions yet. Connect a subscription or a key so agents have a model to run on.
+			</Notice>
+		);
+	}
+	// The deployment's CLIProxyAPI serves `default`, but no subscription is signed in there (where Harbour can tell).
+	const subscriptions = providers.items.filter((item) => item.auth === "subscription");
+	const noAccount =
+		route.owner === "platform" &&
+		subscriptions.length > 0 &&
+		subscriptions.every((item) => item.available && item.connection === undefined);
+	if (noAccount) {
+		return (
+			<Notice level="warning">
+				Sessions go to this deployment's CLIProxyAPI, which has no Claude or ChatGPT account signed in yet. Sign in
+				below, or add an API key.
 			</Notice>
 		);
 	}
@@ -706,6 +715,12 @@ type ConnectState =
 	| { readonly status: "key" }
 	| { readonly status: "failed"; readonly error: string };
 
+/** A deployment that serves no Connections API answers its routes `not_found` (or `not_supported`). */
+const notServed = (reason: unknown): boolean => {
+	const code = typeof reason === "object" && reason !== null ? (reason as { code?: unknown }).code : undefined;
+	return code === "not_found" || code === "not_supported";
+};
+
 /** A template connects with a key when it has a key auth type and no OAuth sign-in. */
 const connectsWithKey = (entry: CatalogueEntry) =>
 	!entry.authTypes.includes("oauth2") &&
@@ -726,6 +741,7 @@ function ConnectorsStep({
 	const [catalogue, setCatalogue] = useState<readonly CatalogueEntry[] | undefined>(initial?.catalogue);
 	const [connected, setConnected] = useState<readonly Connection[]>(initial?.connections ?? []);
 	const [problem, setProblem] = useState<string>();
+	const [served, setServed] = useState(true);
 	const [query, setQuery] = useState("");
 	const [states, setStates] = useState<Readonly<Record<string, ConnectState>>>({});
 
@@ -736,7 +752,8 @@ function ConnectorsStep({
 			setCatalogue(entries);
 			setConnected(mine);
 		} catch (reason) {
-			setProblem(problemOf(reason));
+			if (notServed(reason)) setServed(false);
+			else setProblem(problemOf(reason));
 		}
 	}, [connections]);
 	useEffect(() => {
@@ -785,7 +802,7 @@ function ConnectorsStep({
 		);
 	}, [catalogue, query]);
 
-	if (connections === undefined) {
+	if (connections === undefined || !served) {
 		return (
 			<EmptyState title="Connectors aren't available here yet">
 				This deployment doesn't serve the Connections API. Skip this step; you can add connectors later in settings.
@@ -1017,13 +1034,14 @@ function SessionStep({
 				rows={4}
 				{...(error === undefined ? {} : { error })}
 			/>
-			<div className="flex flex-wrap gap-2" aria-label="Ideas">
+			<fieldset className="m-0 flex flex-wrap gap-2 border-0 p-0">
+				<legend className="hb-sr-only">Ideas</legend>
 				{FIRST_SESSION_IDEAS.map((idea) => (
 					<Button key={idea} size="xs" variant="ghost" onClick={() => setText(idea)} aria-pressed={text === idea}>
 						{idea}
 					</Button>
 				))}
-			</div>
+			</fieldset>
 			<FormActions>
 				<Button type="submit" variant="primary" busy={busy} disabled={disabled || text.trim() === ""}>
 					Start session

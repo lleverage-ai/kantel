@@ -59,6 +59,7 @@ export type Route =
 	| { readonly name: "sharing" }
 	| { readonly name: "connections" }
 	| { readonly name: "rules" }
+	| { readonly name: "onboarding" }
 	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
@@ -87,6 +88,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "sharing" && parts.length === 1) return { name: "sharing" };
 	if (parts[0] === "connections" && parts.length === 1) return { name: "connections" };
 	if (parts[0] === "rules" && parts.length === 1) return { name: "rules" };
+	if (parts[0] === "welcome" && parts.length === 1) return { name: "onboarding" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
 		const skillId = parts[1] === undefined ? undefined : segment(parts[1]);
@@ -166,6 +168,8 @@ export const KEYS_PATH = "/keys";
 export const MEMBERS_PATH = "/members";
 /** Prompt rules, and what a new session would get. */
 export const RULES_PATH = "/rules";
+/** First-run onboarding: connect a model, add connectors, start a first session. */
+export const ONBOARDING_PATH = "/welcome";
 /** The skills page, or one skill on it. */
 export const skillsPath = (skillId?: string): string =>
 	skillId === undefined ? "/skills" : `/skills/${encodeURIComponent(skillId)}`;
