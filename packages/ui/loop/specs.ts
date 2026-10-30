@@ -75,6 +75,17 @@ export const specs: readonly ComponentSpec[] = [
 			exports: ["VaultApprovalCard", "BindingCodePicker"],
 		},
 	},
+	{
+		component: "ThemePicker",
+		stories: "theme--theme-picker",
+		scenario: "theme",
+		watched: ["TranscriptRow", "UserMessage", "AssistantMessage", "ToolCallChip"],
+		workload:
+			"The picker open over 300 transcript items, with highlighted code in every fifth answer. Wasted: any render of the transcript, which a theme switch restyles without rendering.",
+		interaction:
+			"Arrow down through the picker, 12 times, each previewing a theme on the whole page: keydown to next frame.",
+		bundle: { module: "src/theme/theme-picker.tsx", exports: ["ThemePicker", "useThemeShortcut"] },
+	},
 ];
 
 export const specFor = (scenario: string): ComponentSpec | undefined =>

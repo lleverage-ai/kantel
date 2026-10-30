@@ -295,6 +295,12 @@ export interface ConsoleClient {
 	 * change once it resolves. Absent on a client that can't (a recorded session): its rows have no menu.
 	 */
 	updateSession?(sessionId: string, change: SessionChange): Promise<void>;
+	/**
+	 * Keeps the person's theme (a theme ID, or "system") as their preference on the server, so it follows them to another
+	 * browser. Fire and forget: this browser already shows and remembers it. Absent where there's nowhere to keep it (a
+	 * recorded session, an API key).
+	 */
+	readonly saveTheme?: (preference: string) => void;
 	/** Deletes a session for good: it stops and leaves every list. Absent on a client that can't. */
 	deleteSession?(sessionId: string): Promise<void>;
 	/** The session's workspace, read-only, or undefined when it has none. Rejects when there's no such session. */

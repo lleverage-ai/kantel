@@ -222,6 +222,74 @@ function seedCache(now: number): Recording {
 	return r;
 }
 
+const chargeSource = `import { setTimeout as sleep } from "node:timers/promises";
+import type { Charge, Gateway } from "./types.ts";
+
+/** Charges a card once. Throws on any gateway error. */
+export async function charge(gateway: Gateway, input: Charge): Promise<string> {
+	const response = await gateway.post("/v1/charges", input);
+	if (!response.ok) throw new Error(\`charge failed: \${response.status}\`);
+	return (await response.json()).id;
+}
+`;
+
+const retriesAnswer = [
+	"Charges now retry on a `429` or a `5xx`, three times with jittered backoff, and never on a `4xx` that means the card was declined. The idempotency key is made once per charge, so a retry can't charge twice.",
+	"",
+	"```ts",
+	"export async function charge(gateway: Gateway, input: Charge, attempts = 3): Promise<string> {",
+	"\tconst key = crypto.randomUUID(); // one key for every attempt",
+	"\tfor (let attempt = 1; ; attempt++) {",
+	'\t\tconst response = await gateway.post("/v1/charges", input, { idempotencyKey: key });',
+	"\t\tif (response.ok) return (await response.json()).id;",
+	"\t\tif (!retryable(response.status) || attempt === attempts) throw new ChargeError(response.status);",
+	"\t\tawait sleep(2 ** attempt * 100 + Math.random() * 50);",
+	"\t}",
+	"}",
+	"```",
+	"",
+	"The new tests cover a retry that succeeds, one that gives up, and a decline that never retries:",
+	"",
+	"```bash",
+	"pnpm vitest run src/billing --reporter=dot",
+	"```",
+	"",
+	"The gateway's retry settings, if you want them in config later:",
+	"",
+	"```json",
+	'{ "billing": { "retries": 3, "backoffMs": 100, "retryOn": [429, 500, 502, 503] } }',
+	"```",
+].join("\n");
+
+/** Done and read, with code: a file read, an edit and a test run, and an answer with fenced code in three languages. */
+function retries(now: number): Recording {
+	const r = new Recording("s-retries", "Retry failed charges in the billing client", now - 50 * MINUTE);
+	r.user("Make `charge()` in the billing client retry transient gateway errors, without ever charging twice.")
+		.status("running")
+		.wait(1200)
+		.tool({ name: "read", args: { path: "src/billing/charge.ts" }, ms: 300, output: chargeSource })
+		.tool({
+			name: "edit",
+			args: {
+				path: "src/billing/charge.ts",
+				oldText: "export async function charge(gateway: Gateway, input: Charge)",
+				newText: "export async function charge(gateway: Gateway, input: Charge, attempts = 3)",
+			},
+			ms: 400,
+			output: "Edited src/billing/charge.ts: 1 replacement",
+		})
+		.tool({
+			name: "bash",
+			args: { command: "pnpm vitest run src/billing --reporter=dot" },
+			ms: 6_400,
+			output: "✓ src/billing/charge.test.ts (7 tests) 41ms\n\nTest Files  1 passed (1)\n     Tests  7 passed (7)",
+		})
+		.wait(1500)
+		.say(retriesAnswer)
+		.status("idle");
+	return r;
+}
+
 /** Done and read: quiet in the list. */
 function handback(now: number): Recording {
 	const r = new Recording("s-handback", "Draft the M0 handback", now - 26 * HOUR);
@@ -263,6 +331,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 		},
 		{ id: "s-gvisor", projectId: "harbour", branch: "m0-sh1/gvisor-kvm", unread: true, frames: made(gvisor(now)) },
 		{ id: "s-seed", projectId: "harbour", frames: made(seedCache(now)) },
+		{ id: "s-retries", projectId: "harbour", branch: "billing-retries", frames: made(retries(now)) },
 	];
 	if (urls !== undefined) {
 		sessions.push(

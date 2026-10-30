@@ -4,7 +4,11 @@
    Dark and neutral, after T3 Code's dark theme (pingdotgg/t3code@1152e9171a9ce6ede20e0cc1f16ed0dbe103da9b,
    apps/web/src/index.css): a near-black canvas, slightly lifted panels, hairline white borders, system fonts, compact
    12–14px text. One accent, which a host app rebrands by setting --hb-accent, --hb-accent-hover, --hb-accent-text
-   and --hb-accent-fg on any ancestor. */
+   and --hb-accent-fg on any ancestor.
+
+   The colours here are the Harbour theme's, so a page paints in it before any theme is applied. Every other theme
+   (src/tokens/themes/) sets the same colour tokens on [data-hb-theme="<id>"]: see docs/theming.md. A new colour token
+   goes in src/tokens/theme-schema.ts too, and theme.test.ts holds the two together. */
 
 :root,
 .hb-theme {
@@ -59,6 +63,24 @@
 	/* Diff. */
 	--hb-diff-add: #34d399;
 	--hb-diff-del: #f87171;
+
+	/* Syntax: highlighted code (src/code/syntax.css). Each passes AA on --hb-code. */
+	--hb-syntax-text: var(--hb-text);
+	--hb-syntax-comment: #7f8792;
+	--hb-syntax-keyword: #c3a6ff;
+	--hb-syntax-string: #a5d6a7;
+	--hb-syntax-number: #f5b97a;
+	--hb-syntax-function: #81a9fd;
+	--hb-syntax-type: #6fd3e3;
+	--hb-syntax-property: #f0a6c8;
+	--hb-syntax-variable: var(--hb-syntax-text);
+	--hb-syntax-operator: #a3a3a3;
+	--hb-syntax-punctuation: var(--hb-text-muted);
+	--hb-syntax-tag: #f28b82;
+	--hb-syntax-regexp: var(--hb-syntax-string);
+	--hb-syntax-meta: var(--hb-syntax-keyword);
+	--hb-syntax-inserted: var(--hb-diff-add);
+	--hb-syntax-deleted: var(--hb-diff-del);
 
 	/* Type. System stacks, as T3 Code. */
 	--hb-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", sans-serif;
@@ -175,4 +197,9 @@
 	--hb-doc-h3: 17px;
 	--hb-menu-width: 12rem; /* a short menu of choices, such as the composer's thinking levels */
 	--hb-picker-min: 6rem; /* the least a composer picker with a name shortens to before its row wraps */
+	--hb-palette-width: 32rem; /* a command palette, such as the theme picker */
+	--hb-palette-top: 12vh; /* how far down the window a command palette opens */
+	--hb-swatch-width: 28px; /* a theme's swatch in the picker */
+	--hb-swatch-height: 16px;
+	--hb-swatch-dot: 2.5px;
 }

@@ -63,6 +63,7 @@ import {
 } from "./router.ts";
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
+import { ThemeButton, ThemeSwitcher } from "./theme.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
 import { useSessionView } from "./use-session-view.ts";
 import { sidebarShortcut, useSidebarCollapse } from "./use-sidebar.ts";
@@ -147,6 +148,7 @@ function Actor({ actor }: { actor: ConsoleActor }) {
 			name={actor.name}
 			{...(actor.email === undefined ? {} : { email: actor.email })}
 			{...(actor.stubbed ? { badge: <Badge>Sign-in stubbed</Badge> } : {})}
+			actions={<ThemeButton />}
 			{...(signOut === undefined
 				? {}
 				: {
@@ -800,6 +802,7 @@ export function App({
 					{main}
 				</main>
 			)}
+			<ThemeSwitcher {...(client.saveTheme === undefined ? {} : { onChoose: client.saveTheme })} />
 		</div>
 	);
 }

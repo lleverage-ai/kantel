@@ -30,6 +30,7 @@ import {
 	isHarbourError,
 	type JsonValue,
 	ME_PATH,
+	ME_PREFERENCES_PATH,
 	type MeResponse,
 	ORGANISATION_HEADER,
 	type OrganisationId,
@@ -52,6 +53,8 @@ import {
 	systemContext,
 	type UnauthenticatedResponse,
 	type UserId,
+	type UserPreferences,
+	type UserPreferencesChange,
 } from "@harbour/contracts";
 import { type SignedIn, signedInReaderOf } from "./signed-in.ts";
 
@@ -163,6 +166,8 @@ export interface IdentityHandlerOptions {
 		| "issueApiKey"
 		| "listApiKeys"
 		| "revokeApiKey"
+		| "userPreferences"
+		| "setUserPreferences"
 	>;
 	readonly authenticator: Authenticator;
 	/** The clock a new key's expiry is checked against. Default the system's. */
@@ -236,11 +241,12 @@ async function heldRoles(
 }
 
 type Route =
-	| { readonly name: "me" | "projects" | "keys" | "organisations" | "members" }
+	| { readonly name: "me" | "preferences" | "projects" | "keys" | "organisations" | "members" }
 	| { readonly name: "revoke"; readonly keyId: string };
 
 const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
 	me: ["GET"],
+	preferences: ["PATCH"],
 	projects: ["GET"],
 	organisations: ["GET"],
 	members: ["GET"],
@@ -252,6 +258,7 @@ const REVOKE_SUFFIX = "/revoke";
 
 function routeOf(path: string): Route | undefined {
 	if (path === ME_PATH) return { name: "me" };
+	if (path === ME_PREFERENCES_PATH) return { name: "preferences" };
 	if (path === PROJECTS_PATH) return { name: "projects" };
 	if (path === ORGANISATIONS_PATH) return { name: "organisations" };
 	if (path === MEMBERS_PATH) return { name: "members" };
@@ -589,10 +596,21 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				const issued: CreateApiKeyResponse = await issue(identity, ctx, createRequestOf(body, clock.now()));
 				return json(201, issued);
 			}
+			if (route.name === "preferences") {
+				noParameters(url.searchParams);
+				if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
+				const body: UserPreferences = await identity.setUserPreferences(
+					ctx,
+					(await readJson(request)) as UserPreferencesChange,
+				);
+				return json(200, body);
+			}
 			if (route.name === "me") {
-				const [described, roles] = await Promise.all([
+				const [described, roles, preferences] = await Promise.all([
 					describe(identity, caller, ctx),
 					heldRoles(identity, caller, ctx),
+					// A person's settings; a directory that can't read them leaves them out rather than fail the call.
+					caller.actor.kind === "human" ? identity.userPreferences(ctx).catch(() => undefined) : undefined,
 				]);
 				const body: MeResponse = {
 					actor: caller.actor,
@@ -600,6 +618,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 					method: caller.method,
 					...described,
 					roles,
+					...(preferences === undefined ? {} : { preferences }),
 				};
 				return json(200, body);
 			}
@@ -643,6 +662,8 @@ export interface IdentityClient {
 	createApiKey(input: CreateApiKeyRequest, signal?: AbortSignal): Promise<IssuedApiKey>;
 	/** Revokes a key; its next call is refused. Resolves for a key already revoked too. */
 	revokeApiKey(keyId: string, signal?: AbortSignal): Promise<void>;
+	/** Changes the signed-in person's own settings (`null` clears one), and resolves with them as now kept. */
+	setPreferences(change: UserPreferencesChange, signal?: AbortSignal): Promise<UserPreferences>;
 }
 
 /** The seconds a `Retry-After` header asks for, when it gives a number of them or a date. */
@@ -772,6 +793,16 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 
 		async revokeApiKey(keyId, signal) {
 			await post(apiKeyRevokePath(keyId), {}, signal);
+		},
+
+		async setPreferences(change, signal) {
+			const response = await call(ME_PREFERENCES_PATH, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(change),
+				signal,
+			});
+			return (await response.json()) as UserPreferences;
 		},
 	};
 	return client;

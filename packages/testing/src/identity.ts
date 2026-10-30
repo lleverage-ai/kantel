@@ -878,6 +878,50 @@ export function createIdentityConformance(options: {
 				a.strictEqual((await identity.authenticateApiKey(WORKER, issued.secret)).role, "operator");
 			}),
 		},
+		{
+			name: "keeps a person's own settings: a change keeps what it leaves out, null clears, they follow the person",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const viewer = await createMember(identity, tenant, "viewer");
+				const ctx = contextFor(viewer, tenant.organisation.id);
+				a.deepEqual(await identity.userPreferences(ctx), {}, "nobody has settings at first");
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "catppuccin-latte" }), {
+					theme: "catppuccin-latte",
+				});
+				a.deepEqual(await identity.setUserPreferences(ctx, {}), { theme: "catppuccin-latte" }, "{} changes nothing");
+				a.deepEqual(await identity.userPreferences(ctx), { theme: "catppuccin-latte" });
+				a.deepEqual(await identity.userPreferences(tenant.admin), {}, "another person's are their own");
+
+				// They are the person's, not the organisation's: the same person in another organisation has them too.
+				const other = await createTenant(identity, "Other");
+				const userId = viewer.kind === "human" ? viewer.userId : "";
+				await identity.grantRole(other.admin, { principal: { kind: "user", userId }, role: "viewer" });
+				a.deepEqual(await identity.userPreferences(contextFor(viewer, other.organisation.id)), {
+					theme: "catppuccin-latte",
+				});
+
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "system" }), { theme: "system" });
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: null }), {}, "null clears the theme");
+				for (const bad of [{ theme: "Not a theme" }, { theme: 3 }, { colour: "red" }, [] as unknown, null]) {
+					await a.rejectsWithCode(
+						identity.setUserPreferences(ctx, bad as never),
+						"invalid",
+						`refuses ${JSON.stringify(bad)}`,
+					);
+				}
+
+				const service = await createService(identity, tenant);
+				const serviceCtx = contextFor(actors.service(service.id), tenant.organisation.id);
+				await a.rejectsWithCode(identity.userPreferences(serviceCtx), "forbidden", "a service has no settings");
+				await a.rejectsWithCode(identity.setUserPreferences(serviceCtx, { theme: "nord" }), "forbidden");
+				const stranger = await identity.createUser(tenant.admin, { name: "no role" });
+				await a.rejectsWithCode(
+					identity.userPreferences(contextFor(actors.human(stranger.id), tenant.organisation.id)),
+					"forbidden",
+					"a person with no role in the organisation is refused",
+				);
+			}),
+		},
 	];
 }
 

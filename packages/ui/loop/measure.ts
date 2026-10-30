@@ -135,6 +135,16 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		}
 		return 40;
 	},
+	theme: async (page) => {
+		await page.locator(".hb-theme-picker-search").focus();
+		await page.evaluate(() => (window as HarnessWindow).__hb?.reset());
+		for (let i = 0; i < 12; i++) {
+			await page.keyboard.press("ArrowDown");
+			await pause(page, 50);
+		}
+		// A theme switch renders the picker's list and nothing in the transcript.
+		return 0;
+	},
 	"vault-card": async (page) => {
 		await page.locator('[role="radio"]').first().focus();
 		await page.evaluate(() => (window as HarnessWindow).__hb?.reset());
