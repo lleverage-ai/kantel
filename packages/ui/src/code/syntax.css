@@ -3,6 +3,8 @@
 
 .hb-syntax {
 	color: var(--hb-syntax-text);
+	/* As the file viewer: a tab is four columns, not the browser's eight. */
+	tab-size: 4;
 }
 
 .hb-syntax .hljs-comment,
