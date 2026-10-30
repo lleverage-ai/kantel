@@ -30,6 +30,7 @@ import { type BrowserProvider, HarbourError } from "@harbour/contracts";
 import { createPasskeys } from "@harbour/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createSqlOnboarding, migrateOnboarding } from "@harbour/onboarding/sql";
 import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
 import { callbackHostHandlers } from "@harbour/runtime/http";
@@ -136,6 +137,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		// Connections need the vault, so none without its key.
 		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
 		if (connectionsOn) await migrateConnections(driver);
+		await migrateOnboarding(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -163,6 +165,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const skills = createSqlSkills({ driver, objects: skillObjects, audit, access: auditAccess.access });
 		const memory = createSqlMemory({ driver, audit, access: auditAccess.access });
 		const rules = createSqlPromptRules({ driver, audit, access: auditAccess.access });
+		const onboarding = createSqlOnboarding({ driver, audit, access: auditAccess.access });
 		let workspaces: StoredWorkspaces | undefined;
 		// The vault is built after the runtime (it needs its access), so it is asked for per call.
 		let sharedVault: HarbourVault | undefined;
@@ -260,6 +263,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			memory,
 			sharing,
 			rules,
+			onboarding,
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
@@ -281,6 +285,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				skills: "postgres + s3",
 				memory: "postgres",
 				rules: "postgres",
+				onboarding: "postgres",
 				usage: usage?.binding ?? "off",
 				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",

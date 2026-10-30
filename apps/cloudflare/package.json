@@ -27,6 +27,7 @@
 		"@harbour/identity": "workspace:*",
 		"@harbour/memory": "workspace:*",
 		"@harbour/model-gateway": "workspace:*",
+		"@harbour/onboarding": "workspace:*",
 		"@harbour/runtime": "workspace:*",
 		"@harbour/runtime-cloudflare": "workspace:*",
 		"@harbour/sandbox": "workspace:*",

@@ -15,6 +15,7 @@
  * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin or a key with the `import` permission |
  * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space for the organisation's admin, and loading a snapshot for the admin or a key with the `import` permission |
  * | `/v1/rules`, `/v1/rules/…` | the prompt rules API (`@harbour/rules/http`): the platform's, organisation's, projects' and users' rules |
+ * | `/v1/onboarding`, `/v1/onboarding/…` | the onboarding API (`@harbour/onboarding/http`): the organisation's first-run progress, read by its members and changed by its admin |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
  * | `POST /v1/browser/replay` | a replay link to one of a session's browsers, open or closed (harbour provider) |
@@ -51,6 +52,7 @@ import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
+import { createOnboardingApi } from "@harbour/onboarding/http";
 import { createRulesApi } from "@harbour/rules/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createSchedulesApi } from "@harbour/schedules/http";
@@ -247,9 +249,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	});
 	// Prompt rules: the store's own rules decide who writes what (an admin of the owner, a user's own), never an agent.
 	const rules = createRulesApi({ rules: stack.rules, authenticate: callContext, basePath: API_BASE });
+	// Onboarding: the service's own check decides who changes it (an organisation-wide admin), never an agent.
+	const onboarding = createOnboardingApi({
+		onboarding: stack.onboarding,
+		authenticate: callContext,
+		basePath: API_BASE,
+	});
 	const SKILLS_BASE = `${API_BASE}/skills`;
 	const MEMORY_BASE = `${API_BASE}/memory`;
 	const RULES_BASE = `${API_BASE}/rules`;
+	const ONBOARDING_BASE = `${API_BASE}/onboarding`;
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
@@ -488,14 +497,25 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			if (path === AUDIT_EVENTS_PATH || path === AUDIT_EVENT_PATH) return audit(request);
 			if (isPasskeyPath(path)) return passkeys(request);
 			if (isIdentityPath(path)) return identity(request);
-			if (under(path, SKILLS_BASE) || under(path, MEMORY_BASE) || under(path, RULES_BASE)) {
+			if (
+				under(path, SKILLS_BASE) ||
+				under(path, MEMORY_BASE) ||
+				under(path, RULES_BASE) ||
+				under(path, ONBOARDING_BASE)
+			) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {
 					await request.body?.cancel().catch(() => undefined);
 					return caller;
 				}
 				callers.set(request, caller);
-				const api = under(path, SKILLS_BASE) ? skills : under(path, MEMORY_BASE) ? memory : rules;
+				const api = under(path, SKILLS_BASE)
+					? skills
+					: under(path, MEMORY_BASE)
+						? memory
+						: under(path, RULES_BASE)
+							? rules
+							: onboarding;
 				return (await api.fetch(request)) ?? notFound();
 			}
 			if (under(path, SCHEDULES_BASE)) {

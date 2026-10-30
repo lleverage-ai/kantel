@@ -207,6 +207,19 @@ describe("schemas match the contracts", () => {
 		expect([contract, title, timezone]).toHaveLength(3);
 	});
 
+	it("matches the onboarding contract", () => {
+		const proofs = [
+			same<Wire<typeof Wires.OnboardingStepId>, Sharing.OnboardingStepId>(true),
+			same<Wire<typeof Wires.OnboardingStepStatus>, Sharing.OnboardingStepStatus>(true),
+			same<Wire<typeof Wires.OnboardingStatus>, Sharing.OnboardingStatus>(true),
+			same<Wire<typeof Wires.Onboarding>, Sharing.Onboarding>(true),
+			same<Wire<typeof Wires.SetOnboardingStepBody>, { readonly status: Sharing.OnboardingStepStatus }>(true),
+			same<Wire<typeof Wires.SetOnboardingCurrentBody>, { readonly step: Sharing.OnboardingStepId }>(true),
+			same<Wire<typeof Wires.ReopenOnboardingBody>, { readonly step?: Sharing.OnboardingStepId }>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
+	});
+
 	it("matches the connections contract", () => {
 		const proofs = [
 			same<Wire<typeof Conn.ProviderTemplate>, Sharing.ProviderTemplate>(true),

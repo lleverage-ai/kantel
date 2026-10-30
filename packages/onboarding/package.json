@@ -1,0 +1,24 @@
+{
+	"name": "@harbour/onboarding",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "First-run onboarding: where an organisation is in the steps that get an install going, in memory or on SQL",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./memory": "./src/memory.ts",
+		"./sql": "./src/sql.ts",
+		"./http": "./src/http.ts"
+	},
+	"dependencies": {
+		"@harbour/api": "workspace:*",
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*"
+	},
+	"devDependencies": {
+		"@electric-sql/pglite": "0.5.12",
+		"@harbour/testing": "workspace:*",
+		"miniflare": "5.20261023.0-beta"
+	}
+}

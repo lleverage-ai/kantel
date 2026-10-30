@@ -1363,3 +1363,55 @@ export const ResolvedPromptRulesQuery = Type.Object(
 );
 
 export const PromptRulePath = Type.Object({ ruleId: id("The rule's ID.") });
+
+// First-run onboarding (packages/contracts/src/onboarding.ts): where an organisation is in the steps that get an install
+// going. It only records progress; each step's resource is made through its own routes.
+
+export const OnboardingStepId = Type.Union(
+	[Type.Literal("models"), Type.Literal("connectors"), Type.Literal("session")],
+	{ title: "OnboardingStepId", description: "A step, in order: connect a model, add connectors, start a first session." },
+);
+
+export const OnboardingStepStatus = Type.Union(
+	[Type.Literal("pending"), Type.Literal("done"), Type.Literal("skipped")],
+	{ title: "OnboardingStepStatus" },
+);
+
+export const OnboardingStatus = Type.Union(
+	[Type.Literal("active"), Type.Literal("completed"), Type.Literal("dismissed")],
+	{
+		title: "OnboardingStatus",
+		description:
+			"`active` while it is offered; `completed` once no step is pending; `dismissed` when someone skipped the lot.",
+	},
+);
+
+export const Onboarding = Type.Object(
+	{
+		organisationId: id("The organisation."),
+		status: OnboardingStatus,
+		current: OnboardingStepId,
+		steps: Type.Object(
+			{ models: OnboardingStepStatus, connectors: OnboardingStepStatus, session: OnboardingStepStatus },
+			{ description: "Each step's status." },
+		),
+		updatedAt: Type.Optional(
+			Type.Integer({ description: "When it last changed, in epoch milliseconds. Absent while nothing is stored." }),
+		),
+	},
+	{
+		title: "Onboarding",
+		description: "An organisation's onboarding: its status, the step to show and each step's status.",
+	},
+);
+
+export const OnboardingStepPath = Type.Object({ step: OnboardingStepId });
+
+export const SetOnboardingStepBody = Type.Object({ status: OnboardingStepStatus }, { title: "SetOnboardingStepBody" });
+
+export const SetOnboardingCurrentBody = Type.Object({ step: OnboardingStepId }, { title: "SetOnboardingCurrentBody" });
+
+export const ReopenOnboardingBody = Type.Object(
+	{ step: Type.Optional(OnboardingStepId) },
+	{ title: "ReopenOnboardingBody", description: "Where to reopen it. Default the first step." },
+);

@@ -53,6 +53,7 @@ import {
 	type LeaseEndReason,
 	type Memory,
 	type ModelGateway,
+	type OnboardingService,
 	type Organisation,
 	type Project,
 	type ProjectAccess,
@@ -76,6 +77,8 @@ import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@har
 import { defaultRecallRenderer } from "@harbour/memory";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createMemoryOnboarding } from "@harbour/onboarding/memory";
+import { createSqlOnboarding, migrateOnboarding } from "@harbour/onboarding/sql";
 import { createMemoryPromptRules } from "@harbour/rules/memory";
 import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
@@ -346,6 +349,8 @@ export interface Stack {
 	readonly connections?: ConnectionsService;
 	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
 	readonly rules: PromptRules;
+	/** First-run onboarding: where the organisation is in its steps (packages/onboarding/CONTRACT.md). */
+	readonly onboarding: OnboardingService;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -394,6 +399,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateSkills(driver);
 		await migrateMemory(driver);
 		await migrateRules(driver);
+		await migrateOnboarding(driver);
 		await migrateSchedules(driver);
 		await migrateFileShares(driver);
 		await migrateSharing(driver);
@@ -552,6 +558,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		driver === undefined
 			? createMemoryPromptRules({ clock, audit, access: auditAccess })
 			: createSqlPromptRules({ driver, clock, audit, access: auditAccess });
+	const onboarding =
+		driver === undefined
+			? createMemoryOnboarding({ clock, audit, access: auditAccess })
+			: createSqlOnboarding({ driver, clock, audit, access: auditAccess });
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
@@ -820,6 +830,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			sharing,
 			...(connections === undefined ? {} : { connections }),
 			rules,
+			onboarding,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			passkeys,

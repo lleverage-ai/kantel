@@ -13,6 +13,8 @@
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
 //   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
 //   /v1/rules/...               prompt rules API (@harbour/rules/http): the platform's, organisation's, projects', users'
+//   /v1/onboarding/...          onboarding API (@harbour/onboarding/http): the organisation's first-run progress, read by
+//                               its members and changed by its admin
 //   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
 //   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
@@ -47,6 +49,7 @@ import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour
 import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
+import { createOnboardingApi } from "@harbour/onboarding/http";
 import { createRulesApi } from "@harbour/rules/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
 import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
@@ -124,6 +127,7 @@ const BROWSER_ROUTES: ReadonlySet<string> = new Set([
 const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
 const RULES_BASE = "/v1/rules";
+const ONBOARDING_BASE = "/v1/onboarding";
 const MEMORY_BASE = "/v1/memory";
 
 /** Whether `path` is `base` or under it. */
@@ -263,6 +267,12 @@ export function createGateway(options: GatewayOptions): Gateway {
 		callers.set(request, callContextFor(caller));
 		return (await rulesApi.fetch(request)) ?? notFound();
 	});
+	// Onboarding: the service's own check decides who changes it (an organisation-wide admin), never an agent.
+	const onboardingApi = createOnboardingApi({ onboarding: components.onboarding, authenticate: signedIn });
+	const onboarding = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await onboardingApi.fetch(request)) ?? notFound();
+	});
 	const skills = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await skillsApi.fetch(request)) ?? notFound();
@@ -352,6 +362,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (under(path, RULES_BASE)) return await rules(request);
+				if (under(path, ONBOARDING_BASE)) return await onboarding(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);
 				}

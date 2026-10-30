@@ -50,6 +50,8 @@ import {
 	MessageBody,
 	NewSessionModelsQuery,
 	OccurrencePage,
+	Onboarding,
+	OnboardingStepPath,
 	PageQuery,
 	PreviewScheduleQuery,
 	ProfilePath,
@@ -61,6 +63,7 @@ import {
 	RecallBody,
 	RegisteredResource,
 	RegisterResourceBody,
+	ReopenOnboardingBody,
 	RequestAccessBody,
 	ResolvedPromptRulesQuery,
 	ResourceBinding,
@@ -80,6 +83,8 @@ import {
 	SessionPath,
 	SessionRecord,
 	SessionWarmth,
+	SetOnboardingCurrentBody,
+	SetOnboardingStepBody,
 	SetResourcePolicyBody,
 	ShareFileBody,
 	ShareInviteBody,
@@ -1097,11 +1102,95 @@ export const ruleRoutes = {
 	removePromptRule,
 } as const;
 
+// First-run onboarding (packages/contracts/src/onboarding.ts): one state per organisation, read by its members and
+// changed by an organisation-wide admin.
+
+const onboardingErrors = ["invalid", "forbidden"] as const;
+
+export const getOnboarding = defineRoute({
+	operationId: "getOnboarding",
+	method: "GET",
+	path: "/onboarding",
+	tag: "onboarding",
+	summary: "Get the organisation's onboarding",
+	description:
+		"Where the organisation is in first-run onboarding: its status, the step to show and each step's status. A fresh " +
+		"organisation's is `active` at `models` with every step pending. Open to the organisation's members and agents.",
+	answer: { status: 200, description: "The organisation's onboarding.", schema: Onboarding },
+	errors: onboardingErrors,
+});
+
+export const setOnboardingStep = defineRoute({
+	operationId: "setOnboardingStep",
+	method: "PUT",
+	path: "/onboarding/steps/{step}",
+	tag: "onboarding",
+	summary: "Mark an onboarding step done, skipped or pending",
+	description:
+		"Marking a step done or skipped moves `current` to the next pending step, and completes the onboarding when none is " +
+		"left; marking it pending makes it `current` and the onboarding active. Needs an organisation-wide admin; agents " +
+		"never may. Audited as `onboarding.changed`.",
+	params: OnboardingStepPath,
+	body: SetOnboardingStepBody,
+	answer: { status: 200, description: "The onboarding as stored.", schema: Onboarding },
+	errors: onboardingErrors,
+});
+
+export const setOnboardingCurrent = defineRoute({
+	operationId: "setOnboardingCurrent",
+	method: "PUT",
+	path: "/onboarding/current",
+	tag: "onboarding",
+	summary: "Show another onboarding step",
+	description:
+		"Moves to another step, such as Back, without changing any step's status, and reopens a completed or dismissed " +
+		"onboarding. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+	body: SetOnboardingCurrentBody,
+	answer: { status: 200, description: "The onboarding as stored.", schema: Onboarding },
+	errors: onboardingErrors,
+});
+
+export const dismissOnboarding = defineRoute({
+	operationId: "dismissOnboarding",
+	method: "POST",
+	path: "/onboarding/dismiss",
+	tag: "onboarding",
+	summary: "Dismiss onboarding",
+	description:
+		"Skips the whole onboarding: it is not offered again until it is reopened. Each step keeps its status. Needs an " +
+		"organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+	answer: { status: 200, description: "The onboarding as stored.", schema: Onboarding },
+	errors: onboardingErrors,
+});
+
+export const reopenOnboarding = defineRoute({
+	operationId: "reopenOnboarding",
+	method: "POST",
+	path: "/onboarding/reopen",
+	tag: "onboarding",
+	summary: "Reopen onboarding",
+	description:
+		"Offers a completed or dismissed onboarding again, at `step` or the first step, keeping each step's status. Needs " +
+		"an organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+	body: ReopenOnboardingBody,
+	answer: { status: 200, description: "The onboarding as stored.", schema: Onboarding },
+	errors: onboardingErrors,
+});
+
+export const onboardingRoutes = {
+	getOnboarding,
+	setOnboardingStep,
+	setOnboardingCurrent,
+	dismissOnboarding,
+	reopenOnboarding,
+} as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
 export const routes = {
 	...sessionRoutes,
 	...skillRoutes,
 	...ruleRoutes,
+	...onboardingRoutes,
 	...memoryRoutes,
 	...scheduleRoutes,
 	...browserRoutes,

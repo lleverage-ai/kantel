@@ -22,6 +22,7 @@ import {
 	type IdentityDirectory,
 	type Memory,
 	normaliseEmail,
+	type OnboardingService,
 	type OrganisationId,
 	PLATFORM_ORGANISATION,
 	type Project,
@@ -35,6 +36,7 @@ import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createMemoryMemory } from "@harbour/memory/memory";
+import { createMemoryOnboarding } from "@harbour/onboarding/memory";
 import { createMemoryPromptRules } from "@harbour/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
@@ -73,6 +75,8 @@ export interface GatewayComponents {
 	readonly sharing: SharingStore;
 	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
 	readonly rules: PromptRules;
+	/** First-run onboarding: where the organisation is in its steps (packages/onboarding/CONTRACT.md). */
+	readonly onboarding: OnboardingService;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -232,6 +236,7 @@ export function createGatewayComponents(
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
 	const rules = createMemoryPromptRules({ audit, access: auditAccess.access });
+	const onboarding = createMemoryOnboarding({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
 	const sharing = createMemorySharing({
 		audit,
@@ -301,6 +306,7 @@ export function createGatewayComponents(
 		memory,
 		sharing,
 		rules,
+		onboarding,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
