@@ -49,6 +49,7 @@ import {
 	type Project,
 	type ProjectAccess,
 	type PromptLayer,
+	type PromptRules,
 	type RecallRenderer,
 	type Schedule,
 	type Schedules,
@@ -67,6 +68,8 @@ import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@har
 import { defaultRecallRenderer } from "@harbour/memory";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createMemoryPromptRules } from "@harbour/rules/memory";
+import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
 import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import {
@@ -317,6 +320,8 @@ export interface Stack {
 	 * `access` for every resource check.
 	 */
 	readonly sharing: SharingStore;
+	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
+	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -364,6 +369,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateAudit(driver);
 		await migrateSkills(driver);
 		await migrateMemory(driver);
+		await migrateRules(driver);
 		await migrateSchedules(driver);
 		await migrateFileShares(driver);
 		await migrateSharing(driver);
@@ -499,6 +505,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		driver === undefined
 			? createMemoryMemory({ clock, audit, access: storeAccess, renderer })
 			: createSqlMemory({ driver, clock, audit, access: storeAccess, renderer });
+	const rules =
+		driver === undefined
+			? createMemoryPromptRules({ clock, audit, access: auditAccess })
+			: createSqlPromptRules({ driver, clock, audit, access: auditAccess });
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
@@ -578,6 +588,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 		// A session whose profile names memory spaces is given their recall on its first prompt, and the memory tools.
 		memory: sessionMemory(memory),
+		// Its prompt rules, fixed when it starts: platform, organisation, project, profile, then its user's.
+		rules,
 		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
 		attachments: attachments.reader,
 	};
@@ -758,6 +770,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			skills,
 			memory,
 			sharing,
+			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			passkeys,

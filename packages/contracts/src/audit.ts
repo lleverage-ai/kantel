@@ -32,6 +32,7 @@ export type AuditSource =
 	| "capability"
 	| "skills"
 	| "memory"
+	| "rules"
 	| "access"
 	| "control"
 	| "sharing";

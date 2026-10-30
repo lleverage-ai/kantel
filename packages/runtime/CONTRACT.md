@@ -220,6 +220,16 @@ with the revisions the source's entry records under the fork's session ID, so it
 names (#210); the host mounts them by version (`skillsMountVersion(pins)` of `@harbour/workspace/mounts`). Which
 revisions, and whether they are mounted, is a session document of the fork's (`harbour.fork-skills`).
 
+## Prompt rules
+
+`createSessionRuntime({ rules })` takes a `PromptRules` (`packages/rules/CONTRACT.md`). It is optional; without it a
+session runs its profile's own layers alone. `create` calls `rules.forSession` as Harbour once, after its own create
+check, with the session's project (none for an organisation session) and `userId`. The layers become platform,
+organisation, project, the profile's own, then the user's (`resolvePromptLayers`), and are stored with the session's
+copy of the profile. A restart, a reopened session and a fork (which copies the source's profile) run the same prompt;
+an edited rule reaches only sessions created after the edit. Harbour adds no rule of its own. Covered by
+`test/rules.test.ts`.
+
 ## The in-memory implementation
 
 `createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@harbour/runtime/memory`

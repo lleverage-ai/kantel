@@ -55,6 +55,9 @@ importers:
       "@harbour/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
+      "@harbour/rules":
+        specifier: workspace:*
+        version: link:../../packages/rules
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -277,6 +280,9 @@ importers:
       "@harbour/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
+      "@harbour/rules":
+        specifier: workspace:*
+        version: link:../../packages/rules
       "@harbour/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -560,6 +566,28 @@ importers:
 
   packages/protocol: {}
 
+  packages/rules:
+    dependencies:
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../sql
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+      miniflare:
+        specifier: 5.20261023.0-beta
+        version: 5.20261023.0-beta(@types/node@24.19.2)
+
   packages/runtime:
     dependencies:
       "@earendil-works/chord":
@@ -596,6 +624,9 @@ importers:
       "@harbour/codemode":
         specifier: workspace:*
         version: link:../codemode
+      "@harbour/rules":
+        specifier: workspace:*
+        version: link:../rules
       "@harbour/sandbox":
         specifier: workspace:*
         version: link:../sandbox

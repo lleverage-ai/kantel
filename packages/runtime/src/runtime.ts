@@ -50,6 +50,8 @@ import {
 	type ProjectAccess,
 	type ProjectId,
 	type PromptInput,
+	type PromptRules,
+	resolvePromptLayers,
 	type Sandboxes,
 	type SessionBranching,
 	type SessionDirectory,
@@ -232,6 +234,13 @@ export interface SessionRuntimeOptions {
 	 * `memory_search` and `memory_read` tools. Without it sessions get no memory.
 	 */
 	readonly memory?: SessionMemoryOptions;
+	/**
+	 * Prompt rules (docs/design/org-scope.md, decision 5): resolved once when a session is created, for its project and
+	 * user, and kept with its copy of the profile around the profile's own layers (platform, organisation, project,
+	 * profile, user). A restart or a fork runs the same prompt; an edit reaches only new sessions. Without it a session
+	 * runs its profile's layers alone.
+	 */
+	readonly rules?: Pick<PromptRules, "forSession">;
 	/**
 	 * Reads a prompt's attachments through the host that stored them (`./attachments.ts`): what the model sees of each,
 	 * placed ahead of the prompt's words. Without it a prompt with attachments is `invalid`.
@@ -584,6 +593,22 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			return own === undefined ? undefined : recordOf(own).userId;
 		}
 		return input.userId;
+	};
+
+	/** The profile a new session keeps: its prompt rules joined around the profile's own layers, when there are rules. */
+	const withRules = async (
+		ctx: CallContext,
+		profile: AgentProfile,
+		scope: { readonly projectId?: ProjectId; readonly userId?: UserId },
+	): Promise<AgentProfile> => {
+		if (options.rules === undefined) return profile;
+		// As Harbour, after the create check: the session's scope decides which rules it gets, not who started it.
+		const rules = await options.rules.forSession(
+			{ actor: { kind: "system", component: "session.rules" }, organisationId: ctx.organisationId },
+			scope,
+		);
+		if (rules.length === 0) return profile;
+		return { ...profile, promptLayers: resolvePromptLayers(rules, profile.promptLayers) };
 	};
 
 	const requireProfile = async (ctx: CallContext, agentId: AgentId): Promise<AgentProfile> => {
@@ -1367,7 +1392,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				createdAt: now,
 				updatedAt: now,
 			};
-			const stored = await store.createSession({ record, profile, aborts: 0, closed: false });
+			const sessionProfile = await withRules(ctx, profile, {
+				...(projectId === undefined ? {} : { projectId }),
+				...(userId === undefined ? {} : { userId }),
+			});
+			const stored = await store.createSession({ record, profile: sessionProfile, aborts: 0, closed: false });
 			await ensureOpen(stored);
 			await audit([
 				{

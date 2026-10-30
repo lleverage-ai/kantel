@@ -12,6 +12,7 @@
 //   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@harbour/audit/http)
 //   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
+//   /v1/rules/...               prompt rules API (@harbour/rules/http): the platform's, organisation's, projects', users'
 //   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
 //   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
@@ -43,6 +44,7 @@ import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour
 import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
+import { createRulesApi } from "@harbour/rules/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
 import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
@@ -115,6 +117,7 @@ const BROWSER_ROUTES: ReadonlySet<string> = new Set([
 ]);
 const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
+const RULES_BASE = "/v1/rules";
 const MEMORY_BASE = "/v1/memory";
 
 /** Whether `path` is `base` or under it. */
@@ -247,7 +250,13 @@ export function createGateway(options: GatewayOptions): Gateway {
 		authenticate: signedIn,
 		authorizeWrite: organisationAdmin,
 	});
+	// Prompt rules: the store's own rules decide who writes what (an admin of the owner, a user's own), never an agent.
+	const rulesApi = createRulesApi({ rules: components.rules, authenticate: signedIn });
 	const notFound = () => json({ error: { code: "not_found", message: "No such route" } }, 404);
+	const rules = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await rulesApi.fetch(request)) ?? notFound();
+	});
 	const skills = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await skillsApi.fetch(request)) ?? notFound();
@@ -320,6 +329,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 				if (under(path, SKILLS_BASE)) return await skills(request);
 				if (under(path, MEMORY_BASE)) return await memory(request);
 				if (isSharingPath(path)) return await sharing(request);
+				if (under(path, RULES_BASE)) return await rules(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);
 				}

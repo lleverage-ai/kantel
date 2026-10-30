@@ -1651,6 +1651,405 @@
 				}
 			}
 		},
+		"/rules": {
+			"get": {
+				"operationId": "listPromptRules",
+				"summary": "List an owner's prompt rules",
+				"description": "The platform's, the organisation's, a project's or a user's rules, in order. A project's need the viewer role on it; the others are open to the organisation.",
+				"tags": ["rules"],
+				"parameters": [
+					{
+						"name": "owner",
+						"in": "query",
+						"required": true,
+						"description": "Whose rules: the platform's, the organisation's, a project's or a user's.",
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string",
+									"const": "platform"
+								},
+								{
+									"type": "string",
+									"const": "organisation"
+								},
+								{
+									"type": "string",
+									"const": "project"
+								},
+								{
+									"type": "string",
+									"const": "user"
+								}
+							]
+						}
+					},
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"description": "The project, for `owner=project`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "userId",
+						"in": "query",
+						"required": false,
+						"description": "The user, for `owner=user`. Default the calling person.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The owner's rules.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PromptRuleList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"operationId": "putPromptRule",
+				"summary": "Create or replace a prompt rule",
+				"description": "Creates the owner's rule of that name, or replaces its text and order. The organisation's rules need an organisation-wide admin, a project's an admin on it, a user's that user or an organisation-wide admin; agents never write rules. Audited as `rules.rule.put`, without the text.",
+				"tags": ["rules"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PutPromptRuleBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The rule as stored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PromptRule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/rules/resolved": {
+			"get": {
+				"operationId": "resolvePromptRules",
+				"summary": "The rules a new session would get",
+				"description": "Platform, organisation, project (for a project session) and user rules, in the order they wrap the profile's own prompt: platform, organisation, project, profile, user. A session keeps the rules it started with.",
+				"tags": ["rules"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"description": "A project session's project. Absent: an organisation session.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "userId",
+						"in": "query",
+						"required": false,
+						"description": "The session's user. Default the calling person.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The rules, in layer order.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PromptRuleList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/rules/{ruleId}": {
+			"get": {
+				"operationId": "getPromptRule",
+				"summary": "Get a prompt rule",
+				"tags": ["rules"],
+				"parameters": [
+					{
+						"name": "ruleId",
+						"in": "path",
+						"required": true,
+						"description": "The rule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The rule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PromptRule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removePromptRule",
+				"summary": "Remove a prompt rule",
+				"description": "Needs what writing it needs. New sessions stop getting it; running ones keep theirs.",
+				"tags": ["rules"],
+				"parameters": [
+					{
+						"name": "ruleId",
+						"in": "path",
+						"required": true,
+						"description": "The rule's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The removed rule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PromptRule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/memory/spaces": {
 			"get": {
 				"operationId": "listMemorySpaces",
@@ -6854,6 +7253,81 @@
 				},
 				"title": "PromptAttachment",
 				"description": "A file for a message, uploaded first: on Cloudflare `POST /v1/attachments?projectId=&name=` with the file's bytes as the body answers this reference. The message carries only the reference; the model sees the file's contents."
+			},
+			"PromptRule": {
+				"type": "object",
+				"required": ["id", "owner", "name", "text", "order", "createdAt", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The rule's ID."
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"description": "Unique among its owner's rules."
+					},
+					"text": {
+						"type": "string",
+						"description": "The prompt text."
+					},
+					"order": {
+						"type": "integer",
+						"description": "Its place among its owner's rules, lowest first; ties go by name."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "PromptRule"
+			},
+			"PromptRuleList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/PromptRule"
+						},
+						"description": "In layer order: platform, organisation, project, user."
+					}
+				},
+				"title": "PromptRuleList"
+			},
+			"PutPromptRuleBody": {
+				"type": "object",
+				"required": ["owner", "name", "text"],
+				"properties": {
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+						"description": "1 to 100 letters, digits, `.`, `_` and `-`. A rule of this name replaces the owner's rule."
+					},
+					"text": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 32768
+					},
+					"order": {
+						"type": "integer",
+						"minimum": -1000000,
+						"maximum": 1000000,
+						"description": "Default 0."
+					}
+				},
+				"title": "PutPromptRuleBody"
 			},
 			"QuestionCard": {
 				"type": "object",
