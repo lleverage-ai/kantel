@@ -18,10 +18,11 @@ import { Button, ListRow, StatusLabel } from "@harbour/ui";
 </div>;
 ```
 
-Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source and plain CSS
-that each component imports itself, so a Vite app needs no extra configuration and pays only for the components it
-uses. React 19 is a peer dependency. `src/index.ts` is listed in `sideEffects` because it imports the tokens and the
-base styles: keep it there, or a production build drops them while the dev server still shows them.
+Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source; components are
+styled with Tailwind v4 utilities (a few still import a .css file of their own while they move over), so a Vite app
+adds Tailwind's plugin, `@tailwindcss/vite`, to its `plugins` (see `apps/console/vite.config.ts`). React 19 is a
+peer dependency. `src/index.ts` is listed in `sideEffects` because it imports the tokens, the base styles and the
+Tailwind entry: keep it there, or a production build drops them while the dev server still shows them.
 
 `apps/console` is the reference host: its `src/ui/session-view.tsx` maps a session client's state onto
 `SessionHeader`, `Transcript` and `Composer`, and its only CSS is layout, in tokens. Lint a host's CSS and TSX
@@ -33,7 +34,8 @@ with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`),
 1. Build screens from `@harbour/ui`. If a component you need is missing, add it here, with stories and docs, and
    use it from your app. Don't write a one-off component in an app.
 2. Use the tokens (`--hb-*` in [src/tokens/tokens.css](src/tokens/tokens.css)) for every colour, size, radius and
-   duration. `pnpm --filter @harbour/ui test` fails on a raw value.
+   duration, through the Tailwind utilities mapped from them ([docs/tailwind.md](docs/tailwind.md)).
+   `pnpm --filter @harbour/ui test` fails on a raw value, including an arbitrary one such as `p-[13px]`.
 3. Copy is plain sentence case. No uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
 4. Every component has a story for each state it can be in: loading, empty, streaming, error, long content and
    mobile (420px), where they apply.

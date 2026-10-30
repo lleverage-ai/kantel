@@ -46,6 +46,7 @@
 		"@harbour/memory": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@ladle/react": "5.1.1",
+		"@tailwindcss/vite": "4.3.3",
 		"@types/node": "26.6.5",
 		"@types/react": "19.3.0",
 		"@types/react-dom": "19.3.0",
@@ -76,6 +77,7 @@
 		"pdfjs-dist": "6.4.299",
 		"react-markdown": "10.1.0",
 		"remark-gfm": "4.0.1",
+		"tailwindcss": "4.3.3",
 		"virtua": "0.53.6",
 		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
 	}

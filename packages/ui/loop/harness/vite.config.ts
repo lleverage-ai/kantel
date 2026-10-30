@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -8,7 +9,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
 	root: fileURLToPath(new URL(".", import.meta.url)),
 	base: "./",
-	plugins: [react()],
+	plugins: [tailwindcss(), react()],
 	resolve: { alias: [{ find: /^react-dom\/client$/, replacement: "react-dom/profiling" }] },
 	build: { outDir: fileURLToPath(new URL("../out/harness/", import.meta.url)), emptyOutDir: true },
 	logLevel: "warn",

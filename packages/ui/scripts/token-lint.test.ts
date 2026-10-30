@@ -59,4 +59,21 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/x.ts", "const point = { left: 1, top: 2 };")).toEqual([]);
 		expect(lintSource("src/x.tsx", "// a comment about 12px and → arrows")).toEqual([]);
 	});
+
+	it("refuses arbitrary raw values in Tailwind classes, and allows token utilities", () => {
+		expect(lintSource("src/x.tsx", '<div className="p-[13px]" />')).toHaveLength(1);
+		expect(lintSource("src/x.tsx", '<div className="flex max-w-[40rem]" />')).toHaveLength(1);
+		expect(lintSource("src/x.tsx", '<div className="hover:bg-[#fff]" />')).toHaveLength(1);
+		expect(lintSource("src/x.tsx", '<div className="text-[rgb(0_0_0)]" />')).toHaveLength(1);
+		expect(lintSource("src/x.ts", 'const row = "transition-opacity duration-[150ms]";')).toHaveLength(1);
+		expect(
+			lintSource(
+				"src/x.tsx",
+				'<div className="flex gap-2 px-0.5 bg-canvas text-muted rounded-panel size-control-sm" />',
+			),
+		).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div className="z-(--hb-z-float) duration-(--hb-duration-fast)" />')).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div className="grid-cols-[auto_1fr] w-[60%]" />')).toEqual([]);
+		expect(lintSource("src/tokens/tailwind.css", "\t--spacing: 0.25rem;")).toEqual([]);
+	});
 });

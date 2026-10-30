@@ -3,6 +3,8 @@ export default {
 	stories: "src/**/*.stories.tsx",
 	defaultStory: "workbench--overview",
 	outDir: "build",
+	// Tailwind's Vite plugin: see vite.config.ts.
+	viteConfig: ".ladle/vite.config.ts",
 	addons: {
 		a11y: { enabled: true },
 		action: { enabled: true },
