@@ -92,7 +92,12 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 		const depth = source.history ?? DEFAULT_HISTORY;
 		if (history === undefined || source.sparse !== undefined || depth < 1) return Promise.resolve([]);
 		return fetchGitHistory(
-			{ fetch: send, refs, ...history },
+			{
+				fetch: send,
+				refs,
+				...history,
+				blobs: history.blobs ?? { onError: (error: unknown) => history.onError?.(error, source) },
+			},
 			{ repo: source.repo, ref: source.ref, commit, depth },
 		).catch((error: unknown) => {
 			history.onError?.(error, source);

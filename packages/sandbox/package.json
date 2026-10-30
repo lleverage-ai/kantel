@@ -24,6 +24,7 @@
 		"@harbour/contracts": "workspace:*",
 		"@harbour/workspace": "workspace:*",
 		"@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+		"diff": "8.0.4",
 		"isomorphic-git": "1.44.8",
 		"just-bash": "3.6.0",
 		"quickjs-emscripten-core": "0.32.0"

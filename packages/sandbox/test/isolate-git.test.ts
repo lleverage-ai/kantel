@@ -5,7 +5,7 @@ import { dirname, join, relative } from "node:path";
 import { type CallContext, DEFAULT_TIER_ROUTES } from "@harbour/contracts";
 import { commandSubcommand, routeTool } from "@harbour/sandbox";
 import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createIsolateGitCommand, ISOLATE_GIT_ROUTES } from "@harbour/sandbox/isolate-git";
+import { createIsolateGitCommand, gitDate, ISOLATE_GIT_ROUTES } from "@harbour/sandbox/isolate-git";
 import { createTieredSandboxes } from "@harbour/sandbox/tiered";
 import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
 import type { ModedChange } from "@harbour/workspace/tree";
@@ -16,6 +16,11 @@ const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisat
 const GIT_ENV = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 
 let repo: string;
+
+/** Thirty lines with a function header every ten, so hunks carry git's default function context. */
+const LONG = Array.from({ length: 30 }, (_, index) =>
+	index % 10 === 0 ? `function part${index}() {` : `\treturn ${index};`,
+);
 
 function git(...args: string[]): string {
 	return execFileSync(
@@ -56,11 +61,23 @@ beforeAll(() => {
 	repo = mkdtempSync(join(tmpdir(), "harbour-isolate-git-"));
 	git("init", "--quiet", "--initial-branch=main");
 	git("remote", "add", "origin", "https://github.com/harbour-fixtures/site.git");
-	write({ "README.md": "# site\n", "src/index.ts": "export const a = 1;\n", "src/gone.ts": "gone\n" });
+	write({
+		"README.md": "# site\n",
+		"src/index.ts": "export const a = 1;\n",
+		"src/gone.ts": "gone\n",
+		"src/long.ts": LONG.join("\n"),
+		"docs/old.md": "old\n",
+	});
 	git("add", "-A");
 	git("commit", "--quiet", "-m", "first");
-	write({ "src/index.ts": "export const a = 2;\n" });
-	git("commit", "--quiet", "-am", "second\n\nwith a body");
+	// Two hunks in one file, a file without its last newline, a new file and a deleted one.
+	const long = [...LONG];
+	long[4] = "\treturn four;";
+	long[24] = "\treturn 25; // changed";
+	write({ "src/index.ts": "export const a = 2;\n", "src/long.ts": `${long.join("\n")}\n`, "docs/new.md": "new\n" });
+	rmSync(join(repo, "docs/old.md"));
+	git("add", "-A");
+	git("commit", "--quiet", "-m", "second\n\nwith a body");
 	// Work in progress: one staged edit, one unstaged edit, one deletion and one new file.
 	write({ "README.md": "# site, staged\n" });
 	git("add", "README.md");
@@ -106,10 +123,27 @@ describe("git reads in the isolate tier", () => {
 		await same("git show HEAD~1:src/index.ts");
 		await same("git cat-file -t HEAD");
 		await same("git cat-file -p HEAD:src");
+		// Diffs: a commit's, between revisions, and of the work in progress.
+		await same("git show HEAD");
+		await same("git show HEAD~1");
+		await same("git show --name-status HEAD");
+		await same("git show --name-only HEAD");
+		await same("git show -s HEAD");
+		await same("git diff HEAD~1 HEAD");
+		await same("git diff HEAD~1..HEAD -- src");
+		await same("git diff --stat HEAD~1 HEAD");
+		await same("git diff");
+		await same("git diff --cached");
+		await same("git diff HEAD");
+		await same("git diff --name-status HEAD");
 		const head = git("rev-parse", "HEAD").trim();
 		expect((await run("git log -1")).stdout).toBe(
-			`commit ${head}\nAuthor: Harbour <harbour@example.test>\nDate:   Thu, 01 Oct 2026 00:00:00 GMT\n\n    second\n    \n    with a body\n`,
+			`commit ${head}\nAuthor: Harbour <harbour@example.test>\nDate:   Thu Oct 1 00:00:00 2026 +0000\n\n    second\n    \n    with a body\n`,
 		);
+		await same("git log");
+		// 06:33:59 UTC, in the author's zone.
+		expect(gitDate(1791873239, -420)).toBe("Tue Oct 13 13:33:59 2026 +0700");
+		expect(gitDate(1791873239, 330)).toBe("Tue Oct 13 01:03:59 2026 -0530");
 		const long = (await run("git status")).stdout;
 		expect(long).toContain("On branch main\n");
 		expect(long).toContain("Changes to be committed:\n\tmodified:   README.md\n");

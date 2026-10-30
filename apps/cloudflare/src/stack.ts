@@ -504,13 +504,14 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
 		// A git seed writes the last 50 commits, without blobs, as a shallow `.git` next to the tree, for the isolate's `git`
-		// (src/sandboxes.ts). Best effort: a failed history fetch seeds the tree alone, and says why in the Worker's logs.
+		// (src/sandboxes.ts), with the blobs of recent diffs. Best effort: a failed fetch seeds what it can (the tree alone,
+		// or history without those blobs), and says why in the Worker's logs.
 		const seeders = {
 			git: createGitHubTarballFetcher({
 				fetch: gitFetch,
 				history: {
 					onError: (error, source) =>
-						console.warn(`harbour: seeding the history of ${source.repo}@${source.ref} failed; no .git`, error),
+						console.warn(`harbour: the git history of ${source.repo}@${source.ref} was seeded only in part`, error),
 				},
 			}),
 		};

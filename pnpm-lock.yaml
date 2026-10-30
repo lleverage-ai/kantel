@@ -587,6 +587,9 @@ importers:
       "@jitl/quickjs-wasmfile-release-sync":
         specifier: 0.32.0
         version: 0.32.0
+      diff:
+        specifier: 8.0.4
+        version: 8.0.4
       isomorphic-git:
         specifier: 1.44.8
         version: 1.44.8
