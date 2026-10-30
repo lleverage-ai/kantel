@@ -368,6 +368,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const auditAccess: ProjectAccess = {
 		require: (ctx, check) => lateAccess().require(ctx, check),
 		allows: (ctx, check) => lateAccess().allows(ctx, check),
+		resource: (ctx, check) => lateAccess().resource(ctx, check),
+		allowsResource: (ctx, check) => lateAccess().allowsResource(ctx, check),
 	};
 	const store: AuditStore =
 		driver === undefined

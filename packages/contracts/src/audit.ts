@@ -33,7 +33,8 @@ export type AuditSource =
 	| "skills"
 	| "memory"
 	| "access"
-	| "control";
+	| "control"
+	| "sharing";
 
 /**
  * Well-known event types. Components may add their own `<source>.<noun>.<verb>` types; these are the ones other
