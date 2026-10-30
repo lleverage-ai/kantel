@@ -5896,6 +5896,36 @@
 					},
 					{
 						"type": "object",
+						"required": ["op", "itemId", "path", "append"],
+						"properties": {
+							"op": {
+								"type": "string",
+								"const": "args"
+							},
+							"itemId": {
+								"type": "string"
+							},
+							"path": {
+								"type": "array",
+								"items": {
+									"anyOf": [
+										{
+											"type": "string"
+										},
+										{
+											"type": "number"
+										}
+									]
+								},
+								"description": "Keys and indexes to a string in the tool item's `args`; missing ones are created."
+							},
+							"append": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
 						"required": ["op", "status", "attention"],
 						"properties": {
 							"op": {
@@ -5938,7 +5968,7 @@
 					}
 				],
 				"title": "DeltaOp",
-				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's."
+				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, `args` appends streamed text to a string in a tool item's arguments, and `status`, `title` and `usage` set the session's."
 			},
 			"DraftDocument": {
 				"type": "object",
@@ -8518,7 +8548,13 @@
 							}
 						]
 					},
-					"args": {},
+					"args": {
+						"description": "The call's arguments; while `streaming`, the model's partial JSON parsed so far."
+					},
+					"streaming": {
+						"type": "boolean",
+						"description": "True while the model is still writing the call: its arguments are arriving and it hasn't started."
+					},
 					"output": {
 						"type": "string"
 					},

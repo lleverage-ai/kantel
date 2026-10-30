@@ -1,5 +1,5 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
-import { memo, type ReactNode, useEffect, useId, useState } from "react";
+import { memo, type ReactNode, useEffect, useId, useMemo, useState } from "react";
 import { Code, languageForPath } from "../code/code.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
@@ -20,6 +20,8 @@ import {
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { ClockTime } from "../primitives/time.tsx";
+import { ToolViewCard } from "./tool-views.tsx";
+import { openByDefault, toolView, toolViewLabel } from "./tool-views-model.ts";
 import "./tool-call.css";
 
 // A tool call as one quiet work-log line, after T3 Code's work-log row (TimelineWorkEntryRow.tsx, WorkLog.tsx at
@@ -28,6 +30,10 @@ import "./tool-call.css";
 // hover or focus, and how long the work took is said once for the group ("Worked for 8s"). The arguments and output
 // are one tap away and rendered only while open; nothing about a call shouts while it runs, though its label is at
 // full strength (see tool-call.css) so the call happening now is read before the finished ones.
+//
+// The file and shell tools (write, read, edit, bash) open to a card of their own instead (`tool-views.tsx`): the file
+// as an editor shows it, the edit as a diff, the command as a terminal, growing as the model writes the call. Their
+// raw arguments and output stay one switch away.
 
 type IconComponent = (props: IconProps) => ReactNode;
 
@@ -98,7 +104,7 @@ function Leading({ item }: { item: ToolItem }) {
 	}
 }
 
-function Detail({ item, id, images }: { item: ToolItem; id: string; images: boolean }) {
+function Detail({ item, id, images }: { item: ToolItem; id?: string; images: boolean }) {
 	const args = formatArgs(item.args);
 	const running = item.status === "running";
 	const output = item.output ?? "";
@@ -217,11 +223,18 @@ export const ToolCallChip = memo(function ToolCallChip({
 	images = "inline",
 }: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
-	const [open, setOpen] = useState(defaultOpen);
+	// Recomputed only when the call's name or arguments change, so a card's views keep their memoised parts.
+	const view = useMemo(
+		() => toolView({ name: item.name, args: item.args, streaming: item.streaming }),
+		[item.name, item.args, item.streaming],
+	);
+	const [open, setOpen] = useState(defaultOpen || openByDefault(view));
+	const [raw, setRaw] = useState(false);
 	const id = useId();
+	const label = view === undefined ? item.label : toolViewLabel(view, item.status);
 	return (
 		<div
-			className={`hb-tool hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}`}
+			className={`hb-tool hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}${item.streaming ? " hb-tool-streaming" : ""}`}
 			data-call={item.callId}
 		>
 			<button
@@ -234,12 +247,24 @@ export const ToolCallChip = memo(function ToolCallChip({
 				<span className="hb-tool-icon">
 					<Leading item={item} />
 				</span>
-				<span className="hb-tool-label">{item.label}</span>
+				<span className="hb-tool-label">{label}</span>
 				<ClockTime at={item.at} className="hb-tool-stamp" />
 				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
 			</button>
 			{browserView ?? (images === "inline" ? <ToolImages item={item} /> : null)}
-			{open ? <Detail item={item} id={id} images={images === "detail"} /> : null}
+			{!open ? null : view === undefined ? (
+				<Detail item={item} id={id} images={images === "detail"} />
+			) : (
+				<div id={id}>
+					<ToolViewCard
+						item={item}
+						view={view}
+						raw={raw}
+						onRawChange={setRaw}
+						rawView={<Detail item={item} images={images === "detail"} />}
+					/>
+				</div>
+			)}
 		</div>
 	);
 });

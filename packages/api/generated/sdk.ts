@@ -325,7 +325,7 @@ export interface DecideAccessRequestBody {
 	readonly revision?: number;
 }
 
-/** `append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's. */
+/** `append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, `args` appends streamed text to a string in a tool item's arguments, and `status`, `title` and `usage` set the session's. */
 export type DeltaOp =
 	| {
 			readonly op: "append";
@@ -340,6 +340,13 @@ export type DeltaOp =
 			readonly itemId: string;
 			readonly append: string;
 			readonly field?: "text" | "thinking" | "document";
+	  }
+	| {
+			readonly op: "args";
+			readonly itemId: string;
+			/** Keys and indexes to a string in the tool item's `args`; missing ones are created. */
+			readonly path: readonly (string | number)[];
+			readonly append: string;
 	  }
 	| {
 			readonly op: "status";
@@ -1401,7 +1408,10 @@ export interface ToolItem {
 	/** A plain-language label, such as "Reading notes/x.md". */
 	readonly label: string;
 	readonly status: "running" | "done" | "error" | "interrupted";
+	/** The call's arguments; while `streaming`, the model's partial JSON parsed so far. */
 	readonly args?: unknown;
+	/** True while the model is still writing the call: its arguments are arriving and it hasn't started. */
+	readonly streaming?: boolean;
 	readonly output?: string;
 	/** The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. */
 	readonly files?: readonly PresentedFile[];

@@ -80,11 +80,12 @@ export type SessionState = {
 /** Ops that only grow something already on screen; these wait to be coalesced. */
 const streamOnly = (op: DeltaOp): boolean =>
 	op.op === "text" ||
+	op.op === "args" ||
 	op.op === "usage" ||
 	(op.op === "replace" && op.item.kind === "tool" && op.item.status === "running");
 
 const touched = (op: DeltaOp): string | undefined =>
-	op.op === "text" ? op.itemId : op.op === "append" || op.op === "replace" ? op.item.id : undefined;
+	op.op === "text" || op.op === "args" ? op.itemId : op.op === "append" || op.op === "replace" ? op.item.id : undefined;
 
 export class SessionClient {
 	private state: SessionState;

@@ -1,0 +1,192 @@
+/* An inline terminal: a darker well than code, the prompt in green, output in the terminal's own text colour with
+   ANSI runs mapped to the 16 --hb-ansi-* colours, stderr (when a tool keeps it apart) in a soft red. Collapsed, the
+   output is a window of its last lines. */
+
+.hb-terminal {
+	--hb-code-line: calc(var(--hb-text-code) * var(--hb-leading));
+
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	background: var(--hb-terminal);
+	color: var(--hb-terminal-text);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	line-height: var(--hb-leading);
+}
+
+.hb-terminal-command {
+	padding: var(--hb-space-5) var(--hb-space-6) var(--hb-space-2);
+	overflow-x: auto;
+}
+
+.hb-terminal-prompt-line {
+	display: flex;
+	gap: var(--hb-space-4);
+	white-space: pre;
+}
+
+.hb-terminal-prompt {
+	flex: none;
+	color: var(--hb-terminal-prompt);
+	user-select: none;
+}
+
+.hb-terminal-command-text {
+	min-width: 0;
+	color: var(--hb-terminal-text);
+	user-select: text;
+}
+
+.hb-terminal-scroll {
+	min-width: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+	padding: var(--hb-space-2) var(--hb-space-6) var(--hb-space-5);
+}
+
+.hb-terminal-collapsed .hb-terminal-scroll {
+	max-height: calc(var(--hb-code-line) * var(--hb-code-lines) + var(--hb-space-2) + var(--hb-space-5));
+}
+
+.hb-terminal-output {
+	width: max-content;
+	min-width: 100%;
+	margin: 0;
+	font: inherit;
+	white-space: pre;
+	user-select: text;
+}
+
+.hb-terminal-stderr {
+	color: var(--hb-terminal-stderr);
+}
+
+.hb-terminal-caret {
+	margin-left: 0;
+}
+
+.hb-terminal-more {
+	border-top-color: var(--hb-border);
+}
+
+.hb-terminal-footer {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	padding: var(--hb-space-3) var(--hb-space-6);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+	font-family: var(--hb-font-sans);
+	font-size: var(--hb-text-xs);
+	color: var(--hb-text-faint);
+}
+
+/* ANSI runs: the 16 colours by palette index (0-7 normal, 8-15 bright), each a --hb-ansi-N token. */
+.hb-ansi-bold {
+	font-weight: var(--hb-weight-strong);
+}
+.hb-ansi-dim {
+	opacity: 0.65;
+}
+.hb-ansi-italic {
+	font-style: italic;
+}
+.hb-ansi-underline {
+	text-decoration: underline;
+}
+.hb-ansi-fg-0 {
+	color: var(--hb-ansi-0);
+}
+.hb-ansi-fg-1 {
+	color: var(--hb-ansi-1);
+}
+.hb-ansi-fg-2 {
+	color: var(--hb-ansi-2);
+}
+.hb-ansi-fg-3 {
+	color: var(--hb-ansi-3);
+}
+.hb-ansi-fg-4 {
+	color: var(--hb-ansi-4);
+}
+.hb-ansi-fg-5 {
+	color: var(--hb-ansi-5);
+}
+.hb-ansi-fg-6 {
+	color: var(--hb-ansi-6);
+}
+.hb-ansi-fg-7 {
+	color: var(--hb-ansi-7);
+}
+.hb-ansi-fg-8 {
+	color: var(--hb-ansi-8);
+}
+.hb-ansi-fg-9 {
+	color: var(--hb-ansi-9);
+}
+.hb-ansi-fg-10 {
+	color: var(--hb-ansi-10);
+}
+.hb-ansi-fg-11 {
+	color: var(--hb-ansi-11);
+}
+.hb-ansi-fg-12 {
+	color: var(--hb-ansi-12);
+}
+.hb-ansi-fg-13 {
+	color: var(--hb-ansi-13);
+}
+.hb-ansi-fg-14 {
+	color: var(--hb-ansi-14);
+}
+.hb-ansi-fg-15 {
+	color: var(--hb-ansi-15);
+}
+.hb-ansi-bg-0 {
+	background: var(--hb-ansi-0);
+}
+.hb-ansi-bg-1 {
+	background: var(--hb-ansi-1);
+}
+.hb-ansi-bg-2 {
+	background: var(--hb-ansi-2);
+}
+.hb-ansi-bg-3 {
+	background: var(--hb-ansi-3);
+}
+.hb-ansi-bg-4 {
+	background: var(--hb-ansi-4);
+}
+.hb-ansi-bg-5 {
+	background: var(--hb-ansi-5);
+}
+.hb-ansi-bg-6 {
+	background: var(--hb-ansi-6);
+}
+.hb-ansi-bg-7 {
+	background: var(--hb-ansi-7);
+}
+.hb-ansi-bg-8 {
+	background: var(--hb-ansi-8);
+}
+.hb-ansi-bg-9 {
+	background: var(--hb-ansi-9);
+}
+.hb-ansi-bg-10 {
+	background: var(--hb-ansi-10);
+}
+.hb-ansi-bg-11 {
+	background: var(--hb-ansi-11);
+}
+.hb-ansi-bg-12 {
+	background: var(--hb-ansi-12);
+}
+.hb-ansi-bg-13 {
+	background: var(--hb-ansi-13);
+}
+.hb-ansi-bg-14 {
+	background: var(--hb-ansi-14);
+}
+.hb-ansi-bg-15 {
+	background: var(--hb-ansi-15);
+}

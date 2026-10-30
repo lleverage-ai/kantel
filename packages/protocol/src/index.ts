@@ -136,7 +136,16 @@ export interface ToolItem {
 	/** A plain-language chip label, such as "Reading notes/x.md". */
 	readonly label: string;
 	readonly status: ToolItemStatus;
+	/**
+	 * The call's arguments. While `streaming`, the model's partial JSON parsed so far: any field may be missing or cut
+	 * short, and `args` ops grow its strings.
+	 */
 	readonly args?: unknown;
+	/**
+	 * True while the model is still writing the call: its arguments are arriving and it hasn't started. The item is
+	 * replaced without it once the call is whole. Absent otherwise.
+	 */
+	readonly streaming?: boolean;
 	readonly output?: string;
 	/** Images the call returned, in order, such as a browser's screenshot of the page it is on. */
 	readonly images?: readonly ToolImage[];
@@ -240,9 +249,22 @@ export type DeltaOp =
 			readonly append: string;
 			readonly field?: "text" | "thinking" | "document";
 	  }
+	/**
+	 * Appends streamed text to the string at `path` in a tool item's `args`, while the model writes the call. A missing
+	 * string starts empty, and missing objects (arrays, for a number key) on the way to it are created.
+	 */
+	| {
+			readonly op: "args";
+			readonly itemId: string;
+			readonly path: readonly ArgsKey[];
+			readonly append: string;
+	  }
 	| { readonly op: "status"; readonly status: SessionStatus; readonly attention: Attention }
 	| { readonly op: "title"; readonly title: string }
 	| { readonly op: "usage"; readonly usage: Usage };
+
+/** A step into a tool call's arguments: an object's key, or an array's index. */
+export type ArgsKey = string | number;
 
 export interface SessionDelta {
 	readonly sessionId: string;
@@ -305,5 +327,6 @@ export interface SessionStreamWriter {
 	publish(ops: readonly DeltaOp[]): Promise<SessionDelta>;
 }
 
+export { type ArgsAppend, appendArgs, argsAppends } from "./args.ts";
 export { parseFixture, serializeFixture } from "./fixture.ts";
 export { applyDelta, applyFrames, attentionFor, ProtocolError } from "./reduce.ts";
