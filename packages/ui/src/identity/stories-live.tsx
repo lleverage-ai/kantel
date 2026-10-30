@@ -20,6 +20,7 @@ import { Field, FieldList, Panel } from "../primitives/surface.tsx";
 import { SignInScreen } from "./sign-in.tsx";
 import type { SignInApi } from "./sign-in-model.ts";
 import { SignedInAs } from "./signed-in-as.tsx";
+import { liveFrame, signInFrame, storyCode, storyNote } from "./story-frames.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "workbench" }, organisationId: "bootstrap" };
 export const LIVE_INVITED = "ada@harbour.test";
@@ -92,14 +93,14 @@ export function LiveSignIn() {
 	}, []);
 	if (world === undefined) return null;
 	return (
-		<div className="hb-story-live">
-			<div className="hb-story-sign-in">
+		<div className={liveFrame}>
+			<div className={signInFrame}>
 				<SignInScreen api={world.api} onSignedIn={() => void world.me().then(setMe)} />
 			</div>
 			<Panel header={<span>Inbox</span>} className="hb-story-inbox" aria-label="Inbox">
-				<p className="hb-story-note">Only {LIVE_INVITED} is invited. Anyone else gets the same answer and no email.</p>
+				<p className={storyNote}>Only {LIVE_INVITED} is invited. Anyone else gets the same answer and no email.</p>
 				{mail.length === 0 ? (
-					<p className="hb-story-note">No email yet.</p>
+					<p className={storyNote}>No email yet.</p>
 				) : (
 					<FieldList>
 						{[...mail].reverse().map((message) => (
@@ -108,7 +109,7 @@ export function LiveSignIn() {
 								label={message.to}
 								extra={`Until ${clockTime(message.expiresAt, Date.now())}`}
 							>
-								<span className="hb-story-code">{message.code}</span>
+								<span className={storyCode}>{message.code}</span>
 							</Field>
 						))}
 					</FieldList>

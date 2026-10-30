@@ -1,82 +1,23 @@
 /*
- * The theme picker, as a command palette: a raised panel near the top of the window over the page, with no dimming,
- * because the page behind it is the preview. A search field, then one row per theme: its swatch, its name, Dark or
- * Light, and a tick on the one that's chosen. Rows are a menu's (menu.css): baseline-aligned, the swatch and the tick
- * moved up onto the middle of the label's capitals.
+ * What stays in CSS of the theme picker; the rest is Tailwind utilities in theme-picker.tsx.
  */
 
-.hb-theme-picker {
-	width: min(var(--hb-palette-width), calc(100vw - var(--hb-space-9)));
-	max-width: none;
-	max-height: none;
-	margin: var(--hb-palette-top) auto auto;
-	padding: 0;
-	overflow: visible;
-	border: 0;
-	background: none;
-	color: var(--hb-text);
-	font-family: var(--hb-font-sans);
-	font-size: var(--hb-text-md);
-}
-
-.hb-theme-picker::backdrop {
-	background: none;
-}
-
+/* Keyframes, and the animation that uses them: the panel drops in as the dialog opens. */
 @keyframes hb-theme-picker-in {
 	from {
 		opacity: 0;
-		transform: translateY(calc(var(--hb-space-2) * -1)) scale(0.99);
+		transform: translateY(calc(var(--hb-step-1) * -1)) scale(0.99);
 	}
-}
-
-.hb-theme-picker-panel {
-	display: flex;
-	flex-direction: column;
-	overflow: hidden;
-	border-radius: var(--hb-radius);
-	background: var(--hb-raised);
-	box-shadow: var(--hb-shadow-float);
 }
 
 .hb-theme-picker[open] .hb-theme-picker-panel {
 	animation: hb-theme-picker-in var(--hb-duration-fast) var(--hb-ease);
 }
 
-.hb-theme-picker-search {
-	height: var(--hb-control-lg);
-	padding: 0 var(--hb-space-6);
-	border: 0;
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-	background: none;
-	color: var(--hb-text);
-	font: inherit;
-	outline: none;
-}
-
-.hb-theme-picker-search::placeholder {
-	color: var(--hb-text-faint);
-}
-
-.hb-theme-picker-list {
-	display: flex;
-	flex-direction: column;
-	max-height: var(--hb-popover-height);
-	padding: var(--hb-space-2);
-	overflow-y: auto;
-	overscroll-behavior: contain;
-}
-
-.hb-theme-picker-empty {
-	margin: 0;
-	padding: var(--hb-space-4);
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-sm);
-}
-
 /*
  * A theme's swatch: its canvas, with a bar of its text colour and three dots of its accent, a syntax colour and its
- * approval amber. The colours come from the theme's own tokens, set on the element by the picker.
+ * approval amber. The colours come from the theme's own tokens, set on the element by the picker. Five layered
+ * backgrounds, which no utility writes legibly.
  */
 .hb-theme-swatch {
 	position: relative;
@@ -90,7 +31,7 @@
 		radial-gradient(circle at 62% 50%, var(--hb-swatch-a) 0 var(--hb-swatch-dot), transparent var(--hb-swatch-dot)),
 		radial-gradient(circle at 80% 50%, var(--hb-swatch-b) 0 var(--hb-swatch-dot), transparent var(--hb-swatch-dot)),
 		radial-gradient(circle at 44% 50%, var(--hb-swatch-accent) 0 var(--hb-swatch-dot), transparent var(--hb-swatch-dot)),
-		linear-gradient(var(--hb-swatch-text), var(--hb-swatch-text)) var(--hb-space-2) 50% / var(--hb-space-3)
+		linear-gradient(var(--hb-swatch-text), var(--hb-swatch-text)) var(--hb-step-1) 50% / var(--hb-step-1_5)
 		var(--hb-hairline) no-repeat,
 		var(--hb-swatch-canvas);
 	box-shadow: inset 0 0 0 var(--hb-hairline) var(--hb-border-strong);
@@ -108,76 +49,14 @@
 	box-shadow: none;
 }
 
-.hb-theme-picker-option {
-	display: flex;
-	flex: none;
-	align-items: baseline;
-	gap: var(--hb-space-5);
-	padding: var(--hb-space-3) var(--hb-space-4);
-	border-radius: var(--hb-radius-sm);
-	line-height: var(--hb-leading);
-	white-space: nowrap;
-	cursor: pointer;
-	user-select: none;
-}
-
-.hb-theme-picker-option[aria-selected="true"] {
-	background: var(--hb-hover);
-}
-
-/* A zero-width character gives the swatch's slot the label's baseline; the swatch then sits on the capitals' middle. */
+/* A zero-width character gives the swatch's and the tick's slots the label's baseline; each is then moved onto the
+   capitals' middle (utilities in theme-picker.tsx). A pseudo-element's escaped content doesn't survive a class name
+   in a JS string, so it stays here. */
 .hb-theme-picker-option::before {
 	content: "\200b";
 	width: 0;
 }
 
-.hb-theme-picker-option > .hb-theme-swatch {
-	translate: 0 var(--hb-on-cap);
-	margin-top: calc(var(--hb-swatch-height) * -1);
-}
-
-.hb-theme-picker-name {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.hb-theme-picker-kind {
-	flex: none;
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-sm);
-}
-
-.hb-theme-picker-check {
-	display: inline-flex;
-	flex: none;
-	align-items: baseline;
-	justify-content: center;
-	width: var(--hb-icon-md);
-	color: var(--hb-accent-text);
-}
-
 .hb-theme-picker-check::before {
 	content: "\200b";
-}
-
-.hb-theme-picker-check > .hb-icon {
-	translate: 0 var(--hb-on-cap);
-	margin-top: calc(var(--hb-icon-md) * -1);
-}
-
-.hb-theme-picker-foot {
-	display: flex;
-	gap: var(--hb-space-7);
-	padding: var(--hb-space-4) var(--hb-space-6);
-	border-top: var(--hb-hairline) solid var(--hb-border);
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-theme-picker-foot > span {
-	display: inline-flex;
-	align-items: center;
-	gap: var(--hb-space-3);
 }

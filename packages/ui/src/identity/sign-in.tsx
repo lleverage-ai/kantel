@@ -12,7 +12,24 @@ import {
 	type SignInProblem,
 	type SignInState,
 } from "./sign-in-model.ts";
-import "./sign-in.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css). One narrow column, centred on the canvas, with no panel
+// around it: T3 Code keeps its sign-in to a heading, a field and one button, and so does this. The column is 360px at
+// 1280px, and the page's own width, less its padding, at 420px.
+
+const title = "m-0 text-lg font-strong leading-tight text-fg";
+/** Under the title, pulled up so it reads as the title's second line. */
+const lede = "m-0 -mt-1.5 text-sm leading-normal text-muted wrap-anywhere";
+const address = "font-medium text-fg";
+/** The field and its button, full width. */
+const form = "flex flex-col gap-3 [&>.hb-button]:w-full";
+/**
+ * The code: larger and monospace, so six digits read as one code and a mistyped one is easy to see. `!` because the
+ * input's own rules (primitives/controls.css) are unlayered and would beat a utility; drop it once TextField is on
+ * utilities.
+ */
+const codeField =
+	"[&_.hb-input]:h-control-lg! [&_.hb-input]:font-mono! [&_.hb-input]:text-lg! [&_.hb-input]:tabular-nums [&_.hb-input:disabled]:text-disabled!";
 
 export interface SignInScreenProps {
 	/** `POST /auth/otp/start` and `/auth/otp/verify`; the identity client's `startOtp` and `verifyOtp` fit. */
@@ -87,9 +104,10 @@ export function SignInScreen({ api, onSignedIn, initial, now = Date.now, product
 	}, [deadline, flow, now]);
 
 	return (
-		<div className="hb-sign-in">
-			<div className="hb-sign-in-card">
-				<p className="hb-sign-in-brand">{product}</p>
+		<div className="grid min-h-full w-full place-items-center px-4 py-12 max-sm:items-start max-sm:py-8">
+			{/* Sits a little above the middle, where the eye starts. */}
+			<div className="flex w-full max-w-90 flex-col gap-3 mb-18 max-sm:mb-0">
+				<p className="m-0 mb-2 text-md font-strong text-fg">{product}</p>
 				{state.step === "email" ? (
 					<EmailStep flow={flow} state={state} product={product} now={now} />
 				) : state.step === "code" ? (
@@ -121,9 +139,9 @@ function EmailStep({
 	};
 	return (
 		<>
-			<h1 className="hb-sign-in-title">Sign in to {product}</h1>
-			<p className="hb-sign-in-lede">Enter your email and we'll send you a {SIGN_IN_CODE_DIGITS}-digit code.</p>
-			<form className="hb-sign-in-form" onSubmit={submit} noValidate>
+			<h1 className={title}>Sign in to {product}</h1>
+			<p className={lede}>Enter your email and we'll send you a {SIGN_IN_CODE_DIGITS}-digit code.</p>
+			<form className={form} onSubmit={submit} noValidate>
 				<TextField
 					label="Email"
 					type="email"
@@ -179,18 +197,18 @@ function CodeStep({
 
 	return (
 		<>
-			<h1 className="hb-sign-in-title">Check your email</h1>
-			<p className="hb-sign-in-lede">
+			<h1 className={title}>Check your email</h1>
+			<p className={lede}>
 				{state.resent ? "We sent a new code to " : "We sent a code to "}
-				<span className="hb-sign-in-email">{state.email}</span>.
+				<span className={address}>{state.email}</span>.
 				{dead ? null : ` It works until ${clockTime(state.expiresAt, now())}.`}
 			</p>
-			<form className="hb-sign-in-form" onSubmit={submit} noValidate>
+			<form className={form} onSubmit={submit} noValidate>
 				<TextField
 					ref={field}
 					label="Code"
 					name="code"
-					className="hb-sign-in-code"
+					className={codeField}
 					inputMode="numeric"
 					autoComplete="one-time-code"
 					spellCheck={false}
@@ -225,7 +243,7 @@ function CodeStep({
 			{notice === undefined ? null : (
 				<Notice level={state.problem?.kind === "unavailable" ? "error" : "warning"}>{notice}</Notice>
 			)}
-			<div className="hb-sign-in-actions">
+			<div className="-mx-2.5 -mt-1.5 flex flex-wrap justify-between gap-2">
 				{dead ? null : (
 					<Button
 						variant="ghost"
@@ -251,9 +269,9 @@ function CodeStep({
 function SignedIn({ email }: { email: string }) {
 	return (
 		<>
-			<h1 className="hb-sign-in-title">You're signed in</h1>
-			<p className="hb-sign-in-lede" role="status">
-				Signed in as <span className="hb-sign-in-email">{email}</span>. Opening Harbour.
+			<h1 className={title}>You're signed in</h1>
+			<p className={lede} role="status">
+				Signed in as <span className={address}>{email}</span>. Opening Harbour.
 			</p>
 		</>
 	);

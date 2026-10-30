@@ -95,4 +95,19 @@ utilities that means `transition-opacity` or `transition-transform`, not `transi
 4. Check it follows a theme switch, such as in the console with the theme picker (`Ctrl+K T`): a utility that
    doesn't change with the theme is reading a copied value, not a token.
 
-The first component converted is `SignedInAs` (src/identity/signed-in-as.tsx).
+The first component converted is `SignedInAs` (src/identity/signed-in-as.tsx). The identity, theme, sharing,
+skills and vault areas followed.
+
+What caught those conversions out:
+
+- Utilities are in a layer, and the primitives' CSS isn't yet, so a primitive's own rule beats a utility on the
+  same property. Override it with `!` (`gap-3!` on a `FormLayout`) and say why beside it, until the primitive is
+  converted too.
+- A page-wide `p { margin: 0 }` used to win over rendered Markdown's paragraph spacing; as `[&_p]:m-0` it is in
+  the utilities layer and no longer does, so Markdown inside the page keeps its own spacing.
+- With preflight off, `border-dashed` (or `-dotted`) styles every side, and the others show at the browser's
+  medium width: write `border-0 border-t border-dashed`.
+- Tailwind finds classes by scanning the source, and a class run straight into an interpolation
+  (`` `border-t${x}` ``) can be missed. Leave a space before `${`.
+- The theme has Tailwind's breakpoints only. A component with its own breakpoint (900px, 1040px) keeps that
+  media query in its .css, on a kept `hb-` class, because `max-[900px]:` is a raw size.

@@ -33,7 +33,17 @@ import {
 	shareState,
 	sortShares,
 } from "./sharing-model.ts";
-import "./sharing-page.css";
+import {
+	sharingActions,
+	sharingBody,
+	sharingDetail,
+	sharingReason,
+	sharingResource,
+	sharingRow,
+	sharingRows,
+	sharingTitle,
+	sharingWhat,
+} from "./sharing-styles.ts";
 
 export interface SharingProject {
 	readonly id: string;
@@ -76,7 +86,7 @@ export function SharingPage({ source, projects, initialProjectId, directory = {}
 	};
 
 	return (
-		<div className="hb-sharing">
+		<div className="flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-5 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				title="Sharing"
 				lede="Skills, memory, vault items and workspaces this project shares with others, what others share with it, and the requests for access waiting on you."
@@ -94,7 +104,7 @@ export function SharingPage({ source, projects, initialProjectId, directory = {}
 			{projectId === undefined ? (
 				<EmptyState title="No project to show">Sharing is per project, and you're in none yet.</EmptyState>
 			) : state.status === "loading" ? (
-				<div className="hb-sharing-loading" aria-busy="true">
+				<div className={sharingBody} aria-busy="true">
 					<Skeleton lines={3} />
 					<Skeleton lines={3} />
 				</div>
@@ -131,12 +141,12 @@ export interface SharingViewProps {
 /** The page's four lists, drawn from what was read. */
 export function SharingView({ overview, directory = {}, now, busy, onDecide, onRevoke, onWithdraw }: SharingViewProps) {
 	return (
-		<div className="hb-sharing-body">
-			<Panel header={<h2 className="hb-sharing-title">Requests to decide</h2>} aria-label="Requests to decide">
+		<div className={sharingBody}>
+			<Panel header={<h2 className={sharingTitle}>Requests to decide</h2>} aria-label="Requests to decide">
 				{overview.inbox.length === 0 ? (
 					<EmptyState title="Nothing waiting on you" />
 				) : (
-					<ul className="hb-sharing-rows">
+					<ul className={sharingRows}>
 						{overview.inbox.map((request) => (
 							<InboxRow
 								key={request.id}
@@ -172,25 +182,22 @@ export function SharingView({ overview, directory = {}, now, busy, onDecide, onR
 				onRevoke={onRevoke}
 				side="incoming"
 			/>
-			<Panel
-				header={<h2 className="hb-sharing-title">This project's requests</h2>}
-				aria-label="This project's requests"
-			>
+			<Panel header={<h2 className={sharingTitle}>This project's requests</h2>} aria-label="This project's requests">
 				{overview.requests.length === 0 ? (
 					<EmptyState title="No requests from this project" />
 				) : (
-					<ul className="hb-sharing-rows">
+					<ul className={sharingRows}>
 						{overview.requests.map((request) => (
-							<li key={request.id} className="hb-sharing-row">
-								<div className="hb-sharing-what">
-									<span className="hb-sharing-resource">{resourceText(request.resource, directory)}</span>
-									<span className="hb-sharing-detail">
+							<li key={request.id} className={sharingRow}>
+								<div className={sharingWhat}>
+									<span className={sharingResource}>{resourceText(request.resource, directory)}</span>
+									<span className={sharingDetail}>
 										{PERMISSION_LABELS[request.permission]} for {granteeText(request.grantee, directory)}, asked by{" "}
 										{actorText(request.requestedBy, directory)} <ClockTime at={request.createdAt} now={now} />
 									</span>
-									<span className="hb-sharing-reason">{request.reason}</span>
+									<span className={sharingReason}>{request.reason}</span>
 								</div>
-								<div className="hb-sharing-actions">
+								<div className={sharingActions}>
 									<Badge
 										tone={request.status === "granted" ? "done" : request.status === "pending" ? "accent" : "neutral"}
 									>
@@ -233,17 +240,17 @@ export function InboxRow({
 	const [agentWrites, setAgentWrites] = useState(false);
 	const choices = grantablePermissions(request.permission);
 	return (
-		<li className="hb-sharing-row">
-			<div className="hb-sharing-what">
-				<span className="hb-sharing-resource">{resourceText(request.resource, directory)}</span>
-				<span className="hb-sharing-detail">
+		<li className={sharingRow}>
+			<div className={sharingWhat}>
+				<span className={sharingResource}>{resourceText(request.resource, directory)}</span>
+				<span className={sharingDetail}>
 					{PERMISSION_LABELS[request.permission]} for {granteeText(request.grantee, directory)}, asked by{" "}
 					{actorText(request.requestedBy, directory)} <ClockTime at={request.createdAt} now={now} />
 					{request.expiresAt === undefined ? null : `, for ${expiryText(request.expiresAt, now).replace(/ left$/, "")}`}
 				</span>
-				<span className="hb-sharing-reason">{request.reason}</span>
+				<span className={sharingReason}>{request.reason}</span>
 			</div>
-			<div className="hb-sharing-actions">
+			<div className={sharingActions}>
 				{choices.length > 1 ? (
 					<SelectField
 						label="Grant"
@@ -305,23 +312,23 @@ export function ShareList({
 	heading?: "h2" | "h3";
 }) {
 	return (
-		<Panel header={<Heading className="hb-sharing-title">{title}</Heading>} aria-label={title}>
+		<Panel header={<Heading className={sharingTitle}>{title}</Heading>} aria-label={title}>
 			{shares.length === 0 ? (
 				<EmptyState title={empty} />
 			) : (
-				<ul className="hb-sharing-rows">
+				<ul className={sharingRows}>
 					{sortShares(shares, now).map((share) => {
 						const state = shareState(share, now);
 						return (
-							<li key={share.id} className="hb-sharing-row">
-								<div className="hb-sharing-what">
-									<span className="hb-sharing-resource">
+							<li key={share.id} className={sharingRow}>
+								<div className={sharingWhat}>
+									<span className={sharingResource}>
 										{side === "resource"
 											? sentenceCase(granteeText(share.grantee, directory)) +
 												(share.resource.revision === undefined ? "" : `, revision ${share.resource.revision}`)
 											: resourceText(share.resource, directory)}
 									</span>
-									<span className="hb-sharing-detail">
+									<span className={sharingDetail}>
 										{side === "outgoing"
 											? `With ${granteeText(share.grantee, directory)}, shared by `
 											: side === "incoming"
@@ -337,10 +344,10 @@ export function ShareList({
 										)}
 									</span>
 									{share.parentShareId === undefined ? null : (
-										<span className="hb-sharing-reason">Passed on by a supervising session.</span>
+										<span className={sharingReason}>Passed on by a supervising session.</span>
 									)}
 								</div>
-								<div className="hb-sharing-actions">
+								<div className={sharingActions}>
 									<Badge tone={state === "active" ? "accent" : "neutral"}>{PERMISSION_LABELS[share.permission]}</Badge>
 									{agentWritesText(share) === undefined ? null : <Badge>{agentWritesText(share)}</Badge>}
 									{state === "active" ? (

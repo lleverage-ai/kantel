@@ -3,7 +3,7 @@ import { Badge } from "../primitives/status.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import { SignedInAs, type SignedInAsProps } from "./signed-in-as.tsx";
-import "./stories.css";
+import { sidebarFoot, sidebarFrame } from "./story-frames.ts";
 
 export default { title: "Identity/Signed in as" } satisfies StoryDefault;
 
@@ -11,7 +11,7 @@ export default { title: "Identity/Signed in as" } satisfies StoryDefault;
 function Foot(props: SignedInAsProps & { projects?: readonly string[] }) {
 	const { projects, ...rest } = props;
 	return (
-		<div className="hb-story-sidebar">
+		<div className={sidebarFrame}>
 			{projects === undefined ? null : (
 				<nav aria-label="Projects">
 					{projects.map((name, index) => (
@@ -19,7 +19,7 @@ function Foot(props: SignedInAsProps & { projects?: readonly string[] }) {
 					))}
 				</nav>
 			)}
-			<div className="hb-story-sidebar-foot">
+			<div className={sidebarFoot}>
 				<SignedInAs {...rest} />
 			</div>
 		</div>

@@ -5,7 +5,7 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { ApiKeysPage } from "./api-keys.tsx";
 import type { ApiKeysApi, ApiKeysState, KeyProject } from "./api-keys-model.ts";
 import { ApiKeysLive } from "./stories-live-keys.tsx";
-import "./stories.css";
+import { pageFrame } from "./story-frames.ts";
 
 export default { title: "Identity/API keys" } satisfies StoryDefault;
 
@@ -135,7 +135,7 @@ function Page({
 	const [made] = useState(api);
 	const [start] = useState(initial ?? (() => undefined));
 	return (
-		<div className="hb-story-keys">
+		<div className={pageFrame}>
 			<ApiKeysPage
 				api={made}
 				projects={projects}

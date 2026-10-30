@@ -8,7 +8,12 @@ import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { methodText } from "../session/vault-model.ts";
 import type { GrantSummary } from "./load.ts";
 import { usesText } from "./vault-page-model.ts";
-import "./grant-list.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css): one row per grant, Stop always visible (not on hover), so
+// it works the same with touch.
+
+/** A line of facts about a grant, wrapping between them. */
+const meta = "flex flex-wrap gap-x-2.5 text-xs text-muted wrap-anywhere";
 
 export type ActiveGrantListProps = {
 	grants: readonly GrantSummary[];
@@ -40,22 +45,24 @@ const GrantRow = memo(function GrantRow({
 	const name = summary.itemName ?? "A credential";
 	const who = [summary.requester?.agent, summary.requester?.session].filter(Boolean).join(" in ");
 	return (
-		<li className={`hb-grant-row${current ? " hb-grant-row-current" : ""}`}>
-			<KeyIcon size="sm" className="hb-grant-row-icon" />
-			<div className="hb-grant-row-text">
-				<p className="hb-grant-row-title">
-					{name} <span className="hb-grant-row-on">on</span> <span className="hb-mono">{grant.route.host}</span>
+		<li
+			className={`flex min-w-0 items-start gap-2.5 border-border px-3 py-2.5 not-first:border-t ${current ? "bg-selected" : ""}`}
+		>
+			<KeyIcon size="sm" className="mt-0.5 flex-none text-faint" />
+			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+				<p className="font-medium wrap-anywhere">
+					{name} <span className="font-regular text-muted">on</span> <span className="hb-mono">{grant.route.host}</span>
 				</p>
-				<p className="hb-grant-row-meta">
+				<p className={meta}>
 					<span className="hb-mono">{methodText(grant.route.methods)}</span>{" "}
 					<span className="hb-mono">{grant.route.pathPrefix}</span>
 				</p>
-				<p className="hb-grant-row-meta">
+				<p className={meta}>
 					<span>{usesText(grant)}</span>
 					<span>{grant.expiresAt === undefined ? "No expiry" : timeLeft(grant.expiresAt, now)}</span>
 				</p>
-				{who === "" ? null : <p className="hb-grant-row-meta">{who}</p>}
-				{failed ? <p className="hb-grant-row-error">The vault didn't stop it. Try again.</p> : null}
+				{who === "" ? null : <p className={meta}>{who}</p>}
+				{failed ? <p className="text-xs text-status-error">The vault didn't stop it. Try again.</p> : null}
 			</div>
 			<Button
 				size="xs"
@@ -96,14 +103,14 @@ export function ActiveGrantList({
 	const ticking = useNow(1000, fixedNow === undefined && grants.length > 0);
 	const now = fixedNow ?? ticking;
 	return (
-		<section className="hb-grant-list" aria-label={title}>
-			<div className="hb-grant-list-head">
-				<h2 className="hb-grant-list-title">{title}</h2>
-				{grants.length === 0 ? null : <span className="hb-grant-list-count">{grants.length}</span>}
+		<section className="flex min-w-0 flex-col gap-2.5 text-sm text-fg [&_p]:m-0" aria-label={title}>
+			<div className="flex items-baseline gap-2">
+				<h2 className="m-0 text-sm font-medium">{title}</h2>
+				{grants.length === 0 ? null : <span className="text-xs text-faint tabular-nums">{grants.length}</span>}
 			</div>
 			{error === undefined ? null : <Notice level="error">{error}</Notice>}
 			{grants.length === 0 && loading ? (
-				<div className="hb-grant-list-loading">
+				<div className="hb-grant-list-loading flex flex-col gap-4">
 					<span className="hb-sr-only">Loading active grants</span>
 					<Skeleton lines={3} />
 					<Skeleton lines={3} />
@@ -113,7 +120,7 @@ export function ActiveGrantList({
 					When you approve a request, its grant is listed here until it ends.
 				</EmptyState>
 			) : (
-				<ul className="hb-grant-list-items">
+				<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-panel p-0">
 					{grants.map((summary) => (
 						<GrantRow
 							key={summary.grant.id}

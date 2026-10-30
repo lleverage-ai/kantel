@@ -12,7 +12,9 @@ import { Section, Sheet } from "../workbench/specimen.tsx";
 import { createThemeController, type ThemeController } from "./controller.ts";
 import { createThemeRegistry } from "./registry.ts";
 import { ThemePicker, type ThemePickerProps } from "./theme-picker.tsx";
-import "./theme-picker.stories.css";
+
+/** A transcript under the picker, in a 480px frame. */
+const frame = "mt-3 flex h-120 w-full flex-col overflow-hidden rounded-panel border border-border bg-canvas";
 
 export default { title: "Theme/Theme picker" } satisfies StoryDefault;
 
@@ -80,7 +82,7 @@ export const Default: Story = () => (
 		intro="Ctrl+K T (⌘K T) or the palette button by who is signed in. Arrow keys preview each theme on the whole page as you move, Enter keeps it, Escape puts yours back."
 	>
 		<Picker />
-		<div className="hb-story-theme-frame">
+		<div className={frame}>
 			<Transcript items={session} />
 		</div>
 	</Sheet>
@@ -89,11 +91,15 @@ export const Default: Story = () => (
 /** Every built-in theme side by side: a session with code, and the status colours. */
 export const Themes: Story = () => (
 	<Sheet title="Themes" intro="Every built-in theme, each in its own colours. Code follows the theme's syntax palette.">
-		<div className="hb-story-theme-grid">
+		<div className="grid grid-cols-[repeat(auto-fill,minmax(calc(var(--hb-step-12)*9),1fr))] gap-3">
 			{builtinThemes.map((theme) => (
-				<section key={theme.id} data-hb-theme={theme.id} className="hb-app hb-story-theme-card">
-					<h2 className="hb-story-theme-name">{theme.name}</h2>
-					<div className="hb-story-theme-statuses">
+				<section
+					key={theme.id}
+					data-hb-theme={theme.id}
+					className="hb-app flex min-w-0 flex-col gap-2.5 rounded-panel border border-border bg-canvas p-3"
+				>
+					<h2 className="m-0 text-md font-medium text-fg">{theme.name}</h2>
+					<div className="flex flex-wrap gap-2.5">
 						<StatusLabel status="working" />
 						<StatusLabel status="waiting" />
 						<StatusLabel status="approval" />
@@ -112,7 +118,7 @@ export const Loading: Story = () => (
 		title="Code before the highlighter loads"
 		intro="The highlighter is its own chunk, loaded the first time code asks for it. Until then code is plain, in the theme's code colour; then every block highlights in one render."
 	>
-		<pre className="hb-story-theme-pre">
+		<pre className="m-0 rounded-sm bg-code-surface px-3 py-2.5 font-mono text-sm">
 			<code className="hb-syntax">{'const response = await gateway.post("/v1/charges", input);'}</code>
 		</pre>
 	</Sheet>
@@ -135,7 +141,7 @@ export const Streaming: Story = () => (
 		intro="An open fence highlights as it grows. Switching theme mid-stream restyles it without highlighting again."
 	>
 		<Picker />
-		<div className="hb-story-theme-frame">
+		<div className={frame}>
 			<Transcript items={streaming} />
 		</div>
 	</Sheet>

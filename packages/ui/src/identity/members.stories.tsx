@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { MembersPage } from "./members.tsx";
 import type { MemberRow, MembersApi, MembersState } from "./members-model.ts";
-import "./stories.css";
+import { pageFrame } from "./story-frames.ts";
 
 export default { title: "Identity/Members" } satisfies StoryDefault;
 
@@ -45,7 +45,7 @@ function Page({ api, initial }: { api: () => MembersApi; initial?: () => Members
 	const [made] = useState(api);
 	const [start] = useState(initial ?? (() => undefined));
 	return (
-		<div className="hb-story-keys">
+		<div className={pageFrame}>
 			<MembersPage api={made} viewer="usr_tom" {...(start === undefined ? {} : { initial: start })} />
 		</div>
 	);

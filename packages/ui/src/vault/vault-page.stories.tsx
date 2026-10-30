@@ -16,9 +16,12 @@ import type { GrantSummary } from "./load.ts";
 import type { PasskeyCheck } from "./passkey.ts";
 import { VaultPage, type VaultPageProps } from "./vault-page.tsx";
 import { decisionRefusal, type VaultRequest, type Viewer } from "./vault-page-model.ts";
-import "./stories.css";
 
 export default { title: "Vault/Vault page" } satisfies StoryDefault;
+
+/** The page at the console's width, with the audit log under it in some stories. */
+const frame =
+	"flex max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-step-12)_*_2)] flex-col gap-8";
 
 /** The workbench's passkey: a short pause, as a real prompt would take, then confirmed (or cancelled). */
 const fakePasskey =
@@ -124,7 +127,7 @@ function ScenarioPage({
 	);
 
 	return (
-		<div className="vault-story">
+		<div className={frame}>
 			<VaultPage
 				viewer={viewer}
 				vaultHost={VAULT_HOST}
@@ -151,8 +154,13 @@ function ScenarioPage({
 /** The binding-code refusals the vault audited, under the page, so the story shows the record a wrong pick leaves. */
 function AuditRows({ events }: { events: AuditEvent[] }) {
 	return (
-		<section className="vault-story-audit" aria-label="Audit log">
-			<h2 className="vault-story-audit-title">Audit log: binding code refusals ({events.length})</h2>
+		// border-0 first: border-dashed styles every side, and with preflight off the others would show at the browser's
+		// medium width.
+		<section
+			className="flex flex-col gap-2.5 border-0 border-t border-dashed border-border-strong pt-4"
+			aria-label="Audit log"
+		>
+			<h2 className="m-0 text-xs font-medium text-muted">Audit log: binding code refusals ({events.length})</h2>
 			{events.map((event) => (
 				<FieldList key={event.id}>
 					<Field label="Type">
@@ -243,7 +251,7 @@ const noop = async () => {
 };
 
 export const Loading: Story = () => (
-	<div className="vault-story">
+	<div className={frame}>
 		<VaultPage
 			viewer={people.tom}
 			vaultHost={VAULT_HOST}
@@ -257,7 +265,7 @@ export const Loading: Story = () => (
 );
 
 export const Empty: Story = () => (
-	<div className="vault-story">
+	<div className={frame}>
 		<VaultPage
 			viewer={people.tom}
 			vaultHost={VAULT_HOST}
@@ -271,7 +279,7 @@ export const Empty: Story = () => (
 
 // biome-ignore lint/suspicious/noShadowRestrictedNames: every component's error state is the story named Error.
 export const Error: Story = () => (
-	<div className="vault-story">
+	<div className={frame}>
 		<VaultPage
 			viewer={people.tom}
 			vaultHost={VAULT_HOST}
