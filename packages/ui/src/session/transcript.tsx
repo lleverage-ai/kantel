@@ -30,6 +30,17 @@ import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent-model.ts";
 import { ToolCallGroup } from "./tool-call.tsx";
 import {
+	FOLLOWING,
+	type Follow,
+	type FollowEvent,
+	isAtEnd,
+	type Navigation,
+	nextFollow,
+	releases,
+	scrollKey,
+	upwardScrollDetector,
+} from "./transcript-follow.ts";
+import {
 	activeBrowsingRow,
 	type BrowserViewSlot,
 	browserViewSlots,
@@ -45,19 +56,41 @@ import { LiveActivity, WorkingIndicator } from "./working-indicator.tsx";
 import "./transcript.css";
 
 // The virtualised transcript. Only the rows near the viewport are mounted, whatever the session's length. It follows
-// new output only while the reader is at the bottom (T3 Code's useTimelineFollow.ts:162-196): scrolling up stops
-// following, and returning to the bottom, or the "Scroll to end" button, starts it again. Near the top it asks for
-// the previous history page, and keeps the reader's place when that page is put in front. Once there is nothing
-// older, a paged transcript starts with a quiet "Start of the session" divider, so the reader knows they have it all.
+// new output only while the reader is at the end, as T3 Code's thread does (transcript-follow.ts has the rules):
+// the reader's own input up lets go at once, content changing height never does, and coming back to the end, or the
+// "Scroll to end" button, follows again. Following pins the list to its end directly, never through the virtualiser's
+// scrollToIndex, which keeps scrolling to its target each time a row is measured and so, while an answer streams,
+// would take the reader back to the end after they had scrolled away. Near the top it asks for the previous history
+// page, and keeps the reader's place when that page is put in front. Once there is nothing older, a paged transcript
+// starts with a quiet "Start of the session" divider, so the reader knows they have it all.
 
-/** How close to the bottom still counts as at the bottom, in CSS pixels. */
-const AT_BOTTOM_PX = 48;
 /** How close to the top asks for the previous page. */
 const LOAD_OLDER_PX = 600;
 /** How far beyond the viewport rows stay mounted. */
 const BUFFER_PX = 600;
 /** How long a linked turn stays highlighted once the list has landed on it (ms); its fade is the CSS's. */
 const HIGHLIGHT_MS = 2400;
+/** The most frames a landing on a linked turn keeps correcting itself while the rows around it are measured. */
+const LANDING_FRAMES = 60;
+
+/**
+ * Whether a wheel over `target` scrolls something inside the list rather than the list: a code block or a tool's
+ * output that can still scroll that way, or one that keeps its scrolling to itself (T3 Code's timelineScrollTarget.ts).
+ */
+function innerScrollerTakes(target: EventTarget | null, list: HTMLElement, deltaY: number): boolean {
+	for (
+		let element = target instanceof Element ? target : null;
+		element && element !== list;
+		element = element.parentElement
+	) {
+		const style = getComputedStyle(element);
+		if (style.overflowY !== "auto" && style.overflowY !== "scroll") continue;
+		const canScroll =
+			deltaY < 0 ? element.scrollTop > 0 : element.scrollTop < element.scrollHeight - element.clientHeight;
+		if (canScroll || style.overscrollBehaviorY === "contain" || style.overscrollBehaviorY === "none") return true;
+	}
+	return false;
+}
 
 // A fixed spacer always sits after the last row, so the bottom padding never belongs to a real row: if it did, the
 // row that was last would render again, to lose it, every time an item arrived.
@@ -478,7 +511,9 @@ export function Transcript({
 
 	const list = useRef<VListHandle>(null);
 	const frame = useRef<HTMLElement>(null);
-	const following = useRef(true);
+	// Following lives in a ref the list's listeners read as events arrive; a render reads only whether Scroll to end
+	// shows, so scrolling re-renders nothing unless that changes.
+	const follow = useRef<Follow>(FOLLOWING);
 	const [showEnd, setShowEnd] = useState(false);
 	// A docked composer rests while the reader is away from the end; see the dock below.
 	const [resting, setResting] = useState(false);
@@ -499,11 +534,80 @@ export function Transcript({
 		entries.length > count.current &&
 		count.current > 1;
 
-	const toBottom = useCallback(() => {
-		const handle = list.current;
-		if (handle === null || entries.length <= 1) return;
-		handle.scrollToIndex(entries.length - 1, { align: "end" });
-	}, [entries.length]);
+	const viewportOf = useCallback((): HTMLElement | null => {
+		const viewport = frame.current?.firstElementChild;
+		return viewport instanceof HTMLElement ? viewport : null;
+	}, []);
+
+	// The end, at once: one write of the list's own scroll offset, which the virtualiser takes as any scroll. Rows it
+	// then measures change the content's height, and the observer below pins again while following.
+	const pin = useCallback(() => {
+		const viewport = viewportOf();
+		if (viewport === null) return;
+		const end = viewport.scrollHeight - viewport.clientHeight;
+		if (viewport.scrollTop < end - 0.5) viewport.scrollTop = end;
+	}, [viewportOf]);
+
+	// Landing on a linked turn or a browser's view: the transcript's own scroll, which may go up, so the scroll events
+	// it causes are held from being taken for the reader's while it lands. The reader's input stops it.
+	const holds = useRef(0);
+	const landing = useRef<(() => void) | undefined>(undefined);
+	const stopLanding = useCallback(() => landing.current?.(), []);
+	const land = useCallback(
+		(index: number) => {
+			stopLanding();
+			holds.current += 1;
+			let frameId = 0;
+			let frames = 0;
+			let still = 0;
+			const stop = () => {
+				cancelAnimationFrame(frameId);
+				landing.current = undefined;
+				// After the frame, so the scroll event of the last write is still held.
+				requestAnimationFrame(() => {
+					holds.current -= 1;
+				});
+			};
+			landing.current = stop;
+			// Rows around the turn are measured as they mount, which moves it, so the landing corrects itself until the
+			// turn has stayed put for a few frames.
+			const step = () => {
+				const handle = list.current;
+				const viewport = viewportOf();
+				if (handle === null || viewport === null) return stop();
+				const end = viewport.scrollHeight - viewport.clientHeight;
+				const centre = handle.getItemOffset(index) + (handle.getItemSize(index) - viewport.clientHeight) / 2;
+				const target = Math.max(0, Math.min(end, centre));
+				if (Math.abs(viewport.scrollTop - target) > 1) {
+					viewport.scrollTop = target;
+					still = 0;
+				} else still += 1;
+				frames += 1;
+				if (still >= 3 || frames >= LANDING_FRAMES) return stop();
+				frameId = requestAnimationFrame(step);
+			};
+			step();
+		},
+		[stopLanding, viewportOf],
+	);
+	useEffect(() => stopLanding, [stopLanding]);
+
+	// One change of following, from the list's events or the transcript's own moves. Coming back to following pins the
+	// list to its very end.
+	const moveFollow = useCallback(
+		(event: FollowEvent) => {
+			const before = follow.current;
+			const after = nextFollow(before, event);
+			if (after === before) return;
+			follow.current = after;
+			setShowEnd(after.mode === "released" && !after.atEnd);
+			if (after.mode === "following") {
+				setResting(false);
+				pin();
+			}
+		},
+		[pin],
+	);
 
 	useLayoutEffect(() => {
 		const initial =
@@ -514,7 +618,12 @@ export function Transcript({
 			rows.length > 0;
 		first.current = firstKey;
 		count.current = entries.length;
-		if (initial || (following.current && !prepended)) toBottom();
+		// Opening a quiet session, the virtualiser lands on the last row itself, settling a few frames sooner than a raw
+		// write it takes for the reader's scroll. Only then: its scroll stays under way until rows stop being measured
+		// for 150 ms, which a running turn never lets happen, and it can't be cancelled.
+		if (initial && !showWorking && entries.length > 1)
+			list.current?.scrollToIndex(entries.length - 1, { align: "end" });
+		else if (initial || (follow.current.mode === "following" && !prepended)) pin();
 	});
 
 	// A linked turn: once its item is loaded, the list lands on it, stops following and highlights it. This runs after
@@ -533,9 +642,8 @@ export function Transcript({
 		const index = entries.indexOf(found.row);
 		if (index < 0) return;
 		landed.current = turn;
-		following.current = false;
-		setShowEnd(true);
-		handle.scrollToIndex(index, { align: "center" });
+		moveFollow({ type: "jumped" });
+		land(index);
 		setHighlight({ row: found.row.id, item: found.item.id });
 	});
 	useEffect(() => {
@@ -555,54 +663,87 @@ export function Transcript({
 		const index = entries.findIndex((entry) => entryKey(entry) === rowId);
 		if (index === -1 || list.current === null) return;
 		focused.current = focusBrowser;
-		following.current = false;
-		setShowEnd(true);
-		list.current.scrollToIndex(index, { align: "center" });
-	}, [focusBrowser, slots, entries]);
+		moveFollow({ type: "jumped" });
+		land(index);
+	}, [focusBrowser, slots, entries, moveFollow, land]);
 
-	// While following, keep the bottom in view as the last row grows (a streamed answer, a tool's output) and as the
-	// viewport itself changes size (a phone's keyboard opening, a window resized).
+	// The list's events. The reader's input that can take the list from its end lets go of it (transcript-follow.ts);
+	// a scroll then says whether the list is in the end band, which follows again once the reader has left it and come
+	// back. While following, the observer keeps the end in view as the content grows (a streamed answer, thinking, a
+	// tool's output, a card, the working row) and as the viewport changes size (a phone's keyboard, a window resized);
+	// while not, a change of height only says whether the list is still at its end, and never moves it.
 	useEffect(() => {
 		if (!showList) return;
-		const viewport = frame.current?.firstElementChild;
+		const viewport = viewportOf();
 		const content = viewport?.firstElementChild;
-		if (!(viewport instanceof HTMLElement) || !(content instanceof HTMLElement)) return;
+		if (viewport === null || !(content instanceof HTMLElement)) return;
+		const metrics = () => ({ top: viewport.scrollTop, height: viewport.scrollHeight, client: viewport.clientHeight });
+		const band = () => moveFollow({ type: isAtEnd(metrics()) ? "reachedEnd" : "leftEnd" });
+		const navigate = (navigation: Navigation) => {
+			if (!releases(navigation, metrics())) return;
+			stopLanding();
+			moveFollow({ type: "navigated" });
+		};
+		const onWheel = (event: WheelEvent) => {
+			if (event.ctrlKey || event.deltaY === 0 || innerScrollerTakes(event.target, viewport, event.deltaY)) return;
+			navigate({ source: "wheel", up: event.deltaY < 0 });
+		};
+		const onKey = (event: KeyboardEvent) => {
+			const key = scrollKey(event.key);
+			if (key === undefined || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+			if (event.isComposing) return;
+			const target = event.target instanceof Element ? event.target : null;
+			if (target?.closest("input, textarea, select, [contenteditable]")) return;
+			navigate({ source: "key", up: key.up });
+		};
+		const onPointer = (event: PointerEvent) => navigate({ source: "pointer", onScrollbar: event.target === viewport });
+		const onTouch = () => navigate({ source: "touch" });
+		const scrolledUp = upwardScrollDetector({ top: viewport.scrollTop, height: viewport.scrollHeight });
+		const onScroll = () => {
+			const scroll = metrics();
+			// An upward scroll with no input seen (an embedded frame's scroll chaining out) is the reader's too.
+			if (scrolledUp({ ...scroll, programmatic: holds.current > 0 }) && !isAtEnd(scroll)) {
+				navigate({ source: "scroll" });
+			}
+			band();
+			if (isAtEnd(scroll)) setResting(false);
+		};
 		const observer = new ResizeObserver(() => {
-			if (following.current) viewport.scrollTop = viewport.scrollHeight;
+			if (follow.current.mode === "following") pin();
+			else band();
 		});
+		viewport.addEventListener("wheel", onWheel, { passive: true });
+		viewport.addEventListener("keydown", onKey);
+		viewport.addEventListener("pointerdown", onPointer, { passive: true });
+		viewport.addEventListener("touchmove", onTouch, { passive: true });
+		viewport.addEventListener("scroll", onScroll, { passive: true });
 		observer.observe(content);
 		observer.observe(viewport);
-		return () => observer.disconnect();
-	}, [showList]);
+		return () => {
+			viewport.removeEventListener("wheel", onWheel);
+			viewport.removeEventListener("keydown", onKey);
+			viewport.removeEventListener("pointerdown", onPointer);
+			viewport.removeEventListener("touchmove", onTouch);
+			viewport.removeEventListener("scroll", onScroll);
+			observer.disconnect();
+		};
+	}, [showList, viewportOf, moveFollow, pin, stopLanding]);
 
-	// Following stops only when the reader moves up (the offset falls while away from the bottom), never because rows
-	// were measured taller after a jump to the end: that scroll event is not the reader's, and the observer above
-	// brings the end back into view. Reaching the bottom by any means starts following again.
-	const lastOffset = useRef(0);
+	// The virtualiser's offset, for paging only. After a failed page only "Try again" asks again, or every scroll
+	// event would.
 	const onScroll = useCallback(
 		(offset: number) => {
-			const handle = list.current;
-			if (handle === null) return;
-			const distance = handle.scrollSize - (offset + handle.viewportSize);
-			const atBottom = distance <= AT_BOTTOM_PX;
-			if (atBottom) {
-				following.current = true;
-				setResting(false);
-			} else if (offset < lastOffset.current) following.current = false;
-			lastOffset.current = offset;
-			setShowEnd(!following.current);
-			// After a failed page only "Try again" asks again, or every scroll event would.
 			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
 		},
 		[hasOlder, loadingOlder, olderError, onLoadOlder],
 	);
 
 	const scrollToEnd = useCallback(() => {
-		following.current = true;
-		setShowEnd(false);
+		stopLanding();
+		moveFollow({ type: "followEnd" });
 		setResting(false);
-		toBottom();
-	}, [toBottom]);
+		pin();
+	}, [moveFollow, pin, stopLanding]);
 
 	// The dock. Its height becomes the room at the list's end, measured as it changes. While the composer rests the
 	// room stays as it was, so folding it doesn't move what the reader is looking at (T3 Code keeps the expanded
@@ -631,7 +772,9 @@ export function Transcript({
 	}, [docked]);
 
 	// Resting: a wheel gesture of 24px or more, a Page Up or Home, or a finger dragging the list, while it can scroll
-	// that way (T3 Code's composerScrollGesture.ts). Scrolling down at the end never rests it; reaching the end wakes it.
+	// that way (T3 Code's composerScrollGesture.ts). Scrolling down in the end band never rests it, so the composer
+	// doesn't fold and unfold on every notch down to the end; reaching the end wakes it. Following is the list's events'
+	// business above, not this.
 	useEffect(() => {
 		if (!docked || !showList) return;
 		const viewport = frame.current?.firstElementChild;
@@ -650,22 +793,16 @@ export function Transcript({
 				now,
 				pixels,
 				canScroll: up ? scroll.top > 0 : !atEnd,
-				downAtEnd: !up && atEnd,
+				downAtEnd: !up && isAtEnd(scroll),
 			});
-			if (!rests) return;
-			// The reader is leaving the end: stop following now, before the scroll event says so, or the re-render
-			// that rests the composer would pin the list back to its end.
-			if (up) following.current = false;
-			setResting(true);
+			if (rests) setResting(true);
 		};
 		const onWheel = (event: WheelEvent) => {
 			if (event.ctrlKey || event.deltaY === 0) return;
 			record(event.timeStamp, event.deltaY, wheelPixels(event.deltaY, event.deltaMode, viewport.clientHeight));
 		};
 		const onKey = (event: KeyboardEvent) => {
-			if (!restsForKey(event.key, position())) return;
-			if (event.key === "PageUp" || event.key === "Home") following.current = false;
-			setResting(true);
+			if (restsForKey(event.key, position())) setResting(true);
 		};
 		let lastY: number | undefined;
 		const onTouchStart = (event: TouchEvent) => {

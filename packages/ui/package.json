@@ -31,7 +31,8 @@
 		"shoot": "node scripts/shoot.ts",
 		"build:harness": "vite build --config loop/harness/vite.config.ts",
 		"gates": "node loop/gates.ts",
-		"measure": "node loop/measure.ts"
+		"measure": "node loop/measure.ts",
+		"follow": "node loop/follow.ts"
 	},
 	"peerDependencies": {
 		"react": ">=19.0.0",
