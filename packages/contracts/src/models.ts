@@ -39,6 +39,7 @@ import type {
 export const MODEL_GATEWAY_PATHS = {
 	config: "/v1/config",
 	messages: "/messages",
+	images: "/images",
 } as const;
 
 /** The pi-ai provider ID and API the runtime uses for every model call. */
@@ -47,6 +48,22 @@ export const HARBOUR_MODEL_API = "pi-messages";
 
 /** The wire APIs connectors speak upstream; all are implemented by pi-ai. */
 export type ModelWireApi = "anthropic-messages" | "openai-completions" | "openai-responses";
+
+/** What a model takes in or gives back: text, images or both. */
+export type ModelModality = "text" | "image";
+
+/**
+ * The wire APIs a connector generates images over, beside its chat APIs:
+ *
+ * - `openai-images`: OpenAI's Images API, `POST <baseUrl>/images/generations` (and `/images/edits` with reference
+ *   images, as multipart form data). OpenAI, LiteLLM, CLIProxyAPI and the compatible presets speak it.
+ * - `chat-modalities`: chat completions with `modalities: ["image", "text"]`, the images coming back in
+ *   `message.images` (pi-ai's `openrouter-images`). OpenRouter and Vercel AI Gateway speak it. Declared, not yet served:
+ *   the gateway refuses it with `not_supported`.
+ */
+export type ModelImageApi = "openai-images" | "chat-modalities";
+
+export const MODEL_IMAGE_APIS: readonly ModelImageApi[] = ["openai-images", "chat-modalities"];
 
 /**
  * A preset fixes the pi-ai provider, the wire APIs, where the key goes and how scope reaches the upstream as
@@ -92,6 +109,8 @@ export interface ModelRates {
 	readonly output: number;
 	readonly cacheRead: number;
 	readonly cacheWrite: number;
+	/** US dollars per generated image, for an image model its catalogue prices per image rather than per token. */
+	readonly image?: number;
 }
 
 /** What a connector's catalogue says about a model, or what an override supplies. */
@@ -105,6 +124,13 @@ export interface ModelOverride {
 	readonly maxTokens?: number;
 	readonly reasoning?: boolean;
 	readonly input?: readonly ("text" | "image")[];
+	/**
+	 * What the model gives back. `image` makes it an image model, which the gateway calls with `images` over its
+	 * `imageApi`; a model without `text` can't be a chat model. Ignored on a preset with no image API (Anthropic).
+	 */
+	readonly output?: readonly ModelModality[];
+	/** The image API this model uses, on a connector whose preset speaks more than one. */
+	readonly imageApi?: ModelImageApi;
 	readonly rates?: ModelRates;
 }
 
@@ -269,6 +295,11 @@ export interface ModelGatewayModel {
 	/** pi thinking level → the upstream's value; `null` marks a level unsupported. */
 	readonly thinkingLevelMap?: { readonly [level: string]: string | null };
 	readonly input: readonly ("text" | "image")[];
+	/**
+	 * What the model gives back: `text` for a chat model, `image` for one `images` can call. An image-only model
+	 * (`["image"]`) is listed for `images`; a chat picker leaves it out, and `messages` refuses it.
+	 */
+	readonly output: readonly ModelModality[];
 	readonly cost: ModelRates;
 	readonly contextWindow: number;
 	readonly maxTokens: number;
@@ -308,6 +339,8 @@ export interface ModelUsage {
 	/** Reasoning tokens, a subset of `output`, when the upstream reports them. */
 	readonly reasoning?: number;
 	readonly totalTokens: number;
+	/** Images the call generated, for an `images` call. */
+	readonly images?: number;
 	readonly cost: {
 		readonly input: number;
 		readonly output: number;
@@ -315,6 +348,53 @@ export interface ModelUsage {
 		readonly cacheWrite: number;
 		readonly total: number;
 	};
+}
+
+/** An image going to or coming from an image model: a raster image, base64. */
+export interface ModelImage {
+	/** `image/png`, `image/jpeg`, `image/webp` or `image/gif`. */
+	readonly mimeType: string;
+	/** Base64, without a `data:` prefix. */
+	readonly data: string;
+}
+
+/** The shape asked for: the gateway picks the size each model takes for it. */
+export type ModelImageAspect = "square" | "landscape" | "portrait";
+
+/** The most images one `images` call may ask for, and the most reference images it may send. */
+export const MAX_IMAGES_PER_CALL = 4;
+export const MAX_REFERENCE_IMAGES = 4;
+
+/** The body of `POST /images`. */
+export interface ModelImagesRequest {
+	/** A model ID `config` listed with `image` in its `output`: a route, or `<route>:<modelId>`. */
+	readonly model: string;
+	/** What to draw, or how to change the reference images. Passed to the upstream, never logged or audited. */
+	readonly prompt: string;
+	/** How many images, 1 to `MAX_IMAGES_PER_CALL`. Default 1. */
+	readonly count?: number;
+	/** The shape, which the gateway turns into a size the model takes. Ignored when `size` is set. */
+	readonly aspect?: ModelImageAspect;
+	/** An exact size the upstream takes, such as `1024x1024` or `auto`. */
+	readonly size?: string;
+	/** How much effort the model spends, on models that take it (`gpt-image-*`); ignored by others. */
+	readonly quality?: "low" | "medium" | "high" | "auto";
+	/** Images to edit or work from; with any, the call is an edit (`/images/edits` on `openai-images`). */
+	readonly images?: readonly ModelImage[];
+}
+
+/** What `images` answers. */
+export interface ModelImagesResult {
+	readonly images: readonly (ModelImage & {
+		/** The prompt the upstream actually used, when it rewrote it (DALL·E 3 does). */
+		readonly revisedPrompt?: string;
+	})[];
+	/** Text the model returned beside the images, if any. */
+	readonly text?: string;
+	readonly usage: ModelUsage;
+	/** The route the call went to, and the upstream model that served it. */
+	readonly route: string;
+	readonly modelId: string;
 }
 
 /** One SSE event of the `messages` stream: pi-ai's `PiMessagesEvent`, as JSON. */
@@ -370,6 +450,37 @@ export type ModelStreamEvent =
 			readonly providerThinkingLevel?: string;
 	  };
 
+/** One model a connector offers, as the console shows it. */
+export interface ConnectorModel {
+	/** The upstream's own ID. */
+	readonly id: string;
+	readonly name: string;
+	readonly input: readonly ModelModality[];
+	readonly output: readonly ModelModality[];
+	/** The image API an image model is called over. */
+	readonly imageApi?: ModelImageApi;
+	readonly contextWindow?: number;
+}
+
+/** A connector and what it offers, without its base URL's secrets, its vault item or its key. */
+export interface ConnectorModels {
+	readonly id: string;
+	readonly owner: ConnectorOwner;
+	readonly preset: ConnectorPreset;
+	/** The routes over this connector the caller can see, by name. */
+	readonly routes: readonly string[];
+	readonly models: readonly ConnectorModel[];
+}
+
+export interface ConnectorImageTest {
+	readonly connectorId: string;
+	readonly modelId: string;
+	/** The project the test is made in and recorded under. */
+	readonly projectId: ProjectId;
+	/** Default: a short prompt for a simple picture. */
+	readonly prompt?: string;
+}
+
 /**
  * What the gateway records for every call. It audits each one as a `model.call` event (source `session`, subject
  * `{ kind: "model.call", id }`) with the record's fields as data: never a prompt, a completion or a key.
@@ -381,6 +492,8 @@ export interface ModelCallRecord {
 	readonly route: string;
 	readonly connectorId: string;
 	readonly modelId: string;
+	/** Which operation the call was: a chat call (`messages`, also when absent) or an image call (`images`). */
+	readonly operation?: "messages" | "images";
 	readonly status: "done" | "error" | "aborted";
 	readonly stopReason?: string;
 	readonly durationMs: number;
@@ -418,6 +531,31 @@ export interface ModelGateway {
 		request: ModelMessagesRequest,
 		signal?: AbortSignal,
 	): Promise<AsyncIterable<ModelStreamEvent>>;
+	/**
+	 * Generates images with a model `config` lists with `image` in its `output`, over its connector's image API: one
+	 * upstream attempt, the key in the preset's header, the preset's attribution. Resolves the route and pins it as
+	 * `messages` does. Rejects with `not_found` for a route the session can't use, `refused` for a model its policy
+	 * excludes, `invalid` for a model that doesn't make images or a malformed request, and `not_supported` for an image
+	 * API the gateway doesn't serve yet. An upstream failure rejects with its text, redacted: `invalid` for a 400,
+	 * `exhausted` for a 429, `unavailable` otherwise. Each call that resolved a route records one `ModelCallRecord` with
+	 * `operation: "images"` and its `model.call` event, as `messages` does; no prompt or image is in either.
+	 */
+	images(session: ModelCallScope, request: ModelImagesRequest, signal?: AbortSignal): Promise<ModelImagesResult>;
+	/**
+	 * The connectors the caller's organisation can use (the platform's and its own) with the models each offers, as its
+	 * catalogue was last refreshed: for the console's connector list and model pickers. Viewer on the organisation (or
+	 * on `filter.projectId`, whose policy then narrows the models). Never a key or a vault item ID.
+	 */
+	listConnectorModels(
+		ctx: CallContext,
+		filter?: { readonly projectId?: ProjectId },
+	): Promise<readonly ConnectorModels[]>;
+	/**
+	 * Makes one small image with `modelId` on `connectorId`, to check the connector can: the console's "Test generate".
+	 * Admin on `projectId`, whose policy must allow the model. Recorded and audited like any `images` call, under the
+	 * project with agent `console` and a fresh session ID per test, so its cost shows.
+	 */
+	testImage(ctx: CallContext, input: ConnectorImageTest): Promise<ModelImagesResult>;
 	/** The calls recorded for the caller's organisation, newest first. Viewer on the project or session filtered by. */
 	listCalls(
 		ctx: CallContext,

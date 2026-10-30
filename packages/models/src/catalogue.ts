@@ -4,23 +4,30 @@
  * connector's overrides on top. What is available is decided by the connector: for `refresh: "gateway"` the upstream's
  * list (`/v1/models`, LiteLLM's `/model/info`), read with the connector's key and cached for a TTL; for `static`,
  * `include` and the overrides. `include` limits either. A model with no pi match is offered only when an override
- * supplies `contextWindow` and `maxTokens`.
+ * supplies `contextWindow` and `maxTokens`, or it makes images.
+ *
+ * What a model gives back (`output`) comes from, in order: the override; the upstream's listing (OpenRouter's
+ * `architecture.output_modalities`, LiteLLM's `mode: "image_generation"` or `supported_output_modalities`, Vercel's
+ * `type: "image"` or its `image-generation` tag); pi's image catalogue; the model's name, on presets that read it
+ * (`outputByName`); else text. A preset with no image API (Anthropic) offers text only.
  */
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
-import { OPENROUTER_MODELS } from "@earendil-works/pi-ai/providers/openrouter.models";
+import { OPENROUTER_IMAGE_MODELS, OPENROUTER_MODELS } from "@earendil-works/pi-ai/providers/openrouter.models";
 import { VERCEL_AI_GATEWAY_MODELS } from "@earendil-works/pi-ai/providers/vercel-ai-gateway.models";
 import type {
 	Clock,
 	ModelCallScope,
 	ModelConnector,
+	ModelImageApi,
+	ModelModality,
 	ModelOverride,
 	ModelRates,
 	ModelWireApi,
 } from "@harbour/contracts";
-import { catalogueUrl, presetSpec, upstreamBaseUrl } from "./presets.ts";
+import { catalogueUrl, outputByName, presetSpec, upstreamBaseUrl } from "./presets.ts";
 import { Redactor } from "./redact.ts";
 
 /** Default lifetime of a refreshed catalogue listing. */
@@ -71,6 +78,27 @@ export function findPiModel(id: string, preferProvider?: string): Model<Api> | u
 	return undefined;
 }
 
+/** pi's image models (`ImageModel`): what they give back and their rates. Only OpenRouter's catalogue has any. */
+interface PiImageModel {
+	readonly id: string;
+	readonly name: string;
+	readonly input: readonly ModelModality[];
+	readonly output: readonly ModelModality[];
+	readonly cost: ModelRates;
+}
+
+const PI_IMAGE_MODELS: ReadonlyMap<string, PiImageModel> = new Map(
+	Object.entries(OPENROUTER_IMAGE_MODELS as unknown as { readonly [id: string]: PiImageModel }),
+);
+
+/** pi's image model for `id`: by its ID, or as `<creator>/<id>` (`gpt-image-1` is `openai/gpt-image-1`). */
+export function findPiImageModel(id: string): PiImageModel | undefined {
+	const exact = PI_IMAGE_MODELS.get(id);
+	if (exact !== undefined) return exact;
+	for (const [key, model] of PI_IMAGE_MODELS) if (key.endsWith(`/${id}`)) return model;
+	return undefined;
+}
+
 /** What an upstream's own listing says about one model. */
 export interface ListedModel {
 	readonly id: string;
@@ -78,6 +106,8 @@ export interface ListedModel {
 	readonly contextWindow?: number;
 	readonly maxTokens?: number;
 	readonly rates?: ModelRates;
+	/** What the model gives back, when the listing says. */
+	readonly output?: readonly ModelModality[];
 }
 
 const asRecord = (value: unknown): { readonly [key: string]: unknown } | undefined =>
@@ -101,18 +131,53 @@ function perMillion(value: unknown): number | undefined {
 		: undefined;
 }
 
+/** A price in dollars as a number; absent or negative is undefined. */
+function dollars(value: unknown): number | undefined {
+	const number = typeof value === "string" ? Number.parseFloat(value) : value;
+	return typeof number === "number" && Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
 function ratesOf(entry: { readonly [key: string]: unknown }): ModelRates | undefined {
 	const pricing = asRecord(entry.pricing);
 	const info = asRecord(entry.model_info);
 	const input = perMillion(pricing?.prompt ?? pricing?.input ?? info?.input_cost_per_token);
 	const output = perMillion(pricing?.completion ?? pricing?.output ?? info?.output_cost_per_token);
-	if (input === undefined || output === undefined) return undefined;
+	// Per generated image: Vercel's `pricing.image` on an image model (OpenRouter's `pricing.image` prices input images,
+	// so it isn't read), and LiteLLM's `output_cost_per_image`.
+	const image = dollars(entry.type === "image" ? pricing?.image : undefined) ?? dollars(info?.output_cost_per_image);
+	const perImage = image === undefined ? {} : { image };
+	if (input === undefined || output === undefined) {
+		return image === undefined ? undefined : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...perImage };
+	}
 	return {
 		input,
 		output,
 		cacheRead: perMillion(pricing?.input_cache_read ?? info?.cache_read_input_token_cost) ?? 0,
 		cacheWrite: perMillion(pricing?.input_cache_write ?? info?.cache_creation_input_token_cost) ?? 0,
+		...perImage,
 	};
+}
+
+const modalities = (value: unknown): readonly ModelModality[] | undefined => {
+	if (!Array.isArray(value)) return undefined;
+	const known = (value as unknown[]).filter((item): item is ModelModality => item === "text" || item === "image");
+	return known.length === 0 ? undefined : [...new Set(known)];
+};
+
+/**
+ * What a listing entry says a model gives back: OpenRouter's `architecture.output_modalities`; LiteLLM's
+ * `model_info.supported_output_modalities`, or `mode: "image_generation"`; Vercel's `type: "image"` (image models), or
+ * an `image-generation` tag on a language model, which then gives back text and images. Undefined when it says nothing.
+ */
+function outputOf(entry: { readonly [key: string]: unknown }): readonly ModelModality[] | undefined {
+	const architecture = asRecord(entry.architecture);
+	const info = asRecord(entry.model_info);
+	const listed = modalities(architecture?.output_modalities) ?? modalities(info?.supported_output_modalities);
+	if (listed !== undefined) return listed;
+	if (info?.mode === "image_generation") return ["image"];
+	if (entry.type === "image") return ["image"];
+	if (Array.isArray(entry.tags) && entry.tags.includes("image-generation")) return ["text", "image"];
+	return undefined;
 }
 
 /**
@@ -139,12 +204,14 @@ export function parseCatalogueListing(body: unknown): readonly ListedModel[] {
 		);
 		const maxTokens = positive(entry.max_tokens, top?.max_completion_tokens, info?.max_output_tokens, info?.max_tokens);
 		const rates = ratesOf(entry);
+		const output = outputOf(entry);
 		listed.push({
 			id,
 			...(typeof name === "string" ? { name } : {}),
 			...(contextWindow === undefined ? {} : { contextWindow }),
 			...(maxTokens === undefined ? {} : { maxTokens }),
 			...(rates === undefined ? {} : { rates }),
+			...(output === undefined ? {} : { output }),
 		});
 	}
 	return listed;
@@ -165,14 +232,39 @@ export interface OfferedModel {
 	readonly id: string;
 	readonly api: ModelWireApi;
 	readonly model: Model<ModelWireApi>;
+	/** What it gives back. A model without `text` is an image model only: `messages` refuses it. */
+	readonly output: readonly ModelModality[];
+	/** The image API it is called over, when it makes images. */
+	readonly imageApi?: ModelImageApi;
 }
 
 const ZERO_RATES: ModelRates = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+/** What `modelId` gives back on `connector`, and the image API it is called over when that includes images. */
+function outputFor(
+	connector: ModelConnector,
+	modelId: string,
+	override: ModelOverride | undefined,
+	listed: ListedModel | undefined,
+): { readonly output: readonly ModelModality[]; readonly imageApi?: ModelImageApi } {
+	const spec = presetSpec(connector.preset);
+	const [defaultImageApi] = spec.imageApis;
+	if (defaultImageApi === undefined) return { output: ["text"] };
+	const id = override?.canonical ?? modelId;
+	const output = override?.output ??
+		listed?.output ??
+		findPiImageModel(id)?.output ??
+		(spec.imageOutputByName ? outputByName(id) : undefined) ?? ["text"];
+	if (!output.includes("image")) return { output };
+	const imageApi =
+		override?.imageApi !== undefined && spec.imageApis.includes(override.imageApi) ? override.imageApi : defaultImageApi;
+	return { output, imageApi };
+}
+
 /**
  * Builds the upstream pi `Model` for `modelId` on `connector`, or undefined when there is no metadata for it: no pi
- * match and no override with `contextWindow` and `maxTokens`. Precedence: the override, then the upstream's listing,
- * then pi's catalogue.
+ * match and no override with `contextWindow` and `maxTokens`, unless it makes images (an image model needs neither).
+ * Precedence: the override, then the upstream's listing, then pi's catalogue.
  */
 export function upstreamModel(
 	connector: ModelConnector,
@@ -182,7 +274,10 @@ export function upstreamModel(
 	const spec = presetSpec(connector.preset);
 	const override: ModelOverride | undefined = connector.catalogue.overrides?.[modelId];
 	const pi = findPiModel(override?.canonical ?? modelId, spec.piProvider);
-	if (pi === undefined && (override?.contextWindow === undefined || override.maxTokens === undefined)) return undefined;
+	const { output, imageApi } = outputFor(connector, modelId, override, listed);
+	const piImage = output.includes("image") ? findPiImageModel(override?.canonical ?? modelId) : undefined;
+	const sized = override?.contextWindow !== undefined && override.maxTokens !== undefined;
+	if (pi === undefined && !sized && imageApi === undefined) return undefined;
 	const piApi = pi !== undefined && isWireApi(pi.api) && spec.apis.includes(pi.api) ? pi.api : undefined;
 	const catalogueApi = pi?.provider === spec.piProvider ? piApi : undefined;
 	const api =
@@ -197,23 +292,24 @@ export function upstreamModel(
 		borrowedCompat === undefined && connector.compat === undefined
 			? undefined
 			: { ...borrowedCompat, ...connector.compat };
-	const rates = override?.rates ?? listed?.rates;
+	const rates = override?.rates ?? listed?.rates ?? (pi === undefined ? piImage?.cost : undefined);
 	const model: Model<ModelWireApi> = {
 		id: modelId,
-		name: override?.name ?? listed?.name ?? pi?.name ?? modelId,
+		name: override?.name ?? listed?.name ?? pi?.name ?? piImage?.name ?? modelId,
 		api,
 		provider: spec.piProvider,
 		baseUrl: upstreamBaseUrl(connector.baseUrl, api),
 		reasoning: override?.reasoning ?? pi?.reasoning ?? false,
 		...(pi?.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: pi.thinkingLevelMap }),
 		...(pi?.promptCache === undefined ? {} : { promptCache: pi.promptCache }),
-		input: [...(override?.input ?? pi?.input ?? ["text"])],
+		input: [...(override?.input ?? pi?.input ?? piImage?.input ?? ["text"])],
 		cost: rates === undefined ? (pi?.cost ?? { ...ZERO_RATES }) : { ...rates },
-		contextWindow: override?.contextWindow ?? listed?.contextWindow ?? pi!.contextWindow,
-		maxTokens: override?.maxTokens ?? listed?.maxTokens ?? pi!.maxTokens,
+		// An image model with no chat metadata has no context to speak of: 0, which no chat picker offers.
+		contextWindow: override?.contextWindow ?? listed?.contextWindow ?? pi?.contextWindow ?? 0,
+		maxTokens: override?.maxTokens ?? listed?.maxTokens ?? pi?.maxTokens ?? 0,
 		...(compat === undefined ? {} : { compat: compat as Model<ModelWireApi>["compat"] }),
 	};
-	return { id: modelId, api, model };
+	return { id: modelId, api, model, output, ...(imageApi === undefined ? {} : { imageApi }) };
 }
 
 /** How the catalogue reads a connector's key: the gateway's credential cache. */

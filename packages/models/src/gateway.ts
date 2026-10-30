@@ -550,11 +550,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				? {}
 				: { thinkingLevelMap: model.thinkingLevelMap as { readonly [level: string]: string | null } }),
 			input: [...model.input],
+			output: [...offered.output],
 			cost: {
 				input: model.cost.input,
 				output: model.cost.output,
 				cacheRead: model.cost.cacheRead,
 				cacheWrite: model.cost.cacheWrite,
+				...(imageRate(model.cost) === undefined ? {} : { image: imageRate(model.cost) }),
 			},
 			contextWindow: model.contextWindow,
 			maxTokens: model.maxTokens,
@@ -950,6 +952,118 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		}
 	}
 
+	/** Checks a console caller: `needed` on `projectId`, or across the organisation; agents never pass. */
+	async function requireCaller(
+		ctx: CallContext,
+		needed: "viewer" | "admin",
+		operation: string,
+		projectId: string | undefined,
+	): Promise<void> {
+		if (typeof ctx !== "object" || ctx === null || typeof ctx.actor !== "object" || ctx.actor === null) {
+			throw new HarbourError("forbidden", "The caller may not do this in this project");
+		}
+		if (isSystemActor(ctx.actor)) return;
+		if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "The caller may not do this in this project");
+		await options.access?.require(ctx, { needed, operation, ...(projectId === undefined ? {} : { projectId }) });
+	}
+
+	/**
+	 * One `images` call to `served`, recorded as `routeName`: the upstream request over the model's image API, its
+	 * images, usage and cost, and the call's `ModelCallRecord` and `model.call` event.
+	 */
+	async function generate(
+		scope: ModelCallScope,
+		served: ServedModel,
+		routeName: string,
+		request: ModelImagesRequest,
+		signal: AbortSignal | undefined,
+	): Promise<ModelImagesResult> {
+		const { connector, target } = served;
+		if (target.imageApi === undefined || !target.output.includes("image")) {
+			throw new HarbourError("invalid", `Model ${request.model} doesn't make images`);
+		}
+		if (target.imageApi !== "openai-images") {
+			throw new HarbourError("not_supported", `The gateway can't call the ${target.imageApi} image API yet`);
+		}
+		const id = crypto.randomUUID();
+		const startedAt = clock.now();
+		const spec = presetSpec(connector.preset);
+		const controller = new AbortController();
+		const onAbort = () => controller.abort(signal?.reason);
+		if (signal?.aborted) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
+		let recorded = false;
+		const finish = (
+			status: ModelCallRecord["status"],
+			usage: ModelUsage,
+			costSource: ModelCallRecord["costSource"],
+		) => {
+			recorded = true;
+			return record({
+				id,
+				at: startedAt,
+				scope,
+				route: routeName,
+				connectorId: connector.id,
+				modelId: target.id,
+				operation: "images",
+				status,
+				stopReason: status === "done" ? "stop" : status,
+				durationMs: Math.max(0, clock.now() - startedAt),
+				usage,
+				costSource,
+			});
+		};
+		const failedCostSource = spec.cost === "none" ? "none" : "computed";
+		let redactor = new Redactor([]);
+		try {
+			const key = await keys.key(connector, scope, controller.signal);
+			redactor = new Redactor([key]);
+			const call = await openaiImages({
+				fetch: upstreamFetch,
+				baseUrl: upstreamBaseUrl(connector.baseUrl, "openai-completions"),
+				modelId: target.id,
+				request,
+				headers: { ...spec.headers(scope, "openai-completions"), ...keyHeaders(spec, "openai-completions", key) },
+				...(spec.imagePayload === undefined
+					? {}
+					: { payload: (body: { readonly [key: string]: unknown }) => spec.imagePayload!(body, scope) }),
+				signal: controller.signal,
+			});
+			if (call.status === 401) keys.drop(connector);
+			if (!call.ok) {
+				const usage = { ...emptyUsage(), images: 0 };
+				await finish(controller.signal.aborted ? "aborted" : "error", usage, failedCostSource);
+				throw new HarbourError(
+					call.status === 400 || call.status === 422 ? "invalid" : call.status === 429 ? "exhausted" : "unavailable",
+					redactor.text(`${call.status}: ${call.errorMessage}`),
+				);
+			}
+			const { usage, costSource } = pricedImages(spec.cost, target, call);
+			await finish("done", usage, costSource);
+			return {
+				images: call.images.map((image) => ({
+					mimeType: image.mimeType,
+					data: image.data,
+					...(image.revisedPrompt === undefined ? {} : { revisedPrompt: redactor.text(image.revisedPrompt) }),
+				})),
+				...(call.text === undefined ? {} : { text: redactor.text(call.text) }),
+				usage,
+				route: routeName,
+				modelId: target.id,
+			};
+		} catch (error) {
+			// An upstream's refusal was recorded with its answer; a key read, a network failure or an abort is recorded here.
+			const aborted = controller.signal.aborted;
+			if (!recorded) await finish(aborted ? "aborted" : "error", { ...emptyUsage(), images: 0 }, failedCostSource);
+			if (isHarbourError(error) && !aborted) throw error;
+			const message = redactor.text(error instanceof Error ? error.message : String(error));
+			throw new HarbourError(aborted ? "aborted" : "unavailable", message);
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+		}
+	}
+
 	return {
 		// Lists what `messages` would serve: each ID the session pinned through its pin, route or no route, and each
 		// unpinned route and override through the route's current connector.
@@ -988,7 +1102,102 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		async messages(session, request, signal) {
 			assertMessagesRequest(request);
 			const call = await resolveCall(session, request.model, signal);
+			if (!call.target.output.includes("text")) {
+				throw new HarbourError("invalid", `Model ${request.model} makes images only; call images`);
+			}
 			return stream(session, call, request, signal);
+		},
+
+		async images(session, request, signal) {
+			assertImagesRequest(request);
+			const call = await resolveCall(session, request.model, signal);
+			return generate(session, call, call.routeName, request, signal);
+		},
+
+		async listConnectorModels(ctx, filter) {
+			await requireCaller(ctx, "viewer", "models.listConnectorModels", filter?.projectId);
+			const inOrganisation: CallContext = { actor: GATEWAY_CONTEXT.actor, organisationId: ctx.organisationId };
+			const policy =
+				filter?.projectId === undefined
+					? undefined
+					: await connectors.getProjectPolicy(inOrganisation, filter.projectId);
+			const listed = await allPages((page) => connectors.listConnectors(inOrganisation, page));
+			const routes = await allPages((page) =>
+				connectors.listRoutes(
+					inOrganisation,
+					filter?.projectId === undefined ? undefined : { projectId: filter.projectId },
+					page,
+				),
+			);
+			// The catalogue reads a connector's key as the organisation's; the console has no session, so none is named.
+			const scope: ModelCallScope = {
+				organisationId: ctx.organisationId,
+				projectId: filter?.projectId ?? "",
+				agentId: CONSOLE_AGENT,
+				sessionId: "",
+			};
+			const result: ConnectorModels[] = [];
+			for (const connector of listed) {
+				if (policy?.connectors !== undefined && !policy.connectors.includes(connector.id)) continue;
+				const offered = await catalogue.offered(connector, scope, ctx.signal);
+				const models: ConnectorModel[] = [];
+				for (const target of offered.values()) {
+					if (policy !== undefined && !policyAllows(policy, connector.id, target.id)) continue;
+					models.push({
+						id: target.id,
+						name: target.model.name,
+						input: [...target.model.input],
+						output: [...target.output],
+						...(target.imageApi === undefined ? {} : { imageApi: target.imageApi }),
+						...(target.model.contextWindow > 0 ? { contextWindow: target.model.contextWindow } : {}),
+					});
+				}
+				result.push({
+					id: connector.id,
+					owner: connector.owner,
+					preset: connector.preset,
+					routes: routes.filter((route) => route.connectorId === connector.id).map((route) => route.name),
+					models,
+				});
+			}
+			return result;
+		},
+
+		async testImage(ctx, input) {
+			if (typeof input !== "object" || input === null || typeof input.projectId !== "string" || input.projectId === "") {
+				throw new HarbourError("invalid", "A test image is made in a project");
+			}
+			await requireCaller(ctx, "admin", "models.testImage", input.projectId);
+			const scope: ModelCallScope = {
+				organisationId: ctx.organisationId,
+				projectId: input.projectId,
+				agentId: CONSOLE_AGENT,
+				sessionId: `connector-test:${crypto.randomUUID()}`,
+			};
+			let connector: ModelConnector;
+			try {
+				connector = await connectors.getConnector(directoryContext(scope), input.connectorId);
+			} catch (error) {
+				if (isHarbourError(error, "not_found")) throw new HarbourError("not_found", `No connector ${input.connectorId}`);
+				throw error;
+			}
+			const served = await serve(
+				scope,
+				input.modelId,
+				connector,
+				input.modelId,
+				await policyOf(scope),
+				ctx.signal,
+			);
+			const request: ModelImagesRequest = {
+				model: input.modelId,
+				prompt: input.prompt ?? TEST_IMAGE_PROMPT,
+				count: 1,
+				aspect: "square",
+				quality: "low",
+			};
+			assertImagesRequest(request);
+			return generate(scope, served, TEST_IMAGE_ROUTE, request, ctx.signal);
 		},
 
 		async listCalls(ctx, filter, page) {
