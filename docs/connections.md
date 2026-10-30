@@ -68,7 +68,7 @@ proposal is in issues #335 and #332.
 `@harbour/connections` serves the routes above over a `ConnectionsService`:
 
 - **Records** (connections, connect attempts, OAuth clients, dynamic registrations, uses) are JSON records in one
-  table (`connections_records`), in D1 on Cloudflare, Postgres self-hosted, or memory. No record holds a secret.
+  table (`connection_records`), in D1 on Cloudflare, Postgres self-hosted, or memory. No record holds a secret.
 - **Secrets** (access and refresh tokens, keys, OAuth client secrets) are vault items, put and opened through the
   vault's system-only `connectionSecret` call. An item is bound to its hosts: an access token to the connection's
   hosts, a refresh token and a client secret to the token endpoint's host only. Each open is recorded as a vault use,
