@@ -25,6 +25,7 @@
 // `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import { createSqlConnectionsRepository, migrateConnections } from "@harbour/connections/repository";
 import { type BrowserProvider, HarbourError } from "@harbour/contracts";
 import { createPasskeys } from "@harbour/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
@@ -52,6 +53,7 @@ import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
+import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { selfHostedUsage, type UsageConfig } from "./usage.ts";
@@ -84,6 +86,8 @@ export interface DurableConfig {
 	readonly browserBinding?: string;
 	/** Usage rows for model calls (`usage.ts`); left out, none are written. */
 	readonly usage?: UsageConfig;
+	/** Connections (`connections.ts`), in Postgres with their secrets in the vault. Without it, or a vault, none. */
+	readonly connections?: GatewayConnectionsConfig;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -129,11 +133,23 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await migrateMemory(driver);
 		await migrateSharing(driver);
 		await migrateRules(driver);
+		// Connections need the vault, so none without its key.
+		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
+		if (connectionsOn) await migrateConnections(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
+		const linked =
+			!connectionsOn || config.connections === undefined
+				? undefined
+				: gatewayConnections({
+						config: config.connections,
+						repository: createSqlConnectionsRepository(driver),
+						audit,
+						access: () => auditAccess.access,
+					});
 		// In memory, as the sandboxes' leases are; built before the runtime so a session it resumes has its tools.
 		const browser =
 			config.browserProvider === undefined
@@ -179,7 +195,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const runtime = withOwnWorkspaces(
 			createSessionRuntime({
 				...gatewaySandboxes.runtimeOptions,
-				tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
+				tools:
+					linked === undefined
+						? withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser)
+						: linked.withTools(withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser)),
 				store: await createSqlSessionStore(db),
 				storage: (session) => sqlPiStorage(db, session.id),
 				audit,
@@ -227,6 +246,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			vault = createVault({ store, cipher: createAesGcmCipher({ key: config.vaultCipherKey }), audit, access });
 			sharedVault = vault;
 		}
+		const connections = vault === undefined ? undefined : linked?.attach(vault);
 
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
@@ -247,8 +267,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(vault === undefined ? {} : { vault }),
 			...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 			...(browser === undefined ? {} : { browser }),
+			...(connections === undefined ? {} : { connections }),
 			bindings: {
 				browser: config.browserBinding ?? (browser === undefined ? "none" : "given"),
+				connections: connections === undefined ? "off" : "postgres + vault",
 				vault: vault === undefined ? "off (no HARBOUR_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",

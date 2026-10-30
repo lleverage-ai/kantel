@@ -38,6 +38,7 @@ import { type BrowserObjects, type BrowserVars, browserProviderFrom } from "./br
 import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
+import { type ConnectionsVars, stackConnectionsFrom } from "./connections.ts";
 import type { SandboxContainer } from "./container-backend.ts";
 import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
@@ -65,7 +66,8 @@ export interface Env
 		BrowserVars,
 		CodemodeVars,
 		SubagentVars,
-		RecallVars {
+		RecallVars,
+		ConnectionsVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
@@ -207,10 +209,13 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		if (browserProvider === undefined) {
 			console.warn("harbour: the browser provider has no key (HARBOUR_BROWSER_PROVIDER); sessions have no browser");
 		}
+		// Connections (epic #322): their secrets in the one VaultDO, over RPC.
+		const connections = stackConnectionsFrom(env, () => namedObject(env.VAULTS, VAULT_NAME, env));
 		const sandboxObjects = env.SANDBOXES;
 		const containersOn = (env.HARBOUR_SANDBOX_CONTAINERS ?? "").trim() === "on" && sandboxObjects !== undefined;
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
+			...(connections === undefined ? {} : { connections }),
 			presentFiles: (env.HARBOUR_PRESENT_FILES ?? "").trim() !== "off",
 			// One container object per session, beside the stack (the container app's regions place the container itself).
 			...(containersOn

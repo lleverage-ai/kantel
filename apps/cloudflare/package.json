@@ -32,6 +32,7 @@
 		"@harbour/sandbox": "workspace:*",
 		"@harbour/schedules": "workspace:*",
 		"@harbour/rules": "workspace:*",
+		"@harbour/connections": "workspace:*",
 		"@harbour/sharing": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@harbour/sql": "workspace:*",

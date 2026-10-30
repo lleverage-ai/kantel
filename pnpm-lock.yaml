@@ -48,6 +48,9 @@ importers:
       "@harbour/cloudflare-workspace":
         specifier: workspace:*
         version: link:../../targets/cloudflare/workspace
+      "@harbour/connections":
+        specifier: workspace:*
+        version: link:../../packages/connections
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -273,6 +276,9 @@ importers:
       "@harbour/browser":
         specifier: workspace:*
         version: link:../../packages/browser
+      "@harbour/connections":
+        specifier: workspace:*
+        version: link:../../packages/connections
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -502,6 +508,37 @@ importers:
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
+
+  packages/connections:
+    dependencies:
+      "@earendil-works/pi-ai":
+        specifier: 1.4.0
+        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
+      "@earendil-works/pi-durable":
+        specifier: 1.4.0
+        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
+      "@harbour/api":
+        specifier: workspace:*
+        version: link:../api
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../sql
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../vault
+      miniflare:
+        specifier: 5.20261023.0-beta
+        version: 5.20261023.0-beta(@types/node@24.19.2)
 
   packages/contracts:
     dependencies:

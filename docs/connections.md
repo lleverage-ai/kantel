@@ -62,3 +62,37 @@ Several connections to one provider may coexist, each with its own owner and usa
 the connections it may use most specific owner first (its person's, the project's, the organisation's), and every
 use is recorded as a `ConnectionUse` with the session, the tool call and the session's audience at the time. The full
 proposal is in issues #335 and #332.
+
+## How it runs
+
+`@harbour/connections` serves the routes above over a `ConnectionsService`:
+
+- **Records** (connections, connect attempts, OAuth clients, dynamic registrations, uses) are JSON records in one
+  table (`connection_records`), in D1 on Cloudflare, Postgres self-hosted, or memory. No record holds a secret.
+- **Secrets** (access and refresh tokens, keys, OAuth client secrets) are vault items, put and opened through the
+  vault's system-only `connectionSecret` call. An item is bound to its hosts: an access token to the connection's
+  hosts, a refresh token and a client secret to the token endpoint's host only. Each open is recorded as a vault use,
+  and refused for another host, another organisation, or a blocked or ended session.
+- **OAuth client order**: a registered client (the owner's own tier first: the person's, the project's, the
+  organisation's, then the deployment's), then CIMD (only when the client metadata document is public and the server
+  says it supports it), then DCR (one registration per authorisation server, reused). A connection keeps the client
+  that minted it; a client with connections pinned to it can't be removed.
+- **Sessions** get four tools: `connections_list`, `connection_tools`, `connection_call` (remote MCP) and
+  `connection_request` (HTTP APIs). They run on the host, never in the sandbox: the service checks
+  `connectionUsableIn`, records the use against the session and tool call, refreshes the token when due (and once
+  on a 401), opens the credential for the request's host, sends with `redirect: "manual"`, and cuts the credential
+  out of the answer. A tool can't set `authorization`, `cookie` or `host`.
+
+## Turning it on
+
+| Where | Setting | Meaning |
+| --- | --- | --- |
+| Cloudflare | `HARBOUR_HOSTNAME` | Set by the deploy config. Redirect URI `https://<host>/v1/connections/callback`. |
+| Cloudflare | `HARBOUR_CONNECTIONS=off` | No connections. |
+| Cloudflare | `HARBOUR_CONNECTIONS_CIMD=on` | Only after a Cloudflare Access Bypass policy on `/v1/connections/oauth/client-metadata.json`. |
+| Both | `HARBOUR_CONNECTIONS_PERSONAL=on` | One-person deployment: sessions acting for the person are private to them. |
+| Self-hosted | `HARBOUR_PUBLIC_URL` and a vault | Connections are on with both; `HARBOUR_CONNECTIONS=off` turns them off. |
+
+A provider that needs a registered OAuth app (GitHub, Google, Slack and others in the catalogue marked
+`needs_client`) is registered by an admin with `POST /v1/connections/clients`, giving the client ID and secret of an
+app whose redirect URI is the deployment's callback above. The secret goes to the vault and is never returned.

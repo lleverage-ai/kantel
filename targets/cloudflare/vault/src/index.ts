@@ -9,6 +9,8 @@
  * never spend a grant past `maxUses`.
  */
 import type {
+	ConnectionSecretCall,
+	ConnectionSecretResult,
 	ConnectorCredential,
 	ConnectorCredentialRequest,
 	EgressDecision,
@@ -207,6 +209,11 @@ export class VaultDurableObjectCore {
 	/** The model gateway's key read, as an RPC call. */
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential> {
 		return this.vault.readConnectorCredential(ctx, request);
+	}
+
+	/** The connections service's secrets (epic #322), as an RPC call from a Worker holding a system context. */
+	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult> {
+		return this.vault.connectionSecret(ctx, call);
 	}
 
 	/** The model gateway's per-call check that the session is neither blocked nor ended, as an RPC call. */

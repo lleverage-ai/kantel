@@ -17,6 +17,8 @@
 //                               imports for the organisation's admin
 //   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
 //                               policy and a session's uses; the store checks every call
+//   /v1/connections/...         connections API (@harbour/connections/http, epic #322), its connect and callback pages,
+//                               and the client ID metadata document (no sign-in), when there are connections
 //   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault; an
 //                               approval needs the person's passkey once they have one, and a refusal is audited
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
@@ -29,6 +31,7 @@
 import { createAuditQueryHandler } from "@harbour/audit/http";
 import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
 import { VIEWER_PAGE, viewerPageHeaders } from "@harbour/browser/runtime";
+import { createConnectionsApi, isConnectionsPath } from "@harbour/connections/http";
 import {
 	type Authenticator,
 	type CallContext,
@@ -56,6 +59,9 @@ import type { GatewayComponents } from "./components.ts";
 import { createEgressHandler, type EgressScope } from "./egress.ts";
 import type { MailDescription } from "./mail.ts";
 import { createStaticHandler } from "./static.ts";
+
+/** Public: authorisation servers fetch it to learn this deployment's OAuth client (CIMD). */
+const CLIENT_METADATA_PATH = "/v1/connections/oauth/client-metadata.json";
 
 export interface GatewayOptions {
 	readonly components: GatewayComponents;
@@ -270,6 +276,17 @@ export function createGateway(options: GatewayOptions): Gateway {
 		callers.set(request, callContextFor(caller));
 		return (await sharingApi.fetch(request)) ?? notFound();
 	});
+	const connectionsApi =
+		components.connections === undefined
+			? undefined
+			: createConnectionsApi({ connections: components.connections, authenticate: signedIn });
+	const connections =
+		connectionsApi === undefined
+			? undefined
+			: withAuthentication(authenticator, async (request, caller) => {
+					callers.set(request, callContextFor(caller));
+					return (await connectionsApi.fetch(request)) ?? notFound();
+				});
 
 	const sessionBrowser = components.browser;
 	const browserApi =
@@ -329,6 +346,11 @@ export function createGateway(options: GatewayOptions): Gateway {
 				if (under(path, SKILLS_BASE)) return await skills(request);
 				if (under(path, MEMORY_BASE)) return await memory(request);
 				if (isSharingPath(path)) return await sharing(request);
+				if (connectionsApi !== undefined && connections !== undefined && isConnectionsPath(path)) {
+					// The metadata document is public: authorisation servers fetch it to learn this deployment's client.
+					if (path === CLIENT_METADATA_PATH) return (await connectionsApi.fetch(request)) ?? notFound();
+					return await connections(request);
+				}
 				if (under(path, RULES_BASE)) return await rules(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);

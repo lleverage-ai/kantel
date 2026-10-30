@@ -24,6 +24,7 @@
 		"@harbour/sandbox": "workspace:*",
 		"@harbour/selfhosted-workspace": "workspace:*",
 		"@harbour/rules": "workspace:*",
+		"@harbour/connections": "workspace:*",
 		"@harbour/sharing": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@harbour/sql": "workspace:*",

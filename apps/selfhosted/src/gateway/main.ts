@@ -43,6 +43,9 @@
 //   HARBOUR_PUBLIC_URL          where people reach the console, such as https://harbour.example.com: an embed link is
 //                               made absolute against it, and passkeys are made for it. Default: the request's own
 //                               origin, which is `http:`, so set it behind a TLS proxy
+//   HARBOUR_CONNECTIONS, HARBOUR_CONNECTIONS_CIMD, HARBOUR_CONNECTIONS_PERSONAL
+//                               connections (connections.ts, epic #322), on with HARBOUR_PUBLIC_URL and a vault unless
+//                               HARBOUR_CONNECTIONS is `off`; CIMD `on` once the client metadata document is public
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -51,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
+import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
 import { createGateway } from "./gateway.ts";
@@ -77,8 +81,10 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	if (publicUrl !== "" && !/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error("HARBOUR_PUBLIC_URL must be an origin, such as https://harbour.example.com");
 	}
+	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
 	return {
 		...(browser === undefined ? {} : { browser }),
+		...(connections === undefined ? {} : { connections }),
 		...(publicUrl === "" ? {} : { publicOrigin: new URL(publicUrl).origin }),
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
@@ -169,11 +175,16 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			: { browserProvider: gatewayBrowserProvider(cfg.browser), browserBinding: browserBinding(cfg.browser) };
 	const components =
 		cfg.durable === undefined
-			? createGatewayComponents({ ...(modelGateway === undefined ? {} : { modelGateway }), ...browser })
+			? createGatewayComponents({
+					...(modelGateway === undefined ? {} : { modelGateway }),
+					...browser,
+					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
+				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
 					...(modelGateway === undefined ? {} : { modelGateway }),
 					...browser,
+					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 				});
 	const browserViews = cfg.browser?.provider === "harbour" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);

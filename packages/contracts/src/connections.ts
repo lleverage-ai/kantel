@@ -716,3 +716,49 @@ export function connectionUsableIn(
 
 /** Most specific owner first: a person's own, then the project's, then the organisation's. */
 export const CONNECTION_OWNER_ORDER: readonly ConnectionOwner["kind"][] = ["user", "project", "organisation"];
+
+// The vault's side: where connection secrets live.
+
+/**
+ * One call on the vault's connection secrets: access and refresh tokens, keys and OAuth client secrets, as vault items
+ * the connections service keeps. A worker call: only `system` may make it.
+ * - `put`: stores a new secret bound to `hosts` and answers its item ID.
+ * - `replace`: a refreshed token or rotated key, in place (the item's value version goes up).
+ * - `open`: the value, for one request to `host`, which must be one of the item's hosts and the item's organisation the
+ *   one named; refused for a blocked or ended session. Recorded as a vault use either way.
+ * - `clear`: drops the value; the item stays, empty, for the record.
+ */
+export type ConnectionSecretCall =
+	| {
+			readonly op: "put";
+			readonly owner: OwnerRef;
+			readonly name: string;
+			readonly hosts: readonly string[];
+			readonly value: string;
+	  }
+	| { readonly op: "replace"; readonly itemId: string; readonly value: string }
+	| {
+			readonly op: "open";
+			readonly itemId: string;
+			readonly host: string;
+			/** The organisation the use is for; a platform item may be opened for any. */
+			readonly organisationId: OrganisationId;
+			readonly session?: {
+				readonly sessionId: SessionId;
+				readonly projectId?: ProjectId;
+				readonly agentId?: AgentId;
+			};
+			/** Why, for the vault's use record, such as `connection conn_1: tools/call`. */
+			readonly purpose: string;
+	  }
+	| { readonly op: "clear"; readonly itemId: string };
+
+export interface ConnectionSecretResult {
+	readonly itemId?: string;
+	/** Only for `open`. */
+	readonly value?: string;
+}
+
+export interface ConnectionSecrets {
+	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult>;
+}
