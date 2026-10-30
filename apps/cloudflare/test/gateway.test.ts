@@ -478,6 +478,8 @@ describe("the gateway", () => {
 			name: "Tom Davies",
 			email: ADMIN,
 			roles: [{ role: "admin" }],
+			// Saved console preferences (#353): none yet.
+			preferences: {},
 		});
 		await stack.identity.createProject(stack.admin, { name: "Website" });
 		const projects = await call("/v1/projects", headers);
