@@ -72,15 +72,15 @@ export interface ConnectorPresetSpec {
 	readonly imageApis: readonly ModelImageApi[];
 	/**
 	 * The image API an image-only model (no `text` in its output) uses when its override names none, if not the first
-	 * of `imageApis`: Vercel serves its image-only models (gpt-image, Flux, Imagen) on `/images/generations`, and refuses
-	 * them the chat `modalities` parameter.
+	 * of `imageApis`: Vercel documents its image-only models (gpt-image, Flux, Imagen) on `/images/generations`, where
+	 * they take `n`, `size` and `quality`, rather than on chat completions.
 	 */
 	readonly imageOnlyApi?: ModelImageApi;
 	/** Whether a `chat-modalities` call takes `image_config` (OpenRouter's `aspect_ratio`). Vercel documents none. */
 	readonly chatImageConfig?: boolean;
 	/**
-	 * Where an image call's cost comes from, when not as `cost` says. Vercel's chat completions answer `usage.cost`
-	 * (not in its documented schema, so a call without it is computed).
+	 * Where an image call's cost comes from, when not as `cost` says. Vercel answers `usage.cost` on chat completions
+	 * (outside its documented schema, so a call without it is computed).
 	 */
 	readonly imageCost?: PresetCostSource;
 	/**

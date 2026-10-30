@@ -266,8 +266,9 @@ model: a session can chat with Claude over CLIProxyAPI and make images with any 
   `imageApi`; a preset may give image-only models another default (`imageOnlyApi`).
   - `openai-images`: `POST <API root>/images/generations` with a JSON body, and `POST <API root>/images/edits` as
     multipart form data when the call sends reference images (OpenAI, LiteLLM, CLIProxyAPI, the compatible presets,
-    and Vercel's image-only models such as `openai/gpt-image-2` and Flux, which Vercel refuses the chat `modalities`
-    parameter).
+    and Vercel's image-only models such as `openai/gpt-image-2` and Flux, which Vercel documents on the Images API).
+    OpenRouter has a dedicated Images API too (`POST /api/v1/images`, with `n`, `aspect_ratio`, `size` and
+    `input_references`), not used yet.
   - `chat-modalities` (OpenRouter, and Vercel's language models with the `image-generation` tag): one non-streaming
     `POST <API root>/chat/completions` with `modalities: ["image", "text"]` (`["image"]` for an image-only model). The
     prompt is the user message; reference images follow it as `image_url` parts (data URLs). Images come back in
