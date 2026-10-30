@@ -379,6 +379,8 @@ export interface ModelImagesRequest {
 	readonly size?: string;
 	/** How much effort the model spends, on models that take it (`gpt-image-*`); ignored by others. */
 	readonly quality?: "low" | "medium" | "high" | "auto";
+	/** The file format asked for, on models that take one (`gpt-image-*`); others answer in their own. */
+	readonly outputFormat?: "png" | "jpeg" | "webp";
 	/** Images to edit or work from; with any, the call is an edit (`/images/edits` on `openai-images`). */
 	readonly images?: readonly ModelImage[];
 }
@@ -467,8 +469,8 @@ export interface ConnectorModels {
 	readonly id: string;
 	readonly owner: ConnectorOwner;
 	readonly preset: ConnectorPreset;
-	/** The routes over this connector the caller can see, by name. */
-	readonly routes: readonly string[];
+	/** The routes over this connector the caller can see, and the model each names. */
+	readonly routes: readonly { readonly name: string; readonly modelId: string }[];
 	readonly models: readonly ConnectorModel[];
 }
 

@@ -1222,7 +1222,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					id: connector.id,
 					owner: connector.owner,
 					preset: connector.preset,
-					routes: routes.filter((route) => route.connectorId === connector.id).map((route) => route.name),
+					routes: routes
+						.filter((route) => route.connectorId === connector.id)
+						.map((route) => ({ name: route.name, modelId: route.modelId })),
 					models,
 				});
 			}

@@ -21,6 +21,12 @@
  */
 import { type CallContext, HarbourError, type SessionRecord } from "@harbour/contracts";
 import { createMockAccess, type MockAccess } from "@harbour/identity/testing";
+import {
+	createFakeModelUpstream,
+	type FakeImagesScript,
+	type FakeModelUpstream,
+	type FakeUpstreamScript,
+} from "@harbour/testing/models";
 import { createDevBrowserModels } from "./dev-browser-model.ts";
 import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
@@ -49,6 +55,7 @@ export class HarbourVault extends DeployedHarbourVault {
 export class HarbourStack extends HarbourStackBase {
 	#access: MockAccess | undefined;
 	#apiKey: Promise<string> | undefined;
+	#fakeUpstream: FakeModelUpstream | undefined;
 
 	#mockAccess(): MockAccess {
 		const teamDomain = this.env.HARBOUR_ACCESS_TEAM_DOMAIN ?? "";
@@ -59,6 +66,22 @@ export class HarbourStack extends HarbourStackBase {
 
 	protected override stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		return { ...super.stackOptions(), accessFetch: this.#mockAccess().fetch };
+	}
+
+	/**
+	 * With `HARBOUR_DEV_FAKE_MODELS=on` (and any `HARBOUR_CPA_API_KEY`), the gateway calls the fake upstream from
+	 * `@harbour/testing` in place of CPA: a chat model and `gpt-image-1`, whose images are its fixed PNG. For working on
+	 * the gateway's pages and `generate_image` without a key; set `HARBOUR_IMAGE_MODEL=gpt-image-1` for the `images`
+	 * route.
+	 */
+	protected override modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
+		if ((this.env as { HARBOUR_DEV_FAKE_MODELS?: string }).HARBOUR_DEV_FAKE_MODELS !== "on") {
+			return super.modelsUpstream();
+		}
+		this.#fakeUpstream ??= createFakeModelUpstream({
+			models: [{ id: "claude-sonnet-5-5" }, { id: "gpt-5" }, { id: "gpt-image-1" }],
+		});
+		return this.#fakeUpstream.fetch;
 	}
 
 	protected override stackModels(): StackOptions["models"] {
@@ -134,6 +157,18 @@ export class HarbourStack extends HarbourStackBase {
 				const message = error instanceof HarbourError ? error.message : String(error);
 				return Response.json({ error: { code: "unavailable", message } }, { status: 503 });
 			}
+		}
+		if (url.pathname === `${DEV_PREFIX}fake-models` && request.method === "POST") {
+			// Queues the fake upstream's next answers (`HARBOUR_DEV_FAKE_MODELS=on`): `{ "next": [script…] }` for model calls,
+			// such as a tool call, and `{ "images": [script…] }` for image calls.
+			const fake = this.#fakeUpstream;
+			if (fake === undefined) {
+				return Response.json({ error: { code: "unavailable", message: "The fake upstream is off" } }, { status: 503 });
+			}
+			const body = (await request.json()) as { next?: FakeUpstreamScript[]; images?: FakeImagesScript[] };
+			for (const script of body.next ?? []) fake.next(script);
+			for (const script of body.images ?? []) fake.nextImages(script);
+			return Response.json({ queued: (body.next?.length ?? 0) + (body.images?.length ?? 0) });
 		}
 		return Response.json({ error: { code: "not_found", message: "No such dev route" } }, { status: 404 });
 	}

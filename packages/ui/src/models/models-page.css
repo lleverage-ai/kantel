@@ -1,0 +1,142 @@
+/* The Models page: the agent's image model, then each connector's models with their capabilities and a test image. */
+
+.hb-models {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-9);
+	width: 100%;
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-models p {
+	margin: 0;
+}
+
+/* The agent's settings keep the reading width; the connectors take the page's. */
+.hb-models > .hb-form-layout {
+	max-width: var(--hb-content-width);
+}
+
+.hb-models-chat {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-models-chat-label {
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-models-connectors {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-6);
+	min-width: 0;
+}
+
+.hb-models-heading {
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-models-connector-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-models-connector-name {
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+	overflow-wrap: anywhere;
+}
+
+.hb-models-empty {
+	color: var(--hb-text-muted);
+}
+
+.hb-models-rows {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-models-row {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	padding: var(--hb-space-4) 0;
+}
+
+.hb-models-row + .hb-models-row {
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-models-row-main {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4) var(--hb-space-6);
+	min-width: 0;
+}
+
+.hb-models-row-text {
+	display: flex;
+	flex: 1 1 var(--hb-space-11);
+	flex-direction: column;
+	min-width: 0;
+}
+
+.hb-models-row-name {
+	font-weight: var(--hb-weight-medium);
+	overflow-wrap: anywhere;
+}
+
+.hb-models-row-id {
+	color: var(--hb-text-muted);
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-xs);
+	overflow-wrap: anywhere;
+}
+
+.hb-models-badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--hb-space-3);
+}
+
+.hb-models-test {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-3);
+	margin: 0;
+}
+
+.hb-models-test-image {
+	/* Two thumbnails' width: big enough to judge a test image, small beside the list. */
+	width: calc(var(--hb-thumb) * 2);
+	height: calc(var(--hb-thumb) * 2);
+	border: var(--hb-hairline) solid var(--hb-border);
+	border-radius: var(--hb-radius-sm);
+	background: var(--hb-sunken);
+	object-fit: cover;
+}
+
+.hb-models-test-meta {
+	display: flex;
+	gap: var(--hb-space-5);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	font-variant-numeric: tabular-nums;
+}

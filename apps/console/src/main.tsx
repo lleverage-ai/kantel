@@ -12,6 +12,7 @@ import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
 import { apiMembers, type ConsoleMembers } from "./api/members.ts";
+import { apiModels, type ConsoleModels } from "./api/models-http.ts";
 import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
@@ -123,6 +124,7 @@ type Oversight = {
 	readonly members?: ConsoleMembers;
 	readonly schedules?: ConsoleSchedules;
 	readonly agent?: ConsoleAgent;
+	readonly models?: ConsoleModels;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -154,7 +156,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, agent } = oversight;
+	const { vault, audit, keys, members, schedules, agent, models } = oversight;
 	return (
 		<App
 			client={client}
@@ -165,6 +167,7 @@ function Console({
 			{...(members === undefined ? {} : { members })}
 			{...(schedules === undefined ? {} : { schedules })}
 			{...(agent === undefined ? {} : { agent })}
+			{...(models === undefined ? {} : { models })}
 			onOpen={onOpen}
 		/>
 	);
@@ -316,11 +319,13 @@ function SignedInConsole({
 			...apiAgent({ headers: state.headers, onUnauthenticated }),
 			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
 		};
+		const models = apiModels({ headers: state.headers, onUnauthenticated });
 		return {
 			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
 			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
 			ready: {
 				agent,
+				models,
 				...(keys === undefined ? {} : { keys }),
 				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
@@ -339,6 +344,7 @@ function SignedInConsole({
 					...(vault === undefined ? {} : { vault }),
 					audit: audit(vault !== undefined),
 					agent,
+					models,
 					schedules,
 					...(keys === undefined ? {} : { keys }),
 					...(members === undefined ? {} : { members }),

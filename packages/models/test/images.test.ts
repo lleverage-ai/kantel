@@ -351,7 +351,11 @@ describe("the console's connector models and test generate", () => {
 		});
 		const viewer = contextFor(actors.human("viewer-a"), ORG);
 		const [connector] = await gateway.listConnectorModels(viewer, { projectId: PROJECT });
-		expect(connector).toMatchObject({ id: "up", preset: "openai", routes: ["images"] });
+		expect(connector).toMatchObject({
+			id: "up",
+			preset: "openai",
+			routes: [{ name: "images", modelId: "gpt-image-1" }],
+		});
 		expect(connector?.models.find((model) => model.id === "gpt-image-1")).toMatchObject({
 			output: ["image"],
 			imageApi: "openai-images",
