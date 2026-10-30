@@ -31,6 +31,7 @@ const sonnet: ModelGatewayModel = {
 	reasoning: true,
 	thinkingLevelMap: { off: null, low: "1024", high: "16384" },
 	input: ["text", "image"],
+	output: ["text"],
 	cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 	contextWindow: 200_000,
 	maxTokens: 64_000,

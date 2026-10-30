@@ -12,3 +12,4 @@ export * from "./redact.ts";
 export * from "./resolution.ts";
 export * from "./tokens.ts";
 export * from "./tool-names.ts";
+export * from "./images.ts";

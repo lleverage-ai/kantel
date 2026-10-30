@@ -16,6 +16,9 @@
  *   tool namespace (CLIProxyAPI on Messages), tool names go up under it and come back without it (tool-names.ts).
  * - **Events.** pi's events become `ModelStreamEvent`s, with every known secret redacted (see redact.ts) and
  *   `usage.cost` filled from the upstream's report or pi's `calculateCost`.
+ * - **Images.** `images` makes one call over the model's image API (images.ts), resolved and pinned as `messages`
+ *   is, with the same key header, attribution headers and redaction, recorded with `operation: "images"` and the
+ *   image count in its usage. `listConnectorModels` and `testImage` serve the console's connector list and test.
  * - **Accounting.** Each call that resolved a route records one `ModelCallRecord` and appends one `model.call` audit
  *   event (source `session`), as `system("model-gateway")`. Neither holds a prompt, a completion or a key. A failed
  *   append is retried; if it still fails the record is marked `auditPending` and the host told (`onAuditFailure`).
@@ -39,6 +42,8 @@ import {
 	type CallContext,
 	type Clock,
 	type ConnectorCredentials,
+	type ConnectorModel,
+	type ConnectorModels,
 	HarbourError,
 	isHarbourError,
 	isSystemActor,
@@ -49,6 +54,8 @@ import {
 	type ModelConnectors,
 	type ModelGateway,
 	type ModelGatewayModel,
+	type ModelImagesRequest,
+	type ModelImagesResult,
 	type ModelMessagesRequest,
 	type ModelStreamEvent,
 	type ModelThinking,
@@ -64,8 +71,17 @@ import {
 import { type CatalogueKeys, createModelCatalogue, type OfferedModel } from "./catalogue.ts";
 import { assertPiContext } from "./context.ts";
 import { MODEL_THINKING_LEVELS } from "./directory.ts";
-import { pageOf } from "./page.ts";
-import { keyHeaders, presetSpec } from "./presets.ts";
+import {
+	assertImagesRequest,
+	CONSOLE_AGENT,
+	imageRate,
+	openaiImages,
+	pricedImages,
+	TEST_IMAGE_PROMPT,
+	TEST_IMAGE_ROUTE,
+} from "./images.ts";
+import { allPages, pageOf } from "./page.ts";
+import { keyHeaders, presetSpec, upstreamBaseUrl } from "./presets.ts";
 import { Redactor, StreamRedactor } from "./redact.ts";
 import { connectorServes, overrideId, parseModelRequestId, policyAllows } from "./resolution.ts";
 import { namespaceToolNames } from "./tool-names.ts";
@@ -636,6 +652,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				route: call.route,
 				connectorId: call.connectorId,
 				modelId: call.modelId,
+				...(call.operation === undefined ? {} : { operation: call.operation }),
 				status: call.status,
 				...(call.stopReason === undefined ? {} : { stopReason: call.stopReason }),
 				durationMs: call.durationMs,
