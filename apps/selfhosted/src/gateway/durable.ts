@@ -38,6 +38,8 @@ import {
 	migrateWorkspaceStore,
 	pgDatabase,
 } from "@harbour/selfhosted-workspace";
+import { componentResolvers } from "@harbour/sharing/resolvers";
+import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
 import { createSqlSkills, migrateSkills } from "@harbour/skills/sql";
 import { postgresPoolDriver } from "@harbour/sql/postgres";
 import { createAesGcmCipher } from "@harbour/vault/cipher";
@@ -124,6 +126,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await migrateIdentity(driver);
 		await migrateSkills(driver);
 		await migrateMemory(driver);
+		await migrateSharing(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -142,6 +145,19 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const skills = createSqlSkills({ driver, objects: skillObjects, audit, access: auditAccess.access });
 		const memory = createSqlMemory({ driver, audit, access: auditAccess.access });
 		let workspaces: StoredWorkspaces | undefined;
+		// The vault is built after the runtime (it needs its access), so it is asked for per call.
+		let sharedVault: HarbourVault | undefined;
+		const sharing = createSqlSharing({
+			driver,
+			audit,
+			access: auditAccess.access,
+			resolvers: componentResolvers(() => ({
+				skills,
+				memory,
+				...(sharedVault === undefined ? {} : { vault: sharedVault }),
+				...(workspaces === undefined ? {} : { workspaces }),
+			})),
+		});
 		const lateWorkspaces = () => {
 			if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
 			return workspaces;
@@ -165,6 +181,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				storage: (session) => sqlPiStorage(db, session.id),
 				audit,
 				identity,
+				sharing,
 				...models,
 				...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
 				// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
@@ -190,7 +207,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			schema: config.schema,
 			audit,
 			access,
-			sources: [skillsMountSource(skills, () => runtime.directory)],
+			sources: [
+				skillsMountSource(
+					skills,
+					() => runtime.directory,
+					() => runtime.profiles,
+				),
+			],
 		});
 		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 
@@ -198,6 +221,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			const store = createPostgresVaultStore({ db: pool, schema: `${config.schema}_vault` });
 			await store.migrate();
 			vault = createVault({ store, cipher: createAesGcmCipher({ key: config.vaultCipherKey }), audit, access });
+			sharedVault = vault;
 		}
 
 		const resumed = await runtime.resume();
@@ -210,6 +234,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			workspaces,
 			skills,
 			memory,
+			sharing,
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),

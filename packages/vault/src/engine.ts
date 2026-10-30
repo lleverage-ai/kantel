@@ -317,6 +317,28 @@ export function createVault(options: VaultOptions): HarbourVault {
 		throw new HarbourError("unavailable", `The vault could not update ${id}: too many concurrent changes`);
 	}
 
+	/**
+	 * Whether a grant may use `item` for `request`: always for an item of the request's own project or of no project;
+	 * for another project's item, only while an active share covers the request's session. Without `access`, as before.
+	 */
+	async function stillShared(request: EgressRequest, item: VaultItem): Promise<boolean> {
+		if (access === undefined || item.owner.kind !== "project" || item.owner.projectId === request.projectId)
+			return true;
+		if (request.agentId === undefined || request.sessionId === undefined) return false;
+		const ctx: CallContext = {
+			actor: { kind: "agent", agentId: request.agentId, sessionId: request.sessionId },
+			organisationId: request.organisationId,
+			...(request.projectId === undefined ? {} : { projectId: request.projectId }),
+		};
+		const allowed = await access.allowsResource(ctx, {
+			resource: { kind: "vault.item", id: item.id },
+			owner: item.owner,
+			permission: "use",
+			needed: "operator",
+		});
+		return allowed !== undefined;
+	}
+
 	/** Keeps the records the caller may view: an organisation's own records always, the rest as `access` allows. */
 	async function visibleOnly<T>(ctx: CallContext, records: readonly T[], scopeOf: (record: T) => Scope): Promise<T[]> {
 		if (access === undefined) return [...records];
@@ -808,13 +830,36 @@ export function createVault(options: VaultOptions): HarbourVault {
 					...(actor.kind === "agent" ? { sessionId: actor.sessionId } : {}),
 				};
 				const subject = named === undefined ? {} : { subject: { kind: "vault.item", id: named.id } };
-				const resolved = await access.require(ctx, {
-					...scope,
-					needed: "operator",
-					operation: "vault.propose",
-					...subject,
-				});
-				projectId = resolved.projectId;
+				if (
+					named !== undefined &&
+					named.owner.kind === "project" &&
+					!(await access.allows(ctx, { ...scope, needed: "operator" }))
+				) {
+					// Another project's item, shared into where the caller acts (docs/design/sharing.md): the proposal is in the
+					// caller's project and decided there, with its route, binding code and the ceiling as for any other.
+					const resolved = await access.resource(ctx, {
+						resource: { kind: "vault.item", id: named.id },
+						owner: named.owner,
+						permission: "use",
+						needed: "operator",
+						...(actor.kind !== "agent" && ctx.projectId !== undefined ? { projectId: ctx.projectId } : {}),
+						operation: "vault.propose",
+					});
+					if (resolved.via !== "share" || resolved.projectId === undefined) {
+						throw new HarbourError("forbidden", "The caller may not do this in this project", {
+							operation: "vault.propose",
+						});
+					}
+					projectId = resolved.projectId;
+				} else {
+					const resolved = await access.require(ctx, {
+						...scope,
+						needed: "operator",
+						operation: "vault.propose",
+						...subject,
+					});
+					projectId = resolved.projectId;
+				}
 			}
 			if (named !== undefined) {
 				const existing = await itemFor(ctx.organisationId, named.id);
@@ -1368,6 +1413,9 @@ export function createVault(options: VaultOptions): HarbourVault {
 				if (!active || !selectorMatches(selector, request) || !routeAllows(route, method, host, path)) continue;
 				const stored = itemOf(candidate.itemId);
 				if (stored === undefined) continue;
+				// A grant on another project's item is used only while the item is still shared into the session
+				// (docs/design/sharing.md). A policy is that item's project admin's own, so it stands as set.
+				if (candidate.grant !== undefined && !(await stillShared(request, stored.item))) continue;
 				const { item, sealed } = stored;
 				if (sealed === undefined) {
 					valueless ??= item;

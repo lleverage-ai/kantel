@@ -19,6 +19,7 @@
 // runtime's own tools come first). A session started on an existing workspace keeps it: workspaces take their mounts
 // when they are made, so `/skills` is there only if whoever made it mounted it.
 import type {
+	AgentProfiles,
 	CallContext,
 	Memory,
 	MountSource,
@@ -48,11 +49,18 @@ export function sessionAgentContext(record: SessionRecord): CallContext {
 	};
 }
 
-/** The `skills` mount source over the store: a mount's ref is a session ID, its version the session's pins. */
-export function skillsMountSource(skills: Skills, directory: () => Pick<SessionDirectory, "get">): MountSource {
+/**
+ * The `skills` mount source over the store: a mount's ref is a session ID, its version the session's pins. With
+ * `profiles`, a session's pins include the skills its profile names that are shared into it.
+ */
+export function skillsMountSource(
+	skills: Skills,
+	directory: () => Pick<SessionDirectory, "get">,
+	profiles?: () => Pick<AgentProfiles, "get">,
+): MountSource {
 	return createSkillsMountSource({
 		skills,
-		visibility: (ctx, sessionId) => sessionSkillVisibility(directory())(ctx, sessionId),
+		visibility: (ctx, sessionId) => sessionSkillVisibility(directory(), profiles?.())(ctx, sessionId),
 	});
 }
 

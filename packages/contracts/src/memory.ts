@@ -214,6 +214,8 @@ export interface Memory {
 	 * view, and a user's own. A person never sees another user's space here; services and Harbour see every one.
 	 */
 	listSpaces(ctx: CallContext, page?: PageRequest): Promise<Page<MemorySpace>>;
+	/** One space, read as its concepts are: a project's needs viewer on it or a share (docs/design/sharing.md). */
+	getSpace(ctx: CallContext, spaceId: string): Promise<MemorySpace>;
 	getConcept(ctx: CallContext, spaceId: string, conceptId: string): Promise<Concept>;
 	listConcepts(
 		ctx: CallContext,

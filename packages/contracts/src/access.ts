@@ -314,7 +314,14 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 				return passes(ctx, { ...where, needed });
 			}
 			if (owner.kind === "project") {
-				if (where.projectId !== undefined && where.projectId !== owner.projectId) return false;
+				if (where.projectId !== undefined && where.projectId !== owner.projectId) {
+					// A person or service reading from another project still may as a member of the owner's; a session may not.
+					return (
+						where.sessionId === undefined &&
+						actor.kind !== "agent" &&
+						passes(ctx, { projectId: owner.projectId, needed })
+					);
+				}
 				return passes(ctx, { ...where, projectId: owner.projectId, needed });
 			}
 			return actor.kind === "human" && actor.userId === owner.userId;
@@ -327,8 +334,9 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 			case "project":
 				return passes(ctx, { ...ownSession, projectId: owner.projectId, needed });
 			case "user":
+				// The person themselves; anyone else as on an organisation's resource, as components checked before sharing.
 				if (actor.kind === "human" && actor.userId === owner.userId) return true;
-				return actor.kind !== "agent" && passes(ctx, { needed });
+				return passes(ctx, { ...ownSession, needed });
 		}
 		return false;
 	};
@@ -429,8 +437,11 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 		// Where the actor acts: as named, else an agent's own session.
 		const sessionId =
 			check.sessionId ?? (actor.kind === "agent" && check.projectId === undefined ? actor.sessionId : undefined);
+		// A person or service acts in the call's project unless the check names one.
+		const projectId =
+			check.projectId ?? (actor.kind !== "agent" && sessionId === undefined ? ctx.projectId : undefined);
 		const where = {
-			...(check.projectId === undefined ? {} : { projectId: check.projectId }),
+			...(projectId === undefined ? {} : { projectId }),
 			...(sessionId === undefined ? {} : { sessionId }),
 		};
 		if (actor.kind === "system") {

@@ -1,5 +1,6 @@
 import {
 	type AuditSink,
+	authorKey,
 	type CallContext,
 	type Clock,
 	HarbourError,
@@ -19,6 +20,7 @@ import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, valid
 import {
 	assertDescription,
 	assertMayOwn,
+	assertNotAuthor,
 	authorityOf,
 	checkImport,
 	checkList,
@@ -26,18 +28,23 @@ import {
 	chooseByName,
 	copyOwner,
 	deepFreeze,
+	draftPermission,
 	type Extensions,
 	forbidAgent,
 	ownerKey,
 	ownerVisibleTo,
 	paginate,
 	prepareFiles,
-	requireOwner,
+	requireChange,
+	requireUse,
 	requireWrite,
+	type SharedCandidate,
 	type Source,
+	sharedSkills,
 	skillsAudit,
 	utf8Size,
 	visibleOwner,
+	withShared,
 } from "./rules.ts";
 
 export interface MemorySkillsOptions {
@@ -65,6 +72,8 @@ interface Draft {
 	readonly files: readonly SkillFile[];
 	readonly digest: string;
 	readonly description: string;
+	/** Everyone who saved the draft since the last publish (`authorKey`), for the two-person rule. */
+	readonly authors: readonly string[];
 }
 
 interface StoredSkill {
@@ -175,20 +184,41 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		return revision;
 	}
 
-	function visibleListings(ctx: CallContext, visibility: SkillVisibility): SkillListing[] {
+	function listingOf(stored: StoredSkill, revision: SkillRevision): SkillListing {
+		return {
+			skillId: stored.pkg.id,
+			name: stored.pkg.name,
+			description: revision.description,
+			revision: revision.revision,
+			path: `${mountRoot}/${stored.pkg.name}/${SKILL_MD}`,
+		};
+	}
+
+	async function visibleListings(
+		ctx: CallContext,
+		visibility: SkillVisibility,
+		sessionId?: string,
+	): Promise<SkillListing[]> {
 		const candidates = [...skills.values()]
 			.filter((stored) => stored.revisions.length > 0 && visibleOwner(ctx, visibility, stored.pkg.owner))
 			.map((stored) => ({ owner: stored.pkg.owner, name: stored.pkg.name, stored }));
-		return chooseByName(candidates).map(({ stored }) => {
-			const latest = latestOf(stored)!;
+		const visible = chooseByName(candidates).map(({ stored }) => listingOf(stored, latestOf(stored)!));
+		const find = async (skillId: string): Promise<SharedCandidate | undefined> => {
+			const stored = skills.get(skillId);
+			if (stored === undefined) return undefined;
+			const latest = latestOf(stored)?.revision;
 			return {
-				skillId: stored.pkg.id,
+				skillId,
+				owner: stored.pkg.owner,
 				name: stored.pkg.name,
-				description: latest.description,
-				revision: latest.revision,
-				path: `${mountRoot}/${stored.pkg.name}/${SKILL_MD}`,
+				...(latest === undefined ? {} : { latestRevision: latest }),
 			};
+		};
+		const shared = (await sharedSkills(access, ctx, visibility, find, sessionId)).map((found) => {
+			const stored = skills.get(found.skillId)!;
+			return listingOf(stored, revisionFor(stored, found.revision));
 		});
+		return withShared(visible, shared);
 	}
 
 	return {
@@ -205,14 +235,22 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 
 		async get(ctx, skillId) {
 			const stored = skillFor(ctx, skillId);
-			await requireOwner(access, ctx, stored.pkg.owner, "viewer", "skills.get", skillId);
+			await requireUse(access, ctx, stored.pkg.owner, "skills.get", skillId);
 			return { ...stored.pkg };
 		},
 
 		async saveDraft(ctx, skillId, input) {
 			const before = skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.pkg.owner);
-			await requireWrite(access, ctx, before.pkg.owner, authority.saveDraft, "skills.saveDraft", skillId);
+			await requireChange(
+				access,
+				ctx,
+				before.pkg.owner,
+				draftPermission(ctx),
+				authority.saveDraft,
+				"skills.saveDraft",
+				skillId,
+			);
 			if (input.description !== undefined) assertDescription(input.description);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
@@ -220,7 +258,9 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			const stored = skillFor(ctx, skillId);
 			const skillMd = files.find((file) => file.path === SKILL_MD)!.content;
 			const description = input.description ?? parseSkillFrontmatter(skillMd).description ?? stored.pkg.description;
-			stored.draft = { files, digest, description };
+			const author = authorKey(ctx.actor);
+			const authors = stored.draft?.authors ?? [];
+			stored.draft = { files, digest, description, authors: authors.includes(author) ? authors : [...authors, author] };
 			stored.pkg = { ...stored.pkg, draftDigest: digest, updatedAt: clock.now() };
 			stored.draftSaves += 1;
 			await audits.draftSaved(ctx, { skillId, name: stored.pkg.name, digest, files: files.length }, stored.draftSaves);
@@ -230,7 +270,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 		async readDraft(ctx, skillId) {
 			const stored = skillFor(ctx, skillId);
 			assertMayOwn(ctx, stored.pkg.owner);
-			await requireOwner(access, ctx, stored.pkg.owner, "viewer", "skills.readDraft", skillId);
+			await requireUse(access, ctx, stored.pkg.owner, "skills.readDraft", skillId);
 			if (stored.draft === undefined) throw new HarbourError("not_found", `Skill ${skillId} has no open draft`);
 			return stored.draft.files;
 		},
@@ -239,7 +279,16 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			forbidAgent(ctx, "publish skills");
 			const before = skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.pkg.owner);
-			await requireWrite(access, ctx, before.pkg.owner, authority.publish, "skills.publish", skillId);
+			// Publishing needs `approve`: the `SkillsAuthority.publish` role on the owner, an approver binding or share.
+			const policy = await requireChange(
+				access,
+				ctx,
+				before.pkg.owner,
+				"approve",
+				authority.publish,
+				"skills.publish",
+				skillId,
+			);
 			// Re-read after the await; everything below changes the package without another await until the audit.
 			const stored = skillFor(ctx, skillId);
 			const latest = latestOf(stored);
@@ -252,6 +301,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			if (draft.digest !== input.expectedDigest) {
 				throw new HarbourError("conflict", "The draft changed since it was reviewed", { digest: draft.digest });
 			}
+			assertNotAuthor(policy, ctx, draft.authors);
 			if (latest !== undefined && latest.digest === draft.digest) {
 				delete stored.draft;
 				const { draftDigest: _draftDigest, ...pkg } = stored.pkg;
@@ -271,13 +321,13 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 
 		async getRevision(ctx, skillId, revision) {
 			const stored = skillFor(ctx, skillId);
-			await requireOwner(access, ctx, stored.pkg.owner, "viewer", "skills.getRevision", skillId);
+			await requireUse(access, ctx, stored.pkg.owner, "skills.getRevision", skillId, revision);
 			return revisionFor(stored, revision);
 		},
 
 		async readFile(ctx, skillId, revision, path) {
 			const stored = skillFor(ctx, skillId);
-			await requireOwner(access, ctx, stored.pkg.owner, "viewer", "skills.readFile", skillId);
+			await requireUse(access, ctx, stored.pkg.owner, "skills.readFile", skillId, revision);
 			revisionFor(stored, revision);
 			const content = stored.contents.get(revision)?.get(normaliseSkillPath(path));
 			if (content === undefined) throw new HarbourError("not_found", `No ${path} in revision ${revision}`);
@@ -286,13 +336,13 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 
 		async listRevisions(ctx, skillId, page) {
 			const stored = skillFor(ctx, skillId);
-			await requireOwner(access, ctx, stored.pkg.owner, "viewer", "skills.listRevisions", skillId);
+			await requireUse(access, ctx, stored.pkg.owner, "skills.listRevisions", skillId);
 			return paginate([...stored.revisions].reverse(), page);
 		},
 
 		async list(ctx, visibility, page) {
 			await checkList(access, ctx, visibility);
-			return paginate(visibleListings(ctx, visibility), page);
+			return paginate(await visibleListings(ctx, visibility), page);
 		},
 
 		async pinForSession(ctx, sessionId, visibility) {
@@ -300,9 +350,13 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			const key = `${ctx.organisationId}\0${sessionId}`;
 			const existing = pins.get(key);
 			if (existing !== undefined) return existing;
+			const listings = await visibleListings(ctx, visibility, sessionId);
+			// Pinned at once by another caller meanwhile: that caller's pins stand.
+			const raced = pins.get(key);
+			if (raced !== undefined) return raced;
 			const pinnedAt = clock.now();
 			const pinned: readonly SessionSkillPin[] = deepFreeze(
-				visibleListings(ctx, visibility).map((listing) => ({
+				listings.map((listing) => ({
 					sessionId,
 					skillId: listing.skillId,
 					revision: listing.revision,

@@ -67,6 +67,9 @@ importers:
       "@harbour/schedules":
         specifier: workspace:*
         version: link:../../packages/schedules
+      "@harbour/sharing":
+        specifier: workspace:*
+        version: link:../../packages/sharing
       "@harbour/skills":
         specifier: workspace:*
         version: link:../../packages/skills
@@ -280,6 +283,9 @@ importers:
       "@harbour/selfhosted-workspace":
         specifier: workspace:*
         version: link:../../targets/selfhosted/workspace
+      "@harbour/sharing":
+        specifier: workspace:*
+        version: link:../../packages/sharing
       "@harbour/skills":
         specifier: workspace:*
         version: link:../../packages/skills
@@ -671,9 +677,21 @@ importers:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
+      "@harbour/memory":
+        specifier: workspace:*
+        version: link:../memory
+      "@harbour/skills":
+        specifier: workspace:*
+        version: link:../skills
       "@harbour/testing":
         specifier: workspace:*
         version: link:../testing
+      "@harbour/vault":
+        specifier: workspace:*
+        version: link:../vault
+      "@harbour/workspace":
+        specifier: workspace:*
+        version: link:../workspace
       miniflare:
         specifier: 5.20261023.0-beta
         version: 5.20261023.0-beta(@types/node@24.19.2)
