@@ -46,10 +46,17 @@
 }
 
 .hb-memory-list,
+.hb-memory-controls,
 .hb-memory-proposals,
 .hb-memory-recall,
 .hb-memory-recall-result {
 	gap: var(--hb-space-7);
+}
+
+/* The status filter keeps its own width above the search, as a segmented control does in a form. */
+.hb-memory-controls > .hb-segmented {
+	align-self: flex-start;
+	max-width: 100%;
 }
 
 .hb-memory-controls,

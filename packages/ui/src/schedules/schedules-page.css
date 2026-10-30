@@ -27,8 +27,14 @@
 .hb-schedules-list {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-6);
+	gap: var(--hb-space-7);
 	min-width: 0;
+}
+
+/* The status filter keeps its own width, as the memory page's does, rather than a frame stretched past its options. */
+.hb-schedules-list > .hb-segmented {
+	align-self: flex-start;
+	max-width: 100%;
 }
 
 .hb-schedules-rows {
