@@ -50,6 +50,15 @@ export const SessionRecord = Type.Object(
 		createdBy: Actor,
 		createdAt: Timestamp,
 		updatedAt: Timestamp,
+		pinnedAt: Type.Optional(
+			Type.Integer({ description: "When the session was pinned to the top of the list, in epoch milliseconds." }),
+		),
+		archivedAt: Type.Optional(
+			Type.Integer({ description: "When the session was archived (out of the default list), in epoch milliseconds." }),
+		),
+		markedUnreadAt: Type.Optional(
+			Type.Integer({ description: "When someone marked the session unread, in epoch milliseconds." }),
+		),
 	},
 	{ title: "SessionRecord" },
 );

@@ -27,8 +27,10 @@ import {
 	type SessionHistory,
 	type SessionHistoryRequest,
 	type SessionModels,
+	type SessionOrganising,
 	type SessionRecord,
 	type SessionRuntime,
+	type SessionUpdate,
 	type Subscription,
 	systemClock,
 } from "@harbour/contracts";
@@ -75,6 +77,12 @@ export interface SessionApiOptions {
 	 * command. Without it the route checks the session and answers `unavailable` for the container.
 	 */
 	readonly warm?: SessionWarmer;
+	/**
+	 * Serves `PATCH /sessions/:id` (body `{ title?, pinned?, archived?, unread? }`, 200 with the record as now stored) and
+	 * `DELETE /sessions/:id` (closes and deletes the session, 204), for the console's session menu: the runtime's
+	 * `organising`.
+	 */
+	readonly organising?: SessionOrganising;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -191,6 +199,25 @@ function forkInput(body: Partial<ForkSessionInput>): ForkSessionInput {
 	if (body.title !== undefined && typeof body.title !== "string")
 		throw new HarbourError("invalid", "title must be a string");
 	return body.title === undefined ? { itemId: body.itemId } : { itemId: body.itemId, title: body.title };
+}
+
+/** A session update's fields, each checked when given; any other field is ignored. */
+function updateInput(body: { readonly [key in keyof SessionUpdate]?: unknown }): SessionUpdate {
+	if (body.title !== undefined && typeof body.title !== "string") {
+		throw new HarbourError("invalid", "title must be a string");
+	}
+	for (const flag of ["pinned", "archived", "unread"] as const) {
+		if (body[flag] !== undefined && typeof body[flag] !== "boolean") {
+			throw new HarbourError("invalid", `${flag} must be true or false`);
+		}
+	}
+	const { title, pinned, archived, unread } = body as SessionUpdate;
+	return {
+		...(title === undefined ? {} : { title }),
+		...(pinned === undefined ? {} : { pinned }),
+		...(archived === undefined ? {} : { archived }),
+		...(unread === undefined ? {} : { unread }),
+	};
 }
 
 function editInput(body: Partial<EditSessionInput>): EditSessionInput {
@@ -310,6 +337,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	): Promise<Response> => {
 		const route = `${request.method} ${rest.join("/")}`;
 		switch (route) {
+			case "PATCH ":
+				if (options.organising === undefined) break;
+				return json(await options.organising.update(ctx, sessionId, updateInput(await readJson(request))));
+			case "DELETE ":
+				if (options.organising === undefined) break;
+				await options.organising.remove(ctx, sessionId);
+				return new Response(null, { status: 204 });
 			case "GET children":
 				return json({ items: await directory.children(ctx, sessionId) });
 			case "GET snapshot":

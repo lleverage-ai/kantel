@@ -154,6 +154,12 @@ export interface CreatedSession {
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
+	/** When the session was pinned to the top of the list, in epoch milliseconds. */
+	readonly pinnedAt?: number;
+	/** When the session was archived (out of the default list), in epoch milliseconds. */
+	readonly archivedAt?: number;
+	/** When someone marked the session unread, in epoch milliseconds. */
+	readonly markedUnreadAt?: number;
 	/** A message the session accepted. */
 	readonly submission?: Submission;
 }
@@ -691,6 +697,12 @@ export interface SessionRecord {
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
+	/** When the session was pinned to the top of the list, in epoch milliseconds. */
+	readonly pinnedAt?: number;
+	/** When the session was archived (out of the default list), in epoch milliseconds. */
+	readonly archivedAt?: number;
+	/** When someone marked the session unread, in epoch milliseconds. */
+	readonly markedUnreadAt?: number;
 }
 
 export interface SessionSnapshot {

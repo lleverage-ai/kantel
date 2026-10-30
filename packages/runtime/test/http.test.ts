@@ -59,6 +59,7 @@ function setUp(outbound?: typeof fetch) {
 	const api = createSessionApi({
 		runtime: memory.runtime,
 		branching: memory.branching,
+		organising: memory.organising,
 		directory: memory.directory,
 		profiles: memory.profiles,
 		hostTools: memory.hostTools,
@@ -307,6 +308,41 @@ describe("session API over HTTP", () => {
 		expect(await refused("edit", { itemId: "u1" })).toBe(400);
 		expect(await refused("edit", { text: "x" })).toBe(400);
 		expect(await refused("fork", { itemId: "nope" })).toBe(404);
+	});
+
+	it("renames, pins and deletes a session, refusing malformed bodies", async () => {
+		const { request } = setUp();
+		const sessionId = await createSession(request);
+		const path = `/sessions/${sessionId}`;
+
+		const patched = await request("PATCH", path, {
+			token: "supervisor",
+			body: { title: " Release plan ", pinned: true, unread: true, ignored: "x" },
+		});
+		expect(patched.status).toBe(200);
+		const record = (await patched.json()) as { title: string; pinnedAt?: number; markedUnreadAt?: number };
+		expect(record.title).toBe("Release plan");
+		expect(record.pinnedAt).toBeTypeOf("number");
+		expect(record.markedUnreadAt).toBeTypeOf("number");
+		const read = await request("GET", path, { token: "supervisor" });
+		expect(await read.json()).toMatchObject({ title: "Release plan", pinnedAt: record.pinnedAt });
+
+		const refused = async (body: unknown) => (await request("PATCH", path, { token: "supervisor", body })).status;
+		expect(await refused({ title: 3 })).toBe(400);
+		expect(await refused({ pinned: "yes" })).toBe(400);
+		expect(await refused({ archived: 1 })).toBe(400);
+		expect(await refused({ title: "  " })).toBe(400);
+		expect(await refused([])).toBe(400);
+
+		const deleted = await request("DELETE", path, { token: "supervisor" });
+		expect(deleted.status).toBe(204);
+		expect((await request("GET", path, { token: "supervisor" })).status).toBe(404);
+		expect((await request("DELETE", path, { token: "supervisor" })).status).toBe(404);
+		expect((await request("PATCH", path, { token: "supervisor", body: { pinned: false } })).status).toBe(404);
+		const listed = (await (await request("GET", "/sessions", { token: "supervisor" })).json()) as {
+			items: { id: string }[];
+		};
+		expect(listed.items.map((item) => item.id)).not.toContain(sessionId);
 	});
 
 	it("registers only https callbacks with a long enough secret, and generates one when none is given", async () => {

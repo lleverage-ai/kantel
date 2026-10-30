@@ -80,6 +80,21 @@ export interface SessionRecord {
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
 	readonly updatedAt: Timestamp;
+	/**
+	 * Proposed: pinned to the top of the session list, and when. Set by `SessionOrganising.update`; session-wide, not per
+	 * person, for now.
+	 */
+	readonly pinnedAt?: Timestamp;
+	/**
+	 * Proposed: archived, and when: out of the session list's default view, but still readable and usable. Set by
+	 * `SessionOrganising.update`; session-wide, not per person, for now.
+	 */
+	readonly archivedAt?: Timestamp;
+	/**
+	 * Proposed: someone marked the session unread, and when; a client clears it (`unread: false`) when the session is
+	 * next opened. Set by `SessionOrganising.update`; session-wide, not per person, for now.
+	 */
+	readonly markedUnreadAt?: Timestamp;
 }
 
 export interface CreateSessionInput {
@@ -255,6 +270,42 @@ export interface SessionBranching {
 	 * Watchers get a fresh snapshot.
 	 */
 	edit(ctx: CallContext, sessionId: SessionId, input: EditSessionInput): Promise<Submission>;
+}
+
+/** What to change about a session's place in the list. Each field left out is left as it is. */
+export interface SessionUpdate {
+	/** The session's new title: trimmed, then 1 to 200 characters. */
+	readonly title?: string;
+	/** Pins the session to the top of the list (`pinnedAt`), or unpins it. */
+	readonly pinned?: boolean;
+	/** Archives the session (`archivedAt`), taking it out of the list's default view, or brings it back. */
+	readonly archived?: boolean;
+	/** Marks the session unread (`markedUnreadAt`), or clears the mark. */
+	readonly unread?: boolean;
+}
+
+/**
+ * Proposed (30 Oct 2026, the console's session menu): renaming, pinning, archiving, marking unread and deleting a
+ * session. A separate interface, as `SessionBranching` is, so that no existing `SessionRuntime` has to change to adopt
+ * it. The marks are on the session, not per person, for now.
+ */
+export interface SessionOrganising {
+	/**
+	 * Changes what `change` names and answers the record as now stored. The caller needs operator on the session's
+	 * project; another organisation's session is `not_found`. A title is trimmed and must then be 1 to 200 characters
+	 * (`invalid` otherwise). `pinned: true` sets `pinnedAt` to now, keeping the time it was pinned when it already is,
+	 * and `pinned: false` removes it; `archived` and `archivedAt`, and `unread` and `markedUnreadAt`, work the same way.
+	 * It doesn't change `updatedAt`, which is the session's last activity: its status changes. An empty change changes
+	 * nothing.
+	 */
+	update(ctx: CallContext, sessionId: SessionId, change: SessionUpdate): Promise<SessionRecord>;
+	/**
+	 * Deletes the session. It is closed first, as `SessionRuntime.close` closes it (its work stops, and its leases,
+	 * browsers and grants end), then it is never found again: every call naming it answers `not_found`, and it leaves
+	 * every list. Its stored transcript is kept in storage for now (a soft delete). The caller needs operator on the
+	 * session's project; removing a removed session is `not_found`.
+	 */
+	remove(ctx: CallContext, sessionId: SessionId): Promise<void>;
 }
 
 /** The most items one history page holds; a larger `limit` is cut to it. */

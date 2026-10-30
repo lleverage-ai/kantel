@@ -160,6 +160,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				}
 			},
 		},
+		// The console's session menu: rename, pin, archive, mark unread and delete a session.
+		organising: stack.runtime.organising,
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,
