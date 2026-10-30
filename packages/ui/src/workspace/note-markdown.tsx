@@ -18,6 +18,11 @@ const components: Components = {
 		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.
 		<pre {...props} className="hb-focusable" tabIndex={0} />
 	),
+	// So do tables (`display: block` with `overflow-x: auto`) too wide for a narrow panel.
+	table: ({ node: _node, ...props }) => (
+		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling table must be reachable to scroll by keyboard.
+		<table {...props} className="hb-focusable" tabIndex={0} />
+	),
 	// A task's box is read-only and says what it means, rather than being an unnamed form control.
 	input: ({ node: _node, ...props }) =>
 		props.type === "checkbox" ? (
