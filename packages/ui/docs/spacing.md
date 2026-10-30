@@ -6,8 +6,9 @@ wherever you are in it.
 ## The scale
 
 One step is 4px, numbered as Tailwind v4's spacing (`--spacing: 0.25rem`): step n is n × 4px, so `--hb-step-4` is
-Tailwind's `p-4`, 16px. When Harbour moves to Tailwind, `var(--hb-step-4)` becomes `p-4` (or `gap-4`, `mt-4`) as it
-stands.
+Tailwind's `p-4`, 16px. A component moving to Tailwind ([tailwind.md](tailwind.md)) turns `var(--hb-step-4)` into
+`p-4` (or `gap-4`, `mt-4`) as it stands, and the rhythm's tokens into their utilities: `gap-within`, `mt-between`,
+`pt-turn`, `p-pad-card`, `p-pad-panel`, `px-gutter`, `px-gutter-narrow` (`src/tokens/tailwind.css`).
 
 | Step | Token | px | Tailwind |
 | --- | --- | --- | --- |
@@ -47,7 +48,7 @@ The rhythm has names, so CSS says which rule it follows rather than a number:
 | `--hb-pad-card` | 3 (12px) | The inside of a card in the flow |
 | `--hb-pad-panel` | 4 (16px) | The inside of a panel, a popover or a dialog |
 | `--hb-gutter` | 6 (24px) | A page's or a panel's edge to its content, on a wide screen |
-| `--hb-gutter-narrow` | 4 (16px) | The same on a phone (under 900px) |
+| `--hb-gutter-narrow` | 4 (16px) | The same on a phone (under 640px), and the session's own columns at every width: its bars, the transcript and the composer, which sit beside other panels |
 
 ## Where each step goes
 
@@ -65,8 +66,8 @@ The rhythm has names, so CSS says which rule it follows rather than a number:
 | Inside a card in the flow | 3 | `--hb-pad-card` |
 | Inside a panel, a popover, a dialog, the right-hand panel's header | 4 | `--hb-pad-panel` |
 | Page and panel gutters | 6 wide, 4 narrow | `--hb-gutter`, `--hb-gutter-narrow` |
-| List rows (sessions, skills, schedules, audit) | 1 between rows; 2–3 inside a row | `--hb-step-1`, `--hb-step-2` |
-| Groups of rows in a list (Working, Done) | 6 | `--hb-gap-between` |
+| List rows (sessions, skills, schedules, audit) | 0.5 between rows, which carry their own padding (2–2.5) and hover background | `--hb-step-0_5`, `--hb-step-2` |
+| Groups of rows in the sidebar's dense column (Working, Done) | 4 | `--hb-step-4` |
 | The composer: inside its surface | 3 | `--hb-pad-card` |
 | The composer: from the transcript's end, and from the window's foot | 6 wide (4 narrow) | `--hb-gutter`, `--hb-gutter-narrow` |
 
@@ -81,7 +82,11 @@ only:
   stands `--hb-gap-within` under it: `hb-transcript-row-close`;
 - the first thing under the person's message stands `--hb-gap-within` under it too, because the message's actions row
   (Copy and the time, shown on hover) already stands between them;
-- the person's message starts a turn and stands `--hb-gap-turn` under what came before: `hb-transcript-turn`.
+- the person's message starts a turn and stands `--hb-gap-turn` under what came before: `hb-transcript-turn`;
+- a finished turn's work folds under one "Worked for" line, which is a line of work like any other (close under the
+  message, a block above the answer). A folded row that shows nothing takes no room; one that keeps something in view
+  (presented files, a failed call) is a block under the line. Opened, the fold's first line of work sits close under
+  it and the agent's words a block under it.
 
 Inside a row the same rules hold: an answer's thought, its words and a draft document's card are a block apart; the
 cards a call presented are `--hb-gap-within` apart and a block under the call.

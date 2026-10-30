@@ -15,14 +15,15 @@
  * The Harbour and the credentials come from the environment, never the command line or the repository:
  *
  * - `HARBOUR_URL`: the Harbour's base URL, such as `https://harbour.example` (or `--url`);
- * - `HARBOUR_API_KEY`: an `hbr_` key, sent as `Authorization: Bearer`;
+ * - `HARBOUR_API_KEY`: an `hbr_` key, sent as `Authorization: Bearer`; the normal path;
  * - `HARBOUR_ACCESS_TOKEN`: a signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion`.
  *
- * On Cloudflare, importing skills and snapshots needs the organisation's admin role, which only a person holds today:
- * an API key's role is on its projects, so the gateway refuses it there (403), though it can set a profile. Run with
- * Node 24:
+ * Importing skills and snapshots is the organisation admin's, or a key's that carries the `import` permission (minted by
+ * an organisation admin: `POST /v1/keys` with `"permissions": ["import"]`, see the README). That permission covers the
+ * two imports only, so the memory space must exist first: an admin makes it once, or a signed-in admin's first run
+ * does. An `operator` key on the project also sets the profile. Run with Node 24:
  *
- *   HARBOUR_URL=https://harbour.example HARBOUR_ACCESS_TOKEN=<token> \
+ *   HARBOUR_URL=https://harbour.example HARBOUR_API_KEY=<key> \
  *     node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --profile assistant
  *
  * `--out <file>` writes the requests as JSON instead of sending them (`{ organisation, skills, space, snapshot }`, with
@@ -33,7 +34,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createHarbourClient, type ImportSkillBody } from "@harbour/api/sdk";
+import { createHarbourClient, HarbourApiError, type ImportSkillBody } from "@harbour/api/sdk";
 import type { AgentProfile, MemorySnapshot, MeResponse, OwnerRef } from "@harbour/contracts";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker } from "../src/worker.ts";
@@ -163,7 +164,13 @@ if (values.out !== undefined) {
 	const spaces = await harbour.listMemorySpaces({ limit: 100 });
 	const space =
 		spaces.items.find((item) => item.name === spaceName && item.owner.kind === "organisation") ??
-		(await harbour.createMemorySpace({ owner, name: spaceName }));
+		(await harbour.createMemorySpace({ owner, name: spaceName }).catch((error: unknown) => {
+			if (!(error instanceof HarbourApiError) || error.status !== 403) throw error;
+			throw new Error(
+				`There is no memory space "${spaceName}", and this caller may not make one: an organisation admin makes it once (see the README)`,
+				{ cause: error },
+			);
+		}));
 	const loaded = await harbour.importMemorySnapshot(space.id, snapshot);
 
 	let profile: { readonly agentId: string; readonly skills: number; readonly memoryScopes: number } | undefined;

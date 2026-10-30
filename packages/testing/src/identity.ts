@@ -249,6 +249,81 @@ export function createIdentityConformance(options: {
 			}),
 		},
 		{
+			name: "a key's import permission: an organisation admin issues it, it is kept, and it widens no role",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const globex = await createTenant(identity, "Globex");
+				const org = tenant.organisation.id;
+				const project = await identity.createProject(tenant.admin, { name: "Imports" });
+				const service = await createService(identity, tenant);
+				const issued = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "operator",
+					permissions: ["import", "import"],
+				});
+				a.deepEqual(issued.key.permissions, ["import"], "each permission once");
+				const listed = await identity.listApiKeys(tenant.admin);
+				a.deepEqual(listed.find((key) => key.id === issued.key.id)?.permissions, ["import"], "the list keeps it");
+				const { actor } = await identity.authenticateApiKey(WORKER, issued.secret);
+				a.strictEqual(await identity.keyPermits(WORKER, actor, org, "import"), true);
+				a.strictEqual(
+					await identity.keyPermits(WORKER, actor, globex.organisation.id, "import"),
+					false,
+					"only in the key's own organisation",
+				);
+				// The permission is not a role: the key is still its role on its projects and nothing organisation-wide.
+				a.strictEqual(await identity.roleOf(WORKER, actor, org), undefined);
+				a.strictEqual(await identity.roleOf(WORKER, actor, org, project.id), "operator");
+				await a.rejectsWithCode(identity.authorize(contextFor(actor, org), "viewer"), "forbidden");
+				await a.rejectsWithCode(identity.createProject(contextFor(actor, org), { name: "Sneaky" }), "forbidden");
+
+				// A key without it, the service's own sign-in and a person never permit an import.
+				const plain = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "admin",
+				});
+				a.strictEqual(plain.key.permissions, undefined);
+				const plainActor = (await identity.authenticateApiKey(WORKER, plain.secret)).actor;
+				a.strictEqual(await identity.keyPermits(WORKER, plainActor, org, "import"), false);
+				a.strictEqual(await identity.keyPermits(WORKER, actors.service(service.id), org, "import"), false);
+				a.strictEqual(await identity.keyPermits(WORKER, actors.human(tenant.founder.id), org, "import"), false);
+
+				// Revoked, it permits nothing.
+				await identity.revokeApiKey(tenant.admin, issued.key.id);
+				a.strictEqual(await identity.keyPermits(WORKER, actor, org, "import"), false);
+
+				// Only an organisation admin hands one out, and only a permission the contract names.
+				const projectAdmin = await createMember(identity, tenant, "admin", project.id);
+				const asProjectAdmin = contextFor(projectAdmin, org);
+				await identity.issueApiKey(asProjectAdmin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "operator",
+				});
+				await a.rejectsWithCode(
+					identity.issueApiKey(asProjectAdmin, {
+						serviceId: service.id,
+						projectIds: [project.id],
+						role: "operator",
+						permissions: ["import"],
+					}),
+					"forbidden",
+					"a project admin cannot issue a key that imports into the organisation",
+				);
+				await a.rejectsWithCode(
+					identity.issueApiKey(tenant.admin, {
+						serviceId: service.id,
+						projectIds: [project.id],
+						role: "operator",
+						permissions: ["admin"] as unknown as ["import"],
+					}),
+					"invalid",
+				);
+			}),
+		},
+		{
 			name: "a service actor without a key acts with its own role bindings",
 			run: withSubject(async ({ identity }) => {
 				const tenant = await createTenant(identity, "Acme");
@@ -844,7 +919,7 @@ export function createIdentityConformance(options: {
 			}),
 		},
 		{
-			name: "worker calls: roleOf and authenticateApiKey refuse every caller but system",
+			name: "worker calls: roleOf, keyPermits and authenticateApiKey refuse every caller but system",
 			run: withSubject(async ({ identity }, deps) => {
 				const tenant = await createTenant(identity, "Acme");
 				const org = tenant.organisation.id;
@@ -867,6 +942,7 @@ export function createIdentityConformance(options: {
 					for (const [operation, call] of [
 						["identity.roleOf", () => identity.roleOf(ctx, founder, org)],
 						["identity.authenticateApiKey", () => identity.authenticateApiKey(ctx, issued.secret)],
+						["identity.keyPermits", () => identity.keyPermits(ctx, founder, org, "import")],
 					] as const) {
 						// Started after the audit is counted: the refusal may be audited before the call first awaits.
 						const deferred = Promise.resolve().then((): Promise<unknown> => call());

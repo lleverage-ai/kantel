@@ -6,6 +6,9 @@
  *   `content-type`, stores the file in R2 under the project and answers 201 with its `PromptAttachment`. The operator
  *   role on the project, as for starting a session in it. A file the model can't read is refused here, so the composer
  *   says so on the file's card rather than when the message is sent.
+ * - `GET /v1/attachments/<id>?projectId=<id>` answers the file as it was stored, for the console's thumbnail of a sent
+ *   image and its file panel. The viewer role on the project, as for reading its sessions. It is never run: an image or
+ *   a PDF goes with its own type, anything else as plain text, every answer with `nosniff` and a sandboxing CSP.
  * - A prompt names its attachments by that reference. The runtime asks `attachmentBlocks` what the model sees of each
  *   (`SessionRuntimeOptions.attachments`), from the session's own project only: an image as image content, a text file
  *   as its text and a PDF as the text in it (pi's messages carry text and images, not documents), each framed by its
@@ -133,6 +136,11 @@ export interface AttachmentStore {
 	): Promise<PromptAttachment>;
 	/** What the model reads of a session's attachments, from the session's project only. */
 	readonly reader: PromptAttachments;
+	/** A file as it was stored, from that project only; undefined when the project holds no such file. */
+	get(
+		scope: { readonly organisationId: string; readonly projectId: string },
+		id: string,
+	): Promise<{ readonly attachment: PromptAttachment; readonly bytes: Uint8Array } | undefined>;
 }
 
 const keyOf = (organisationId: string, projectId: string, id: string) =>
@@ -222,9 +230,19 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 		return publicOf(record);
 	};
 
+	const get: AttachmentStore["get"] = async (scope, id) => {
+		if (!ID.test(id)) return undefined;
+		const key = keyOf(scope.organisationId, scope.projectId, id);
+		const meta = await objects.get(`${key}.json`);
+		if (meta === undefined) return undefined;
+		const bytes = await objects.get(key);
+		if (bytes === undefined) return undefined;
+		return { attachment: publicOf(JSON.parse(decoder.decode(meta)) as StoredAttachment), bytes };
+	};
+
 	const load = async (session: SessionRecord, id: string) => {
 		// An ID is one this store made: never a path into another key.
-		if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) throw new HarbourError("invalid", `No attachment ${id} in this project`);
+		if (!ID.test(id)) throw new HarbourError("invalid", `No attachment ${id} in this project`);
 		const key = keyOf(session.organisationId, session.projectId, id);
 		const meta = await objects.get(`${key}.json`);
 		if (meta === undefined) throw new HarbourError("not_found", `No attachment ${id} in this project`);
@@ -269,20 +287,66 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 		},
 	};
 
-	return { put, reader };
+	return { put, reader, get };
 }
+
+/** An attachment ID this store makes: never a path into another key. */
+const ID = /^[A-Za-z0-9-]{1,64}$/;
+
+/** The types a stored file is served as itself; anything else is sent as plain text. */
+const SERVED_AS_ITSELF: ReadonlySet<string> = new Set([...IMAGE_TYPES, "application/pdf"]);
+
+/** Sent with every file: nothing it holds is ever run or sniffed by a browser. */
+const SAFE_HEADERS = {
+	"x-content-type-options": "nosniff",
+	"content-security-policy": "default-src 'none'; sandbox",
+	"referrer-policy": "no-referrer",
+} as const;
 
 /**
  * The upload route: `POST /v1/attachments?projectId=&name=`, the file as the body. The gateway signs the caller in
  * first; this checks the operator role on the project, reads at most `MAX_ATTACHMENT_BYTES` and stores the file.
+ * And the read route, `GET /v1/attachments/<id>?projectId=`, for a viewer of the project: the file's bytes.
  */
 export function createAttachmentsApi(options: {
 	readonly store: AttachmentStore;
 	readonly access: ProjectAccess;
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 }): (request: Request) => Promise<Response> {
+	const read = async (request: Request, url: URL): Promise<Response> => {
+		if (request.method !== "GET" && request.method !== "HEAD") {
+			await request.body?.cancel().catch(() => undefined);
+			return Response.json(
+				{ error: { code: "invalid", message: "GET only" } },
+				{ status: 405, headers: { allow: "GET, HEAD", "cache-control": "no-store" } },
+			);
+		}
+		const id = decodeURIComponent(url.pathname.slice(ATTACHMENTS_PATH.length + 1));
+		const projectId = url.searchParams.get("projectId") ?? "";
+		if (projectId === "" || id === "") throw new HarbourError("invalid", "Name the project: ?projectId=");
+		const ctx = await options.authenticate(request);
+		await options.access.require(ctx, { projectId, needed: "viewer", operation: "attachment.read" });
+		const found = await options.store.get({ organisationId: ctx.organisationId, projectId }, id);
+		if (found === undefined) throw new HarbourError("not_found", `No attachment ${id} in this project`);
+		const { attachment, bytes } = found;
+		const type = SERVED_AS_ITSELF.has(attachment.type) ? attachment.type : "text/plain; charset=utf-8";
+		return new Response(request.method === "HEAD" ? null : (bytes as Uint8Array<ArrayBuffer>), {
+			status: 200,
+			headers: {
+				...SAFE_HEADERS,
+				"content-type": type,
+				"content-length": String(bytes.byteLength),
+				"content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(attachment.name)}`,
+				// An attachment never changes once stored; the browser may keep it for the page's life and beyond.
+				"cache-control": "private, max-age=86400, immutable",
+			},
+		});
+	};
+
 	return async (request) => {
 		try {
+			const url = new URL(request.url);
+			if (url.pathname.startsWith(`${ATTACHMENTS_PATH}/`)) return await read(request, url);
 			if (request.method !== "POST") {
 				await request.body?.cancel().catch(() => undefined);
 				return Response.json(
@@ -290,7 +354,6 @@ export function createAttachmentsApi(options: {
 					{ status: 405, headers: { allow: "POST", "cache-control": "no-store" } },
 				);
 			}
-			const url = new URL(request.url);
 			const projectId = url.searchParams.get("projectId") ?? "";
 			const name = url.searchParams.get("name") ?? "";
 			if (projectId === "" || name === "") {

@@ -371,6 +371,115 @@ export function registerSharingConformance(
 			}),
 		},
 		{
+			name: "agents write through a share only when it lets them, and never approve",
+			run: withSubject(async ({ sharing }, deps, a) => {
+				const change = (ctx: CallContext, permission: "propose" | "edit" | "approve") =>
+					deps.access.allowsResource(ctx, {
+						resource: skill(),
+						owner: SKILLS["sk-owner"] as OwnerRef,
+						permission,
+						needed: "operator",
+					});
+				const into = (permission: "use" | "propose" | "edit" | "approve", agentWrites?: unknown) =>
+					sharing.createShare(ownerAdmin, {
+						resource: skill(),
+						grantee: { kind: "project", projectId: USER_PROJECT },
+						permission,
+						...(agentWrites === undefined ? {} : { agentWrites: agentWrites as boolean }),
+					});
+				await a.rejectsWithCode(into("use", true), "invalid", "a use share can't let agents write");
+				await a.rejectsWithCode(into("propose", true), "invalid", "nor a propose share");
+				await a.rejectsWithCode(into("edit", "yes"), "invalid", "the flag is a boolean");
+				// An edit share without the flag: the project's people edit, its agents still only propose.
+				const plain = await into("edit");
+				a.strictEqual(plain.agentWrites, false, "off by default");
+				a.strictEqual(await change(supervisor, "edit"), undefined);
+				a.strictEqual((await change(supervisor, "propose"))?.via, "share");
+				a.strictEqual((await change(userOperator, "edit"))?.share?.id, plain.id);
+				// With it, the project's agents write through that share, and only that one.
+				const writes = await into("edit", true);
+				a.strictEqual(writes.agentWrites, true);
+				a.strictEqual((await sharing.getShare(ownerAdmin, writes.id)).agentWrites, true, "stored");
+				const written = await change(supervisor, "edit");
+				a.strictEqual(written?.via, "share");
+				a.strictEqual(written?.share?.id, writes.id);
+				a.strictEqual(await change(supervisor, "approve"), undefined, "an agent never approves");
+				a.strictEqual(await change(thirdAgent, "edit"), undefined, "nor writes outside the grantee");
+				// An approve share that lets agents write still lets them only edit.
+				const approve = await into("approve", true);
+				a.strictEqual(approve.agentWrites, true);
+				a.strictEqual(await change(supervisor, "approve"), undefined);
+				// The owner's own agents get nothing from it: agents write only through a share that opts in.
+				deps.tenancy.session({
+					id: "sess-owner",
+					organisationId: ORG,
+					projectId: OWNER_PROJECT,
+					agentId: "agent-owner",
+				});
+				const ownerAgent = contextFor(actors.agent("agent-owner", "sess-owner"), ORG, OWNER_PROJECT);
+				a.strictEqual(await change(ownerAgent, "edit"), undefined);
+				const refused = deps.access.resource(supervisor, {
+					resource: skill(),
+					owner: SKILLS["sk-owner"] as OwnerRef,
+					permission: "approve",
+					operation: "skills.publish",
+				});
+				await assertAccessDenied(a, deps, refused, { operation: "skills.publish" });
+				// Revoking the opted-in shares ends the agents' writes.
+				await sharing.revokeShare(ownerAdmin, writes.id);
+				await sharing.revokeShare(ownerAdmin, approve.id);
+				a.strictEqual(await change(supervisor, "edit"), undefined);
+				// The flag is in the audit of each share.
+				const created = deps.audit.ofType("sharing.share.created");
+				a.deepEqual(
+					created.map((event) => (event.data as { agentWrites?: unknown }).agentWrites),
+					[false, true, true],
+				);
+			}),
+		},
+		{
+			name: "a grant lets agents write only when the decider says so, on an edit grant",
+			run: withSubject(async ({ sharing }, deps, a) => {
+				const ask = (reason: string) =>
+					sharing.requestAccess(userOperator, {
+						resource: skill(),
+						grantee: { kind: "project", projectId: USER_PROJECT },
+						permission: "edit",
+						reason,
+					});
+				const first = await ask("our agents keep the checklist current");
+				await a.rejectsWithCode(
+					sharing.decideRequest(ownerAdmin, first.id, { decision: "grant", permission: "propose", agentWrites: true }),
+					"invalid",
+					"a narrowed grant that can't carry it",
+				);
+				a.strictEqual(
+					(await sharing.getRequest(ownerAdmin, first.id)).status,
+					"pending",
+					"the refusal decides nothing",
+				);
+				const decided = await sharing.decideRequest(ownerAdmin, first.id, { decision: "grant", agentWrites: true });
+				a.partialDeepEqual(decided.share, { permission: "edit", agentWrites: true, requestId: first.id });
+				a.strictEqual(
+					(
+						await deps.access.allowsResource(supervisor, {
+							resource: skill(),
+							owner: SKILLS["sk-owner"] as OwnerRef,
+							permission: "edit",
+						})
+					)?.share?.id,
+					decided.share?.id,
+				);
+				a.partialDeepEqual(deps.audit.ofType("sharing.request.granted")[0]?.data, {
+					grantedPermission: "edit",
+					agentWrites: true,
+				});
+				const second = await ask("the same, without agents");
+				const plain = await sharing.decideRequest(ownerAdmin, second.id, { decision: "grant" });
+				a.strictEqual(plain.share?.agentWrites, false, "off unless the decider turns it on");
+			}),
+		},
+		{
 			name: "a request goes to the owner's approvers, is granted once and records its decision",
 			run: withSubject(async ({ sharing }, deps, a) => {
 				const request = await sharing.requestAccess(supervisor, {
@@ -556,6 +665,47 @@ export function registerSharingConformance(
 				a.strictEqual(await deps.access.allowsResource(child, useCheck(child)), undefined);
 				const revoked = deps.audit.ofType("sharing.share.revoked");
 				a.strictEqual(revoked.length, 2);
+			}),
+		},
+		{
+			name: "a supervisor passes on agent writes only when the share it holds has them",
+			run: withSubject(async ({ sharing }, deps, a) => {
+				const edit = (ctx: CallContext) =>
+					deps.access.allowsResource(ctx, {
+						resource: skill(),
+						owner: SKILLS["sk-owner"] as OwnerRef,
+						permission: "edit",
+					});
+				const passOn = (parentShareId: string, permission: "propose" | "edit", agentWrites?: boolean) =>
+					sharing.createShare(supervisor, {
+						resource: skill(),
+						grantee: { kind: "session", sessionId: "sess-child" },
+						permission,
+						...(agentWrites === undefined ? {} : { agentWrites }),
+						parentShareId,
+					});
+				const plain = await sharing.createShare(ownerAdmin, {
+					resource: skill(),
+					grantee: { kind: "session", sessionId: "sess-super" },
+					permission: "edit",
+				});
+				await a.rejectsWithCode(passOn(plain.id, "edit", true), "forbidden", "not when the held share hasn't it");
+				await a.rejectsWithCode(passOn(plain.id, "edit"), "forbidden", "nor edit without it");
+				a.strictEqual((await passOn(plain.id, "propose")).agentWrites, false);
+				const writes = await sharing.createShare(ownerAdmin, {
+					resource: skill(),
+					grantee: { kind: "session", sessionId: "sess-super" },
+					permission: "edit",
+					agentWrites: true,
+				});
+				a.strictEqual(await edit(child), undefined);
+				await a.rejectsWithCode(passOn(writes.id, "edit"), "forbidden", "edit passed on needs the flag passed on");
+				const passed = await passOn(writes.id, "edit", true);
+				a.partialDeepEqual(passed, { parentShareId: writes.id, permission: "edit", agentWrites: true });
+				a.strictEqual((await edit(child))?.share?.id, passed.id);
+				a.strictEqual(await edit(sibling), undefined);
+				await sharing.revokeShare(ownerAdmin, writes.id);
+				a.strictEqual(await edit(child), undefined, "revoking the held share ends the child's writes");
 			}),
 		},
 		{

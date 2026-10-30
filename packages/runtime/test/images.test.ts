@@ -9,9 +9,10 @@ import type {
 	SessionRecord,
 } from "@harbour/contracts";
 import type { ToolItem } from "@harbour/protocol";
-import { GENERATE_IMAGE_TOOL, imageStem, type SessionImages } from "@harbour/runtime";
+import { GENERATE_IMAGE_TOOL, imageStem, MAX_INLINE_IMAGE_CHARS, type SessionImages } from "@harbour/runtime";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
 import { createScriptedModel } from "@harbour/runtime/testing";
+import { encode as encodeJpeg } from "jpeg-js";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-images";
@@ -43,15 +44,22 @@ const gatewayModel = (id: string, output: ModelGatewayModel["output"]): ModelGat
 	maxTokens: 0,
 });
 
+/** A 1536 by 1024 JPEG of noise: too large to go into the conversation as it is. */
+function largeJpeg(): string {
+	const data = new Uint8Array(1536 * 1024 * 4);
+	for (let at = 0; at < data.length; at += 65_536) crypto.getRandomValues(data.subarray(at, at + 65_536));
+	return Buffer.from(encodeJpeg({ width: 1536, height: 1024, data }, 95).data).toString("base64");
+}
+
 /** The gateway's image side for a test: what config lists, and each `images` call it was asked for. */
-function fakeImages(listed: readonly ModelGatewayModel[]) {
+function fakeImages(listed: readonly ModelGatewayModel[], made = { mimeType: "image/png", data: PIXEL }) {
 	const calls: ModelImagesRequest[] = [];
 	const images: SessionImages = {
 		models: async () => listed,
 		async generate(request): Promise<ModelImagesResult> {
 			calls.push(request);
 			return {
-				images: Array.from({ length: request.count ?? 1 }, () => ({ mimeType: "image/png", data: PIXEL })),
+				images: Array.from({ length: request.count ?? 1 }, () => made),
 				usage: {
 					input: 0,
 					output: 0,
@@ -89,9 +97,9 @@ function memoryEnv(files: Map<string, Uint8Array>): (record: SessionRecord) => E
 		}) as unknown as ExecutionEnv;
 }
 
-function setUp(listed: readonly ModelGatewayModel[]) {
+function setUp(listed: readonly ModelGatewayModel[], made?: { mimeType: string; data: string }) {
 	const { models, script } = createScriptedModel();
-	const { images, calls } = fakeImages(listed);
+	const { images, calls } = fakeImages(listed, made);
 	const files = new Map<string, Uint8Array>();
 	const service = createMemoryRuntime({ models, images: () => images, environment: memoryEnv(files) });
 	return { service, script, calls, files };
@@ -181,6 +189,63 @@ describe("generate_image", () => {
 			} finally {
 				await service.close();
 			}
+		}
+	});
+
+	it("presents the saved images, each with the model that made it, in a session with a workspace", async () => {
+		const { service, script } = setUp([gatewayModel("scripted-1", ["image"])]);
+		try {
+			await service.profiles.put(ctx, profile({ route: "images" }));
+			const session = await service.runtime.create(ctx, {
+				projectId: "proj",
+				agentId: "artist",
+				workspaceId: "ws-1",
+			});
+			script.reply(
+				{ toolCalls: [{ name: GENERATE_IMAGE_TOOL, args: { prompt: "A red lighthouse", aspect: "portrait" } }] },
+				{ text: "Done" },
+			);
+			const submission = await service.runtime.prompt(ctx, session.id, { text: "Draw one" });
+			await service.runtime.wait(ctx, session.id, submission.id);
+			const tool = (await service.runtime.snapshot(ctx, session.id)).items.find(
+				(item): item is ToolItem => item.kind === "tool",
+			);
+			expect(tool?.label).toBe("Making an image");
+			expect(tool?.files).toEqual([
+				expect.objectContaining({
+					workspaceId: "ws-1",
+					path: expect.stringMatching(/^images\/a-red-lighthouse-[a-z0-9]+\.png$/),
+					mimeType: "image/png",
+					model: "gpt-image-1",
+				}),
+			]);
+			expect(script.requests[1]?.messages.at(-1)?.text ?? "").toContain("The person sees it in the conversation");
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("shows an image too large for the conversation scaled down, and keeps the file full size", async () => {
+		const made = { mimeType: "image/jpeg", data: largeJpeg() };
+		expect(made.data.length).toBeGreaterThan(MAX_INLINE_IMAGE_CHARS);
+		const { service, script, files } = setUp([gatewayModel("scripted-1", ["image"])], made);
+		try {
+			await service.profiles.put(ctx, profile({ route: "images" }));
+			const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "artist" });
+			script.reply({ toolCalls: [{ name: GENERATE_IMAGE_TOOL, args: { prompt: "Noise" } }] }, { text: "Done" });
+			const submission = await service.runtime.prompt(ctx, session.id, { text: "Draw" });
+			await service.runtime.wait(ctx, session.id, submission.id);
+			const saved = [...files.values()][0];
+			expect(saved?.length).toBe(Buffer.from(made.data, "base64").length);
+			const tool = (await service.runtime.snapshot(ctx, session.id)).items.find(
+				(item): item is ToolItem => item.kind === "tool",
+			);
+			expect(tool?.images).toHaveLength(1);
+			expect(tool?.images?.[0]?.mimeType).toBe("image/jpeg");
+			expect(tool?.images?.[0]?.data.length).toBeLessThanOrEqual(MAX_INLINE_IMAGE_CHARS);
+			expect(script.requests[1]?.messages.at(-1)?.text ?? "").not.toContain("too large");
+		} finally {
+			await service.close();
 		}
 	});
 

@@ -54,6 +54,37 @@
 	padding-top: var(--hb-gutter-narrow);
 }
 
+/* A finished turn's work, folded under its "Worked for" line (TurnFoldLine). A folded row that shows nothing (the agent's
+   words before its answer, a run of calls that presented nothing) takes no room; one that keeps something in view
+   (presented files, a browser's card, a failed call) is a block of its own, a block under the line above it. The
+   "Worked for" line is a line of work like any other: close under the person's message, a block above the answer. */
+.hb-transcript-row-folded:not(.hb-transcript-row-fold-line) {
+	padding-top: 0;
+}
+
+.hb-transcript-row-folded:not(.hb-transcript-row-fold-line):has(.hb-transcript-column > *) {
+	padding-top: var(--hb-gap-between);
+}
+
+/* Presented files first in a folded row: the row's padding already stands them a block under the line. */
+.hb-transcript-row-folded .hb-transcript-column > .hb-presented-files:first-child {
+	margin-top: 0;
+}
+
+/* An open fold: the line's first row of work sits close under it, the agent's words a block under it. */
+.hb-transcript-column > .hb-turn-fold + * {
+	margin-top: var(--hb-gap-within);
+}
+
+.hb-transcript-column > .hb-turn-fold + .hb-assistant-message {
+	margin-top: var(--hb-gap-between);
+}
+
+.hb-turn-fold > .hb-disclosure-summary {
+	width: auto;
+	max-width: 100%;
+}
+
 .hb-transcript-column {
 	min-width: 0;
 	max-width: var(--hb-content-width);

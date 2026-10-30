@@ -8,6 +8,7 @@ import {
 	type AccessRequestQuery,
 	type Actor,
 	AGENT_MAX_PERMISSION,
+	AGENT_WRITES_PERMISSION,
 	type AuditEventInput,
 	type AuditSink,
 	type BindingInput,
@@ -55,6 +56,7 @@ import {
 	resourceName,
 	sameGrantee,
 	sameResource,
+	validateAgentWrites,
 	validateBinding,
 	validateBindingObject,
 	validateGrantee,
@@ -159,6 +161,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 				resource: selectorJson(share.resource),
 				grantee: granteeKey(share.grantee),
 				permission: share.permission,
+				agentWrites: share.agentWrites,
 				...(share.requestId === undefined ? {} : { requestId: share.requestId }),
 				...(share.parentShareId === undefined ? {} : { parentShareId: share.parentShareId }),
 				...(share.expiresAt === undefined ? {} : { expiresAt: share.expiresAt }),
@@ -325,7 +328,12 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			subject: { kind: "sharing.share", id: parent.id },
 		});
 		const permission = validatePermission(input.permission);
-		if (!permissionSatisfies(parent.permission, permission) || !permissionSatisfies(AGENT_MAX_PERMISSION, permission)) {
+		const agentWrites = validateAgentWrites(input.agentWrites, permission);
+		if (agentWrites && !parent.agentWrites)
+			refuse("A share passed on can't let agents write when the one held doesn't");
+		// What an agent may pass on is what it may use: `propose`, or `edit` when the share lets agents write.
+		const cap = agentWrites ? AGENT_WRITES_PERMISSION : AGENT_MAX_PERMISSION;
+		if (!permissionSatisfies(parent.permission, permission) || !permissionSatisfies(cap, permission)) {
 			refuse("A share passed on can't be wider than the one held");
 		}
 		const expiresAt = assertFuture(input.expiresAt) ?? parent.expiresAt;
@@ -343,6 +351,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 		return {
 			parent,
 			permission,
+			agentWrites,
 			expiresAt,
 			resource: { kind: resource.kind, id: resource.id, ...(revision === undefined ? {} : { revision }) },
 		};
@@ -504,6 +513,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 					owner,
 					grantee,
 					permission: passed.permission,
+					agentWrites: passed.agentWrites,
 					grantedBy: ctx.actor,
 					grantedAt: clock.now(),
 					...(passed.expiresAt === undefined ? {} : { expiresAt: passed.expiresAt }),
@@ -513,6 +523,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			} else {
 				if (input.parentShareId !== undefined)
 					throw new HarbourError("invalid", "Only a supervisor's agent passes a share on");
+				const agentWrites = validateAgentWrites(input.agentWrites, permission);
 				await requireAuthority(ctx, resource, owner, "sharing.createShare");
 				const expiresAt = assertFuture(input.expiresAt);
 				share = {
@@ -522,6 +533,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 					owner,
 					grantee,
 					permission,
+					agentWrites,
 					grantedBy: ctx.actor,
 					grantedAt: clock.now(),
 					...(expiresAt === undefined ? {} : { expiresAt }),
@@ -745,6 +757,8 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			if (!permissionSatisfies(request.permission, permission)) {
 				throw new HarbourError("invalid", "A grant can't be wider than the request");
 			}
+			// The decider's choice: a request asks for a permission, and only the owner's side lets agents write with it.
+			const agentWrites = validateAgentWrites(input.agentWrites, permission);
 			const expiresAt = assertFuture(input.expiresAt) ?? request.expiresAt;
 			if (request.expiresAt !== undefined && (expiresAt === undefined || expiresAt > request.expiresAt)) {
 				throw new HarbourError("invalid", "A grant can't outlast what was asked");
@@ -766,6 +780,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 				owner: request.owner,
 				grantee: request.grantee,
 				permission,
+				agentWrites,
 				grantedBy: ctx.actor,
 				grantedAt: decidedAt,
 				requestId: request.id,
@@ -788,6 +803,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 				requestEvent("sharing.request.granted", settled, {
 					shareId: share.id,
 					grantedPermission: permission,
+					agentWrites,
 					...(noteText === undefined ? {} : { note: noteText }),
 				}),
 				shareEvent("sharing.share.created", share),

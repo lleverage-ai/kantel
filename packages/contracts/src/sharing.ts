@@ -103,8 +103,19 @@ export function permissionSatisfies(held: SharePermission, needed: SharePermissi
 	return SHARE_PERMISSIONS.indexOf(held) >= SHARE_PERMISSIONS.indexOf(needed);
 }
 
-/** The strongest permission an agent may hold or use: agents draft and propose, never edit or approve. */
+/**
+ * The strongest permission an agent may hold or use: agents draft and propose, never edit or approve. The one exception
+ * is a share that opts in (`ResourceShare.agentWrites`): through it an agent may reach `AGENT_WRITES_PERMISSION`.
+ */
 export const AGENT_MAX_PERMISSION: SharePermission = "propose";
+
+/** The strongest permission an agent may use through a share with `agentWrites` on: write, never approve. */
+export const AGENT_WRITES_PERMISSION: SharePermission = "edit";
+
+/** Whether a share at `permission` may let agents write: only one that allows `edit` (an `edit` or `approve` share). */
+export function permissionAllowsAgentWrites(permission: SharePermission): boolean {
+	return permissionSatisfies(permission, AGENT_WRITES_PERMISSION);
+}
 
 export type ResourceShareId = string;
 export type AccessRequestId = string;
@@ -117,6 +128,11 @@ export interface ResourceShare {
 	readonly owner: OwnerRef;
 	readonly grantee: ShareGrantee;
 	readonly permission: SharePermission;
+	/**
+	 * Whether agents covered by the share may write through it (`edit`, never `approve`). Off by default: without it an
+	 * agent gets at most `propose` however strong the share. Only an `edit` or `approve` share may turn it on.
+	 */
+	readonly agentWrites: boolean;
 	readonly grantedBy: Actor;
 	readonly grantedAt: Timestamp;
 	/** The request this share answers, when it answers one. */
@@ -141,6 +157,11 @@ export interface CreateShareInput {
 	readonly resource: ResourceSelector;
 	readonly grantee: ShareGrantee;
 	readonly permission: SharePermission;
+	/**
+	 * Let agents write through the share (default false). Only on an `edit` or `approve` share; a share passed on may
+	 * turn it on only when the one held has it.
+	 */
+	readonly agentWrites?: boolean;
 	readonly expiresAt?: Timestamp;
 	/** Required of an agent: the share it holds and passes on. */
 	readonly parentShareId?: ResourceShareId;
@@ -195,6 +216,8 @@ export interface DecideRequestInput {
 	readonly note?: string;
 	/** A grant may narrow what was asked: a weaker permission, an earlier expiry, or a pinned revision. Never wider. */
 	readonly permission?: SharePermission;
+	/** Let agents write through the share the grant makes (default false). Only when it grants `edit` or `approve`. */
+	readonly agentWrites?: boolean;
 	readonly expiresAt?: Timestamp;
 	readonly revision?: number;
 }

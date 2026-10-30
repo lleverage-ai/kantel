@@ -94,6 +94,11 @@ export type BrowsingGroupProps = {
 	 * between calls too, so the line doesn't flip between "Browsing" and "Browsed for" at every step.
 	 */
 	active?: boolean;
+	/**
+	 * The run is in a finished turn whose work is folded under the turn's "Worked for" line (`TurnFold`), and that line
+	 * is closed: the run's own line goes, and only its browser's card and its failed calls stay.
+	 */
+	folded?: boolean;
 };
 
 /**
@@ -109,6 +114,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	browserView,
 	focus,
 	active = false,
+	folded = false,
 }: BrowsingGroupProps) {
 	useRenderProbe("BrowsingGroup", items[0]?.id ?? "");
 	const [open, setOpen] = useState(focus !== undefined);
@@ -125,6 +131,33 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 	const chip = (call: ToolItem) => (
 		<ToolCallChip key={call.id} item={call} images="detail" linked={call.id === focus} />
 	);
+	const card =
+		onShowBrowser === undefined || browserEntry === null ? null : browserEntry !== undefined ? (
+			<SlotBrowser
+				slot={browserEntry}
+				busy={busy}
+				shown={browserEntry.browserSessionId === shownBrowser}
+				state={browserState}
+				onShow={() => onShowBrowser(browserEntry.browserSessionId)}
+			/>
+		) : browser === undefined ? null : (
+			<RunBrowser
+				calls={calls}
+				busy={busy}
+				shown={browser === shownBrowser}
+				state={browserState}
+				onShow={() => onShowBrowser(browser)}
+			/>
+		);
+	if (folded) {
+		if (card === null && failed.length === 0) return null;
+		return (
+			<div className="hb-browsing hb-browsing-folded">
+				{card}
+				{failed.length > 0 ? <div className="hb-browsing-failed">{failed.map(chip)}</div> : null}
+			</div>
+		);
+	}
 	return (
 		<div className={`hb-browsing${open ? " hb-browsing-open" : ""}${busy ? " hb-browsing-running" : ""}`}>
 			<div className="hb-browsing-line">
@@ -152,23 +185,7 @@ export const BrowsingGroup = memo(function BrowsingGroup({
 					<ChevronRightIcon size="sm" className="hb-browsing-chevron" />
 				</button>
 			</div>
-			{onShowBrowser === undefined || browserEntry === null ? null : browserEntry !== undefined ? (
-				<SlotBrowser
-					slot={browserEntry}
-					busy={busy}
-					shown={browserEntry.browserSessionId === shownBrowser}
-					state={browserState}
-					onShow={() => onShowBrowser(browserEntry.browserSessionId)}
-				/>
-			) : browser === undefined ? null : (
-				<RunBrowser
-					calls={calls}
-					busy={busy}
-					shown={browser === shownBrowser}
-					state={browserState}
-					onShow={() => onShowBrowser(browser)}
-				/>
-			)}
+			{card}
 			{open ? (
 				<div id={id} className="hb-browsing-steps">
 					{items.map((step) => (isCall(step) ? chip(step) : <BrowsingNote key={step.id} item={step} />))}

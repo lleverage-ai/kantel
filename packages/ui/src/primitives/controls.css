@@ -152,3 +152,42 @@
 	color: var(--hb-text-faint);
 	font-variant-numeric: tabular-nums;
 }
+
+/* One on/off choice: the browser's checkbox in the accent colour, its label beside it, a hint under the label. */
+.hb-checkbox-field {
+	display: inline-grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: center;
+	column-gap: var(--hb-space-3);
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-checkbox {
+	width: calc(var(--hb-space-6) + var(--hb-space-1));
+	height: calc(var(--hb-space-6) + var(--hb-space-1));
+	margin: 0;
+	accent-color: var(--hb-accent);
+	cursor: pointer;
+}
+
+.hb-checkbox-label {
+	cursor: pointer;
+}
+
+.hb-checkbox:disabled,
+.hb-checkbox:disabled + .hb-checkbox-label {
+	cursor: default;
+}
+
+.hb-checkbox:disabled + .hb-checkbox-label {
+	color: var(--hb-text-disabled);
+}
+
+.hb-checkbox-hint {
+	grid-column: 2;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+}

@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fileTypeIcon, fileTypeKind, fileTypeLabel } from "../primitives/file-icons.ts";
 import { RetryIcon, XIcon } from "../primitives/icons.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
+import { AttachmentCard, AttachmentCards } from "./attachment-card.tsx";
 import { isImage } from "./composer-model.ts";
 
 /** What an attachment is, which decides how the composer shows it. */
 export type ComposerAttachmentKind =
-	/** A PNG, JPEG, GIF or WebP a model can look at: a thumbnail. */
+	/** A PNG, JPEG, GIF or WebP a model can look at: its card shows its thumbnail. */
 	| "image"
-	/** Any other file: a chip with its name and size. */
+	/** Any other file: its card shows its type's icon. */
 	| "file"
-	/** Pasted text the composer turned into a file (pasted-text.txt): a chip. */
+	/** Pasted text the composer turned into a file (pasted-text.txt): its card says Pasted. */
 	| "text";
 
 /**
@@ -248,7 +248,7 @@ export function useComposerAttachments<R>(upload: Upload<R>): ComposerAttachment
 	return { attachments, attach, remove, retry, take, ready, clear };
 }
 
-// The strip: thumbnails for images, chips for files and pasted text, above the field.
+// The strip: a card for each attachment above the field, the same card a sent message shows its files with.
 
 type StripProps = {
 	attachments: readonly ComposerAttachment[];
@@ -273,163 +273,89 @@ function statusText(attachment: ComposerAttachment): string {
 /** The attachments in the draft. Each says what it is, its size and its upload's state to a screen reader. */
 export function AttachmentStrip({ attachments, onRemove, onRetry, disabled }: StripProps) {
 	if (attachments.length === 0) return null;
-	const images = attachments.filter((attachment) => attachment.kind === "image");
-	const files = attachments.filter((attachment) => attachment.kind !== "image");
 	return (
 		<div className="hb-composer-attachments">
-			{images.length === 0 ? null : (
-				<ul className="hb-composer-thumbs" aria-label="Attached images">
-					{images.map((attachment) => (
-						<Thumbnail
-							key={attachment.id}
-							attachment={attachment}
-							onRemove={onRemove}
-							onRetry={onRetry}
-							disabled={disabled}
-						/>
-					))}
-				</ul>
-			)}
-			{files.length === 0 ? null : (
-				<ul className="hb-composer-chips" aria-label="Attached files">
-					{files.map((attachment) => (
-						<Chip
-							key={attachment.id}
-							attachment={attachment}
-							onRemove={onRemove}
-							onRetry={onRetry}
-							disabled={disabled}
-						/>
-					))}
-				</ul>
-			)}
+			<AttachmentCards label="Attached files">
+				{attachments.map((attachment) => (
+					<li key={attachment.id} className="hb-attachment-cards-item">
+						<DraftAttachment attachment={attachment} onRemove={onRemove} onRetry={onRetry} disabled={disabled} />
+					</li>
+				))}
+			</AttachmentCards>
 		</div>
 	);
 }
 
 type ItemProps = {
 	attachment: ComposerAttachment;
-	onRemove?: (id: string) => void;
-	onRetry?: (id: string) => void;
+	onRemove?: ((id: string) => void) | undefined;
+	onRetry?: ((id: string) => void) | undefined;
 	disabled: boolean;
 };
 
-function Progress({ attachment }: { attachment: ComposerAttachment }) {
-	if (attachment.status !== "uploading") return null;
-	if (attachment.progress === undefined) return <Spinner size="sm" />;
+/** An upload's progress where the card's type and size go: the percentage with the size, or a spinner. */
+function Uploading({ attachment }: { attachment: ComposerAttachment }) {
 	return (
-		<span className="hb-composer-progress-text" aria-hidden="true">
-			{Math.round(attachment.progress * 100)}%
-		</span>
+		<>
+			<span className="hb-attachment-card-fact">{formatBytes(attachment.size)}</span>
+			{attachment.progress === undefined ? (
+				<Spinner size="sm" />
+			) : (
+				<span className="hb-attachment-card-fact hb-composer-progress-text" aria-hidden="true">
+					{Math.round(attachment.progress * 100)}%
+				</span>
+			)}
+		</>
 	);
 }
 
-function Thumbnail({ attachment, onRemove, onRetry, disabled }: ItemProps) {
+function DraftAttachment({ attachment, onRemove, onRetry, disabled }: ItemProps) {
 	const failed = attachment.status === "failed";
 	const uploading = attachment.status === "uploading";
 	return (
-		<li
-			className={`hb-composer-thumb${failed ? " hb-composer-thumb-failed" : ""}`}
+		<AttachmentCard
+			file={attachment}
+			previewUrl={attachment.kind === "image" ? attachment.previewUrl : undefined}
+			failed={failed}
 			title={failed && attachment.error ? `${attachment.name}: ${attachment.error}` : attachment.name}
-		>
-			{attachment.previewUrl ? (
-				<img className="hb-composer-thumb-image" src={attachment.previewUrl} alt={attachment.name} />
-			) : (
-				<span className="hb-composer-thumb-image hb-composer-thumb-blank" role="img" aria-label={attachment.name} />
-			)}
-			<span className="hb-sr-only">
-				{attachment.name}, {formatBytes(attachment.size)}, {statusText(attachment)}
-			</span>
-			{uploading ? (
-				<span className="hb-composer-thumb-veil" aria-hidden="true">
-					{attachment.progress === undefined ? <Spinner size="sm" /> : null}
-				</span>
-			) : null}
-			{uploading && attachment.progress !== undefined ? (
-				<span className="hb-composer-thumb-bar" aria-hidden="true">
-					<span className="hb-composer-thumb-bar-fill" style={{ transform: `scaleX(${attachment.progress})` }} />
-				</span>
-			) : null}
-			{failed && onRetry ? (
-				<button
-					type="button"
-					className="hb-composer-thumb-retry hb-focusable"
-					aria-label={`Retry ${attachment.name}`}
-					title={attachment.error ? `${attachment.error} Retry.` : "Retry"}
-					onClick={() => onRetry(attachment.id)}
-					disabled={disabled}
-				>
-					<RetryIcon />
-				</button>
-			) : null}
-			{onRemove ? (
-				<button
-					type="button"
-					className="hb-composer-thumb-remove hb-focusable"
-					aria-label={`Remove ${attachment.name}`}
-					title="Remove"
-					onClick={() => onRemove(attachment.id)}
-					disabled={disabled}
-				>
-					<XIcon size="sm" />
-				</button>
-			) : null}
-		</li>
-	);
-}
-
-function Chip({ attachment, onRemove, onRetry, disabled }: ItemProps) {
-	const failed = attachment.status === "failed";
-	const Icon = fileTypeIcon(attachment);
-	return (
-		<li
-			className={`hb-composer-chip${failed ? " hb-composer-chip-failed" : ""}`}
-			title={failed && attachment.error ? `${attachment.name}: ${attachment.error}` : attachment.name}
-		>
-			<span className="hb-composer-chip-tile hb-file-tile" data-kind={fileTypeKind(attachment)}>
-				<Icon className="hb-composer-chip-icon" />
-			</span>
-			<span className="hb-composer-chip-text">
-				<span className="hb-composer-chip-name">{attachment.name}</span>
-				<span className="hb-composer-chip-facts">
-					{failed ? (
-						<span className="hb-composer-chip-meta">{attachment.error ?? "Failed"}</span>
-					) : (
-						<>
-							<span className="hb-composer-chip-meta">
-								{attachment.kind === "text" ? "Pasted" : fileTypeLabel(attachment)}
-							</span>
-							<span className="hb-composer-chip-meta">{formatBytes(attachment.size)}</span>
-							<Progress attachment={attachment} />
-						</>
-					)}
-					<span className="hb-sr-only">, {statusText(attachment)}</span>
-				</span>
-			</span>
-			{failed && onRetry ? (
-				<button
-					type="button"
-					className="hb-composer-chip-button hb-focusable"
-					aria-label={`Retry ${attachment.name}`}
-					title={attachment.error ? `${attachment.error} Retry.` : "Retry"}
-					onClick={() => onRetry(attachment.id)}
-					disabled={disabled}
-				>
-					<RetryIcon size="sm" />
-				</button>
-			) : null}
-			{onRemove ? (
-				<button
-					type="button"
-					className="hb-composer-chip-button hb-focusable"
-					aria-label={`Remove ${attachment.name}`}
-					title="Remove"
-					onClick={() => onRemove(attachment.id)}
-					disabled={disabled}
-				>
-					<XIcon size="sm" />
-				</button>
-			) : null}
-		</li>
+			status={statusText(attachment)}
+			facts={
+				failed ? (
+					<span className="hb-attachment-card-fact">{attachment.error ?? "Failed"}</span>
+				) : uploading ? (
+					<Uploading attachment={attachment} />
+				) : undefined
+			}
+			actions={
+				(failed && onRetry) || onRemove ? (
+					<>
+						{failed && onRetry ? (
+							<button
+								type="button"
+								className="hb-composer-chip-button hb-focusable"
+								aria-label={`Retry ${attachment.name}`}
+								title={attachment.error ? `${attachment.error} Retry.` : "Retry"}
+								onClick={() => onRetry(attachment.id)}
+								disabled={disabled}
+							>
+								<RetryIcon size="sm" />
+							</button>
+						) : null}
+						{onRemove ? (
+							<button
+								type="button"
+								className="hb-composer-chip-button hb-focusable"
+								aria-label={`Remove ${attachment.name}`}
+								title="Remove"
+								onClick={() => onRemove(attachment.id)}
+								disabled={disabled}
+							>
+								<XIcon size="sm" />
+							</button>
+						) : null}
+					</>
+				) : undefined
+			}
+		/>
 	);
 }

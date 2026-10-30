@@ -6,6 +6,8 @@ import {
 	type Actor,
 	API_KEY_LAST_USED_PRECISION_MS,
 	API_KEY_NAME_MAX_LENGTH,
+	API_KEY_PERMISSIONS,
+	type ApiKeyPermission,
 	HarbourError,
 	ROLES,
 	type Role,
@@ -70,6 +72,22 @@ export function apiKeyName(name: unknown): string | undefined {
 		throw new HarbourError("invalid", `a key's name is at most ${API_KEY_NAME_MAX_LENGTH} characters`);
 	}
 	return trimmed;
+}
+
+/**
+ * An API key's permissions as issued: each once, in `API_KEY_PERMISSIONS`' order, or undefined when there are none.
+ * Rejects with `invalid` anything but a list of the permissions that constant names.
+ */
+export function apiKeyPermissions(permissions: unknown): readonly ApiKeyPermission[] | undefined {
+	if (permissions === undefined) return undefined;
+	if (
+		!Array.isArray(permissions) ||
+		!permissions.every((permission) => (API_KEY_PERMISSIONS as readonly unknown[]).includes(permission))
+	) {
+		throw new HarbourError("invalid", `a key's permissions are a list of: ${API_KEY_PERMISSIONS.join(", ")}`);
+	}
+	const held = API_KEY_PERMISSIONS.filter((permission) => permissions.includes(permission));
+	return held.length === 0 ? undefined : Object.freeze(held);
 }
 
 /** Whether a use at `now` should be recorded over `recorded`: none yet, or one older than the precision. */

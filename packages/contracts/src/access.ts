@@ -19,7 +19,8 @@
  * Resources (docs/design/sharing.md): `resource` is the one check for using or changing a resource that may be owned
  * outside the project acting on it, such as another project's skill. It applies the owner rules above, then the
  * resource's bindings (maintainer, approver) and its active shares, read through `SharingLookup`. Without a lookup only
- * the owner rules apply, which is how every resource behaved before sharing.
+ * the owner rules apply, which is how every resource behaved before sharing. An agent never gets past `propose` this way,
+ * except to `edit` through an active share that opts in to agent writes (`ResourceShare.agentWrites`).
  *
  * Worker calls (settled 27 Oct 2026, open question 13) are the calls Harbour makes on its own behalf and no caller
  * reaches: scheduler ticks and claims, audit appends and relays, retention, the egress gateway's decision, the sandbox
@@ -45,6 +46,7 @@ import { type IdentityDirectory, type Role, roleSatisfies } from "./identity.ts"
 import type { SessionDirectory, SessionRecord } from "./session.ts";
 import {
 	AGENT_MAX_PERMISSION,
+	AGENT_WRITES_PERMISSION,
 	type BindingSubject,
 	DEFAULT_RESOURCE_POLICY,
 	permissionSatisfies,
@@ -350,6 +352,8 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 	): Promise<{ readonly share: ResourceShare; readonly projectId?: ProjectId } | undefined> => {
 		if (sharing === undefined) return undefined;
 		const now = clock.now();
+		// An agent above its cap is covered only by a share that lets agents write (and never to approve).
+		const agentWrite = ctx.actor.kind === "agent" && !permissionSatisfies(AGENT_MAX_PERMISSION, check.permission);
 		const candidates = (
 			await sharing.sharesOf(ACCESS_CONTEXT, ctx.organisationId, {
 				kind: check.resource.kind,
@@ -360,6 +364,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 				share.organisationId === ctx.organisationId &&
 				shareActive(share, now) &&
 				permissionSatisfies(share.permission, check.permission) &&
+				(!agentWrite || (share.agentWrites && permissionSatisfies(AGENT_WRITES_PERMISSION, check.permission))) &&
 				(share.resource.revision === undefined ||
 					check.resource.revision === undefined ||
 					share.resource.revision === check.resource.revision),
@@ -451,10 +456,16 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 				policy: await policy(),
 			};
 		}
-		// Agents draft and propose; they never edit or approve.
-		if (actor.kind === "agent" && !permissionSatisfies(AGENT_MAX_PERMISSION, check.permission)) return undefined;
+		// Agents draft and propose; they never edit or approve, except to write through a share that opts in to it
+		// (`agentWrites`), and then only through that share: not as the owner's, nor through a binding.
+		const agentWrite = actor.kind === "agent" && !permissionSatisfies(AGENT_MAX_PERMISSION, check.permission);
+		if (agentWrite && !permissionSatisfies(AGENT_WRITES_PERMISSION, check.permission)) return undefined;
 		const needed = check.needed ?? (check.permission === "use" ? "viewer" : "operator");
-		const through = new Set(check.through ?? ["owner", "binding", "share"]);
+		const through = new Set<"owner" | "binding" | "share">(
+			agentWrite
+				? (check.through ?? ["share"]).filter((way) => way === "share")
+				: (check.through ?? ["owner", "binding", "share"]),
+		);
 		if (through.has("owner") && (await viaOwner(ctx, check, where, needed))) {
 			const projectId = check.projectId ?? (owner.kind === "project" ? owner.projectId : undefined);
 			return { via: "owner", ...(projectId === undefined ? {} : { projectId }), policy: await policy() };

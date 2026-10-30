@@ -9,6 +9,7 @@ import {
 	HarbourError,
 	isBuiltInResourceKind,
 	type OwnerRef,
+	permissionAllowsAgentWrites,
 	RESERVED_RESOURCE_PREFIXES,
 	RESOURCE_KIND_PATTERN,
 	type ResourceRef,
@@ -81,6 +82,16 @@ export function validatePermission(permission: unknown): SharePermission {
 		throw new HarbourError("invalid", `A permission is one of ${SHARE_PERMISSIONS.join(", ")}`);
 	}
 	return permission as SharePermission;
+}
+
+/** A share's `agentWrites`: false unless asked for, and only on a share that allows `edit`. */
+export function validateAgentWrites(agentWrites: unknown, permission: SharePermission): boolean {
+	if (agentWrites === undefined || agentWrites === false) return false;
+	if (agentWrites !== true) throw new HarbourError("invalid", "agentWrites is true or false");
+	if (!permissionAllowsAgentWrites(permission)) {
+		throw new HarbourError("invalid", "Only an edit or approve share may let agents write");
+	}
+	return true;
 }
 
 export function validateGrantee(grantee: unknown): ShareGrantee {

@@ -2,6 +2,7 @@ import type { TranscriptItem } from "@harbour/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Sheet } from "../workbench/specimen.tsx";
+import { EXAMPLE_GENERATED_IMAGE } from "./fixture-generated-image.ts";
 import {
 	assistant,
 	browser,
@@ -274,7 +275,7 @@ const withFiles: TranscriptItem[] = [
 export const WithAttachments: Story = () => (
 	<Sheet
 		title="Transcript with attached files"
-		intro="The files sent with a message sit above its bubble as cards: the file type's icon, the name, the type and size. A message of files alone has no bubble."
+		intro="The files sent with a message sit above its bubble as cards of one size, right-aligned and wrapping: an image's thumbnail when the host can read it back (the file type's icon until then, and here), the name cut short (whole on hover), the type and size. A message of files alone has no bubble."
 	>
 		<div className="hb-story-transcript-frame">
 			<Transcript items={withFiles} />
@@ -438,6 +439,136 @@ export const NotSent: Story = () => (
 		</div>
 	</Sheet>
 );
+
+// An image made with generate_image, which presents it, with the model that made it; an agent that still presents it
+// again adds no second card. Then the answer.
+const pogoPath = "images/a-man-on-a-pogo-stick-mhd0k2pq.jpg";
+const pogoFile = {
+	workspaceId: "ws_1",
+	path: pogoPath,
+	name: "a-man-on-a-pogo-stick-mhd0k2pq.jpg",
+	mimeType: "image/jpeg",
+	size: 2_340_000,
+} as const;
+const pogoArgs = { prompt: "A man bouncing on a pogo stick in a park at sunset, photo", aspect: "portrait" };
+const imageTurn: TranscriptItem[] = [
+	user("iu", "Make me an image of a man on a pogo stick", 60),
+	{
+		...tool("it1", "generate_image", "Making an image", {
+			args: pogoArgs,
+			output: `Made 1 image with gpt-image-2.5-flare.\nSaved in the session's files:\n${pogoPath}\nThe person sees it in the conversation already.`,
+			seconds: 22,
+			secondsAgo: 58,
+		}),
+		files: [{ ...pogoFile, model: "gpt-image-2.5-flare" }],
+		images: [{ mimeType: "image/jpeg", data: EXAMPLE_GENERATED_IMAGE }],
+	},
+	{
+		...tool("it2", "present_files", "Presenting a-man-on-a-pogo-stick-mhd0k2pq.jpg", {
+			args: { filepaths: [pogoPath] },
+			output: `Presented ${pogoPath}`,
+			seconds: 0.3,
+			secondsAgo: 35,
+		}),
+		files: [pogoFile],
+	},
+	assistant("ia", "Here's a man mid-bounce on a pogo stick in a park at sunset, in portrait.", { secondsAgo: 33 }),
+];
+const openNothing = () => {};
+
+/** generate_image running: a placeholder the shape of the image to come, under its call, while the turn works. */
+function MakingImageDemo({
+	args,
+	label = "Making an image",
+}: {
+	args: { readonly [key: string]: unknown };
+	label?: string;
+}) {
+	const [items] = useState<TranscriptItem[]>(() => [
+		{ ...user("mu", "Make me an image of a man on a pogo stick"), at: Date.now() - 9_000 },
+		{
+			...tool("mt1", "generate_image", label, { status: "running", args }),
+			at: Date.now() - 7_000,
+		},
+	]);
+	return (
+		<div className="hb-story-transcript-frame">
+			<Transcript items={items} working />
+		</div>
+	);
+}
+
+// A turn of several steps: the agent's words between its calls, a thought, two runs of calls, then the answer.
+const stepsTurn: TranscriptItem[] = [
+	user("su1", "The billing worker charged two customers twice last night. Find out why and fix it.", 300),
+	assistant("sa1", "I'll start with the charge path and how it retries.", {
+		thinking: "A double charge after a timeout usually means a retry without an idempotency key.",
+		secondsAgo: 296,
+	}),
+	tool("st1", "read", "Read src/billing/charge.ts", {
+		args: { path: "src/billing/charge.ts" },
+		seconds: 0.2,
+		secondsAgo: 295,
+	}),
+	tool("st2", "grep", "Searched for retryCharge", { args: { pattern: "retryCharge" }, seconds: 0.4, secondsAgo: 290 }),
+	assistant("sa2", "The retry makes a new charge without a key. Fixing it and running the tests.", { secondsAgo: 280 }),
+	tool("st3", "edit", "Edited src/billing/retry.ts", {
+		args: { path: "src/billing/retry.ts" },
+		seconds: 0.1,
+		secondsAgo: 270,
+	}),
+	tool("st4", "bash", "Ran pnpm test billing", {
+		args: { command: "pnpm test billing" },
+		seconds: 41,
+		secondsAgo: 260,
+	}),
+	assistant(
+		"sa3",
+		"Found and fixed: the retry in `src/billing/retry.ts` made a new Stripe charge without an idempotency key, so a timeout could charge twice. It now reuses the first attempt's key, and the billing tests pass.",
+		{ secondsAgo: 212 },
+	),
+];
+
+export const FinishedTurn: Story = () => (
+	<Sheet
+		title="Transcript with a finished turn of several steps"
+		intro="The agent's words between its calls, a thought and two runs of calls, folded under one Worked for line, closed by default; the answer under it. Open the line to see every step."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={stepsTurn} />
+		</div>
+	</Sheet>
+);
+FinishedTurn.storyName = "Finished turn";
+
+export const ImageGeneration: Story = () => (
+	<Sheet
+		title="Transcript with a generated image"
+		intro="A finished turn that made an image with generate_image: its work folded, the image in view as a card with the model that made it, then the answer."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={imageTurn} onOpenFile={openNothing} />
+		</div>
+	</Sheet>
+);
+ImageGeneration.storyName = "Image generation";
+
+export const MakingAnImage: Story = () => (
+	<Sheet
+		title="Transcript making an image"
+		intro="generate_image running in a working turn: a portrait placeholder, a light crossing it and its icon breathing (transform and opacity only)."
+	>
+		<MakingImageDemo args={pogoArgs} />
+	</Sheet>
+);
+MakingAnImage.storyName = "Making an image";
+
+export const MakingImages: Story = () => (
+	<Sheet title="Transcript making two landscape images" intro="One placeholder for each image the call asked for.">
+		<MakingImageDemo args={{ prompt: "A lighthouse at dusk", aspect: "landscape", count: 2 }} label="Making 2 images" />
+	</Sheet>
+);
+MakingImages.storyName = "Making images";
 
 export const Mobile: Story = () => (
 	<Sheet title="Transcript at 420px" intro="The default session on a phone.">

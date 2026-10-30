@@ -24,6 +24,10 @@ values unchanged (`theme.test.ts` holds the two together).
 
 Only colour is themed. Type, space, radius and motion stay in `tokens.css` and are the same in every theme.
 
+Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token into `@theme inline` as a
+`var(--hb-*)` reference, so `bg-canvas` or `text-muted` reads the token and follows the theme with nothing rebuilt
+(see [tailwind.md](tailwind.md)).
+
 - **Surfaces**: `canvas`, `panel`, `raised`, `sunken`, `user-message`, `code`, and the derived `hover`, `active`,
   `selected` and `scrim`.
 - **Lines**: `border`, `border-strong` and `border-input`, all derived from the theme's text colour.

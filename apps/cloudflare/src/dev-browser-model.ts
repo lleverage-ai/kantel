@@ -4,8 +4,12 @@
  * URL once a person allows it, take a screenshot, scroll the page and say what it saw; `close` closes the browser it
  * opened last (so its replay shows). A message `codemode <script>` makes it run the script with the `codemode` tool
  * and say what it answered; `bash <command>` makes it run the command with `bash` (in the isolate, or the container
- * tier when the command needs it) and say what it printed. Anything else is echoed. The tool calls are real: the broker, the browser provider (brwsr,
- * or Harbour's own browsers), the console's Allow and the code mode isolate are what a deployed session uses.
+ * tier when the command needs it) and say what it printed. A message `delegate <task> > <its part> > …` hands
+ * `<its part> > …` to a subagent with the `subagent` tool (`HARBOUR_SUBAGENTS=on`), which does the same with what's
+ * left, so each `>` is one more level of subagents; the last one looks around the workspace for a few seconds and
+ * answers, and each level passes the answer up. Anything else is echoed. The tool calls are real: the broker, the
+ * browser provider (brwsr, or Harbour's own browsers), the console's Allow, the code mode isolate, the sandbox and the
+ * subagents' sessions are what a deployed session uses.
  */
 import type { Message } from "@earendil-works/pi-ai";
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
@@ -33,6 +37,8 @@ export function nextStep(messages: readonly Message[]) {
 	while (start >= 0 && messages[start]?.role !== "user") start -= 1;
 	const said = start < 0 ? "" : textOf((messages[start] as { content: Parameters<typeof textOf>[0] }).content).trim();
 	if (/^close$/i.test(said)) return closeStep(messages, start);
+	const delegated = /^delegate\s+([\s\S]+)$/i.exec(said)?.[1];
+	if (delegated !== undefined) return delegateStep(messages, start, delegated);
 	const command = /^bash\s+([\s\S]+)$/i.exec(said)?.[1];
 	if (command !== undefined) {
 		const answered = messages.slice(start + 1).find((message) => message.role === "toolResult");
@@ -77,6 +83,36 @@ export function nextStep(messages: readonly Message[]) {
 		return call("browser_act", { browserSessionId, action: "scroll" });
 	}
 	return fauxAssistantMessage(fauxText(`Done: ${last.text.split("\n")[0] ?? ""}`));
+}
+
+/** How long each of `delegate`'s steps takes, so a person can watch the cards and the subagents' sessions work. */
+export const DELEGATE_STEP_MS = 4000;
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * `delegate <task> > <its part> > …`: hands the rest to a subagent, or, with nothing left to hand on, lists the
+ * workspace, runs a command and answers. Each step waits `stepMs` first.
+ */
+export async function delegateStep(
+	messages: readonly Message[],
+	start: number,
+	said: string,
+	stepMs = DELEGATE_STEP_MS,
+) {
+	const [task = "", ...rest] = said.split(">").map((part) => part.trim());
+	const results = messages.slice(start + 1).filter((message) => message.role === "toolResult");
+	const last = results.at(-1);
+	const call = (name: string, args: { [key: string]: string }) =>
+		fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+	await pause(stepMs);
+	if (rest.length > 0) {
+		if (last === undefined) return call("subagent", { task: `delegate ${rest.join(" > ")}`, title: rest[0] ?? task });
+		const answer = textOf(last.content).split("\n")[0] ?? "";
+		return fauxAssistantMessage(fauxText(last.isError ? `I stopped: ${answer}` : `${task}: ${answer}`));
+	}
+	if (results.length === 0) return call("ls", { path: "." });
+	if (results.length === 1) return call("bash", { command: `echo "Checked: ${task.replace(/["\\$`]/g, "")}"` });
+	return fauxAssistantMessage(fauxText(`Done with "${task}" after ${results.length} steps.`));
 }
 
 /** `close`: closes the browser the conversation opened last. */

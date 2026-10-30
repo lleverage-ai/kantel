@@ -1,6 +1,6 @@
-import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
+import type { PresentedFile, SessionStatus, TranscriptItem, UserAttachment } from "@harbour/protocol";
 import type { ComposerAttachment, ComposerProps, ComposerState, MessageDelivery } from "@harbour/ui";
-import type { SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
+import type { AttachmentContent, SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
 import { inFlight, type Outgoing, outgoingId } from "../state/outbox.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
@@ -52,6 +52,11 @@ export type SessionActions = {
 	 * cards with nothing to open. Rejects with an `ApiError` (`too_large` for a file larger than the API serves).
 	 */
 	readPresented?: (file: PresentedFile, signal: AbortSignal) => Promise<WorkspaceFile>;
+	/**
+	 * Reads a file sent with a message, as it was uploaded: for an image's thumbnail above the bubble, and the panel a
+	 * card opens. Absent, the cards show their type's icon and open nothing.
+	 */
+	readAttachment?: (attachment: UserAttachment, signal: AbortSignal) => Promise<AttachmentContent>;
 	/**
 	 * Saves a document the person edited (`create_document`'s), only if it is still the digest they read. Absent, a
 	 * document opens read-only.

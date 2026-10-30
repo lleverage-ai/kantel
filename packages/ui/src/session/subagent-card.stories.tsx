@@ -3,7 +3,7 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { assistant, tool, user } from "./fixtures.ts";
 import { SubagentCard } from "./subagent-card.tsx";
-import { subagentOf } from "./subagent-model.ts";
+import { subagentOf, subagentStatus } from "./subagent-model.ts";
 import { Transcript } from "./transcript.tsx";
 import "./stories.css";
 
@@ -18,9 +18,9 @@ const started = Date.now() - 72_000;
 export const States: Story = () => (
 	<Sheet
 		title="Subagent card"
-		intro="A task the agent handed to a session of its own: a bot avatar with the status on its corner and a Subagent tag, so it reads as a subagent at a glance. Working: its task, a pulsing dot and a live timer. Done: the opening of its answer and how long it took. The whole card opens the subagent's session."
+		intro="A task the agent handed to a session of its own: a bot avatar with the status on its corner and a Subagent tag, so it reads as a subagent at a glance. Working: a pulsing dot, a live timer and what it is doing now, or its task until it starts, and a Stop when the host can stop it. Done: the opening of its answer and how long it took. The whole card opens the subagent's session; Stop stops just the subagent and its own."
 	>
-		<Section title="Working">
+		<Section title="Working, just started">
 			<Column>
 				<SubagentCard
 					title="Find the untested refund cases"
@@ -28,6 +28,57 @@ export const States: Story = () => (
 					status="running"
 					startedAt={started}
 					href="#s"
+				/>
+			</Column>
+		</Section>
+		<Section title="Working, with what it's doing now">
+			<Column>
+				<SubagentCard
+					title="Find the untested refund cases"
+					task={task}
+					activity="Reading billing/refund.test.ts"
+					status="running"
+					startedAt={started}
+					href="#s"
+				/>
+			</Column>
+		</Section>
+		<Section title="Working, waiting on a subagent of its own">
+			<Column>
+				<SubagentCard
+					title="Audit the refund path"
+					task="Audit the refund path, handing the partial refunds to a subagent of your own."
+					activity="Waiting on its subagent: Check the partial refunds"
+					status="running"
+					startedAt={started}
+					href="#s"
+				/>
+			</Column>
+		</Section>
+		<Section title="Working, with Stop">
+			<Column>
+				<SubagentCard
+					title="Audit the refund path"
+					task="Audit the refund path, handing the partial refunds to a subagent of your own."
+					activity="Waiting on its subagent: Check the partial refunds"
+					status="running"
+					startedAt={started}
+					href="#s"
+					onStop={() => {}}
+				/>
+			</Column>
+		</Section>
+		<Section title="Stopping">
+			<Column>
+				<SubagentCard
+					title="Audit the refund path"
+					task="Audit the refund path, handing the partial refunds to a subagent of your own."
+					activity="Waiting on its subagent: Check the partial refunds"
+					status="running"
+					startedAt={started}
+					href="#s"
+					onStop={() => {}}
+					stopping
 				/>
 			</Column>
 		</Section>
@@ -128,9 +179,10 @@ export const InTheThread: Story = () => (
 				renderSubagent={(item) => (
 					<SubagentCard
 						{...subagentOf(item)}
-						status={item.status}
+						status={subagentStatus(item)}
 						startedAt={item.at}
 						endedAt={item.endedAt}
+						{...(item.status === "running" ? { activity: "Reading billing/refund.test.ts", onStop: () => {} } : {})}
 						href={`#${item.callId}`}
 					/>
 				)}

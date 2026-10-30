@@ -1,12 +1,11 @@
-import type { AssistantItem, NoticeItem, UserAttachment, UserItem } from "@harbour/protocol";
+import type { AssistantItem, NoticeItem, UserItem } from "@harbour/protocol";
 import { memo, useContext, useState } from "react";
 import { DraftDocumentCard } from "../presented/presented-file-card.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
-import { fileTypeIcon, fileTypeKind, fileTypeLabel } from "../primitives/file-icons.ts";
 import { ForkIcon, PencilIcon, RetryIcon, RewindIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Notice } from "../primitives/surface.tsx";
-import { formatBytes } from "../workspace/workspace-model.ts";
+import { SentAttachments } from "./attachment-card.tsx";
 import { Markdown } from "./markdown.tsx";
 import { MessageAction, MessageActions, MessageActionsContext, MessageEditor } from "./message-actions.tsx";
 import { LiveActivity } from "./working-indicator.tsx";
@@ -116,31 +115,6 @@ export const UserMessage = memo(function UserMessage({
 		</div>
 	);
 });
-
-/** The files sent with a message, above its bubble: each a small card with its file type's icon, name, type and size. */
-function SentAttachments({ attachments }: { attachments: readonly UserAttachment[] }) {
-	return (
-		<ul className="hb-user-attachments" aria-label="Attached files">
-			{attachments.map((attachment) => {
-				const Icon = fileTypeIcon(attachment);
-				return (
-					<li key={attachment.id} className="hb-user-attachment" title={attachment.name}>
-						<span className="hb-user-attachment-tile hb-file-tile" data-kind={fileTypeKind(attachment)}>
-							<Icon />
-						</span>
-						<span className="hb-user-attachment-text">
-							<span className="hb-user-attachment-name">{attachment.name}</span>
-							<span className="hb-user-attachment-facts">
-								<span>{attachment.kind === "text" ? "Pasted" : fileTypeLabel(attachment)}</span>
-								<span>{formatBytes(attachment.size)}</span>
-							</span>
-						</span>
-					</li>
-				);
-			})}
-		</ul>
-	);
-}
 
 /**
  * A thought as it streams, before the answer's first word, after T3 Code's live reasoning preview
