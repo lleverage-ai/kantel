@@ -150,7 +150,8 @@ export class FakeSandboxContainer implements SandboxContainer {
 
 	#checkFence(leaseId: string): void {
 		const fence = this.#fences.get(leaseId);
-		if (fence !== undefined) throw new Error(`lease ${leaseId} ${fence === "closing" ? "is being released" : "has ended"}`);
+		if (fence !== undefined)
+			throw new Error(`lease ${leaseId} ${fence === "closing" ? "is being released" : "has ended"}`);
 	}
 
 	#claim(leaseId: string, workspaceId: string): Record<string, number> {

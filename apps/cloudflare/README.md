@@ -91,6 +91,11 @@ by the session's first command that needs one. `src/container-backend.ts` is the
 - **Warm-up**: `POST /v1/sessions/{id}/warm` (the console sends it when someone focuses the composer or types, at
   most every 30 s) reads the head's listing for the isolate and, for a session that has used a container before,
   starts it and re-bases it, so the next command waits for neither. A session that never needed one is skipped.
+- **Locally**: `wrangler dev --env dev` builds `images/sandbox` and runs each session's container in Docker, beside
+  workerd's egress interceptor (`cloudflare/proxy-everything`), which needs iptables' nf_tables `socket` match in the
+  host kernel; where that is missing the interceptor exits and every container fails to start. The dev model's
+  `bash <command>` runs a command with the agent's `bash` tool. The agent alone runs in plain Docker:
+  `docker run -p 8080:8080 --entrypoint bun <image> /opt/harbour/agent.ts`.
 
 ## The browser
 
