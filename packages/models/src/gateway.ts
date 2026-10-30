@@ -1039,20 +1039,24 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			costSource: ModelCallRecord["costSource"],
 		) => {
 			recorded = true;
-			return record({
-				id,
-				at: startedAt,
-				scope,
-				route: routeName,
-				connectorId: connector.id,
-				modelId: target.id,
-				operation: "images",
-				status,
-				stopReason: status === "done" ? "stop" : status,
-				durationMs: Math.max(0, clock.now() - startedAt),
-				usage,
-				costSource,
-			});
+			return record(
+				{
+					id,
+					at: startedAt,
+					scope,
+					route: routeName,
+					connectorId: connector.id,
+					modelId: target.id,
+					operation: "images",
+					status,
+					stopReason: status === "done" ? "stop" : status,
+					durationMs: Math.max(0, clock.now() - startedAt),
+					usage,
+					costSource,
+				},
+				// The usage record, as a chat call's: images are priced at the model's token rates (`pricedImages`).
+				{ connector, api: target.api, rates: target.model.cost },
+			);
 		};
 		const failedCostSource = spec.cost === "none" ? "none" : "computed";
 		let redactor = new Redactor([]);

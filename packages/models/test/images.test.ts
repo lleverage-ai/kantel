@@ -1,4 +1,10 @@
-import { type ConnectorPreset, HarbourError, type ModelOverride } from "@harbour/contracts";
+import {
+	type ConnectorPreset,
+	HarbourError,
+	type ModelOverride,
+	type UsageRecord,
+	type UsageWriter,
+} from "@harbour/contracts";
 import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway } from "@harbour/models/gateway";
@@ -35,6 +41,7 @@ async function setup(options: {
 	chatModel?: string;
 	refresh?: "gateway" | "static";
 	overrides?: { readonly [modelId: string]: ModelOverride };
+	usage?: UsageWriter;
 }) {
 	const deps = createDeps();
 	deps.tenancy.bind(actors.human("viewer-a"), ORG, "viewer", PROJECT);
@@ -83,6 +90,7 @@ async function setup(options: {
 		fetch: upstream.fetch,
 		baseUrl: "http://gateway.internal",
 		access: deps.access,
+		...(options.usage === undefined ? {} : { usage: options.usage }),
 	});
 	return { deps, upstream, gateway, connectors };
 }
@@ -180,6 +188,29 @@ describe("images", () => {
 		expect(event?.data).toMatchObject({ operation: "images", route: "images", status: "done", costSource: "computed" });
 		expect(JSON.stringify(event)).not.toContain("lighthouse");
 		expect(JSON.stringify(event)).not.toContain(FAKE_IMAGE_PNG.slice(0, 40));
+	});
+
+	it("writes an image call's usage record, with its tokens and cost, as a chat call's", async () => {
+		const records: UsageRecord[] = [];
+		const { gateway, upstream } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage: { record: async (record) => void records.push(record) },
+		});
+		upstream.nextImages({ usage: { input: 50, output: 4160 } });
+		const result = await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse" });
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({
+			route: "images",
+			modelId: "gpt-image-1",
+			connectorPreset: "openai",
+			status: "done",
+			inputTokens: 50,
+			outputTokens: 4160,
+			costSource: "computed",
+			cost: result.usage.cost,
+		});
 	});
 
 	it("edits over /images/edits as multipart form data when given reference images", async () => {
