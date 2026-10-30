@@ -1,284 +1,16 @@
-/* The schedules page: a heading, then the list beside the open schedule. Under 900px the two stack and only one
-   shows at a time: the list, or the schedule with a way back. */
+/* The schedules page is styled with Tailwind utilities; this is what is kept in CSS, the parts that change with the
+   screen's width at widths the closed theme has no breakpoint for (the token lint refuses `max-[900px]`). Each
+   property here is set nowhere else, except `display: none`, which these unlayered rules win over a utility's `flex`
+   or `grid` on purpose. */
 
-.hb-schedules {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-8);
-	width: 100%;
-	min-width: 0;
-	color: var(--hb-text);
-	font-size: var(--hb-text-sm);
-	line-height: var(--hb-leading);
-}
-
-.hb-schedules p {
-	margin: 0;
-}
-
+/* The list beside the open schedule. Under 900px the two stack and only one shows: the list, or the schedule with a
+   way back. Which one is the page's data-view: state on another element. */
 .hb-schedules-body {
-	display: grid;
-	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-space-10)) minmax(0, 1fr);
-	align-items: start;
-	gap: var(--hb-space-9);
-	min-width: 0;
-}
-
-.hb-schedules-list {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-7);
-	min-width: 0;
-}
-
-/* The status filter keeps its own width, as the memory page's does, rather than a frame stretched past its options. */
-.hb-schedules-list > .hb-segmented {
-	align-self: flex-start;
-	max-width: 100%;
-}
-
-.hb-schedules-rows {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-1);
-	margin: 0;
-	padding: 0;
-	list-style: none;
-}
-
-.hb-schedules-next {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	white-space: nowrap;
-}
-
-.hb-schedules-loading {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-7);
-}
-
-.hb-schedules-detail {
-	min-width: 0;
-}
-
-.hb-schedules-placeholder {
-	padding-top: var(--hb-space-10);
+	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-step-8)) minmax(0, 1fr);
 }
 
 .hb-schedules-back {
 	display: none;
-}
-
-/* The open schedule. */
-
-.hb-schedule {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-7);
-	min-width: 0;
-}
-
-.hb-schedule-head {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-start;
-	justify-content: space-between;
-	gap: var(--hb-space-4) var(--hb-space-7);
-}
-
-.hb-schedule-heading {
-	display: flex;
-	flex: 1;
-	flex-direction: column;
-	gap: var(--hb-space-3);
-	min-width: 0;
-}
-
-.hb-schedule-title {
-	margin: 0;
-	font-size: var(--hb-text-lg);
-	font-weight: var(--hb-weight-strong);
-	line-height: var(--hb-leading-tight);
-	overflow-wrap: anywhere;
-}
-
-.hb-schedule-title:focus {
-	outline: none;
-}
-
-.hb-schedule-tags {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-3);
-}
-
-.hb-schedule-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-3);
-}
-
-.hb-schedule-payload-agent {
-	margin: 0 0 var(--hb-space-3);
-	color: var(--hb-text-muted);
-}
-
-.hb-schedule-payload-agent strong {
-	color: var(--hb-text);
-	font-weight: var(--hb-weight-medium);
-}
-
-.hb-schedule-section {
-	margin: 0;
-	font-size: var(--hb-text-sm);
-	font-weight: var(--hb-weight-medium);
-}
-
-.hb-schedule-section-row {
-	display: flex;
-	flex: 1;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: var(--hb-space-4);
-}
-
-.hb-schedule-count {
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-schedule-subhead {
-	margin: 0;
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-	font-weight: var(--hb-weight-medium);
-}
-
-.hb-schedule-note {
-	color: var(--hb-text-muted);
-}
-
-.hb-schedule-next {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-3);
-	padding-top: var(--hb-space-5);
-	border-top: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-schedule-next-list {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	margin: 0;
-	padding: 0;
-	list-style: none;
-}
-
-.hb-schedule-next-item {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: 0 var(--hb-space-5);
-	font-variant-numeric: tabular-nums;
-}
-
-.hb-schedule-next-in {
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-schedule-payload-text {
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-}
-
-.hb-schedule-payload-code {
-	margin: 0;
-	padding: var(--hb-space-4) var(--hb-space-5);
-	overflow-x: auto;
-	border-radius: var(--hb-radius-control);
-	background: var(--hb-sunken);
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-}
-
-.hb-schedule-findings,
-.hb-schedule-runs {
-	display: flex;
-	flex-direction: column;
-	margin: 0;
-	padding: 0;
-	list-style: none;
-}
-
-.hb-schedule-findings {
-	gap: var(--hb-space-5);
-}
-
-.hb-schedule-finding {
-	display: flex;
-	align-items: baseline;
-	gap: var(--hb-space-4);
-	min-width: 0;
-}
-
-.hb-schedule-finding-text {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-1);
-	min-width: 0;
-	overflow-wrap: anywhere;
-}
-
-.hb-schedule-finding-meta {
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-schedule-run {
-	display: grid;
-	grid-template-columns: 11em 9em minmax(0, 1fr);
-	align-items: baseline;
-	gap: var(--hb-space-4);
-	padding: var(--hb-space-3) 0;
-	border-top: var(--hb-hairline) solid var(--hb-border);
-	font-variant-numeric: tabular-nums;
-}
-
-.hb-schedule-run:first-child {
-	border-top: 0;
-	padding-top: 0;
-}
-
-.hb-schedule-run-time {
-	color: var(--hb-text-muted);
-	white-space: nowrap;
-}
-
-.hb-schedule-run-detail {
-	color: var(--hb-text-muted);
-	overflow-wrap: anywhere;
-}
-
-.hb-schedule-run[data-linked] {
-	grid-template-columns: 11em 9em minmax(0, 1fr) auto;
-}
-
-.hb-schedule-run-link {
-	color: var(--hb-accent-text);
-	font-size: var(--hb-text-xs);
-	text-decoration: none;
-	white-space: nowrap;
-	border-radius: var(--hb-radius-xs);
-}
-
-.hb-schedule-run-link:hover {
-	text-decoration: underline;
 }
 
 @media (max-width: 900px) {
@@ -291,7 +23,8 @@
 		display: none;
 	}
 
-	/* The page keeps its one h1 for screen readers while the open schedule fills the screen. */
+	/* The page keeps its one h1 for screen readers while the open schedule fills the screen. PageHeader's own padding
+	   and border are unlayered too, so this reaches it here rather than with `sr-only`. */
 	.hb-schedules[data-view="detail"] .hb-schedules-head {
 		position: absolute;
 		width: var(--hb-hairline);
@@ -304,6 +37,7 @@
 		border: 0;
 	}
 
+	/* Out of the tab order as well as out of sight: a Button's own display would beat a utility. */
 	.hb-schedules[data-view="detail"] .hb-schedules-head button,
 	.hb-schedules[data-view="detail"] .hb-page-header-lede {
 		display: none;
@@ -311,8 +45,17 @@
 
 	.hb-schedules-back {
 		display: flex;
-		margin-left: calc(var(--hb-space-5) * -1);
 	}
+}
+
+/* A run: when, its state, what happened and the session it started, on fixed tracks so the rows line up as a table.
+   Under 520px the time and the state share a line and the rest goes under them. */
+.hb-schedule-run {
+	grid-template-columns: 11em 9em minmax(0, 1fr);
+}
+
+.hb-schedule-run[data-linked] {
+	grid-template-columns: 11em 9em minmax(0, 1fr) auto;
 }
 
 @media (max-width: 520px) {

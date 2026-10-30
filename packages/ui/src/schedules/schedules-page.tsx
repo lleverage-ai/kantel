@@ -41,7 +41,22 @@ import {
 	zonedText,
 	zoneName,
 } from "./schedules-model.ts";
+// Styled with Tailwind utilities (src/tokens/tailwind.css); only the phone layout and the run rows' columns are left in
+// CSS, which says why.
 import "./schedules-page.css";
+
+/** The open schedule, or the form: its head, then a panel for each part. */
+const frame = "flex min-w-0 flex-col gap-4";
+const loading = "flex flex-col gap-4";
+/** A panel's heading. */
+const section = "m-0 text-sm font-medium";
+const note = "m-0 text-muted";
+const faint = "text-xs text-faint";
+const flatList = "m-0 flex list-none flex-col p-0";
+/** Which agent a task asks, over its prompt. */
+const payloadAgent = "m-0 text-muted";
+/** The ghost button's label lines up with the page's edge. Shown under 900px only (schedules-page.css). */
+const back = "hb-schedules-back -ml-2.5";
 
 /** Where the page links. An absent builder, or undefined from one (a record the host can't open), leaves it unlinked. */
 export interface ScheduleLinks {
@@ -134,7 +149,10 @@ export function SchedulesPage({
 	const formNow = fixedNow === undefined ? undefined : () => fixedNow;
 
 	return (
-		<div className="hb-schedules" data-view={selected === undefined && editing === undefined ? "list" : "detail"}>
+		<div
+			className="hb-schedules flex w-full min-w-0 flex-col gap-5 text-sm leading-normal text-fg"
+			data-view={selected === undefined && editing === undefined ? "list" : "detail"}
+		>
 			<PageHeader
 				className="hb-schedules-head"
 				title="Schedules"
@@ -154,8 +172,13 @@ export function SchedulesPage({
 							),
 						})}
 			/>
-			<div className="hb-schedules-body">
-				<section className="hb-schedules-list" aria-label="Schedules">
+			<div className="hb-schedules-body grid min-w-0 items-start gap-6">
+				{/* The status filter keeps its own width, as the memory page's does, rather than a frame stretched past its
+				    options. */}
+				<section
+					className="hb-schedules-list flex min-w-0 flex-col gap-4 [&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start"
+					aria-label="Schedules"
+				>
 					<SegmentedControl
 						label="Show"
 						value={filter}
@@ -165,7 +188,7 @@ export function SchedulesPage({
 						)}
 					/>
 					{state.status === "loading" ? (
-						<div className="hb-schedules-loading">
+						<div className={loading}>
 							<span className="hb-sr-only">Loading schedules</span>
 							<Skeleton lines={2} />
 							<Skeleton lines={2} />
@@ -189,7 +212,7 @@ export function SchedulesPage({
 					) : shown.length === 0 ? (
 						<EmptyState title={`No ${filter} schedules`}>Pick another filter to see the rest.</EmptyState>
 					) : (
-						<ul className="hb-schedules-rows">
+						<ul className={`${flatList} gap-0.5`}>
 							{shown.map((schedule) => (
 								<li key={schedule.id}>
 									<ListRow
@@ -199,7 +222,7 @@ export function SchedulesPage({
 										meta={timingText(schedule)}
 										trailing={
 											schedule.status === "active" ? (
-												<span className="hb-schedules-next">{nextText(schedule, now)}</span>
+												<span className="text-xs whitespace-nowrap text-muted">{nextText(schedule, now)}</span>
 											) : (
 												<Badge tone={SCHEDULE_STATUS[schedule.status].tone}>
 													{SCHEDULE_STATUS[schedule.status].label}
@@ -215,10 +238,10 @@ export function SchedulesPage({
 						</ul>
 					)}
 				</section>
-				<section className="hb-schedules-detail" aria-label="Schedule">
+				<section className="hb-schedules-detail min-w-0" aria-label="Schedule">
 					{editing !== undefined && form !== undefined ? (
-						<div className="hb-schedule">
-							<div className="hb-schedules-back">
+						<div className={frame}>
+							<div className={back}>
 								<Button size="sm" variant="ghost" onClick={() => setEditing(undefined)}>
 									{editing.kind === "new" ? "All schedules" : "Back to the schedule"}
 								</Button>
@@ -237,7 +260,7 @@ export function SchedulesPage({
 							/>
 						</div>
 					) : selected === undefined ? (
-						<div className="hb-schedules-placeholder">
+						<div className="pt-8">
 							<EmptyState title="Pick a schedule">
 								See when it runs next, what it runs and how its runs went.
 							</EmptyState>
@@ -346,9 +369,9 @@ export function ScheduleDetail({
 		}
 	};
 
-	const back =
+	const backButton =
 		onBack === undefined ? null : (
-			<div className="hb-schedules-back">
+			<div className={back}>
 				<Button size="sm" variant="ghost" onClick={onBack}>
 					All schedules
 				</Button>
@@ -357,10 +380,10 @@ export function ScheduleDetail({
 
 	if (state.status !== "ready") {
 		return (
-			<div className="hb-schedule">
-				{back}
+			<div className={frame}>
+				{backButton}
 				{state.status === "loading" ? (
-					<div className="hb-schedules-loading" aria-busy="true">
+					<div className={loading} aria-busy="true">
 						<span className="hb-sr-only">Loading the schedule</span>
 						<Skeleton width="50%" />
 						<Skeleton lines={3} />
@@ -390,20 +413,25 @@ export function ScheduleDetail({
 	const listed = runFilter === "all" ? runs : problems;
 	const visible = listed.slice(0, shown);
 	return (
-		<article className="hb-schedule" aria-labelledby="hb-schedule-title">
-			{back}
-			<header className="hb-schedule-head">
-				<div className="hb-schedule-heading">
-					<h2 id="hb-schedule-title" className="hb-schedule-title" ref={heading} tabIndex={-1}>
+		<article className={frame} aria-labelledby="hb-schedule-title">
+			{backButton}
+			<header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+				<div className="flex min-w-0 flex-1 flex-col gap-1.5">
+					<h2
+						id="hb-schedule-title"
+						className="m-0 text-lg leading-tight font-strong wrap-anywhere focus:outline-none"
+						ref={heading}
+						tabIndex={-1}
+					>
 						{schedule.title}
 					</h2>
-					<div className="hb-schedule-tags">
+					<div className="flex flex-wrap gap-1.5">
 						<Badge>{KIND_LABELS[schedule.kind]}</Badge>
 						<Badge tone={status.tone}>{status.label}</Badge>
 					</div>
 				</div>
 				{schedule.status === "ended" ? null : (
-					<div className="hb-schedule-actions">
+					<div className="flex flex-wrap gap-1.5">
 						{onEdit !== undefined && isFormKind(schedule.kind) && payloadEditable(schedule) ? (
 							<Button size="sm" variant="ghost" disabled={changing} onClick={() => onEdit(schedule)}>
 								Edit
@@ -421,7 +449,7 @@ export function ScheduleDetail({
 				</Notice>
 			) : null}
 
-			<Panel header={<h3 className="hb-schedule-section">When it runs</h3>}>
+			<Panel header={<h3 className={section}>When it runs</h3>}>
 				<FieldList>
 					<Field label="Repeats">{timingText(schedule)}</Field>
 					<Field label="Time zone">{schedule.timezone}</Field>
@@ -440,19 +468,19 @@ export function ScheduleDetail({
 					)}
 				</FieldList>
 				{schedule.status !== "active" ? (
-					<p className="hb-schedule-note">
+					<p className={note}>
 						{schedule.status === "paused" ? "Paused: nothing runs until it is resumed." : "Ended: it won't run again."}
 					</p>
 				) : next.length === 0 ? (
-					<p className="hb-schedule-note">Nothing more is due.</p>
+					<p className={note}>Nothing more is due.</p>
 				) : (
-					<div className="hb-schedule-next">
-						<h4 className="hb-schedule-subhead">Next runs, in {zoneName(schedule.timezone)}</h4>
-						<ol className="hb-schedule-next-list">
+					<div className="flex flex-col gap-1.5 border-t border-border pt-2.5">
+						<h4 className="m-0 text-xs font-medium text-muted">Next runs, in {zoneName(schedule.timezone)}</h4>
+						<ol className={`${flatList} gap-1`}>
 							{next.map((at) => (
-								<li key={at} className="hb-schedule-next-item">
+								<li key={at} className="flex flex-wrap items-baseline justify-between gap-x-2.5 tabular-nums">
 									<time dateTime={new Date(at).toISOString()}>{zonedText(at, schedule.timezone)}</time>
-									<span className="hb-schedule-next-in">{timeUntil(at, now)}</span>
+									<span className={faint}>{timeUntil(at, now)}</span>
 								</li>
 							))}
 						</ol>
@@ -460,11 +488,11 @@ export function ScheduleDetail({
 				)}
 			</Panel>
 
-			<Panel header={<h3 className="hb-schedule-section">{payload.label}</h3>}>
+			<Panel header={<h3 className={section}>{payload.label}</h3>}>
 				{payload.kind === "text" && payload.agentId !== undefined ? (
-					<p className="hb-schedule-payload-agent">
+					<p className={payloadAgent}>
 						Asks{" "}
-						<strong>
+						<strong className="font-medium text-fg">
 							{agents.find((agent) => agent.id === payload.agentId)?.name ??
 								directory.agent?.(payload.agentId) ??
 								payload.agentId}
@@ -472,29 +500,31 @@ export function ScheduleDetail({
 						, in a new session each run, with this prompt as written:
 					</p>
 				) : schedule.kind === "task" && payload.kind === "text" ? (
-					<p className="hb-schedule-payload-agent">
+					<p className={payloadAgent}>
 						Asks the default agent, in a new session each run, with this prompt as written:
 					</p>
 				) : null}
 				{payload.kind === "text" ? (
-					<p className="hb-schedule-payload-text hb-selectable">{payload.text}</p>
+					<p className="hb-selectable m-0 whitespace-pre-wrap wrap-anywhere">{payload.text}</p>
 				) : (
-					<pre className="hb-schedule-payload-code hb-selectable">{payload.text}</pre>
+					<pre className="hb-selectable m-0 overflow-x-auto rounded-control bg-sunken px-2.5 py-2 font-mono text-code whitespace-pre-wrap wrap-anywhere">
+						{payload.text}
+					</pre>
 				)}
 			</Panel>
 
 			{findings === undefined || schedule.kind !== "check" ? null : (
-				<Panel header={<h3 className="hb-schedule-section">Findings raised</h3>}>
+				<Panel header={<h3 className={section}>Findings raised</h3>}>
 					{findings.length === 0 ? (
-						<p className="hb-schedule-note">No findings raised.</p>
+						<p className={note}>No findings raised.</p>
 					) : (
-						<ul className="hb-schedule-findings">
+						<ul className={`${flatList} gap-2.5`}>
 							{findings.slice(0, 8).map((finding) => (
-								<li key={`${finding.occurrenceId}:${finding.key}`} className="hb-schedule-finding">
+								<li key={`${finding.occurrenceId}:${finding.key}`} className="flex min-w-0 items-baseline gap-2">
 									<Badge tone={severityTone(finding.severity)}>{severityText(finding.severity)}</Badge>
-									<span className="hb-schedule-finding-text">
+									<span className="flex min-w-0 flex-col gap-0.5 wrap-anywhere">
 										<span>{finding.summary}</span>
-										<span className="hb-schedule-finding-meta">
+										<span className={faint}>
 											{FINDING_REASON[finding.reason]}, <span className="hb-mono">{finding.key}</span>
 										</span>
 									</span>
@@ -507,10 +537,10 @@ export function ScheduleDetail({
 
 			<Panel
 				header={
-					<div className="hb-schedule-section-row">
-						<h3 className="hb-schedule-section">Run history</h3>
+					<div className="flex flex-1 items-baseline justify-between gap-2">
+						<h3 className={section}>Run history</h3>
 						{problems.length === 0 ? (
-							<span className="hb-schedule-count">
+							<span className={faint}>
 								{runs.length}
 								{complete ? "" : "+"} {runs.length === 1 ? "run" : "runs"}
 							</span>
@@ -539,14 +569,14 @@ export function ScheduleDetail({
 				}
 			>
 				{runs.length === 0 ? (
-					<p className="hb-schedule-note">
+					<p className={note}>
 						No runs yet.{" "}
 						{schedule.status === "active" && schedule.nextDueAt !== undefined
 							? `The first is ${timeUntil(schedule.nextDueAt, now)}.`
 							: ""}
 					</p>
 				) : (
-					<ol className="hb-schedule-runs">
+					<ol className={flatList}>
 						{visible.map((run) => {
 							const sessionId = runSession(run);
 							const href = sessionId === undefined ? undefined : links?.session?.(sessionId, schedule);
@@ -586,17 +616,21 @@ function RunRow({
 	const detail = runDetail(run, kind);
 	const when = zonedText(run.dueAt, timezone);
 	return (
-		<li className="hb-schedule-run" data-linked={sessionHref === undefined ? undefined : ""}>
-			<time className="hb-schedule-run-time" dateTime={new Date(run.dueAt).toISOString()}>
+		// The columns are in schedules-page.css, which reflows them on a phone.
+		<li
+			className="hb-schedule-run grid items-baseline gap-2 border-t border-border py-1.5 tabular-nums first:border-t-0 first:pt-0"
+			data-linked={sessionHref === undefined ? undefined : ""}
+		>
+			<time className="whitespace-nowrap text-muted" dateTime={new Date(run.dueAt).toISOString()}>
 				{when}
 			</time>
-			<span className="hb-schedule-run-state">
+			<span>
 				<Badge tone={state.tone}>{state.label}</Badge>
 			</span>
-			<span className="hb-schedule-run-detail">{detail ?? ""}</span>
+			<span className="hb-schedule-run-detail text-muted wrap-anywhere">{detail ?? ""}</span>
 			{sessionHref === undefined ? null : (
 				<a
-					className="hb-schedule-run-link hb-focusable"
+					className="hb-schedule-run-link hb-focusable rounded-xs text-xs whitespace-nowrap text-accent-text no-underline hover:underline"
 					href={sessionHref}
 					aria-label={`Open session, from the run at ${when}`}
 				>

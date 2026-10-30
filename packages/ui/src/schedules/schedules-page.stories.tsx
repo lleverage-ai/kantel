@@ -14,7 +14,9 @@ import {
 } from "./fixtures.ts";
 import type { StatusFilter } from "./schedules-model.ts";
 import { type ScheduleFormSettings, type ScheduleLinks, SchedulesPage } from "./schedules-page.tsx";
-import "./stories.css";
+
+/** Story-only frame: as wide as the console gives the page beside its sidebar. */
+const frame = "max-w-[calc(var(--hb-content-width)+var(--hb-sidebar-width)+var(--hb-step-12))]";
 
 export default { title: "Schedules/Schedules page" } satisfies StoryDefault;
 
@@ -55,7 +57,7 @@ function ScenarioPage({
 	const source =
 		scenario === undefined ? pendingSource : slow === undefined ? scenario.source : slowSource(scenario.source, slow);
 	return (
-		<div className="schedules-story">
+		<div className={frame}>
 			<SchedulesPage
 				key={scenario === undefined ? "pending" : "ready"}
 				source={source}
@@ -113,7 +115,7 @@ export const Ended: Story = () => <ScenarioPage open="export" filter="ended" />;
 export const All: Story = () => <ScenarioPage filter="all" />;
 
 export const Loading: Story = () => (
-	<div className="schedules-story">
+	<div className={frame}>
 		<SchedulesPage source={pendingSource} directory={directory} now={FIXTURE_NOW} />
 	</div>
 );
@@ -124,7 +126,7 @@ export const DetailLoading: Story = () => <ScenarioPage open="disk" slow={60_000
 export const Empty: Story = () => <ScenarioPage empty />;
 
 export const LoadError: Story = () => (
-	<div className="schedules-story">
+	<div className={frame}>
 		<SchedulesPage source={failingSource} directory={directory} now={FIXTURE_NOW} />
 	</div>
 );
