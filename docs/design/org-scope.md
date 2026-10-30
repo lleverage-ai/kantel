@@ -155,8 +155,9 @@ contract). From this PR it is its user's:
   agent are still the organisation's or the project's, and the existing vault cases are unchanged. Storage needs
   no migration: the owner is in each item's JSON, and the row's organisation column is the user's organisation.
 - **Console.** Items are made by host apps (no console screen creates one), so the console change is on the approval
-  page: a request for a personal item carries a "Your personal item" badge for its owner ("Personal item" for anyone
-  else, who sees it read-only), and the fixture gains an open proposal for one.
+  page: a request for a personal item carries a "Your personal item" badge for its owner. Anyone else who can see the
+  request (an operator on the session's project) can't read the item, so the page shows "A credential", read-only,
+  and says the credential may be someone's personal one. The fixture gains an open proposal for one.
 
 With the sharing primitive (docs/design/sharing.md in that stack), `ResourceCheck.owner` of kind `user` is the same
 owner. Its owner rule should take this one: an agent passes `use` through a session that works for the user, and a

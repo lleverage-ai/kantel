@@ -258,6 +258,9 @@ describe("a forwarded link", () => {
 		const other = await scenario.load(scenario.proposals.personal, people.alex);
 		expect(other.readOnly).toBeDefined();
 		expect(other.codeChoices).toBeUndefined();
+		// Alex can't read the item at all, so the page says why it may be read-only without naming it.
+		expect(other.item).toBeUndefined();
+		expect(render(other, people.alex)).toContain("someone&#x27;s personal one");
 		const error = await scenario.vault
 			.decide(scenario.ctxFor(people.alex), {
 				proposalId: other.proposal.id,

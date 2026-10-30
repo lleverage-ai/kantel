@@ -335,8 +335,12 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 	const busy = phase !== "idle";
 	const project = request.requester.project;
 
+	// An item the viewer can't read may be someone's personal one, which only its owner decides (the vault says no more).
+	const hidden = request.item === undefined && request.proposal.terms.itemId !== undefined;
 	const blocker = readOnly
-		? `You can see this request but not decide it: that needs the operator role on ${project ?? "its project"}.`
+		? `You can see this request but not decide it: that needs the operator role on ${project ?? "its project"}${
+				hidden ? ", or the credential is someone's personal one, which only they decide" : ""
+			}.`
 		: mustPick && pickedCode === undefined
 			? `Pick the code that matches the card to ${isSecret ? "paste" : "approve"}.`
 			: isSecret && secretValue === ""
