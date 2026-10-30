@@ -8,7 +8,8 @@ wherever you are in it.
 One step is 4px, numbered as Tailwind v4's spacing (`--spacing: 0.25rem`): step n is n × 4px, so `--hb-step-4` is
 Tailwind's `p-4`, 16px. A component moving to Tailwind ([tailwind.md](tailwind.md)) turns `var(--hb-step-4)` into
 `p-4` (or `gap-4`, `mt-4`) as it stands, and the rhythm's tokens into their utilities: `gap-within`, `mt-between`,
-`pt-turn`, `p-pad-card`, `p-pad-panel`, `px-gutter`, `px-gutter-narrow` (`src/tokens/tailwind.css`).
+`pt-turn`, `p-pad-card`, `p-pad-panel`, `px-gutter`, `px-gutter-narrow` (`src/tokens/tailwind.css`). The console uses
+the same names on its own elements: a page outside a session is `p-gutter`, or `p-gutter-narrow` on a phone.
 
 | Step | Token | px | Tailwind |
 | --- | --- | --- | --- |

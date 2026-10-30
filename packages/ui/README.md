@@ -20,14 +20,17 @@ import { Button, ListRow, StatusLabel } from "@harbour/ui";
 
 Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source; components are
 styled with Tailwind v4 utilities (a few still import a .css file of their own while they move over), so a Vite app
-adds Tailwind's plugin, `@tailwindcss/vite`, to its `plugins` (see `apps/console/vite.config.ts`). React 19 is a
+adds Tailwind's plugin, `@tailwindcss/vite`, to its `plugins` (see `apps/console/vite.config.ts`), and its `src/` to
+the scanned sources in `src/tokens/tailwind.css`, or the utilities on its own elements aren't generated. React 19 is a
 peer dependency. `src/index.ts` is listed in `sideEffects` because it imports the tokens, the base styles and the
 Tailwind entry: keep it there, or a production build drops them while the dev server still shows them. Style
 components with the utilities mapped from the tokens ([docs/tailwind.md](docs/tailwind.md)); the token lint fails
 on an arbitrary raw value such as `p-[13px]`, as it does on one in CSS.
 
 `apps/console` is the reference host: its `src/ui/session-view.tsx` maps a session client's state onto
-`SessionHeader`, `Transcript` and `Composer`, and its only CSS is layout, in tokens. Lint a host's CSS and TSX
+`SessionHeader`, `Transcript` and `Composer`, and lays out its own elements with the same utilities; its one .css
+file, `src/ui/styles.css`, keeps only what they can't say ([docs/tailwind.md](docs/tailwind.md#the-console)). Lint a
+host's CSS and TSX
 with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`), or by hand:
 `node packages/ui/scripts/token-lint.ts apps/console`.
 
