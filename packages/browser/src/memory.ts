@@ -192,7 +192,8 @@ interface StoredRequest {
 interface StoredSession {
 	session: BrowserSession;
 	readonly providerSessionId: string;
-	readonly projectId: ProjectId;
+	/** Absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly agentId: AgentId;
 }
 
@@ -201,7 +202,7 @@ interface PendingRelease {
 	readonly providerSessionId: string;
 	readonly browserSessionId: string;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	readonly projectId?: ProjectId;
 	readonly sessionId: SessionId;
 	readonly agentId: AgentId;
 	/** Release attempts so far; each failed one is audited once. */
@@ -617,8 +618,9 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				});
 				throw new HarbourError("refused", message);
 			};
-			const onProject = (projectId: ProjectId): AccessCheck => ({
-				projectId,
+			// A project's grant is checked on the project; an organisation session's on the organisation.
+			const onProject = (projectId: ProjectId | undefined): AccessCheck => ({
+				...(projectId === undefined ? {} : { projectId }),
 				needed: "operator",
 				operation: "browser.grant",
 				subject: { kind: "browser.context", id: input.contextId },
@@ -640,7 +642,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			const owner = context.context.owner;
 			if (owner.kind === "project") await requireAccess(ctx, onProject(owner.projectId));
 			assertNonEmpty(input.sessionId, "A session ID");
-			assertNonEmpty(input.projectId, "A project ID");
+			if (input.projectId !== undefined) assertNonEmpty(input.projectId, "A project ID");
 			assertNonEmpty(input.agentId, "An agent ID");
 			if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1) {
 				throw new HarbourError("invalid", "timeoutMs must be a positive integer");

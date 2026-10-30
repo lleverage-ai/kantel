@@ -113,6 +113,8 @@ const siteOperator: CallContext = contextFor(actors.service("site-operator"), OR
 const reader: CallContext = contextFor(actors.human("reader"), ORG, PROJECT);
 const agentIn = (sessionId: string, projectId = PROJECT): CallContext =>
 	contextFor(actors.agent(AGENT, sessionId), ORG, projectId);
+/** The agent in an organisation session, whose calls name no project. */
+const orgAgentIn = (sessionId: string): CallContext => contextFor(actors.agent(AGENT, sessionId), ORG);
 
 /** What each fake component holds for a session, and the teardown that ends it. */
 const FAKE_COMPONENTS: readonly { readonly name: string; readonly holds: readonly string[] }[] = [
@@ -399,6 +401,154 @@ export function createRuntimeConformance(options: {
 		},
 	];
 
+	/** Sessions scoped to the organisation (docs/design/org-scope.md): no project, and an agent there passes no project's check. */
+	const organisationScopeCases: ConformanceCase[] = [
+		{
+			name: "organisation scope: an organisation-wide operator creates a session with no project, which lists under the organisation scope and no project",
+			run: run(async (subject, deps) => {
+				const project = await setUp(subject);
+				deps.clock.advance(1000);
+				const organisation = await subject.runtime.create(operator, { scope: "organisation", agentId: AGENT });
+				a.strictEqual(organisation.projectId, undefined, "an organisation session has no project");
+				a.ok(!("projectId" in organisation), "the record leaves projectId out");
+				const stored = await subject.directory.get(operator, organisation.id);
+				a.partialDeepEqual(stored, { id: organisation.id, organisationId: ORG, agentId: AGENT, status: "idle" });
+				a.strictEqual(stored.projectId, undefined, "it reads back with no project");
+				const ids = async (filter: Parameters<RuntimeSubject["directory"]["list"]>[1]) =>
+					(await subject.directory.list(operator, filter)).items.map((record) => record.id);
+				a.deepEqual(await ids(undefined), [organisation.id, project.id], "both, newest first");
+				a.deepEqual(await ids({ scope: "organisation" }), [organisation.id]);
+				a.deepEqual(await ids({ scope: "project" }), [project.id]);
+				a.deepEqual(await ids({ projectId: PROJECT }), [project.id], "no project lists an organisation session");
+				a.strictEqual(deps.audit.ofType("session.created").length, 2);
+			}),
+		},
+		{
+			name: "organisation scope: refuses as invalid an organisation session naming a project, a project session naming none, an unknown scope and a project's profile",
+			run: run(async (subject) => {
+				await subject.profiles.put(operator, workerProfile());
+				await subject.profiles.put(operator, workerProfile({ id: "docs-writer", projectId: PROJECT }));
+				const create = (input: Parameters<RuntimeSubject["runtime"]["create"]>[1]) =>
+					subject.runtime.create(operator, input);
+				await a.rejectsWithCode(create({ scope: "organisation", projectId: PROJECT, agentId: AGENT }), "invalid");
+				await a.rejectsWithCode(
+					create({ agentId: AGENT }),
+					"invalid",
+					"a session is a project's unless it says otherwise",
+				);
+				await a.rejectsWithCode(create({ scope: "project", agentId: AGENT }), "invalid");
+				await a.rejectsWithCode(
+					create({ scope: "everywhere" as "organisation", agentId: AGENT }),
+					"invalid",
+					"an unknown scope",
+				);
+				await a.rejectsWithCode(
+					create({ scope: "organisation", agentId: "docs-writer" }),
+					"invalid",
+					"a project's profile runs only in its project",
+				);
+				a.strictEqual((await subject.directory.list(operator)).items.length, 0, "nothing was created");
+			}),
+		},
+		{
+			name: "organisation scope: an operator on one project only, a viewer and a project session's agent may not create an organisation session",
+			run: run(async (subject, deps) => {
+				const session = await setUp(subject);
+				const projectAgent = agentIn(session.id);
+				for (const [ctx, who] of [
+					[siteOperator, "an operator on one project"],
+					[reader, "a project viewer"],
+					[projectAgent, "a project session's agent"],
+				] as const) {
+					await assertAccessDenied(a, deps, subject.runtime.create(ctx, { scope: "organisation", agentId: AGENT }), {
+						operation: "session.create",
+						message: `an organisation session by ${who}`,
+					});
+				}
+				a.deepEqual(
+					(await subject.directory.list(operator)).items.map((record) => record.id),
+					[session.id],
+					"no session was created",
+				);
+			}),
+		},
+		{
+			name: "organisation scope: an organisation session's agent supervises organisation children but passes no project's check",
+			run: run(async (subject, deps) => {
+				const project = await setUp(subject);
+				const parent = await subject.runtime.create(operator, { scope: "organisation", agentId: AGENT });
+				const agent = orgAgentIn(parent.id);
+				const child = await subject.runtime.create(agent, {
+					scope: "organisation",
+					agentId: AGENT,
+					parentSessionId: parent.id,
+				});
+				a.strictEqual(child.parentSessionId, parent.id);
+				a.strictEqual(child.projectId, undefined, "the child is in its parent's scope");
+				a.strictEqual((await subject.runtime.snapshot(agent, parent.id)).status, "idle");
+				a.strictEqual((await subject.directory.get(agent, child.id)).id, child.id, "a supervisor reads its child");
+				a.deepEqual(
+					(await subject.directory.list(agent)).items.map((record) => record.id),
+					[child.id, parent.id],
+					"the agent lists its own session and its child, not the project's",
+				);
+				await a.rejectsWithCode(
+					subject.runtime.create(agent, { projectId: PROJECT, agentId: AGENT, parentSessionId: parent.id }),
+					"invalid",
+					"a child is in its parent's scope",
+				);
+				await assertAccessDenied(a, deps, subject.runtime.create(agent, { projectId: PROJECT, agentId: AGENT }), {
+					operation: "session.create",
+					message: "an organisation agent creates no project session",
+				});
+				await assertAccessDenied(a, deps, subject.directory.get(agent, project.id), {
+					operation: "session.get",
+					message: "an organisation agent reads no project session",
+				});
+				await assertAccessDenied(a, deps, subject.runtime.prompt(agent, project.id, { text: "Hi" }), {
+					operation: "session.prompt",
+				});
+				await assertAccessDenied(a, deps, subject.directory.list(agent, { projectId: PROJECT }), {
+					operation: "session.list",
+					message: "an organisation agent lists no project",
+				});
+				await subject.runtime.close(operator, parent.id);
+				await assertAccessDenied(a, deps, subject.directory.get(agent, child.id), {
+					operation: "session.get",
+					message: "an agent whose organisation session is closed no longer supervises its child",
+				});
+				a.strictEqual(subject.model.requests.length, 0, "the project session was never prompted");
+			}),
+		},
+		{
+			name: "organisation scope: a person's session works for them, and they may name no one else",
+			run: run(async (subject, deps) => {
+				const owner = contextFor(actors.human("owner"), ORG);
+				deps.tenancy.bind(owner.actor, ORG, "operator");
+				await subject.profiles.put(operator, workerProfile());
+				const mine = await subject.runtime.create(owner, { scope: "organisation", agentId: AGENT });
+				a.strictEqual(mine.userId, "owner");
+				const child = await subject.runtime.create(orgAgentIn(mine.id), {
+					scope: "organisation",
+					agentId: AGENT,
+					parentSessionId: mine.id,
+				});
+				a.strictEqual(child.userId, "owner", "a child works for its parent's user");
+				await a.rejectsWithCode(
+					subject.runtime.create(owner, { scope: "organisation", agentId: AGENT, userId: "someone-else" }),
+					"forbidden",
+				);
+				const forThem = await subject.runtime.create(operator, {
+					scope: "organisation",
+					agentId: AGENT,
+					userId: "someone-else",
+				});
+				a.strictEqual(forThem.userId, "someone-else", "a service may name the user");
+				a.strictEqual((await subject.directory.get(operator, mine.id)).userId, "owner", "it reads back");
+			}),
+		},
+	];
+
 	const projectAccessCases: ConformanceCase[] = [
 		{
 			name: "project access: refuses an operator outside the project every call on its sessions and profiles, and changes nothing",
@@ -569,6 +719,7 @@ export function createRuntimeConformance(options: {
 				a.strictEqual((await subject.directory.get(operator, session.id)).status, "idle");
 			}),
 		},
+		...organisationScopeCases,
 	];
 
 	const cases: ConformanceCase[] = [

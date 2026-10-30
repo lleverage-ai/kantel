@@ -67,7 +67,8 @@ export interface CapabilityInvocation {
 	readonly version: string;
 	readonly args: JsonValue;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/** The session's project; absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly sessionId: SessionId;
 	readonly agentId: AgentId;
 }

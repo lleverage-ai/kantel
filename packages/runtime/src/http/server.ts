@@ -689,6 +689,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				if (options.models === undefined) {
 					throw new HarbourError("not_supported", "This server doesn't list models");
 				}
+				// `?scope=organisation` names no project: the models a new organisation session would list.
+				if (query.scope === "organisation" && query.projectId === undefined) {
+					return options.models.startModels(ctx, { scope: "organisation", agentId: params.agentId });
+				}
+				if (query.projectId === undefined || query.projectId === "") {
+					throw new HarbourError("invalid", "Name the project");
+				}
 				return options.models.startModels(ctx, { projectId: query.projectId, agentId: params.agentId });
 			},
 			sendMessage: async (ctx: CallContext, { params, body, idempotencyKey }) => {

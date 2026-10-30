@@ -46,6 +46,43 @@ export type OwnerRef =
 	| { readonly kind: "project"; readonly organisationId: OrganisationId; readonly projectId: ProjectId }
 	| { readonly kind: "user"; readonly organisationId: OrganisationId; readonly userId: UserId };
 
+/**
+ * Where a session works, and what an access check resolves to: one project of the organisation, or the organisation
+ * itself (above its projects, none of which it reaches unless one is shared with it). See docs/design/org-scope.md.
+ * The sharing primitive uses the same shape for an owner or grantee at organisation or project level.
+ */
+export type AccessScope =
+	| { readonly kind: "organisation" }
+	| { readonly kind: "project"; readonly projectId: ProjectId };
+
+/** The scope of a record that names its project when it has one, such as a `SessionRecord`: no project is the organisation. */
+export function scopeOf(record: { readonly projectId?: ProjectId | undefined }): AccessScope {
+	return record.projectId === undefined ? { kind: "organisation" } : { kind: "project", projectId: record.projectId };
+}
+
+/**
+ * The owner of what a scope holds, such as a session's own workspace: its project for a project-scoped record, else
+ * its organisation.
+ */
+export function scopeOwner(record: {
+	readonly organisationId: OrganisationId;
+	readonly projectId?: ProjectId | undefined;
+}): Extract<OwnerRef, { readonly kind: "organisation" | "project" }> {
+	return record.projectId === undefined
+		? { kind: "organisation", organisationId: record.organisationId }
+		: { kind: "project", organisationId: record.organisationId, projectId: record.projectId };
+}
+
+/**
+ * `{ projectId }` when the record has a project, else nothing: for spreading a session's project into another record
+ * (an audit row, a grant, a usage row) that leaves it out for an organisation-scoped session.
+ */
+export function projectFields(record: { readonly projectId?: ProjectId | undefined }): {
+	readonly projectId?: ProjectId;
+} {
+	return record.projectId === undefined ? {} : { projectId: record.projectId };
+}
+
 /** The context of one API call: who acts, in which tenant, with cancellation. */
 export interface CallContext {
 	readonly actor: Actor;

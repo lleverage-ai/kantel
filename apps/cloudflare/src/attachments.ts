@@ -100,7 +100,8 @@ export function formatOf(name: string, type: string): AttachmentFormat | undefin
 type StoredAttachment = PromptAttachment & {
 	readonly format: AttachmentFormat;
 	readonly organisationId: string;
-	readonly projectId: string;
+	/** Absent for an organisation session's upload. */
+	readonly projectId?: string;
 	readonly uploadedAt: number;
 };
 
@@ -129,9 +130,12 @@ export interface AttachmentStoreOptions {
 }
 
 export interface AttachmentStore {
-	/** Stores a file under the project; refuses one the model couldn't read. */
+	/**
+	 * Stores a file under the project, or under the organisation for an organisation session (no `projectId`); refuses
+	 * one the model couldn't read.
+	 */
 	put(
-		scope: { readonly organisationId: string; readonly projectId: string },
+		scope: { readonly organisationId: string; readonly projectId?: string },
 		file: { readonly name: string; readonly type: string; readonly bytes: Uint8Array },
 	): Promise<PromptAttachment>;
 	/** What the model reads of a session's attachments, from the session's project only. */
@@ -143,8 +147,11 @@ export interface AttachmentStore {
 	): Promise<{ readonly attachment: PromptAttachment; readonly bytes: Uint8Array } | undefined>;
 }
 
-const keyOf = (organisationId: string, projectId: string, id: string) =>
-	`attachments/${encodeURIComponent(organisationId)}/${encodeURIComponent(projectId)}/${id}`;
+/** A project's uploads are under the project; an organisation session's under a prefix no project's key shares. */
+const keyOf = (organisationId: string, projectId: string | undefined, id: string) =>
+	projectId === undefined
+		? `org-attachments/${encodeURIComponent(organisationId)}/${id}`
+		: `attachments/${encodeURIComponent(organisationId)}/${encodeURIComponent(projectId)}/${id}`;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
@@ -356,12 +363,18 @@ export function createAttachmentsApi(options: {
 			}
 			const projectId = url.searchParams.get("projectId") ?? "";
 			const name = url.searchParams.get("name") ?? "";
-			if (projectId === "" || name === "") {
+			// `?scope=organisation` (and no project) uploads for an organisation session.
+			const organisation = url.searchParams.get("scope") === "organisation" && projectId === "";
+			if ((projectId === "" && !organisation) || name === "") {
 				await request.body?.cancel().catch(() => undefined);
 				throw new HarbourError("invalid", "Name the project and the file: ?projectId=&name=");
 			}
 			const ctx = await options.authenticate(request);
-			await options.access.require(ctx, { projectId, needed: "operator", operation: "attachment.upload" });
+			await options.access.require(ctx, {
+				...(organisation ? {} : { projectId }),
+				needed: "operator",
+				operation: "attachment.upload",
+			});
 			const bytes = await readLimited(request, MAX_ATTACHMENT_BYTES);
 			if (bytes === undefined) {
 				return Response.json(
@@ -370,7 +383,7 @@ export function createAttachmentsApi(options: {
 				);
 			}
 			const attachment = await options.store.put(
-				{ organisationId: ctx.organisationId, projectId },
+				{ organisationId: ctx.organisationId, ...(organisation ? {} : { projectId }) },
 				{ name, type: request.headers.get("content-type") ?? "", bytes },
 			);
 			return Response.json(attachment, { status: 201, headers: { "cache-control": "no-store" } });

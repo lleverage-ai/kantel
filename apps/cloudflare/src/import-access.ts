@@ -95,7 +95,7 @@ export function withKeyImports(
 				check.sessionId === undefined &&
 				(await keyMayImport(identity, ctx))
 			) {
-				return {};
+				return { scope: { kind: "organisation" } };
 			}
 			return access.require(ctx, check);
 		},

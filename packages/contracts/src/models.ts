@@ -184,7 +184,8 @@ export interface ProjectModelPolicy {
 /** Who is calling the gateway: the claims of a verified session token. */
 export interface ModelCallScope {
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/** The session's project; absent for an organisation-scoped session, which no project's policy narrows. */
+	readonly projectId?: ProjectId;
 	readonly agentId: AgentId;
 	readonly sessionId: SessionId;
 }

@@ -529,7 +529,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		organisationId: scope.organisationId,
 	});
 
-	async function policyOf(scope: ModelCallScope): Promise<ProjectModelPolicy> {
+	/** The project's policy; an organisation session has no project, so nothing narrows its organisation's models. */
+	async function policyOf(scope: ModelCallScope): Promise<Pick<ProjectModelPolicy, "connectors" | "models">> {
+		if (scope.projectId === undefined) return {};
 		return connectors.getProjectPolicy(directoryContext(scope), scope.projectId);
 	}
 
@@ -539,7 +541,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		requestId: string,
 		connector: ModelConnector,
 		modelId: string,
-		policy: ProjectModelPolicy,
+		policy: Pick<ProjectModelPolicy, "connectors" | "models">,
 		signal: AbortSignal | undefined,
 	): Promise<ServedModel> {
 		if (!policyAllows(policy, connector.id, modelId)) {
@@ -558,7 +560,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		scope: ModelCallScope,
 		requestId: string,
 		pin: ModelPin,
-		policy: ProjectModelPolicy,
+		policy: Pick<ProjectModelPolicy, "connectors" | "models">,
 		signal: AbortSignal | undefined,
 	): Promise<ServedModel> {
 		let connector: ModelConnector;

@@ -18,16 +18,17 @@
 // `write`, `edit` and `ls` as host tools, and the runtime's coding tools of those names would take their place (the
 // runtime's own tools come first). A session started on an existing workspace keeps it: workspaces take their mounts
 // when they are made, so `/skills` is there only if whoever made it mounted it.
-import type {
-	AgentProfiles,
-	CallContext,
-	Memory,
-	MountSource,
-	SessionDirectory,
-	SessionRecord,
-	SessionRuntime,
-	SessionSkillPin,
-	Skills,
+import {
+	type AgentProfiles,
+	type CallContext,
+	type Memory,
+	type MountSource,
+	type SessionDirectory,
+	type SessionRecord,
+	type SessionRuntime,
+	type SessionSkillPin,
+	type Skills,
+	scopeOwner,
 } from "@harbour/contracts";
 import type { SessionRuntimeOptions, SessionRuntimeService } from "@harbour/runtime/core";
 import { renderSkillListings } from "@harbour/skills/sources";
@@ -123,7 +124,7 @@ export function withOwnWorkspaces(
 			const record = await inner.create(ctx, { ...input, workspaceId });
 			try {
 				await workspaces().ensure(sessionAgentContext(record), workspaceId, {
-					owner: { kind: "project", organisationId: record.organisationId, projectId: record.projectId },
+					owner: scopeOwner(record),
 					sessionId: record.id,
 					mounts: [{ path: SKILLS_MOUNT, source: "skills", ref: record.id }],
 				});

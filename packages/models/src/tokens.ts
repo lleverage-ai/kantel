@@ -39,7 +39,8 @@ export interface HmacSessionTokensOptions {
 interface Claims {
 	readonly v: number;
 	readonly o: string;
-	readonly p: string;
+	/** Absent for an organisation session. */
+	readonly p?: string;
 	readonly a: string;
 	readonly s: string;
 	readonly exp: number;
@@ -75,7 +76,7 @@ function assertScope(scope: ModelCallScope): void {
 		typeof scope !== "object" ||
 		scope === null ||
 		!isNonEmptyString(scope.organisationId) ||
-		!isNonEmptyString(scope.projectId) ||
+		(scope.projectId !== undefined && !isNonEmptyString(scope.projectId)) ||
 		!isNonEmptyString(scope.agentId) ||
 		!isNonEmptyString(scope.sessionId)
 	) {
@@ -114,7 +115,7 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 			const claims: Claims = {
 				v: VERSION,
 				o: scope.organisationId,
-				p: scope.projectId,
+				...(scope.projectId === undefined ? {} : { p: scope.projectId }),
 				a: scope.agentId,
 				s: scope.sessionId,
 				exp: expiresAt,
@@ -141,7 +142,7 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 			if (
 				claims.v !== VERSION ||
 				!isNonEmptyString(claims.o) ||
-				!isNonEmptyString(claims.p) ||
+				(claims.p !== undefined && !isNonEmptyString(claims.p)) ||
 				!isNonEmptyString(claims.a) ||
 				!isNonEmptyString(claims.s) ||
 				typeof claims.exp !== "number"
@@ -149,7 +150,12 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 				throw new HarbourError("forbidden", INVALID);
 			}
 			if (clock.now() >= claims.exp) throw new HarbourError("expired", "The model session token has expired");
-			return { organisationId: claims.o, projectId: claims.p, agentId: claims.a, sessionId: claims.s };
+			return {
+				organisationId: claims.o,
+				...(claims.p === undefined ? {} : { projectId: claims.p }),
+				agentId: claims.a,
+				sessionId: claims.s,
+			};
 		},
 	};
 }

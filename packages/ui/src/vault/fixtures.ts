@@ -139,7 +139,9 @@ function fixtureAccess(): ProjectAccess {
 		async require(ctx, check) {
 			const result = passes(ctx, check);
 			if (result === false) throw new HarbourError("forbidden", "The caller may not do this in this project");
-			return result === undefined ? {} : { projectId: result };
+			return result === undefined
+				? { scope: { kind: "organisation" } }
+				: { projectId: result, scope: { kind: "project", projectId: result } };
 		},
 		async allows(ctx, check) {
 			return passes(ctx, check) !== false;

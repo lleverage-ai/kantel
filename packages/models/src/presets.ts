@@ -130,9 +130,12 @@ function asRecord(payload: unknown): { readonly [key: string]: unknown } | undef
 		: undefined;
 }
 
-/** The value Anthropic's `metadata.user_id` carries: the session, under its organisation, project and agent. */
+/**
+ * The value Anthropic's `metadata.user_id` carries: the session, under its organisation, project and agent. An
+ * organisation session's project segment is `-`, which no project ID is.
+ */
 export function attributionUserId(scope: ModelCallScope): string {
-	return `harbour/${scope.organisationId}/${scope.projectId}/${scope.agentId}/${scope.sessionId}`;
+	return `harbour/${scope.organisationId}/${scope.projectId ?? "-"}/${scope.agentId}/${scope.sessionId}`;
 }
 
 /** Sets `metadata.user_id` on an Anthropic Messages body. */
@@ -142,11 +145,14 @@ function withAnthropicUserId(payload: unknown, scope: ModelCallScope): unknown {
 	return { ...body, metadata: { ...asRecord(body.metadata), user_id: attributionUserId(scope) } };
 }
 
-/** LiteLLM's tags for one call: organisation, project, agent and session, so spend shows per project. */
+/**
+ * LiteLLM's tags for one call: organisation, project, agent and session, so spend shows per project. An organisation
+ * session has no project tag.
+ */
 export function litellmTags(scope: ModelCallScope): readonly string[] {
 	return [
 		`organisation:${scope.organisationId}`,
-		`project:${scope.projectId}`,
+		...(scope.projectId === undefined ? [] : [`project:${scope.projectId}`]),
 		`agent:${scope.agentId}`,
 		`session:${scope.sessionId}`,
 	];

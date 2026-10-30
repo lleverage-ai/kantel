@@ -223,9 +223,12 @@ export interface CreatedSession {
 	/** The session's ID. */
 	readonly id: string;
 	readonly organisationId: string;
-	readonly projectId: string;
+	/** The session's project. Absent for a session scoped to the organisation. */
+	readonly projectId?: string;
 	/** The agent profile the session runs. */
 	readonly agentId: string;
+	/** The person the session works for: whose own skills and prompt rules it gets. */
+	readonly userId?: string;
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
@@ -293,8 +296,12 @@ export interface CreateScheduleBody {
 
 /** Put the host's own reference for the session in `labels`, such as `{ lleverageRunId: "run-42" }`, and find it again with `GET /sessions?label.lleverageRunId=run-42`. */
 export interface CreateSessionBody {
-	/** The project the session runs in. */
-	readonly projectId: string;
+	/** The project the session runs in. Required unless `scope` is `organisation`. */
+	readonly projectId?: string;
+	/** Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them. */
+	readonly scope?: SessionScope;
+	/** The person the session works for. A person may name only themselves; a host app any user. Default the person creating it. */
+	readonly userId?: string;
 	/** The agent profile it runs. */
 	readonly agentId: string;
 	readonly title?: string;
@@ -536,6 +543,8 @@ export interface ListSchedulesQuery {
 
 export interface ListSessionsQuery {
 	readonly projectId?: string;
+	/** Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them. */
+	readonly scope?: SessionScope;
 	readonly agentId?: string;
 	readonly status?: SessionStatus;
 	readonly parentSessionId?: string;
@@ -669,8 +678,10 @@ export interface ModelSelection {
 }
 
 export interface NewSessionModelsQuery {
-	/** The project the session would run in. */
-	readonly projectId: string;
+	/** The project the session would run in. Required unless `scope` is `organisation`. */
+	readonly projectId?: string;
+	/** Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them. */
+	readonly scope?: SessionScope;
 }
 
 export interface NoticeItem {
@@ -1137,9 +1148,12 @@ export interface SessionRecord {
 	/** The session's ID. */
 	readonly id: string;
 	readonly organisationId: string;
-	readonly projectId: string;
+	/** The session's project. Absent for a session scoped to the organisation. */
+	readonly projectId?: string;
 	/** The agent profile the session runs. */
 	readonly agentId: string;
+	/** The person the session works for: whose own skills and prompt rules it gets. */
+	readonly userId?: string;
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
@@ -1159,6 +1173,9 @@ export interface SessionRecord {
 	/** When someone marked the session unread, in epoch milliseconds. */
 	readonly markedUnreadAt?: number;
 }
+
+/** Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them. */
+export type SessionScope = "project" | "organisation";
 
 export interface SessionSnapshot {
 	readonly v: 1;
@@ -1744,8 +1761,12 @@ export interface HarbourClient {
 	getRunResult(sessionId: string, query: RunResultQuery, options?: CallOptions): Promise<RunResult | PendingRun>;
 	/** List the models a session may switch to. For a model and thinking picker: the models a message's `model` may name, what the session runs with now and what its agent profile names. Naming another model on a message switches the session from that run on (a steer's from the run's next model call) and keeps the conversation's context. Needs viewer on the session. `GET /sessions/{sessionId}/models` */
 	getSessionModels(sessionId: string, options?: CallOptions): Promise<SessionModelState>;
-	/** List the models a new session could use. What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator on the project, as creating the session does. `GET /profiles/{agentId}/models` */
-	getNewSessionModels(agentId: string, query: NewSessionModelsQuery, options?: CallOptions): Promise<SessionModelState>;
+	/** List the models a new session could use. What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator on the project, as creating the session does; `scope=organisation` with no `projectId` answers for a new organisation session, and needs operator across the organisation. `GET /profiles/{agentId}/models` */
+	getNewSessionModels(
+		agentId: string,
+		query?: NewSessionModelsQuery,
+		options?: CallOptions,
+	): Promise<SessionModelState>;
 	/** Warm a session's sandbox. A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and cheap to repeat; send it at most every few seconds. Needs the operator role on the session. `POST /sessions/{sessionId}/warm` */
 	warmSession(sessionId: string, options?: CallOptions): Promise<SessionWarmth>;
 	/** Stream a session. The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events. `GET /sessions/{sessionId}/stream` */

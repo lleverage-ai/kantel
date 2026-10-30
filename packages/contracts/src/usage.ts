@@ -13,7 +13,8 @@ export interface UsageRecord {
 	/** When the call started. */
 	readonly startedAt: Timestamp;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/** The session's project; absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly sessionId: SessionId;
 	/** The agent profile the session runs. */
 	readonly agentId: AgentId;

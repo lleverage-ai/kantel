@@ -37,6 +37,7 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	type CreateSessionInput,
 	createProjectAccess,
 	HarbourError,
 	type HostToolBridge,
@@ -47,6 +48,7 @@ import {
 	type ModelThinking,
 	type OrganisationId,
 	type ProjectAccess,
+	type ProjectId,
 	type PromptInput,
 	type Sandboxes,
 	type SessionBranching,
@@ -60,11 +62,13 @@ import {
 	type SessionOrganising,
 	type SessionRecord,
 	type SessionRuntime,
+	type SessionScopeKind,
 	type SessionUpdate,
 	type SharingLookup,
 	type Submission,
 	systemClock,
 	systemContext,
+	type UserId,
 	type WorkspaceId,
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
@@ -518,6 +522,69 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	/** Checks the caller may act on `sessionId` (already found in its organisation) with `needed`. */
 	const checkSession = (ctx: CallContext, sessionId: SessionId, needed: AccessCheck["needed"], operation: string) =>
 		check(ctx, { sessionId, needed, operation, subject: { kind: "session", id: sessionId } });
+
+	/**
+	 * The project a new session is in, or `undefined` for an organisation session: `scope: "organisation"` names none,
+	 * a project session needs one, a child is in its parent's scope, and a project's profile runs only in its project.
+	 */
+	const projectOfNew = (
+		input: { readonly projectId?: ProjectId; readonly scope?: SessionScopeKind },
+		profile: AgentProfile,
+		parent: SessionRecord | undefined,
+	): ProjectId | undefined => {
+		if (input.scope !== undefined && input.scope !== "project" && input.scope !== "organisation") {
+			throw new HarbourError("invalid", "A session's scope is project or organisation");
+		}
+		const organisation = input.scope === "organisation";
+		if (organisation && input.projectId !== undefined) {
+			throw new HarbourError("invalid", "An organisation session names no project");
+		}
+		if (!organisation && (input.projectId === undefined || input.projectId === "")) {
+			throw new HarbourError("invalid", "A session needs a project");
+		}
+		// A different project from the parent's stays the access check's to refuse, as before; a different kind is invalid.
+		if (parent !== undefined && (parent.projectId === undefined) !== organisation) {
+			throw new HarbourError("invalid", "A child session is in its parent's scope");
+		}
+		const projectId = organisation ? undefined : input.projectId;
+		// A project's profile runs only in that project; an organisation-wide one runs in any, and at organisation level.
+		if (profile.projectId !== undefined && profile.projectId !== projectId) {
+			throw new HarbourError("invalid", `Agent profile ${profile.id} is for another project`);
+		}
+		return projectId;
+	};
+
+	/**
+	 * The person a new session works for: a child's parent's; else the person creating it, who may name only
+	 * themselves; an agent's own session's; or whoever a service or Harbour names. Checked after access, so a refusal
+	 * here is not a project check and is not audited as one.
+	 */
+	const userOfNew = async (
+		ctx: CallContext,
+		input: CreateSessionInput,
+		parent: SessionRecord | undefined,
+	): Promise<UserId | undefined> => {
+		const actor = ctx.actor;
+		if (parent !== undefined) {
+			if (input.userId !== undefined && input.userId !== parent.userId) {
+				throw new HarbourError("invalid", "A child session works for its parent's user");
+			}
+			return parent.userId;
+		}
+		if (input.userId === "") throw new HarbourError("invalid", "A user ID is not empty");
+		if (actor.kind === "human") {
+			if (input.userId !== undefined && input.userId !== actor.userId) {
+				throw new HarbourError("forbidden", "A person may start a session only for themselves");
+			}
+			return actor.userId;
+		}
+		if (actor.kind === "agent") {
+			if (input.userId !== undefined) throw new HarbourError("forbidden", "An agent may not name a session's user");
+			const own = await findSession(ctx, actor.sessionId);
+			return own === undefined ? undefined : recordOf(own).userId;
+		}
+		return input.userId;
+	};
 
 	const requireProfile = async (ctx: CallContext, agentId: AgentId): Promise<AgentProfile> => {
 		const profile = await store.profile(ctx.organisationId, agentId);
@@ -1268,19 +1335,18 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const runtime: SessionRuntime = {
 		async create(ctx, input) {
 			const profile = await requireProfile(ctx, input.agentId);
-			if (input.projectId === "") throw new HarbourError("invalid", "A session needs a project");
-			// A project's profile runs only in that project; an organisation-wide one runs in any.
-			if (profile.projectId !== undefined && profile.projectId !== input.projectId) {
-				throw new HarbourError("invalid", `Agent profile ${profile.id} is for another project`);
-			}
-			if (input.parentSessionId !== undefined) await requireStored(ctx, input.parentSessionId);
-			// A child is in its parent's project, and an agent may create one only from its own session or its child.
+			const parent =
+				input.parentSessionId === undefined ? undefined : recordOf(await requireStored(ctx, input.parentSessionId));
+			const projectId = projectOfNew(input, profile, parent);
+			// A child is in its parent's scope, and an agent may create one only from its own session or its child. An
+			// organisation session needs an organisation-wide operator, or an agent in an organisation session.
 			await check(ctx, {
-				projectId: input.projectId,
+				...(projectId === undefined ? {} : { projectId }),
 				...(input.parentSessionId === undefined ? {} : { sessionId: input.parentSessionId }),
 				needed: "operator",
 				operation: "session.create",
 			});
+			const userId = await userOfNew(ctx, input, parent);
 			// Resolve first, so a profile whose route resolves nowhere creates nothing.
 			resolveModel(profile.model);
 			const now = clock.now();
@@ -1289,8 +1355,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const record: SessionRecord = {
 				id,
 				organisationId: ctx.organisationId,
-				projectId: input.projectId,
+				...(projectId === undefined ? {} : { projectId }),
 				agentId: profile.id,
+				...(userId === undefined ? {} : { userId }),
 				...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
 				...(workspaceId === undefined ? {} : { workspaceId }),
 				...(input.title === undefined ? {} : { title: input.title }),
@@ -1427,11 +1494,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		},
 		async startModels(ctx, start) {
 			const profile = await requireProfile(ctx, start.agentId);
-			if (start.projectId === "") throw new HarbourError("invalid", "A session needs a project");
-			if (profile.projectId !== undefined && profile.projectId !== start.projectId) {
-				throw new HarbourError("invalid", `Agent profile ${profile.id} is for another project`);
-			}
-			await check(ctx, { projectId: start.projectId, needed: "operator", operation: "session.models.start" });
+			const projectId = projectOfNew(start, profile, undefined);
+			await check(ctx, {
+				...(projectId === undefined ? {} : { projectId }),
+				needed: "operator",
+				operation: "session.models.start",
+			});
 			if (typeof models !== "function") return modelStateOf(models, profile, undefined);
 			// The models a session there would get: the same call a new session makes when it opens, for a session ID that
 			// no session has, so nothing is pinned for it.
@@ -1439,7 +1507,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const draft: SessionRecord = {
 				id: crypto.randomUUID(),
 				organisationId: ctx.organisationId,
-				projectId: start.projectId,
+				...(projectId === undefined ? {} : { projectId }),
 				agentId: profile.id,
 				status: "idle",
 				labels: {},
@@ -1488,8 +1556,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			}
 			const from = source.record;
 			const { profile } = stored;
-			// A new session in the source's project, under the same check as creating one there.
-			await check(ctx, { projectId: from.projectId, needed: "operator", operation: "session.create" });
+			// A new session in the source's scope, under the same check as creating one there.
+			await check(ctx, {
+				...(from.projectId === undefined ? {} : { projectId: from.projectId }),
+				needed: "operator",
+				operation: "session.create",
+			});
 			// Refuses before anything is written when the agent's model no longer resolves.
 			agentOf(profile);
 			// The history as of the answer, as Pi would start a fork of it: from the newest head through the answer.
@@ -1499,8 +1571,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const record: SessionRecord = {
 				id: crypto.randomUUID(),
 				organisationId: from.organisationId,
-				projectId: from.projectId,
+				...(from.projectId === undefined ? {} : { projectId: from.projectId }),
 				agentId: from.agentId,
+				...(from.userId === undefined ? {} : { userId: from.userId }),
 				...(from.workspaceId === undefined ? {} : { workspaceId: from.workspaceId }),
 				title,
 				status: "idle",

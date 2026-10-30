@@ -195,11 +195,14 @@ export class TenancyFixture {
 		}
 	}
 
-	/** Records an open agent session in the directory and returns the agent actor acting in it. */
+	/**
+	 * Records an open agent session in the directory and returns the agent actor acting in it. Without `projectId` the
+	 * session is scoped to the organisation.
+	 */
 	session(input: {
 		readonly id: SessionId;
 		readonly organisationId: OrganisationId;
-		readonly projectId: ProjectId;
+		readonly projectId?: ProjectId;
 		readonly agentId: AgentId;
 		readonly parentSessionId?: SessionId;
 	}): Actor {
@@ -207,7 +210,7 @@ export class TenancyFixture {
 		this.#sessions.set(input.id, {
 			id: input.id,
 			organisationId: input.organisationId,
-			projectId: input.projectId,
+			...(input.projectId === undefined ? {} : { projectId: input.projectId }),
 			agentId: input.agentId,
 			...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
 			status: "idle",

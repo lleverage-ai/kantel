@@ -2,13 +2,15 @@
 
 ## What it is for
 
-A session is one durable agent conversation, owned by an organisation and project and run with an agent profile.
+A session is one durable agent conversation, owned by an organisation and, unless it is scoped to the organisation,
+a project, and run with an agent profile (docs/design/org-scope.md).
 Hosts create sessions, prompt, steer, follow up, abort, close and watch them, and serve host tools. Every session runs
 on its own Pi Durable Harness; Pi types stay inside this package and never reach contracts or protocol.
 
 ## Records
 
-- `SessionRecord`: organisation, project, agent, optional parent and workspace, title, status, labels, creator, times.
+- `SessionRecord`: organisation, project (absent for an organisation session), agent, optional user, parent and
+  workspace, title, status, labels, creator, times. `scopeOf(record)` gives its `AccessScope`.
 - `AgentProfile`: model route, prompt layers, tools, skills, sandbox policy, memory scopes and the serving host.
 - `HostToolDefinition`: name, description, JSON schema and replay policy, registered per host.
 - `Submission` and `RunResult`: one admitted input and how its run ended (`answered`, `failed`, `aborted`).
@@ -105,6 +107,25 @@ see.
   "project access: an agent acts in its own session and supervises its children, never a sibling, and nowhere once its
   session is closed".
 - "project access: a viewer on the project reads its sessions but cannot change them".
+
+### Organisation scope (docs/design/org-scope.md; with `projectAccess: true`)
+
+`create` with `scope: "organisation"` and no `projectId` makes a session in no project; without `scope` a session
+still needs a project. It needs `operator` across the organisation, and an agent passes only from an organisation
+session. A child is in its parent's scope. An organisation session's agent passes organisation checks for its own
+session and its children, never a project's check. `userId` is the person the session works for: a child's parent's,
+else the person creating it (who may name only themselves) or the one a service names. SQL stores keep `project_id`
+NOT NULL and write `''` for an organisation session; the record, without `projectId`, is what reads back.
+
+- "organisation scope: an organisation-wide operator creates a session with no project, which lists under the
+  organisation scope and no project".
+- "organisation scope: refuses as invalid an organisation session naming a project, a project session naming none, an
+  unknown scope and a project's profile".
+- "organisation scope: an operator on one project only, a viewer and a project session's agent may not create an
+  organisation session".
+- "organisation scope: an organisation session's agent supervises organisation children but passes no project's
+  check".
+- "organisation scope: a person's session works for them, and they may name no one else".
 
 ## The runtime and its store
 

@@ -29,7 +29,8 @@ export function clickHouseRow(record: UsageRecord, recordedAt: number): Record<s
 		started_at: dateTime(record.startedAt),
 		recorded_at: dateTime(recordedAt),
 		organisation_id: record.organisationId,
-		project_id: record.projectId,
+		// An organisation session's call has no project: '' in the column.
+		project_id: record.projectId ?? "",
 		agent_id: record.agentId,
 		run_id: record.runId ?? null,
 		route: record.route,

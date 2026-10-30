@@ -40,8 +40,13 @@ export const SessionRecord = Type.Object(
 	{
 		id: id("The session's ID."),
 		organisationId: Type.String(),
-		projectId: Type.String(),
+		projectId: Type.Optional(
+			Type.String({ description: "The session's project. Absent for a session scoped to the organisation." }),
+		),
 		agentId: Type.String({ description: "The agent profile the session runs." }),
+		userId: Type.Optional(
+			Type.String({ description: "The person the session works for: whose own skills and prompt rules it gets." }),
+		),
 		parentSessionId: Type.Optional(Type.String()),
 		workspaceId: Type.Optional(Type.String()),
 		title: Type.Optional(Type.String()),
@@ -150,9 +155,22 @@ export const Submission = Type.Object(
 	{ title: "Submission", description: "A message the session accepted." },
 );
 
+export const SessionScope = Type.Union([Type.Literal("project"), Type.Literal("organisation")], {
+	title: "SessionScope",
+	description:
+		"Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them.",
+});
+
 export const CreateSessionBody = Type.Object(
 	{
-		projectId: id("The project the session runs in."),
+		projectId: Type.Optional(id("The project the session runs in. Required unless `scope` is `organisation`.")),
+		scope: Type.Optional(SessionScope),
+		userId: Type.Optional(
+			id(
+				"The person the session works for. A person may name only themselves; a host app any user. Default the " +
+					"person creating it.",
+			),
+		),
 		agentId: id("The agent profile it runs."),
 		title: Type.Optional(Type.String()),
 		labels: Type.Optional(Labels),
@@ -189,6 +207,7 @@ export const SessionPage = Type.Object(
 export const ListSessionsQuery = Type.Object(
 	{
 		projectId: Type.Optional(Type.String()),
+		scope: Type.Optional(SessionScope),
 		agentId: Type.Optional(Type.String()),
 		status: Type.Optional(SessionStatus),
 		parentSessionId: Type.Optional(Type.String()),
@@ -271,7 +290,10 @@ export const SessionModelState = Type.Object(
 export const ProfilePath = Type.Object({ agentId: id("The agent profile's ID.") });
 
 export const NewSessionModelsQuery = Type.Object(
-	{ projectId: id("The project the session would run in.") },
+	{
+		projectId: Type.Optional(id("The project the session would run in. Required unless `scope` is `organisation`.")),
+		scope: Type.Optional(SessionScope),
+	},
 	{ title: "NewSessionModelsQuery" },
 );
 
