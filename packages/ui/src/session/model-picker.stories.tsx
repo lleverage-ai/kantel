@@ -2,8 +2,8 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import { type ComposerModelOption, ModelPicker } from "./model-picker.tsx";
+import { pickerFrame } from "./story-frames.ts";
 import type { ThinkingLevel } from "./thinking-model.ts";
-import "./stories.css";
 
 export default { title: "Session/Model picker" } satisfies StoryDefault;
 
@@ -64,7 +64,7 @@ function Opened({ children, query }: { children: ReactNode; query?: string }) {
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 	}, [query]);
 	return (
-		<div ref={frame} className="hb-story-picker-frame">
+		<div ref={frame} className={pickerFrame}>
 			{children}
 		</div>
 	);

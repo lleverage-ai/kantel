@@ -17,8 +17,8 @@ import {
 	user,
 	vaultCard,
 } from "./fixtures.ts";
+import { transcriptFrame, transcriptFrameTall, transcriptFrameTurn } from "./story-frames.ts";
 import { Transcript } from "./transcript.tsx";
-import "./stories.css";
 
 export default { title: "Session/Transcript" } satisfies StoryDefault;
 
@@ -36,7 +36,7 @@ export const Default: Story = () => (
 		title="Transcript"
 		intro="A finished turn, its four calls collapsed to one summary, then a live turn: a command running and an answer streaming its first words."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={session} />
 		</div>
 	</Sheet>
@@ -44,7 +44,7 @@ export const Default: Story = () => (
 
 export const Loading: Story = () => (
 	<Sheet title="Transcript loading" intro="The first page has not arrived yet: skeleton turns in the column's shape.">
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={[]} loading />
 		</div>
 	</Sheet>
@@ -52,7 +52,7 @@ export const Loading: Story = () => (
 
 export const Empty: Story = () => (
 	<Sheet title="Empty transcript" intro="A new session with nothing in it yet.">
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={[]} />
 		</div>
 	</Sheet>
@@ -99,7 +99,7 @@ function StreamingDemo() {
 			title="Transcript streaming"
 			intro="Under the prompt, Working for 30s; after a second of Thinking, an answer streams in a word every 60ms, about 400 words, and the header goes when it ends. Only the streaming row and the timer render; the list follows the end unless you scroll up, which brings up Scroll to end."
 		>
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={items} working={working} />
 			</div>
 		</Sheet>
@@ -120,7 +120,7 @@ function WorkingDemo() {
 			title="Transcript working"
 			intro="Not one of the required states: the turn before the answer's first word. Under the prompt, Working for 12s, timed from it and counting each second, with a divider; then the answer's own activity row, a brain and Thinking."
 		>
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={items} working />
 			</div>
 		</Sheet>
@@ -140,7 +140,7 @@ function JustSentDemo() {
 			title="Transcript just sent"
 			intro="The turn has started (working) and no item of the answer has arrived. The working header goes under the message at once, and Thinking under it, so the reader sees the agent has the message before its first token."
 		>
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={items} working />
 			</div>
 		</Sheet>
@@ -162,7 +162,7 @@ function WorkingBetweenStepsDemo() {
 			title="Transcript working between steps"
 			intro="The turn is working with nothing streaming: a call has finished and the model is deciding what to do next. The header under the prompt keeps counting, and the turn ends with Thinking until the next call or word arrives."
 		>
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={items} working />
 			</div>
 		</Sheet>
@@ -208,7 +208,7 @@ function ThinkingDemo() {
 			title="Transcript thinking"
 			intro="A thought streams live, its newest four lines under the brain and Thinking, so the reader watches the agent think. When the answer's first word arrives the thought folds behind Thought it through and the answer streams."
 		>
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={items} working />
 			</div>
 		</Sheet>
@@ -249,7 +249,7 @@ export const WithCards: Story = () => (
 		title="Transcript with cards, read-only"
 		intro="Without renderCard the cards show everything they say, with nothing to press: the vault request's terms and binding code, the question and its options, the browser request's reason."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={withCards} />
 		</div>
 	</Sheet>
@@ -278,7 +278,7 @@ export const WithAttachments: Story = () => (
 		title="Transcript with attached files"
 		intro="The files sent with a message sit above its bubble as cards of one size, right-aligned and wrapping: an image's thumbnail when the host can read it back (the file type's icon until then, and here), the name cut short (whole on hover), the type and size. A message of files alone has no bubble."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={withFiles} />
 		</div>
 	</Sheet>
@@ -290,7 +290,7 @@ export const PresentedImages: Story = () => (
 		title="Transcript with presented images"
 		intro="A turn that made four posters and presented them. present_files renders in place (the tool renderer registry): its images as pictures, with no 'Presenting 4 files' row and no 'Worked for' group of its own. The image calls before it stay folded."
 	>
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-turn">
+		<div className={transcriptFrameTurn}>
 			<Transcript items={posterTurn} previewImage={previewPoster} onOpenFile={() => {}} />
 		</div>
 	</Sheet>
@@ -302,7 +302,7 @@ export const PresentedImagesNoPreview: Story = () => (
 		title="Transcript with presented images, no previews"
 		intro="The same turn with a host that can't read the images: each is a file's card with its icon, still with no row of its own."
 	>
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-turn">
+		<div className={transcriptFrameTurn}>
 			<Transcript items={posterTurn} onOpenFile={() => {}} />
 		</div>
 	</Sheet>
@@ -314,7 +314,7 @@ export const ErrorState: Story = () => (
 		title="Transcript with errors"
 		intro="The transcript's own error sits above the list. In the list, a failed and an interrupted call, then the host's error notice."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={failed} error="Lost the connection to the session. What you see may be out of date." />
 		</div>
 	</Sheet>
@@ -357,7 +357,7 @@ export const LongContent: Story = () => (
 		title="Long transcript"
 		intro="Three hundred finished turns (1,200 items, virtualised), then a call with 400 lines of output (open it) and a very long unbroken link, which wraps."
 	>
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+		<div className={transcriptFrameTall}>
 			<Transcript items={longItems} />
 		</div>
 	</Sheet>
@@ -396,7 +396,7 @@ function PagingDemo({
 	}, [delayMs]);
 	return (
 		<Sheet title={title} intro={intro}>
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript
 					items={items.slice(start)}
 					hasOlder={start > 0}
@@ -428,7 +428,7 @@ export const OlderPagesLoading: Story = () => (
 		title="Transcript loading an earlier page"
 		intro="The reader has scrolled to the top of what is loaded; the page before it is on its way."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={lastPage} hasOlder loadingOlder onLoadOlder={noop} />
 		</div>
 	</Sheet>
@@ -436,7 +436,7 @@ export const OlderPagesLoading: Story = () => (
 
 export const OlderPagesError: Story = () => (
 	<Sheet title="Transcript after a failed page" intro="Loading the page before these failed; Try again asks for it.">
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={lastPage} hasOlder olderError="Couldn't load earlier messages." onLoadOlder={noop} />
 		</div>
 	</Sheet>
@@ -459,7 +459,7 @@ export const NotSent: Story = () => (
 		title="Transcript with a message that didn't send"
 		intro="A message shows the moment it is sent (delivery). One the host couldn't take stays in place, and the line under it says so, with Try again and Edit, which puts the words back in the composer."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={unsent} delivery={unsentDelivery} />
 		</div>
 	</Sheet>
@@ -517,7 +517,7 @@ function MakingImageDemo({
 		},
 	]);
 	return (
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={items} working />
 		</div>
 	);
@@ -559,7 +559,7 @@ export const FinishedTurn: Story = () => (
 		title="Transcript with a finished turn of several steps"
 		intro="The agent's words between its calls, a thought and two runs of calls, folded under one Worked for line, closed by default; the answer under it. Open the line to see every step."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={stepsTurn} />
 		</div>
 	</Sheet>
@@ -571,7 +571,7 @@ export const ImageGeneration: Story = () => (
 		title="Transcript with a generated image"
 		intro="A finished turn that made an image with generate_image: its work folded, the image in view as a card with the model that made it, then the answer."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={imageTurn} onOpenFile={openNothing} />
 		</div>
 	</Sheet>
@@ -646,12 +646,12 @@ export const WorkingSections: Story = () => (
 		intro="A finished turn whose work folds under its Worked for line: an editor card for the file it wrote, a terminal for each command (the first failed, exit 2), and a subagent. The line says only how long the turn took, never how many steps. Closed, it hides every step, the failed one too, and shows an alert mark in the error colour (A step failed, for a screen reader); with nothing failed there is no mark. The subagent stays in view, out of the fold. Open, the cards sit in line with their rows, not indented."
 	>
 		<Section title="A step failed">
-			<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+			<div className={transcriptFrameTall}>
 				<Transcript items={helloTurn} />
 			</div>
 		</Section>
 		<Section title="Every step worked">
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={helloClean} />
 			</div>
 		</Section>
@@ -670,12 +670,12 @@ export const UnansweredGroup: Story = () => (
 		intro="A turn that stopped without an answer isn't folded; its calls collapse to one Worked for group, which says how long they took and no step count. Closed, the group hides its failed call too and shows only an alert mark in the error colour; with nothing failed there is no mark."
 	>
 		<Section title="A step failed">
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={helloUnanswered} />
 			</div>
 		</Section>
 		<Section title="Every step worked">
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={helloUnansweredClean} />
 			</div>
 		</Section>
@@ -685,7 +685,7 @@ UnansweredGroup.storyName = "Unanswered group";
 
 export const Mobile: Story = () => (
 	<Sheet title="Transcript at 420px" intro="The default session on a phone.">
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+		<div className={transcriptFrameTall}>
 			<Transcript items={session} />
 		</div>
 	</Sheet>

@@ -274,7 +274,7 @@ function statusText(attachment: ComposerAttachment): string {
 export function AttachmentStrip({ attachments, onRemove, onRetry, disabled }: StripProps) {
 	if (attachments.length === 0) return null;
 	return (
-		<div className="hb-composer-attachments">
+		<div className="hb-composer-attachments mb-3 min-w-0 cursor-default">
 			<AttachmentCards label="Attached files">
 				{attachments.map((attachment) => (
 					<li key={attachment.id} className="hb-attachment-cards-item">
@@ -309,6 +309,10 @@ function Uploading({ attachment }: { attachment: ComposerAttachment }) {
 	);
 }
 
+/** A card's small square button (retry, remove). hb-composer-chip-button is a hook for loop/align.ts. */
+const chipButton =
+	"hb-composer-chip-button hb-focusable grid size-control-xs flex-none cursor-pointer place-items-center rounded-sm border-0 bg-transparent p-0 text-muted enabled:hover:bg-hover enabled:hover:text-fg";
+
 function DraftAttachment({ attachment, onRemove, onRetry, disabled }: ItemProps) {
 	const failed = attachment.status === "failed";
 	const uploading = attachment.status === "uploading";
@@ -332,7 +336,7 @@ function DraftAttachment({ attachment, onRemove, onRetry, disabled }: ItemProps)
 						{failed && onRetry ? (
 							<button
 								type="button"
-								className="hb-composer-chip-button hb-focusable"
+								className={chipButton}
 								aria-label={`Retry ${attachment.name}`}
 								title={attachment.error ? `${attachment.error} Retry.` : "Retry"}
 								onClick={() => onRetry(attachment.id)}
@@ -344,7 +348,7 @@ function DraftAttachment({ attachment, onRemove, onRetry, disabled }: ItemProps)
 						{onRemove ? (
 							<button
 								type="button"
-								className="hb-composer-chip-button hb-focusable"
+								className={chipButton}
 								aria-label={`Remove ${attachment.name}`}
 								title="Remove"
 								onClick={() => onRemove(attachment.id)}

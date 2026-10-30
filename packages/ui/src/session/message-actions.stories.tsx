@@ -8,8 +8,8 @@ import {
 	MessageActionsContext,
 	MessageEditor,
 } from "./message-actions.tsx";
+import { transcriptFrame } from "./story-frames.ts";
 import { Transcript } from "./transcript.tsx";
-import "./stories.css";
 
 export default { title: "Session/Message actions" } satisfies StoryDefault;
 
@@ -122,7 +122,7 @@ export const BranchingInTranscript: Story = () => (
 		title="Branching in a transcript"
 		intro="Hover the person's message for Edit from here, or the final answer for Fork from this response."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={finishedTurn} messageActions={branching} />
 		</div>
 	</Sheet>
@@ -134,7 +134,7 @@ export const InTranscript: Story = () => (
 		title="Message actions in a transcript"
 		intro="Hover a message to see its time and Copy. Only a turn's final answer has them, not the words between tool calls, and not an answer still streaming."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript items={[...finishedTurn, ...liveTurn]} />
 		</div>
 	</Sheet>

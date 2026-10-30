@@ -2,12 +2,43 @@ import { createContext, type KeyboardEvent, type ReactNode, useEffect, useRef, u
 import { Button, IconButton } from "../primitives/button.tsx";
 import { CopyButton } from "../primitives/controls.tsx";
 import { ClockTime } from "../primitives/time.tsx";
-import "./message-actions.css";
 
 // A message's actions, after T3 Code's message meta rows (TimelineUserMessageRow.tsx:196-229,
 // TimelineAssistantRows.tsx:144-196, pingdotgg/t3code at 9826dbb9): a quiet line under the message with its time and small ghost buttons, shown
 // while the message is hovered or holds focus, and always under a coarse pointer, where there is no hover. It is
 // transparent rather than absent while hidden, so the transcript never moves when it appears.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css). hb-message-actions stays as a hook for message.css (its
+// spacing under an answer), and hb-message-actions-error is the class message.tsx puts on the reason an action failed,
+// which this line styles and which keeps it shown. The other hb- classes stay as names for the parts.
+
+/**
+ * The line: its buttons ghost and 24px, transparent until the message (message.tsx's .hb-user-message or
+ * .hb-assistant-message) is hovered or the line holds focus or an error, and always shown under a coarse pointer, where
+ * there is no hover. Only its opacity animates, and not under reduced motion. The hover is plain `:hover` on the
+ * message, as before, rather than `hover:` (which Tailwind wraps in a hover-capable media query).
+ */
+const line =
+	"hb-message-actions flex min-h-control-xs min-w-0 items-center gap-1.5 transition-opacity focus-within:opacity-100 has-[.hb-message-actions-error]:opacity-100 pointer-coarse:opacity-100 motion-reduce:transition-none [.hb-assistant-message:hover_&]:opacity-100 [.hb-user-message:hover_&]:opacity-100";
+/**
+ * Under an answer the actions come first. Optical alignment: the first button's icon, not its invisible box, lines up
+ * with the answer's text; buttons take the touch size under a coarse pointer, so the inset is larger there.
+ */
+const lineStart =
+	"hb-message-actions-start justify-start ml-[calc((var(--hb-icon-sm)_-_var(--hb-control-xs))/2)] pointer-coarse:ml-[calc((var(--hb-icon-sm)_-_var(--hb-control-lg))/2)]";
+/** Why an action failed, such as a fork the server refused (message.tsx's span): on the line, in the error colour. */
+const lineError =
+	"[&_.hb-message-actions-error]:min-w-0 [&_.hb-message-actions-error]:text-xs [&_.hb-message-actions-error]:wrap-anywhere [&_.hb-message-actions-error]:text-status-error";
+/** The time: faint, tabular figures, trimmed to its capitals as a button's label is, so it sits on the icons' centre. */
+const lineTime =
+	"hb-message-actions-time flex-none text-xs whitespace-nowrap text-faint tabular-nums [text-box:trim-both_cap_alphabetic]";
+
+/** Edit from here: the bubble becomes a field the column's width, on the same surface and radius, ringed in focus. */
+const editor =
+	"hb-message-editor box-border flex w-full flex-col gap-2 rounded-bubble border border-border-input bg-user-message px-3 pt-2.5 pb-2 has-[.hb-message-editor-input:focus-visible]:outline has-[.hb-message-editor-input:focus-visible]:-outline-offset-1 has-[.hb-message-editor-input:focus-visible]:outline-focus";
+/** The words, in the bubble's type, two lines tall at least and growing with them up to half the window. */
+const editorInput =
+	"hb-message-editor-input m-0 box-border block max-h-[50vh] min-h-[calc(var(--hb-text-md)*var(--hb-leading)*2)] w-full resize-none border-0 bg-transparent p-0 text-md leading-normal text-fg [field-sizing:content] [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] wrap-anywhere focus:outline-none";
 
 export type MessageActionsProps = {
 	/** When the person sent the message, or when the agent finished the answer (epoch ms). */
@@ -34,13 +65,15 @@ export type MessageActionsProps = {
 
 /** The time and actions under a message: Copy and the host's actions, revealed on hover or focus. */
 export function MessageActions({ at, text, align, children, after, visible = false, now }: MessageActionsProps) {
-	const time = <ClockTime at={at} {...(now === undefined ? {} : { now })} className="hb-message-actions-time" />;
+	const time = <ClockTime at={at} {...(now === undefined ? {} : { now })} className={lineTime} />;
 	const copy = <CopyButton text={text} label="Copy message" iconOnly size="xs" variant="ghost" />;
 	return (
-		<div className={`hb-message-actions hb-message-actions-${align}${visible ? " hb-message-actions-visible" : ""}`}>
+		<div
+			className={`${line} ${lineError} ${align === "start" ? lineStart : "hb-message-actions-end justify-end"} ${visible ? "hb-message-actions-visible opacity-100" : "opacity-0"}`}
+		>
 			{align === "end" ? after : null}
 			{align === "end" ? time : null}
-			<div className="hb-message-actions-buttons">
+			<div className="hb-message-actions-buttons flex items-center gap-0.5">
 				{align === "start" ? copy : null}
 				{children}
 				{align === "end" ? copy : null}
@@ -133,10 +166,10 @@ export function MessageEditor({ text, onSend, onCancel, autoFocus = true }: Mess
 		}
 	};
 	return (
-		<div className="hb-message-editor" data-focus-surface>
+		<div className={editor} data-focus-surface>
 			<textarea
 				ref={field}
-				className="hb-message-editor-input"
+				className={editorInput}
 				aria-label="Edit message"
 				value={draft}
 				rows={1}
@@ -144,16 +177,16 @@ export function MessageEditor({ text, onSend, onCancel, autoFocus = true }: Mess
 				onChange={(event) => setDraft(event.target.value)}
 				onKeyDown={onKeyDown}
 			/>
-			<div className="hb-message-editor-footer">
-				<span className="hb-message-editor-hint">
+			<div className="hb-message-editor-footer flex flex-wrap items-center justify-between gap-1.5">
+				<span className="hb-message-editor-hint min-w-0 flex-auto text-xs text-faint">
 					{error === undefined ? "Sending reruns from here. What came after this message leaves the session." : null}
 					{error === undefined ? null : (
-						<span className="hb-message-editor-error" role="alert">
+						<span className="hb-message-editor-error text-status-error" role="alert">
 							{error}
 						</span>
 					)}
 				</span>
-				<div className="hb-message-editor-buttons">
+				<div className="hb-message-editor-buttons ml-auto flex gap-1">
 					<Button variant="ghost" size="sm" onClick={onCancel} disabled={sending}>
 						Cancel
 					</Button>

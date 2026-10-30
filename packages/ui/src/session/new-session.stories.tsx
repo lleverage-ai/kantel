@@ -9,8 +9,8 @@ import { NewSessionRow } from "./new-session.tsx";
 import { SessionHeader } from "./session-header.tsx";
 import { SessionList } from "./session-list.tsx";
 import type { SessionSummary } from "./session-model.ts";
+import { pickerFrame, transcriptFrameTall } from "./story-frames.ts";
 import { Transcript } from "./transcript.tsx";
-import "./stories.css";
 
 export default { title: "Session/New session" } satisfies StoryDefault;
 
@@ -118,7 +118,7 @@ function OpenPicker({ children }: { children: ReactNode }) {
 		frame.current?.querySelector<HTMLButtonElement>(".hb-model-trigger")?.click();
 	}, []);
 	return (
-		<div ref={frame} className="hb-story-picker-frame">
+		<div ref={frame} className={pickerFrame}>
 			{children}
 		</div>
 	);
@@ -147,7 +147,7 @@ function Page({
 	const [model, setModel] = useState<string>();
 	const name = projects.find((candidate) => candidate.id === project)?.label ?? "";
 	return (
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+		<div className={transcriptFrameTall}>
 			<SessionHeader title="" parents={[{ label: name, href: "#project" }]} connection={{ state: "open" }} />
 			<Transcript
 				items={[]}

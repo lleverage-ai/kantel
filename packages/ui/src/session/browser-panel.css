@@ -1,21 +1,9 @@
-/* The session's browser, in a panel of its own: a one-line header (what the agent is doing in it now), then the view
-   at the browser's shape, as wide as the panel. The host places the panel (beside the transcript, where a presented
-   file's viewer goes, or above it on a narrow screen); it fills the height it is given and scrolls only if its
-   content is taller. It comes in as the file viewer does (presented/file-panel.css), once, when the session's first
-   browser opens: later steps change what is in it, never the panel. */
+/*
+ * What stays in CSS of the session's browser panel; the rest is Tailwind utilities in browser-panel.tsx.
+ */
 
-.hb-browser-panel {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-4);
-	min-width: 0;
-	min-height: 0;
-	padding: var(--hb-space-4) var(--hb-space-6) var(--hb-space-6);
-	overflow-y: auto;
-	background: var(--hb-canvas);
-	animation: hb-browser-panel-in var(--hb-duration) var(--hb-ease);
-}
-
+/* Keyframes, and the animation that uses them: the panel comes in as the file viewer does (presented/file-panel.css),
+   once, when the session's first browser opens; later steps change what is in it, never the panel. */
 @keyframes hb-browser-panel-in {
 	from {
 		opacity: 0;
@@ -25,60 +13,12 @@
 	}
 }
 
+.hb-browser-panel {
+	animation: hb-browser-panel-in var(--hb-duration) var(--hb-ease);
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.hb-browser-panel {
 		animation: none;
 	}
-}
-
-.hb-browser-panel-head {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-3);
-	min-width: 0;
-	min-height: var(--hb-control-sm);
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-sm);
-	line-height: var(--hb-leading-tight);
-}
-
-.hb-browser-panel-icon {
-	display: inline-flex;
-	flex: none;
-	align-items: center;
-	color: var(--hb-text-faint);
-}
-
-.hb-browser-panel-title {
-	flex: none;
-	color: var(--hb-text);
-	font-weight: var(--hb-weight-medium);
-}
-
-/* The step gives way first when the panel is narrow. */
-.hb-browser-panel-step {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	color: var(--hb-text-faint);
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.hb-browser-panel-picker {
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--hb-space-2);
-}
-
-.hb-browser-panel-body {
-	display: flex;
-	flex-direction: column;
-	min-width: 0;
-}
-
-/* In the panel the view starts at its edge, not in line with a tool row's label as it does in the transcript. */
-.hb-browser-panel-body > .hb-browser-live,
-.hb-browser-panel-body > .hb-tool-images {
-	margin: 0;
 }

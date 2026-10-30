@@ -4,11 +4,11 @@ import { StatusLabel } from "../primitives/status.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { BrowserEntry } from "./browser-entry.tsx";
+import { browserLive, browserLiveNote, browserLivePage } from "./browser-live-view.tsx";
 import { BrowserAddressBar, BrowserTabs, BrowserWindow, PlayerControls } from "./browser-window.tsx";
 import { BrowsingGroup } from "./browsing-group.tsx";
 import { EXAMPLE_SCREENSHOT } from "./fixture-screenshot.ts";
 import { tool } from "./fixtures.ts";
-import "./browser-live-view.css";
 
 export default { title: "Session/Browser window" } satisfies StoryDefault;
 
@@ -60,7 +60,7 @@ function Tabs({ end }: { end?: boolean }) {
 						end: (
 							<>
 								<StatusLabel status="idle">Replay</StatusLabel>
-								<span className="hb-browser-live-note">Watch only</span>
+								<span className={browserLiveNote}>Watch only</span>
 							</>
 						),
 					}
@@ -76,9 +76,9 @@ export const Window: Story = () => (
 	>
 		<Section title="Replay, several browsers">
 			<Column>
-				<div className="hb-browser-live">
+				<div className={browserLive}>
 					<BrowserWindow tabs={<Tabs end />} toolbar={<BrowserAddressBar url={TABS[0]?.url} />} footer={<Player />}>
-						<div className="hb-browser-live-page">
+						<div className={browserLivePage}>
 							<img src={page} alt="The page" />
 						</div>
 					</BrowserWindow>
@@ -87,7 +87,7 @@ export const Window: Story = () => (
 		</Section>
 		<Section title="Live, one browser">
 			<Column>
-				<div className="hb-browser-live">
+				<div className={browserLive}>
 					<BrowserWindow
 						tabs={
 							<BrowserTabs
@@ -98,7 +98,7 @@ export const Window: Story = () => (
 						}
 						toolbar={<BrowserAddressBar url="https://example.com/" />}
 					>
-						<div className="hb-browser-live-page">
+						<div className={browserLivePage}>
 							<img src={page} alt="The page" />
 						</div>
 					</BrowserWindow>
@@ -195,9 +195,9 @@ export const Timeline: Story = () => (
 export const Mobile: Story = () => (
 	<Sheet title="Browser window at 420px" intro="Tabs scroll sideways; the address is cut short with an ellipsis.">
 		<Column>
-			<div className="hb-browser-live">
+			<div className={browserLive}>
 				<BrowserWindow tabs={<Tabs end />} toolbar={<BrowserAddressBar url={TABS[0]?.url} />} footer={<Player />}>
-					<div className="hb-browser-live-page">
+					<div className={browserLivePage}>
 						<img src={page} alt="The page" />
 					</div>
 				</BrowserWindow>

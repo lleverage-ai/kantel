@@ -25,6 +25,45 @@ import {
 } from "./session-model.ts";
 import "./session-list.css";
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css). session-list.css keeps only the rules that reach into
+// ListRow's own elements (its side column, its hover and focus state) through `:has()` chains and a pointer query, with
+// .hb-session-status as their hook. hb-session-rows-item stays for loop/measure.ts, hb-session-working and
+// hb-session-working-text for loop/align.ts; the other hb- classes stay as names for the parts.
+
+/** The list: its heading, notices and groups a block apart. */
+const list = "hb-session-list flex min-w-0 flex-col gap-4";
+/** The heading with the filter button at its end, after Claude.ai's Recents; pulled close to the first group. */
+const listHead = "hb-session-list-head -mb-3 flex min-h-control-sm items-center justify-between gap-2 pr-1 pl-2.5";
+/** A group: its shelf label over its rows. */
+const group = "hb-session-group flex min-w-0 flex-col gap-1";
+/** Small, muted, sentence case: a shelf label, not a banner. The count is its own element. */
+const groupHeading =
+	"hb-session-group-heading m-0 flex items-baseline gap-1.5 px-2.5 text-xs leading-tight font-medium text-muted";
+/** The rows: a plain list, 2px apart. */
+const rows = "hb-session-rows m-0 flex min-w-0 list-none flex-col gap-0.5 p-0";
+/**
+ * A list of hundreds of sessions: the browser skips styling, layout and paint for rows out of view, so selecting a
+ * row restyles a screenful, not the whole list. The size estimate holds only until a row has rendered once (`auto`
+ * then remembers its real height), so one estimate serves the one- and three-line rows. Paint containment cannot
+ * clip the focus ring: ListRow draws it inset.
+ */
+const rowsItem =
+	"hb-session-rows-item min-w-0 [content-visibility:auto] [contain-intrinsic-size:auto_var(--hb-step-12)]";
+/**
+ * A working session's status, after T3 Code's (text-info-foreground, a 16px spinner, gap 1): the spinner, "Working"
+ * and its time in the accent's blue, medium weight, with tabular numbers so the row doesn't shift as it counts. The
+ * spinner's moving arc takes the same blue (`!` beats feedback.css's .hb-spinner border-top-color).
+ */
+const working =
+	"hb-session-working inline-flex items-center gap-1 text-xs leading-tight font-medium whitespace-nowrap text-accent-text tabular-nums [&>.hb-spinner]:[border-top-color:currentcolor]!";
+/** Trimmed to the capitals, so the words sit on the spinner's middle. */
+const workingText = "hb-session-working-text py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+/**
+ * The project and the branch side by side, separated by a gap, never a dot. The project keeps its width (it is the
+ * short, recognisable part) up to 60%; the branch gives way first.
+ */
+const where = "hb-session-where flex min-w-0 flex-auto items-baseline gap-2 overflow-hidden";
+
 export type SessionListItemProps = {
 	session: SessionSummary;
 	selected?: boolean;
@@ -49,9 +88,9 @@ export type SessionListItemProps = {
  */
 function WorkingStatus({ since }: { since: number }) {
 	return (
-		<span className="hb-session-working">
+		<span className={working}>
 			<Spinner size="sm" />
-			<span className="hb-session-working-text">
+			<span className={workingText}>
 				Working{" "}
 				<span aria-hidden="true">
 					<Elapsed since={since} />
@@ -79,15 +118,23 @@ function Overline({
 	since?: number;
 }) {
 	return (
-		<span className="hb-session-overline">
+		// Where the session is on the left, its status at the right end. The status never shrinks; the project and branch
+		// truncate first, so the title below has the row's whole width to itself.
+		<span className="hb-session-overline flex min-w-0 items-center gap-2">
 			{project === undefined && branch === undefined ? null : (
-				<span className="hb-session-where">
-					{project === undefined ? null : <span className="hb-session-project">{project}</span>}
-					{branch === undefined ? null : <span className="hb-session-branch">{branch}</span>}
+				<span className={where}>
+					{project === undefined ? null : (
+						<span className="hb-session-project min-w-0 max-w-[60%] flex-none truncate text-muted">{project}</span>
+					)}
+					{branch === undefined ? null : (
+						<span className="hb-session-branch min-w-0 flex-initial truncate font-mono text-2xs text-faint">
+							{branch}
+						</span>
+					)}
 				</span>
 			)}
 			{status === undefined ? null : (
-				<span className="hb-session-status">
+				<span className="hb-session-status ml-auto inline-flex flex-none">
 					{status === "working" && since !== undefined ? (
 						<WorkingStatus since={since} />
 					) : (
@@ -203,9 +250,9 @@ function Rows({
 	onAction?: (session: SessionSummary, action: SessionAction) => void;
 }) {
 	return (
-		<ul className="hb-session-rows">
+		<ul className={rows}>
 			{sessions.map((session) => (
-				<li key={session.id} className="hb-session-rows-item">
+				<li key={session.id} className={rowsItem}>
 					<SessionListItem
 						session={session}
 						selected={session.id === selectedId}
@@ -277,7 +324,7 @@ export function SessionList({
 	let content: ReactNode;
 	if (showSkeleton) {
 		content = (
-			<div className="hb-session-skeleton">
+			<div className="hb-session-skeleton flex flex-col gap-0.5">
 				<span className="hb-sr-only">Loading sessions</span>
 				{skeletonWidths.map((width) => (
 					<ListRow key={width} title={<Skeleton width={width} />} />
@@ -310,9 +357,10 @@ export function SessionList({
 					{...(onAction === undefined ? {} : { onAction })}
 				/>
 			) : (
-				<div key={key} className="hb-session-group">
-					<h3 className="hb-session-group-heading">
-						<span>{label}</span> <span className="hb-session-group-count">{members.length}</span>
+				<div key={key} className={group}>
+					<h3 className={groupHeading}>
+						<span>{label}</span>{" "}
+						<span className="hb-session-group-count font-regular text-faint tabular-nums">{members.length}</span>
 					</h3>
 					<Rows
 						sessions={members}
@@ -327,10 +375,12 @@ export function SessionList({
 	}
 
 	return (
-		<nav className="hb-session-list" aria-label="Sessions" aria-busy={showSkeleton || undefined}>
+		<nav className={list} aria-label="Sessions" aria-busy={showSkeleton || undefined}>
 			{onViewChange === undefined ? null : (
-				<div className="hb-session-list-head">
-					<h3 className="hb-session-list-title">{headings[arrangement.status]}</h3>
+				<div className={listHead}>
+					<h3 className="hb-session-list-title m-0 text-sm leading-tight font-medium text-muted">
+						{headings[arrangement.status]}
+					</h3>
 					<SessionFilterMenu view={arrangement} onViewChange={onViewChange} />
 				</div>
 			)}
