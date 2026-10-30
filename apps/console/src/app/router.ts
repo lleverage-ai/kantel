@@ -22,6 +22,7 @@
 //   /schedules/new                            the schedules page with the form for a new one open
 //   /schedules/:scheduleId                    one schedule: its timing, what it runs and its run history
 //   /sharing                                  what a project shares and is shared, and the requests waiting on you
+//   /connections                              the connector catalogue, what's connected and the OAuth clients (#339)
 //   /rules                                    prompt rules: the platform's, the organisation's, a project's and yours,
 //                                             and what a new session would get
 //   /sessions/:sessionId                      a session whose project the link doesn't know (a schedule's run):
@@ -56,6 +57,7 @@ export type Route =
 	| { readonly name: "memory"; readonly conceptId?: string }
 	| { readonly name: "schedules"; readonly scheduleId?: string; readonly creating?: true }
 	| { readonly name: "sharing" }
+	| { readonly name: "connections" }
 	| { readonly name: "rules" }
 	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
@@ -83,6 +85,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
 	if (parts[0] === "members" && parts.length === 1) return { name: "members" };
 	if (parts[0] === "sharing" && parts.length === 1) return { name: "sharing" };
+	if (parts[0] === "connections" && parts.length === 1) return { name: "connections" };
 	if (parts[0] === "rules" && parts.length === 1) return { name: "rules" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
@@ -175,6 +178,8 @@ export const schedulesPath = (scheduleId?: string): string =>
 export const NEW_SCHEDULE_PATH = "/schedules/new";
 /** The sharing page. */
 export const SHARING_PATH = "/sharing";
+/** The Connections page. */
+export const CONNECTIONS_PATH = "/connections";
 /** A session by its ID alone, for a link that doesn't know its project; the console finds the project and goes there. */
 export const sessionLinkPath = (sessionId: string): string => `/sessions/${encodeURIComponent(sessionId)}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */
