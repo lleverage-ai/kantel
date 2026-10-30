@@ -232,11 +232,7 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
 
 - **`FileTree`**: a workspace's files as a WAI-ARIA tree, one Tab stop with arrow-key navigation. Loading, error and
   empty states for the root, and inline Loading and error rows for a directory.
-- **`FileViewer`**: one file's text in mono with unselectable line numbers, Copy, and states for loading, error,
-  empty, image, binary and too large. Renders at most 5,000 lines and says how many more there are. An image is
-  fitted to the viewer, with its pixel size in the header.
-- **`NoteViewer`**: a Markdown note, parsed as one document in the transcript's Markdown styles at its reading
-  measure, with when it was last updated.
+- A file opens in **`FilePreview`** (`src/preview/`, [preview.md](preview.md)), the same panel as everywhere else.
 - **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
   `formatBytes` and others), exported for hosts.
 
@@ -245,12 +241,11 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
 A document the agent writes with `create_document`, after Claude Docs, in `src/documents/`. Presentational: the host
 reads and saves the file and passes the state in.
 
-- **`DocumentPanel`**: the right-hand panel: title, what's happening (Writing while it streams, then Saved, Saving,
-  Edited or Couldn't save), Share and Close, then the document as a page. While `status` is `streaming` the Markdown
-  so far renders with a caret after it; once `ready` it's a TipTap (ProseMirror) editor over Markdown with a sticky
-  toolbar of lucide icons (undo, redo, text, headings 1 to 3, bold, italic, strikethrough, code, lists, quote, table,
-  divider). The editor is its own chunk, loaded when a document first opens. `onChange` gives the Markdown after each
-  edit; without it the page is read-only.
+- A document opens in **`FilePreview`** ([preview.md](preview.md)): while it streams the Markdown so far renders
+  with a caret after it and the header says Writing; once written it opens in Edit, a TipTap (ProseMirror) editor over
+  Markdown with a sticky toolbar (undo, redo, text, headings 1 to 3, bold, italic, strikethrough, code, lists, quote,
+  table, divider), saved as the person types (Saving, Saved, Edited or Couldn't save). The editor is its own chunk,
+  loaded when a document first opens.
 - **`SharePopover`** and **`ShareButton`**: Share and Export tabs, after Claude's. Share invites by email, lists who
   has access (the owner, then each invite), sets general access (Only you, or Anyone with the link) and copies the
   link; Export lists the host's exports. Without `sharing` the popover is Export alone.

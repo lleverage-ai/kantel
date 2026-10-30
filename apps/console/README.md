@@ -99,10 +99,11 @@ open) at 1280 px and
 
 ## Files
 
-Files in the session header opens the session's workspace: `FileTree` beside `FileViewer` (or `NoteViewer` for
-Markdown) on a desktop, the tree and then the file with Back on a phone. Directories are listed when first opened,
-and a file is read when opened. A file whose name says it isn't text (an image, an archive), or that the listing says
-is over the read API's 16 MiB limit, is shown as such without being read; bytes that aren't UTF-8 are shown as not
-text. `src/ui/files-model.ts` decides which viewer and state. `src/api/workspace.test.ts` browses a whole workspace
+Files in the session header opens the session's workspace: `FileTree` beside the file preview (`FilePreview`, the
+same panel a session opens files in) on a desktop, the tree and then the file with Back on a phone. Directories are
+listed when first opened, and a file is read when opened; the files either side of it are read ahead, so Previous and
+Next (`j`, `k`) show theirs at once. An archive, or a file the listing says is over the read API's 16 MiB limit, is
+shown as such without being read. `src/ui/files-model.ts` says what the preview has of a file, and
+`src/ui/preview-cache.ts` keeps what was read while the screen is open. `src/api/workspace.test.ts` browses a whole workspace
 through the real read API and session API, with every component auditing into one store, and checks the audit log
 has no sandbox event, beside a control where acquiring a sandbox does leave one.

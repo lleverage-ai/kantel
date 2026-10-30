@@ -619,7 +619,6 @@ export {
 	entryName,
 	fileExtension,
 	fileKind,
-	fileViewerLineCap,
 	formatBytes,
 	isNote,
 	nextFocus,

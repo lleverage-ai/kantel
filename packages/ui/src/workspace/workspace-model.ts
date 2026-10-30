@@ -1,4 +1,4 @@
-// Pure helpers for the workspace components (FileTree, FileViewer, NoteViewer): names and parents of paths, the order
+// Pure helpers for the workspace components (FileTree, and the file preview beside it): names and parents of paths, the order
 // a directory lists in, the rows an expanded tree shows, tree keyboard moves, what kind a file is and how big it is.
 //
 // Paths are the workspace read API's: the root directory is "", entries are relative ("src/app.ts"), and a read-only
@@ -336,7 +336,7 @@ export function fileKind(path: string): WorkspaceFileKind {
 	return "text";
 }
 
-/** Whether a path is a note, shown with NoteViewer: .md, .markdown or .mdx. */
+/** Whether a path is a note: .md, .markdown or .mdx. */
 export function isNote(path: string): boolean {
 	return fileKind(path) === "markdown";
 }
@@ -371,9 +371,6 @@ export function formatBytes(bytes: number): string {
 	}
 	return `${text.replace(/\.0$/, "")} ${byteUnits[unit] ?? "TB"}`;
 }
-
-/** The most lines FileViewer renders; past this it shows the first ones and says how many more there are. */
-export const fileViewerLineCap = 5000;
 
 /**
  * A text's lines, split at "\n", "\r\n" or "\r". A final line break ends the last line rather than starting an
