@@ -12,8 +12,8 @@ its tokens.
   components in an app.
 - Use the `--hb-*` tokens for every colour, size, radius and duration. `pnpm --filter @harbour/ui test` fails on a
   raw value in the library.
-- Style with Tailwind v4 (below), not a new .css file.
 - Copy is plain sentence case: no uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
+- Style with Tailwind v4 (below), not a new .css file.
 - Check your component in the workbench (`pnpm --filter @harbour/ui dev`) at 1280px and 420px, and run
   `node packages/ui/loop/gates.ts` after `pnpm --filter @harbour/ui build:workbench` for the accessibility and
   keyboard gates.
