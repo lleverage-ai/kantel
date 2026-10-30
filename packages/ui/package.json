@@ -45,6 +45,8 @@
 		"@harbour/audit": "workspace:*",
 		"@harbour/identity": "workspace:*",
 		"@harbour/memory": "workspace:*",
+		"@harbour/models": "workspace:*",
+		"@harbour/onboarding": "workspace:*",
 		"@harbour/skills": "workspace:*",
 		"@ladle/react": "5.1.1",
 		"@tailwindcss/vite": "4.3.3",

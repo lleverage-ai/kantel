@@ -135,6 +135,19 @@ export {
 	type ModelsPageProps,
 	testKey,
 } from "./models/models-page.tsx";
+// First-run onboarding: connect a model, add connectors, start a first session.
+export {
+	type OnboardingApi,
+	type OnboardingConnectionsApi,
+	type OnboardingProject,
+	problemOf as onboardingProblemOf,
+} from "./onboarding/onboarding-api.ts";
+export {
+	FIRST_SESSION_IDEAS,
+	ONBOARDING_STEP_TEXT,
+	OnboardingPage,
+	type OnboardingPageProps,
+} from "./onboarding/onboarding-page.tsx";
 export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
 // Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
 export {

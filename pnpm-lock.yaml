@@ -945,6 +945,12 @@ importers:
       "@harbour/memory":
         specifier: workspace:*
         version: link:../memory
+      "@harbour/models":
+        specifier: workspace:*
+        version: link:../models
+      "@harbour/onboarding":
+        specifier: workspace:*
+        version: link:../onboarding
       "@harbour/skills":
         specifier: workspace:*
         version: link:../skills
