@@ -263,11 +263,23 @@ model: a session can chat with Claude over CLIProxyAPI and make images with any 
   whatever an override says. An override with `image` in `output` offers its model even when the upstream's listing
   leaves it out (CLIProxyAPI serves `gpt-image-*` without listing it). An image-only model is refused by `messages`.
 - **Image APIs.** A preset declares `imageApis`, the first its default, and a model's override may pick another with
-  `imageApi`. `openai-images` is served: `POST <API root>/images/generations` with a JSON body, and
-  `POST <API root>/images/edits` as multipart form data when the call sends reference images (OpenAI, LiteLLM,
-  CLIProxyAPI and the compatible presets). `chat-modalities` (chat completions with `modalities: ["image", "text"]`,
-  images in `message.images`; OpenRouter and Vercel) is declared but not served yet: `images` refuses it with
-  `not_supported`.
+  `imageApi`; a preset may give image-only models another default (`imageOnlyApi`).
+  - `openai-images`: `POST <API root>/images/generations` with a JSON body, and `POST <API root>/images/edits` as
+    multipart form data when the call sends reference images (OpenAI, LiteLLM, CLIProxyAPI, the compatible presets,
+    and Vercel's image-only models such as `openai/gpt-image-2` and Flux, which Vercel refuses the chat `modalities`
+    parameter).
+  - `chat-modalities` (OpenRouter, and Vercel's language models with the `image-generation` tag): one non-streaming
+    `POST <API root>/chat/completions` with `modalities: ["image", "text"]` (`["image"]` for an image-only model). The
+    prompt is the user message; reference images follow it as `image_url` parts (data URLs). Images come back in
+    `choices[].message.images[].image_url.url` as base64 data URLs (an https URL is fetched once, without the key),
+    and `message.content` becomes the result's `text`. Neither upstream takes `n` on chat completions, so `count` is
+    not sent: one request, and the call answers with the images the model made (usually one). `quality` is not sent.
+    On OpenRouter the shape goes as `image_config.aspect_ratio` (square 1:1, landscape 3:2, portrait 2:3, matching
+    gpt-image's sizes), and an exact `size` as the ratio it reduces to, refused as `invalid` unless it is one
+    OpenRouter lists. Vercel documents only `modalities` on chat completions, so it is sent no shape and an exact
+    size is refused. The connector's routing compat goes as pi sends it on chat (`provider`,
+    `providerOptions.gateway`), then the preset's `onPayload`. A 200 without an image (the model only wrote text, or
+    OpenRouter's in-body `error`) fails the call as `unavailable`, recorded with the tokens and cost it was billed.
 - **The call.** `POST /images` on the gateway's HTTP API takes `{ model, prompt, count?, aspect?, size?, quality?,
   images? }` and answers `{ images: [{ mimeType, data, revisedPrompt? }], usage, route, modelId }`. The route resolves
   and pins as for `messages`; the key goes in the preset's header with its attribution headers, and LiteLLM's metadata
@@ -278,7 +290,9 @@ model: a session can chat with Claude over CLIProxyAPI and make images with any 
   `usage.images`, the number of images made. Cost: the upstream's report where the preset reports one (`usage.cost`, or
   LiteLLM's `x-litellm-response-cost`); else tokens at the model's rates when the upstream counted any (`gpt-image-*`);
   else the per-image rate (`rates.image`: Vercel's `pricing.image`, LiteLLM's `output_cost_per_image`) times the
-  images; `$0` on a `cost: "none"` preset (CLIProxyAPI). Neither record holds the prompt or an image.
+  images; `$0` on a `cost: "none"` preset (CLIProxyAPI). Vercel's chat completions answer `usage.cost` too, though
+  its documented schema leaves it out, so its image calls take it when present (`imageCost: "reported"`) and are
+  computed otherwise. Neither record holds the prompt or an image.
 - **The console.** `listConnectorModels` lists each connector's models with `input`, `output` and `imageApi` for the
   connector page; `testImage` makes one small low-quality image, recorded under agent `console` and route
   `connector-test`.

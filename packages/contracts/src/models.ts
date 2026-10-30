@@ -58,8 +58,8 @@ export type ModelModality = "text" | "image";
  * - `openai-images`: OpenAI's Images API, `POST <baseUrl>/images/generations` (and `/images/edits` with reference
  *   images, as multipart form data). OpenAI, LiteLLM, CLIProxyAPI and the compatible presets speak it.
  * - `chat-modalities`: chat completions with `modalities: ["image", "text"]`, the images coming back in
- *   `message.images` (pi-ai's `openrouter-images`). OpenRouter and Vercel AI Gateway speak it. Declared, not yet served:
- *   the gateway refuses it with `not_supported`.
+ *   `message.images` (pi-ai's `openrouter-images`). OpenRouter and Vercel AI Gateway speak it; Vercel's image-only
+ *   models take `openai-images` instead.
  */
 export type ModelImageApi = "openai-images" | "chat-modalities";
 
@@ -371,7 +371,10 @@ export interface ModelImagesRequest {
 	readonly model: string;
 	/** What to draw, or how to change the reference images. Passed to the upstream, never logged or audited. */
 	readonly prompt: string;
-	/** How many images, 1 to `MAX_IMAGES_PER_CALL`. Default 1. */
+	/**
+	 * How many images, 1 to `MAX_IMAGES_PER_CALL`. Default 1. Over `chat-modalities`, which has no `n`, one request is
+	 * sent and the call answers with what the model made (usually one image).
+	 */
 	readonly count?: number;
 	/** The shape, which the gateway turns into a size the model takes. Ignored when `size` is set. */
 	readonly aspect?: ModelImageAspect;
@@ -535,8 +538,8 @@ export interface ModelGateway {
 	 * Generates images with a model `config` lists with `image` in its `output`, over its connector's image API: one
 	 * upstream attempt, the key in the preset's header, the preset's attribution. Resolves the route and pins it as
 	 * `messages` does. Rejects with `not_found` for a route the session can't use, `refused` for a model its policy
-	 * excludes, `invalid` for a model that doesn't make images or a malformed request, and `not_supported` for an image
-	 * API the gateway doesn't serve yet. An upstream failure rejects with its text, redacted: `invalid` for a 400,
+	 * excludes, and `invalid` for a model that doesn't make images or a malformed request (such as a size its image API
+	 * can't be asked for). An upstream failure rejects with its text, redacted: `invalid` for a 400,
 	 * `exhausted` for a 429, `unavailable` otherwise. Each call that resolved a route records one `ModelCallRecord` with
 	 * `operation: "images"` and its `model.call` event, as `messages` does; no prompt or image is in either.
 	 */

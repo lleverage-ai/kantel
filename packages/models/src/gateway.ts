@@ -16,8 +16,9 @@
  *   tool namespace (CLIProxyAPI on Messages), tool names go up under it and come back without it (tool-names.ts).
  * - **Events.** pi's events become `ModelStreamEvent`s, with every known secret redacted (see redact.ts) and
  *   `usage.cost` filled from the upstream's report or pi's `calculateCost`.
- * - **Images.** `images` makes one call over the model's image API (images.ts), resolved and pinned as `messages`
- *   is, with the same key header, attribution headers and redaction, recorded with `operation: "images"` and the
+ * - **Images.** `images` makes one call over the model's image API (images.ts: `openai-images` or
+ *   `chat-modalities`), resolved and pinned as `messages` is, with the same key header, attribution headers, routing
+ *   compat and `onPayload` (on a chat image call) and redaction, recorded with `operation: "images"` and the
  *   image count in its usage. `listConnectorModels` and `testImage` serve the console's connector list and test.
  * - **Accounting.** Each call that resolved a route records one `ModelCallRecord` and appends one `model.call` audit
  *   event (source `session`), as `system("model-gateway")`. Neither holds a prompt, a completion or a key. A failed
@@ -77,6 +78,8 @@ import { MODEL_THINKING_LEVELS } from "./directory.ts";
 import {
 	assertImagesRequest,
 	CONSOLE_AGENT,
+	chatModalitiesBody,
+	chatModalitiesImages,
 	imageRate,
 	openaiImages,
 	pricedImages,
@@ -1022,12 +1025,23 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		if (target.imageApi === undefined || !target.output.includes("image")) {
 			throw new HarbourError("invalid", `Model ${request.model} doesn't make images`);
 		}
-		if (target.imageApi !== "openai-images") {
-			throw new HarbourError("not_supported", `The gateway can't call the ${target.imageApi} image API yet`);
-		}
+		const spec = presetSpec(connector.preset);
+		// A chat image call's body is built first, so a size the upstream can't be asked for is refused before any record.
+		const chatBody =
+			target.imageApi === "chat-modalities"
+				? chatModalitiesBody({
+						modelId: target.id,
+						output: target.output,
+						request,
+						imageConfig: spec.chatImageConfig === true,
+						...(target.model.compat === undefined
+							? {}
+							: { compat: target.model.compat as { readonly [key: string]: unknown } }),
+					})
+				: undefined;
+		const imageCost = spec.imageCost ?? spec.cost;
 		const id = crypto.randomUUID();
 		const startedAt = clock.now();
-		const spec = presetSpec(connector.preset);
 		const controller = new AbortController();
 		const onAbort = () => controller.abort(signal?.reason);
 		if (signal?.aborted) onAbort();
@@ -1063,27 +1077,48 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		try {
 			const key = await keys.key(connector, scope, controller.signal);
 			redactor = new Redactor([key]);
-			const call = await openaiImages({
-				fetch: upstreamFetch,
-				baseUrl: upstreamBaseUrl(connector.baseUrl, "openai-completions"),
-				modelId: target.id,
-				request,
-				headers: { ...spec.headers(scope, "openai-completions"), ...keyHeaders(spec, "openai-completions", key) },
-				...(spec.imagePayload === undefined
-					? {}
-					: { payload: (body: { readonly [key: string]: unknown }) => spec.imagePayload!(body, scope) }),
-				signal: controller.signal,
-			});
+			// Both image APIs post under the connector's OpenAI-style API root, with the key and attribution as chat does.
+			const baseUrl = upstreamBaseUrl(connector.baseUrl, "openai-completions");
+			const headers = { ...spec.headers(scope, "openai-completions"), ...keyHeaders(spec, "openai-completions", key) };
+			const call =
+				chatBody === undefined
+					? await openaiImages({
+							fetch: upstreamFetch,
+							baseUrl,
+							modelId: target.id,
+							request,
+							headers,
+							...(spec.imagePayload === undefined
+								? {}
+								: { payload: (body: { readonly [key: string]: unknown }) => spec.imagePayload!(body, scope) }),
+							signal: controller.signal,
+						})
+					: await chatModalitiesImages({
+							fetch: upstreamFetch,
+							baseUrl,
+							// The chat body takes the preset's `onPayload`, as a chat call's does.
+							body:
+								(spec.onPayload?.(chatBody, scope, "openai-completions", connector) as
+									| { readonly [key: string]: unknown }
+									| undefined) ?? chatBody,
+							headers,
+							signal: controller.signal,
+						});
 			if (call.status === 401) keys.drop(connector);
 			if (!call.ok) {
-				const usage = { ...emptyUsage(), images: 0 };
-				await finish(controller.signal.aborted ? "aborted" : "error", usage, failedCostSource);
+				// An answer without an image may still have been billed (a chat model that only wrote text): keep what it cost.
+				const billed =
+					call.tokens === undefined && call.reportedCost === undefined
+						? undefined
+						: pricedImages(imageCost, target, { ...call, images: [] });
+				const usage = billed?.usage ?? { ...emptyUsage(), images: 0 };
+				await finish(controller.signal.aborted ? "aborted" : "error", usage, billed?.costSource ?? failedCostSource);
 				throw new HarbourError(
 					call.status === 400 || call.status === 422 ? "invalid" : call.status === 429 ? "exhausted" : "unavailable",
 					redactor.text(`${call.status}: ${call.errorMessage}`),
 				);
 			}
-			const { usage, costSource } = pricedImages(spec.cost, target, call);
+			const { usage, costSource } = pricedImages(imageCost, target, call);
 			await finish("done", usage, costSource);
 			return {
 				images: call.images.map((image) => ({

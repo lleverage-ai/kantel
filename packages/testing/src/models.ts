@@ -6,8 +6,9 @@
  *   SSE streams in each wire API's real format (`/chat/completions`, `/messages`, `/responses`), so pi-ai's own parsers
  *   consume them, plus the catalogue endpoints (`/models`, LiteLLM's `/model/info`). Each call follows a script (text,
  *   thinking, a tool call, usage, reported cost, an HTTP error, a slow stream) and is recorded with its headers and body.
- *   It also answers OpenAI's Images API (`/images/generations`, and `/images/edits` as multipart form data) with
- *   `FAKE_IMAGE_PNG`, following `nextImages` scripts.
+ *   It also answers OpenAI's Images API (`/images/generations`, and `/images/edits` as multipart form data) and a
+ *   non-streaming chat completion asking for `modalities: ["image", ...]` (OpenRouter's and Vercel's image wire, the
+ *   images in `choices[0].message.images` as data URLs) with `FAKE_IMAGE_PNG`, following `nextImages` scripts.
  * - `registerModelGatewayConformance` drives a gateway over its HTTP API with pi-ai's own `pi-messages` client, as the
  *   session runtime does.
  * - `registerModelConnectorConformance` runs per preset and wire API through the gateway: the key in the right header,
@@ -237,18 +238,28 @@ export interface FakeListedModel {
 export const FAKE_IMAGE_PNG =
 	"iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAABiUlEQVR42u3U3SvDURwG8Ocv+V0rpZRSopQ6pZRSSmihhRYz21pooYUWEhJaiJmZ9/d35v3lb3LlV7tR1L7n5qynTn2uzsXT8704D4qav6ihuPWTGko8H9RQ2vZODWUdb9RQ7n2lhorOF2qo6n6mhmrfEzXU9DwWyne28i/dECh/1rx/q/8mj0Jt4MGwvO1zhGmoC94bJjxAmIb68J1JwvY5kkA0RG5N0jpAEojGgRuTtA6QBKJp6NokrQMkgWiJXpmkdYAkEJ7hS5O0DpAEon30wiStAySB8MbODRO2F6aha+zMMOEBwjT4Jk7Ny9teHoXe+Emh/FtdNwSByWNqCE0fUUNk5pAaBmcPqCE6v08NIwt71BBb3KWG8eUdaognMtQwtbJNDTNraWqYW9+ihoVkihqWUpvUkEgnqWE1s0ENTkg5YeX4ldOnnIBy+pUTVESPoG7vPoK6vfsI6vbuI6jbu4+gbu8+grq9+2hn1M6onVE7o3ZG7YzaGbUzamfUzqidUTujtF/5ByS2PygU+A6kAAAAAElFTkSuQmCC";
 
-/** What the fake upstream answers one Images API call with. */
+/**
+ * What the fake upstream answers one image call with: an Images API call, or a chat completion asking for image
+ * output (`modalities`).
+ */
 export interface FakeImagesScript {
-	/** Images to answer with. Default: as many as the request's `n`. */
+	/** Images to answer with. Default: as many as the request's `n` on the Images API, one on chat completions. */
 	readonly count?: number;
-	/** Token counts in `usage`, as gpt-image reports them. Default none. */
+	/**
+	 * Token counts in `usage`, as gpt-image reports them (`input_tokens`) or chat completions do (`prompt_tokens`).
+	 * Default none on the Images API; 12 in and 1290 out on chat completions.
+	 */
 	readonly usage?: { readonly input: number; readonly output: number };
 	/** A cost the upstream reports in US dollars (`usage.cost`). */
 	readonly reportedCost?: number;
-	/** A `revised_prompt` on each image. */
+	/** A `revised_prompt` on each image (Images API). */
 	readonly revisedPrompt?: string;
-	/** Answer with `url`s to fetch instead of `b64_json`. */
+	/** Answer with `url`s to fetch instead of `b64_json`, or of data URLs on chat completions. */
 	readonly asUrl?: boolean;
+	/** The text beside the images on chat completions (`message.content`). Default none. */
+	readonly text?: string;
+	/** On chat completions, a 200 whose body carries this error instead of a choice, as OpenRouter can answer. */
+	readonly bodyError?: { readonly code: number; readonly message: string };
 	/** An HTTP error instead of images, in OpenAI's error body. */
 	readonly error?: { readonly status: number; readonly message: string };
 }
@@ -256,7 +267,10 @@ export interface FakeImagesScript {
 export interface FakeModelUpstream extends RecordingUpstream {
 	/** Answers the next model call with `script`; later calls take later scripts, then the default. */
 	next(script: FakeUpstreamScript): void;
-	/** Answers the next Images API call with `script`; later calls take later scripts, then one image per `n`. */
+	/**
+	 * Answers the next image call (Images API, or a chat completion asking for images) with `script`; later calls take
+	 * later scripts, then one image per `n` (one on chat completions).
+	 */
 	nextImages(script: FakeImagesScript): void;
 	/** Replaces what the catalogue endpoints list. */
 	setModels(models: readonly FakeListedModel[]): void;
@@ -598,6 +612,59 @@ function imagesResponse(script: FakeImagesScript, body: unknown): Response {
 	});
 }
 
+/** Whether a chat completions body asks for image output: OpenRouter's and Vercel's image wire, never streamed. */
+function asksForImages(body: unknown): boolean {
+	const fields = typeof body === "object" && body !== null ? (body as { readonly [key: string]: unknown }) : {};
+	return Array.isArray(fields.modalities) && fields.modalities.includes("image") && fields.stream !== true;
+}
+
+/** A chat completion with images in `choices[0].message.images`, answering `script`. */
+function chatImagesResponse(script: FakeImagesScript, body: unknown): Response {
+	if (script.error !== undefined) return errorResponse("openai-completions", script.error);
+	const usage = script.usage ?? { input: 12, output: 1290 };
+	const usageBody = {
+		prompt_tokens: usage.input,
+		completion_tokens: usage.output,
+		total_tokens: usage.input + usage.output,
+		...(script.reportedCost === undefined ? {} : { cost: script.reportedCost }),
+	};
+	if (script.bodyError !== undefined) {
+		return new Response(JSON.stringify({ error: script.bodyError, usage: usageBody }), {
+			headers: { "content-type": "application/json" },
+		});
+	}
+	const images = Array.from({ length: script.count ?? 1 }, (_, index) => ({
+		type: "image_url",
+		image_url: {
+			url:
+				script.asUrl === true
+					? `https://fake-upstream.test/fake-images/${index}.png`
+					: `data:image/png;base64,${FAKE_IMAGE_PNG}`,
+		},
+	}));
+	return new Response(
+		JSON.stringify({
+			id: "gen-fake",
+			object: "chat.completion",
+			created: 1_790_000_000,
+			model: modelOf(body),
+			choices: [
+				{
+					index: 0,
+					message: {
+						role: "assistant",
+						content: script.text ?? "",
+						...(images.length === 0 ? {} : { images }),
+					},
+					finish_reason: "stop",
+				},
+			],
+			usage: usageBody,
+		}),
+		{ headers: { "content-type": "application/json" } },
+	);
+}
+
 const FAKE_MODELS: readonly FakeListedModel[] = [{ id: "claude-sonnet-4-5" }, { id: "gpt-5" }];
 
 /**
@@ -705,6 +772,10 @@ export function createFakeModelUpstream(
 				return new Response(JSON.stringify({ error: { message: "Not found" } }), { status: 404 });
 			}
 			const api = recorded.kind;
+			if (api === "openai-completions" && asksForImages(recorded.body)) {
+				recorded.completed = true;
+				return chatImagesResponse(queuedImages.shift() ?? {}, recorded.body);
+			}
 			const script: FakeUpstreamScript = queued.shift() ?? options.script ?? DEFAULT_FAKE_SCRIPT;
 			if (script.error !== undefined) {
 				recorded.completed = true;

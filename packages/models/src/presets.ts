@@ -11,7 +11,8 @@
  * - where cost comes from: the upstream's report, pi's `calculateCost` from catalogue rates, or none (tokens only);
  * - any namespace tool names travel under, for an upstream that would otherwise rename them (tool-names.ts);
  * - how its catalogue refreshes;
- * - the image APIs it generates images over, if any, and whether a model's image output is read off its name (for an
+ * - the image APIs it generates images over, if any, which one an image-only model takes, what a chat image call may
+ *   send, where an image call's cost comes from, and whether a model's image output is read off its name (for an
  *   upstream whose catalogue lists IDs only).
  *
  * A connector's `baseUrl` is the upstream's OpenAI-style API root, such as `http://cliproxyapi.internal:8317/v1`. The
@@ -69,6 +70,19 @@ export interface ConnectorPresetSpec {
 	 * may change. Empty: no model on it makes images (Anthropic), whatever an override says.
 	 */
 	readonly imageApis: readonly ModelImageApi[];
+	/**
+	 * The image API an image-only model (no `text` in its output) uses when its override names none, if not the first
+	 * of `imageApis`: Vercel serves its image-only models (gpt-image, Flux, Imagen) on `/images/generations`, and refuses
+	 * them the chat `modalities` parameter.
+	 */
+	readonly imageOnlyApi?: ModelImageApi;
+	/** Whether a `chat-modalities` call takes `image_config` (OpenRouter's `aspect_ratio`). Vercel documents none. */
+	readonly chatImageConfig?: boolean;
+	/**
+	 * Where an image call's cost comes from, when not as `cost` says. Vercel's chat completions answer `usage.cost`
+	 * (not in its documented schema, so a call without it is computed).
+	 */
+	readonly imageCost?: PresetCostSource;
 	/**
 	 * Whether a model's image output is read off its ID (`outputByName`) when neither an override nor the catalogue
 	 * says: for upstreams whose catalogue lists IDs only (OpenAI, CLIProxyAPI, the compatible presets).
@@ -198,7 +212,12 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		},
 		cost: "computed",
 		cataloguePath: "/v1/models",
-		imageApis: ["chat-modalities"],
+		// Language models with the `image-generation` tag make images over chat completions; image-only models (its
+		// listing's `type: "image"`) over the Images API.
+		imageApis: ["chat-modalities", "openai-images"],
+		imageOnlyApi: "openai-images",
+		chatImageConfig: false,
+		imageCost: "reported",
 		imageOutputByName: false,
 	},
 	openrouter: {
@@ -212,6 +231,7 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		cost: "reported",
 		cataloguePath: "/v1/models",
 		imageApis: ["chat-modalities"],
+		chatImageConfig: true,
 		imageOutputByName: false,
 	},
 	anthropic: {
@@ -325,6 +345,11 @@ export function upstreamBaseUrl(baseUrl: string, api: ModelWireApi): string {
 /** Where an `openai-images` call posts: `<API root>/images/generations`, or `/images/edits` with reference images. */
 export function imagesUrl(baseUrl: string, edit: boolean): string {
 	return `${trimSlashes(baseUrl)}/images/${edit ? "edits" : "generations"}`;
+}
+
+/** Where a `chat-modalities` call posts: `<API root>/chat/completions`. */
+export function chatCompletionsUrl(baseUrl: string): string {
+	return `${trimSlashes(baseUrl)}/chat/completions`;
 }
 
 /** Where the connector's catalogue is read. */
