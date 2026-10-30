@@ -248,7 +248,8 @@ function assertConnectorRequest(request: ConnectorCredentialRequest): void {
 		!isString(candidate?.baseUrl) ||
 		!ownerValid ||
 		!isString(scope?.organisationId) ||
-		!isString(scope?.projectId) ||
+		// An organisation session has no project (docs/design/org-scope.md); a project named is never blank.
+		(scope?.projectId !== undefined && !isString(scope.projectId)) ||
 		!isString(scope?.agentId) ||
 		!isString(scope?.sessionId)
 	) {
@@ -1796,7 +1797,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const { scope, owner } = request;
 			const caller = {
 				organisationId: scope.organisationId,
-				projectId: scope.projectId,
+				...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
 				agentId: scope.agentId,
 				sessionId: scope.sessionId,
 				method: "POST" as const,
