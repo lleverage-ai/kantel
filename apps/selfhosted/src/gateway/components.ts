@@ -21,6 +21,8 @@ import {
 	HarbourError,
 	type IdentityDirectory,
 	type Memory,
+	type ModelConnectors,
+	type ModelProviders,
 	normaliseEmail,
 	type OnboardingService,
 	type OrganisationId,
@@ -36,6 +38,8 @@ import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createMemoryMemory } from "@harbour/memory/memory";
+import type { CpaManagement } from "@harbour/models/cpa-management";
+import { createMemoryModelProviderStore, type ModelProviderStore } from "@harbour/models/providers";
 import { createMemoryOnboarding } from "@harbour/onboarding/memory";
 import { createMemoryPromptRules } from "@harbour/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
@@ -50,6 +54,7 @@ import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
+import { gatewayModelProviders } from "./model-providers.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
@@ -77,6 +82,8 @@ export interface GatewayComponents {
 	readonly rules: PromptRules;
 	/** First-run onboarding: where the organisation is in its steps (packages/onboarding/CONTRACT.md). */
 	readonly onboarding: OnboardingService;
+	/** An organisation's model providers: keys and subscriptions, connected at runtime (`model-providers.ts`). */
+	readonly modelProviders: ModelProviders;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -124,11 +131,15 @@ export interface GatewayComponents {
 export interface ModelGatewaySource {
 	/** The route the bootstrap's `assistant` profile names. */
 	readonly route: string;
+	/** CPA's management API, for subscription sign-ins; absent without HARBOUR_CPA_MANAGEMENT_KEY. */
+	readonly subscriptions?: CpaManagement;
 	build(deps: {
 		readonly vault: () => HarbourVault | undefined;
 		readonly audit: AuditSink;
 		/** Where each model call's usage row goes: the Postgres usage ledger, on durable components. */
 		readonly usage?: UsageWriter;
+		/** Organisations' own providers, replayed into the gateway's directory when it is built. */
+		readonly providers?: ModelProviderStore;
 	}): GatewayModels;
 }
 
@@ -205,7 +216,10 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 }
 
 /** The sessions' models: a test's scripted model, say. Default the echo model. */
-export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel"> & {
+	/** The model gateway's directory, once built, where organisations' own providers go. Absent without a gateway. */
+	readonly connectors?: () => Promise<ModelConnectors>;
+};
 
 export function createGatewayComponents(
 	options: {
@@ -230,8 +244,11 @@ export function createGatewayComponents(
 	const gatewaySandboxes = createGatewaySandboxes();
 	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
 	let vault: HarbourVault | undefined;
-	const models = options.models ??
-		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
+	const providerStore = createMemoryModelProviderStore();
+	const { connectors: modelConnectors, ...models } = options.models ??
+		options.modelGateway?.build({ vault: () => vault, audit, providers: providerStore }) ?? {
+			models: createEchoModels(),
+		};
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
@@ -297,6 +314,14 @@ export function createGatewayComponents(
 	vault = createMemoryVault({ audit, access });
 	const connections = linked?.attach(vault);
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
+	const modelProviders = gatewayModelProviders({
+		...(modelConnectors === undefined ? {} : { connectors: modelConnectors }),
+		...(modelGateway?.subscriptions === undefined ? {} : { subscriptions: modelGateway.subscriptions }),
+		vault: () => vault,
+		access,
+		audit,
+		store: providerStore,
+	});
 	return {
 		identity,
 		audit,
@@ -307,6 +332,7 @@ export function createGatewayComponents(
 		sharing,
 		rules,
 		onboarding,
+		modelProviders,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),

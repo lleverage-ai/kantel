@@ -17,6 +17,13 @@
  *   model CPA lists is offered as `default:<model>`. The bootstrap's `assistant` profile names it. The `echo` route
  *   stays on the echo model, so the bootstrap's `echo` profile and the end-to-end checks work as before.
  *
+ * - **Organisations' own providers.** An organisation's admin can connect a provider's key at runtime (`POST
+ *   /v1/model-providers/{id}/key`, `@harbour/models/providers`): the key goes into the vault, the connector and its
+ *   routes into this gateway's directory and into a store (`ModelProviderStore`, never a key), replayed into the
+ *   directory whenever the gateway is built. The gateway's fetch then reaches CPA and those connectors' origins only.
+ * - **Subscriptions.** With `HARBOUR_CPA_MANAGEMENT_KEY`, an admin can sign in to Claude or ChatGPT through CPA's
+ *   management API; CPA keeps and refreshes the subscription's tokens and serves it on the `default` route as before.
+ *
  * Without `HARBOUR_CPA_URL` and `HARBOUR_CPA_API_KEY`, sessions stay on the echo model.
  */
 
@@ -28,11 +35,19 @@ import {
 	HarbourError,
 	type InjectionRule,
 	type ModelChoice,
+	type ModelConnectors,
 	PLATFORM_ORGANISATION,
 	systemContext,
 	type UsageWriter,
 } from "@harbour/contracts";
-import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
+import {
+	createModelGatewayApp,
+	MODEL_GATEWAY_CONFIG_CONTEXT,
+	type ModelGatewayApp,
+	type ModelGatewayConfig,
+} from "@harbour/model-gateway";
+import { createCpaManagement } from "@harbour/models/cpa-management";
+import { type ModelProviderStore, replayModelProviders } from "@harbour/models/providers";
 import { harbourModels, harbourResolveModel } from "@harbour/runtime/models";
 import type { HarbourVault } from "@harbour/vault/engine";
 import { ECHO_ROUTE, echoProvider, type GatewayModels, type ModelGatewaySource } from "./components.ts";
@@ -44,6 +59,11 @@ export interface CpaConfig {
 	readonly apiKey: string;
 	/** The upstream model the `default` route serves. */
 	readonly modelId: string;
+	/**
+	 * CPA's management key (`HARBOUR_CPA_MANAGEMENT_KEY`), for signing in to subscriptions from the console. Held by the
+	 * gateway process only, as CPA's own config holds it; never stored or logged.
+	 */
+	readonly managementKey?: string;
 }
 
 export const CPA_CONNECTOR_ID = "sal-cliproxyapi";
@@ -86,7 +106,16 @@ export function cpaConfig(env: NodeJS.ProcessEnv = process.env): CpaConfig | und
 	}
 	const modelId = env.HARBOUR_DEFAULT_MODEL?.trim() || DEFAULT_MODEL;
 	if (/[\s:]/.test(modelId)) throw new Error("HARBOUR_DEFAULT_MODEL must be one model ID");
-	return { baseUrl: url.replace(/\/+$/, ""), apiKey, modelId };
+	const managementKey = env.HARBOUR_CPA_MANAGEMENT_KEY?.trim() ?? "";
+	if (managementKey !== "" && /\s/.test(managementKey)) {
+		throw new Error("HARBOUR_CPA_MANAGEMENT_KEY must have no spaces");
+	}
+	return {
+		baseUrl: url.replace(/\/+$/, ""),
+		apiKey,
+		modelId,
+		...(managementKey === "" ? {} : { managementKey }),
+	};
 }
 
 /**
@@ -142,15 +171,47 @@ export function modelGatewayConfig(cpa: CpaConfig, vaultItemId: string): ModelGa
 	};
 }
 
-/** A fetch that reaches only CPA's origin and refuses any other, so no call leaves another way. */
-export function cpaOnly(cpa: CpaConfig, upstream: typeof fetch = fetch): typeof fetch {
+/**
+ * A fetch that reaches only CPA's origin and `others` (the origins of organisations' connectors, as they are put in the
+ * directory) and refuses any other, so no call leaves another way.
+ */
+export function cpaOnly(
+	cpa: CpaConfig,
+	upstream: typeof fetch = fetch,
+	others: ReadonlySet<string> = new Set(),
+): typeof fetch {
 	const origin = new URL(cpa.baseUrl).origin;
 	return async (input, init) => {
 		const request = new Request(input, init);
-		if (new URL(request.url).origin !== origin) {
-			throw new HarbourError("refused", "The self-hosted model gateway reaches only CLIProxyAPI");
+		const target = new URL(request.url).origin;
+		if (target !== origin && !others.has(target)) {
+			throw new HarbourError(
+				"refused",
+				"The self-hosted model gateway reaches only CLIProxyAPI and connected providers",
+			);
 		}
 		return upstream(request);
+	};
+}
+
+/** `connectors`, adding each connector's origin to `origins` as it is put, so the gateway's fetch may reach it. */
+function recordingOrigins(connectors: ModelConnectors, origins: Set<string>): ModelConnectors {
+	return {
+		...connectors,
+		putConnector: async (ctx, input) => {
+			const connector = await connectors.putConnector(ctx, input);
+			origins.add(new URL(connector.baseUrl).origin);
+			return connector;
+		},
+		getConnector: (ctx, id) => connectors.getConnector(ctx, id),
+		listConnectors: (ctx, page) => connectors.listConnectors(ctx, page),
+		deleteConnector: (ctx, id) => connectors.deleteConnector(ctx, id),
+		putRoute: (ctx, input) => connectors.putRoute(ctx, input),
+		listRoutes: (ctx, filter, page) => connectors.listRoutes(ctx, filter, page),
+		deleteRoute: (ctx, owner, name) => connectors.deleteRoute(ctx, owner, name),
+		setProjectPolicy: (ctx, policy) => connectors.setProjectPolicy(ctx, policy),
+		getProjectPolicy: (ctx, projectId) => connectors.getProjectPolicy(ctx, projectId),
+		resolve: (ctx, scope) => connectors.resolve(ctx, scope),
 	};
 }
 
@@ -234,6 +295,8 @@ export interface GatewayModelsOptions {
 	readonly clock?: Clock;
 	/** Where each call's usage row goes: the Postgres usage ledger (`usage.ts`). */
 	readonly usage?: UsageWriter;
+	/** Organisations' own providers, replayed into the directory when the gateway is built. */
+	readonly providers?: ModelProviderStore;
 }
 
 /** `ModelGatewaySource`, and the seeding the start does once the components and the bootstrap are ready. */
@@ -256,8 +319,25 @@ export function modelGatewaySource(
 	});
 	return {
 		route: DEFAULT_ROUTE,
-		build: ({ vault, audit, usage }) =>
-			createGatewayModels({ ...options, cpa, item, vault, audit, ...(usage === undefined ? {} : { usage }) }),
+		...(cpa.managementKey === undefined
+			? {}
+			: {
+					subscriptions: createCpaManagement({
+						baseUrl: cpa.baseUrl,
+						managementKey: cpa.managementKey,
+						fetch: cpaOnly(cpa, options.upstream),
+					}),
+				}),
+		build: ({ vault, audit, usage, providers }) =>
+			createGatewayModels({
+				...options,
+				cpa,
+				item,
+				vault,
+				audit,
+				...(usage === undefined ? {} : { usage }),
+				...(providers === undefined ? {} : { providers }),
+			}),
 		async seed(vault, previous) {
 			if (vault === undefined)
 				throw new Error("HARBOUR_CPA_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
@@ -285,10 +365,12 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 		.map((byte) => byte.toString(16).padStart(2, "0"))
 		.join("");
 	let app: Promise<ModelGatewayApp> | undefined;
+	// The origins of organisations' connectors, as they are put in the directory: the gateway's fetch may reach them.
+	const origins = new Set<string>();
 	const gateway = (): Promise<ModelGatewayApp> => {
 		if (app === undefined) {
-			const building = (async () =>
-				createModelGatewayApp({
+			const building = (async () => {
+				const built = await createModelGatewayApp({
 					config: modelGatewayConfig(options.cpa, await options.item),
 					tokenKey,
 					credentials: {
@@ -296,10 +378,16 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 						assertSessionOpen: (ctx, scope) => vault().assertSessionOpen(ctx, scope),
 					},
 					audit: options.audit,
-					fetch: cpaOnly(options.cpa, options.upstream),
+					fetch: cpaOnly(options.cpa, options.upstream, origins),
 					...(options.clock === undefined ? {} : { clock: options.clock }),
 					...(options.usage === undefined ? {} : { usage: options.usage }),
-				}))();
+				});
+				const connectors = recordingOrigins(built.connectors, origins);
+				if (options.providers !== undefined) {
+					await replayModelProviders(connectors, options.providers, MODEL_GATEWAY_CONFIG_CONTEXT);
+				}
+				return { ...built, connectors };
+			})();
 			app = building;
 			building.catch(() => {
 				if (app === building) app = undefined;
@@ -317,6 +405,7 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 	});
 	const echo = echoProvider();
 	return {
+		connectors: async () => (await gateway()).connectors,
 		models: async (session) => {
 			// `harbourModels` makes each session's collection with pi-ai's `createModels`, which is mutable.
 			const models = (await sessionModels(session)) as Partial<MutableModels> & Models;

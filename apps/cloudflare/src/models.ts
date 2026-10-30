@@ -26,6 +26,7 @@ import type {
 	Clock,
 	ConnectorCredentials,
 	InjectionRule,
+	ModelConnectors,
 	ModelGateway,
 	UsageWriter,
 } from "@harbour/contracts";
@@ -121,6 +122,8 @@ export interface GatewayModelsOptions {
  */
 export type StackModels = Pick<SessionRuntimeOptions, "models" | "resolveModel" | "images"> & {
 	readonly gateway?: () => Promise<ModelGateway>;
+	/** The gateway's directory, for the model providers API's list (`/v1/model-providers`). */
+	readonly connectors?: () => Promise<ModelConnectors>;
 };
 
 /** The gateway's one connector (CPA), its `default` route and, with an image model, its `images` route. */
@@ -217,5 +220,6 @@ export function createGatewayModels(options: GatewayModelsOptions): StackModels 
 		resolveModel: harbourResolveModel,
 		images: harbourImages(sessions),
 		gateway: async () => (await gateway()).gateway,
+		connectors: async () => (await gateway()).connectors,
 	};
 }

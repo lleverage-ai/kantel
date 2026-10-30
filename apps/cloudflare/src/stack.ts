@@ -48,11 +48,13 @@ import {
 	type CallContext,
 	type Clock,
 	type FileShares,
+	HarbourError,
 	type IdentityDirectory,
 	isHarbourError,
 	type LeaseEndReason,
 	type Memory,
 	type ModelGateway,
+	type ModelProviders,
 	type OnboardingService,
 	type Organisation,
 	type Project,
@@ -77,6 +79,8 @@ import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@har
 import { defaultRecallRenderer } from "@harbour/memory";
 import { createMemoryMemory } from "@harbour/memory/memory";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createMemoryModelConnectors } from "@harbour/models/directory";
+import { createModelProviders, lateModelConnectors } from "@harbour/models/providers";
 import { createMemoryOnboarding } from "@harbour/onboarding/memory";
 import { createSqlOnboarding, migrateOnboarding } from "@harbour/onboarding/sql";
 import { createMemoryPromptRules } from "@harbour/rules/memory";
@@ -147,6 +151,9 @@ const BOOTSTRAP: CallContext = {
 
 /** The agent every new deployment has, so a session can be created before any host registers its own profiles. */
 export const DEFAULT_AGENT_ID = "assistant";
+/** Why no provider connects from the console on Cloudflare. */
+const CLOUDFLARE_PROVIDERS_REASON =
+	"On Cloudflare the model gateway reaches only CLIProxyAPI: sign in to subscriptions there, or use the self-hosted gateway";
 
 /**
  * The prompt layer earlier releases wrote into the default profile on every start. Harbour adds no prompt of its own:
@@ -351,6 +358,11 @@ export interface Stack {
 	readonly rules: PromptRules;
 	/** First-run onboarding: where the organisation is in its steps (packages/onboarding/CONTRACT.md). */
 	readonly onboarding: OnboardingService;
+	/**
+	 * Model providers (`/v1/model-providers`): listed, with the `default` route the gateway serves. The gateway here
+	 * reaches only CPA through the `MODELS` VPC service, so no provider's key or subscription connects from the console.
+	 */
+	readonly modelProviders: ModelProviders;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -459,7 +471,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					background: storage.usageLedger.background,
 				})
 			: undefined;
-	const { gateway: modelGateway, ...models }: StackModels = options.models?.({
+	const {
+		gateway: modelGateway,
+		connectors: modelConnectors,
+		...models
+	}: StackModels = options.models?.({
 		audit,
 		clock,
 		...(usage === undefined ? {} : { usage: usage.writer }),
@@ -562,6 +578,16 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		driver === undefined
 			? createMemoryOnboarding({ clock, audit, access: auditAccess })
 			: createSqlOnboarding({ driver, clock, audit, access: auditAccess });
+	const modelProviders = createModelProviders({
+		connectors: modelConnectors === undefined ? createMemoryModelConnectors() : lateModelConnectors(modelConnectors),
+		vault: {
+			putItem: () => Promise.reject(new HarbourError("not_supported", CLOUDFLARE_PROVIDERS_REASON)),
+		},
+		access: auditAccess,
+		audit,
+		clock,
+		keyProviders: { reason: CLOUDFLARE_PROVIDERS_REASON },
+	});
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
@@ -831,6 +857,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(connections === undefined ? {} : { connections }),
 			rules,
 			onboarding,
+			modelProviders,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			passkeys,

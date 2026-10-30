@@ -644,6 +644,22 @@ export function createMemoryModelProviderStore(): ModelProviderStore {
 	};
 }
 
+/** A directory reached through `get` on every call: for a model gateway built on first use. */
+export function lateModelConnectors(get: () => Promise<ModelConnectors>): ModelConnectors {
+	return {
+		putConnector: async (ctx, input) => (await get()).putConnector(ctx, input),
+		getConnector: async (ctx, id) => (await get()).getConnector(ctx, id),
+		listConnectors: async (ctx, page) => (await get()).listConnectors(ctx, page),
+		deleteConnector: async (ctx, id) => (await get()).deleteConnector(ctx, id),
+		putRoute: async (ctx, input) => (await get()).putRoute(ctx, input),
+		listRoutes: async (ctx, filter, page) => (await get()).listRoutes(ctx, filter, page),
+		deleteRoute: async (ctx, owner, name) => (await get()).deleteRoute(ctx, owner, name),
+		setProjectPolicy: async (ctx, policy) => (await get()).setProjectPolicy(ctx, policy),
+		getProjectPolicy: async (ctx, projectId) => (await get()).getProjectPolicy(ctx, projectId),
+		resolve: async (ctx, scope) => (await get()).resolve(ctx, scope),
+	};
+}
+
 /**
  * Puts every stored connection's connector and routes back into `connectors`, as `ctx` (a `system` caller) in each
  * connection's organisation: for a gateway whose directory was rebuilt after a restart. Resolves with how many

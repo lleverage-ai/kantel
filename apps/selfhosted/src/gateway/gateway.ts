@@ -15,6 +15,8 @@
 //   /v1/rules/...               prompt rules API (@harbour/rules/http): the platform's, organisation's, projects', users'
 //   /v1/onboarding/...          onboarding API (@harbour/onboarding/http): the organisation's first-run progress, read by
 //                               its members and changed by its admin
+//   /v1/model-providers/...     model providers API (@harbour/models/providers-http): an organisation's keys and
+//                               subscriptions, listed to its members and connected by its admin
 //   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
 //   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
@@ -49,6 +51,7 @@ import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour
 import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
+import { createModelProvidersApi } from "@harbour/models/providers-http";
 import { createOnboardingApi } from "@harbour/onboarding/http";
 import { createRulesApi } from "@harbour/rules/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
@@ -128,6 +131,7 @@ const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
 const RULES_BASE = "/v1/rules";
 const ONBOARDING_BASE = "/v1/onboarding";
+const MODEL_PROVIDERS_BASE = "/v1/model-providers";
 const MEMORY_BASE = "/v1/memory";
 
 /** Whether `path` is `base` or under it. */
@@ -273,6 +277,15 @@ export function createGateway(options: GatewayOptions): Gateway {
 		callers.set(request, callContextFor(caller));
 		return (await onboardingApi.fetch(request)) ?? notFound();
 	});
+	// Model providers: the service's own check decides who connects one (an organisation-wide admin), never an agent.
+	const modelProvidersApi = createModelProvidersApi({
+		providers: components.modelProviders,
+		authenticate: signedIn,
+	});
+	const modelProviders = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await modelProvidersApi.fetch(request)) ?? notFound();
+	});
 	const skills = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await skillsApi.fetch(request)) ?? notFound();
@@ -363,6 +376,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 				}
 				if (under(path, RULES_BASE)) return await rules(request);
 				if (under(path, ONBOARDING_BASE)) return await onboarding(request);
+				if (under(path, MODEL_PROVIDERS_BASE)) return await modelProviders(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);
 				}

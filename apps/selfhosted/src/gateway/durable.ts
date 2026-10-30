@@ -30,9 +30,10 @@ import { type BrowserProvider, HarbourError } from "@harbour/contracts";
 import { createPasskeys } from "@harbour/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createSqlModelProviderStore, migrateModelProviders } from "@harbour/models/providers-sql";
 import { createSqlOnboarding, migrateOnboarding } from "@harbour/onboarding/sql";
 import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
-import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
+import { createSessionRuntime } from "@harbour/runtime/core";
 import { callbackHostHandlers } from "@harbour/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
 import {
@@ -53,8 +54,15 @@ import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
-import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
+import {
+	createEchoModels,
+	deferredAccess,
+	type GatewayComponents,
+	type GatewayModels,
+	type ModelGatewaySource,
+} from "./components.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
+import { gatewayModelProviders } from "./model-providers.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { selfHostedUsage, type UsageConfig } from "./usage.ts";
@@ -78,7 +86,7 @@ export interface DurableConfig {
 	readonly vaultCipherKey?: string;
 	readonly log?: (message: string) => void;
 	/** The sessions' models. Default the echo model. */
-	readonly models?: Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+	readonly models?: GatewayModels;
 	/** Sessions on the model gateway (`models.ts`), reading CPA's key through the vault; when `models` is unset. */
 	readonly modelGateway?: ModelGatewaySource;
 	/** The sessions' browser provider (`browser.ts`). Without it, sessions have no browser. */
@@ -138,6 +146,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
 		if (connectionsOn) await migrateConnections(driver);
 		await migrateOnboarding(driver);
+		await migrateModelProviders(driver);
+		const providerStore = createSqlModelProviderStore(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -191,8 +201,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		// The vault needs the runtime's access check; the model gateway reads it only at its first call.
 		let vault: HarbourVault | undefined;
 		const modelGateway = config.models === undefined ? config.modelGateway : undefined;
-		const models = config.models ??
-			modelGateway?.build({ vault: () => vault, audit, ...(usage === undefined ? {} : { usage: usage.writer }) }) ?? {
+		const { connectors: modelConnectors, ...models } = config.models ??
+			modelGateway?.build({
+				vault: () => vault,
+				audit,
+				providers: providerStore,
+				...(usage === undefined ? {} : { usage: usage.writer }),
+			}) ?? {
 				models: createEchoModels(),
 			};
 		const runtime = withOwnWorkspaces(
@@ -251,6 +266,15 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		}
 		const connections = vault === undefined ? undefined : linked?.attach(vault);
 
+		const modelProviders = gatewayModelProviders({
+			...(modelConnectors === undefined ? {} : { connectors: modelConnectors }),
+			...(modelGateway?.subscriptions === undefined ? {} : { subscriptions: modelGateway.subscriptions }),
+			vault: () => vault,
+			access,
+			audit,
+			store: providerStore,
+		});
+
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
 
@@ -264,6 +288,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			sharing,
 			rules,
 			onboarding,
+			modelProviders,
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),

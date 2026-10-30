@@ -52,6 +52,7 @@ import { authenticationFailureResponse } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
+import { createModelProvidersApi } from "@harbour/models/providers-http";
 import { createOnboardingApi } from "@harbour/onboarding/http";
 import { createRulesApi } from "@harbour/rules/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
@@ -259,6 +260,13 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	const MEMORY_BASE = `${API_BASE}/memory`;
 	const RULES_BASE = `${API_BASE}/rules`;
 	const ONBOARDING_BASE = `${API_BASE}/onboarding`;
+	// Model providers: listed to the organisation; on Cloudflare the gateway reaches only CPA, so none connects here.
+	const modelProviders = createModelProvidersApi({
+		providers: stack.modelProviders,
+		authenticate: callContext,
+		basePath: API_BASE,
+	});
+	const MODEL_PROVIDERS_BASE = `${API_BASE}/model-providers`;
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
@@ -501,7 +509,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				under(path, SKILLS_BASE) ||
 				under(path, MEMORY_BASE) ||
 				under(path, RULES_BASE) ||
-				under(path, ONBOARDING_BASE)
+				under(path, ONBOARDING_BASE) ||
+				under(path, MODEL_PROVIDERS_BASE)
 			) {
 				const caller = await authenticate(request);
 				if (caller instanceof Response) {
@@ -515,7 +524,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 						? memory
 						: under(path, RULES_BASE)
 							? rules
-							: onboarding;
+							: under(path, ONBOARDING_BASE)
+								? onboarding
+								: modelProviders;
 				return (await api.fetch(request)) ?? notFound();
 			}
 			if (under(path, SCHEDULES_BASE)) {

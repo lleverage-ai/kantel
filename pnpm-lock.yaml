@@ -63,6 +63,9 @@ importers:
       "@harbour/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
+      "@harbour/models":
+        specifier: workspace:*
+        version: link:../../packages/models
       "@harbour/onboarding":
         specifier: workspace:*
         version: link:../../packages/onboarding
@@ -294,6 +297,9 @@ importers:
       "@harbour/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
+      "@harbour/models":
+        specifier: workspace:*
+        version: link:../../packages/models
       "@harbour/onboarding":
         specifier: workspace:*
         version: link:../../packages/onboarding
