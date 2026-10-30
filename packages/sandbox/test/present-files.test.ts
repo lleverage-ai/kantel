@@ -67,6 +67,8 @@ describe("present_files", () => {
 		expect(schema.properties.filepaths.items.type).toBe("string");
 		expect(schema.properties.filepaths.maxItems).toBe(MAX_PRESENTED_FILES);
 		expect(tool.description).toContain("When NOT to use the present_files tool");
+		// Its round runs in order, so a file written in the same round exists when it is presented.
+		expect(tool.executionMode).toBe("sequential");
 	});
 
 	it("presents workspace files by absolute or relative path, with a preview for text", async () => {
