@@ -37,7 +37,7 @@ async function ids(store: ReturnType<typeof createSqlAuditStore>): Promise<strin
 }
 
 for (const kind of testDatabaseKinds()) {
-	describe(`SQL audit on ${kind.name}`, () => {
+	describe(`SQL audit on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		it("keeps rows, retention and the outbox across store instances, and seq keeps rising", async () => {
 			const database = await kind.open();
 			try {

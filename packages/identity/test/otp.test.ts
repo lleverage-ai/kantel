@@ -36,6 +36,8 @@ const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap"
 
 interface Backend {
 	readonly name: string;
+	/** The database kind's longer timeout, when its fixture is slow (`TestDatabaseKind.testTimeoutMs`). */
+	readonly testTimeoutMs?: number;
 	open(
 		clock: ManualClock,
 		audit: RecordingAuditSink,
@@ -58,6 +60,7 @@ const backends: Backend[] = [
 	...testDatabaseKinds().map(
 		(kind): Backend => ({
 			name: kind.name,
+			testTimeoutMs: kind.testTimeoutMs,
 			async open(clock, audit) {
 				const database = await kind.open();
 				await migrateIdentity(database.driver);
@@ -148,7 +151,7 @@ async function harness(backend: Backend, overrides: Partial<EmailOtpOptions> = {
 const wrong = (code: string) => (code === "000000" ? "000001" : "000000");
 
 for (const backend of backends) {
-	describe(`email one-time PIN on ${backend.name}`, () => {
+	describe(`email one-time PIN on ${backend.name}`, { timeout: backend.testTimeoutMs }, () => {
 		it("signs an invited user in end to end, and the session authenticates as them", async () => {
 			const h = await harness(backend);
 			try {

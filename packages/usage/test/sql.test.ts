@@ -70,7 +70,7 @@ function imageCall(overrides: Partial<UsageRecord> = {}): UsageRecord {
 }
 
 for (const kind of testDatabaseKinds()) {
-	describe(`usage ledger on ${kind.name}`, () => {
+	describe(`usage ledger on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		async function open(now = () => 1_000_000) {
 			const database = await kind.open();
 			await migrateUsage(database.driver);

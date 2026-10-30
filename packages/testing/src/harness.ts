@@ -108,6 +108,15 @@ export function registerCases(runner: ConformanceRunner, name: string, cases: re
 	});
 }
 
+/**
+ * `runner` with `timeoutMs` for every case that sets none of its own, for a backend whose fixture is slow (such as
+ * `TestDatabaseKind.testTimeoutMs`). Undefined returns `runner` unchanged.
+ */
+export function withTestTimeout(runner: ConformanceRunner, timeoutMs: number | undefined): ConformanceRunner {
+	if (timeoutMs === undefined) return runner;
+	return { ...runner, it: (name, test, caseTimeoutMs) => runner.it(name, test, caseTimeoutMs ?? timeoutMs) };
+}
+
 /** A clock the suite moves by hand. Implementations under test must read time only from the clock they are given. */
 export class ManualClock implements Clock {
 	#now: Timestamp;

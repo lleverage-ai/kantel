@@ -110,7 +110,7 @@ afterEach(async () => {
 });
 
 for (const kind of testDatabaseKinds()) {
-	describe(`SQL skills on ${kind.name}`, () => {
+	describe(`SQL skills on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		async function open(): Promise<SqlDriver> {
 			const database = await kind.open();
 			cleanups.push(() => database.close());

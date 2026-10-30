@@ -135,7 +135,7 @@ afterEach(async () => {
 });
 
 for (const kind of testDatabaseKinds()) {
-	describe(`SQL memory on ${kind.name}`, () => {
+	describe(`SQL memory on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		async function open(): Promise<SqlDriver> {
 			const database = await kind.open();
 			cleanups.push(() => database.close());

@@ -3,7 +3,7 @@ import { testDatabaseKinds } from "@harbour/sql/testing";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {
-	describe(`SqlDriver on ${kind.name}`, () => {
+	describe(`SqlDriver on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		it("runs queries with ? placeholders, and a batch atomically", async () => {
 			const { driver, close } = await kind.open();
 			try {

@@ -84,7 +84,7 @@ const rolesChange = (sql: string) => sql.includes("SET roles_version");
 const request = (headers: Record<string, string>) => new Request("https://harbour.test/v1/sessions", { headers });
 
 for (const kind of testDatabaseKinds()) {
-	describe(`SQL identity on ${kind.name}`, () => {
+	describe(`SQL identity on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		it("keeps organisations, users, bindings and keys across directory instances, and a revocation holds on both", async () => {
 			await withDatabase(kind, async (driver) => {
 				await migrateIdentity(driver);

@@ -18,11 +18,26 @@ export interface TestDatabase {
 
 export interface TestDatabaseKind {
 	readonly name: string;
+	/**
+	 * The per-test timeout for suites on this kind, when its fixture is too slow for vitest's 10 s default on a loaded
+	 * host; undefined keeps the default. Pass it as the suite's `timeout` (`describe(name, { timeout }, …)`), or to a
+	 * conformance runner with `withTestTimeout` from `@harbour/testing/harness`.
+	 */
+	readonly testTimeoutMs?: number;
 	open(): Promise<TestDatabase>;
 }
 
+/**
+ * The timeout for kinds whose fixture, not the code under test, costs seconds per test. PGlite runs initdb in WASM on
+ * every `open` (3–5 s on CI's shared 48-core host at a load average of 50–70). Miniflare's D1 binding is a proxy to
+ * workerd, so each statement is a synchronous round trip for `prepare` and another for `bind`: about 15–20 ms a
+ * statement under that load, so the audit outbox's 250-event retry case takes 9–11 s on D1 and 31 ms on node:sqlite.
+ */
+const SLOW_FIXTURE_TIMEOUT_MS = 30_000;
+
 export const pgliteDatabase: TestDatabaseKind = {
 	name: "Postgres (PGlite)",
+	testTimeoutMs: SLOW_FIXTURE_TIMEOUT_MS,
 	async open() {
 		const database = await PGlite.create();
 		return { driver: postgresTransactionalDriver(database), close: () => database.close() };
@@ -44,6 +59,7 @@ export const nodeSqliteDatabase: TestDatabaseKind = {
 
 export const d1Database: TestDatabaseKind = {
 	name: "D1 (Miniflare)",
+	testTimeoutMs: SLOW_FIXTURE_TIMEOUT_MS,
 	async open() {
 		const miniflare = new Miniflare(
 			convertV4MiniflareOptions({

@@ -706,7 +706,7 @@ describe("a check's output", () => {
 });
 
 for (const kind of testDatabaseKinds()) {
-	describe(`the scheduler loop on SQL (${kind.name})`, () => {
+	describe(`the scheduler loop on SQL (${kind.name})`, { timeout: kind.testTimeoutMs }, () => {
 		it("three runners on three hosts run every occurrence exactly once", async () => {
 			const database = await kind.open();
 			try {
