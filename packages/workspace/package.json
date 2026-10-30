@@ -12,6 +12,7 @@
 		"./write-api": "./src/write-api.ts",
 		"./mounts": "./src/mounts.ts",
 		"./stored": "./src/stored.ts",
+		"./hydration": "./src/hydration.ts",
 		"./tree": "./src/tree.ts",
 		"./seed": "./src/seed.ts",
 		"./seed-spec": "./src/seed-spec.ts",

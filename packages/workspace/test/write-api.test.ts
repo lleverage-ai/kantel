@@ -338,3 +338,49 @@ describe("PUT /v1/workspaces/:id/content", () => {
 		).toBeNull();
 	});
 });
+
+describe("POST /v1/workspaces/:id/fork", () => {
+	const fork = (id: string, body: unknown, user = "olive") =>
+		fixture.api(
+			new Request(`${BASE}/${encodeURIComponent(id)}/fork`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-user": user },
+				body: JSON.stringify(body),
+			}),
+		);
+
+	it("forks a workspace into the project, sharing its files, and the client does the same", async () => {
+		const source = (await (await post({ projectId: PROJECT, seed }))!.json()) as WorkspaceRecord;
+		const response = await fork(source.id, { projectId: PROJECT });
+		expect(response!.status).toBe(201);
+		const record = (await response!.json()) as WorkspaceRecord;
+		expect(response!.headers.get("location")).toBe(`/v1/workspaces/${record.id}`);
+		expect(record.forkedFrom).toEqual({ workspaceId: source.id, version: source.head });
+		expect(new TextDecoder().decode((await fixture.read.read(record.id, "notes/plan.md")).content)).toContain("Retry");
+		// The seed was fetched once, for the source.
+		expect(fixture.fetched).toEqual(["acme/billing-sync@main"]);
+
+		const client = createWorkspaceWriteClient({
+			baseUrl: BASE,
+			headers: { "x-user": "olive" },
+			fetch: async (input, init) => (await fixture.api(new Request(input, init)))!,
+		});
+		const older = await client.fork(source.id, { projectId: PROJECT, version: 0 });
+		expect(older.head).toBe(0);
+	});
+
+	it("refuses a viewer, a caller outside the project and a bad version, and forks nothing", async () => {
+		const source = (await (await post({ projectId: PROJECT, seed }))!.json()) as WorkspaceRecord;
+		expect(await errorOf(await fork(source.id, { projectId: PROJECT }, "vera"))).toEqual({
+			status: 403,
+			code: "forbidden",
+		});
+		expect(await errorOf(await fork(source.id, { projectId: "proj-other" }, "oscar"))).toMatchObject({ status: 403 });
+		expect(await errorOf(await fork(source.id, { projectId: PROJECT, version: -1 }))).toEqual({
+			status: 400,
+			code: "invalid",
+		});
+		expect(await errorOf(await fork("ws_missing", { projectId: PROJECT }))).toEqual({ status: 404, code: "not_found" });
+		expect(fixture.deps.audit.ofType("workspace.forked")).toEqual([]);
+	});
+});

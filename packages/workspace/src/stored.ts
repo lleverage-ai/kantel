@@ -12,6 +12,10 @@
  *   race is `conflict` and leaves only unreferenced objects behind. A store that writes something of its own before
  *   the head (R2's archive records) takes the objects still in flight, and writes alongside them: nothing refers to any
  *   of them until the head moves, so their order doesn't matter, only that all are written first.
+ * - With `hydration`, a seed is lazy (docs/design/workspace-hydration.md): its bodies go out as a few staging packs
+ *   (`./hydration.ts`) rather than one object each, the record names them (`staged`, never returned to callers) and
+ *   says `hydration.hydrated: false`, and a background pass copies each body out to its blob, then clears `staged`.
+ *   Until then a body is read from its pack, after the same access checks as any read.
  */
 import {
 	type AuditEventInput,
@@ -22,6 +26,7 @@ import {
 	type CommitResult,
 	type FileContent,
 	type FileEntry,
+	type ForkWorkspaceInput,
 	HarbourError,
 	type ListOptions,
 	type Mount,
@@ -33,12 +38,23 @@ import {
 	type SessionId,
 	systemClock,
 	systemContext,
+	type WorkspaceHydratedEvent,
+	type WorkspaceHydrationSink,
 	type WorkspaceId,
 	type WorkspaceRecord,
 	type Workspaces,
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
 } from "@harbour/contracts";
+import {
+	type BuiltPack,
+	buildPacks,
+	PACK_BYTES,
+	PackReader,
+	packDoneKey,
+	packIndexKey,
+	serialisePackIndex,
+} from "./hydration.ts";
 import {
 	checkKeyedId,
 	isUnderMount,
@@ -136,6 +152,11 @@ export interface WorkspaceStore {
 	/** Up to `limit` history entries below version `below`, newest first. */
 	history(current: LoadedHead, below: WorkspaceVersion, limit: number): Promise<readonly WorkspaceVersionInfo[]>;
 	getObject(key: string): Promise<Uint8Array | undefined>;
+	/**
+	 * Optional: `length` bytes of an object from `offset`, as an HTTP range read does; undefined when there is no such
+	 * object. A lazy workspace reads a body out of its staging pack with it; without it, the whole pack is read.
+	 */
+	getObjectRange?(key: string, offset: number, length: number): Promise<Uint8Array | undefined>;
 	putObject(key: string, bytes: Uint8Array): Promise<void>;
 }
 
@@ -147,6 +168,43 @@ const OBJECT_BATCH = 16;
 const TREE_CACHE_ENTRIES = 250_000;
 /** Times a commit or remount re-reads the head when only the token moved (a remount racing a commit). */
 const HEAD_ATTEMPTS = 3;
+/** Times the end of a hydration re-reads the head when a commit or remount moved it meanwhile. */
+const HYDRATED_ATTEMPTS = 10;
+
+/**
+ * Lazy hydration (docs/design/workspace-hydration.md). Given this, the host has it: a seed is lazy unless its spec
+ * says `hydration: "eager"` (or `default` is `eager` and the spec says nothing).
+ */
+export interface StoredHydrationOptions {
+	/** For a spec that names no `hydration`. Default `lazy`. */
+	readonly default?: "lazy" | "eager";
+	/** Receives `workspace.hydrated` once each lazy workspace (or fork of one) is hydrated. Never fails the workspace. */
+	readonly onHydrated?: WorkspaceHydrationSink;
+	/**
+	 * Given each background hydration as it starts, so a host can keep it alive (a Worker's `ctx.waitUntil`). Without
+	 * it the work runs unawaited; a hydration cut short is resumed by the next call that loads the workspace.
+	 */
+	readonly background?: (work: Promise<void>) => void;
+	/** A seed with at most this many distinct bodies is written eagerly: one batch of writes either way. Default 16. */
+	readonly minBodies?: number;
+	/** The most bytes in one staging pack. Default 32 MiB. */
+	readonly packBytes?: number;
+}
+
+/** A record as the store keeps it: the staging packs a lazy workspace still reads from, which callers never see. */
+type StoredRecord = WorkspaceRecord & { readonly staged?: readonly string[] };
+
+function stagedOf(record: WorkspaceRecord): readonly string[] {
+	const staged = (record as StoredRecord).staged;
+	return Array.isArray(staged) ? staged : [];
+}
+
+/** The record without the store's own fields. */
+function publicRecord(record: WorkspaceRecord): WorkspaceRecord {
+	if (!Object.hasOwn(record, "staged")) return record;
+	const { staged: _staged, ...rest } = record as StoredRecord;
+	return rest;
+}
 
 export interface StoredWorkspacesOptions {
 	readonly store: WorkspaceStore;
@@ -162,6 +220,8 @@ export interface StoredWorkspacesOptions {
 	readonly seeders?: Seeders;
 	/** Receives a `seed.status` event as each seed reaches a readiness stage, or fails. */
 	readonly onSeedStatus?: SeedStatusSink;
+	/** Lazy hydration of seeds; without it every seed is eager. */
+	readonly hydration?: StoredHydrationOptions;
 }
 
 /** A commit with mode bits, and a guard for a caller whose right to commit can lapse meanwhile. */
@@ -191,6 +251,12 @@ export interface StoredWorkspaces extends KeyedWorkspaces {
 		digest: string,
 		options: { readonly version: WorkspaceVersion },
 	): Promise<Uint8Array>;
+	/** A fork that shares the source's bodies: one tree object and a head, whatever the size. */
+	fork(ctx: CallContext, id: WorkspaceId, input: ForkWorkspaceInput): Promise<WorkspaceRecord>;
+	/** Resolves once every hydration this instance has started has ended (for tests and orderly shutdown). */
+	hydrationSettled(): Promise<void>;
+	/** Where this instance's reads of pending bodies were served from, for tests and timings. */
+	readonly packReads: { readonly memory: number; readonly ranged: number; readonly whole: number };
 }
 
 export function createStoredWorkspaces(options: StoredWorkspacesOptions): StoredWorkspaces {
@@ -200,6 +266,11 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 	const checks = workspaceAccess(options.access);
 	const sources = mountSources(options.sources);
 	const trees = new TreeCache(options.treeCacheEntries ?? TREE_CACHE_ENTRIES);
+	const hydration = options.hydration;
+	const packs = new PackReader(store);
+	/** Hydrations running in this instance, by workspace, and pack explosions, by pack key. */
+	const hydrating = new Map<WorkspaceId, Promise<void>>();
+	const exploding = new Map<string, Promise<void>>();
 
 	/** The head in the caller's organisation; another organisation's workspace looks exactly like a missing one. */
 	async function load(ctx: CallContext, id: WorkspaceId): Promise<LoadedHead> {
@@ -207,7 +278,139 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		if (head === undefined || head.organisationId !== ctx.organisationId) {
 			throw new HarbourError("not_found", `workspace ${String(id)} not found`);
 		}
+		// A hydration this instance did not start (another process's, cut short, or a fork's) is resumed here.
+		if (stagedOf(head.record).length > 0) startHydration(id);
 		return head;
+	}
+
+	/**
+	 * A body of `head`'s workspace: from a staging pack while the workspace still has one that holds it, else its blob.
+	 * Callers have made the workspace's access checks, and the digest is one of a tree the caller may read.
+	 */
+	async function readBody(head: StoredHead, digest: string): Promise<Uint8Array> {
+		const staged = stagedOf(head.record);
+		if (staged.length > 0) {
+			const body = await packs.read(staged, digest);
+			if (body !== undefined) return body;
+		}
+		return readBlobObject(head.organisationId, digest);
+	}
+
+	/** Starts hydrating `id` in the background, unless this instance is already. */
+	function startHydration(id: WorkspaceId): void {
+		if (hydration === undefined || hydrating.has(id)) return;
+		const work = hydrate(id)
+			.catch((error: unknown) => {
+				// Reads keep working from the packs; the next load of the workspace tries again.
+				console.warn(`harbour: hydrating workspace ${id} failed; it will be retried`, error);
+			})
+			.finally(() => {
+				hydrating.delete(id);
+			});
+		hydrating.set(id, work);
+		hydration.background?.(work);
+	}
+
+	/** Copies every staged body of `id` out to its blob, then clears `staged` and sends `workspace.hydrated`. */
+	async function hydrate(id: WorkspaceId): Promise<void> {
+		for (let attempt = 1; attempt <= HYDRATED_ATTEMPTS; attempt++) {
+			const head = await store.load(id);
+			if (head === undefined) return;
+			const staged = stagedOf(head.record);
+			if (staged.length === 0) return;
+			for (const key of staged) await explode(key);
+			const now = clock.now();
+			const { staged: _staged, ...rest } = head.record as StoredRecord;
+			const before = head.record.hydration;
+			const startedAt = before?.startedAt ?? now;
+			const state = {
+				hydrated: true,
+				entriesTotal: before?.entriesTotal ?? 0,
+				bytesTotal: before?.bytesTotal ?? 0,
+				startedAt,
+				hydratedAt: now,
+			};
+			const record: WorkspaceRecord = { ...rest, hydration: state, updatedAt: now };
+			if (!(await store.update(head, { organisationId: head.organisationId, record, tree: head.tree }))) continue;
+			await hydrated(head.organisationId, record, now - startedAt);
+			return;
+		}
+		throw new HarbourError("conflict", `workspace ${id} kept changing while its hydration ended`);
+	}
+
+	async function hydrated(organisationId: string, record: WorkspaceRecord, elapsedMs: number): Promise<void> {
+		const state = record.hydration;
+		if (state === undefined) return;
+		const at = state.hydratedAt ?? clock.now();
+		const event: WorkspaceHydratedEvent = {
+			type: "workspace.hydrated",
+			workspaceId: record.id,
+			organisationId,
+			...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+			at,
+			elapsedMs,
+			entriesTotal: state.entriesTotal,
+			bytesTotal: state.bytesTotal,
+		};
+		try {
+			void Promise.resolve(hydration?.onHydrated?.(event)).catch(() => undefined);
+		} catch {
+			// A sink never fails the workspace.
+		}
+		await emit({
+			id: `workspace:hydrated:${record.id}`,
+			at,
+			source: "workspace",
+			type: "workspace.hydrated",
+			actor: AUDIT_CONTEXT.actor,
+			organisationId,
+			...(record.owner.kind === "project" ? { projectId: record.owner.projectId } : {}),
+			...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+			subject: { kind: "workspace", id: record.id },
+			data: { entriesTotal: state.entriesTotal, bytesTotal: state.bytesTotal, elapsedMs },
+		});
+	}
+
+	/** Copies one pack's bodies out to their blobs, once per instance at a time; a pack marked done is skipped. */
+	function explode(key: string): Promise<void> {
+		const running = exploding.get(key);
+		if (running !== undefined) return running;
+		const work = explodeOnce(key).finally(() => exploding.delete(key));
+		exploding.set(key, work);
+		return work;
+	}
+
+	async function explodeOnce(key: string): Promise<void> {
+		if ((await store.getObject(packDoneKey(key))) !== undefined) {
+			packs.release(key);
+			return;
+		}
+		const bytes = packs.held(key) ?? (await store.getObject(key));
+		if (bytes === undefined) throw new HarbourError("unavailable", `workspace pack ${key} is missing`);
+		const index = await packs.index(key);
+		// Blobs sit beside the pack, under the same organisation's prefix.
+		const blobs = `${key.slice(0, key.lastIndexOf("/packs/"))}/blobs`;
+		await inBatches([...index], async ([digest, [offset, length]]) => {
+			const body = bytes.slice(offset, offset + length);
+			// A blob's key is its content's hash: a damaged pack must never put wrong bytes under one.
+			if ((await sha256Hex(body)) !== digest) {
+				throw new HarbourError("unavailable", `workspace pack ${key} does not match its index`);
+			}
+			await store.putObject(`${blobs}/${digest}`, body);
+		});
+		await store.putObject(packDoneKey(key), new Uint8Array(0));
+		packs.release(key);
+	}
+
+	/** Writes staging packs and their indexes, all at once. */
+	async function writePacks(built: readonly BuiltPack[]): Promise<void> {
+		await inBatches(
+			built.flatMap((pack) => [
+				[pack.key, pack.bytes] as const,
+				[packIndexKey(pack.key), serialisePackIndex(pack.index)] as const,
+			]),
+			([objectKey, bytes]) => store.putObject(objectKey, bytes),
+		);
 	}
 
 	async function treeAt(head: LoadedHead, version: WorkspaceVersion | undefined): Promise<Tree> {
@@ -320,8 +523,19 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			version: 1,
 			...(change.mode === undefined ? {} : { mode: change.mode }),
 		}));
-		const { treeKey, written } = await writeVersion(ctx.organisationId, tree, prepared);
-		await written;
+		// A lazy seed stages its bodies in a few packs, so the workspace is usable once the tree and packs are written.
+		const bodies = new Map<string, Uint8Array>();
+		for (const change of prepared) if (change.op === "put") bodies.set(change.digest, change.content);
+		const lazy =
+			hydration !== undefined &&
+			(seed?.hydration ?? hydration.default ?? "lazy") === "lazy" &&
+			bodies.size > (hydration.minBodies ?? OBJECT_BATCH);
+		const staging = lazy
+			? await buildPacks(organisationPrefix(ctx.organisationId), bodies, hydration?.packBytes ?? PACK_BYTES)
+			: undefined;
+		const { treeKey, written } = await writeVersion(ctx.organisationId, tree, staging === undefined ? prepared : []);
+		if (staging !== undefined) for (const pack of staging) packs.hold(pack);
+		await Promise.all([written, staging === undefined ? undefined : writePacks(staging)]);
 		const now = clock.now();
 		const versions: StoredVersion[] = [{ info: { version: 0, at: now, actor: ctx.actor, changed: [] }, tree: null }];
 		if (treeKey !== null) {
@@ -330,7 +544,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				tree: treeKey,
 			});
 		}
-		const record: WorkspaceRecord = {
+		const record: StoredRecord = {
 			id,
 			owner: input.owner,
 			...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
@@ -339,18 +553,99 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			...(seed === undefined ? {} : { seed }),
 			seedReadiness: seeded.readiness,
 			...(seeded.report === undefined ? {} : { seedReport: seeded.report }),
+			...(staging === undefined
+				? {}
+				: {
+						hydration: { hydrated: false, entriesTotal: tree.size, bytesTotal: treeBytes(tree), startedAt: now },
+						staged: staging.map((pack) => pack.key),
+					}),
 			createdAt: now,
 			updatedAt: now,
 		};
-		if (await store.create({ organisationId: ctx.organisationId, record, tree: treeKey }, versions)) return record;
+		if (await store.create({ organisationId: ctx.organisationId, record, tree: treeKey }, versions)) {
+			if (staging !== undefined) startHydration(id);
+			return publicRecord(record);
+		}
 		// A racing `ensure` created it while this one worked; the first one wins.
 		const raced = await store.load(id);
+		if (staging !== undefined) {
+			const kept = new Set(raced === undefined ? [] : stagedOf(raced.record));
+			for (const pack of staging) if (!kept.has(pack.key) && !exploding.has(pack.key)) packs.release(pack.key);
+		}
 		if (keyed && raced !== undefined && raced.organisationId === ctx.organisationId) {
 			// The winner may be another project's: the loser sees it only as any existing workspace would be seen.
 			await checks.requireWorkspace(ctx, raced.record, "viewer", "workspace.get");
-			return raced.record;
+			return publicRecord(raced.record);
 		}
 		throw new HarbourError("conflict", `workspace ${id} is taken`);
+	}
+
+	async function fork(ctx: CallContext, id: WorkspaceId, input: ForkWorkspaceInput): Promise<WorkspaceRecord> {
+		const source = await load(ctx, id);
+		// Reading the source's tree is what a fork does with it: viewer, as for reading it.
+		await checks.requireWorkspace(ctx, source.record, "viewer", "workspace.fork");
+		checkOwner(ctx, input.owner);
+		await checks.requireCreate(ctx, input.owner, input.sessionId);
+		// The fork keeps the source's pins, so its owner must be allowed to mount them, as at create.
+		await checks.requireMounts(ctx, source.record.mounts);
+		// A seed still being fetched would never reach the fork, which would wait at `metadata` for good.
+		if (source.record.seedReadiness === "pending" || source.record.seedReadiness === "metadata") {
+			throw new HarbourError("conflict", `workspace ${id} is still seeding; fork it once its files are in`);
+		}
+		const version = input.version ?? source.record.head;
+		const base = await treeAt(source, version);
+		// The fork's history starts at its version 1, so every path was last changed there. Only the tree is written: the
+		// bodies are the source's, in the same organisation's blobs (or its staging packs, which the fork reads too).
+		const tree = new Map<string, TreeFile>();
+		for (const [path, file] of base) tree.set(path, { ...file, version: 1 });
+		const { treeKey, written } = await writeVersion(source.organisationId, tree, []);
+		await written;
+		const forkId: WorkspaceId = `ws_${crypto.randomUUID()}`;
+		const now = clock.now();
+		const versions: StoredVersion[] = [{ info: { version: 0, at: now, actor: ctx.actor, changed: [] }, tree: null }];
+		if (treeKey !== null) {
+			versions.push({
+				info: {
+					version: 1,
+					at: now,
+					actor: ctx.actor,
+					changed: [...tree.keys()].sort(compare),
+					message: `fork of ${id} at version ${version}`,
+				},
+				tree: treeKey,
+			});
+		}
+		const staged = treeKey === null ? [] : stagedOf(source.record);
+		const from = source.record;
+		const record: StoredRecord = {
+			id: forkId,
+			owner: input.owner,
+			...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+			head: versions.length - 1,
+			mounts: from.mounts,
+			...(from.seed === undefined ? {} : { seed: from.seed }),
+			seedReadiness: from.seedReadiness,
+			...(from.seedReport === undefined ? {} : { seedReport: from.seedReport }),
+			...(staged.length === 0
+				? {}
+				: {
+						hydration: { hydrated: false, entriesTotal: tree.size, bytesTotal: treeBytes(tree), startedAt: now },
+						staged,
+					}),
+			forkedFrom: { workspaceId: id, version },
+			createdAt: now,
+			updatedAt: now,
+		};
+		const head: StoredHead = { organisationId: source.organisationId, record, tree: treeKey };
+		if (!(await store.create(head, versions))) throw new HarbourError("conflict", `workspace ${forkId} is taken`);
+		await emit({
+			...auditBase(ctx, head),
+			id: `workspace:forked:${forkId}`,
+			type: "workspace.forked",
+			data: { from: id, version, entries: tree.size },
+		});
+		if (staged.length > 0) startHydration(forkId);
+		return publicRecord(record);
 	}
 
 	const workspaces: StoredWorkspaces = {
@@ -364,14 +659,22 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				throw new HarbourError("conflict", `workspace ${id} is taken`);
 			}
 			await checks.requireWorkspace(ctx, existing.record, "viewer", "workspace.get");
-			return existing.record;
+			return publicRecord(existing.record);
 		},
 
 		async get(ctx, id) {
 			const head = await load(ctx, id);
 			await checks.requireWorkspace(ctx, head.record, "viewer", "workspace.get");
-			return head.record;
+			return publicRecord(head.record);
 		},
+
+		fork,
+
+		async hydrationSettled() {
+			while (hydrating.size > 0) await Promise.allSettled([...hydrating.values()]);
+		},
+
+		packReads: packs.counts,
 
 		async list(ctx, id, listOptions: ListOptions = {}) {
 			const head = await load(ctx, id);
@@ -417,7 +720,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			const file = readTree(await treeAt(head, readOptions?.version), normalizeWorkspacePath(path));
 			// The tree holds the size, so a file over the limit is refused before its body is fetched.
 			checkReadSize(path, file.size, readOptions?.maxBytes);
-			const content = await readBlobObject(head.organisationId, file.digest);
+			const content = await readBody(head, file.digest);
 			return { path, content, version: file.version, digest: file.digest };
 		},
 
@@ -438,7 +741,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			if (!found) {
 				throw new HarbourError("not_found", `no file with digest ${digest} at version ${blobOptions.version}`);
 			}
-			return readBlobObject(head.organisationId, digest);
+			return readBody(head, digest);
 		},
 
 		async commit(ctx, id, request): Promise<CommitResult> {
@@ -563,7 +866,9 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			for (let attempt = 1; ; attempt++) {
 				const mounts = head.record.mounts.map((existing) => (existing.path === path ? mount : existing));
 				const record: WorkspaceRecord = { ...head.record, mounts, updatedAt: clock.now() };
-				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) return record;
+				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) {
+					return publicRecord(record);
+				}
 				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the remount");
 				head = await load(ctx, id);
 			}
@@ -577,7 +882,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				const { record, event } = dependencyStage(head.record, head.organisationId, update, clock.now());
 				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) {
 					sendSeedStatus(options.onSeedStatus, event);
-					return record;
+					return publicRecord(record);
 				}
 				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the update");
 				head = await load(ctx, id);
@@ -598,7 +903,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			);
 			return inBatches(selected, async ([path, file]) => ({
 				path,
-				content: await readBlobObject(head.organisationId, file.digest),
+				content: await readBody(head, file.digest),
 				version: file.version,
 				digest: file.digest,
 			}));
@@ -614,6 +919,12 @@ export function organisationPrefix(organisationId: string): string {
 
 export function blobKey(organisationId: string, digest: string): string {
 	return `${organisationPrefix(organisationId)}/blobs/${digest}`;
+}
+
+function treeBytes(tree: Tree): number {
+	let total = 0;
+	for (const file of tree.values()) total += file.size;
+	return total;
 }
 
 /** A tree as JSON with sorted paths, so equal trees serialise to equal bytes (and so to one key). */
@@ -709,7 +1020,7 @@ class TreeCache {
  * a listing read no bodies.
  */
 export interface MemoryWorkspaceStore extends WorkspaceStore {
-	readonly counts: { blobReads: number; treeReads: number; objectWrites: number };
+	readonly counts: { blobReads: number; treeReads: number; objectWrites: number; packReads: number };
 	/** Object keys, for tests. */
 	keys(): string[];
 }
@@ -722,7 +1033,7 @@ export function createMemoryWorkspaceStore(): MemoryWorkspaceStore {
 	}
 	const rows = new Map<WorkspaceId, Row>();
 	const objects = new Map<string, Uint8Array>();
-	const counts = { blobReads: 0, treeReads: 0, objectWrites: 0 };
+	const counts = { blobReads: 0, treeReads: 0, objectWrites: 0, packReads: 0 };
 	const loaded = (row: Row): LoadedHead => ({ ...row.head, token: String(row.revision) });
 	const current = (head: LoadedHead): Row | undefined => {
 		const row = rows.get(head.record.id);
@@ -774,8 +1085,15 @@ export function createMemoryWorkspaceStore(): MemoryWorkspaceStore {
 			const bytes = objects.get(key);
 			if (bytes === undefined) return undefined;
 			if (key.includes("/blobs/")) counts.blobReads++;
+			else if (key.includes("/packs/")) counts.packReads++;
 			else counts.treeReads++;
 			return new Uint8Array(bytes);
+		},
+		async getObjectRange(key, offset, length) {
+			const bytes = objects.get(key);
+			if (bytes === undefined) return undefined;
+			counts.packReads++;
+			return bytes.slice(offset, offset + length);
 		},
 		async putObject(key, bytes) {
 			counts.objectWrites++;

@@ -21,7 +21,30 @@ registerWorkspaceConformance(
 		});
 		await use({ workspaces, projectFiles });
 	},
-	{ projectAccess: true, keyed: true, seeding: true },
+	{ projectAccess: true, keyed: true, seeding: true, fork: true },
+);
+
+// The same with lazy hydration for every seed, however small: each case reads its seeded files out of staging packs
+// until the background pass has copied them, and nothing a caller sees may differ.
+registerWorkspaceConformance(
+	{ describe, expect, it },
+	"stored workspaces, lazily hydrated",
+	async (deps, use) => {
+		const projectFiles = createMemoryProjectFiles({ access: deps.access });
+		const workspaces = createStoredWorkspaces({
+			store: createMemoryWorkspaceStore(),
+			clock: deps.clock,
+			audit: deps.audit,
+			sources: [projectFiles],
+			access: deps.access,
+			seeders: deps.seeders,
+			onSeedStatus: deps.onSeedStatus,
+			hydration: { minBodies: 0 },
+		});
+		await use({ workspaces, projectFiles });
+		await workspaces.hydrationSettled();
+	},
+	{ projectAccess: true, keyed: true, seeding: true, fork: true },
 );
 
 registerWorkspaceConformance(

@@ -38,6 +38,10 @@
  * route can seed them (M2-BE1).
  * Errors are the read API's: `{ "error": { "code", "message" } }` with `errorStatus`'s status, and 413 for a body over
  * the limit.
+ *
+ * `POST /v1/workspaces/:id/fork` with `{ "projectId", "sessionId"?, "version"? }` forks a workspace the caller may read
+ * into a project it operates (`Workspaces.fork`): the new workspace shares the source's bodies, so it costs one tree
+ * whatever its size (docs/design/workspace-hydration.md).
  */
 import {
 	type CallContext,
@@ -81,7 +85,7 @@ export interface WorkspaceWriteApiOptions {
 	 * Creates the workspace (give it the `seeders`, a git fetcher, the host can fetch with) and, with `get`, `stat` and
 	 * `commit`, writes one file for the content route. Without those the content route answers `not_supported`.
 	 */
-	readonly workspaces: Pick<Workspaces, "create"> & Partial<Pick<Workspaces, "get" | "stat" | "commit">>;
+	readonly workspaces: Pick<Workspaces, "create"> & Partial<Pick<Workspaces, "get" | "stat" | "commit" | "fork">>;
 	/** Project access, for the operator check the route makes before anything else. */
 	readonly access: ProjectAccess;
 	/** Who is calling, from the request. Throw a `HarbourError` to refuse; its code sets the status. */
@@ -106,6 +110,11 @@ export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): Work
 	return async (request) => {
 		const url = new URL(request.url);
 		if (request.method === "PUT") return writeFile(request, url);
+		const forkOf =
+			request.method === "POST" && url.pathname.startsWith(`${base}/`)
+				? url.pathname.slice(base.length).match(/^\/([^/]+)\/fork\/?$/)
+				: null;
+		if (forkOf !== null) return fork(request, decodeURIComponent(forkOf[1] ?? ""));
 		if (request.method !== "POST" || url.pathname.replace(/\/+$/, "") !== base) return null;
 		try {
 			const ctx = await options.authenticate(request);
@@ -130,6 +139,46 @@ export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): Work
 			return errorResponse(500, "unavailable", "the workspace write API failed");
 		}
 	};
+
+	/**
+	 * `POST <base>/:id/fork` with `{ projectId, sessionId?, version? }`: a new workspace in the project that shares the
+	 * source's bodies (`Workspaces.fork`), 201 with its record. Operator on the target project, checked first; the fork
+	 * then needs viewer on the source, as reading it does.
+	 */
+	async function fork(request: Request, sourceId: string): Promise<Response> {
+		try {
+			const forkWorkspace = options.workspaces.fork;
+			if (forkWorkspace === undefined) {
+				throw new HarbourError("not_supported", "this host's workspaces cannot be forked");
+			}
+			const ctx = await options.authenticate(request);
+			const text = await readBounded(request, maxBodyBytes);
+			if (text === undefined) {
+				return errorResponse(413, "refused", `the body is larger than this route reads (${maxBodyBytes} bytes)`);
+			}
+			const raw = parseJson(text);
+			const target = parseTarget(raw);
+			const version = raw.version;
+			if (version !== undefined && (!Number.isSafeInteger(version) || (version as number) < 0)) {
+				throw invalid("version must be a version number");
+			}
+			await options.access.require(ctx, {
+				projectId: target.projectId,
+				...(target.sessionId === undefined ? {} : { sessionId: target.sessionId }),
+				needed: "operator",
+				operation: "workspace.create",
+			});
+			const record = await forkWorkspace.call(options.workspaces, ctx, sourceId, {
+				owner: { kind: "project", organisationId: ctx.organisationId, projectId: target.projectId },
+				...(target.sessionId === undefined ? {} : { sessionId: target.sessionId }),
+				...(version === undefined ? {} : { version: version as number }),
+			});
+			return json(record, 201, { Location: `${base}/${encodeURIComponent(record.id)}` });
+		} catch (error) {
+			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			return errorResponse(500, "unavailable", "the workspace write API failed");
+		}
+	}
 }
 
 /**
@@ -359,6 +408,20 @@ export interface WorkspaceWriteClientOptions {
 export interface WorkspaceWriteClient {
 	/** Creates a seeded workspace; errors come back as `HarbourError` with the server's code and message. */
 	create(body: CreateWorkspaceBody, init?: { readonly signal?: AbortSignal }): Promise<WorkspaceRecord>;
+	/** Forks a workspace into the project (`POST /:id/fork`), sharing its bodies. */
+	fork(
+		workspaceId: string,
+		body: ForkWorkspaceBody,
+		init?: { readonly signal?: AbortSignal },
+	): Promise<WorkspaceRecord>;
+}
+
+/** What a host sends to fork a workspace. */
+export interface ForkWorkspaceBody {
+	readonly projectId: string;
+	readonly sessionId?: SessionId;
+	/** The source's version to fork; its head when absent. */
+	readonly version?: number;
 }
 
 export function createWorkspaceWriteClient(options: WorkspaceWriteClientOptions): WorkspaceWriteClient {
@@ -367,6 +430,16 @@ export function createWorkspaceWriteClient(options: WorkspaceWriteClientOptions)
 	return {
 		async create(body, init) {
 			const response = await fetcher(base, {
+				method: "POST",
+				headers: { ...options.headers, "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+				...(init?.signal === undefined ? {} : { signal: init.signal }),
+			});
+			if (!response.ok) throw await toError(response);
+			return (await response.json()) as WorkspaceRecord;
+		},
+		async fork(workspaceId, body, init) {
+			const response = await fetcher(`${base}/${encodeURIComponent(workspaceId)}/fork`, {
 				method: "POST",
 				headers: { ...options.headers, "Content-Type": "application/json" },
 				body: JSON.stringify(body),
