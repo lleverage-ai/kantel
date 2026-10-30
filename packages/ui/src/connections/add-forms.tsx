@@ -147,7 +147,7 @@ export function McpServerForm({ viewer, flow, onAdd, onKey, onDone, onCancel, in
 		);
 
 	return (
-		<div className="flex min-w-0 flex-col gap-5">
+		<div className="flex w-full max-w-content min-w-0 flex-col gap-5">
 			<FormHead
 				icon={
 					<span className={iconTile}>
@@ -416,7 +416,7 @@ export function KeyConnectionForm({
 	if (result !== undefined) {
 		const { connection, test } = result;
 		return (
-			<div className="flex min-w-0 flex-col gap-5">
+			<div className="flex w-full max-w-content min-w-0 flex-col gap-5">
 				{head}
 				<div className="flex flex-col gap-4 rounded-panel border border-border bg-panel p-5" role="status">
 					<div className="flex items-start gap-3">
@@ -452,7 +452,7 @@ export function KeyConnectionForm({
 	}
 
 	return (
-		<div className="flex min-w-0 flex-col gap-5">
+		<div className="flex w-full max-w-content min-w-0 flex-col gap-5">
 			{head}
 			<form onSubmit={(event) => void submit(event)} noValidate className="min-w-0">
 				<FormLayout>
