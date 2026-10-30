@@ -143,6 +143,13 @@ const TOOLS: readonly (readonly Tool[])[] = [
 	],
 ];
 
+// The toolbar is styled with Tailwind utilities (src/tokens/tailwind.css); the document's type is document-panel.css's,
+// on the editor's hb-doc-prose class.
+
+/** A 28px icon button: muted, the hover colour when enabled, the active colour while its format is on. */
+const toolButton =
+	"hb-focusable inline-flex size-control-sm cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted enabled:hover:bg-hover enabled:hover:text-fg disabled:cursor-default disabled:text-disabled aria-pressed:bg-active aria-pressed:text-fg";
+
 function Toolbar({ editor }: { editor: Editor }) {
 	// Re-rendered only when what the buttons show changes, not on every keystroke.
 	const state = useEditorState({
@@ -155,9 +162,17 @@ function Toolbar({ editor }: { editor: Editor }) {
 	});
 	let index = 0;
 	return (
-		<div className="hb-doc-toolbar" role="toolbar" aria-label="Formatting">
+		// It stays at the top of the page as the page scrolls.
+		<div
+			className="sticky top-0 z-(--hb-z-float) -mx-2 flex flex-wrap items-center gap-2 bg-canvas p-2"
+			role="toolbar"
+			aria-label="Formatting"
+		>
 			{TOOLS.map((group) => (
-				<div key={group[0]?.label} className="hb-doc-toolbar-group">
+				<div
+					key={group[0]?.label}
+					className="flex items-center gap-0.5 not-first:border-l not-first:border-border not-first:pl-2"
+				>
 					{group.map((tool) => {
 						const shown = state[index++] ?? { active: false, enabled: true };
 						const Icon = tool.icon;
@@ -165,7 +180,7 @@ function Toolbar({ editor }: { editor: Editor }) {
 							<button
 								key={tool.label}
 								type="button"
-								className="hb-doc-tool hb-focusable"
+								className={toolButton}
 								aria-label={tool.label}
 								title={tool.label}
 								aria-pressed={tool.active === undefined ? undefined : shown.active}

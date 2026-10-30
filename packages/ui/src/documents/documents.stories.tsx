@@ -5,9 +5,11 @@ import { Column, Sheet } from "../workbench/specimen.tsx";
 import { DocumentPanel, type DocumentSaveState } from "./document-panel.tsx";
 import { type ShareAccess, type ShareControls, SharePopover, type ShareState } from "./share-popover.tsx";
 import "../workspace/stories.css";
-import "./stories.css";
 
 export default { title: "Documents/Document panel" } satisfies StoryDefault;
+
+/** Story-only: the Share popover shown in place, in a frame its height, rather than hung under a button. */
+const shareFrame = "relative flex w-full justify-end [&>.hb-share-popover]:static";
 
 const rainbow = `# The colours of the rainbow
 
@@ -140,13 +142,13 @@ export const Share: Story = () => {
 			intro="Share: invite by email, who has access, general access (only you, or anyone with the link) and Copy link. Export: Markdown and PDF."
 		>
 			<Column>
-				<div className="hb-story-share-frame">
+				<div className={shareFrame}>
 					<SharePopover title="The colours of the rainbow" {...share} onClose={() => {}} />
 				</div>
-				<div className="hb-story-share-frame">
+				<div className={shareFrame}>
 					<SharePopover title="The colours of the rainbow" {...linked} onClose={() => {}} />
 				</div>
-				<div className="hb-story-share-frame">
+				<div className={shareFrame}>
 					<SharePopover title="The colours of the rainbow" {...share} onClose={() => {}} initialTab="export" />
 				</div>
 			</Column>

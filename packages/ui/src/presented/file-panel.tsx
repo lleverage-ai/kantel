@@ -1,6 +1,6 @@
 import type { PresentedFile } from "@harbour/protocol";
 import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
-import { ShareButton, SharePopover, type SharePopoverProps } from "../documents/share-popover.tsx";
+import { ShareButton, SharePopover, type SharePopoverProps, shareAnchor } from "../documents/share-popover.tsx";
 import { IconButton } from "../primitives/button.tsx";
 import { XIcon } from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -215,7 +215,7 @@ export function FilePanel({ file, state, onClose, onDownload, renderers, share }
 				actions={
 					<>
 						{share === undefined ? null : (
-							<span className="hb-share-anchor">
+							<span className={shareAnchor}>
 								<ShareButton open={sharing} onToggle={() => setSharing((open) => !open)} />
 								{sharing ? (
 									<SharePopover {...share} title={presentedTitle(file)} onClose={() => setSharing(false)} />
