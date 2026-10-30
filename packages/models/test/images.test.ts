@@ -291,6 +291,34 @@ describe("images", () => {
 		expect(events.map((event) => event.data?.status)).toEqual(["error", "error"]);
 	});
 
+	it("writes a usage record per image call, done or refused, under the image API", async () => {
+		const records: UsageRecord[] = [];
+		const { gateway, upstream } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage: { record: async (record) => void records.push(record) },
+		});
+		upstream.nextImages({ usage: { input: 50, output: 4160 } });
+		await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse" });
+		upstream.nextImages({ error: { status: 400, message: `Rejected (key ${KEY})` } });
+		await gateway.images(scopeFor(), { model: "images", prompt: "x" }).catch(() => {});
+		expect(records).toHaveLength(2);
+		expect(records[0]).toMatchObject({
+			api: "openai-images",
+			modelId: "gpt-image-1",
+			provider: "openai",
+			connectorPreset: "openai",
+			status: "done",
+			inputTokens: 50,
+			outputTokens: 4160,
+			costSource: "computed",
+		});
+		expect(records[1]).toMatchObject({ api: "openai-images", status: "error", inputTokens: 0 });
+		expect(records[1]?.error).toContain("400: Rejected");
+		expect(records[1]?.error).not.toContain(KEY);
+	});
+
 	it("rejects a malformed request as invalid", () => {
 		const bad = [
 			{ model: "images" },
