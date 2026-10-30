@@ -35,5 +35,40 @@ for (const kind of testDatabaseKinds()) {
 				await close();
 			}
 		});
+
+		it("opens a database of its own each time, empty, even while another is open", async () => {
+			const first = await kind.open();
+			try {
+				await first.driver.query("CREATE TABLE marks (id TEXT PRIMARY KEY)");
+				await first.driver.query("INSERT INTO marks (id) VALUES (?)", ["first"]);
+				const second = await kind.open();
+				try {
+					await second.driver.query("CREATE TABLE marks (id TEXT PRIMARY KEY)");
+					expect(await second.driver.query("SELECT id FROM marks")).toEqual([]);
+					await second.driver.query("INSERT INTO marks (id) VALUES (?)", ["second"]);
+				} finally {
+					await second.close();
+				}
+				expect(await first.driver.query("SELECT id FROM marks")).toEqual([{ id: "first" }]);
+			} finally {
+				await first.close();
+			}
+		});
+
+		it("throws the database's own error, with its message, when a constraint fails", async () => {
+			const { driver, close } = await kind.open();
+			try {
+				await driver.query("CREATE TABLE items (id TEXT PRIMARY KEY)");
+				await driver.query("INSERT INTO items (id) VALUES (?)", ["a"]);
+				await expect(driver.query("INSERT INTO items (id) VALUES (?)", ["a"])).rejects.toThrow(
+					/UNIQUE constraint failed|duplicate key value/,
+				);
+				await expect(driver.batch([sql("INSERT INTO items (id) VALUES (?)", "a")])).rejects.toThrow(
+					/UNIQUE constraint failed|duplicate key value/,
+				);
+			} finally {
+				await close();
+			}
+		});
 	});
 }
