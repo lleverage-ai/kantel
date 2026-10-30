@@ -12,9 +12,9 @@ import type { AttachmentLimits } from "./composer-model.ts";
 import { finishedTurn, liveTurn, longTranscript, question } from "./fixtures.ts";
 import type { ComposerModelOption } from "./model-picker.tsx";
 import { QuestionCard } from "./question-card.tsx";
+import { pickerFrame, transcriptFrame, transcriptFrameTall } from "./story-frames.ts";
 import type { ThinkingLevel } from "./thinking-model.ts";
 import { Transcript } from "./transcript.tsx";
-import "./stories.css";
 
 export default { title: "Session/Composer" } satisfies StoryDefault;
 
@@ -371,7 +371,7 @@ function OpenPicker({ children, trigger = ".hb-model-trigger" }: { children: Rea
 		frame.current?.querySelector<HTMLButtonElement>(trigger)?.click();
 	}, [trigger]);
 	return (
-		<div ref={frame} className="hb-story-picker-frame">
+		<div ref={frame} className={pickerFrame}>
 			{children}
 		</div>
 	);
@@ -530,7 +530,7 @@ export const DragOverStory: Story = () => (
 		</Section>
 		<Section title="Docked in a transcript">
 			<DragOver selector=".hb-transcript">
-				<div className="hb-story-transcript-frame">
+				<div className={transcriptFrame}>
 					<Transcript items={finishedTurn} dock={<Live />} />
 				</div>
 			</DragOver>
@@ -620,7 +620,7 @@ function ScrolledBack({ children }: { children: ReactNode }) {
 
 function DockedDemo({ state = "running" }: { state?: ComposerState }) {
 	return (
-		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+		<div className={transcriptFrameTall}>
 			<Transcript items={session} dock={<Live state={state} onStop={() => {}} captureTyping />} />
 		</div>
 	);
@@ -652,7 +652,7 @@ export const Mobile: Story = () => (
 		intro="On a phone the composer rests whenever it isn't in use, as T3 Code's does: one line and the action, with the model underneath. Tap it to expand. On a touch screen the type is 16px, the button 36px and Enter is a new line."
 	>
 		<Section title="Docked, at rest">
-			<div className="hb-story-transcript-frame">
+			<div className={transcriptFrame}>
 				<Transcript items={[...finishedTurn, ...rebase(liveTurn)]} dock={<Live state="running" onStop={() => {}} />} />
 			</div>
 		</Section>

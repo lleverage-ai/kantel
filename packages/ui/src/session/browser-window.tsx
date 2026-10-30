@@ -11,6 +11,42 @@ import "./browser-window.css";
 //
 // The window is chrome only: it never fetches anything, not even a site's favicon (that would tell the site who is
 // watching). A tab's icon is the first letter of its host, in a tile.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css). browser-window.css keeps only the scrubber: a range
+// input's track and thumb are pseudo-elements, and a test pins its class attribute. The other hb- classes carry no
+// style of their own; they stay as names: hb-browser-address is looked for by a test, and hb-browser-page-icon by the
+// active tab here.
+
+/** A page's icon: its host's first letter in a small tile. Add its background: a tile, or none for a spinner. */
+const pageIcon =
+	"hb-browser-page-icon inline-grid size-icon-md flex-none place-items-center rounded-xs text-2xs font-strong leading-none text-muted";
+/** The strip of tabs, on the window's darker colour, the tabs sitting on its bottom edge. */
+const tabsStrip = "hb-browser-tabs flex min-w-0 items-end gap-2 bg-panel px-1.5 pt-1.5 pb-0";
+/** The tabs, scrolling sideways with no scrollbar when there are more than fit. */
+const tabsList =
+	"hb-browser-tabs-list flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+/**
+ * A tab: icon and title, rounded on top. Only one tab, and nothing to pick: it reads as the window's title, not a
+ * control. Its focus ring sits inside it (`!`: base.css's unlayered `.hb-focusable:focus-visible` sets the offset).
+ */
+const tabButton =
+	"hb-browser-tab hb-focusable inline-flex h-control-sm max-w-48 min-w-18 flex-initial cursor-pointer items-center gap-1.5 rounded-t-control border-0 py-0 pr-2.5 pl-2 text-xs leading-tight whitespace-nowrap [font-family:inherit] [font-feature-settings:inherit] transition-[background-color,color] duration-(--hb-duration-fast) only:cursor-default focus-visible:outline-offset-[calc(var(--hb-ring)*-1)]!";
+/** The tab on show, joined to the toolbar under it, its icon in full colour; the others light up on hover. */
+const tabOnShow = "hb-browser-tab-active bg-raised text-fg [&_.hb-browser-page-icon]:text-fg";
+const tabOther = "bg-transparent text-muted hover:bg-hover hover:text-fg";
+/** At the strip's end: the view's status and links. */
+const tabsEnd = "hb-browser-tabs-end flex min-h-control-sm flex-none items-center gap-1.5 pb-0.5 text-xs text-muted";
+/** The toolbar under the tabs, on the active tab's colour. */
+const toolbarRow =
+	"hb-browser-toolbar flex min-w-0 items-center gap-2 border-b border-border bg-raised px-2 py-1.5 text-xs text-muted";
+/** The address bar: a read-only pill on the sunken colour. */
+const addressBar =
+	"hb-browser-address flex h-control-sm min-w-0 flex-1 items-center gap-1.5 rounded-full border border-border bg-sunken py-0 pr-3 pl-2.5 text-xs leading-tight whitespace-nowrap text-muted";
+/** The page: it fills the window, on the sunken colour. */
+const viewport = "hb-browser-viewport relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sunken";
+/** A replay's controls, in a row under the page. */
+const playerRow =
+	"hb-player flex min-w-0 flex-none items-center gap-2 border-t border-border bg-raised px-2 py-1 text-xs text-muted";
 
 /** A page as a tab or the address bar shows it. */
 export type BrowserPageInfo = {
@@ -61,7 +97,7 @@ export function addressParts(
 export function PageIcon({ url }: { url: string | undefined }) {
 	const host = pageHost(url);
 	return (
-		<span className="hb-browser-page-icon" aria-hidden="true">
+		<span className={`${pageIcon} bg-active`} aria-hidden="true">
 			{host === undefined ? <GlobeIcon size="sm" /> : host.charAt(0).toUpperCase()}
 		</span>
 	);
@@ -105,8 +141,8 @@ export function BrowserTabs({ tabs, active, onSelect, label = "Tabs", end }: Bro
 		strip.current?.querySelector<HTMLElement>(`[data-tab="${CSS.escape(next.id)}"]`)?.focus();
 	};
 	return (
-		<div className="hb-browser-tabs">
-			<div className="hb-browser-tabs-list" role="tablist" aria-label={label} ref={strip} onKeyDown={onKeyDown}>
+		<div className={tabsStrip}>
+			<div className={tabsList} role="tablist" aria-label={label} ref={strip} onKeyDown={onKeyDown}>
 				{tabs.map((tab) => {
 					const selected = tab.id === active;
 					const text = pageLabel(tab);
@@ -118,23 +154,23 @@ export function BrowserTabs({ tabs, active, onSelect, label = "Tabs", end }: Bro
 							data-tab={tab.id}
 							aria-selected={selected}
 							tabIndex={selected || (active === undefined && tab === tabs[0]) ? 0 : -1}
-							className={`hb-browser-tab hb-focusable${selected ? " hb-browser-tab-active" : ""}`}
+							className={`${tabButton} ${selected ? tabOnShow : tabOther}`}
 							title={tab.url && tab.url !== text ? `${text}\n${tab.url}` : text}
 							onClick={onSelect === undefined ? undefined : () => onSelect(tab.id)}
 						>
 							{tab.busy ? (
-								<span className="hb-browser-page-icon hb-browser-page-icon-busy">
+								<span className={`${pageIcon} hb-browser-page-icon-busy bg-transparent`}>
 									<Spinner size="sm" />
 								</span>
 							) : (
 								<PageIcon url={tab.url} />
 							)}
-							<span className="hb-browser-tab-title">{text}</span>
+							<span className="hb-browser-tab-title min-w-0 overflow-hidden text-ellipsis">{text}</span>
 						</button>
 					);
 				})}
 			</div>
-			{end === undefined ? null : <div className="hb-browser-tabs-end">{end}</div>}
+			{end === undefined ? null : <div className={tabsEnd}>{end}</div>}
 		</div>
 	);
 }
@@ -158,20 +194,20 @@ export type BrowserAddressBarProps = {
 export function BrowserAddressBar({ url, placeholder = "No page yet", start, end }: BrowserAddressBarProps) {
 	const parts = addressParts(url);
 	return (
-		<div className="hb-browser-toolbar">
+		<div className={toolbarRow}>
 			{start}
-			<div className="hb-browser-address" title={url} translate="no">
+			<div className={addressBar} title={url} translate="no">
 				<span className="hb-sr-only">Address: </span>
 				{parts === undefined ? (
-					<span className="hb-browser-address-empty">{placeholder}</span>
+					<span className="hb-browser-address-empty text-faint">{placeholder}</span>
 				) : (
 					<>
-						<span className="hb-browser-address-icon">
+						<span className="hb-browser-address-icon inline-flex flex-none text-faint">
 							{parts.secure ? <LockIcon size="sm" label="Secure connection" /> : <GlobeIcon size="sm" />}
 						</span>
-						<span className="hb-browser-address-text">
-							<span className="hb-browser-address-host">{parts.host}</span>
-							<span className="hb-browser-address-rest">{parts.rest}</span>
+						<span className="hb-browser-address-text min-w-0 overflow-hidden text-ellipsis">
+							<span className="hb-browser-address-host text-fg">{parts.host}</span>
+							<span className="hb-browser-address-rest text-faint">{parts.rest}</span>
 						</span>
 					</>
 				)}
@@ -196,14 +232,16 @@ export type BrowserWindowProps = {
 /** A browser window around a view of a page: tabs, address bar, the page and its controls, in one framed box. */
 export function BrowserWindow({ tabs, toolbar, footer, children, className }: BrowserWindowProps) {
 	return (
-		<div className={`hb-browser-window${className ? ` ${className}` : ""}`}>
+		<div
+			className={`hb-browser-window flex min-w-0 flex-col overflow-hidden rounded-panel border border-border-strong bg-panel${className ? ` ${className}` : ""}`}
+		>
 			{tabs === undefined && toolbar === undefined ? null : (
-				<div className="hb-browser-chrome">
+				<div className="hb-browser-chrome flex min-w-0 flex-none flex-col">
 					{tabs}
 					{toolbar}
 				</div>
 			)}
-			<div className="hb-browser-viewport">{children}</div>
+			<div className={viewport}>{children}</div>
 			{footer}
 		</div>
 	);
@@ -277,7 +315,7 @@ export function PlayerControls({
 }: PlayerControlsProps) {
 	const over = !playing && duration > 0 && position >= duration;
 	return (
-		<div className="hb-player">
+		<div className={playerRow}>
 			<IconButton
 				variant="ghost"
 				size="sm"
@@ -287,21 +325,21 @@ export function PlayerControls({
 				onClick={onToggle}
 			/>
 			<Scrubber value={position} max={duration} onChange={onSeek} label="Position in the recording" />
-			<span className="hb-player-time">
+			<span className="hb-player-time flex-none whitespace-nowrap text-muted tabular-nums">
 				{playerClock(position)} / {playerClock(duration)}
 			</span>
 			{speed === undefined || onSpeed === undefined ? null : (
 				<Button
 					variant="ghost"
 					size="xs"
-					className="hb-player-speed"
+					className="hb-player-speed min-w-control-md flex-none tabular-nums"
 					aria-label={`Playback speed, ${speed} times`}
 					onClick={onSpeed}
 				>
 					{`${speed}×`}
 				</Button>
 			)}
-			{end === undefined ? null : <span className="hb-player-end">{end}</span>}
+			{end === undefined ? null : <span className="hb-player-end flex-none whitespace-nowrap text-faint">{end}</span>}
 		</div>
 	);
 }

@@ -19,6 +19,18 @@ import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Field, FieldList, Notice } from "../primitives/surface.tsx";
 import { BindingCodePicker } from "../session/vault-approval-card.tsx";
 import { isUrgent, methodText } from "../session/vault-model.ts";
+import {
+	vaultCode,
+	vaultCodeLabel,
+	vaultCodeRow,
+	vaultCodeRule,
+	vaultCodeValue,
+	vaultMuted,
+	vaultSkeletonCode,
+	vaultToneDone,
+	vaultToneError,
+	vaultToneFaint,
+} from "../session/vault-styles.ts";
 import { ActiveGrantList, type ActiveGrantListProps } from "./grant-list.tsx";
 import type { PasskeyCheck } from "./passkey.ts";
 import {
@@ -45,8 +57,9 @@ import "../session/vault-approval-card.css";
 import "./vault-page.css";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css): the request beside the viewer's active grants, stacked on
-// a narrow screen (the side-by-side breakpoint stays in vault-page.css). The binding code and the muted and tone
-// classes are the card's (session/vault-approval-card.css), so the code looks the same in both places.
+// a narrow screen (the side-by-side breakpoint stays in vault-page.css). The binding code, the muted and tone colours
+// and the code's placeholder share the card's classes (session/vault-styles.ts), so the code looks the same in both
+// places; the code row's wrap under 480px stays in session/vault-approval-card.css, imported above.
 
 /** A part of the request, under a hairline. */
 const section = "flex min-w-0 flex-col gap-2.5 border-t border-border pt-4";
@@ -149,7 +162,7 @@ function Requester({ request, viewer, now }: { request: VaultRequest; viewer: Vi
 				{requester.person === undefined ? null : <Field label="On behalf of">{requester.person}</Field>}
 				<Field label="Session">
 					{requester.session === undefined ? (
-						<span className="hb-vault-muted">No session</span>
+						<span className={vaultMuted}>No session</span>
 					) : requester.sessionHref === undefined ? (
 						requester.session
 					) : (
@@ -252,7 +265,7 @@ function EditableTerms({
 			)}
 			<Term label="Injection">
 				{request.item === undefined ? (
-					<span className="hb-vault-muted">Set by the item</span>
+					<span className={vaultMuted}>Set by the item</span>
 				) : (
 					<code className="hb-mono hb-selectable">{request.item.injection}</code>
 				)}
@@ -306,11 +319,11 @@ function EditableTerms({
 /** The binding code, always on show. Plain for reads and settled requests; inside the picker when it must be picked. */
 function CodeBlock({ code, note }: { code: string; note: string }) {
 	return (
-		<div className="hb-vault-code">
-			<p className="hb-vault-code-label">Binding code</p>
-			<p className="hb-vault-code-rule">{note}</p>
-			<div className="hb-vault-code-row">
-				<code className="hb-vault-code-value hb-selectable">{code}</code>
+		<div className={vaultCode}>
+			<p className={vaultCodeLabel}>Binding code</p>
+			<p className={vaultCodeRule}>{note}</p>
+			<div className={vaultCodeRow}>
+				<code className={`${vaultCodeValue} hb-selectable`}>{code}</code>
 			</div>
 		</div>
 	);
@@ -557,12 +570,12 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 }
 
 const settledCopy = {
-	approved: { icon: <CheckCircleIcon className="hb-vault-tone-done" />, title: "Approved" },
-	narrowed: { icon: <CheckCircleIcon className="hb-vault-tone-done" />, title: "Approved with narrower terms" },
-	denied: { icon: <XCircleIcon className="hb-vault-tone-error" />, title: "Denied" },
-	expired: { icon: <AlertIcon className="hb-vault-tone-faint" />, title: "Expired" },
-	revoked: { icon: <MinusCircleIcon className="hb-vault-tone-faint" />, title: "Approved, then stopped" },
-	withdrawn: { icon: <MinusCircleIcon className="hb-vault-tone-faint" />, title: "Withdrawn" },
+	approved: { icon: <CheckCircleIcon className={vaultToneDone} />, title: "Approved" },
+	narrowed: { icon: <CheckCircleIcon className={vaultToneDone} />, title: "Approved with narrower terms" },
+	denied: { icon: <XCircleIcon className={vaultToneError} />, title: "Denied" },
+	expired: { icon: <AlertIcon className={vaultToneFaint} />, title: "Expired" },
+	revoked: { icon: <MinusCircleIcon className={vaultToneFaint} />, title: "Approved, then stopped" },
+	withdrawn: { icon: <MinusCircleIcon className={vaultToneFaint} />, title: "Withdrawn" },
 } as const;
 
 function SettledRequest({
@@ -637,7 +650,7 @@ function SettledRequest({
 						</Field>
 						<Field label="Path">
 							<code className="hb-mono hb-selectable">{proposed.route.pathPrefix}</code>{" "}
-							<span className="hb-vault-muted">and below</span>
+							<span className={vaultMuted}>and below</span>
 						</Field>
 						<Field label="Lifetime">
 							{proposed.lifetime.ttlMs === undefined ? "No expiry" : lifetimeLabel(proposed.lifetime.ttlMs)}
@@ -657,7 +670,7 @@ function SettledRequest({
 							</Field>
 							<Field label="Path">
 								<code className="hb-mono hb-selectable">{effective.route.pathPrefix}</code>{" "}
-								<span className="hb-vault-muted">and below</span>
+								<span className={vaultMuted}>and below</span>
 							</Field>
 							<Field label="Lifetime">
 								{effective.expiresAt === undefined
@@ -789,7 +802,7 @@ export function VaultRequestSkeleton() {
 			<Skeleton width="65%" />
 			<Skeleton lines={2} />
 			<Skeleton lines={5} width="85%" />
-			<span className="hb-vault-skeleton-code" aria-hidden="true" />
+			<span className={vaultSkeletonCode} aria-hidden="true" />
 			<Skeleton width="40%" />
 		</div>
 	);

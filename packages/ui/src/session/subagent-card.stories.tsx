@@ -2,10 +2,10 @@ import type { TranscriptItem } from "@harbour/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { assistant, tool, user } from "./fixtures.ts";
+import { transcriptFrame } from "./story-frames.ts";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf, subagentStatus } from "./subagent-model.ts";
 import { Transcript } from "./transcript.tsx";
-import "./stories.css";
 
 export default { title: "Session/Subagent card" } satisfies StoryDefault;
 
@@ -173,7 +173,7 @@ export const InTheThread: Story = () => (
 		title="Subagent cards in the thread"
 		intro="Each subagent call is a card of its own between the messages, not a line in a group of tool calls, and opens the subagent's session (renderSubagent gives it the link)."
 	>
-		<div className="hb-story-transcript-frame">
+		<div className={transcriptFrame}>
 			<Transcript
 				items={thread}
 				renderSubagent={(item) => (

@@ -4,7 +4,26 @@ import { IconButton } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { ChevronRightIcon } from "../primitives/icons.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
-import "./session-header.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-session-header, hb-session-header-actions,
+// hb-session-header-back and hb-connection classes carry no style of their own: loop/align.ts finds the bar, its
+// buttons and the connection's words by them. The rest stay as names for the parts.
+
+/**
+ * The bar: one compact row, its sides the narrow gutter at every width (as the file viewer's bar beside it), clear of a
+ * notch at the top, with a hairline under it. Tighter gaps on a phone (`max-sm:` is under 640px).
+ */
+const header =
+	"hb-session-header flex min-h-[calc(var(--hb-control-md)+var(--hb-step-2)*2)] min-w-0 items-center gap-2.5 border-b border-border bg-canvas px-gutter-narrow py-2 pt-[max(var(--hb-step-2),env(safe-area-inset-top))] max-sm:gap-1.5";
+/** The trail's current item: the breadcrumbs' type, so it reads as one line with its parents. Truncates first. */
+const headerTitle = "hb-session-header-title m-0 min-w-0 flex-auto truncate [font:inherit]";
+/** The icon buttons at the right end, pulled out so the last icon, not its box, meets the gutter. */
+const headerActions = "hb-session-header-actions -mr-1.5 flex flex-none items-center gap-1";
+/** The connection's line: small, muted, tabular figures, never wrapping. */
+const connectionLine =
+	"hb-connection inline-flex flex-none items-center gap-1.5 text-xs leading-tight whitespace-nowrap tabular-nums";
+/** Its words, trimmed to their capitals as the trail is, so they sit on the trail's line and the buttons' centre. */
+const connectionWords = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
 
 /** The link to the session host: up, coming up, or down with a retry scheduled at `retryAt` (epoch ms). */
 export type ConnectionStateValue = { state: "open" } | { state: "connecting" } | { state: "offline"; retryAt: number };
@@ -39,14 +58,16 @@ export function secondsUntil(retryAt: number, now: number): number {
 export function ConnectionState({ connection }: { connection: ConnectionStateValue }) {
 	const offline = connection.state === "offline";
 	const now = useNow(1000, offline);
+	// Offline in the error colour, else muted. Connected says nothing on screen, so it takes no space in the row either.
+	const state = offline ? "text-status-error" : connection.state === "open" ? "absolute text-muted" : "text-muted";
 	return (
-		<span className={`hb-connection hb-connection-${connection.state}`} role="status">
+		<span className={`${connectionLine} hb-connection-${connection.state} ${state}`} role="status">
 			{connection.state === "open" ? (
 				<span className="hb-sr-only">Connected</span>
 			) : connection.state === "connecting" ? (
 				<>
 					<Spinner size="sm" />
-					<span>Connecting</span>
+					<span className={connectionWords}>Connecting</span>
 				</>
 			) : (
 				<OfflineText seconds={secondsUntil(connection.retryAt, now)} />
@@ -56,11 +77,13 @@ export function ConnectionState({ connection }: { connection: ConnectionStateVal
 }
 
 function OfflineText({ seconds }: { seconds: number }) {
-	if (seconds === 0) return <span>Reconnecting</span>;
+	if (seconds === 0) return <span className={connectionWords}>Reconnecting</span>;
 	return (
 		<>
 			<span className="hb-sr-only">Offline, retrying soon</span>
-			<span aria-hidden="true">Offline, retrying in {seconds}s</span>
+			<span className={connectionWords} aria-hidden="true">
+				Offline, retrying in {seconds}s
+			</span>
 		</>
 	);
 }
@@ -81,13 +104,14 @@ export function SessionHeader({
 }: SessionHeaderProps) {
 	const shown = title === undefined || title.trim() === "" ? "New session" : title;
 	return (
-		<header className="hb-session-header">
+		<header className={header}>
 			{onBack === undefined ? null : (
 				<IconButton
-					className="hb-session-header-back"
+					className="hb-session-header-back -ml-1.5"
 					variant="ghost"
 					label="Back"
-					icon={<ChevronRightIcon className="hb-session-header-back-icon" />}
+					// The chevron points right everywhere else; mirrored, it says "back" without an arrow glyph.
+					icon={<ChevronRightIcon className="hb-session-header-back-icon -scale-x-100" />}
 					onClick={onBack}
 				/>
 			)}
@@ -95,10 +119,11 @@ export function SessionHeader({
 				label="Session"
 				parents={parents}
 				current={
-					<h1 className="hb-session-header-title" title={loading ? undefined : shown}>
+					<h1 className={headerTitle} title={loading ? undefined : shown}>
 						{loading ? (
 							<>
-								<span className="hb-session-header-skeleton">
+								{/* 252px, as the 18em it was at the title's 14px; capped at the room there is. */}
+								<span className="hb-session-header-skeleton block w-63 max-w-full">
 									<Skeleton width="100%" />
 								</span>
 								<span className="hb-sr-only">Loading the session</span>
@@ -110,7 +135,7 @@ export function SessionHeader({
 				}
 			/>
 			<ConnectionState connection={connection} />
-			{actions === undefined || actions === null ? null : <div className="hb-session-header-actions">{actions}</div>}
+			{actions === undefined || actions === null ? null : <div className={headerActions}>{actions}</div>}
 		</header>
 	);
 }

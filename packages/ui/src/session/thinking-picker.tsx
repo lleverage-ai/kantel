@@ -1,7 +1,34 @@
 import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { BrainIcon, CheckIcon, ChevronDownIcon } from "../primitives/icons.tsx";
 import { chosenThinking, clampThinking, THINKING_LABELS, type ThinkingLevel } from "./thinking-model.ts";
-import "./thinking-picker.css";
+
+// The composer's thinking picker, after T3 Code's traits picker: a control of its own beside the model's, shaped as the
+// model picker's button is (a brain, the level, a chevron), that opens a short menu upward.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-thinking- classes carry no style of their own: they
+// are hooks for loop/align.ts and the composer's stories.
+
+/** Trimmed to its capitals and centred, as the model picker's name is, so the two words share one line. */
+const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+/** The model picker's button (model-picker.tsx's `triggerClass`), muted, with its brain and chevron. */
+const triggerClass =
+	"hb-thinking-trigger hb-focusable inline-flex cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--hb-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
+/** The button's size: `sm` in the composer's toolbar, `xs` in its resting strip. */
+const triggerSize = {
+	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
+	xs: "h-control-xs gap-1 rounded-sm px-1.5 text-xs",
+} as const;
+/** The menu, a raised panel above the button. */
+const menuClass =
+	"hb-thinking-menu absolute bottom-[calc(100%+--spacing(1.5))] left-0 z-(--hb-z-overlay) flex min-w-(--hb-menu-width) cursor-default flex-col rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none";
+/** The menu's quiet heading. */
+const heading = "hb-thinking-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
+/**
+ * A row: the level's name with "Default" on its baseline, then the tick. The row under the pointer or the keys is lit
+ * as the model picker's is; the menu keeps focus inside, so no ring.
+ */
+const optionClass =
+	"hb-thinking-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-sm px-2 py-1.5 outline-none hover:bg-hover focus:bg-hover";
 
 export type ThinkingPickerProps = {
 	/**
@@ -142,11 +169,11 @@ export function ThinkingPicker({
 	const label = THINKING_LABELS[chosen];
 
 	return (
-		<div className={`hb-thinking-picker hb-thinking-picker-${size}`} ref={root}>
+		<div className="hb-thinking-picker relative flex min-w-0 flex-none" ref={root}>
 			<button
 				ref={trigger}
 				type="button"
-				className="hb-thinking-trigger hb-focusable"
+				className={`${triggerClass} ${triggerSize[size]}`}
 				aria-haspopup="menu"
 				aria-expanded={open}
 				aria-controls={open ? menuId : undefined}
@@ -157,20 +184,20 @@ export function ThinkingPicker({
 				onKeyDown={onTriggerKey}
 			>
 				<BrainIcon size={size === "xs" ? "sm" : "md"} />
-				<span className="hb-thinking-trigger-label">{label}</span>
-				<ChevronDownIcon size="sm" className="hb-thinking-trigger-chevron" />
+				<span className={`hb-thinking-trigger-label ${trimmed}`}>{label}</span>
+				<ChevronDownIcon size="sm" className="hb-thinking-trigger-chevron text-faint" />
 			</button>
 			{open ? (
 				<div
 					ref={menu}
 					id={menuId}
-					className="hb-thinking-menu"
+					className={menuClass}
 					role="menu"
 					aria-label="Thinking"
 					tabIndex={-1}
 					onKeyDown={onMenuKey}
 				>
-					<div className="hb-thinking-heading" aria-hidden="true">
+					<div className={heading} aria-hidden="true">
 						Thinking
 					</div>
 					{levels.map((level) => (
@@ -180,7 +207,7 @@ export function ThinkingPicker({
 							aria-checked={level === chosen}
 							tabIndex={-1}
 							data-level={level}
-							className="hb-thinking-option"
+							className={optionClass}
 							onClick={() => choose(level)}
 							onKeyDown={(event) => {
 								if (event.key === "Enter" || event.key === " ") {
@@ -189,11 +216,17 @@ export function ThinkingPicker({
 								}
 							}}
 						>
-							<span className="hb-thinking-option-label">
-								<span className="hb-thinking-option-name">{THINKING_LABELS[level]}</span>
-								{level === marked ? <span className="hb-thinking-option-default">Default</span> : null}
+							<span className="hb-thinking-option-label flex min-w-0 items-baseline gap-1.5 text-md leading-tight">
+								<span className={`hb-thinking-option-name whitespace-nowrap ${trimmed}`}>{THINKING_LABELS[level]}</span>
+								{level === marked ? (
+									<span className={`hb-thinking-option-default text-xs whitespace-nowrap text-faint ${trimmed}`}>
+										Default
+									</span>
+								) : null}
 							</span>
-							<span className="hb-thinking-option-check">{level === chosen ? <CheckIcon size="sm" /> : null}</span>
+							<span className="hb-thinking-option-check grid w-icon-sm place-items-center text-accent-text">
+								{level === chosen ? <CheckIcon size="sm" /> : null}
+							</span>
 						</div>
 					))}
 				</div>
