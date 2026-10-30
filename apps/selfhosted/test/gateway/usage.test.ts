@@ -1,7 +1,9 @@
 // Usage rows on the self-hosted gateway: `HARBOUR_USAGE` and `HARBOUR_CLICKHOUSE_*`, and the ClickHouse shipper over
 // the Postgres ledger (node:sqlite stands in for Postgres here; the ledger's SQL is the same on both).
+//
+// The stack job also runs this file with `bun test` (spike/conformance/run.ts), and Bun has no `node:sqlite`, so the
+// ledger tests load `@harbour/sql/testing` only when they run, and run on Node alone (CI's check job, under vitest).
 import type { UsageRecord } from "@harbour/contracts";
-import { nodeSqliteDatabase } from "@harbour/sql/testing";
 import { createSqlUsageLedger } from "@harbour/usage/sql";
 import { describe, expect, it, vi } from "vitest";
 import { selfHostedUsage, usageConfig } from "../../src/gateway/usage.ts";
@@ -51,9 +53,14 @@ describe("usageConfig", () => {
 	});
 });
 
-describe("selfHostedUsage", () => {
+async function openDatabase() {
+	const { nodeSqliteDatabase } = await import("@harbour/sql/testing");
+	return nodeSqliteDatabase.open();
+}
+
+describe.skipIf("Bun" in globalThis)("selfHostedUsage", () => {
 	it("keeps rows in the ledger alone without ClickHouse", async () => {
-		const database = await nodeSqliteDatabase.open();
+		const database = await openDatabase();
 		try {
 			const usage = await selfHostedUsage(database.driver, {}, () => {});
 			expect(usage.binding).toBe("postgres");
@@ -66,7 +73,7 @@ describe("selfHostedUsage", () => {
 	});
 
 	it("ships settled rows to ClickHouse, logging an outage once and catching up after it", async () => {
-		const database = await nodeSqliteDatabase.open();
+		const database = await openDatabase();
 		const logs: string[] = [];
 		const inserts: string[] = [];
 		let down = true;
