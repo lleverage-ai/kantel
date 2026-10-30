@@ -17,6 +17,7 @@ import {
 	type SessionDelta,
 	type SessionSnapshot,
 	type SessionStatus,
+	type ToolItem,
 	type TranscriptItem,
 	type UserAttachment,
 	type UserItemVia,
@@ -35,6 +36,13 @@ export type ToolStep = {
 	label?: string;
 	/** The files the call presented (`present_files`), as cards under its group. */
 	files?: readonly PresentedFile[];
+	/**
+	 * The model writes the call as the session watches: each string argument arrives in pieces of about `chars`
+	 * characters, `gap` ms apart, as `args` ops, before the call runs.
+	 */
+	write?: { chars?: number; gap?: number };
+	/** Output the call prints while it runs, a piece every `gap` ms of its `ms`, before its whole `output` lands. */
+	progress?: readonly string[];
 };
 
 export class Recording {
@@ -132,7 +140,7 @@ export class Recording {
 	/** A tool call that runs for `ms` and ends done (or `status`). */
 	tool(step: ToolStep): this {
 		this.start(step);
-		this.wait(step.ms ?? 800);
+		this.run(step);
 		return this.finish(step);
 	}
 
@@ -143,7 +151,38 @@ export class Recording {
 		const callId = this.id("call");
 		const id = `tool:${callId}`;
 		this.current = { id, callId, at: this.clock };
-		this.commit([{ op: "append", item: this.toolItem(step, "running") }]);
+		if (step.write === undefined) {
+			this.commit([{ op: "append", item: this.toolItem(step, "running") }]);
+			return this;
+		}
+		// The call as the model writes it: no arguments, then each string growing, then the whole call.
+		const { chars = 24, gap = 40 } = step.write;
+		const item = this.toolItem({ ...step, args: {} }, "running");
+		this.commit([{ op: "append", item: { ...item, streaming: true } }]);
+		for (const [key, value] of Object.entries(step.args)) {
+			if (typeof value !== "string") continue;
+			for (let index = 0; index < Math.max(1, value.length); index += chars) {
+				this.wait(gap);
+				this.commit([{ op: "args", itemId: id, path: [key], append: value.slice(index, index + chars) }]);
+			}
+		}
+		this.wait(gap);
+		this.commit([{ op: "replace", item: this.toolItem(step, "running") }]);
+		return this;
+	}
+
+	/** A tool call that prints `progress` while it runs, then ends with `output`. */
+	private run(step: ToolStep): this {
+		const progress = step.progress ?? [];
+		const ms = step.ms ?? 800;
+		const gap = Math.floor(ms / (progress.length + 1));
+		let output = "";
+		for (const piece of progress) {
+			this.wait(gap);
+			output += piece;
+			this.commit([{ op: "replace", item: { ...this.toolItem(step, "running"), output } }]);
+		}
+		this.wait(ms - gap * progress.length);
 		return this;
 	}
 
@@ -154,7 +193,7 @@ export class Recording {
 		return this;
 	}
 
-	private toolItem(step: ToolStep, status: "running" | "done" | "error"): TranscriptItem {
+	private toolItem(step: ToolStep, status: "running" | "done" | "error"): ToolItem {
 		const current = this.current;
 		if (current === undefined) throw new Error("No tool call is running");
 		return {

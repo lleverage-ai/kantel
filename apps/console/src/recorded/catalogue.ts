@@ -366,6 +366,137 @@ function posters(now: number): Recording {
 	return r;
 }
 
+const releaseScript = `"""Release notes from merged pull requests, grouped by label."""
+
+import argparse
+import json
+import sys
+from collections import defaultdict
+from datetime import date
+
+SECTIONS = {
+    "feature": "New",
+    "fix": "Fixed",
+    "docs": "Documentation",
+}
+
+
+def load(path: str) -> list[dict]:
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def group(prs: list[dict], since: date) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for pr in prs:
+        if date.fromisoformat(pr["merged_at"][:10]) < since:
+            continue
+        for label in pr["labels"]:
+            groups[SECTIONS.get(label, "Other")].append(pr)
+    return groups
+
+
+def render(groups: dict[str, list[dict]]) -> str:
+    lines = []
+    for section in [*SECTIONS.values(), "Other"]:
+        if not groups.get(section):
+            continue
+        lines.append(f"## {section}\\n")
+        lines += [f"- {pr['title']} (#{pr['number']})" for pr in groups[section]]
+        lines.append("")
+    return "\\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path")
+    parser.add_argument("--since", type=date.fromisoformat, required=True)
+    args = parser.parse_args()
+    print(render(group(load(args.path), args.since)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+`;
+
+const ESC = "\u001b";
+
+/** Done: writes a script as you watch, runs it, fixes it and runs it again. Its tool calls open as cards. */
+function releaseNotesScript(now: number): Recording {
+	const r = new Recording("s-script", "Script the release notes", now - 12 * MINUTE);
+	const run = "python notes/release_notes.py data/prs.json --since 2026-10-23";
+	r.user("Write a script that turns last week's merged PRs into release notes grouped by label, then run it.")
+		.status("running")
+		.live(now + 1000)
+		.wait(900)
+		.say("I'll write the script first, then run it on the export in `data/prs.json`.", { chunks: 4 })
+		.tool({
+			name: "write",
+			args: { path: "notes/release_notes.py", content: releaseScript },
+			write: { chars: 14, gap: 45 },
+			ms: 150,
+			output: "Successfully wrote to notes/release_notes.py",
+			tier: "isolate",
+		})
+		.tool({
+			name: "bash",
+			args: { command: run },
+			write: { chars: 12, gap: 40 },
+			ms: 1400,
+			status: "error",
+			tier: "container",
+			output:
+				'Traceback (most recent call last):\n  File "notes/release_notes.py", line 52, in <module>\n    sys.exit(main())\n  File "notes/release_notes.py", line 47, in main\n    print(render(group(load(args.path), args.since)))\n  File "notes/release_notes.py", line 26, in group\n    for label in pr["labels"]:\nKeyError: \'labels\'\n\n<harness>\n[error] Command exited with code 1\n</harness>',
+		})
+		.wait(1200)
+		.say("Some pull requests have no `labels` key at all. I'll look at one.", { chunks: 3 })
+		.tool({
+			name: "read",
+			args: { path: "data/prs.json", offset: 41, limit: 9 },
+			ms: 200,
+			output:
+				'  {\n    "number": 312,\n    "title": "Console: show the model\'s cost per session",\n    "merged_at": "2026-10-24T16:02:11Z"\n  },\n  {\n    "number": 313,\n    "title": "Sandbox: keep the seed cache warm",\n    "labels": ["feature"],\n\n<harness>\n[info] 188 more lines in file. Use offset=50 to continue.\n</harness>',
+		})
+		.wait(900)
+		.tool({
+			name: "edit",
+			args: {
+				path: "notes/release_notes.py",
+				edits: [
+					{
+						oldText: '        for label in pr["labels"]:\n            groups[SECTIONS.get(label, "Other")].append(pr)',
+						newText:
+							'        labels = pr.get("labels") or ["other"]\n        section = next((SECTIONS[label] for label in labels if label in SECTIONS), "Other")\n        groups[section].append(pr)',
+					},
+				],
+			},
+			write: { chars: 10, gap: 40 },
+			ms: 300,
+			output: "Successfully replaced 1 block(s) in notes/release_notes.py.",
+		})
+		.tool({
+			name: "bash",
+			args: { command: `python -m pytest notes -q --color=yes && ${run}` },
+			write: { chars: 12, gap: 40 },
+			ms: 2600,
+			tier: "container",
+			progress: [
+				`${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m`,
+				`${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m`,
+				`${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m [100%]${ESC}[0m\n`,
+			],
+			output: `${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m.${ESC}[0m${ESC}[32m [100%]${ESC}[0m\n${ESC}[32m${ESC}[1m8 passed${ESC}[0m${ESC}[32m in 0.41s${ESC}[0m\n## New\n\n- Sandbox: keep the seed cache warm (#313)\n- Console: tool calls as code, diffs and terminals (#318)\n\n## Fixed\n\n- Vault: refuse an expired grant at the proxy (#309)\n\n## Other\n\n- Console: show the model's cost per session (#312)\n`,
+		})
+		.wait(1500)
+		.say(
+			"The notes are ready. The script now files a pull request with no labels under *Other* instead of failing, and the tests cover that case.",
+			{ chunks: 8 },
+		)
+		.status("idle");
+	return r;
+}
+
 /** Done and read: quiet in the list. */
 function handback(now: number): Recording {
 	const r = new Recording("s-handback", "Draft the M0 handback", now - 26 * HOUR);
@@ -433,6 +564,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 		{ id: "s-retries", projectId: "harbour", branch: "billing-retries", frames: made(retries(now)) },
 		{ id: "s-attachments", projectId: "harbour", frames: made(officeTheme(now)) },
 		{ id: "s-posters", projectId: "harbour", frames: made(posters(now)) },
+		{ id: "s-script", projectId: "sal", frames: made(releaseNotesScript(now)) },
 	];
 	if (urls !== undefined) {
 		sessions.push(

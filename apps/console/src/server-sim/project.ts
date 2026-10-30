@@ -97,12 +97,18 @@ function tool(
 	return { kind: "tool", id: toolId(callId), at, callId, name, label: toolLabel(name, args, status), status, args };
 }
 
+/** A tool item changed by `patch`. Any change but more arguments means the model has finished writing the call. */
 function withTool(
 	item: ToolItem,
 	patch: Partial<Pick<ToolItem, "status" | "args" | "output" | "endedAt" | "at">>,
+	streaming = false,
 ): ToolItem {
-	const next = { ...item, ...patch };
-	return { ...next, label: toolLabel(next.name, next.args, next.status) };
+	const { streaming: _streaming, ...rest } = { ...item, ...patch };
+	return {
+		...rest,
+		label: toolLabel(rest.name, rest.args, rest.status),
+		...(streaming && item.streaming === true ? { streaming: true } : {}),
+	};
 }
 
 type Segment = { text: string; thinking: string };
@@ -291,7 +297,7 @@ export class Projector {
 		if (block.type === "toolCall") {
 			live.afterTool = true;
 			live.calls.set(index, { callId: block.id, args: structuredClone(block.arguments) });
-			this.addTool(block, at, ops);
+			this.addTool(block, at, ops, true);
 			return;
 		}
 		if (block.type === "thinking" && block.redacted) return;
@@ -305,9 +311,12 @@ export class Projector {
 		if (append !== "") ops.push({ op: "text", itemId, append, ...(field === "thinking" ? { field } : {}) });
 	}
 
-	private addTool(block: Extract<Block, { type: "toolCall" }>, at: Timestamp, ops: DeltaOp[]): void {
+	private addTool(block: Extract<Block, { type: "toolCall" }>, at: Timestamp, ops: DeltaOp[], streaming = false): void {
 		if (this.tools.has(block.id)) return;
-		const item = tool(block.id, block.name, block.arguments, at);
+		const item: ToolItem = {
+			...tool(block.id, block.name, block.arguments, at),
+			...(streaming ? { streaming: true } : {}),
+		};
 		this.tools.set(block.id, item);
 		ops.push({ op: "append", item });
 	}
@@ -461,7 +470,17 @@ export class Projector {
 				}
 				const leaf = path.at(-1)!;
 				target[leaf] = String(target[leaf] ?? "") + change.delta;
-				this.updateTool(call.callId, { args: structuredClone(call.args) }, ops);
+				// The client grows the same string with an `args` op rather than taking the whole item again.
+				const item = this.tools.get(call.callId);
+				if (item === undefined || change.delta === "") return;
+				const next = withTool(item, { args: structuredClone(call.args) }, true);
+				this.tools.set(call.callId, next);
+				// A label that changed with it (the path has arrived) takes the whole item.
+				ops.push(
+					next.label === item.label
+						? { op: "args", itemId: item.id, path, append: change.delta }
+						: { op: "replace", item: next },
+				);
 				return;
 			}
 			case "block":
@@ -502,7 +521,11 @@ export class Projector {
 			if (block.type !== "toolCall") continue;
 			this.addTool(block, message.timestamp, ops);
 			const item = this.tools.get(block.id);
-			if (item !== undefined && JSON.stringify(item.args) !== JSON.stringify(block.arguments)) {
+			// The call is whole: it stops streaming, with the settled arguments.
+			if (
+				item !== undefined &&
+				(item.streaming === true || JSON.stringify(item.args) !== JSON.stringify(block.arguments))
+			) {
 				this.updateTool(block.id, { args: block.arguments }, ops);
 			}
 		}

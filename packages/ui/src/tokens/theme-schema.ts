@@ -12,7 +12,7 @@
 
 export type ThemeKind = "dark" | "light";
 
-export type TokenGroup = "surface" | "line" | "text" | "accent" | "status" | "diff" | "effect" | "syntax";
+export type TokenGroup = "surface" | "line" | "text" | "accent" | "status" | "diff" | "effect" | "syntax" | "terminal";
 
 export type TokenSpec = {
 	/** The token's name without `--hb-`: `canvas`, `text-muted`, `syntax-keyword`. */
@@ -35,6 +35,41 @@ const shadowComposer = (kind: ThemeKind) =>
 	kind === "dark" ? "0 14px 32px -18px rgb(0 0 0 / 0.75)" : "0 14px 32px -18px rgb(0 0 0 / 0.22)";
 const mixText = (dark: number, light: number) => (kind: ThemeKind) =>
 	`color-mix(in srgb, var(--hb-text) ${kind === "dark" ? dark : light}%, transparent)`;
+
+const terminal = (name: string, description: string, value: string): TokenSpec => ({
+	name,
+	group: "terminal",
+	description,
+	derive: value,
+});
+
+/** The 16 ANSI colours by palette index (0-7 normal, 8-15 bright), after VS Code's dark terminal. */
+const ANSI = [
+	"#6e7681",
+	"#f14c4c",
+	"#23d18b",
+	"#e5e510",
+	"#3b8eea",
+	"#d670d6",
+	"#29b8db",
+	"#e5e5e5",
+	"#8b949e",
+	"#ff7b72",
+	"#56d364",
+	"#f5f543",
+	"#79c0ff",
+	"#f778ba",
+	"#56d4dd",
+	"#ffffff",
+];
+
+const TERMINAL_TOKENS: readonly TokenSpec[] = [
+	terminal("terminal", "The inline terminal's well", "#050505"),
+	terminal("terminal-text", "A terminal's text", "#d4d4d4"),
+	terminal("terminal-prompt", "The prompt before a command", "#7ee787"),
+	terminal("terminal-stderr", "What a command wrote to stderr, when a tool keeps it apart", "#ffa198"),
+	...ANSI.map((value, index) => terminal(`ansi-${index}`, `ANSI colour ${index}`, value)),
+];
 
 /**
  * Every colour token a theme sets, in the order a theme's CSS lists them. A new colour token in tokens.css belongs
@@ -120,6 +155,18 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 	// Diff.
 	{ name: "diff-add", group: "diff", description: "Lines added", derive: "var(--hb-status-done)" },
 	{ name: "diff-del", group: "diff", description: "Lines removed", derive: "var(--hb-status-error)" },
+	{
+		name: "diff-add-soft",
+		group: "diff",
+		description: "Behind an added line in an edit's diff",
+		derive: "color-mix(in srgb, var(--hb-diff-add) 10%, transparent)",
+	},
+	{
+		name: "diff-del-soft",
+		group: "diff",
+		description: "Behind a removed line in an edit's diff",
+		derive: "color-mix(in srgb, var(--hb-diff-del) 10%, transparent)",
+	},
 	// Effects.
 	{ name: "shadow-float", group: "effect", description: "The shadow under a menu or popover", derive: shadowFloat },
 	{ name: "shadow-composer", group: "effect", description: "The composer's shadow", derive: shadowComposer },
@@ -191,6 +238,8 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 	},
 	{ name: "syntax-inserted", group: "syntax", description: "Added lines in a diff", derive: "var(--hb-diff-add)" },
 	{ name: "syntax-deleted", group: "syntax", description: "Removed lines in a diff", derive: "var(--hb-diff-del)" },
+	// The inline terminal a bash call shows: dark in every theme, as a terminal is, unless a theme sets its own.
+	...TERMINAL_TOKENS,
 ];
 
 export type ThemeTokenName = string;

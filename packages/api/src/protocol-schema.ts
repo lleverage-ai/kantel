@@ -124,7 +124,17 @@ export const ToolItem = Type.Object(
 			Type.Literal("error"),
 			Type.Literal("interrupted"),
 		]),
-		args: Type.Optional(Type.Unknown()),
+		args: Type.Optional(
+			Type.Unknown({
+				description: "The call's arguments; while `streaming`, the model's partial JSON parsed so far.",
+			}),
+		),
+		streaming: Type.Optional(
+			Type.Boolean({
+				description:
+					"True while the model is still writing the call: its arguments are arriving and it hasn't started.",
+			}),
+		),
 		output: Type.Optional(Type.String()),
 		files: Type.Optional(
 			Type.Array(PresentedFile, {
@@ -234,6 +244,14 @@ export const DeltaOp = Type.Union(
 			append: Type.String(),
 			field: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("thinking"), Type.Literal("document")])),
 		}),
+		Type.Object({
+			op: Type.Literal("args"),
+			itemId: Type.String(),
+			path: Type.Array(Type.Union([Type.String(), Type.Number()]), {
+				description: "Keys and indexes to a string in the tool item's `args`; missing ones are created.",
+			}),
+			append: Type.String(),
+		}),
 		Type.Object({ op: Type.Literal("status"), status: SessionStatus, attention: Attention }),
 		Type.Object({ op: Type.Literal("title"), title: Type.String() }),
 		Type.Object({ op: Type.Literal("usage"), usage: Usage }),
@@ -242,7 +260,8 @@ export const DeltaOp = Type.Union(
 		title: "DeltaOp",
 		description:
 			"`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an " +
-			"assistant item, and `status`, `title` and `usage` set the session's.",
+			"assistant item, `args` appends streamed text to a string in a tool item's arguments, and `status`, `title` " +
+			"and `usage` set the session's.",
 	},
 );
 

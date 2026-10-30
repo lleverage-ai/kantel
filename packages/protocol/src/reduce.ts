@@ -1,3 +1,4 @@
+import { appendArgs } from "./args.ts";
 import type {
 	AssistantItem,
 	Attention,
@@ -75,6 +76,22 @@ function applyOp(snapshot: SessionSnapshot, items: TranscriptItem[] | undefined,
 						? { ...item, document: { ...item.document, text: item.document.text + op.append } }
 						: { ...item, thinking: (item.thinking ?? "") + op.append };
 			target[index] = updated;
+			break;
+		}
+		case "args": {
+			const target = writable();
+			const index = indexOfItem(target, op.itemId);
+			if (index < 0) {
+				if (next.hasEarlier) break;
+				throw new ProtocolError("unknown_item", `No item ${op.itemId} to append arguments to`);
+			}
+			const item = target[index];
+			if (item?.kind !== "tool") throw new ProtocolError("invalid", `Item ${op.itemId} is not a tool item`);
+			const args = appendArgs(item.args, op.path, op.append);
+			if (args === undefined) {
+				throw new ProtocolError("invalid", `Item ${op.itemId} has no string at ${JSON.stringify(op.path)}`);
+			}
+			target[index] = { ...item, args };
 			break;
 		}
 		case "status":

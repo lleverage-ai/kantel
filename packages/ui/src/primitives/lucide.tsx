@@ -2,15 +2,20 @@ import {
 	Archive,
 	ArchiveRestore,
 	Bot,
+	Braces,
 	Check,
 	ChevronRight,
+	ChevronsDownUp,
+	ChevronsUpDown,
 	Ellipsis,
 	ExternalLink,
 	Eye,
 	EyeOff,
 	File,
 	FileCode,
+	FileDiff,
 	FileImage,
+	FilePenLine,
 	FileSpreadsheet,
 	FileText,
 	ListFilter,
@@ -22,6 +27,7 @@ import {
 	PinOff,
 	Play,
 	RotateCcw,
+	SquareTerminal,
 	Trash2,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
@@ -75,3 +81,11 @@ export const FileTextIcon = lucide(FileText, "FileTextIcon");
 export const FileImageIcon = lucide(FileImage, "FileImageIcon");
 export const FileCodeIcon = lucide(FileCode, "FileCodeIcon");
 export const FileSpreadsheetIcon = lucide(FileSpreadsheet, "FileSpreadsheetIcon");
+// The file and shell tools' cards (`session/tool-views.tsx`): a file written, a file edited, a terminal, the raw call,
+// and a long view's expand and collapse.
+export const FileWriteIcon = lucide(FilePenLine, "FileWriteIcon");
+export const FileDiffIcon = lucide(FileDiff, "FileDiffIcon");
+export const TerminalWindowIcon = lucide(SquareTerminal, "TerminalWindowIcon");
+export const RawIcon = lucide(Braces, "RawIcon");
+export const ExpandIcon = lucide(ChevronsUpDown, "ExpandIcon");
+export const CollapseIcon = lucide(ChevronsDownUp, "CollapseIcon");

@@ -31,6 +31,18 @@ const subscribe = (listener: () => void) => {
 };
 const ready = () => highlighter !== undefined;
 
+/**
+ * Whether the highlighter has loaded, re-rendering when it does; asks for it when `wanted`. For a view that highlights
+ * with `highlightCode` itself, such as a tool call's code view (lines.ts).
+ */
+export function useHighlighter(wanted: boolean): boolean {
+	const loaded = useSyncExternalStore(subscribe, ready, ready);
+	useEffect(() => {
+		if (wanted && !loaded) void loadHighlighter();
+	}, [wanted, loaded]);
+	return loaded;
+}
+
 /** Past this, code shows plain: highlighting a long log costs more than it gives. */
 export const HIGHLIGHT_LIMIT = 60_000;
 
@@ -107,10 +119,7 @@ export const Code = memo(function Code({
 	language: string | undefined;
 	className?: string | undefined;
 }) {
-	const loaded = useSyncExternalStore(subscribe, ready, ready);
-	useEffect(() => {
-		if (language !== undefined && !loaded) void loadHighlighter();
-	}, [language, loaded]);
+	const loaded = useHighlighter(language !== undefined);
 	const html = loaded ? highlightCode(code, language) : undefined;
 	const classes = `hb-syntax${className === undefined ? "" : ` ${className}`}`;
 	// The highlighter escapes the code it is given: its output is spans of escaped text.

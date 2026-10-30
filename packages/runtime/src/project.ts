@@ -13,6 +13,7 @@ import type {
 import type { ConversationView, EntryRecord, InputEntry, LiveState } from "@earendil-works/pi-durable";
 import {
 	type AssistantItem,
+	argsAppends,
 	attentionFor,
 	type DeltaOp,
 	type DraftDocument,
@@ -402,6 +403,12 @@ export class ConversationProjector {
 	readonly #seenEntries = new Set<string>();
 	/** Tool items by Pi tool call ID, while their result is outstanding. */
 	readonly #runningTools = new Map<string, ToolItem>();
+	/**
+	 * Tool items for the calls the model is writing, by Pi tool call ID, until the answer's entry claims them: their
+	 * arguments as last shown, which `args` ops grow.
+	 */
+	readonly #streamingTools = new Map<string, ToolItem>();
+	#streamingToolCount = 0;
 	/** The entry behind each user and settled assistant item, by item ID: where a fork or an edit starts. */
 	readonly #entries = new Map<string, EntryRecord>();
 	#streaming: AssistantItem | undefined;
@@ -511,10 +518,13 @@ export class ConversationProjector {
 		}
 		for (const block of message.content) {
 			if (block.type !== "toolCall") continue;
+			// A call shown while the model wrote it keeps its item, and its place, now that it is whole.
+			const streamed = this.#streamingTools.get(block.id);
+			this.#streamingTools.delete(block.id);
 			const item: ToolItem = {
 				kind: "tool",
-				id: `t${entry.id}:${block.id}`,
-				at: this.#now(),
+				id: streamed?.id ?? `t${entry.id}:${block.id}`,
+				at: streamed?.at ?? this.#now(),
 				callId: block.id,
 				name: block.name,
 				label: toolLabel(block.name, block.arguments),
@@ -522,7 +532,7 @@ export class ConversationProjector {
 				args: block.arguments,
 			};
 			this.#runningTools.set(block.id, item);
-			ops.push({ op: "append", item });
+			ops.push({ op: streamed === undefined ? "append" : "replace", item });
 		}
 		this.#lastRunFailed = message.stopReason === "error";
 		if (message.stopReason === "error") {
@@ -571,6 +581,61 @@ export class ConversationProjector {
 
 	#projectPartial(live: LiveState | undefined, ops: DeltaOp[]): void {
 		const partial = live?.generation?.message as AssistantMessage | undefined;
+		this.#projectPartialText(live, partial, ops);
+		this.#projectPartialTools(partial, ops);
+	}
+
+	/**
+	 * Tool calls the model is writing, as tool items with `streaming: true` placed where the call starts: an `append`
+	 * when a call first shows, then `args` ops as its strings grow (a `replace` for any other change, or a new label).
+	 * The answer's entry replaces each with the whole call. A call the generation drops without an entry (a retry, an
+	 * abort) is left interrupted.
+	 */
+	#projectPartialTools(partial: AssistantMessage | undefined, ops: DeltaOp[]): void {
+		const seen = new Set<string>();
+		for (const block of partial?.content ?? []) {
+			if (block.type !== "toolCall") continue;
+			const call = block as ToolCall;
+			// A document being written streams as the answer's draft, not as a call; a settled call is no longer streaming.
+			if (call.name === "create_document" || this.#runningTools.has(call.id)) continue;
+			seen.add(call.id);
+			const args: unknown = call.arguments ?? {};
+			const label = toolLabel(call.name, args);
+			const current = this.#streamingTools.get(call.id);
+			if (current === undefined) {
+				this.#streamingToolCount += 1;
+				const item: ToolItem = {
+					kind: "tool",
+					id: `ts${this.#streamingToolCount}:${call.id}`,
+					at: this.#now(),
+					callId: call.id,
+					name: call.name,
+					label,
+					status: "running",
+					args: structuredClone(args),
+					streaming: true,
+				};
+				this.#streamingTools.set(call.id, item);
+				ops.push({ op: "append", item });
+				continue;
+			}
+			const appends =
+				current.name === call.name && current.label === label ? argsAppends(current.args, args) : undefined;
+			if (appends !== undefined && appends.length === 0) continue;
+			const item: ToolItem = { ...current, name: call.name, label, args: structuredClone(args) };
+			this.#streamingTools.set(call.id, item);
+			if (appends === undefined) ops.push({ op: "replace", item });
+			else for (const append of appends) ops.push({ op: "args", itemId: item.id, ...append });
+		}
+		for (const [callId, item] of this.#streamingTools) {
+			if (seen.has(callId)) continue;
+			this.#streamingTools.delete(callId);
+			const { streaming: _streaming, ...rest } = item;
+			ops.push({ op: "replace", item: { ...rest, status: "interrupted", endedAt: this.#now() } });
+		}
+	}
+
+	#projectPartialText(live: LiveState | undefined, partial: AssistantMessage | undefined, ops: DeltaOp[]): void {
 		const text = partial === undefined ? "" : textOf(partial.content);
 		const thinking = partial === undefined ? "" : thinkingOf(partial.content);
 		const document = partial === undefined ? undefined : draftDocumentOf(partial.content);

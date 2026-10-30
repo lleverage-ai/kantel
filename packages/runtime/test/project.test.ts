@@ -1,3 +1,4 @@
+import { parseStreamingJson } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { applyDelta, PROTOCOL_VERSION, type SessionSnapshot } from "@harbour/protocol";
 import { ConversationProjector, HARBOUR_USER_ENTRY, toolLabel, UsageTally } from "@harbour/runtime";
@@ -183,6 +184,142 @@ describe("ConversationProjector", () => {
 		expect(projector.close()).toEqual([{ op: "status", status: "done", attention: "done" }]);
 		expect(projector.project(view([], running))).toEqual([]);
 		expect(projector.status).toBe("done");
+	});
+});
+
+describe("a tool call streaming in", () => {
+	const prompt = user(1, "Write it", "prompt");
+	const writing = (args: unknown, text = "") => ({
+		...running,
+		generation: {
+			attempt: 1,
+			message: {
+				role: "assistant",
+				content: [
+					...(text === "" ? [] : [{ type: "text", text }]),
+					{ type: "toolCall", id: "w1", name: "write", arguments: args },
+				],
+			},
+		},
+	});
+
+	it("shows the call as it is written, growing its strings with args ops", () => {
+		const projector = new ConversationProjector({ now: () => 7 });
+		projector.project(view([prompt], running));
+		expect(projector.project(view([prompt], writing({})))).toEqual([
+			{
+				op: "append",
+				item: {
+					kind: "tool",
+					id: "ts1:w1",
+					at: 7,
+					callId: "w1",
+					name: "write",
+					label: toolLabel("write", {}),
+					status: "running",
+					args: {},
+					streaming: true,
+				},
+			},
+		]);
+		expect(projector.project(view([prompt], writing({ path: "a.py", content: "imp" })))).toEqual([
+			{ op: "args", itemId: "ts1:w1", path: ["path"], append: "a.py" },
+			{ op: "args", itemId: "ts1:w1", path: ["content"], append: "imp" },
+		]);
+		expect(projector.project(view([prompt], writing({ path: "a.py", content: "imp" })))).toEqual([]);
+		expect(projector.project(view([prompt], writing({ path: "a.py", content: "import sys\n" })))).toEqual([
+			{ op: "args", itemId: "ts1:w1", path: ["content"], append: "ort sys\n" },
+		]);
+	});
+
+	it("settles the streamed item in place when the answer's entry lands, then its result", () => {
+		const projector = new ConversationProjector({ now: () => 7 });
+		const args = { path: "a.py", content: "import sys\n" };
+		const call = assistant(2, [{ type: "toolCall", id: "w1", name: "write", arguments: args }], "toolUse");
+		const snapshot = replay(projector, [
+			view([prompt], running),
+			view([prompt], writing({ path: "a.p" }, "On it.")),
+			view([prompt], writing({ path: "a.py", content: "import" }, "On it.")),
+			view([prompt, call], running),
+			view([prompt, call, toolResult(3, "w1", "Wrote 11 bytes", false)], {}),
+		]);
+		expect(snapshot.items.map((item) => [item.kind, item.id])).toEqual([
+			["user", "u1"],
+			["assistant", "p1"],
+			["tool", "ts1:w1"],
+		]);
+		const tool = snapshot.items[2];
+		expect(tool).toMatchObject({ status: "done", args, output: "Wrote 11 bytes" });
+		expect(tool).not.toHaveProperty("streaming");
+	});
+
+	it("replaces the item for a change an append can't say", () => {
+		const projector = new ConversationProjector({ now: () => 0 });
+		projector.project(view([prompt], writing({ command: "ls" })));
+		const ops = projector.project(view([prompt], writing({ command: "ls", timeout: 5 })));
+		expect(ops).toEqual([{ op: "replace", item: expect.objectContaining({ args: { command: "ls", timeout: 5 } }) }]);
+	});
+
+	it("leaves a call the generation dropped interrupted", () => {
+		const projector = new ConversationProjector({ now: () => 3 });
+		const snapshot = replay(projector, [
+			view([prompt], writing({ path: "a.py" })),
+			view([prompt], { ...running, generation: { attempt: 2, message: { role: "assistant", content: [] } } }),
+		]);
+		expect(snapshot.items.at(-1)).toMatchObject({ kind: "tool", status: "interrupted", endedAt: 3 });
+		expect(snapshot.items.at(-1)).not.toHaveProperty("streaming");
+	});
+
+	it("follows the provider's partial JSON character by character, mostly as args ops", () => {
+		const args = {
+			path: "notes/plan.py",
+			edits: [
+				{ oldText: 'print("hi")\n', newText: 'print("h\u00e9llo \\\\ \\n")\n\tdone()' },
+				{ oldText: "x = 1", newText: "x = 2" },
+			],
+		};
+		const json = JSON.stringify(args);
+		const projector = new ConversationProjector({ now: () => 0 });
+		let snapshot: SessionSnapshot = replay(projector, [view([prompt], running)]);
+		const kinds = new Map<string, number>();
+		for (let end = 0; end <= json.length; end++) {
+			const parsed = parseStreamingJson(json.slice(0, end));
+			const live = {
+				...running,
+				generation: {
+					attempt: 1,
+					message: { role: "assistant", content: [{ type: "toolCall", id: "e1", name: "edit", arguments: parsed }] },
+				},
+			};
+			const ops = projector.project(view([prompt], live));
+			for (const op of ops) kinds.set(op.op, (kinds.get(op.op) ?? 0) + 1);
+			if (ops.length > 0) snapshot = applyDelta(snapshot, { sessionId: "s", cursor: `c${end + 2}`, at: 0, ops });
+			// What the client holds is always what the provider has parsed so far.
+			expect(snapshot.items.at(-1)).toMatchObject({ kind: "tool", streaming: true, args: parsed });
+		}
+		expect(snapshot.items.at(-1)).toMatchObject({ args });
+		// Each value's characters arrive as appends. Only the call's first showing is a whole item, and each empty array
+		// or object opening (`"edits": [`, then `{`, twice) a replace.
+		expect(kinds.get("append")).toBe(1);
+		expect(kinds.get("args") ?? 0).toBeGreaterThan(50);
+		expect(kinds.get("replace")).toBe(3);
+	});
+
+	it("leaves a document to its draft", () => {
+		const projector = new ConversationProjector({ now: () => 0 });
+		const ops = projector.project(
+			view([prompt], {
+				...running,
+				generation: {
+					attempt: 1,
+					message: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "d", name: "create_document", arguments: { title: "Plan" } }],
+					},
+				},
+			}),
+		);
+		expect(ops.some((op) => (op.op === "append" || op.op === "replace") && op.item.kind === "tool")).toBe(false);
 	});
 });
 
