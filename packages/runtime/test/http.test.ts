@@ -536,10 +536,15 @@ describe("requests that go away", () => {
 	it("closes the watch when the caller goes away while it is being set up", async () => {
 		let resolveWatch: (subscription: { close(): Promise<void> }) => void = () => {};
 		let closed = 0;
+		let watching: () => void = () => {};
+		const watchStarted = new Promise<void>((resolve) => {
+			watching = resolve;
+		});
 		const api = stubApi({
 			watch: () =>
 				new Promise((resolve) => {
 					resolveWatch = resolve;
+					watching();
 				}),
 		});
 		const controller = new AbortController();
@@ -549,7 +554,9 @@ describe("requests that go away", () => {
 				signal: controller.signal,
 			}),
 		);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		// Gone while the watch is being set up: after the API has asked for it, before it is ready. A fixed wait here
+		// raced the request's own setup on a loaded host.
+		await watchStarted;
 		controller.abort();
 		resolveWatch({
 			close: async () => {
@@ -696,9 +703,14 @@ describe("host-tool callbacks", () => {
 
 	it("aborts the host request, and the handler's signal, when the call is aborted", async () => {
 		let handlerSignal: AbortSignal | undefined;
+		let handling: () => void = () => {};
+		const handlerStarted = new Promise<void>((resolve) => {
+			handling = resolve;
+		});
 		const endpoint = createHostToolEndpoint(
 			(_incoming, signal) => {
 				handlerSignal = signal;
+				handling();
 				return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
 			},
 			{ secret },
@@ -710,7 +722,9 @@ describe("host-tool callbacks", () => {
 		});
 		const controller = new AbortController();
 		const running = handler(call, controller.signal);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		// Aborted while the host's handler runs. A fixed wait here could abort before the endpoint had checked the
+		// signature and called the handler, which then waited for an abort that had already happened (main, 30 Oct).
+		await handlerStarted;
 		controller.abort();
 		// In process the endpoint answers 500 once its handler rejects; over a network the fetch itself rejects.
 		await expect(running).rejects.toBeInstanceOf(HarbourError);
