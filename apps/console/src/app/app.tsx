@@ -367,9 +367,14 @@ export function App({
 	const toggleSessions = useCallback(() => setSessionsHidden((hidden) => !hidden), []);
 	const sidebar = useSidebarCollapse(!narrow);
 	const [live, setLive] = useState<LiveSummary>();
-	const sessions = useMemo(() => withLive(list.sessions, live), [list.sessions, live]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
 	const lineage = useLineage(client, route.name === "session" ? sessionId : undefined);
+	// A subagent's session isn't listed (it's reached from its card), so it gets no live row of its own while open.
+	const subagentOpen = lineage.length > 0;
+	const sessions = useMemo(
+		() => withLive(list.sessions, subagentOpen ? undefined : live),
+		[list.sessions, live, subagentOpen],
+	);
 	// The session's top bar: the project, then the sessions above a subagent's, each a link back to its level.
 	const parents = useMemo((): readonly Crumb[] | undefined => {
 		if (projectId === undefined) return undefined;
