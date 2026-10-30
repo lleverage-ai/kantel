@@ -447,6 +447,25 @@ export {
 	WorkingIndicator,
 	type WorkingIndicatorProps,
 } from "./session/working-indicator.tsx";
+// The sharing page (docs/design/sharing.md), and the client it reads and writes through.
+export {
+	grantablePermissions,
+	granteeText,
+	kindLabel,
+	PERMISSION_LABELS,
+	readOverview,
+	resourceText,
+	type SharingDirectory,
+	type SharingOverview,
+	type SharingSource,
+} from "./sharing/sharing-model.ts";
+export {
+	SharingPage,
+	type SharingPageProps,
+	type SharingProject,
+	SharingView,
+	type SharingViewProps,
+} from "./sharing/sharing-page.tsx";
 // The skills page.
 export { SkillEditor, type SkillEditorProps, type SkillEditorTarget } from "./skills/skill-editor.tsx";
 export {

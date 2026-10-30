@@ -17,6 +17,7 @@
 		"./vault/fixtures": "./src/vault/fixtures.ts",
 		"./audit/fixtures": "./src/audit/fixtures.ts",
 		"./schedules/fixtures": "./src/schedules/fixtures.ts",
+		"./sharing/fixtures": "./src/sharing/fixtures.ts",
 		"./skills/fixtures": "./src/skills/fixtures.ts",
 		"./memory/fixtures": "./src/memory/fixtures.ts",
 		"./workspace/image-fixture": "./src/workspace/image-fixture.ts",

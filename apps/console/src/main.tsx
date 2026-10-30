@@ -13,15 +13,24 @@ import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } 
 import { apiKeys } from "./api/keys.ts";
 import { apiMembers, type ConsoleMembers } from "./api/members.ts";
 import { apiModels, type ConsoleModels } from "./api/models-http.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
+import type {
+	ConsoleAgent,
+	ConsoleAudit,
+	ConsoleKeys,
+	ConsoleSchedules,
+	ConsoleSharing,
+	ConsoleVault,
+} from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
+import { apiSharing } from "./api/sharing-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
 import { createRecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
+import { createRecordedSharing } from "./recorded/sharing.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { syncTheme } from "./state/theme-sync.ts";
@@ -129,6 +138,7 @@ type Oversight = {
 	readonly keys?: ConsoleKeys;
 	readonly members?: ConsoleMembers;
 	readonly schedules?: ConsoleSchedules;
+	readonly sharing?: ConsoleSharing;
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
 };
@@ -143,7 +153,7 @@ const recordedOversight: Promise<Oversight> | undefined =
 				createRecordedAgent(),
 			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, ConsoleAgent]): Oversight => {
 				proposals = made.proposals;
-				return { vault: made.vault, audit: made.audit, schedules, agent };
+				return { vault: made.vault, audit: made.audit, schedules, sharing: createRecordedSharing(), agent };
 			})
 		: undefined;
 
@@ -162,7 +172,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, agent, models } = oversight;
+	const { vault, audit, keys, members, schedules, sharing, agent, models } = oversight;
 	return (
 		<App
 			client={client}
@@ -172,6 +182,7 @@ function Console({
 			{...(keys === undefined ? {} : { keys })}
 			{...(members === undefined ? {} : { members })}
 			{...(schedules === undefined ? {} : { schedules })}
+			{...(sharing === undefined ? {} : { sharing })}
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
 			onOpen={onOpen}
@@ -358,13 +369,22 @@ function SignedInConsole({
 					},
 				),
 				apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
+				// No sharing page on a gateway that doesn't serve /v1/sharing, or for someone who can see no project.
+				apiSharing({ headers: state.headers, onUnauthenticated }).then(
+					(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
+					(error: unknown) => {
+						console.info("harbour: no sharing page:", error instanceof Error ? error.message : error);
+						return undefined;
+					},
+				),
 			]).then(
-				([vault, schedules]): Oversight => ({
+				([vault, schedules, sharing]): Oversight => ({
 					...(vault === undefined ? {} : { vault }),
 					audit: audit(vault !== undefined),
 					agent,
 					models,
 					schedules,
+					...(sharing === undefined ? {} : { sharing }),
 					...(keys === undefined ? {} : { keys }),
 					...(members === undefined ? {} : { members }),
 				}),
