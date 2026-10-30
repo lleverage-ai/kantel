@@ -29,6 +29,7 @@
 	"devDependencies": {
 		"@harbour/browser": "workspace:*",
 		"@harbour/codemode": "workspace:*",
+		"@harbour/rules": "workspace:*",
 		"@harbour/sandbox": "workspace:*",
 		"@harbour/testing": "workspace:*",
 		"@harbour/vault": "workspace:*",

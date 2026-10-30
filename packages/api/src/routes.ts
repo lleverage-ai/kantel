@@ -33,6 +33,7 @@ import {
 	ListAccessRequestsQuery,
 	ListBindingsQuery,
 	ListConceptsQuery,
+	ListPromptRulesQuery,
 	ListResourceSharesQuery,
 	ListSchedulesQuery,
 	ListSessionsQuery,
@@ -51,11 +52,16 @@ import {
 	PageQuery,
 	PreviewScheduleQuery,
 	ProfilePath,
+	PromptRule,
+	PromptRuleList,
+	PromptRulePath,
+	PutPromptRuleBody,
 	Recall,
 	RecallBody,
 	RegisteredResource,
 	RegisterResourceBody,
 	RequestAccessBody,
+	ResolvedPromptRulesQuery,
 	ResourceBinding,
 	ResourceBindingPage,
 	ResourcePolicy,
@@ -1012,10 +1018,89 @@ export const sharingRoutes = {
 	listShareUses,
 } as const;
 
+// Prompt rules (docs/design/org-scope.md, decision 5).
+
+const ruleErrors = ["invalid", "forbidden", "not_found"] as const;
+
+export const listPromptRules = defineRoute({
+	operationId: "listPromptRules",
+	method: "GET",
+	path: "/rules",
+	tag: "rules",
+	summary: "List an owner's prompt rules",
+	description:
+		"The platform's, the organisation's, a project's or a user's rules, in order. A project's need the viewer role on " +
+		"it; the others are open to the organisation.",
+	query: ListPromptRulesQuery,
+	answer: { status: 200, description: "The owner's rules.", schema: PromptRuleList },
+	errors: ruleErrors,
+});
+
+export const resolvePromptRules = defineRoute({
+	operationId: "resolvePromptRules",
+	method: "GET",
+	path: "/rules/resolved",
+	tag: "rules",
+	summary: "The rules a new session would get",
+	description:
+		"Platform, organisation, project (for a project session) and user rules, in the order they wrap the profile's " +
+		"own prompt: platform, organisation, project, profile, user. A session keeps the rules it started with.",
+	query: ResolvedPromptRulesQuery,
+	answer: { status: 200, description: "The rules, in layer order.", schema: PromptRuleList },
+	errors: ruleErrors,
+});
+
+export const getPromptRule = defineRoute({
+	operationId: "getPromptRule",
+	method: "GET",
+	path: "/rules/{ruleId}",
+	tag: "rules",
+	summary: "Get a prompt rule",
+	params: PromptRulePath,
+	answer: { status: 200, description: "The rule.", schema: PromptRule },
+	errors: ruleErrors,
+});
+
+export const putPromptRule = defineRoute({
+	operationId: "putPromptRule",
+	method: "PUT",
+	path: "/rules",
+	tag: "rules",
+	summary: "Create or replace a prompt rule",
+	description:
+		"Creates the owner's rule of that name, or replaces its text and order. The organisation's rules need an " +
+		"organisation-wide admin, a project's an admin on it, a user's that user or an organisation-wide admin; agents " +
+		"never write rules. Audited as `rules.rule.put`, without the text.",
+	body: PutPromptRuleBody,
+	answer: { status: 200, description: "The rule as stored.", schema: PromptRule },
+	errors: ruleErrors,
+});
+
+export const removePromptRule = defineRoute({
+	operationId: "removePromptRule",
+	method: "DELETE",
+	path: "/rules/{ruleId}",
+	tag: "rules",
+	summary: "Remove a prompt rule",
+	description: "Needs what writing it needs. New sessions stop getting it; running ones keep theirs.",
+	params: PromptRulePath,
+	answer: { status: 200, description: "The removed rule.", schema: PromptRule },
+	errors: ruleErrors,
+});
+
+export const ruleRoutes = {
+	listPromptRules,
+	resolvePromptRules,
+	getPromptRule,
+	putPromptRule,
+	removePromptRule,
+} as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
 export const routes = {
 	...sessionRoutes,
 	...skillRoutes,
+	...ruleRoutes,
 	...memoryRoutes,
 	...scheduleRoutes,
 	...browserRoutes,

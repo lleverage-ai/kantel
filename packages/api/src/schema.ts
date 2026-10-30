@@ -1301,3 +1301,65 @@ export const ShareUse = Type.Object(
 export const ShareUseList = Type.Object({ items: Type.Array(ShareUse) }, { title: "ShareUseList" });
 
 export const ListShareUsesQuery = Type.Object({ sessionId: id("The session.") }, { title: "ListShareUsesQuery" });
+
+// Prompt rules (docs/design/org-scope.md, decision 5): prompt layers owned by the platform, the organisation, a project
+// or a user, layered around a session's profile when it starts.
+
+export const PromptRule = Type.Object(
+	{
+		id: id("The rule's ID."),
+		owner: OwnerRef,
+		name: Type.String({ description: "Unique among its owner's rules." }),
+		text: Type.String({ description: "The prompt text." }),
+		order: Type.Integer({ description: "Its place among its owner's rules, lowest first; ties go by name." }),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{ title: "PromptRule" },
+);
+
+export const PromptRuleList = Type.Object(
+	{ items: Type.Array(PromptRule, { description: "In layer order: platform, organisation, project, user." }) },
+	{ title: "PromptRuleList" },
+);
+
+export const PutPromptRuleBody = Type.Object(
+	{
+		owner: OwnerRef,
+		name: Type.String({
+			pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+			description: "1 to 100 letters, digits, `.`, `_` and `-`. A rule of this name replaces the owner's rule.",
+		}),
+		text: Type.String({ minLength: 1, maxLength: 32768 }),
+		order: Type.Optional(Type.Integer({ minimum: -1000000, maximum: 1000000, description: "Default 0." })),
+	},
+	{ title: "PutPromptRuleBody" },
+);
+
+export const ListPromptRulesQuery = Type.Object(
+	{
+		owner: Type.Union(
+			[Type.Literal("platform"), Type.Literal("organisation"), Type.Literal("project"), Type.Literal("user")],
+			{ description: "Whose rules: the platform's, the organisation's, a project's or a user's." },
+		),
+		projectId: Type.Optional(Type.String({ minLength: 1, description: "The project, for `owner=project`." })),
+		userId: Type.Optional(
+			Type.String({ minLength: 1, description: "The user, for `owner=user`. Default the calling person." }),
+		),
+	},
+	{ title: "ListPromptRulesQuery" },
+);
+
+export const ResolvedPromptRulesQuery = Type.Object(
+	{
+		projectId: Type.Optional(
+			Type.String({ minLength: 1, description: "A project session's project. Absent: an organisation session." }),
+		),
+		userId: Type.Optional(
+			Type.String({ minLength: 1, description: "The session's user. Default the calling person." }),
+		),
+	},
+	{ title: "ResolvedPromptRulesQuery" },
+);
+
+export const PromptRulePath = Type.Object({ ruleId: id("The rule's ID.") });

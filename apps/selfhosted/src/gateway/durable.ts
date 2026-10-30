@@ -29,6 +29,7 @@ import { type BrowserProvider, HarbourError } from "@harbour/contracts";
 import { createPasskeys } from "@harbour/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
+import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
 import { callbackHostHandlers } from "@harbour/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
@@ -127,6 +128,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await migrateSkills(driver);
 		await migrateMemory(driver);
 		await migrateSharing(driver);
+		await migrateRules(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -144,6 +146,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await skillObjects.ensureBucket();
 		const skills = createSqlSkills({ driver, objects: skillObjects, audit, access: auditAccess.access });
 		const memory = createSqlMemory({ driver, audit, access: auditAccess.access });
+		const rules = createSqlPromptRules({ driver, audit, access: auditAccess.access });
 		let workspaces: StoredWorkspaces | undefined;
 		// The vault is built after the runtime (it needs its access), so it is asked for per call.
 		let sharedVault: HarbourVault | undefined;
@@ -184,6 +187,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				sharing,
 				...models,
 				...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
+				rules,
 				// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
 				hostHandler: callbackHostHandlers(),
 				onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
@@ -235,6 +239,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			skills,
 			memory,
 			sharing,
+			rules,
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
@@ -253,6 +258,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				workspaces: "postgres + s3",
 				skills: "postgres + s3",
 				memory: "postgres",
+				rules: "postgres",
 				usage: usage?.binding ?? "off",
 				sandboxes: SANDBOX_BINDING,
 				signIn: "postgres",

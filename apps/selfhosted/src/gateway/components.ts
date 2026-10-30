@@ -24,6 +24,7 @@ import {
 	type Project,
 	type ProjectAccess,
 	type ProjectId,
+	type PromptRules,
 	type Skills,
 	type WorkspaceId,
 } from "@harbour/contracts";
@@ -31,6 +32,7 @@ import { createMemoryIdentity } from "@harbour/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
 import { createMemoryMemory } from "@harbour/memory/memory";
+import { createMemoryPromptRules } from "@harbour/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
@@ -65,6 +67,8 @@ export interface GatewayComponents {
 	readonly memory: Memory;
 	/** Sharing resources across projects (docs/design/sharing.md), read by the runtime's access for every resource check. */
 	readonly sharing: SharingStore;
+	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
+	readonly rules: PromptRules;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -216,6 +220,7 @@ export function createGatewayComponents(
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
+	const rules = createMemoryPromptRules({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
 	const sharing = createMemorySharing({
 		audit,
@@ -240,6 +245,7 @@ export function createGatewayComponents(
 			...gatewaySandboxes.runtimeOptions,
 			tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
+			rules,
 		}),
 		lateWorkspaces,
 	);
@@ -272,6 +278,7 @@ export function createGatewayComponents(
 		skills,
 		memory,
 		sharing,
+		rules,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),

@@ -53,6 +53,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
 | Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (27) | [skills](../packages/skills/CONTRACT.md) |
 | Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (39) | [memory](../packages/memory/CONTRACT.md) |
+| Prompt rules | `PromptRules` | `@harbour/rules/memory` (durable: `@harbour/rules/sql`) | `registerRulesConformance` (10) | [rules](../packages/rules/CONTRACT.md) |
 | Schedules | `Schedules` | `@harbour/schedules/memory` (durable: `@harbour/schedules/sql`) | `registerSchedulesConformance` (33) | [schedules](../packages/schedules/CONTRACT.md) |
 | Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (22) | [audit](../packages/audit/CONTRACT.md) |
 
