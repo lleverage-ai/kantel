@@ -21,7 +21,11 @@ export type SessionActions = {
 	>;
 	/** Queues the draft to run when the current run finishes. */
 	onFollowUp: (text: string) => void;
-	onStop: () => void;
+	/**
+	 * Stops the run. Absent while a press is still waiting for the run to end, when Stop shows disabled. A stop is never
+	 * a send: it doesn't set `sending` (state/stop.ts).
+	 */
+	onStop?: () => void;
 	/**
 	 * Messages sent from here that the session's stream hasn't brought yet, oldest first (state/outbox.ts). The
 	 * transcript shows them at once, after the session's items.
@@ -31,7 +35,7 @@ export type SessionActions = {
 	onRetrySend?: (requestId: string) => void;
 	/** Takes a failed message out of the outbox and puts its words back in the composer. Keep it stable. */
 	onEditUnsent?: (requestId: string) => void;
-	/** A stop, a browser decision or a follow-up is on its way (messages and steers go through the outbox). */
+	/** A browser decision or a follow-up is on its way (messages and steers go through the outbox, a stop doesn't wait). */
 	sending: boolean;
 	/**
 	 * When the person last sent a prompt (epoch ms), until the session's status first moves after it. The transcript

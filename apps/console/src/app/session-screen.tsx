@@ -8,6 +8,7 @@ import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
 import { Outbox, type OutgoingVia } from "../state/outbox.ts";
 import { SessionClient } from "../state/session-client.ts";
+import { Stopper } from "../state/stop.ts";
 import { createRequestIds, createWarmHint, type SessionActions } from "../ui/actions.ts";
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
@@ -149,6 +150,15 @@ export function SessionScreen({
 				);
 	}, [client, sessionId]);
 	useEffect(() => () => browserLive?.dispose(), [browserLive]);
+	// Stop follows the session's stream, not the abort request, which the host holds until the run has let go of
+	// everything (state/stop.ts): it never puts the composer in its sending state.
+	const stopper = useMemo(() => new Stopper(() => client.cancel(sessionId), setFailure), [client, sessionId]);
+	const stopping = useSyncExternalStore(stopper.subscribe, stopper.getState);
+	useEffect(() => {
+		const settle = () => stopper.settle(session.getState().status);
+		settle();
+		return session.subscribe(settle);
+	}, [session, stopper]);
 	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
 	const linked = useLinkedTurn(session);
 	// Where the session's subagent cards go: each call's own session, found from the call. None on a client that
@@ -424,7 +434,14 @@ export function SessionScreen({
 		},
 		files: attached.composer,
 		onFollowUp: followUp,
-		onStop: () => void run(() => client.cancel(sessionId)),
+		...(stopping
+			? {}
+			: {
+					onStop: () => {
+						setFailure(undefined);
+						stopper.stop();
+					},
+				}),
 		...(client.decideBrowser === undefined
 			? {}
 			: {
