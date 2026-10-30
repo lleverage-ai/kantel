@@ -4,7 +4,7 @@
  * behind each target's `HARBOUR_USAGE` switch.
  */
 import type { AgentId, OrganisationId, ProjectId, SessionId, Timestamp } from "./common.ts";
-import type { ConnectorPreset, ModelWireApi } from "./models.ts";
+import type { ConnectorPreset, ModelImageApi, ModelWireApi } from "./models.ts";
 
 /** One model call's usage. Immutable; `(sessionId, callId)` is its idempotency key. */
 export interface UsageRecord {
@@ -28,7 +28,8 @@ export interface UsageRecord {
 	readonly connectorId: string;
 	/** The connector's kind (`cliproxyapi`, `litellm`, `openrouter`, …). */
 	readonly connectorPreset: ConnectorPreset;
-	readonly api: ModelWireApi;
+	/** The wire API of a chat call (`messages`), or the image API of an image call (`images`), such as `openai-images`. */
+	readonly api: ModelWireApi | ModelImageApi;
 	readonly status: "done" | "error" | "aborted";
 	readonly stopReason?: string;
 	/** The upstream's error text, redacted and cut to 500 characters. */
@@ -40,6 +41,8 @@ export interface UsageRecord {
 	readonly cacheWriteTokens: number;
 	/** A subset of `outputTokens`, when the upstream reports it. */
 	readonly reasoningTokens?: number;
+	/** The images the call generated: 0 for a chat call, and for an image call that failed. */
+	readonly images: number;
 	/** US dollars; zero when `costSource` is `none`. */
 	readonly cost: {
 		readonly total: number;
@@ -51,7 +54,8 @@ export interface UsageRecord {
 	readonly costSource: "reported" | "computed" | "none";
 	/**
 	 * Which prices made `cost`: `rates:<input>/<output>/<cacheRead>/<cacheWrite>` in US dollars per million tokens for a
-	 * computed cost (the connector's catalogue rates at call time), `reported` or `none`.
+	 * computed cost (the connector's catalogue rates at call time), `image:<rate>` in US dollars per image for an image
+	 * call priced per image (no token counts), `reported` or `none`.
 	 */
 	readonly priceVersion: string;
 	readonly durationMs: number;

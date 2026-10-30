@@ -1033,10 +1033,12 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		if (signal?.aborted) onAbort();
 		else signal?.addEventListener("abort", onAbort, { once: true });
 		let recorded = false;
+		// Recorded as `messages` records its calls: the `model.call` event, and the usage record under the image API.
 		const finish = (
 			status: ModelCallRecord["status"],
 			usage: ModelUsage,
 			costSource: ModelCallRecord["costSource"],
+			priced: { readonly error?: string; readonly priceVersion?: string } = {},
 		) => {
 			recorded = true;
 			return record(
@@ -1054,14 +1056,23 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					usage,
 					costSource,
 				},
-				// Its usage row: the image API is called through the connector's OpenAI-compatible base URL.
-				{ connector, api: "openai-completions", rates: target.model.cost },
+				// Its usage row, under the image API it was made over (not the chat wire whose base URL it shares).
+				{
+					connector,
+					api: target.imageApi ?? "openai-images",
+					rates: target.model.cost,
+					...(priced.priceVersion === undefined ? {} : { priceVersion: priced.priceVersion }),
+					...(priced.error === undefined ? {} : { error: redactor.text(priced.error) }),
+				},
 			);
 		};
 		const failedCostSource = spec.cost === "none" ? "none" : "computed";
 		let redactor = new Redactor([]);
+		/** Whether the key was read: a call that failed before it reached no upstream, and costs nothing (as `messages`). */
+		let keyRead = false;
 		try {
 			const key = await keys.key(connector, scope, controller.signal);
+			keyRead = true;
 			redactor = new Redactor([key]);
 			const call = await openaiImages({
 				fetch: upstreamFetch,
@@ -1077,14 +1088,16 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			if (call.status === 401) keys.drop(connector);
 			if (!call.ok) {
 				const usage = { ...emptyUsage(), images: 0 };
-				await finish(controller.signal.aborted ? "aborted" : "error", usage, failedCostSource);
+				await finish(controller.signal.aborted ? "aborted" : "error", usage, failedCostSource, {
+					error: `${call.status}: ${call.errorMessage}`,
+				});
 				throw new HarbourError(
 					call.status === 400 || call.status === 422 ? "invalid" : call.status === 429 ? "exhausted" : "unavailable",
 					redactor.text(`${call.status}: ${call.errorMessage}`),
 				);
 			}
-			const { usage, costSource } = pricedImages(spec.cost, target, call);
-			await finish("done", usage, costSource);
+			const { usage, costSource, priceVersion } = pricedImages(spec.cost, target, call);
+			await finish("done", usage, costSource, priceVersion === undefined ? {} : { priceVersion });
 			return {
 				images: call.images.map((image) => ({
 					mimeType: image.mimeType,
@@ -1099,7 +1112,16 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		} catch (error) {
 			// An upstream's refusal was recorded with its answer; a key read, a network failure or an abort is recorded here.
 			const aborted = controller.signal.aborted;
-			if (!recorded) await finish(aborted ? "aborted" : "error", { ...emptyUsage(), images: 0 }, failedCostSource);
+			if (!recorded) {
+				await finish(
+					aborted ? "aborted" : "error",
+					{ ...emptyUsage(), images: 0 },
+					keyRead ? failedCostSource : "none",
+					{
+						error: error instanceof Error ? error.message : String(error),
+					},
+				);
+			}
 			if (isHarbourError(error) && !aborted) throw error;
 			const message = redactor.text(error instanceof Error ? error.message : String(error));
 			throw new HarbourError(aborted ? "aborted" : "unavailable", message);
