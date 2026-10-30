@@ -52,7 +52,7 @@ this table moves there route by route (#150); until then those routes are served
 | `GET /sessions/:id/snapshot` | `runtime.snapshot` | `SessionSnapshot` |
 | `GET /sessions/:id/history?cursor&before&limit` | `history.history`, when the API has `history` | `SessionHistoryPage` |
 | `GET /sessions/:id/models` | `models.modelState`, when the API has `models` | `SessionModelState` |
-| `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId?, model?, thinking? }`) | 202 `Submission` |
+| `POST /sessions/:id/prompt`, `/steer`, `/follow-up` | `prompt`, `steer`, `followUp` (body `{ text, requestId?, model?, thinking?, attachments? }`; `attachments` are `PromptAttachment` references the host stored, read through `SessionRuntimeOptions.attachments`, and `text` may be empty with one) | 202 `Submission` |
 | `POST /sessions/:id/abort` | `runtime.abort` (body `{ reason? }`) | 204 |
 | `POST /sessions/:id/warm` | `warm.warm`, when the API has `warm`; otherwise it only checks the session | `{ container }` |
 | `POST /sessions/:id/close` | `runtime.close` | 204 |

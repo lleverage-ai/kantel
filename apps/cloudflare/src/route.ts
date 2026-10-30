@@ -36,6 +36,11 @@ import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
 
+/** Where the console uploads a file for a prompt (`src/attachments.ts`). */
+export const ATTACHMENTS_PATH = "/v1/attachments";
+/** The largest file that API takes, in bytes. */
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
 /** Where a host creates a seeded workspace. */
@@ -255,6 +260,13 @@ export async function routeRequest<StackId, VaultId>(
 		// And for importing a skill, loading a snapshot, a search or a recall: the stack refuses a stranger before it reads
 		// the JSON body, at most a skill's files or a space's concepts.
 		const forwarded = await buffered(request, skills ? SKILL_IMPORT_BODY_LIMIT : MEMORY_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	if (request.method === "POST" && path === ATTACHMENTS_PATH) {
+		// And for a prompt's attachment: the stack refuses someone who can't start a session in the project before it reads
+		// the file, at most 20 MB.
+		const forwarded = await buffered(request, MAX_ATTACHMENT_BYTES);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

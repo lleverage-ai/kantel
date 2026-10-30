@@ -5928,6 +5928,42 @@
 				},
 				"title": "Usage"
 			},
+			"UserAttachment": {
+				"type": "object",
+				"required": ["id", "name", "type", "size", "kind"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"type": {
+						"type": "string"
+					},
+					"size": {
+						"type": "number"
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "image"
+							},
+							{
+								"type": "string",
+								"const": "file"
+							},
+							{
+								"type": "string",
+								"const": "text"
+							}
+						]
+					}
+				},
+				"title": "UserAttachment",
+				"description": "A file sent with a message. The model saw its contents; `text` leaves them out."
+			},
 			"UserItem": {
 				"type": "object",
 				"required": ["kind", "id", "at", "text", "via"],
@@ -5964,6 +6000,12 @@
 					},
 					"requestId": {
 						"type": "string"
+					},
+					"attachments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/UserAttachment"
+						}
 					}
 				},
 				"title": "UserItem"

@@ -343,16 +343,20 @@
 	background: var(--hb-scrim);
 }
 
+/*
+ * A file as a small card, after Claude's: the file type's icon on a tile, the name over its type and size, and Remove.
+ * As tall as an image's thumbnail is wide, so a strip of both reads as one row of things attached.
+ */
 .hb-composer-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: var(--hb-space-3);
-	max-width: 100%;
-	height: var(--hb-control-sm);
-	padding: 0 var(--hb-space-1) 0 var(--hb-space-4);
-	border: var(--hb-hairline) solid var(--hb-accent-soft);
+	gap: var(--hb-space-4);
+	max-width: min(100%, calc(var(--hb-card-width) / 2));
+	height: calc(var(--hb-control-md) + var(--hb-space-6) + var(--hb-hairline) * 2);
+	padding: var(--hb-space-3) var(--hb-space-2) var(--hb-space-3) var(--hb-space-3);
+	border: var(--hb-hairline) solid var(--hb-border-strong);
 	border-radius: var(--hb-radius-control);
-	background: var(--hb-accent-soft);
+	background: var(--hb-raised);
 	color: var(--hb-text);
 	font-size: var(--hb-text-xs);
 	font-weight: var(--hb-weight-medium);
@@ -364,8 +368,26 @@
 	background: var(--hb-status-error-soft);
 }
 
-.hb-composer-chip-icon {
-	color: var(--hb-accent-text);
+.hb-composer-chip-tile {
+	display: grid;
+	flex: none;
+	place-items: center;
+	width: var(--hb-control-md);
+	height: var(--hb-control-md);
+	border-radius: var(--hb-radius-sm);
+}
+
+.hb-composer-chip-text {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-composer-chip-facts {
+	display: flex;
+	gap: var(--hb-space-3);
+	min-width: 0;
 }
 
 /*
@@ -382,7 +404,6 @@
 
 .hb-composer-chip-name {
 	min-width: 0;
-	max-width: calc(var(--hb-card-width) / 2);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -397,9 +418,22 @@
 	white-space: nowrap;
 }
 
-.hb-composer-chip-failed .hb-composer-chip-icon,
 .hb-composer-chip-failed .hb-composer-chip-meta {
 	color: var(--hb-status-error);
+}
+
+/* Over the file type's tint (file-tile.css). */
+.hb-composer-chip-failed .hb-composer-chip-tile.hb-file-tile {
+	background: var(--hb-status-error-soft);
+	color: var(--hb-status-error);
+}
+
+/* The card's own error line: what went wrong, cut to the card's width (the whole of it is in the title). */
+.hb-composer-chip-failed .hb-composer-chip-meta {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .hb-composer-chip-button {

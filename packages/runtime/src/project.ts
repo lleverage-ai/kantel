@@ -24,6 +24,7 @@ import {
 	type ToolImage,
 	type ToolItem,
 	type ToolItemStatus,
+	type UserAttachment,
 	type UserItem,
 	type UserItemVia,
 } from "@harbour/protocol";
@@ -34,11 +35,32 @@ export const HARBOUR_USER_ENTRY = "harbour.user";
 export interface HarbourUserEntryData {
 	readonly via: UserItemVia;
 	readonly requestId?: string;
+	/** The files sent with the input, as the transcript names them. */
+	readonly attachments?: readonly UserAttachment[];
+	/**
+	 * How many of the message's leading content blocks are the attachments' (their text and images), so the transcript
+	 * shows only the typed words after them.
+	 */
+	readonly attachmentBlocks?: number;
 }
 
 /** The entry a Harbour input is placed as: its kind and how it was sent. The model still sees the text. */
-export function harbourUserEntry(via: UserItemVia, requestId?: string): InputEntry {
-	return { kind: HARBOUR_USER_ENTRY, data: requestId === undefined ? { via } : { via, requestId } };
+export function harbourUserEntry(
+	via: UserItemVia,
+	requestId?: string,
+	attached?: { readonly attachments: readonly UserAttachment[]; readonly blocks: number },
+): InputEntry {
+	const data: HarbourUserEntryData = {
+		via,
+		...(requestId === undefined ? {} : { requestId }),
+		...(attached === undefined || attached.attachments.length === 0
+			? {}
+			: {
+					attachments: attached.attachments.map(({ id, name, type, size, kind }) => ({ id, name, type, size, kind })),
+					attachmentBlocks: attached.blocks,
+				}),
+	};
+	return { kind: HARBOUR_USER_ENTRY, data: data as unknown as InputEntry["data"] };
 }
 
 /** The plain-language chip label of a tool call. */
@@ -280,6 +302,26 @@ function userViaOf(entry: EntryRecord): { via: UserItemVia; requestId?: string }
 }
 
 /**
+ * A user message's words and attachments: the attachments' blocks lead the content and the model reads them, but the
+ * transcript shows only what the person typed, with the files named beside it.
+ */
+function userContentOf(
+	entry: EntryRecord,
+	content: readonly ContentBlock[] | string,
+): { text: string; attachments?: readonly UserAttachment[] } {
+	const data =
+		entry.kind === HARBOUR_USER_ENTRY && typeof entry.data === "object" && entry.data !== null
+			? (entry.data as Partial<HarbourUserEntryData>)
+			: undefined;
+	const attachments = Array.isArray(data?.attachments) ? data.attachments : undefined;
+	if (attachments === undefined || attachments.length === 0 || typeof content === "string") {
+		return { text: textOf(content) };
+	}
+	const skip = typeof data?.attachmentBlocks === "number" ? data.attachmentBlocks : 0;
+	return { text: textOf(content.slice(skip)), attachments };
+}
+
+/**
  * Turns successive views of one conversation into delta ops. New entries append items; a streamed answer grows one
  * assistant item with `text` ops; a tool call is a `tool` item replaced when its result lands; status changes become
  * `status` ops.
@@ -347,7 +389,7 @@ export class ConversationProjector {
 				id: `u${entry.id}`,
 				// When it was sent, from the stored message: a session projected again keeps its times.
 				at: timeOf(message.timestamp) ?? this.#now(),
-				text: textOf(message.content),
+				...userContentOf(entry, message.content),
 				...userViaOf(entry),
 			};
 			this.#entries.set(item.id, entry);

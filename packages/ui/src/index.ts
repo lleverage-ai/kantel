@@ -143,6 +143,7 @@ export {
 	TextField,
 } from "./primitives/controls.tsx";
 export { Dialog, type DialogProps } from "./primitives/dialog.tsx";
+export { type FileTypeKind, fileTypeIcon, fileTypeKind, fileTypeLabel } from "./primitives/file-icons.ts";
 export {
 	describedBy,
 	FormActions,
@@ -267,6 +268,7 @@ export {
 	type ComposerState,
 	checkFiles,
 	DEFAULT_PASTE_FOLD,
+	isImage,
 	limitsSummary,
 	type PasteFold,
 	type PrimaryAction,

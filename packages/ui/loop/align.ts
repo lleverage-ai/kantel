@@ -335,19 +335,43 @@ export function measureAlignment(): Misalignment[] {
 		const baseline = (top + bottom) / 2 + (metrics.fontBoundingBoxAscent - metrics.fontBoundingBoxDescent) / 2;
 		compare("model search icon", search, centre(icon), baseline - metrics.actualBoundingBoxAscent / 2);
 	}
-	// Attachment chips (files and pasted text): the name on the chip's centre, the icon and buttons on the name, the
-	// size on the name's baseline.
-	for (const chip of root.querySelectorAll(".hb-composer-chip")) {
-		const line = labelled(
-			"attachment chip",
-			chip,
-			chip.querySelector(".hb-composer-chip-name"),
-			chip.querySelectorAll(":scope > .hb-icon, .hb-composer-chip-button > .hb-icon"),
-			true,
-		);
-		for (const meta of chip.querySelectorAll(".hb-composer-chip-meta, .hb-composer-progress-text")) {
-			const metaLine = visible(meta) ? textLine(meta) : null;
-			if (line !== null && metaLine !== null) compare("attachment chip size", chip, metaLine.baseline, line.baseline);
+	// Attachment cards (files and pasted text), in the composer and sent with a message: the name over the type and size,
+	// the two lines together on the card's centre; the type's tile, and the buttons, on the card's centre, the icon on
+	// its tile; the type, size and progress on one baseline.
+	for (const [selector, part] of [
+		[".hb-composer-chip", "hb-composer-chip"],
+		[".hb-user-attachment", "hb-user-attachment"],
+	] as const) {
+		for (const chip of root.querySelectorAll(selector)) {
+			if (!visible(chip)) continue;
+			const name = chip.querySelector(`.${part}-name`);
+			const line = name === null ? null : textLine(name);
+			if (line === null) {
+				unmeasured("attachment card name", chip);
+				continue;
+			}
+			const metas = [
+				...chip.querySelectorAll(
+					part === "hb-composer-chip"
+						? ".hb-composer-chip-meta, .hb-composer-progress-text"
+						: ".hb-user-attachment-facts > span",
+				),
+			]
+				.map((meta) => (visible(meta) ? textLine(meta) : null))
+				.filter((meta) => meta !== null);
+			const first = metas[0];
+			if (first === undefined) unmeasured("attachment card facts", chip);
+			else compare("attachment card lines", chip, (line.centre + first.centre) / 2, centre(chip));
+			for (const meta of metas.slice(1)) compare("attachment card facts", chip, meta.baseline, first?.baseline);
+			const tile = chip.querySelector(`.${part}-tile`);
+			if (tile !== null) {
+				compare("attachment card tile", chip, centre(tile), centre(chip));
+				const icon = tile.querySelector(".hb-icon");
+				if (icon !== null) compare("attachment card icon", chip, centre(icon), centre(tile));
+			}
+			for (const icon of chip.querySelectorAll(".hb-composer-chip-button > .hb-icon")) {
+				if (visible(icon)) compare("attachment card button", chip, centre(icon), centre(chip));
+			}
 		}
 	}
 	// Image thumbnails' remove and retry buttons, and a resting file square: the icon on its box.

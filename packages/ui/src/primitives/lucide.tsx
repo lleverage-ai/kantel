@@ -6,6 +6,11 @@ import {
 	Ellipsis,
 	Eye,
 	EyeOff,
+	File,
+	FileCode,
+	FileImage,
+	FileSpreadsheet,
+	FileText,
 	ListFilter,
 	type LucideIcon,
 	Pencil,
@@ -50,3 +55,9 @@ export const RenameIcon = lucide(Pencil, "RenameIcon");
 export const PinIcon = lucide(Pin, "PinIcon");
 export const UnpinIcon = lucide(PinOff, "UnpinIcon");
 export const TrashIcon = lucide(Trash2, "TrashIcon");
+// File types, for attachment cards (`file-icons.ts`).
+export const LucideFileIcon = lucide(File, "LucideFileIcon");
+export const FileTextIcon = lucide(FileText, "FileTextIcon");
+export const FileImageIcon = lucide(FileImage, "FileImageIcon");
+export const FileCodeIcon = lucide(FileCode, "FileCodeIcon");
+export const FileSpreadsheetIcon = lucide(FileSpreadsheet, "FileSpreadsheetIcon");

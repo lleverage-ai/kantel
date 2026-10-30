@@ -68,6 +68,7 @@ import {
 } from "@harbour/contracts";
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+import { type PromptAttachments, type ReadAttachments, userInputOf } from "./attachments.ts";
 import { ACTIVE_CONVERSATION, copyEntries, entryBefore, FORK_SKILLS } from "./branching.ts";
 import {
 	contextEntryOf,
@@ -213,6 +214,11 @@ export interface SessionRuntimeOptions {
 	 * `memory_search` and `memory_read` tools. Without it sessions get no memory.
 	 */
 	readonly memory?: SessionMemoryOptions;
+	/**
+	 * Reads a prompt's attachments through the host that stored them (`./attachments.ts`): what the model sees of each,
+	 * placed ahead of the prompt's words. Without it a prompt with attachments is `invalid`.
+	 */
+	readonly attachments?: PromptAttachments;
 }
 
 export interface SessionRuntimeService {
@@ -1084,7 +1090,17 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		if (stored.closed || open.get(sessionId)?.closed === true) {
 			throw new HarbourError("conflict", `Session ${sessionId} is closed`);
 		}
-		if (input.text === "") throw new HarbourError("invalid", "A prompt needs text");
+		const attachments = input.attachments ?? [];
+		if (input.text === "" && attachments.length === 0) throw new HarbourError("invalid", "A prompt needs text");
+		if (attachments.length > 0 && options.attachments === undefined) {
+			throw new HarbourError("invalid", "This deployment doesn't take attachments");
+		}
+		// Read before anything changes, so an attachment the host refuses leaves the session as it was.
+		const read: ReadAttachments =
+			attachments.length === 0 || options.attachments === undefined
+				? { blocks: [], attachments: [] }
+				: await options.attachments.read(ctx, stored.record, attachments);
+		const { blocks } = read;
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
 		const chose = await applyChoice(ctx, session, input);
@@ -1093,9 +1109,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			session.conversation.submit(
 				{
 					type: "input",
-					content: input.text,
+					content: userInputOf(input.text, blocks),
 					whenBusy: via === "steer" ? "steer" : "followUp",
-					entry: harbourUserEntry(via, input.requestId),
+					entry: harbourUserEntry(
+						via,
+						input.requestId,
+						read.attachments.length === 0 ? undefined : { attachments: read.attachments, blocks: blocks.length },
+					),
 					...(input.requestId === undefined ? {} : { requestId: input.requestId }),
 				},
 				piContext(ctx),

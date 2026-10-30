@@ -22,6 +22,7 @@
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
  * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
+ * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -58,6 +59,7 @@ import {
 	SHARED_LINK_BASE,
 } from "@harbour/workspace/shares-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
+import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
 import { sessionWorkspaceId } from "./coding-tools.ts";
 import {
 	MEASURE_PATH,
@@ -296,6 +298,13 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		return undefined;
 	};
 
+	// The composer's uploads: a file for a prompt, stored under the project before the message is sent.
+	const attachments = createAttachmentsApi({
+		store: stack.attachments,
+		access: stack.access,
+		authenticate: callContext,
+	});
+
 	const workspace = measurementWorkspace(stack);
 	const measure = async (request: Request): Promise<Response> => {
 		if (request.method !== "POST") {
@@ -429,6 +438,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				return (await gitBranches(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
+			if (path === ATTACHMENTS_PATH) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return attachments(request);
+			}
 			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
 				const refused = await signIn(request);
 				if (refused !== undefined) return refused;

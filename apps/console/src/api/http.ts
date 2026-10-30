@@ -31,7 +31,7 @@ import {
 	type SessionHistoryPage,
 	type SessionModelState,
 } from "@harbour/contracts";
-import type { ServerFrame, SessionStatus } from "@harbour/protocol";
+import type { ServerFrame, SessionStatus, UserAttachment } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
@@ -463,6 +463,9 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
 				...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
 				...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+				...(sendOptions?.attachments === undefined || sendOptions.attachments.length === 0
+					? {}
+					: { attachments: sendOptions.attachments }),
 			},
 			sendOptions?.requestId,
 		);
@@ -739,6 +742,17 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 					? sessionUrl(target.sessionId, "/models")
 					: `${base}/profiles/${encodeURIComponent(target.start.agentId)}/models?${new URLSearchParams({ projectId: target.start.projectId })}`;
 			return modelChoicesOf(await getJson<SessionModelState>(path, signal));
+		},
+
+		// A file for a message: its bytes as the body, stored under the project (`POST /v1/attachments`).
+		async uploadAttachment(projectId, file, signal) {
+			const response = await call(`${base}/attachments?${new URLSearchParams({ projectId, name: file.name })}`, {
+				method: "POST",
+				headers: { "content-type": file.type === "" ? "application/octet-stream" : file.type },
+				body: file,
+				...(signal === undefined ? {} : { signal }),
+			});
+			return (await response.json()) as UserAttachment;
 		},
 
 		prompt: (sessionId, text, sendOptions) => send(sessionId, "prompt", text, sendOptions),

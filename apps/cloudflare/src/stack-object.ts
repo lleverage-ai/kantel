@@ -340,6 +340,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 			}),
 			// The skills store keys every body `skills/…`, so it shares the workspaces' bucket (and its placement) apart.
 			skillObjects: r2ObjectBucket(this.env.WORKSPACES),
+			// Prompt attachments too, keyed `attachments/…` (src/attachments.ts).
+			attachmentObjects: r2ObjectBucket(this.env.WORKSPACES),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),

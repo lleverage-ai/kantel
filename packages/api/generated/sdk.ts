@@ -999,6 +999,15 @@ export interface Usage {
 	readonly costUsd?: number;
 }
 
+/** A file sent with a message. The model saw its contents; `text` leaves them out. */
+export interface UserAttachment {
+	readonly id: string;
+	readonly name: string;
+	readonly type: string;
+	readonly size: number;
+	readonly kind: "image" | "file" | "text";
+}
+
 export interface UserItem {
 	readonly kind: "user";
 	readonly id: string;
@@ -1007,6 +1016,7 @@ export interface UserItem {
 	readonly text: string;
 	readonly via: "prompt" | "steer" | "followUp";
 	readonly requestId?: string;
+	readonly attachments?: readonly UserAttachment[];
 }
 
 /** A vault proposal waiting on a person. The secret is never part of it. */

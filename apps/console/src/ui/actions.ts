@@ -1,5 +1,5 @@
 import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
-import type { ComposerProps, ComposerState } from "@harbour/ui";
+import type { ComposerAttachment, ComposerProps, ComposerState } from "@harbour/ui";
 import type { SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
@@ -11,8 +11,13 @@ export type SessionActions = {
 	control: SessionControl;
 	draft: string;
 	onDraft: (text: string) => void;
-	onSend: (text: string) => void;
-	onSteer: (text: string) => void;
+	onSend: (text: string, attachments?: readonly ComposerAttachment[]) => void;
+	onSteer: (text: string, attachments?: readonly ComposerAttachment[]) => void;
+	/** The composer's files: the attached ones and their handlers, or why it takes none. */
+	files?: Pick<
+		ComposerProps,
+		"attachments" | "onAttach" | "onRemoveAttachment" | "onRetryAttachment" | "attachmentLimits" | "attachUnavailable"
+	>;
 	/** Queues the draft to run when the current run finishes. */
 	onFollowUp: (text: string) => void;
 	onStop: () => void;

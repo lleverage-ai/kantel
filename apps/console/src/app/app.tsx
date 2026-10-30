@@ -611,6 +611,7 @@ export function App({
 				key={sessionId}
 				client={client}
 				sessionId={sessionId}
+				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
