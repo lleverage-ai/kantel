@@ -114,14 +114,8 @@ const samples = async (page: Page, name: string): Promise<Sample[]> =>
 		(sample) => sample.phase === name,
 	);
 
-/** Two painted frames in a row away from the end: one frame's lag behind a batch isn't counted. */
-function leftEnd(list: readonly Sample[]): Sample | undefined {
-	for (let i = 1; i < list.length; i++) {
-		const [a, b] = [list[i - 1] as Sample, list[i] as Sample];
-		if (a.gap > AT_END_PX && b.gap > AT_END_PX) return b;
-	}
-	return undefined;
-}
+/** A painted frame away from the end: following, even one frame showing a batch's last lines missing counts. */
+const leftEnd = (list: readonly Sample[]): Sample | undefined => list.find((sample) => sample.gap > AT_END_PX);
 
 /** Frames where the content moved the wrong way: `allowed` says which moves are the reader's own. */
 const against = (list: readonly Sample[], allowed: (moved: number) => boolean) =>
@@ -176,7 +170,7 @@ async function main() {
 		check(
 			"follows the end while the reader is there",
 			left === undefined,
-			left === undefined ? `${following.length} frames, end in view` : `left the end by ${left.gap}px`,
+			left === undefined ? `${following.length} frames, end in view in every one` : `left the end by ${left.gap}px`,
 		);
 
 		// 2. Up, a notch at a time while it streams: each notch moves the content down, nothing moves it back up, and once

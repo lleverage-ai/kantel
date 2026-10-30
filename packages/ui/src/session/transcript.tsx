@@ -711,10 +711,16 @@ export function Transcript({
 			band();
 			if (isAtEnd(scroll)) setResting(false);
 		};
-		const observer = new ResizeObserver(() => {
+		const resized = () => {
 			if (follow.current.mode === "following") pin();
 			else band();
-		});
+		};
+		const observer = new ResizeObserver(resized);
+		// virtua measures its rows in its own ResizeObserver and grows its content at once, inside that callback. A
+		// ResizeObserver only hears of an element shallower than the ones it has just reported in the next frame, so the
+		// end would show a streamed batch's last lines missing for a frame. The content's style changing (its height,
+		// written by virtua) is heard before that frame is painted.
+		const restyled = new MutationObserver(resized);
 		viewport.addEventListener("wheel", onWheel, { passive: true });
 		viewport.addEventListener("keydown", onKey);
 		viewport.addEventListener("pointerdown", onPointer, { passive: true });
@@ -722,6 +728,7 @@ export function Transcript({
 		viewport.addEventListener("scroll", onScroll, { passive: true });
 		observer.observe(content);
 		observer.observe(viewport);
+		restyled.observe(content, { attributes: true, attributeFilter: ["style"] });
 		return () => {
 			viewport.removeEventListener("wheel", onWheel);
 			viewport.removeEventListener("keydown", onKey);
@@ -729,6 +736,7 @@ export function Transcript({
 			viewport.removeEventListener("touchmove", onTouch);
 			viewport.removeEventListener("scroll", onScroll);
 			observer.disconnect();
+			restyled.disconnect();
 		};
 	}, [showList, viewportOf, moveFollow, pin, stopLanding]);
 
