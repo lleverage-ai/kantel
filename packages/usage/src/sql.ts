@@ -182,7 +182,8 @@ function values(record: UsageRecord, recordedAt: number): SqlValue[] {
 		record.startedAt,
 		recordedAt,
 		record.organisationId,
-		record.projectId,
+		// An organisation session's call has no project: '' in the NOT NULL column, read back as absent.
+		record.projectId ?? "",
 		record.agentId,
 		record.runId ?? null,
 		record.route,
@@ -227,7 +228,7 @@ export function recordOf(row: Row): UsageRecord {
 		callId: String(row.call_id),
 		startedAt: sqlNumber(row.started_at),
 		organisationId: String(row.organisation_id),
-		projectId: String(row.project_id),
+		...(row.project_id === "" || row.project_id === null ? {} : { projectId: String(row.project_id) }),
 		sessionId: String(row.session_id),
 		agentId: String(row.agent_id),
 		...(runId === undefined ? {} : { runId }),

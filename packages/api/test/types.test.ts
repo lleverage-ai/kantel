@@ -132,7 +132,7 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof ModelOption>, ContractModelOption>(true),
 			same<Wire<typeof ModelSelection>, ContractModelSelection>(true),
 			same<Wire<typeof SessionModelState>, ContractSessionModelState>(true),
-			same<Wire<typeof NewSessionModelsQuery>, Pick<SessionModelsStart, "projectId">>(true),
+			same<Wire<typeof NewSessionModelsQuery>, Pick<SessionModelsStart, "projectId" | "scope">>(true),
 			same<Wire<typeof ForkSessionBody>, ForkSessionInput>(true),
 			same<Omit<Wire<typeof ListSessionsQuery>, "label" | "limit" | "cursor">, Omit<SessionFilter, "labels">>(true),
 			same<Omit<Wire<typeof CreatedSession>, "submission">, ContractSessionRecord>(true),

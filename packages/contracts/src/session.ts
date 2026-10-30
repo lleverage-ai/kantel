@@ -1,6 +1,7 @@
 /**
  * Session runtime and directory. A session is one durable agent conversation (one Pi Durable harness), owned by an
- * organisation and project and run with an agent profile. A host prompts, steers, follows up, aborts and watches it,
+ * organisation, scoped to one of its projects or to the organisation itself (docs/design/org-scope.md), and run with an
+ * agent profile. A host prompts, steers, follows up, aborts and watches it,
  * and serves host tools over an authenticated callback.
  *
  * Pi types never appear here; the runtime projects Pi Durable's transcript onto `@harbour/protocol` items.
@@ -27,6 +28,7 @@ import type {
 	SessionId,
 	Subscription,
 	Timestamp,
+	UserId,
 	WorkspaceId,
 } from "./common.ts";
 import type { ModelThinking } from "./models.ts";
@@ -73,11 +75,26 @@ export interface AgentProfile {
 	readonly hostId?: string;
 }
 
+/**
+ * Where a session works: `project` (the default) in `CreateSessionInput.projectId`, or `organisation`, above every
+ * project and in none of them. See `SessionRecord.projectId`.
+ */
+export type SessionScopeKind = "project" | "organisation";
+
 export interface SessionRecord {
 	readonly id: SessionId;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/**
+	 * The project the session works in. Absent for an organisation-scoped session, whose agent reaches what the
+	 * organisation owns and the session user's own, and no project's records (`scopeOf(record)`).
+	 */
+	readonly projectId?: ProjectId;
 	readonly agentId: AgentId;
+	/**
+	 * The person the session works for: whose own skills and prompt rules it gets. The creator when that is a human;
+	 * a service or Harbour may name another user; a child session has its parent's. It grants no role.
+	 */
+	readonly userId?: UserId;
 	readonly parentSessionId?: SessionId;
 	readonly workspaceId?: WorkspaceId;
 	readonly title?: string;
@@ -105,7 +122,18 @@ export interface SessionRecord {
 }
 
 export interface CreateSessionInput {
-	readonly projectId: ProjectId;
+	/** The session's project; required for a project session, and not given for an organisation one. */
+	readonly projectId?: ProjectId;
+	/**
+	 * `project` (default) or `organisation`. An organisation session names no project and needs an organisation-wide
+	 * operator (or an agent in an organisation session, for a child). A child is in its parent's scope.
+	 */
+	readonly scope?: SessionScopeKind;
+	/**
+	 * The person the session works for (`SessionRecord.userId`). A human may name only themselves, an agent none (a
+	 * child has its parent's); a service or Harbour may name any user. Default the creator when that is a human.
+	 */
+	readonly userId?: UserId;
 	readonly agentId: AgentId;
 	readonly title?: string;
 	readonly labels?: { readonly [key: string]: string };
@@ -215,9 +243,11 @@ export interface SessionModelState {
 	readonly defaults?: ModelSelection;
 }
 
-/** A session not created yet: the project it will be in and the agent profile it will run. */
+/** A session not created yet: the project it will be in (none for an organisation session) and its agent profile. */
 export interface SessionModelsStart {
-	readonly projectId: ProjectId;
+	readonly projectId?: ProjectId;
+	/** As `CreateSessionInput.scope`. */
+	readonly scope?: SessionScopeKind;
 	readonly agentId: AgentId;
 }
 
@@ -406,7 +436,8 @@ export type SessionEndReason = "aborted" | "session_ended";
 export interface SessionEnd {
 	readonly sessionId: SessionId;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/** Absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly agentId: AgentId;
 	readonly parentSessionId?: SessionId;
 	readonly reason: SessionEndReason;
@@ -439,8 +470,9 @@ export interface SessionEndHook {
 
 export interface SessionRuntime {
 	/**
-	 * Creates a session (idle, with no transcript). The actor needs operator on the project; an agent may create one
-	 * only in its own session's project. A child session is in its parent's project.
+	 * Creates a session (idle, with no transcript). The actor needs operator on the project, or across the organisation
+	 * for an organisation session; an agent may create one only in its own session's scope. A child session is in its
+	 * parent's scope.
 	 */
 	create(ctx: CallContext, input: CreateSessionInput): Promise<SessionRecord>;
 	/** Durably admits user input. Starts a run when idle; queues it when busy. */
@@ -474,6 +506,8 @@ export interface SessionRuntime {
 
 export interface SessionFilter {
 	readonly projectId?: ProjectId;
+	/** Only organisation-scoped sessions, or only project ones. */
+	readonly scope?: SessionScopeKind;
 	readonly agentId?: AgentId;
 	readonly status?: SessionStatus;
 	readonly parentSessionId?: SessionId;
@@ -513,7 +547,8 @@ export interface HostToolCall {
 	readonly hostId: string;
 	readonly sessionId: SessionId;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/** Absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly agentId: AgentId;
 	/** Stable across retries of the same call. */
 	readonly callId: string;

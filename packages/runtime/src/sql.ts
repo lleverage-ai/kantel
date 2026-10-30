@@ -177,7 +177,9 @@ export async function createSqlSessionStore(
 					record.id,
 					sequence,
 					record.organisationId,
-					record.projectId,
+					// `project_id` is NOT NULL, and SQLite can't relax that without rebuilding the table: an organisation session
+					// stores '', which no project ID is (docs/design/org-scope.md). The record, without `projectId`, is the truth.
+					record.projectId ?? "",
 					record.agentId,
 					record.parentSessionId ?? null,
 					record.createdAt,

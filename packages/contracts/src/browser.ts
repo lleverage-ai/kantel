@@ -41,7 +41,8 @@ export interface BrowserContext {
 export interface BrowserGrant {
 	readonly id: string;
 	readonly organisationId: OrganisationId;
-	readonly projectId: ProjectId;
+	/** The session's project; absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly sessionId: SessionId;
 	readonly agentId: AgentId;
 	readonly contextId: string;
@@ -189,7 +190,8 @@ export interface BrowserProvider {
 
 export interface GrantBrowserInput {
 	readonly sessionId: SessionId;
-	readonly projectId: ProjectId;
+	/** The session's project; absent for an organisation-scoped session. */
+	readonly projectId?: ProjectId;
 	readonly agentId: AgentId;
 	readonly contextId: string;
 	readonly persist: boolean;

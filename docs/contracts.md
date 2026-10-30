@@ -73,7 +73,10 @@ These come from the plan and cannot be changed by a target.
   its own open session: in that session's project, as an operator and never an admin, and on that session or its
   children. A refusal is `forbidden`, says the same thing whichever check failed, carries no secret and is audited
   once as `access.denied`. A list scoped to one project is checked like any other call; an organisation-wide list
-  leaves out what the caller may not see. Records in another organisation stay `not_found`.
+  leaves out what the caller may not see. Records in another organisation stay `not_found`. A session may be scoped
+  to the organisation, with no project (docs/design/org-scope.md): each check resolves to one `AccessScope`, and an
+  organisation session's agent passes only organisation checks on its own session and children, never a project's;
+  for an organisation check a human or service needs an organisation-wide binding, which an API key never holds.
 - **One session-end hook.** Settled by Tom on 27 Oct 2026 (question 8). The runtime runs one `SessionEndHook` when a
   session is closed (`session_ended`) and when it is aborted (`aborted`), for each child first. The sandbox, browser,
   capability registry and vault register teardowns (`sandbox`, `browser`, `capability`, `vault`), which end the

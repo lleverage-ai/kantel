@@ -1,5 +1,10 @@
 /**
- * Project access: the one check every component makes before it acts on a project's records.
+ * Project access: the one check every component makes before it acts on a project's records, or the organisation's.
+ *
+ * It is a scope check (docs/design/org-scope.md): each check resolves to one `AccessScope`, the project it names, else
+ * the project of the session it names, else the organisation. A session may be scoped to the organisation (it has no
+ * project), and its agent passes only checks that resolve to the organisation, never a project's. `ScopeAccess` is
+ * the same interface under the name it is moving to.
  *
  * Settled 27 Oct 2026 (open question 7): the runtime and the components enforce it, never the caller or the target
  * alone. Each component calls `ProjectAccess.require` on every project-scoped call, for operators as well as agents. The
@@ -10,8 +15,12 @@
  * - A human or service needs at least `needed` on the project, from a role binding on the project or across the
  *   organisation; a service calling with an API key is limited to the key's projects and role.
  * - An agent passes only when its session exists in the call's organisation, runs as that agent, is not closed, and
- *   belongs to the project. It counts as an operator there, never an admin. When the call names a session, the agent
- *   must be acting in that session or in its parent (a supervisor of a child session).
+ *   is in the check's scope: in the project for a project check, scoped to the organisation for an organisation
+ *   check. It counts as an operator there, never an admin. When the call names a session, the agent must be acting in
+ *   that session or in its parent (a supervisor of a child session). So a project agent passes an organisation check
+ *   only through its own session (which resolves to its project), and an organisation agent no project's check.
+ * - For an organisation check a human or service needs an organisation-wide binding; an API key, which holds roles
+ *   only on its projects, never passes one.
  *
  * A refusal is `forbidden`, says the same thing whichever check failed, names no record beyond the project and holds no
  * secret, and is audited once as `access.denied`.
@@ -29,6 +38,7 @@
  */
 import type { AuditEventInput, AuditSink } from "./audit.ts";
 import {
+	type AccessScope,
 	type Actor,
 	type CallContext,
 	type Clock,
@@ -39,6 +49,7 @@ import {
 	type ProjectId,
 	type SessionId,
 	type SystemContext,
+	scopeOf,
 	systemClock,
 	systemContext,
 } from "./common.ts";
@@ -79,6 +90,8 @@ export interface AccessCheck {
 export interface AccessResult {
 	/** The project checked: `check.projectId`, or the session's project. Absent for an organisation-wide check. */
 	readonly projectId?: ProjectId;
+	/** The scope checked: the project above, or the organisation. */
+	readonly scope: AccessScope;
 }
 
 /**
@@ -132,6 +145,9 @@ export interface ProjectAccess {
 	/** What `resource` would resolve, or `undefined` where it would refuse; without auditing or recording. */
 	allowsResource(ctx: CallContext, check: Omit<ResourceCheck, "operation">): Promise<ResourceAccessResult | undefined>;
 }
+
+/** `ProjectAccess` under the name it is moving to: it checks a project or an organisation scope. */
+export type ScopeAccess = ProjectAccess;
 
 /** The role an agent counts as holding on its own session's project. */
 export const AGENT_ROLE: Role = "operator";
@@ -258,9 +274,11 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 		}
 		if (actor.kind === "system") return result(true, projectId);
 		if (actor.kind === "agent") {
-			if (projectId === undefined || !roleSatisfies(AGENT_ROLE, check.needed)) return result(false, projectId);
+			if (!roleSatisfies(AGENT_ROLE, check.needed)) return result(false, projectId);
 			const own = await sessionOf(ctx, actor.sessionId);
 			if (own === undefined || own.agentId !== actor.agentId || own.status === "done") return result(false, projectId);
+			// The agent's own session must be in the check's scope: the same project, or both the organisation. An
+			// organisation check that names no session is one only an organisation session's agent passes.
 			if (own.projectId !== projectId) return result(false, projectId);
 			// An agent acts in its own session, or as the supervisor of a child session.
 			if (target !== undefined && target.id !== own.id && target.parentSessionId !== own.id) {
@@ -537,7 +555,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 		},
 		async require(ctx, check) {
 			const { allowed, projectId } = await decide(ctx, check);
-			if (allowed) return projectId === undefined ? {} : { projectId };
+			if (allowed) return { ...(projectId === undefined ? {} : { projectId }), scope: scopeOf({ projectId }) };
 			if (options.audit !== undefined) {
 				const event: AuditEventInput = {
 					id: `access:denied:${crypto.randomUUID()}`,

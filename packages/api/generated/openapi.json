@@ -110,6 +110,15 @@
 						}
 					},
 					{
+						"name": "scope",
+						"in": "query",
+						"required": false,
+						"description": "Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them.",
+						"schema": {
+							"$ref": "#/components/schemas/SessionScope"
+						}
+					},
+					{
 						"name": "agentId",
 						"in": "query",
 						"required": false,
@@ -804,7 +813,7 @@
 			"get": {
 				"operationId": "getNewSessionModels",
 				"summary": "List the models a new session could use",
-				"description": "What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator on the project, as creating the session does.",
+				"description": "What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator on the project, as creating the session does; `scope=organisation` with no `projectId` answers for a new organisation session, and needs operator across the organisation.",
 				"tags": ["messages"],
 				"parameters": [
 					{
@@ -820,11 +829,20 @@
 					{
 						"name": "projectId",
 						"in": "query",
-						"required": true,
-						"description": "The project the session would run in.",
+						"required": false,
+						"description": "The project the session would run in. Required unless `scope` is `organisation`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1
+						}
+					},
+					{
+						"name": "scope",
+						"in": "query",
+						"required": false,
+						"description": "Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them.",
+						"schema": {
+							"$ref": "#/components/schemas/SessionScope"
 						}
 					}
 				],
@@ -5593,17 +5611,7 @@
 			},
 			"CreatedSession": {
 				"type": "object",
-				"required": [
-					"id",
-					"organisationId",
-					"projectId",
-					"agentId",
-					"status",
-					"labels",
-					"createdBy",
-					"createdAt",
-					"updatedAt"
-				],
+				"required": ["id", "organisationId", "agentId", "status", "labels", "createdBy", "createdAt", "updatedAt"],
 				"properties": {
 					"id": {
 						"type": "string",
@@ -5614,11 +5622,16 @@
 						"type": "string"
 					},
 					"projectId": {
-						"type": "string"
+						"type": "string",
+						"description": "The session's project. Absent for a session scoped to the organisation."
 					},
 					"agentId": {
 						"type": "string",
 						"description": "The agent profile the session runs."
+					},
+					"userId": {
+						"type": "string",
+						"description": "The person the session works for: whose own skills and prompt rules it gets."
 					},
 					"parentSessionId": {
 						"type": "string"
@@ -5756,12 +5769,20 @@
 			},
 			"CreateSessionBody": {
 				"type": "object",
-				"required": ["projectId", "agentId"],
+				"required": ["agentId"],
 				"properties": {
 					"projectId": {
 						"type": "string",
 						"minLength": 1,
-						"description": "The project the session runs in."
+						"description": "The project the session runs in. Required unless `scope` is `organisation`."
+					},
+					"scope": {
+						"$ref": "#/components/schemas/SessionScope"
+					},
+					"userId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The person the session works for. A person may name only themselves; a host app any user. Default the person creating it."
 					},
 					"agentId": {
 						"type": "string",
@@ -7793,17 +7814,7 @@
 			},
 			"SessionRecord": {
 				"type": "object",
-				"required": [
-					"id",
-					"organisationId",
-					"projectId",
-					"agentId",
-					"status",
-					"labels",
-					"createdBy",
-					"createdAt",
-					"updatedAt"
-				],
+				"required": ["id", "organisationId", "agentId", "status", "labels", "createdBy", "createdAt", "updatedAt"],
 				"properties": {
 					"id": {
 						"type": "string",
@@ -7814,11 +7825,16 @@
 						"type": "string"
 					},
 					"projectId": {
-						"type": "string"
+						"type": "string",
+						"description": "The session's project. Absent for a session scoped to the organisation."
 					},
 					"agentId": {
 						"type": "string",
 						"description": "The agent profile the session runs."
+					},
+					"userId": {
+						"type": "string",
+						"description": "The person the session works for: whose own skills and prompt rules it gets."
 					},
 					"parentSessionId": {
 						"type": "string"
@@ -7860,6 +7876,20 @@
 					}
 				},
 				"title": "SessionRecord"
+			},
+			"SessionScope": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "project"
+					},
+					{
+						"type": "string",
+						"const": "organisation"
+					}
+				],
+				"title": "SessionScope",
+				"description": "Where a session works: `project` (in `projectId`) or `organisation`, above every project and in none of them."
 			},
 			"SessionSnapshot": {
 				"type": "object",

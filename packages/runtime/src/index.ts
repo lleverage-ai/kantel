@@ -73,6 +73,8 @@ export function paginate<T>(items: readonly T[], page?: PageRequest): Page<T> {
 export function matchesSessionFilter(record: SessionRecord, filter: SessionFilter | undefined): boolean {
 	if (filter === undefined) return true;
 	if (filter.projectId !== undefined && record.projectId !== filter.projectId) return false;
+	if (filter.scope === "organisation" && record.projectId !== undefined) return false;
+	if (filter.scope === "project" && record.projectId === undefined) return false;
 	if (filter.agentId !== undefined && record.agentId !== filter.agentId) return false;
 	if (filter.status !== undefined && record.status !== filter.status) return false;
 	if (filter.parentSessionId !== undefined && record.parentSessionId !== filter.parentSessionId) return false;

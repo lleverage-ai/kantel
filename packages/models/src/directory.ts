@@ -118,7 +118,8 @@ function assertScope(scope: unknown): asserts scope is ModelCallScope {
 		typeof candidate !== "object" ||
 		candidate === null ||
 		!isNonEmptyString(candidate.organisationId) ||
-		!isNonEmptyString(candidate.projectId) ||
+		// An organisation session's scope names no project.
+		(candidate.projectId !== undefined && !isNonEmptyString(candidate.projectId)) ||
 		!isNonEmptyString(candidate.agentId) ||
 		!isNonEmptyString(candidate.sessionId)
 	) {
@@ -214,7 +215,8 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 		connector !== undefined &&
 		(connector.owner.kind === "platform" || connector.owner.organisationId === organisationId);
 
-	function policyFor(organisationId: string, projectId: ProjectId): ProjectModelPolicy | undefined {
+	function policyFor(organisationId: string, projectId: ProjectId | undefined): ProjectModelPolicy | undefined {
+		if (projectId === undefined) return undefined;
 		return policies.get(policyKey(organisationId, projectId));
 	}
 

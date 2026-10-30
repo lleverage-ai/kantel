@@ -29,6 +29,7 @@ import {
 	type ProjectAccess,
 	type SessionRecord,
 	type SessionSkillPin,
+	scopeOwner,
 	type WorkspaceRecord,
 } from "@harbour/contracts";
 import { skillsMountVersion } from "@harbour/workspace/mounts";
@@ -71,7 +72,7 @@ export function sessionSkillsMount(
 		const workspaces = options.workspaces();
 		const record = isSessionWorkspace(workspaceId)
 			? await workspaces.ensure(ctx, workspaceId, {
-					owner: { kind: "project", organisationId: session.organisationId, projectId: session.projectId },
+					owner: scopeOwner(session),
 					mounts: [request],
 				})
 			: await workspaces.get(ctx, workspaceId);

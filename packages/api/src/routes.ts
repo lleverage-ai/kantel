@@ -255,7 +255,8 @@ export const getNewSessionModels = defineRoute({
 	description:
 		"What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a " +
 		"New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator " +
-		"on the project, as creating the session does.",
+		"on the project, as creating the session does; `scope=organisation` with no `projectId` answers for a new " +
+		"organisation session, and needs operator across the organisation.",
 	params: ProfilePath,
 	query: NewSessionModelsQuery,
 	answer: { status: 200, description: "The models a new session would list.", schema: SessionModelState },

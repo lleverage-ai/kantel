@@ -27,7 +27,14 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { CallContext, Sandboxes, SessionId, SessionRecord, WorkspaceId } from "@harbour/contracts";
+import {
+	type CallContext,
+	type Sandboxes,
+	type SessionId,
+	type SessionRecord,
+	scopeOwner,
+	type WorkspaceId,
+} from "@harbour/contracts";
 import { IN_CALL_ORDER, inCallOrder } from "@harbour/sandbox/coding-tools";
 import { createSandboxExecutionEnv } from "@harbour/sandbox/pi-env";
 import type { KeyedWorkspaces } from "@harbour/workspace";
@@ -175,7 +182,7 @@ function ensureOnce(
 		if (ensured === undefined) {
 			const ensuring = workspaces
 				.ensure(ctx, workspaceId, {
-					owner: { kind: "project", organisationId: record.organisationId, projectId: record.projectId },
+					owner: scopeOwner(record),
 				})
 				.then(() => undefined);
 			ensured = ensuring;

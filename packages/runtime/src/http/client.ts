@@ -96,6 +96,7 @@ function randomSecret(): string {
 function filterQuery(filter: SessionFilter | undefined, page: PageRequest | undefined): string {
 	const params = new URLSearchParams();
 	if (filter?.projectId !== undefined) params.set("projectId", filter.projectId);
+	if (filter?.scope !== undefined) params.set("scope", filter.scope);
 	if (filter?.agentId !== undefined) params.set("agentId", filter.agentId);
 	if (filter?.status !== undefined) params.set("status", filter.status);
 	if (filter?.parentSessionId !== undefined) params.set("parentSessionId", filter.parentSessionId);
@@ -162,7 +163,9 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 			call<SessionModelState>(
 				ctx,
 				"GET",
-				`/profiles/${segment(start.agentId)}/models?${new URLSearchParams({ projectId: start.projectId })}`,
+				`/profiles/${segment(start.agentId)}/models?${new URLSearchParams(
+					start.projectId === undefined ? { scope: start.scope ?? "project" } : { projectId: start.projectId },
+				)}`,
 			),
 	};
 

@@ -1485,6 +1485,20 @@ export function createVaultConformance(options: {
 			assert.partialDeepEqual(injected[0], { organisationId: ORG, projectId: PROJECT, sessionId: "session-1" });
 		}),
 
+		test("organisation scope: connector credentials: reads the key for an organisation session, which has no project", async (vault, deps) => {
+			deps.tenancy.session({ id: "session-9", organisationId: ORG, agentId: "agent-9" });
+			const item = await putModelKey(vault, human, "organisation");
+			const scope = { organisationId: ORG, agentId: "agent-9", sessionId: "session-9" };
+			const credential = await vault.readConnectorCredential(WORKER, connectorRequest(item.id, { scope }));
+			assert.strictEqual(credential.value, CANARY_SECRET, "the key is read without a project");
+			const [use] = (await vault.listUses(human, { sessionId: "session-9" })).items;
+			assert.partialDeepEqual(use, { id: credential.useId, sessionId: "session-9", outcome: "injected" });
+			const [event] = deps.audit.ofType("vault.use.injected");
+			assert.strictEqual(event?.projectId, undefined, "the use is audited with no project");
+			const blank = connectorRequest(item.id, { scope: { ...scope, projectId: "" } });
+			await assert.rejectsWithCode(vault.readConnectorCredential(WORKER, blank), "invalid", "a blank project");
+		}),
+
 		test("connector credentials: keep the canary out of every use and audit event, returning it only as the value", async (vault, deps) => {
 			const errors: unknown[] = [];
 			const item = await putModelKey(vault, human, "organisation");
