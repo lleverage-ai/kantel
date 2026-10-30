@@ -2,6 +2,7 @@ import type { OwnerRef, Schedule, Timestamp, Weekday } from "@harbour/contracts"
 import { type FormEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../../primitives/button.tsx";
 import { Disclosure, SegmentedControl, SelectField, TextAreaField, TextField } from "../../primitives/controls.tsx";
+import { FormActions, FormField, FormGrid, FormLayout, FormSection } from "../../primitives/form-layout.tsx";
 import { ClockIcon } from "../../primitives/icons.tsx";
 import { Badge } from "../../primitives/status.tsx";
 import { Notice, Panel } from "../../primitives/surface.tsx";
@@ -227,104 +228,110 @@ export function ScheduleForm({
 				</div>
 			}
 		>
-			<form className="hb-schedule-form-body" onSubmit={submit} noValidate>
-				<div className="hb-schedule-form-fields">
-					{editing ? null : (
-						<div className="hb-schedule-form-choice">
-							<span className="hb-schedule-form-label" aria-hidden="true">
-								Kind
-							</span>
-							<SegmentedControl
-								label="Kind"
-								options={KIND_OPTIONS}
-								value={draft.kind}
-								onChange={(next) => flow.edit({ kind: next })}
-							/>
-							<p className="hb-schedule-form-hint">{KIND_HINT[draft.kind]}</p>
-						</div>
-					)}
+			<form onSubmit={submit} noValidate>
+				<FormLayout>
+					<FormSection title="What runs">
+						{editing ? null : (
+							<FormField id="hb-schedule-form-kind" label="Kind" hint={KIND_HINT[draft.kind]}>
+								<SegmentedControl
+									label="Kind"
+									options={KIND_OPTIONS}
+									value={draft.kind}
+									onChange={(next) => flow.edit({ kind: next })}
+								/>
+							</FormField>
+						)}
 
-					<TextField
-						label="Title"
-						name="title"
-						autoComplete="off"
-						// The form opened because the person asked for a schedule; the title is the first thing it needs.
-						autoFocus={!editing}
-						value={draft.title}
-						disabled={busy}
-						placeholder={draft.kind === "task" ? "Triage new issues" : "Disk free on the build hosts"}
-						onChange={(event) => flow.edit({ title: event.target.value })}
-						{...(errors.title === undefined ? {} : { error: errors.title })}
-					/>
-
-					{keepsPayload ? (
-						<Notice level="info" announce={false}>
-							This schedule's payload isn't one the form edits, so saving keeps it as it is.
-						</Notice>
-					) : draft.kind === "task" ? (
-						<>
-							<SelectField
-								label="Agent"
-								name="agent"
-								options={agentOptions}
-								value={draft.agentId}
-								disabled={busy}
-								onChange={(event) => flow.edit({ agentId: event.target.value })}
-								{...(errors.agentId === undefined ? {} : { error: errors.agentId })}
-							/>
-							<TextAreaField
-								label="Prompt"
-								name="prompt"
-								rows={5}
-								value={draft.prompt}
-								disabled={busy}
-								placeholder="What should the agent do each time?"
-								onChange={(event) => flow.edit({ prompt: event.target.value })}
-								{...(errors.prompt === undefined
-									? { hint: "Each run starts a new session and sends this as its first message, exactly as written." }
-									: { error: errors.prompt })}
-							/>
-						</>
-					) : (
 						<TextField
-							label="Command"
-							name="command"
-							className="hb-schedule-form-command"
+							label="Title"
+							name="title"
 							autoComplete="off"
-							spellCheck={false}
-							value={draft.command}
+							// The form opened because the person asked for a schedule; the title is the first thing it needs.
+							autoFocus={!editing}
+							value={draft.title}
 							disabled={busy}
-							placeholder="checks/disk-free.sh --min-free 15%"
-							onChange={(event) => flow.edit({ command: event.target.value })}
-							{...(errors.command === undefined
-								? { hint: "A script and its arguments. Quote an argument that has spaces." }
-								: { error: errors.command })}
+							placeholder={draft.kind === "task" ? "Triage new issues" : "Disk free on the build hosts"}
+							onChange={(event) => flow.edit({ title: event.target.value })}
+							{...(errors.title === undefined ? {} : { error: errors.title })}
 						/>
+
+						{keepsPayload ? (
+							<Notice level="info" announce={false}>
+								This schedule's payload isn't one the form edits, so saving keeps it as it is.
+							</Notice>
+						) : draft.kind === "task" ? (
+							<>
+								<SelectField
+									label="Agent"
+									name="agent"
+									options={agentOptions}
+									value={draft.agentId}
+									disabled={busy}
+									onChange={(event) => flow.edit({ agentId: event.target.value })}
+									{...(errors.agentId === undefined ? {} : { error: errors.agentId })}
+								/>
+								<TextAreaField
+									label="Prompt"
+									name="prompt"
+									rows={5}
+									value={draft.prompt}
+									disabled={busy}
+									placeholder="What should the agent do each time?"
+									onChange={(event) => flow.edit({ prompt: event.target.value })}
+									{...(errors.prompt === undefined
+										? { hint: "Each run starts a new session and sends this as its first message, exactly as written." }
+										: { error: errors.prompt })}
+								/>
+							</>
+						) : (
+							<TextField
+								label="Command"
+								name="command"
+								mono
+								autoComplete="off"
+								spellCheck={false}
+								value={draft.command}
+								disabled={busy}
+								placeholder="checks/disk-free.sh --min-free 15%"
+								onChange={(event) => flow.edit({ command: event.target.value })}
+								{...(errors.command === undefined
+									? { hint: "A script and its arguments. Quote an argument that has spaces." }
+									: { error: errors.command })}
+							/>
+						)}
+					</FormSection>
+
+					<FormSection title="When">
+						<When flow={flow} draft={draft} errors={errors} busy={busy} zones={zones} />
+						{draft.kind === "check" ? (
+							<CheckSettingsFields flow={flow} draft={draft} errors={errors} busy={busy} />
+						) : null}
+						<NextRuns preview={preview} timezone={draft.timezone} schedule={schedule} />
+					</FormSection>
+
+					{state.problem === undefined || state.confirmingEnd ? null : (
+						<Notice level="error">{problemText(state.problem, "save")}</Notice>
 					)}
 
-					<When flow={flow} draft={draft} errors={errors} busy={busy} zones={zones} />
-
-					{draft.kind === "check" ? (
-						<CheckSettingsFields flow={flow} draft={draft} errors={errors} busy={busy} />
-					) : null}
-				</div>
-
-				<NextRuns preview={preview} timezone={draft.timezone} schedule={schedule} />
-
-				{state.problem === undefined || state.confirmingEnd ? null : (
-					<Notice level="error">{problemText(state.problem, "save")}</Notice>
-				)}
-
-				{state.confirmingEnd && schedule !== undefined ? (
-					<EndConfirmation
-						flow={flow}
-						state={state}
-						schedule={schedule}
-						onEnded={(ended) => latest.current.onEnded?.(ended)}
-					/>
-				) : (
-					<div className="hb-schedule-form-actions">
-						<div className="hb-schedule-form-actions-main">
+					{state.confirmingEnd && schedule !== undefined ? (
+						<EndConfirmation
+							flow={flow}
+							state={state}
+							schedule={schedule}
+							onEnded={(ended) => latest.current.onEnded?.(ended)}
+						/>
+					) : (
+						<FormActions
+							{...(editing && schedule.status !== "ended"
+								? {
+										end: (
+											<Button variant="danger" size="sm" disabled={busy} onClick={() => flow.askEnd()}>
+												End schedule
+											</Button>
+										),
+									}
+								: {})}
+						>
 							<Button variant="primary" size="sm" type="submit" busy={state.saving}>
 								{editing ? "Save changes" : "Create schedule"}
 							</Button>
@@ -333,14 +340,9 @@ export function ScheduleForm({
 									Cancel
 								</Button>
 							)}
-						</div>
-						{editing && schedule.status !== "ended" ? (
-							<Button variant="danger" size="sm" disabled={busy} onClick={() => flow.askEnd()}>
-								End schedule
-							</Button>
-						) : null}
-					</div>
-				)}
+						</FormActions>
+					)}
+				</FormLayout>
 			</form>
 		</Panel>
 	);
@@ -362,9 +364,8 @@ function When({
 	const hasInterval = draft.every === "minutes" || draft.every === "hours" || draft.every === "day";
 	const hasAt = !(draft.every === "minutes" || draft.every === "hours");
 	return (
-		// Fields are disabled one by one while saving, not by the fieldset, so the choices above stay reachable by Tab.
-		<fieldset className="hb-schedule-form-when">
-			<legend className="hb-schedule-form-label">When</legend>
+		// Fields are disabled one by one while saving, so the choices above stay reachable by Tab.
+		<>
 			<SegmentedControl
 				label="When"
 				options={WHEN_OPTIONS}
@@ -372,18 +373,19 @@ function When({
 				onChange={(when) => flow.edit({ when })}
 			/>
 			{draft.when === "once" ? (
-				<TextField
-					label="Date and time"
-					name="once"
-					type="datetime-local"
-					disabled={busy}
-					className="hb-schedule-form-narrow"
-					value={draft.once}
-					onChange={(event) => flow.edit({ once: event.target.value })}
-					{...(errors.once === undefined ? {} : { error: errors.once })}
-				/>
+				<FormGrid>
+					<TextField
+						label="Date and time"
+						name="once"
+						type="datetime-local"
+						disabled={busy}
+						value={draft.once}
+						onChange={(event) => flow.edit({ once: event.target.value })}
+						{...(errors.once === undefined ? {} : { error: errors.once })}
+					/>
+				</FormGrid>
 			) : (
-				<div className="hb-schedule-form-row">
+				<FormGrid>
 					<SelectField
 						label="Every"
 						name="every"
@@ -403,7 +405,6 @@ function When({
 							inputMode="numeric"
 							min={1}
 							step={1}
-							className="hb-schedule-form-number"
 							value={draft.interval}
 							onChange={(event) => flow.edit({ interval: event.target.value })}
 							{...(errors.interval === undefined ? {} : { error: errors.interval })}
@@ -419,7 +420,6 @@ function When({
 							min={1}
 							max={31}
 							step={1}
-							className="hb-schedule-form-number"
 							value={draft.day}
 							onChange={(event) => flow.edit({ day: event.target.value })}
 							{...(errors.day === undefined ? { hint: "31 means the last day." } : { error: errors.day })}
@@ -431,18 +431,17 @@ function When({
 							name="at"
 							disabled={busy}
 							type="time"
-							className="hb-schedule-form-time"
 							value={draft.at}
 							onChange={(event) => flow.edit({ at: event.target.value })}
 							{...(errors.at === undefined ? {} : { error: errors.at })}
 						/>
 					) : null}
-				</div>
+				</FormGrid>
 			)}
 			{draft.when === "repeat" && draft.every === "week" ? (
 				<Weekdays value={draft.on} onChange={(on) => flow.edit({ on })} error={errors.on} />
 			) : null}
-			<div className="hb-schedule-form-row">
+			<FormGrid>
 				<SelectField
 					label="Time zone"
 					name="timezone"
@@ -461,15 +460,14 @@ function When({
 						inputMode="numeric"
 						min={1}
 						step={1}
-						className="hb-schedule-form-number"
 						placeholder="No limit"
 						value={draft.count}
 						onChange={(event) => flow.edit({ count: event.target.value })}
 						{...(errors.count === undefined ? { hint: "Runs, in all." } : { error: errors.count })}
 					/>
 				) : null}
-			</div>
-		</fieldset>
+			</FormGrid>
+		</>
 	);
 }
 
@@ -483,12 +481,8 @@ function Weekdays({
 	error: string | undefined;
 }) {
 	return (
-		<div className="hb-schedule-form-choice">
-			<span className="hb-schedule-form-label" id="hb-schedule-form-days">
-				On
-			</span>
-			{/* biome-ignore lint/a11y/useSemanticElements: a row of toggle buttons, inside the When fieldset already. */}
-			<div className="hb-schedule-form-days" role="group" aria-labelledby="hb-schedule-form-days">
+		<FormField id="hb-schedule-form-days" label="On" error={error}>
+			<div className="hb-schedule-form-days">
 				{WEEK.map((weekday) => {
 					const on = value.includes(weekday);
 					return (
@@ -505,12 +499,7 @@ function Weekdays({
 					);
 				})}
 			</div>
-			{error === undefined ? null : (
-				<p className="hb-text-field-error" role="alert">
-					{error}
-				</p>
-			)}
-		</div>
+		</FormField>
 	);
 }
 
@@ -534,8 +523,7 @@ function CheckSettingsFields({
 			defaultOpen={changed || wrong}
 			className="hb-schedule-form-check"
 		>
-			<fieldset className="hb-schedule-form-row">
-				<legend className="hb-sr-only">When findings are raised again</legend>
+			<FormGrid role="group" aria-label="When findings are raised again">
 				<TextField
 					label="Raise again after"
 					name="reraiseHours"
@@ -543,7 +531,6 @@ function CheckSettingsFields({
 					type="number"
 					inputMode="decimal"
 					min={0}
-					className="hb-schedule-form-number"
 					placeholder="6"
 					value={draft.reraiseHours}
 					onChange={(event) => flow.edit({ reraiseHours: event.target.value })}
@@ -558,7 +545,6 @@ function CheckSettingsFields({
 					type="number"
 					inputMode="decimal"
 					min={1}
-					className="hb-schedule-form-number"
 					placeholder="2"
 					value={draft.risingFactor}
 					onChange={(event) => flow.edit({ risingFactor: event.target.value })}
@@ -574,7 +560,6 @@ function CheckSettingsFields({
 					inputMode="numeric"
 					min={1}
 					step={1}
-					className="hb-schedule-form-number"
 					placeholder="3"
 					value={draft.failuresBeforeRaise}
 					onChange={(event) => flow.edit({ failuresBeforeRaise: event.target.value })}
@@ -582,7 +567,7 @@ function CheckSettingsFields({
 						? { hint: "Failed runs in a row." }
 						: { error: errors.failuresBeforeRaise })}
 				/>
-			</fieldset>
+			</FormGrid>
 		</Disclosure>
 	);
 }
@@ -648,7 +633,7 @@ function EndConfirmation({
 				undone.
 			</p>
 			{state.problem === undefined ? null : <Notice level="error">{problemText(state.problem, "end")}</Notice>}
-			<div className="hb-schedule-form-actions-main">
+			<FormActions>
 				<Button
 					variant="danger"
 					size="sm"
@@ -664,7 +649,7 @@ function EndConfirmation({
 				<Button ref={cancel} variant="ghost" size="sm" disabled={state.ending} onClick={() => flow.cancelEnd()}>
 					Keep it
 				</Button>
-			</div>
+			</FormActions>
 		</div>
 	);
 }

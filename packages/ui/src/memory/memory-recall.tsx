@@ -2,6 +2,7 @@ import type { Recall } from "@harbour/contracts";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, TextField } from "../primitives/controls.tsx";
+import { FormActions, FormGrid, FormLayout } from "../primitives/form-layout.tsx";
 import { SearchIcon } from "../primitives/icons.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -82,38 +83,40 @@ export function MemoryRecall({
 	return (
 		<div className="hb-memory-recall">
 			<form className="hb-memory-recall-form" onSubmit={submit} aria-label="Recall">
-				<TextField
-					label="Message"
-					hint="What a session would be asked. Recall searches by it, as a host does before each turn."
-					value={query}
-					onChange={(event) => setQuery(event.target.value)}
-				/>
-				<div className="hb-memory-recall-scopes">
+				<FormLayout>
 					<TextField
-						label="Projects"
-						hint="Project scopes that apply, comma separated"
-						value={projects}
-						onChange={(event) => setProjects(event.target.value)}
+						label="Message"
+						hint="What a session would be asked. Recall searches by it, as a host does before each turn."
+						value={query}
+						onChange={(event) => setQuery(event.target.value)}
 					/>
-					<TextField
-						label="Jobs"
-						hint="Job scopes, for their exceptions"
-						value={jobs}
-						onChange={(event) => setJobs(event.target.value)}
-					/>
-				</div>
-				<div>
-					<Button
-						type="submit"
-						variant="primary"
-						size="sm"
-						icon={<SearchIcon size="sm" />}
-						busy={state.phase === "running"}
-						disabled={query.trim() === ""}
-					>
-						Recall
-					</Button>
-				</div>
+					<FormGrid columns={2}>
+						<TextField
+							label="Projects"
+							hint="Project scopes that apply, comma separated"
+							value={projects}
+							onChange={(event) => setProjects(event.target.value)}
+						/>
+						<TextField
+							label="Jobs"
+							hint="Job scopes, for their exceptions"
+							value={jobs}
+							onChange={(event) => setJobs(event.target.value)}
+						/>
+					</FormGrid>
+					<FormActions>
+						<Button
+							type="submit"
+							variant="primary"
+							size="sm"
+							icon={<SearchIcon size="sm" />}
+							busy={state.phase === "running"}
+							disabled={query.trim() === ""}
+						>
+							Recall
+						</Button>
+					</FormActions>
+				</FormLayout>
 			</form>
 
 			{state.phase === "idle" ? (

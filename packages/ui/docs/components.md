@@ -145,9 +145,35 @@ button with `aria-expanded`; the detail is rendered only while open.
 **For** copying a link, a binding code or a command. Shows "Copied" with a tick for 1.5 seconds, announced
 politely. `iconOnly` for tight rows.
 
+### Config pages and forms: PageHeader, FormLayout, FormSection, FormField, FormGrid and FormActions
+
+Every config page (skills, memory, schedules, vault, audit log, API keys) and every form on them uses these, so
+titles, labels, help text, column tracks and buttons sit in the same places from page to page.
+
+- `PageHeader`: the page's title, one line on what it is for, and its own actions on the right (New key, Export
+  JSONL). The actions drop under the title on a narrow page. Pages take the main area's width; forms keep the
+  `--hb-content-width` measure.
+- `FormLayout`: the column a form sits in. It is the container the fields measure, so the same form lays out the
+  same in a page, a panel or a phone.
+- `FormSection`: a titled group of fields (What runs, When), a line on what it decides and an optional action on
+  its right. Sections after the first get a hairline.
+- `FormField`: one field's label, control and help or error. `TextField`, `TextAreaField` and `SelectField` are
+  built on it; wrap any other control (a `SegmentedControl`, a row of toggles) in it so it gets the same label and
+  help. `layout="inline"` makes it a settings row, the label beside the control on two fixed tracks once the form is
+  36rem wide; `extra` puts a badge beside the label.
+- `FormGrid`: short fields on two or three equal tracks, so inputs line up from row to row; one column under 32rem.
+- `FormActions`: the primary action first, then the rest, left aligned; `end` holds one that removes. Each button
+  takes the whole width, at the touch size, on a form under 30rem.
+
+**Not for** filters above a list (a plain grid of `SelectField`s, as the audit log has), or a decision card in a
+session.
+
+**Costs** container queries only: no script, no listeners.
+
 ### TextField
 
-**For** a labelled single-line input with a hint or an error. 16px under a coarse pointer, so iOS doesn't zoom.
+**For** a labelled single-line input with a hint or an error, laid out by `FormField`. `width="short"` for a number
+or a time, `mono` for a path or a command. 16px under a coarse pointer, so iOS doesn't zoom.
 
 **Not for** the composer, which has its own multi-line field.
 

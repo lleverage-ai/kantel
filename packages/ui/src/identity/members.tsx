@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
+import { PageHeader } from "../primitives/form-layout.tsx";
 import { KeyIcon } from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
@@ -69,13 +70,10 @@ export function MembersPage({ api, viewer, initial }: MembersPageProps) {
 
 	return (
 		<div className="hb-members">
-			<header className="hb-members-head">
-				<h1 className="hb-members-title">Members</h1>
-				<p className="hb-members-lede">
-					The people with a role in this organisation. If someone loses their passkeys, reset them here so they can set
-					up a new one.
-				</p>
-			</header>
+			<PageHeader
+				title="Members"
+				lede="The people with a role in this organisation. If someone loses their passkeys, reset them here so they can set up a new one."
+			/>
 
 			<section className="hb-members-list" aria-label="Members">
 				{state.loadProblem === undefined ? null : (

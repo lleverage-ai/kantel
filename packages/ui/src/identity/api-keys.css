@@ -6,7 +6,6 @@
 	flex-direction: column;
 	gap: var(--hb-space-9);
 	width: 100%;
-	max-width: var(--hb-content-width);
 	min-width: 0;
 	color: var(--hb-text);
 	font-size: var(--hb-text-sm);
@@ -17,32 +16,10 @@
 	margin: 0;
 }
 
-.hb-api-keys-head {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-start;
-	justify-content: space-between;
-	gap: var(--hb-space-5) var(--hb-space-7);
-	padding-bottom: var(--hb-space-6);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-api-keys-heading {
-	display: flex;
-	flex: 1;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	min-width: 0;
-}
-
-.hb-api-keys-title {
-	margin: 0;
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-.hb-api-keys-lede {
-	color: var(--hb-text-muted);
+/* The forms and the secret keep the reading width; the list of keys takes the page's. */
+.hb-api-keys-form,
+.hb-api-keys-issued {
+	max-width: var(--hb-content-width);
 }
 
 .hb-api-keys-issued-title,
@@ -57,8 +34,7 @@
 	outline: none;
 }
 
-.hb-api-keys-issued-body,
-.hb-api-keys-fields {
+.hb-api-keys-issued-body {
 	display: flex;
 	flex-direction: column;
 	gap: var(--hb-space-7);
@@ -95,25 +71,7 @@
 	overflow-wrap: anywhere;
 }
 
-.hb-api-keys-choice {
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: var(--hb-space-2);
-	min-width: 0;
-}
-
-.hb-api-keys-choice-label {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-api-keys-choice-hint {
-	color: var(--hb-text-faint);
-	font-size: var(--hb-text-xs);
-}
-
-.hb-api-keys-actions {
+.hb-api-key-confirm-actions {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;

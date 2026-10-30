@@ -63,6 +63,7 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `EmptyState` | What a list or screen says when it has nothing | Errors that need action (use `Notice`) |
 | `Disclosure` | A summary that shows detail on demand | Navigation |
 | `CopyButton` | Copying a link, code or command | |
+| `PageHeader`, `FormLayout`, `FormSection`, `FormField`, `FormGrid`, `FormActions` | Config pages and their forms: the page title and actions, sections, labelled fields with help, equal tracks for short fields, and the buttons | Filters above a list, session cards |
 | `TextField` | A labelled single-line input | The composer |
 | `TextAreaField` | A labelled multi-line input, such as a scheduled task's prompt | The composer |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu) |

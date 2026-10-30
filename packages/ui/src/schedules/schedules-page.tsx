@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
+import { PageHeader } from "../primitives/form-layout.tsx";
+import { PlusIcon } from "../primitives/icons.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { ownerName } from "../primitives/owner.ts";
@@ -133,24 +135,25 @@ export function SchedulesPage({
 
 	return (
 		<div className="hb-schedules" data-view={selected === undefined && editing === undefined ? "list" : "detail"}>
-			<header className="hb-schedules-head">
-				<div className="hb-schedules-head-row">
-					<h1 className="hb-schedules-title">Schedules</h1>
-					{form === undefined ? null : (
-						<Button
-							size="sm"
-							variant="primary"
-							disabled={editing?.kind === "new"}
-							onClick={() => setEditing({ kind: "new" })}
-						>
-							New schedule
-						</Button>
-					)}
-				</div>
-				<p className="hb-schedules-lede">
-					What runs on its own: reminders, tasks, summaries, checks and programs, with when each runs next.
-				</p>
-			</header>
+			<PageHeader
+				className="hb-schedules-head"
+				title="Schedules"
+				lede="What runs on its own: reminders, tasks, summaries, checks and programs, with when each runs next."
+				{...(form === undefined
+					? {}
+					: {
+							actions: (
+								<Button
+									variant="primary"
+									icon={<PlusIcon size="sm" />}
+									disabled={editing?.kind === "new"}
+									onClick={() => setEditing({ kind: "new" })}
+								>
+									New schedule
+								</Button>
+							),
+						})}
+			/>
 			<div className="hb-schedules-body">
 				<section className="hb-schedules-list" aria-label="Schedules">
 					<SegmentedControl
