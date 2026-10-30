@@ -755,6 +755,18 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			return (await response.json()) as UserAttachment;
 		},
 
+		// And back, for its thumbnail and the file panel (`GET /v1/attachments/:id`).
+		async readAttachment(projectId, attachmentId, signal) {
+			const response = await call(
+				`${base}/attachments/${encodeURIComponent(attachmentId)}?${new URLSearchParams({ projectId })}`,
+				signal === undefined ? {} : { signal },
+			);
+			return {
+				content: new Uint8Array(await response.arrayBuffer()),
+				contentType: response.headers.get("content-type") ?? "application/octet-stream",
+			};
+		},
+
 		prompt: (sessionId, text, sendOptions) => send(sessionId, "prompt", text, sendOptions),
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),

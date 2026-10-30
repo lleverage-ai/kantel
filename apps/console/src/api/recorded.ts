@@ -12,6 +12,7 @@ import {
 	type SessionStatus,
 } from "@harbour/protocol";
 import type { SessionSummary } from "@harbour/ui";
+import { readRecordedAttachment } from "../recorded/attachments.ts";
 import type { Catalogue, RecordedSession } from "../recorded/catalogue.ts";
 import { recordedWorkspace } from "../recorded/workspace.ts";
 import { FixtureHost, type HostOptions } from "../server-sim/fixture-host.ts";
@@ -259,6 +260,9 @@ export function createRecordedClient(catalogue: Catalogue, options: RecordedClie
 				...(options.workspaceDelayMs === undefined ? {} : { delayMs: options.workspaceDelayMs }),
 			});
 		},
+
+		// The recorded messages' files, drawn in the page (recorded/attachments.ts).
+		readAttachment: (_projectId, attachmentId, signal) => readRecordedAttachment(attachmentId, signal),
 
 		hostFor: (sessionId) => entries.get(sessionId)?.host,
 

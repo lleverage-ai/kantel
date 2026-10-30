@@ -24,6 +24,7 @@
  * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
+ * | `GET /v1/attachments/:id` | a stored attachment's bytes, for the console's thumbnail and file panel; viewers and up |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -446,7 +447,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				return (await gitBranches(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
-			if (path === ATTACHMENTS_PATH) {
+			if (under(path, ATTACHMENTS_PATH)) {
 				const refused = await signIn(request);
 				if (refused !== undefined) {
 					await request.body?.cancel().catch(() => undefined);

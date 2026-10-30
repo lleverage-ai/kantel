@@ -274,7 +274,7 @@ const withFiles: TranscriptItem[] = [
 export const WithAttachments: Story = () => (
 	<Sheet
 		title="Transcript with attached files"
-		intro="The files sent with a message sit above its bubble as cards: the file type's icon, the name, the type and size. A message of files alone has no bubble."
+		intro="The files sent with a message sit above its bubble as cards of one size, right-aligned and wrapping: an image's thumbnail when the host can read it back (the file type's icon until then, and here), the name cut short (whole on hover), the type and size. A message of files alone has no bubble."
 	>
 		<div className="hb-story-transcript-frame">
 			<Transcript items={withFiles} />
