@@ -1146,12 +1146,12 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					page,
 				),
 			);
-			// The catalogue reads a connector's key as the organisation's; the console has no session, so none is named.
+			// A catalogue refresh reads the connector's key; the console has no session, so the read is attributed to it.
 			const scope: ModelCallScope = {
 				organisationId: ctx.organisationId,
-				projectId: filter?.projectId ?? "",
+				projectId: filter?.projectId ?? CONSOLE_AGENT,
 				agentId: CONSOLE_AGENT,
-				sessionId: "",
+				sessionId: CONSOLE_AGENT,
 			};
 			const result: ConnectorModels[] = [];
 			for (const connector of listed) {
