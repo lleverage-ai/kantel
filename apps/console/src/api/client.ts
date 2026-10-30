@@ -24,6 +24,17 @@ export type ProjectSummary = {
 	readonly name: string;
 };
 
+/**
+ * The console's key for the organisation wherever it keys by project (docs/design/org-scope.md): a session scoped to
+ * the organisation, in no project, has it as its `projectId` in the console, and a client sends it to the API as
+ * `scope: "organisation"` with no project. No project ID starts with `~`.
+ */
+export const ORGANISATION_SCOPE = "~organisation";
+export const isOrganisationScope = (projectId: string | undefined): boolean => projectId === ORGANISATION_SCOPE;
+
+/** The organisation in the sidebar's tree, above the projects, for a client that serves organisation sessions. */
+export const ORGANISATION_ENTRY: ProjectSummary = { id: ORGANISATION_SCOPE, name: "Organisation-wide" };
+
 /** The session a subagent's session was started from. */
 export type SessionParent = {
 	readonly id: string;
@@ -204,6 +215,11 @@ export type BrowserLiveLink = {
 export interface ConsoleClient {
 	readonly actor: ConsoleActor;
 	projects(): Promise<readonly ProjectSummary[]>;
+	/**
+	 * Lists and starts sessions scoped to the organisation, under `ORGANISATION_SCOPE` in place of a project ID. Without
+	 * it the console shows projects only.
+	 */
+	readonly organisationSessions?: boolean;
 	/** Follows a project's sessions; `onChange` gets every new state. Returns a function that stops following. */
 	watchSessions(projectId: string, onChange: (state: SessionListState) => void): () => void;
 	/** The protocol connection to one session: hello, a snapshot or the deltas after a cursor, history pages. */

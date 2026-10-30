@@ -9,6 +9,7 @@ import {
 	modelsPath,
 	NEW_SCHEDULE_PATH,
 	newSessionPath,
+	ORGANISATION_SCOPE,
 	parseRoute,
 	projectPath,
 	SHARING_PATH,
@@ -23,6 +24,26 @@ import {
 } from "./router.ts";
 
 describe("routes", () => {
+	it("puts the organisation's sessions under /organisation, keyed by ORGANISATION_SCOPE", () => {
+		const org = ORGANISATION_SCOPE;
+		expect(projectPath(org)).toBe("/organisation");
+		expect(newSessionPath(org)).toBe("/organisation/new");
+		expect(sessionPath(org, "s-1")).toBe("/organisation/sessions/s-1");
+		expect(parseRoute(projectPath(org))).toEqual({ name: "project", projectId: org });
+		expect(parseRoute(newSessionPath(org))).toEqual({ name: "new-session", projectId: org });
+		expect(parseRoute(sessionPath(org, "s-1"))).toEqual({ name: "session", projectId: org, sessionId: "s-1" });
+		expect(parseRoute(filesPath(org, "s-1"))).toEqual({ name: "files", projectId: org, sessionId: "s-1" });
+		expect(parseRoute(filesPath(org, "s-1", "src/a b.ts"))).toEqual({
+			name: "files",
+			projectId: org,
+			sessionId: "s-1",
+			path: "src/a b.ts",
+		});
+		// The key is never a project's: /projects/~organisation is no route.
+		expect(parseRoute(`/projects/${encodeURIComponent(org)}`)).toMatchObject({ name: "not-found" });
+		expect(parseRoute("/organisation/models")).toMatchObject({ name: "not-found" });
+	});
+
 	it("parses the skills and memory pages, with a skill or a concept open", () => {
 		expect(parseRoute(skillsPath())).toEqual({ name: "skills" });
 		expect(parseRoute(skillsPath("skl_1"))).toEqual({ name: "skills", skillId: "skl_1" });

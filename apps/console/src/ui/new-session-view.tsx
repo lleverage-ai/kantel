@@ -13,6 +13,7 @@ import {
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
+import { isOrganisationScope } from "../api/client.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
 
 // A new session before it exists, after T3 Code's new thread: the session header with nothing in it yet, an empty
@@ -139,7 +140,13 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 					<Transcript
 						items={[]}
 						empty={
-							<EmptyState title={`Start a session in ${state.projectName}`}>
+							<EmptyState
+								title={
+									isOrganisationScope(state.projectId)
+										? "Start an organisation-wide session"
+										: `Start a session in ${state.projectName}`
+								}
+							>
 								{repo === ""
 									? `Write the first message. ${who} answers it.`
 									: `Write the first message. ${who} answers it, with ${repo} in its workspace.`}

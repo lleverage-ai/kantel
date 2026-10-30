@@ -651,10 +651,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			if (isHarbourError(error, "not_found")) return undefined;
 			throw error;
 		});
+		// Organisation-wide, so it runs in every project and in organisation sessions (docs/design/org-scope.md); a
+		// project's own profile still comes first there.
 		const profile: AgentProfile = {
 			id: DEFAULT_AGENT_ID,
 			organisationId: organisation.id,
-			projectId: project.id,
 			name: "Assistant",
 			model: { route: "default" },
 			// The image model is the user's choice (the console's Models page), kept across starts: none until they pick one.

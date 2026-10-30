@@ -1,6 +1,6 @@
 import type { ComposerAttachment, ProjectOption } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ConsoleClient, ProjectSummary, StartOptions } from "../api/client.ts";
+import { type ConsoleClient, isOrganisationScope, type ProjectSummary, type StartOptions } from "../api/client.ts";
 import { titleFrom } from "../ui/actions.ts";
 import { type NewSessionState, NewSessionView } from "../ui/new-session-view.tsx";
 import { useMessageAttachments } from "./attachments.ts";
@@ -68,8 +68,9 @@ export function NewSessionScreen({
 	const [sending, setSending] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const [loaded, setLoaded] = useState<Options>({ projectId, state: "loading" });
-	// The repository the workspace starts from ("" for none) and its branches, when this client can seed one.
-	const seeds = client.branches !== undefined;
+	// The repository the workspace starts from ("" for none) and its branches, when this client can seed one. A seeded
+	// workspace is a project's, so an organisation session starts on none.
+	const seeds = client.branches !== undefined && !isOrganisationScope(projectId);
 	const [repo, setRepo] = useState("");
 	const [recent, setRecent] = useState<readonly string[]>(() => (seeds ? readRecentRepos() : []));
 	const [branches, setBranches] = useState<Branches>();
