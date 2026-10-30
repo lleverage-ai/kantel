@@ -242,8 +242,10 @@ describe("the gateway", () => {
 		const workspace = (await created.json()) as { id: string; seedReadiness: string; seedReport?: unknown };
 		expect(workspace.seedReadiness).toBe("files");
 		expect(workspace.seedReport).toMatchObject({ sources: [{ kind: "git", commit: COMMIT }, { kind: "files" }] });
+		// Resolving the ref, then the history (a fetch, and which branch the ref is) alongside the tarball. This GitHub
+		// sends no pack, so the workspace is seeded without `.git`.
 		expect(github.calls).toEqual([
-			"https://github.com/octocat/Hello-World.git/git-upload-pack",
+			...Array(4).fill("https://github.com/octocat/Hello-World.git/git-upload-pack"),
 			`https://codeload.github.com/octocat/Hello-World/tar.gz/${COMMIT}`,
 		]);
 

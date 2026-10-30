@@ -8,8 +8,12 @@
  * long before Harbour's own traffic would justify it.
  *
  * The tarball holds the tree without history or `.git`. Symlinks and submodules are left out (`skipped` counts them).
+ * With `history`, the source's last `history` commits (default 50) are fetched alongside it, without blobs, and added
+ * as a shallow `.git` (`./git-history.ts`), so git reads work on the seeded files. History is best effort: when its
+ * fetch fails, the tree is seeded without `.git` and `history.onError` hears why.
  */
 import { type GitFetcher, type GitSeedSource, type GitTree, HarbourError, type SeedFile } from "@harbour/contracts";
+import { DEFAULT_HISTORY, fetchGitHistory, type GitHistoryOptions } from "./git-history.ts";
 import { createGitRefLister, type GitRefLister } from "./git-refs.ts";
 import { gitHubRepo } from "./github-repo.ts";
 
@@ -28,6 +32,14 @@ export interface GitHubTarballFetcherOptions {
 	readonly maxBytes?: number;
 	/** The most files a tree may have. Default 100,000. */
 	readonly maxFiles?: number;
+	/**
+	 * Seeds a shallow, blobless `.git` with the tree, over the same `fetch` (and `refs`) unless these options say
+	 * otherwise. Absent: no `.git`. A source with `sparse` paths or `history: 0` gets none either.
+	 */
+	readonly history?: GitHistoryOptions & {
+		/** Hears why a source's history could not be fetched; the tree is seeded without it. */
+		readonly onError?: (error: unknown, source: GitSeedSource) => void;
+	};
 }
 
 /** Entries the last fetch left out, by kind; for tests and reports. */
@@ -74,6 +86,20 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 		return commit;
 	}
 
+	/** Starts fetching the source's `.git`, alongside the tarball; resolves `[]` when there is none to seed. */
+	function readHistory(source: GitSeedSource, commit: string): Promise<SeedFile[]> {
+		const history = options.history;
+		const depth = source.history ?? DEFAULT_HISTORY;
+		if (history === undefined || source.sparse !== undefined || depth < 1) return Promise.resolve([]);
+		return fetchGitHistory(
+			{ fetch: send, refs, ...history },
+			{ repo: source.repo, ref: source.ref, commit, depth },
+		).catch((error: unknown) => {
+			history.onError?.(error, source);
+			return [];
+		});
+	}
+
 	return {
 		skipped,
 		method: "clone",
@@ -84,6 +110,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 		async fetch(_ctx, source): Promise<GitTree> {
 			const [owner, name] = gitHubRepo(source.repo);
 			const commit = await resolve(owner, name, source);
+			const history = readHistory(source, commit);
 			const response = await send(`${codeload}/${owner}/${name}/tar.gz/${commit}`, {
 				headers: { "user-agent": "harbour-workspace" },
 			});
@@ -103,6 +130,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 				}
 				files.push({ ...file, path });
 			}
+			files.push(...(await history));
 			return { commit, files };
 		},
 	};

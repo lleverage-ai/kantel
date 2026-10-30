@@ -4,8 +4,8 @@
  * file. Writes and pushes (`commit`, `push`, `checkout`, ...) run in the container tier: here they fail with a message
  * that says so, and `ISOLATE_GIT_ROUTE` sends only the read subcommands of a single git command to the isolate.
  *
- * A workspace has a `.git` once a container-tier clone or checkout has been committed into it, or a seed method that
- * keeps history (`lazy`) seeded it. Without one, every subcommand fails as real git does outside a repository.
+ * A workspace has a `.git` once a container-tier clone or checkout has been committed into it, or a git seed wrote its
+ * recent history as a shallow, blobless `.git` (`@harbour/workspace/git-history`), as Cloudflare's does. Without one, every subcommand fails as real git does outside a repository.
  *
  * Supported: `status` (long, `-s`/`--short`, `--porcelain`), `log` (`-n N`, `-N`, `--max-count=N`, `--oneline`),
  * `rev-parse` (`HEAD` or a ref, `--short`, `--abbrev-ref HEAD`, `--show-toplevel`, `--is-inside-work-tree`,

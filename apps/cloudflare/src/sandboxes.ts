@@ -8,8 +8,11 @@
  *   `dynamic-worker` runs the same shell in a Dynamic Worker per session (`src/dynamic-worker.ts`), when the Worker
  *   has the `LOADER` binding. Each backend gets its own sandboxes, so the isolate-ready measurement can run on any of
  *   them while sessions use the chosen one.
- * - **The container tier** is not on Cloudflare yet: a command routed to it (`git`, `python`, `npm` and the rest of
+ * - **The container tier** is not on Cloudflare yet: a command routed to it (`python`, `npm` and the rest of
  *   `DEFAULT_TIER_ROUTES`) is refused `unavailable`.
+ * - **`git`**: the in-process isolate has isomorphic-git's read-only `git` (`@harbour/sandbox/isolate-git`), over the
+ *   shallow `.git` a git seed writes (`@harbour/workspace/git-history`), and every command that starts with `git` runs
+ *   there: with no container to send the others to, its reads answer and its writes say they need the container tier.
  * - **`node`**: with `nodeEngine` (the compiled QuickJS module), the in-process isolate has a `node` program that runs
  *   plain JavaScript in QuickJS (`@harbour/sandbox/isolate-node`), and a command that starts with `node` runs there
  *   instead of being refused. The Worker passes it; the tests may.
@@ -20,15 +23,18 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
+	DEFAULT_TIER_ROUTES,
 	HarbourError,
 	type LeaseEndReason,
 	type ProjectAccess,
 	type SandboxLease,
 	type SessionId,
 	type SystemContext,
+	type TierRoute,
 } from "@harbour/contracts";
 import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createIsolateNodeCommand, ISOLATE_NODE_ROUTES } from "@harbour/sandbox/isolate-node";
+import { createIsolateGitCommand } from "@harbour/sandbox/isolate-git";
+import { createIsolateNodeCommand, ISOLATE_NODE_ROUTE } from "@harbour/sandbox/isolate-node";
 import {
 	type ContainerBackend,
 	createMemoryLeaseStore,
@@ -63,6 +69,14 @@ export function isolateBackendName(vars: SandboxVars): IsolateBackendName {
 }
 
 const NO_CONTAINERS = "The container tier is not on Cloudflare yet; this command needs it";
+
+/** Every `git` command to the isolate, whose `git` answers reads and refuses writes: there is no container tier. */
+export const CLOUDFLARE_GIT_ROUTE: TierRoute = { tool: "bash", programs: ["git"], tier: "isolate" };
+
+/** The in-process isolate's routes: `git`, and `node` when it has the engine, before the defaults. */
+export function inProcessRoutes(node: boolean): readonly TierRoute[] {
+	return [CLOUDFLARE_GIT_ROUTE, ...(node ? [ISOLATE_NODE_ROUTE] : []), ...DEFAULT_TIER_ROUTES];
+}
 
 /**
  * The container tier's stand-in: refuses every command, and has nothing to commit or end. The tiered sandboxes acquire
@@ -112,12 +126,12 @@ export interface StackSandboxes {
 
 export function createStackSandboxes(options: StackSandboxesOptions): StackSandboxes {
 	const backends: Partial<Record<IsolateBackendName, IsolateBackend>> = {
-		"in-process": createInProcessIsolateBackend(
-			options.workspaces,
-			options.nodeEngine === undefined
-				? {}
-				: { commands: [createIsolateNodeCommand({ wasmModule: options.nodeEngine })] },
-		),
+		"in-process": createInProcessIsolateBackend(options.workspaces, {
+			commands: [
+				createIsolateGitCommand(),
+				...(options.nodeEngine === undefined ? [] : [createIsolateNodeCommand({ wasmModule: options.nodeEngine })]),
+			],
+		}),
 		...options.extraBackends?.(options.workspaces),
 	};
 	const all = new Map<IsolateBackendName, TieredSandboxes>();
@@ -134,7 +148,7 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 				clock: options.clock,
 				audit: options.audit,
 				access: options.access,
-				...(name === "in-process" && options.nodeEngine !== undefined ? { routes: ISOLATE_NODE_ROUTES } : {}),
+				...(name === "in-process" ? { routes: inProcessRoutes(options.nodeEngine !== undefined) } : {}),
 			}),
 		);
 	}

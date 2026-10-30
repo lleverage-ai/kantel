@@ -19,10 +19,12 @@
 		"./git-tarball": "./src/git-tarball.ts",
 		"./export": "./src/export.ts",
 		"./dependency-layers": "./src/dependency-layers.ts",
-		"./git-refs": "./src/git-refs.ts"
+		"./git-refs": "./src/git-refs.ts",
+		"./git-history": "./src/git-history.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@harbour/contracts": "workspace:*",
+		"isomorphic-git": "1.44.8"
 	},
 	"devDependencies": {
 		"@harbour/testing": "workspace:*",
