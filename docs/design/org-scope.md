@@ -52,7 +52,7 @@ next to the existing `projectId`.
 - **Humans and services** need `needed` on the scope: for a project scope, a binding on the project or across the
   organisation (unchanged); for the organisation scope, a binding across the organisation (unchanged: `roleOf` with no
   project counts only organisation-wide bindings). An API key holds roles only on its projects, so a key never passes an
-  organisation-scope check; see [follow-ups](#follow-ups).
+  organisation-scope check; organisation-wide keys are designed in [org-api-keys.md](org-api-keys.md).
 - **Agents** act only through their own open session and its children, as an operator, never an admin (unchanged).
   New: the agent's own session must be **in the scope the check resolved to**. A project agent passes project-P checks
   only when its session is in P (unchanged); an organisation agent passes organisation-scope checks, and **no project's
@@ -127,14 +127,37 @@ explicit `order` and then name.
   a project's rules need viewer on it; organisation, platform and user rules are open to the organisation.
 - Every change is audited (`rules.rule.put`, `rules.rule.removed`) with the rule's ID and owner, never its text.
 
-### 6. User-owned vault items: a follow-up
+### 6. User-owned vault items
 
-A personal credential (my Gmail, used by an agent in a shared project) must not become the organisation's. The vault
-already accepts a user owner but treats it like the organisation's (open question in the vault contract). Making it
-the user's means three rules: only that user (or an organisation-wide admin) manages it; only a session whose `userId`
-is that user may propose for it or have it injected; and egress checks the session's user on every use. That touches
-the vault's 49 cases, its approval view and both targets' stores, so it gets its own PR after this work, built on
-`SessionRecord.userId` from decision 3. If the stack is reviewed before it is ready, it stays a follow-up.
+In scope (Tom, 30 Oct 2026: "build them now"), as the stack's sixth PR. A personal credential (my Gmail, used by an
+agent in a shared project) must not become the organisation's. The vault already accepts a user owner
+(`{ kind: "user", organisationId, userId }`) but treats it like the organisation's (an open question in the vault
+contract). From this PR it is its user's:
+
+- **The scope check learns a user owner.** `AccessCheck.userId` says the record belongs to that user. A person passes
+  only as that user (another person, an organisation admin included, is `forbidden`); a service needs the role
+  organisation-wide, as for the organisation's records (a host app acting for its users, as it may name a session's
+  `userId`); an agent passes only through its own open session, as an operator, when that session's `userId` is the
+  owner, whether the session is a project's or the organisation's. A check that also names a project or session needs
+  that too, as before.
+- **Managing it** (`putItem`, `putPolicy`, `revokePolicy`): its user, or a service with an organisation-wide admin
+  role. Agents never.
+- **Seeing it** (`getItem`, `listItems`, and the policies on it in `listPolicies`): its user, a service with an
+  organisation-wide role, and agents whose session works for its user. Others get `forbidden` on a read, and lists leave
+  it out: it never shows up as the organisation's.
+- **Using it.** `propose` naming it passes only for its user, or an agent whose own session works for its user; the
+  proposal is in that session's project, or the organisation for an organisation session. Only its user (or a service
+  with an organisation-wide operator role) opens the approval view or decides: a project operator can't approve someone
+  else's credential. Egress injects it only for a request whose agent's open session works for its user, checked on
+  every decision; without project access, or without the request's agent and session, it is never injected. The
+  organisation's ceiling still bounds every route. A model connector never reads one.
+- **Unchanged.** Grants stay the session's records (project operators may still stop one), new secrets proposed by an
+  agent are still the organisation's or the project's, and the 49 existing vault cases are unchanged. Storage needs
+  no migration: the owner is in each item's JSON, and the row's organisation column is the user's organisation.
+
+With the sharing primitive (docs/design/sharing.md in that stack), `ResourceCheck.owner` of kind `user` is the same
+owner. Its owner rule should take this one: an agent passes `use` through a session that works for the user, and a
+change needs the user or a service, not any organisation admin.
 
 ## Contract changes by package
 
