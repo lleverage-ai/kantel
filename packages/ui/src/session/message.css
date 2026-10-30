@@ -93,12 +93,20 @@
 	white-space: nowrap;
 }
 
+/* The answer's parts are blocks of their own, a block apart (docs/spacing.md): the thought's line, the words, a draft
+   document's card. Copy and the time belong to the words, so they sit close under them. */
 .hb-assistant-message {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-2);
 	min-width: 0;
-	padding: var(--hb-space-1) 0;
+}
+
+.hb-assistant-message > :not(:first-child) {
+	margin-top: var(--hb-gap-between);
+}
+
+.hb-assistant-message > .hb-message-actions {
+	margin-top: var(--hb-step-1);
 }
 
 .hb-assistant-message-thought {
@@ -116,12 +124,12 @@
 .hb-assistant-message-thinking-live {
 	display: flex;
 	flex-direction: column;
-	gap: var(--hb-space-2);
+	gap: var(--hb-step-1);
 	min-width: 0;
 }
 
 .hb-assistant-message-thought-window {
-	margin-left: calc(var(--hb-icon-md) + var(--hb-space-4));
+	margin-left: calc(var(--hb-icon-md) + var(--hb-step-2));
 	display: flex;
 	flex-direction: column;
 	justify-content: flex-end;
@@ -158,5 +166,4 @@
 
 .hb-notice-row {
 	min-width: 0;
-	padding: var(--hb-space-2) 0;
 }

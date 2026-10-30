@@ -26,40 +26,32 @@
 	outline-offset: calc(var(--hb-ring) * -1);
 }
 
+/*
+ * The rhythm (docs/spacing.md): every row stands a block apart from the one above it; a line of work under another
+ * (a run of calls, a thought, the activity row) sits within their block; a person's message starts a turn, a turn
+ * apart. virtua wraps every row in its own element, so sibling selectors can't see the row above: the transcript marks
+ * each row instead (`hb-transcript-row-close`, `hb-transcript-turn`, `hb-transcript-row-first`). Space goes above a
+ * row only, so two rows' paddings never add up.
+ */
 .hb-transcript-row {
-	padding: var(--hb-space-2) var(--hb-space-7);
+	padding: var(--hb-gap-between) var(--hb-gutter-narrow) 0;
 }
 
-.hb-transcript-row-tools,
-.hb-transcript-row-browsing {
-	padding-top: var(--hb-space-1);
-	padding-bottom: var(--hb-space-1);
+.hb-transcript-row-close {
+	padding-top: var(--hb-gap-within);
 }
 
-/* A working turn's header sits close under the person's message, its divider then leading into the turn; the
-   activity row at the foot is a work-log row, spaced as the tool calls are. */
+/* A working turn's header follows the person's message, whose actions row already gives it room. */
 .hb-transcript-row-working {
-	padding-top: var(--hb-space-4);
-	padding-bottom: var(--hb-space-3);
-}
-
-.hb-transcript-row-activity {
-	padding-top: var(--hb-space-1);
-	padding-bottom: var(--hb-space-1);
-}
-
-.hb-transcript-row-card {
-	padding-top: var(--hb-space-3);
-	padding-bottom: var(--hb-space-3);
-}
-
-/* virtua wraps every row in its own element, so the ends are marked explicitly, not with :first-child. */
-.hb-transcript-row-first {
-	padding-top: var(--hb-space-7);
+	padding-top: var(--hb-gap-within);
 }
 
 .hb-transcript-turn {
-	padding-top: var(--hb-space-9);
+	padding-top: var(--hb-gap-turn);
+}
+
+.hb-transcript-row-first {
+	padding-top: var(--hb-gutter-narrow);
 }
 
 .hb-transcript-column {
@@ -69,7 +61,7 @@
 }
 
 .hb-transcript-end {
-	height: var(--hb-space-10);
+	height: var(--hb-gap-turn);
 }
 
 /* A linked turn (`#turn=<id>`) stands out for a moment and fades, so the reader sees where the link landed: a message
@@ -136,7 +128,7 @@
  * under its glass; the end makes room for it, as tall as transcript.tsx measures the dock, plus the usual gap.
  */
 .hb-transcript-docked .hb-transcript-end {
-	height: calc(var(--hb-transcript-dock-height) + var(--hb-space-7));
+	height: calc(var(--hb-transcript-dock-height) + var(--hb-gap-between));
 }
 
 .hb-transcript-dock {
@@ -305,12 +297,16 @@
 @media (min-width: 900px) {
 	.hb-transcript-row,
 	.hb-transcript-error {
-		padding-left: var(--hb-space-9);
-		padding-right: var(--hb-space-9);
+		padding-left: var(--hb-gutter);
+		padding-right: var(--hb-gutter);
+	}
+
+	.hb-transcript-row-first {
+		padding-top: var(--hb-gutter);
 	}
 
 	.hb-transcript-dock {
-		padding-right: var(--hb-space-9);
-		padding-left: var(--hb-space-9);
+		padding-right: var(--hb-gutter);
+		padding-left: var(--hb-gutter);
 	}
 }
