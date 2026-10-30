@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 import { accessVerdict } from "../scripts/check-access.ts";
 import {
+	BROWSER_CONTAINERS,
 	DEPLOY_VARIABLES,
 	deployConfig,
 	deployValues,
+	instanceTypeProblem,
 	LOCATION_HINTS,
 	missingVariables,
+	SANDBOX_CONTAINERS,
 	zoneOf,
 } from "../scripts/deploy-config.ts";
 import { DEFAULT_LOCATION_HINT, LOCATION_HINTS as ROUTE_LOCATION_HINTS } from "../src/route.ts";
@@ -165,6 +168,18 @@ describe("deploy config", () => {
 		const values = deployValues({ ...configured, HARBOUR_R2_BUCKET: "other-bucket" }, "deploy");
 		const { r2_buckets: _, ...noBucket } = rawConfig;
 		expect(() => deployConfig(noBucket, values)).toThrow(/no r2_buckets entry for WORKSPACES/);
+	});
+
+	it("sizes every container app as Cloudflare accepts a custom instance type", () => {
+		for (const app of [...BROWSER_CONTAINERS, ...SANDBOX_CONTAINERS]) {
+			expect(instanceTypeProblem(app.instance_type), app.class_name).toBeUndefined();
+		}
+		// What the first sandbox deploy asked for, and Cloudflare refused (VALIDATE_INPUT).
+		expect(instanceTypeProblem({ vcpu: 1, memory_mib: 2048, disk_mb: 8000 })).toMatch(/3 GiB per vCPU/);
+		expect(instanceTypeProblem({ vcpu: 0.5, memory_mib: 4096, disk_mb: 8000 })).toMatch(/outside 1 to 4/);
+		expect(instanceTypeProblem({ vcpu: 1, memory_mib: 3072, disk_mb: 30_000 })).toMatch(/over 20 GB/);
+		expect(SANDBOX_CONTAINERS[0].instance_type).toEqual({ vcpu: 1, memory_mib: 3072, disk_mb: 8000 });
+		expect(SANDBOX_CONTAINERS[0].max_instances).toBe(10);
 	});
 
 	it("refuses a base config that names a route or account, or could serve outside Access", () => {
