@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DraftDocumentCard, PresentedFileCard } from "../presented/presented-file-card.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Sheet } from "../workbench/specimen.tsx";
 import { DocumentPanel, type DocumentSaveState } from "./document-panel.tsx";
@@ -152,6 +153,33 @@ export const Share: Story = () => {
 		</Sheet>
 	);
 };
+
+export const Cards: Story = () => (
+	<Sheet
+		title="In the transcript"
+		intro="While it streams the answer shows the card the document becomes; once saved, the call's card opens it in the panel."
+	>
+		<Column>
+			<div className="hb-presented-files-item">
+				<DraftDocumentCard title="The colours of the rainbow" />
+			</div>
+			<div className="hb-presented-files-item">
+				<PresentedFileCard
+					file={{
+						workspaceId: "ws-1",
+						path: "documents/the-colours-of-the-rainbow.md",
+						name: "the-colours-of-the-rainbow.md",
+						mimeType: "text/markdown",
+						size: 1200,
+						title: "The colours of the rainbow",
+						document: true,
+					}}
+					onOpen={() => {}}
+				/>
+			</div>
+		</Column>
+	</Sheet>
+);
 
 export const States: Story = () => (
 	<Sheet title="Loading, read-only and error" intro="While it's read, without editing, and when it can't be read.">
