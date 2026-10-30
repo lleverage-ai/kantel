@@ -16,6 +16,11 @@
  * A refusal is `forbidden`, says the same thing whichever check failed, names no record beyond the project and holds no
  * secret, and is audited once as `access.denied`.
  *
+ * Resources (docs/design/sharing.md): `resource` is the one check for using or changing a resource that may be owned
+ * outside the project acting on it, such as another project's skill. It applies the owner rules above, then the
+ * resource's bindings (maintainer, approver) and its active shares, read through `SharingLookup`. Without a lookup only
+ * the owner rules apply, which is how every resource behaved before sharing.
+ *
  * Worker calls (settled 27 Oct 2026, open question 13) are the calls Harbour makes on its own behalf and no caller
  * reaches: scheduler ticks and claims, audit appends and relays, retention, the egress gateway's decision, the sandbox
  * sweep, the browser's session end, and identity's `roleOf` and `authenticateApiKey`. Each takes a `SystemContext` and
@@ -29,6 +34,7 @@ import {
 	HarbourError,
 	isSystemActor,
 	type OrganisationId,
+	type OwnerRef,
 	type ProjectId,
 	type SessionId,
 	type SystemContext,
@@ -37,6 +43,19 @@ import {
 } from "./common.ts";
 import { type IdentityDirectory, type Role, roleSatisfies } from "./identity.ts";
 import type { SessionDirectory, SessionRecord } from "./session.ts";
+import {
+	AGENT_MAX_PERMISSION,
+	type BindingSubject,
+	DEFAULT_RESOURCE_POLICY,
+	permissionSatisfies,
+	type ResourcePolicy,
+	type ResourceSelector,
+	type ResourceShare,
+	type ShareGrantee,
+	type SharePermission,
+	type SharingLookup,
+	shareActive,
+} from "./sharing.ts";
 
 /** What a call needs. Name the project, the session, or both; with neither, the call needs an organisation-wide role. */
 export interface AccessCheck {
@@ -60,11 +79,56 @@ export interface AccessResult {
 	readonly projectId?: ProjectId;
 }
 
+/**
+ * Using or changing one resource. `use` asks whether the actor may use it where it acts (`projectId`, `sessionId`, or
+ * an agent's own session); `propose`, `edit` and `approve` ask whether it may change it.
+ */
+export interface ResourceCheck {
+	/** With `revision`, the revision about to be used; a share pinned to another revision doesn't cover it. */
+	readonly resource: ResourceSelector;
+	/** The resource's owner, as its component holds it. */
+	readonly owner: OwnerRef;
+	readonly permission: SharePermission;
+	/**
+	 * For `use`, the role needed where the actor acts (default `viewer`). For a change, the role the owner fallback needs
+	 * on the owner, and a project share needs on its project (default `operator`): the component's own authority.
+	 */
+	readonly needed?: Role;
+	/** For `use`: the project the resource is used in. */
+	readonly projectId?: ProjectId;
+	/** For `use`: the session it is used in. A use through a share is recorded against it. */
+	readonly sessionId?: SessionId;
+	/**
+	 * The ways the check may pass; default all. Authority over a resource (sharing it, deciding its requests) passes
+	 * only `["owner", "binding"]`: a share never lets its holder share on.
+	 */
+	readonly through?: readonly ("owner" | "binding" | "share")[];
+	readonly operation: string;
+}
+
+/** How a resource check passed. */
+export interface ResourceAccessResult {
+	/** `owner`: the owner rules; `share`: an active share; `binding`: a maintainer or approver binding. */
+	readonly via: "system" | "owner" | "share" | "binding";
+	/** The project the actor acts in, when the check named or implied one. */
+	readonly projectId?: ProjectId;
+	/** The share that covered it, for `via: "share"`. A share pinned to a revision means that revision. */
+	readonly share?: ResourceShare;
+	readonly policy: ResourcePolicy;
+}
+
 export interface ProjectAccess {
 	/** Resolves when `ctx.actor` may make the call; otherwise audits `access.denied` and rejects with `forbidden`. */
 	require(ctx: CallContext, check: AccessCheck): Promise<AccessResult>;
 	/** Whether `require` would pass, without auditing. For filtering lists to what the actor may see. */
 	allows(ctx: CallContext, check: Omit<AccessCheck, "operation" | "subject">): Promise<boolean>;
+	/**
+	 * Resolves how `ctx.actor` may use or change a resource; otherwise audits `access.denied` and rejects with
+	 * `forbidden`, as `require` does. A use through a share in a session is recorded (`SharingLookup.recordUse`).
+	 */
+	resource(ctx: CallContext, check: ResourceCheck): Promise<ResourceAccessResult>;
+	/** What `resource` would resolve, or `undefined` where it would refuse; without auditing or recording. */
+	allowsResource(ctx: CallContext, check: Omit<ResourceCheck, "operation">): Promise<ResourceAccessResult | undefined>;
 }
 
 /** The role an agent counts as holding on its own session's project. */
@@ -77,12 +141,26 @@ export interface ProjectAccessOptions {
 	readonly sessions: Pick<SessionDirectory, "get">;
 	readonly audit?: AuditSink;
 	readonly clock?: Clock;
+	/** Shares, bindings and policies, for `resource`. Without it only the owner rules apply. */
+	readonly sharing?: SharingLookup;
 }
 
 const ACCESS_ACTOR: Actor = { kind: "system", component: "access" };
 const ACCESS_CONTEXT: SystemContext = systemContext("access");
 const REFUSAL = "The caller may not do this in this project";
 const WORKER_REFUSAL = "Only Harbour's own components may make this call";
+const RESOURCE_REFUSAL = "The caller may not do this with this resource";
+
+function sameSubject(a: BindingSubject, b: BindingSubject): boolean {
+	switch (a.kind) {
+		case "user":
+			return b.kind === "user" && b.userId === a.userId;
+		case "service":
+			return b.kind === "service" && b.serviceId === a.serviceId;
+		case "group":
+			return b.kind === "group" && b.groupId === a.groupId;
+	}
+}
 
 /**
  * The organisation `access.denied` rows go under when a refused worker call names none, such as a scheduler tick with
@@ -192,7 +270,249 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 		return result(held !== undefined && roleSatisfies(held, check.needed), projectId);
 	};
 
+	const sharing = options.sharing;
+	const passes = async (ctx: CallContext, check: Omit<AccessCheck, "operation" | "subject">) =>
+		(await decide(ctx, check)).allowed;
+
+	/** The groups a human or service is a member of, read once per check. */
+	const subjectOf = (actor: Actor): BindingSubject | undefined =>
+		actor.kind === "human"
+			? { kind: "user", userId: actor.userId }
+			: actor.kind === "service"
+				? { kind: "service", serviceId: actor.serviceId }
+				: undefined;
+
+	const viaBinding = async (ctx: CallContext, check: Omit<ResourceCheck, "operation">): Promise<boolean> => {
+		const subject = subjectOf(ctx.actor);
+		if (sharing === undefined || subject === undefined || check.permission === "use") return false;
+		const bindings = await sharing.bindingsOf(ACCESS_CONTEXT, ctx.organisationId, {
+			kind: check.resource.kind,
+			id: check.resource.id,
+		});
+		const relations = new Set(check.permission === "approve" ? ["approver"] : ["maintainer", "approver"]);
+		const relevant = bindings.filter((binding) => relations.has(binding.relation));
+		if (relevant.length === 0) return false;
+		if (relevant.some((binding) => sameSubject(binding.subject, subject))) return true;
+		const groups = new Set(await sharing.groupsOf(ACCESS_CONTEXT, ctx.organisationId, subject));
+		return relevant.some((binding) => binding.subject.kind === "group" && groups.has(binding.subject.groupId));
+	};
+
+	/** The owner rules alone: whether the actor may use or change the resource without a share or binding. */
+	const viaOwner = async (
+		ctx: CallContext,
+		check: Omit<ResourceCheck, "operation">,
+		where: { readonly projectId?: ProjectId; readonly sessionId?: SessionId },
+		needed: Role,
+	): Promise<boolean> => {
+		const actor = ctx.actor;
+		const owner = check.owner;
+		const ownSession = actor.kind === "agent" ? { sessionId: actor.sessionId } : {};
+		if (check.permission === "use") {
+			if (owner.kind === "platform" || owner.kind === "organisation") {
+				// Organisation-wide resources stay usable in every project, as before sharing.
+				if (where.projectId === undefined && where.sessionId === undefined) return actor.kind !== "agent";
+				return passes(ctx, { ...where, needed });
+			}
+			if (owner.kind === "project") {
+				if (where.projectId !== undefined && where.projectId !== owner.projectId) return false;
+				return passes(ctx, { ...where, projectId: owner.projectId, needed });
+			}
+			return actor.kind === "human" && actor.userId === owner.userId;
+		}
+		switch (owner.kind) {
+			case "platform":
+				return false;
+			case "organisation":
+				return passes(ctx, { ...ownSession, needed });
+			case "project":
+				return passes(ctx, { ...ownSession, projectId: owner.projectId, needed });
+			case "user":
+				if (actor.kind === "human" && actor.userId === owner.userId) return true;
+				return actor.kind !== "agent" && passes(ctx, { needed });
+		}
+		return false;
+	};
+
+	/** An active share of the resource covering the actor where it acts, at the permission asked. */
+	const viaShare = async (
+		ctx: CallContext,
+		check: Omit<ResourceCheck, "operation">,
+		where: { readonly projectId?: ProjectId; readonly sessionId?: SessionId },
+		needed: Role,
+	): Promise<{ readonly share: ResourceShare; readonly projectId?: ProjectId } | undefined> => {
+		if (sharing === undefined) return undefined;
+		const now = clock.now();
+		const candidates = (
+			await sharing.sharesOf(ACCESS_CONTEXT, ctx.organisationId, {
+				kind: check.resource.kind,
+				id: check.resource.id,
+			})
+		).filter(
+			(share) =>
+				share.organisationId === ctx.organisationId &&
+				shareActive(share, now) &&
+				permissionSatisfies(share.permission, check.permission) &&
+				(share.resource.revision === undefined ||
+					check.resource.revision === undefined ||
+					share.resource.revision === check.resource.revision),
+		);
+		if (candidates.length === 0) return undefined;
+		const actor = ctx.actor;
+		// The session the actor acts in: the one named, else an agent's own.
+		const sessionId = where.sessionId ?? (actor.kind === "agent" ? actor.sessionId : undefined);
+		const session = sessionId === undefined ? undefined : await sessionOf(ctx, sessionId);
+		if (sessionId !== undefined && session === undefined) return undefined;
+		const projectId = where.projectId ?? session?.projectId;
+		if (session !== undefined && projectId !== undefined && session.projectId !== projectId) return undefined;
+		const matches = (grantee: ShareGrantee): boolean => {
+			switch (grantee.kind) {
+				case "project":
+					return projectId !== undefined && grantee.projectId === projectId;
+				case "session":
+					return session !== undefined && grantee.sessionId === session.id;
+				case "agent":
+					return session !== undefined && grantee.agentId === session.agentId;
+				case "user":
+					return actor.kind === "human" && grantee.userId === actor.userId;
+			}
+		};
+		if (check.permission === "use") {
+			const share = candidates.find((candidate) => matches(candidate.grantee));
+			if (share === undefined) return undefined;
+			// The actor must also act in that project or session at all.
+			if (projectId !== undefined || sessionId !== undefined) {
+				const scope = {
+					...(projectId === undefined ? {} : { projectId }),
+					...(sessionId === undefined ? {} : { sessionId }),
+				};
+				if (!(await passes(ctx, { ...scope, needed }))) return undefined;
+			} else if (share.grantee.kind !== "user") {
+				return undefined;
+			}
+			return projectId === undefined ? { share } : { share, projectId };
+		}
+		// A change: through a project where the actor holds `needed`, as that user, or in that session or agent.
+		for (const share of candidates) {
+			const grantee = share.grantee;
+			if (actor.kind === "agent") {
+				const own = session ?? (await sessionOf(ctx, actor.sessionId));
+				if (own === undefined || own.agentId !== actor.agentId || own.status === "done") continue;
+				const covered =
+					(grantee.kind === "project" && grantee.projectId === own.projectId) ||
+					(grantee.kind === "session" && grantee.sessionId === own.id) ||
+					(grantee.kind === "agent" && grantee.agentId === own.agentId);
+				if (covered && (await passes(ctx, { sessionId: own.id, needed }))) return { share, projectId: own.projectId };
+				continue;
+			}
+			if (grantee.kind === "user" && actor.kind === "human" && grantee.userId === actor.userId) return { share };
+			if (grantee.kind === "project" && (await passes(ctx, { projectId: grantee.projectId, needed }))) {
+				return { share, projectId: grantee.projectId };
+			}
+		}
+		return undefined;
+	};
+
+	const decideResource = async (
+		ctx: CallContext,
+		check: Omit<ResourceCheck, "operation">,
+	): Promise<ResourceAccessResult | undefined> => {
+		const actor = ctx.actor;
+		const owner = check.owner;
+		if (owner.kind !== "platform" && owner.organisationId !== ctx.organisationId) return undefined;
+		const policy = async (): Promise<ResourcePolicy> =>
+			sharing === undefined
+				? DEFAULT_RESOURCE_POLICY
+				: await sharing.policyOf(ACCESS_CONTEXT, ctx.organisationId, {
+						kind: check.resource.kind,
+						id: check.resource.id,
+					});
+		// Where the actor acts: as named, else an agent's own session.
+		const sessionId =
+			check.sessionId ?? (actor.kind === "agent" && check.projectId === undefined ? actor.sessionId : undefined);
+		const where = {
+			...(check.projectId === undefined ? {} : { projectId: check.projectId }),
+			...(sessionId === undefined ? {} : { sessionId }),
+		};
+		if (actor.kind === "system") {
+			return {
+				via: "system",
+				...(check.projectId === undefined ? {} : { projectId: check.projectId }),
+				policy: await policy(),
+			};
+		}
+		// Agents draft and propose; they never edit or approve.
+		if (actor.kind === "agent" && !permissionSatisfies(AGENT_MAX_PERMISSION, check.permission)) return undefined;
+		const needed = check.needed ?? (check.permission === "use" ? "viewer" : "operator");
+		const through = new Set(check.through ?? ["owner", "binding", "share"]);
+		if (through.has("owner") && (await viaOwner(ctx, check, where, needed))) {
+			const projectId = check.projectId ?? (owner.kind === "project" ? owner.projectId : undefined);
+			return { via: "owner", ...(projectId === undefined ? {} : { projectId }), policy: await policy() };
+		}
+		if (through.has("binding") && (await viaBinding(ctx, check))) return { via: "binding", policy: await policy() };
+		const shared = through.has("share") ? await viaShare(ctx, check, where, needed) : undefined;
+		if (shared !== undefined) {
+			return {
+				via: "share",
+				share: shared.share,
+				...(shared.projectId === undefined ? {} : { projectId: shared.projectId }),
+				policy: await policy(),
+			};
+		}
+		return undefined;
+	};
+
 	return {
+		async resource(ctx, check) {
+			const decided = await decideResource(ctx, check);
+			if (decided !== undefined) {
+				const sessionId = check.sessionId ?? (ctx.actor.kind === "agent" ? ctx.actor.sessionId : undefined);
+				if (
+					decided.share !== undefined &&
+					sharing !== undefined &&
+					sessionId !== undefined &&
+					check.permission === "use"
+				) {
+					const revision = check.resource.revision ?? decided.share.resource.revision;
+					await sharing.recordUse(ACCESS_CONTEXT, {
+						organisationId: ctx.organisationId,
+						sessionId,
+						resource: {
+							kind: check.resource.kind,
+							id: check.resource.id,
+							...(revision === undefined ? {} : { revision }),
+						},
+						shareId: decided.share.id,
+						usedAt: clock.now(),
+					});
+				}
+				return decided;
+			}
+			if (options.audit !== undefined) {
+				const projectId = check.projectId ?? (check.owner.kind === "project" ? check.owner.projectId : undefined);
+				const event: AuditEventInput = {
+					id: `access:denied:${crypto.randomUUID()}`,
+					at: clock.now(),
+					source: "access",
+					type: "access.denied",
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(projectId === undefined ? {} : { projectId }),
+					...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId, agentId: ctx.actor.agentId } : {}),
+					subject: { kind: check.resource.kind, id: check.resource.id },
+					data: {
+						operation: check.operation,
+						permission: check.permission,
+						...(check.needed === undefined ? {} : { needed: check.needed }),
+						...(check.sessionId === undefined ? {} : { targetSessionId: check.sessionId }),
+					},
+				};
+				await options.audit.append(ACCESS_CONTEXT, [event]);
+			}
+			throw new HarbourError("forbidden", RESOURCE_REFUSAL, { operation: check.operation });
+		},
+		async allowsResource(ctx, check) {
+			return decideResource(ctx, check);
+		},
 		async require(ctx, check) {
 			const { allowed, projectId } = await decide(ctx, check);
 			if (allowed) return projectId === undefined ? {} : { projectId };

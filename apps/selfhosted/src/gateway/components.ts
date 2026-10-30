@@ -173,6 +173,8 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 		access: {
 			require: (ctx, check) => need().require(ctx, check),
 			allows: (ctx, check) => need().allows(ctx, check),
+			resource: (ctx, check) => need().resource(ctx, check),
+			allowsResource: (ctx, check) => need().allowsResource(ctx, check),
 		},
 		set: (access) => {
 			target = access;
