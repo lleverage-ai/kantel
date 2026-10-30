@@ -9,17 +9,22 @@
  *
  * Supported: `status` (long, `-s`/`--short`, `--porcelain`), `log` (`-n N`, `-N`, `--max-count=N`, `--oneline`),
  * `rev-parse` (`HEAD` or a ref, `--short`, `--abbrev-ref HEAD`, `--show-toplevel`, `--is-inside-work-tree`,
- * `--git-dir`), `branch` (list, `--show-current`), `ls-files`, `show <rev>` (the commit, without a diff) and
- * `show <rev>:<path>`, `cat-file` (`-p`, `-t`, `-s`, `-e`), `remote` (`-v`, `get-url <name>`), `config --get <key>`.
+ * `--git-dir`), `branch` (list, `--show-current`), `ls-files`, `show <rev>` (the commit and its diff against its first
+ * parent; a merge's header only, as git shows a clean merge) and `show <rev>:<path>`, `diff` (two revisions, a revision
+ * and the working tree, the index and the working tree, `--cached`; `-- <paths>`), both with `--stat`, `--name-only`,
+ * `--name-status` and (`show`) `-s`, `cat-file` (`-p`, `-t`, `-s`, `-e`), `remote` (`-v`, `get-url <name>`),
+ * `config --get <key>`. A seeded `.git` is blobless beyond recent diffs: a patch that needs a blob it lacks says so.
  */
 import { DEFAULT_TIER_ROUTES, type TierRoute } from "@harbour/contracts";
-import git, { type ReadCommitResult } from "isomorphic-git";
+import { structuredPatch } from "diff";
+import git, { type ReadCommitResult, STAGE, TREE, type Walker, type WalkerEntry, WORKDIR } from "isomorphic-git";
 import type { CustomCommand, IFileSystem } from "just-bash/browser";
 
 /** The git subcommands the isolate answers. */
 export const ISOLATE_GIT_READS = [
 	"status",
 	"log",
+	"diff",
 	"rev-parse",
 	"branch",
 	"ls-files",
@@ -37,7 +42,7 @@ export const ISOLATE_GIT_READS = [
 export const ISOLATE_GIT_ROUTE: TierRoute = {
 	tool: "bash",
 	programs: ["git"],
-	subcommands: ["status", "log", "rev-parse", "ls-files", "show", "cat-file"],
+	subcommands: ["status", "log", "diff", "rev-parse", "ls-files", "show", "cat-file"],
 	tier: "isolate",
 };
 
@@ -152,10 +157,25 @@ async function run(subcommand: string, args: readonly string[], repo: Repo): Pro
 				const { blob } = await git.readBlob({ fs, dir, oid, filepath: target.slice(colon + 1) });
 				return ok(new TextDecoder().decode(blob));
 			}
+			const format = diffFormat(args);
+			if (typeof format !== "string") return format;
 			const oid = await resolveRef(repo, target);
 			const commit = await git.readCommit({ fs, dir, oid });
-			return ok(longLog(commit));
+			const parents = commit.commit.parent;
+			if (format === "none" || parents.length > 1) return ok(longLog(commit));
+			const parent = parents[0];
+			if (parent !== undefined && !(await hasObject(repo, parent))) {
+				return ok(`${longLog(commit)}\n(its parent is past this shallow clone's history, so there is no diff)\n`);
+			}
+			const changes = await diffWalk(repo, [
+				parent === undefined ? undefined : TREE({ ref: parent }),
+				TREE({ ref: oid }),
+			]);
+			const body = await renderDiff(repo, changes, format);
+			return ok(body === "" ? longLog(commit) : `${longLog(commit)}\n${body}`);
 		}
+		case "diff":
+			return diff(repo, args);
 		case "cat-file": {
 			const [flag, spec] = args;
 			if (spec === undefined || !["-p", "-t", "-s", "-e"].includes(flag ?? "")) {
@@ -242,6 +262,249 @@ async function status(repo: Repo, args: readonly string[]): Promise<Result> {
 	return ok(out.join(""));
 }
 
+type DiffFormat = "patch" | "stat" | "name-only" | "name-status" | "none";
+
+/** The output `--stat`, `--name-only`, `--name-status` or `-s` asks for; a usage error for another option. */
+function diffFormat(args: readonly string[]): DiffFormat | Result {
+	let format: DiffFormat = "patch";
+	for (const arg of args) {
+		if (arg === "--") break;
+		if (!arg.startsWith("-")) continue;
+		if (arg === "--stat") format = "stat";
+		else if (arg === "--name-only") format = "name-only";
+		else if (arg === "--name-status") format = "name-status";
+		else if (arg === "-s" || arg === "--no-patch") format = "none";
+		else if (arg === "-p" || arg === "--patch" || arg === "--cached" || arg === "--staged") continue;
+		else return fail(`git: ${arg} is not supported in the isolate tier\n`, 129);
+	}
+	return format;
+}
+
+/** `git diff`: two revisions (`a b` or `a..b`), a revision and the working tree, or the index and the working tree. */
+async function diff(repo: Repo, args: readonly string[]): Promise<Result> {
+	const format = diffFormat(args);
+	if (typeof format !== "string") return format;
+	const separator = args.indexOf("--");
+	const before = separator < 0 ? args : args.slice(0, separator);
+	const paths = separator < 0 ? [] : args.slice(separator + 1).map((path) => path.replace(/^\.\/|\/+$/g, ""));
+	const cached = before.includes("--cached") || before.includes("--staged");
+	const revs = before
+		.filter((arg) => !arg.startsWith("-"))
+		.flatMap((arg) => {
+			const range = /^(.*?)\.\.(.*)$/.exec(arg);
+			return range === null ? [arg] : [range[1] || "HEAD", range[2] || "HEAD"];
+		});
+	if (revs.length > 2) return fail("usage: git diff [<commit> [<commit>]] [-- <path>...]\n", 129);
+	const trees = await Promise.all(revs.map(async (rev) => TREE({ ref: await resolveRef(repo, rev) })));
+	let walkers: (Walker | undefined)[];
+	if (trees.length === 2) walkers = trees;
+	else if (cached) walkers = [trees[0] ?? TREE({ ref: "HEAD" }), STAGE()];
+	else walkers = [trees[0] ?? STAGE(), WORKDIR()];
+	const changes = (await diffWalk(repo, walkers, trees.length < 2 && !cached)).filter(
+		(change) => paths.length === 0 || paths.some((path) => change.path === path || change.path.startsWith(`${path}/`)),
+	);
+	return ok(await renderDiff(repo, changes, format));
+}
+
+/** One side of a changed file: its blob ID and mode, and its content when it's in the working tree. */
+interface Side {
+	readonly oid: string;
+	readonly mode: number;
+	readonly content?: Uint8Array;
+}
+
+interface Change {
+	readonly path: string;
+	readonly before?: Side;
+	readonly after?: Side;
+}
+
+/**
+ * The files that differ between two walkers, in path order. With `worktree`, the right is the working tree, where only
+ * files the left (or the index) tracks count, as `git diff` leaves untracked files out.
+ */
+async function diffWalk(repo: Repo, walkers: readonly (Walker | undefined)[], worktree = false): Promise<Change[]> {
+	const [left, right] = walkers;
+	const trees = [left ?? TREE({ ref: EMPTY_TREE }), right as Walker, ...(worktree ? [STAGE()] : [])];
+	const side = async (entry: WalkerEntry | null, content: boolean): Promise<Side | undefined> => {
+		if (entry === null || (await entry.type()) !== "blob") return undefined;
+		const oid = await entry.oid();
+		const mode = await entry.mode();
+		return content ? { oid, mode, content: (await entry.content()) as Uint8Array } : { oid, mode };
+	};
+	const changes = (await git.walk({
+		fs: repo.fs,
+		dir: repo.dir,
+		trees,
+		async map(path, [a, b, stage]) {
+			if (path === ".") return undefined;
+			const [left, right] = await Promise.all([a?.type(), b?.type()]);
+			const tracked = (a !== null && a !== undefined) || (stage !== null && stage !== undefined);
+			if (left !== "blob" && right !== "blob") {
+				// A directory: not walked into when it's untracked, or the same tree on both sides.
+				if (worktree && !tracked) return null;
+				if (left === "tree" && right === "tree" && !worktree) {
+					const [before, after] = await Promise.all([a?.oid(), b?.oid()]);
+					if (before !== undefined && before === after) return null;
+				}
+				return undefined;
+			}
+			if (worktree && !tracked) return undefined;
+			const before = await side(a ?? null, false);
+			const after = await side(b ?? null, worktree);
+			if (before?.oid === after?.oid && before?.mode === after?.mode) return undefined;
+			return { path, ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }) };
+		},
+	})) as (Change | undefined)[];
+	return changes.filter((change): change is Change => change !== undefined);
+}
+
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+async function hasObject(repo: Repo, oid: string): Promise<boolean> {
+	try {
+		await git.readObject({ fs: repo.fs, dir: repo.dir, oid, format: "deflated" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** A side's content, or `undefined` when the blobless clone doesn't have it. */
+async function contentOf(repo: Repo, side: Side | undefined): Promise<Uint8Array | null | undefined> {
+	if (side === undefined) return null;
+	if (side.content !== undefined) return side.content;
+	try {
+		return (await git.readBlob({ fs: repo.fs, dir: repo.dir, oid: side.oid })).blob;
+	} catch {
+		return undefined;
+	}
+}
+
+const isBinary = (bytes: Uint8Array) => bytes.subarray(0, 8000).includes(0);
+const modeText = (mode: number) => (mode === 0o40000 ? "40000" : mode.toString(8).padStart(6, "0"));
+const abbrev = (oid: string | undefined) => (oid ?? "0".repeat(40)).slice(0, 7);
+
+async function renderDiff(repo: Repo, changes: readonly Change[], format: DiffFormat): Promise<string> {
+	if (format === "none" || changes.length === 0) return "";
+	if (format === "name-only") return changes.map((change) => `${change.path}\n`).join("");
+	if (format === "name-status") {
+		return changes
+			.map(
+				(change) => `${change.before === undefined ? "A" : change.after === undefined ? "D" : "M"}\t${change.path}\n`,
+			)
+			.join("");
+	}
+	const decoder = new TextDecoder();
+	const out: string[] = [];
+	const stats: { path: string; added: number; removed: number; binary?: string; missing?: boolean }[] = [];
+	for (const change of changes) {
+		const { path, before, after } = change;
+		const [old, now] = await Promise.all([contentOf(repo, before), contentOf(repo, after)]);
+		const header = [`diff --git a/${path} b/${path}\n`];
+		if (before === undefined) header.push(`new file mode ${modeText(after?.mode ?? 0o100644)}\n`);
+		else if (after === undefined) header.push(`deleted file mode ${modeText(before.mode)}\n`);
+		else if (before.mode !== after.mode) {
+			header.push(`old mode ${modeText(before.mode)}\n`, `new mode ${modeText(after.mode)}\n`);
+		}
+		if (before?.oid !== after?.oid) {
+			const same = before !== undefined && after !== undefined && before.mode === after.mode;
+			header.push(`index ${abbrev(before?.oid)}..${abbrev(after?.oid)}${same ? ` ${modeText(after.mode)}` : ""}\n`);
+		}
+		if (old === undefined || now === undefined) {
+			stats.push({ path, added: 0, removed: 0, missing: true });
+			out.push(
+				...header,
+				`(${path} as of ${old === undefined ? "before" : "after"} this change isn't in this shallow, blobless clone, which holds only recent diffs: run the diff in the container tier)\n`,
+			);
+			continue;
+		}
+		if (before?.oid === after?.oid) {
+			stats.push({ path, added: 0, removed: 0 });
+			out.push(...header);
+			continue;
+		}
+		if ((old !== null && isBinary(old)) || (now !== null && isBinary(now))) {
+			stats.push({
+				path,
+				added: 0,
+				removed: 0,
+				binary: `Bin ${old?.byteLength ?? 0} -> ${now?.byteLength ?? 0} bytes`,
+			});
+			out.push(
+				...header,
+				`Binary files ${old === null ? "/dev/null" : `a/${path}`} and ${now === null ? "/dev/null" : `b/${path}`} differ\n`,
+			);
+			continue;
+		}
+		const oldText = old === null ? "" : decoder.decode(old);
+		const newText = now === null ? "" : decoder.decode(now);
+		const patch = structuredPatch(`a/${path}`, `b/${path}`, oldText, newText, "", "", { context: 3 });
+		const oldLines = oldText.split("\n");
+		let added = 0;
+		let removed = 0;
+		const hunks: string[] = [];
+		for (const hunk of patch.hunks) {
+			// As git writes them: no count when it's 1, and an empty side starts at the line before.
+			const range = (start: number, count: number) =>
+				count === 1 ? `${start}` : `${count === 0 ? start - 1 : start},${count}`;
+			const func = funcname(oldLines, hunk.oldStart - 1);
+			hunks.push(
+				`@@ -${range(hunk.oldStart, hunk.oldLines)} +${range(hunk.newStart, hunk.newLines)} @@${func === "" ? "" : ` ${func}`}\n`,
+			);
+			for (const line of hunk.lines) {
+				if (line.startsWith("+")) added++;
+				else if (line.startsWith("-")) removed++;
+				hunks.push(`${line}\n`);
+			}
+		}
+		stats.push({ path, added, removed });
+		out.push(
+			...header,
+			`--- ${old === null ? "/dev/null" : `a/${path}`}\n`,
+			`+++ ${now === null ? "/dev/null" : `b/${path}`}\n`,
+			...hunks,
+		);
+	}
+	return format === "stat" ? renderStat(stats) : out.join("");
+}
+
+/**
+ * git's default hunk header context: the nearest line before the hunk (in the old file) that starts with a letter, `_`
+ * or `$`, cut to 80 bytes, without trailing whitespace.
+ */
+function funcname(lines: readonly string[], before: number): string {
+	for (let index = before - 1; index >= 0; index--) {
+		const line = lines[index] as string;
+		if (/^[A-Za-z_$]/.test(line)) return line.slice(0, 80).replace(/\s+$/, "");
+	}
+	return "";
+}
+
+function renderStat(
+	stats: readonly { path: string; added: number; removed: number; binary?: string; missing?: boolean }[],
+): string {
+	if (stats.length === 0) return "";
+	const width = Math.max(...stats.map((stat) => stat.path.length));
+	const counts = stats.map((stat) => stat.binary ?? (stat.missing ? "?" : String(stat.added + stat.removed)));
+	const countWidth = Math.max(...counts.map((count) => (count.startsWith("Bin") ? 0 : count.length)));
+	const most = Math.max(...stats.map((stat) => stat.added + stat.removed));
+	const room = Math.max(10, 80 - width - countWidth - 4);
+	const scale = (n: number) => (most <= room ? n : Math.max(n > 0 ? 1 : 0, Math.round((n * room) / most)));
+	const lines = stats.map((stat, index) => {
+		const count = counts[index] as string;
+		const graph = stat.binary === undefined ? `${"+".repeat(scale(stat.added))}${"-".repeat(scale(stat.removed))}` : "";
+		const shown = count.startsWith("Bin") ? count : count.padStart(countWidth);
+		return ` ${stat.path.padEnd(width)} | ${shown}${graph === "" ? "" : ` ${graph}`}\n`;
+	});
+	const added = stats.reduce((total, stat) => total + stat.added, 0);
+	const removed = stats.reduce((total, stat) => total + stat.removed, 0);
+	const summary = [`${stats.length} file${stats.length === 1 ? "" : "s"} changed`];
+	if (added > 0) summary.push(`${added} insertion${added === 1 ? "" : "s"}(+)`);
+	if (removed > 0) summary.push(`${removed} deletion${removed === 1 ? "" : "s"}(-)`);
+	return `${lines.join("")} ${summary.join(", ")}\n`;
+}
+
 async function dropped(): Promise<void> {}
 
 async function resolveRef(repo: Repo, ref: string): Promise<string> {
@@ -287,14 +550,29 @@ function firstLine(entry: ReadCommitResult): string {
 }
 
 function longLog(entry: ReadCommitResult): string {
-	const { author, message } = entry.commit;
-	const date = new Date(author.timestamp * 1000).toUTCString();
+	const { author, message, parent } = entry.commit;
+	const date = gitDate(author.timestamp, author.timezoneOffset);
 	const body = message
 		.replace(/\n+$/, "")
 		.split("\n")
 		.map((line) => `    ${line}`)
 		.join("\n");
-	return `commit ${entry.oid}\nAuthor: ${author.name} <${author.email}>\nDate:   ${date}\n\n${body}\n`;
+	const merge = parent.length > 1 ? `Merge: ${parent.map((oid) => oid.slice(0, 7)).join(" ")}\n` : "";
+	return `commit ${entry.oid}\n${merge}Author: ${author.name} <${author.email}>\nDate:   ${date}\n\n${body}\n`;
+}
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** git's default date, in the author's own time zone: `Thu Oct 1 00:00:00 2026 +0000`. */
+export function gitDate(timestamp: number, timezoneOffset: number): string {
+	// isomorphic-git's offset is minutes west of UTC, as `Date#getTimezoneOffset` has it.
+	const east = -timezoneOffset;
+	const local = new Date((timestamp + east * 60) * 1000);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	const time = `${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}`;
+	const zone = `${east < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(east) / 60))}${pad(Math.abs(east) % 60)}`;
+	return `${DAYS[local.getUTCDay()]} ${MONTHS[local.getUTCMonth()]} ${local.getUTCDate()} ${time} ${local.getUTCFullYear()} ${zone}`;
 }
 
 /** The nearest directory at or above `cwd` that holds a `.git` directory. */

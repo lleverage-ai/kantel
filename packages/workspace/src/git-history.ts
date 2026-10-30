@@ -22,6 +22,21 @@ export interface GitHistoryOptions {
 	readonly refs?: GitRefLister;
 	/** The largest pack read. Default 256 MiB. */
 	readonly maxBytes?: number;
+	/**
+	 * Which blobs come with the history, in a second fetch, so recent diffs can be read: those the last `commits`
+	 * commits changed (default `DIFF_COMMITS`), both sides, and every file of the commit when it has at most
+	 * `headFiles` (default `HEAD_BLOB_FILES`), so a small repository diffs its working tree too. Best effort: when the
+	 * blobs can't be fetched, or come to more than `maxBytes` (default 32 MiB), the history is seeded without them and
+	 * `onError` hears why. `false`: no blobs.
+	 */
+	readonly blobs?:
+		| false
+		| {
+				readonly commits?: number;
+				readonly headFiles?: number;
+				readonly maxBytes?: number;
+				readonly onError?: (error: unknown) => void;
+		  };
 }
 
 export interface GitHistorySource {
@@ -37,6 +52,12 @@ export interface GitHistorySource {
 
 /** The default number of commits, as `GitSeedSource.history` documents. */
 export const DEFAULT_HISTORY = 50;
+/** The commits whose changed blobs come with the history, so `git show` can print their diffs. */
+export const DIFF_COMMITS = 10;
+/** A commit with at most this many files brings every blob, so the working tree diffs against it too. */
+export const HEAD_BLOB_FILES = 1_000;
+/** The most blobs one seed asks for. */
+const MAX_BLOBS = 5_000;
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const encoder = new TextEncoder();
@@ -123,42 +144,68 @@ export async function fetchGitHistory(options: GitHistoryOptions, source: GitHis
 		throw new HarbourError("invalid", `history must be a whole number of commits, at least 1`);
 	}
 
-	const [reply, branch] = await Promise.all([
-		(async () => {
-			const response = await send(`${base}/${owner}/${name}.git/git-upload-pack`, {
-				method: "POST",
-				headers: {
-					"content-type": "application/x-git-upload-pack-request",
-					accept: "application/x-git-upload-pack-result",
-					"git-protocol": "version=2",
-					"user-agent": "harbour-workspace",
-				},
-				body: shallowFetchRequest(source.commit, source.depth),
+	/** One upload-pack `fetch`, its reply read up to `limit` bytes. */
+	async function uploadPack(body: string, what: string, limit: number) {
+		const response = await send(`${base}/${owner}/${name}.git/git-upload-pack`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-git-upload-pack-request",
+				accept: "application/x-git-upload-pack-result",
+				"git-protocol": "version=2",
+				"user-agent": "harbour-workspace",
+			},
+			body,
+		});
+		if (response.status === 401 || response.status === 403 || response.status === 404) {
+			await response.body?.cancel();
+			throw new HarbourError("not_found", `no repository ${owner}/${name} that Harbour can read`, {
+				repo: `${owner}/${name}`,
 			});
-			if (response.status === 401 || response.status === 403 || response.status === 404) {
-				await response.body?.cancel();
-				throw new HarbourError("not_found", `no repository ${owner}/${name} that Harbour can read`, {
-					repo: `${owner}/${name}`,
-				});
-			}
-			if (!response.ok || response.body === null) {
-				await response.body?.cancel();
-				throw new HarbourError(
-					"unavailable",
-					`fetching the history of ${owner}/${name} failed with ${response.status}`,
-				);
-			}
-			return parseFetchReply(await readAll(response.body, maxBytes));
-		})(),
+		}
+		if (!response.ok || response.body === null) {
+			await response.body?.cancel();
+			throw new HarbourError("unavailable", `fetching ${what} of ${owner}/${name} failed with ${response.status}`);
+		}
+		return parseFetchReply(await readAll(response.body, limit));
+	}
+
+	const [reply, branch] = await Promise.all([
+		uploadPack(shallowFetchRequest(source.commit, source.depth), "the history", maxBytes),
 		branchOf(refs, `${owner}/${name}`, source),
 	]);
+	const blobs = options.blobs === false ? undefined : (options.blobs ?? {});
+	const blobLimit = blobs?.maxBytes ?? 32 * 1024 * 1024;
 	return gitDirectory({
 		url: `${base}/${owner}/${name}.git`,
 		commit: source.commit,
 		...(branch === undefined ? {} : { branch }),
 		shallow: reply.shallow,
 		pack: reply.pack,
+		...(blobs === undefined
+			? {}
+			: {
+					blobs: {
+						commits: blobs.commits ?? DIFF_COMMITS,
+						headFiles: blobs.headFiles ?? HEAD_BLOB_FILES,
+						fetch: async (oids) => (await uploadPack(blobFetchRequest(oids), "blobs", blobLimit)).pack,
+						...(blobs.onError === undefined ? {} : { onError: blobs.onError }),
+					},
+				}),
 	});
+}
+
+/** The protocol v2 `fetch` request for these objects, whole (blobs, when the history came without them). */
+export function blobFetchRequest(oids: readonly string[]): string {
+	return [
+		pktLine("command=fetch\n"),
+		pktLine("agent=harbour\n"),
+		"0001",
+		pktLine("no-progress\n"),
+		pktLine("ofs-delta\n"),
+		...oids.map((oid) => pktLine(`want ${oid}\n`)),
+		pktLine("done\n"),
+		"0000",
+	].join("");
 }
 
 /** The branch `source.ref` names when it is one and still points at `source.commit`. */
@@ -182,22 +229,39 @@ export interface GitDirectoryInput {
 	readonly shallow: readonly string[];
 	/** A blobless pack holding `commit`, its trees and its history down to `shallow`. */
 	readonly pack: Uint8Array;
+	/** Fetches blobs for recent diffs as a second pack (see `GitHistoryOptions.blobs`). */
+	readonly blobs?: {
+		readonly commits: number;
+		readonly headFiles: number;
+		readonly fetch: (oids: readonly string[]) => Promise<Uint8Array>;
+		readonly onError?: (error: unknown) => void;
+	};
 }
 
 /** The `.git` files of a blobless shallow clone of `pack`. */
 export async function gitDirectory(input: GitDirectoryInput): Promise<SeedFile[]> {
 	const fs = memoryFs();
-	const packId = hex(input.pack.subarray(input.pack.length - 20));
-	const packPath = `.git/objects/pack/pack-${packId}`;
-	fs.files.set(`/${packPath}.pack`, input.pack);
 	const cache = {};
-	await git.indexPack({ fs, dir: "/", filepath: `${packPath}.pack`, cache });
-	const idx = fs.files.get(`/${packPath}.idx`);
-	if (idx === undefined) throw new HarbourError("unavailable", "indexing the history's pack failed");
+	const packs = [await addPack(fs, cache, input.pack)];
 
 	const entries: IndexEntry[] = [];
 	const { commit } = await git.readCommit({ fs, dir: "/", oid: input.commit, cache });
 	await walkTree(fs, cache, commit.tree, "", entries);
+
+	if (input.blobs !== undefined) {
+		try {
+			fs.files.set("/.git/shallow", encoder.encode(input.shallow.map((oid) => `${oid}\n`).join("")));
+			const wanted = await recentBlobs(fs, cache, input.commit, input.blobs.commits);
+			if (entries.length <= input.blobs.headFiles) {
+				for (const entry of entries) if (entry.mode !== 0o160000) wanted.add(entry.oid);
+			}
+			if (wanted.size > MAX_BLOBS)
+				throw new HarbourError("exhausted", `${wanted.size} blobs is more than ${MAX_BLOBS}`);
+			if (wanted.size > 0) packs.push(await addPack(fs, cache, await input.blobs.fetch([...wanted].sort())));
+		} catch (error) {
+			input.blobs.onError?.(error);
+		}
+	}
 
 	const branch = input.branch;
 	const head = branch === undefined ? `${input.commit}\n` : `ref: refs/heads/${branch}\n`;
@@ -239,11 +303,73 @@ export async function gitDirectory(input: GitDirectoryInput): Promise<SeedFile[]
 			branch === undefined ? ".git/refs/.keep" : `.git/refs/heads/${branch}`,
 			branch === undefined ? "" : `${input.commit}\n`,
 		),
-		{ path: `${packPath}.pack`, content: input.pack },
-		{ path: `${packPath}.idx`, content: idx },
-		text(`${packPath}.promisor`, ""),
+		...packs.flatMap((pack) => [
+			{ path: `${pack.path}.pack`, content: pack.pack },
+			{ path: `${pack.path}.idx`, content: pack.idx },
+			text(`${pack.path}.promisor`, ""),
+		]),
 		{ path: ".git/index", content: await indexFile(entries) },
 	];
+}
+
+/** Writes `pack` into the memory `.git` and indexes it. */
+async function addPack(fs: MemoryFs, cache: object, pack: Uint8Array) {
+	const path = `.git/objects/pack/pack-${hex(pack.subarray(pack.length - 20))}`;
+	fs.files.set(`/${path}.pack`, pack);
+	await git.indexPack({ fs, dir: "/", filepath: `${path}.pack`, cache });
+	const idx = fs.files.get(`/${path}.idx`);
+	if (idx === undefined) throw new HarbourError("unavailable", "indexing a fetched pack failed");
+	return { path, pack, idx };
+}
+
+/**
+ * The blobs the first `count` commits of `commit`'s log changed, on both sides of each change (against the first
+ * parent; a commit at the shallow boundary, whose parent isn't here, is left out).
+ */
+async function recentBlobs(fs: MemoryFs, cache: object, commit: string, count: number): Promise<Set<string>> {
+	const wanted = new Set<string>();
+	if (count < 1) return wanted;
+	const shallow = new Set(decoder.decode(fs.files.get("/.git/shallow")).split("\n").filter(Boolean));
+	const log = await git.log({ fs, dir: "/", ref: commit, depth: count, cache });
+	for (const entry of log) {
+		const parent = entry.commit.parent[0];
+		if (parent === undefined) {
+			await treeBlobs(fs, cache, entry.commit.tree, wanted);
+			continue;
+		}
+		if (shallow.has(entry.oid)) continue;
+		const before = await git.readCommit({ fs, dir: "/", oid: parent, cache });
+		await changedBlobs(fs, cache, before.commit.tree, entry.commit.tree, wanted);
+	}
+	return wanted;
+}
+
+/** Adds the blobs that differ between two trees, from either side. */
+async function changedBlobs(fs: MemoryFs, cache: object, left: string, right: string, out: Set<string>): Promise<void> {
+	if (left === right) return;
+	const read = async (oid: string) =>
+		new Map((await git.readTree({ fs, dir: "/", oid, cache })).tree.map((entry) => [entry.path, entry]));
+	const [before, after] = await Promise.all([read(left), read(right)]);
+	for (const name of new Set([...before.keys(), ...after.keys()])) {
+		const a = before.get(name);
+		const b = after.get(name);
+		if (a?.oid === b?.oid) continue;
+		if (a?.type === "tree" && b?.type === "tree") {
+			await changedBlobs(fs, cache, a.oid, b.oid, out);
+			continue;
+		}
+		for (const side of [a, b]) {
+			if (side?.type === "blob") out.add(side.oid);
+			else if (side?.type === "tree") await treeBlobs(fs, cache, side.oid, out);
+		}
+	}
+}
+
+async function treeBlobs(fs: MemoryFs, cache: object, oid: string, out: Set<string>): Promise<void> {
+	for (const entry of (await git.readTree({ fs, dir: "/", oid, cache })).tree) {
+		if (entry.type === "blob") out.add(entry.oid);
+		else if (entry.type === "tree") await treeBlobs(fs, cache, entry.oid, out);
+	}
 }
 
 interface IndexEntry {

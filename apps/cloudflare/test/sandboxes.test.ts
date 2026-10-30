@@ -101,6 +101,7 @@ function gitOrigin() {
 		);
 	git(["init", "--quiet", "--initial-branch=main"]);
 	git(["config", "uploadpack.allowFilter", "true"]);
+	git(["config", "uploadpack.allowAnySHA1InWant", "true"]);
 	const commits: string[] = [];
 	for (let index = 1; index <= 4; index++) {
 		mkdirSync(join(dir, "src"), { recursive: true });
@@ -241,8 +242,14 @@ describe("the stack's sandboxes", () => {
 		// Every git command runs in the isolate, a pipeline too; the seeded tree is the commit's, so nothing has changed.
 		expect(await bash("git status --short && git log --format=x | head -1")).toMatchObject({ exitCode: 0 });
 		expect((await bash("git status")).stdout).toContain("On branch main\n");
-		expect((await bash("git show HEAD~1")).stdout).toContain("    Change 3");
+		const show = (await bash("git show HEAD~1")).stdout;
+		expect(show).toContain("    Change 3");
+		// With its diff: recent diffs' blobs come with the history.
+		expect(show).toContain("--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# site 2\n+# site 3\n");
 		expect((await bash("git status --short")).stdout).toBe("");
+		// A small repository brings every blob, so the working tree diffs too.
+		await bash("echo more >> README.md");
+		expect((await bash("git diff")).stdout).toContain("@@ -1 +1,2 @@\n # site 4\n+more\n");
 		// A write says it needs the container tier.
 		const commit = await bash("git commit -m x");
 		expect(commit.exitCode).toBe(1);

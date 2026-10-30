@@ -69,6 +69,8 @@ beforeAll(() => {
 	scratch.push(origin);
 	run(origin, ["init", "--quiet", "--initial-branch=main"]);
 	run(origin, ["config", "uploadpack.allowFilter", "true"]);
+	// As GitHub does, for a partial clone's lazy fetches.
+	run(origin, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
 	for (let index = 1; index <= 6; index++) {
 		commit(
 			`Change ${index}\n\nThe body of change ${index}.`,
@@ -119,7 +121,7 @@ describe("fetchGitHistory", () => {
 	it("writes a shallow, blobless .git that git reads as a clone of the branch", async () => {
 		const github = fakeGitHub();
 		const files = await fetchGitHistory(
-			{ fetch: github.fetch },
+			{ fetch: github.fetch, blobs: false },
 			{ repo: "harbour-fixtures/site", ref: "main", commit: commits[0] as string, depth: 3 },
 		);
 		expect(files.every((file) => file.path.startsWith(".git/"))).toBe(true);
@@ -149,6 +151,68 @@ describe("fetchGitHistory", () => {
 		const log = await git.log({ fs: await import("node:fs"), dir });
 		expect(log.map((entry) => entry.oid)).toEqual(commits.slice(0, 3));
 		expect(log[0]?.commit.message).toBe("Change 6\n\nThe body of change 6.\n");
+	});
+
+	it("brings the blobs of recent diffs, and every blob of a small commit, in a second pack", async () => {
+		const github = fakeGitHub();
+		const blobsOf = (files: readonly SeedFile[]) => {
+			const objects = run(checkout(files), [
+				"cat-file",
+				"--batch-all-objects",
+				"--batch-check=%(objecttype) %(objectname)",
+			]);
+			return new Set(
+				objects
+					.toString()
+					.trim()
+					.split("\n")
+					.filter((line) => line.startsWith("blob "))
+					.map((line) => line.slice(5)),
+			);
+		};
+		const blob = (rev: string) => run(origin, ["rev-parse", rev]).toString().trim();
+		const source = { repo: "harbour-fixtures/site", ref: "main", commit: commits[0] as string, depth: 4 };
+
+		// The last two commits each changed README.md and added a file: both sides of each change.
+		const recent = await fetchGitHistory({ fetch: github.fetch, blobs: { commits: 2, headFiles: 0 } }, source);
+		expect(recent.filter((file) => file.path.endsWith(".pack"))).toHaveLength(2);
+		expect(blobsOf(recent)).toEqual(
+			new Set([
+				blob("HEAD:README.md"),
+				blob("HEAD~1:README.md"),
+				blob("HEAD~2:README.md"),
+				blob("HEAD:src/file-6.ts"),
+				blob("HEAD:src/file-5.ts"),
+			]),
+		);
+		// isomorphic-git reads them.
+		const dir = checkout(recent);
+		const { blob: readme } = await git.readBlob({
+			fs: await import("node:fs"),
+			dir,
+			oid: commits[1] as string,
+			filepath: "README.md",
+		});
+		expect(new TextDecoder().decode(readme)).toBe("# site 5\n");
+
+		// A commit with few files brings them all, so the working tree diffs against it.
+		const small = await fetchGitHistory({ fetch: github.fetch, blobs: { commits: 0 } }, source);
+		const tree = run(origin, ["ls-tree", "-r", "--format=%(objectname)", "HEAD"]).toString().trim().split("\n");
+		expect(blobsOf(small)).toEqual(new Set(tree));
+
+		// Blobs that don't come leave the history as it was, and say why.
+		const errors: unknown[] = [];
+		const failing = (async (input: string | URL | Request, init?: RequestInit) =>
+			String(init?.body ?? "").includes("deepen") || String(init?.body ?? "").includes("ls-refs")
+				? github.fetch(input, init)
+				: new Response("", { status: 500 })) as typeof globalThis.fetch;
+		const without = await fetchGitHistory(
+			{ fetch: failing, blobs: { onError: (error) => errors.push(error) } },
+			source,
+		);
+		expect(without.filter((file) => file.path.endsWith(".pack"))).toHaveLength(1);
+		expect(blobsOf(without).size).toBe(0);
+		expect(isHarbourError(errors[0], "unavailable")).toBe(true);
 	});
 
 	it("detaches HEAD for a tag or a commit, and asks GitHub's git endpoint only", async () => {
