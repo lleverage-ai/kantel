@@ -57,7 +57,7 @@ modifiers such as `bg-accent/50`.
 | `--hb-control-xs` … `-control-lg`, `-icon-sm`, `-icon-md`, `-dot`, `-thumb` | `size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`, `size-thumb` (any sizing or spacing utility) |
 | `--hb-content-width`, `-card-width`, `-sidebar-width`, `-rail-width`, `-popover-width`, `-menu-width`, `-palette-width`, `-share-width`, `-doc-width` | `max-w-content`, `max-w-card`, `w-sidebar`, `w-rail`, `w-popover`, `w-menu`, `w-palette`, `w-share`, `max-w-doc` |
 | `--hb-ease`, `-ease-breathe` | `ease-standard`, `ease-breathe`; `transition-*` default to `--hb-duration` and `--hb-ease` |
-| `--hb-step-0` … `-step-16` | Tailwind's steps, by the same number: `--hb-step-2` is `p-2`, `--hb-step-1_5` is `gap-1.5` |
+| `--hb-step-0` … `-step-12` | Tailwind's steps, by the same number: `--hb-step-2` is `p-2`, `--hb-step-1_5` is `gap-1.5` |
 | `--hb-gap-within`, `-gap-between`, `-gap-turn`, `-pad-card`, `-pad-panel`, `-gutter`, `-gutter-narrow` | `gap-within`, `mt-between`, `pt-turn`, `p-pad-card`, `p-pad-panel`, `px-gutter`, `px-gutter-narrow` (any spacing utility; [spacing.md](spacing.md)) |
 | `--hb-space-1` … `-space-11` (legacy) | Tailwind's steps: 2px `0.5`, 4px `1`, 6px `1.5`, 8px `2`, 10px `2.5`, 12px `3`, 16px `4`, 20px `5`, 24px `6`, 32px `8`, 48px `12` (`p-2`, `gap-1.5`, `mt-6`) |
 | `--hb-hairline` | `border` (1px), `divide-y` |
