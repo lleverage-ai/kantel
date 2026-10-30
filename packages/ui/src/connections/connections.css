@@ -1,0 +1,41 @@
+/* The Connections page is styled with Tailwind utilities; this file keeps only what utilities are worse at: the two
+   keyframes of the connect handshake (connect-flow.tsx), and the classes that name them, since an arbitrary
+   `animate-[...]` can't carry the durations as tokens and a keyframe needs CSS. Transform and opacity only. */
+
+/* While a sign-in is under way, a light travels along the line from Harbour to the service, and round again. */
+.hb-connect-travel {
+	animation: hb-connect-travel var(--hb-duration-shimmer) var(--hb-ease-sweep) infinite;
+}
+
+@keyframes hb-connect-travel {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(300%);
+	}
+}
+
+/* The mark at the line's middle as the attempt settles: a tick or a cross, once. Centred by the `translate`
+   property (its utilities), which composes with this `transform`. */
+.hb-connect-pop {
+	animation: hb-connect-pop var(--hb-duration) var(--hb-ease) both;
+}
+
+@keyframes hb-connect-pop {
+	from {
+		opacity: 0;
+		transform: scale(0.6);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-connect-travel,
+	.hb-connect-pop {
+		animation: none;
+	}
+}

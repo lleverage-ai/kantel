@@ -1,8 +1,11 @@
 import {
+	AppWindow,
 	Archive,
 	ArchiveRestore,
+	Blocks,
 	Bot,
 	Braces,
+	Building2,
 	Check,
 	ChevronRight,
 	ChevronsDownUp,
@@ -19,6 +22,8 @@ import {
 	FilePenLine,
 	FileSpreadsheet,
 	FileText,
+	FolderClosed,
+	KeyRound,
 	ListFilter,
 	type LucideIcon,
 	Palette,
@@ -27,9 +32,16 @@ import {
 	Pin,
 	PinOff,
 	Play,
+	Plug,
+	RefreshCw,
 	RotateCcw,
+	Search,
+	Server,
+	ShieldCheck,
 	SquareTerminal,
 	Trash2,
+	Unplug,
+	User,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
 
@@ -90,5 +102,19 @@ export const TerminalWindowIcon = lucide(SquareTerminal, "TerminalWindowIcon");
 export const RawIcon = lucide(Braces, "RawIcon");
 export const ExpandIcon = lucide(ChevronsUpDown, "ExpandIcon");
 export const CollapseIcon = lucide(ChevronsDownUp, "CollapseIcon");
+// The Connections page (src/connections/): a connection, the catalogue, a remote MCP server, a key, an OAuth app, and
+// a connection's owner (a person, a project, the organisation).
+export const PlugIcon = lucide(Plug, "PlugIcon");
+export const UnplugIcon = lucide(Unplug, "UnplugIcon");
+export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
+export const ServerIcon = lucide(Server, "ServerIcon");
+export const KeyRoundIcon = lucide(KeyRound, "KeyRoundIcon");
+export const AppWindowIcon = lucide(AppWindow, "AppWindowIcon");
+export const LucideSearchIcon = lucide(Search, "LucideSearchIcon");
+export const ReconnectIcon = lucide(RefreshCw, "ReconnectIcon");
+export const ShieldCheckIcon = lucide(ShieldCheck, "ShieldCheckIcon");
+export const PersonIcon = lucide(User, "PersonIcon");
+export const ProjectIcon = lucide(FolderClosed, "ProjectIcon");
+export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
 /** Something in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
 export const FailedStepsIcon = lucide(CircleAlert, "FailedStepsIcon");
