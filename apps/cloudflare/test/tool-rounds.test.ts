@@ -1,7 +1,8 @@
-// Tool calls a model makes in one step (one round) that touch the session's workspace, sandbox or shell run in the
-// order the model made them, so a command sees a file written beside it (seen on harbour.myslop.app, 30 Oct 2026:
-// `write hello.py` and `bash python3 hello.py` in one step, and python3 found no file). Rounds of read-only tools still
-// run at once. A session's workspace, isolate and container are each made once however many calls first need them.
+// Tool calls a model makes in one step (one round) that change the session's workspace or run commands are barriers:
+// each runs alone, in the order the model made the calls, so a command sees a file written before it (seen on
+// harbour.myslop.app, 30 Oct 2026: `write hello.py` and `bash python3 hello.py` in one step, and python3 found no
+// file). Consecutive read-only calls between them still run at once (Harbour's Pi Durable patch, partitioned rounds).
+// A session's workspace, isolate and container are each made once however many calls first need them.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { CallContext } from "@harbour/contracts";
 import { createScriptedModel } from "@harbour/runtime/testing";
@@ -123,7 +124,7 @@ describe("one round's tool calls on the session's workspace", () => {
 });
 
 describe("tool concurrency classes", () => {
-	it("runs a round with write, edit or bash in call order, and leaves read and ls to run at once", () => {
+	it("makes write, edit and bash barriers, and leaves read and ls to run at once", () => {
 		const modes = Object.fromEntries(codingTools().map((tool) => [tool.name, tool.executionMode]));
 		expect(modes).toEqual({
 			read: undefined,
@@ -134,7 +135,7 @@ describe("tool concurrency classes", () => {
 		});
 	});
 
-	it("still runs a round of only reads at once, and a round with a write one call at a time", async () => {
+	it("runs reads at once, and a write alone between them", async () => {
 		const { stack, script, session, run, toolResults } = await setUp();
 		const created = await session();
 		script.reply(
@@ -183,6 +184,27 @@ describe("tool concurrency classes", () => {
 		);
 		await run(created.id, "Read, write, read");
 		expect(most).toBe(1);
+
+		// Read, read, write, read, read: [read, read] [write] [read, read]. The reads either side of the write run two at
+		// once, and those after it see what it wrote.
+		most = 0;
+		script.reply(
+			{
+				toolCalls: [
+					{ name: "read", args: { path: "a.txt" } },
+					{ name: "read", args: { path: "b.txt" } },
+					{ name: "write", args: { path: "a.txt", content: "A2\n" } },
+					{ name: "read", args: { path: "a.txt" } },
+					{ name: "read", args: { path: "c.txt" } },
+				],
+			},
+			{ text: "Done" },
+		);
+		await run(created.id, "Read, read, write, read, read");
+		const results = toolResults().slice(-5);
+		expect([results[0], results[1], results[3], results[4]]).toEqual(["A\n", "B\n", "A2\n", "C\n"]);
+		expect(results[2]).toContain("a.txt");
+		expect(most).toBe(2);
 	});
 });
 

@@ -153,7 +153,7 @@ export function createPresentFilesTool(workspaceId: WorkspaceId): ToolRegistrati
 		// It only reads, so a call cut short by a restart runs again.
 		replay: "safe",
 		// A model writes a file and presents it in the same round. In parallel the present ran before the write and found
-		// no file (seen on harbour.myslop.app); a sequential call makes its round run in order.
+		// no file (seen on harbour.myslop.app); a sequential call is a barrier, run alone after the calls before it.
 		executionMode: "sequential",
 		async execute(args, api, context) {
 			const env = api.env;

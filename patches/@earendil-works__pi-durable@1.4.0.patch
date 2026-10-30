@@ -1,0 +1,161 @@
+diff --git a/dist/harness/generation.d.ts b/dist/harness/generation.d.ts
+index ccd0557bdafa606dadac6d3a2c264d7664a2f690..481f2e142146c9f7cb67042af442690759424fbb 100644
+--- a/dist/harness/generation.d.ts
++++ b/dist/harness/generation.d.ts
+@@ -42,9 +42,9 @@ export type GenerationCheckpoint = {
+     phase: "tools";
+     /** The tool-calling answer. */
+     assistant: EntryId;
+-    /** Tool tasks created so far, in call order; grows by one per started call of a sequential round. */
++    /** Tool tasks created so far, in call order; grows by one batch at a time (Harbour patch: partitioned rounds). */
+     tools: TaskId<ToolTaskResult>[];
+-    /** Calls of a sequential round not started yet, in call order. */
++    /** Calls of the round not started yet, in call order: those after its first barrier or batch. */
+     pending: string[];
+ };
+ export type GenerationResult = {
+diff --git a/dist/harness/generation.js b/dist/harness/generation.js
+index d046232b140f91542879ecd60d05f5796449bf31..91ddd36ec968bb8ddcf1d3e9e1e01fcccfd4346f 100644
+--- a/dist/harness/generation.js
++++ b/dist/harness/generation.js
+@@ -165,23 +165,33 @@ export const GenerationTask = defineTask({
+         },
+         tools: async (task, runtime, context) => {
+             const { assistant, tools, pending } = task.state.checkpoint;
+-            const [next, ...rest] = pending;
+-            if (next === undefined)
++            if (pending.length === 0)
+                 return finishToolRound(runtime, assistant, tools, context);
+-            // Sequential round: start the next call and wait for it.
++            // Harbour patch (partitioned rounds): start the next batch, a barrier alone or the run of calls before the
++            // next barrier, and wait for all of it. A call whose entry can't be read counts as a barrier.
++            const names = new Map((await readCalls(runtime, assistant, pending, context)).map((call) => [call.id, call.name]));
++            const barrier = barrierOf(runtime, (await runtime.agent(context)).tools);
++            const batch = nextBatch(pending, (callId) => {
++                const name = names.get(callId);
++                return name === undefined || barrier(name);
++            });
+             await runtime.commit(async (tx) => {
+                 const live = await tx.doc(LiveDoc, runtime.conversationId);
+-                const taskId = await createToolTask(tx, runtime, assistant, next);
+-                const slot = live.tools?.find((slot) => slot.callId === next && slot.taskId === undefined);
+-                if (slot !== undefined)
+-                    slot.taskId = taskId;
++                const started = [];
++                for (const callId of batch) {
++                    const taskId = await createToolTask(tx, runtime, assistant, callId);
++                    const slot = live.tools?.find((slot) => slot.callId === callId && slot.taskId === undefined);
++                    if (slot !== undefined)
++                        slot.taskId = taskId;
++                    started.push(taskId);
++                }
+                 const checkpoint = {
+                     phase: "tools",
+                     assistant,
+-                    tools: [...tools, taskId],
+-                    pending: rest,
++                    tools: [...tools, ...started],
++                    pending: pending.slice(batch.length),
+                 };
+-                return { status: "waiting", checkpoint, on: [taskId], policy: "allSettled" };
++                return { status: "waiting", checkpoint, on: started, policy: "allSettled" };
+             }, context);
+         },
+     },
+@@ -224,6 +234,27 @@ async function readCalls(runtime, assistant, callIds, context) {
+     const calls = message?.role === "assistant" ? message.content.filter((content) => content.type === "toolCall") : [];
+     return callIds.flatMap((id) => calls.filter((call) => call.id === id).slice(0, 1));
+ }
++/**
++ * Harbour patch (partitioned rounds): whether a call to tool `name` is a barrier in its round. A barrier waits for every
++ * call before it, runs alone, and finishes before any call after it starts; the calls between two barriers run at
++ * once. Every call is one when the settings' `toolExecution` is `sequential`; otherwise a call is one when its tool is
++ * `executionMode: "sequential"`. A tool with no mode, or `parallel`, is not.
++ */
++function barrierOf(runtime, tools) {
++    const every = runtime.settings.toolExecution === "sequential";
++    return (name) => every || tools.find((tool) => tool.name === name)?.executionMode === "sequential";
++}
++/** Harbour patch: the calls to start next from `pending`, in call order: a barrier alone, or the run before one. */
++function nextBatch(pending, isBarrier) {
++    if (pending.length === 0)
++        return [];
++    if (isBarrier(pending[0]))
++        return pending.slice(0, 1);
++    let end = 1;
++    while (end < pending.length && !isBarrier(pending[end]))
++        end++;
++    return pending.slice(0, end);
++}
+ /** A tool task for call `callId`, owned by the generation. */
+ function createToolTask(tx, runtime, assistant, callId) {
+     return tx.createTask(ToolTask, { kind: "model", assistant, callId }, { ownership: { kind: "task", taskId: runtime.taskId } });
+@@ -485,8 +516,8 @@ async function answer(runtime, message, context) {
+ }
+ /**
+  * Append the tool-calling answer and start its tool round in one commit (spec §8.3). A call to a tool the request did
+- * not offer gets its `tool_unavailable` result here; every other call gets a tool task owned by the generation, only the
+- * first one now when the round is sequential. The generation then waits for them in its `tools` phase, keeping the run.
++ * not offer gets its `tool_unavailable` result here; every other call gets a tool task owned by the generation, those
++ * of the round's first batch now (Harbour patch: partitioned rounds, `barrierOf`). The generation then waits for them in its `tools` phase, keeping the run.
+  */
+ async function startToolRound(runtime, request, message, calls, context) {
+     const conversationId = runtime.conversationId;
+@@ -494,14 +525,18 @@ async function startToolRound(runtime, request, message, calls, context) {
+     const offered = new Set(getCurrentTools(messages).map((tool) => tool.name));
+     // Read as the round starts; a tool is resolved as its tool task resolves it.
+     const tools = (await runtime.agent(context)).tools;
+-    const sequential = runtime.settings.toolExecution === "sequential" ||
+-        calls.some((call) => offered.has(call.name) && tools.find((tool) => tool.name === call.name)?.executionMode === "sequential");
++    // Harbour patch (partitioned rounds): the round runs in batches in call order, split at its barriers (`barrierOf`),
++    // instead of all in call order when any one of its tools is sequential. The first batch starts now.
++    const barrier = barrierOf(runtime, tools);
+     await runtime.commit(async (tx) => {
+         const live = await tx.doc(LiveDoc, conversationId);
+         const entry = await appendAssistant(tx, conversationId, message);
+         const slots = [];
+         const tools = [];
+         const pending = [];
++        // Whether the first batch is still open, and whether it is a barrier.
++        let open = true;
++        let alone = false;
+         for (const call of calls) {
+             if (!offered.has(call.name)) {
+                 const unavailable = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+@@ -509,7 +544,10 @@ async function startToolRound(runtime, request, message, calls, context) {
+                 slots.push({ callId: call.id, name: call.name, status: "done", entry: result.id });
+                 continue;
+             }
+-            if (sequential && tools.length > 0) {
++            const isBarrier = barrier(call.name);
++            if (open && tools.length > 0 && (alone || isBarrier))
++                open = false;
++            if (!open) {
+                 pending.push(call.id);
+                 slots.push({ callId: call.id, name: call.name, status: "pending" });
+                 continue;
+@@ -517,6 +555,8 @@ async function startToolRound(runtime, request, message, calls, context) {
+             const taskId = await createToolTask(tx, runtime, entry.id, call.id);
+             tools.push(taskId);
+             slots.push({ callId: call.id, name: call.name, taskId, status: "pending" });
++            if (isBarrier)
++                alone = true;
+         }
+         delete live.generation;
+         live.tools = slots;
+diff --git a/dist/harness/types.d.ts b/dist/harness/types.d.ts
+index 192a9cce35ad4729009d2e3f75f475c8dffa16c8..807752216b65b8bfe160dc706ad5d8d243523ff8 100644
+--- a/dist/harness/types.d.ts
++++ b/dist/harness/types.d.ts
+@@ -242,7 +242,10 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
+ export type ToolRegistration<TParameters extends TSchema = TSchema, TDetails extends JsonValue = JsonValue> = Tool<TParameters> & {
+     /** Whether an interrupted execution may rerun on recovery. Default `unsafe`. */
+     readonly replay?: "safe" | "unsafe";
+-    /** Default: the settings' `toolExecution`. One sequential call makes its whole round sequential. */
++    /**
++     * Default: the settings' `toolExecution`. Harbour patch (partitioned rounds): a sequential call is a barrier in its
++     * round, run alone after every call before it and before any after it; the calls between barriers run at once.
++     */
+     readonly executionMode?: ToolExecutionMode;
+     /**
+      * Repair arguments models commonly get wrong before validation, such as a JSON string where an array belongs. Must be
