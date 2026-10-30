@@ -83,6 +83,11 @@ export interface ProviderTemplate {
 	readonly keyHelp?: string;
 	/** The client a new OAuth connection would use. Absent on an OAuth template: no client is set up yet. */
 	readonly client?: ResolvedClient;
+	/**
+	 * Whether a person can connect it now, when the API says so rather than naming the client (`CatalogueEntry.setup`):
+	 * `needs_client` puts it behind an OAuth client whatever `client` says.
+	 */
+	readonly setup?: "ready" | "needs_client";
 	/** Short provider-specific notes for whoever registers an OAuth app (#340). */
 	readonly clientGuidance?: string;
 	/** A remote MCP server's URL, for a catalogued MCP server (#338). */
@@ -90,8 +95,8 @@ export interface ProviderTemplate {
 	readonly version?: number;
 }
 
-/** A connection's health (#328, #330). */
-export type ConnectionHealth = "healthy" | "needs_reconnect" | "error" | "failing_test";
+/** A connection's health (#328, #330). `disabled`: an admin stopped every use of it. */
+export type ConnectionHealth = "healthy" | "needs_reconnect" | "error" | "failing_test" | "disabled";
 
 /** The owners a connection can have (#335): never the platform. */
 export type ConnectionOwner = Extract<OwnerRef, { kind: "organisation" | "project" | "user" }>;
@@ -120,6 +125,8 @@ export interface Connection {
 	readonly owner: ConnectionOwner;
 	/** Projects a personal connection is shared to (#335). */
 	readonly sharedWith?: readonly string[];
+	/** For an organisation's connection: only sessions in these projects (`ConnectionUsage.projects`). */
+	readonly onlyProjects?: readonly string[];
 	readonly health: ConnectionHealth;
 	/** The last refresh or test error, in plain words. */
 	readonly lastError?: string;
@@ -152,7 +159,8 @@ export interface OAuthClient {
 	readonly ownerLabel: string;
 	readonly label?: string;
 	readonly clientId: string;
-	readonly secret: SecretHint;
+	/** Absent for a public client, which signs in with PKCE alone. */
+	readonly secret?: SecretHint;
 	readonly scopes: readonly string[];
 	readonly redirectUri: string;
 	readonly redirectDomain?: string;
@@ -182,6 +190,8 @@ export interface ConnectStart {
 	readonly attemptId: string;
 	readonly url: string;
 	readonly expiresAt: number;
+	/** Set when it needed no sign-in (a server that answers without one): the connection, made already. */
+	readonly connected?: Connection;
 }
 
 /** Why a connect attempt failed, as the connect URL's final page or the attempt reports it (#326, #327, #338). */
@@ -218,6 +228,8 @@ export interface KeyConnectionInput {
 	readonly label?: string;
 	/** For basic auth: the user name that goes with the key. */
 	readonly username?: string;
+	/** For a remote MCP server that takes a key: its endpoint, on one of `hosts`. */
+	readonly mcpUrl?: string;
 	/** The key itself: sent once, here, and never returned. */
 	readonly key: string;
 }
@@ -243,8 +255,8 @@ export type McpServerStart =
 
 /** What Disconnect did upstream (#329). */
 export interface DisconnectResult {
-	/** `unsupported`: the provider has no revoke endpoint. */
-	readonly revoked: boolean | "unsupported";
+	/** `unsupported`: the provider has no revoke endpoint. `unknown`: the API didn't say. */
+	readonly revoked: boolean | "unsupported" | "unknown";
 	/** Where to revoke by hand when Harbour couldn't. */
 	readonly revokeUrl?: string;
 }
@@ -264,6 +276,11 @@ export interface OAuthClientInput {
 /** The calls the page makes, bound to the viewer by the host. */
 export interface ConnectionsSource {
 	catalogue(): Promise<readonly ProviderTemplate[]>;
+	/**
+	 * One template in full, for its page, when the catalogue lists only summaries (no scope sets or hosts). Without it,
+	 * the catalogue's entries are taken as complete.
+	 */
+	template?(templateId: string): Promise<ProviderTemplate>;
 	connections(): Promise<readonly Connection[]>;
 	/** Starts an OAuth round trip (#327). */
 	connect(input: ConnectInput): Promise<ConnectStart>;
@@ -302,6 +319,7 @@ export const HEALTH_LABELS: Record<ConnectionHealth, string> = {
 	needs_reconnect: "Needs reconnecting",
 	error: "Error",
 	failing_test: "Test failing",
+	disabled: "Disabled",
 };
 
 export const TIER_LABELS: Record<ClientTier, string> = {
@@ -339,14 +357,18 @@ export function ownerText(
  * "Personal to Tom Davies, only in sessions acting as Tom Davies." "Shared with the Support project."
  */
 export function usageText(
-	connection: Pick<Connection, "owner" | "sharedWith">,
+	connection: Pick<Connection, "owner" | "sharedWith" | "onlyProjects">,
 	viewer: ConnectionsViewer,
 	people?: (id: string) => string | undefined,
 ): string {
 	const { owner } = connection;
 	switch (owner.kind) {
-		case "organisation":
+		case "organisation": {
+			const only = connection.onlyProjects ?? [];
+			if (only.length > 0)
+				return `Shared across ${viewer.organisation}, only in the ${listText(only.map((id) => projectName(viewer, id)))} ${only.length === 1 ? "project" : "projects"}.`;
 			return `Shared across ${viewer.organisation}: organisation agents, and project agents its rules allow.`;
+		}
 		case "project":
 			return `Shared with the ${projectName(viewer, owner.projectId)} project: its agents can use it.`;
 		case "user": {
@@ -405,6 +427,7 @@ export type ConnectRoute = "one_click" | "needs_client" | "key";
 export function connectRoute(template: ProviderTemplate): ConnectRoute {
 	const oauth = template.authTypes.includes("oauth2") || template.authTypes.includes("mcp_oauth");
 	if (!oauth) return "key";
+	if (template.setup !== undefined) return template.setup === "ready" ? "one_click" : "needs_client";
 	if (template.authTypes.includes("mcp_oauth") || template.client !== undefined) return "one_click";
 	return "needs_client";
 }

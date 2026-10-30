@@ -138,6 +138,7 @@ export function McpServerForm({ viewer, flow, onAdd, onKey, onDone, onCancel, in
 					name: keyServer.serverName,
 					hosts: [safeHost(url)],
 					injection: { kind: "header", name: keyServer.header },
+					mcpUrl: url.trim(),
 				}}
 				lede={`${keyServer.serverName} takes a key rather than a sign-in. Harbour sends it in the ${keyServer.header} header, only to ${safeHost(url)}.`}
 				onSave={onKey}
@@ -274,7 +275,13 @@ export interface KeyConnectionFormProps {
 	/** A catalogue template to connect with a key. Without one, a custom service. */
 	readonly template?: ProviderTemplate | undefined;
 	/** A custom service's starting description: a name, its hosts and injection. */
-	readonly custom?: { readonly name?: string; readonly hosts?: readonly string[]; readonly injection?: Injection };
+	readonly custom?: {
+		readonly name?: string;
+		readonly hosts?: readonly string[];
+		readonly injection?: Injection;
+		/** For a remote MCP server that takes a key: its endpoint. */
+		readonly mcpUrl?: string;
+	};
 	readonly lede?: string;
 	readonly onSave: (input: KeyConnectionInput) => Promise<KeyConnectionResult>;
 	readonly onDone: (connection?: Connection) => void;
@@ -360,6 +367,7 @@ export function KeyConnectionForm({
 				: {
 						name: name.trim(),
 						hosts,
+						...(custom?.mcpUrl === undefined ? {} : { mcpUrl: custom.mcpUrl }),
 						injection:
 							injection === "header"
 								? { kind: "header", name: headerName.trim(), ...(prefix === "" ? {} : { prefix }) }

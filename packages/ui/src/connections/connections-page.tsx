@@ -139,7 +139,16 @@ export function ConnectionsPage({
 		{ value: "clients" as const, label: "OAuth clients" },
 	];
 
-	const findTemplate = (templateId: string | undefined) => templates.find((t) => t.id === templateId);
+	// A service's page, and its key form, want the template in full: the catalogue may list only summaries.
+	const fullId = view.name === "service" || view.name === "key" ? view.templateId : undefined;
+	const full = useLoad(
+		async () => (fullId === undefined || source.template === undefined ? undefined : source.template(fullId)),
+		[source, fullId],
+	);
+	const fullLoading = fullId !== undefined && source.template !== undefined && full.state.status === "loading";
+	const findTemplate = (templateId: string | undefined) =>
+		(full.state.status === "ready" && full.state.value?.id === templateId ? full.state.value : undefined) ??
+		templates.find((t) => t.id === templateId);
 
 	let body: ReactNode;
 	if (view.name === "browse") {
@@ -159,8 +168,8 @@ export function ConnectionsPage({
 	} else if (view.name === "service") {
 		const template = findTemplate(view.templateId);
 		body =
-			template === undefined ? (
-				catalogue.state.status === "loading" ? null : (
+			template === undefined || fullLoading ? (
+				catalogue.state.status === "loading" || fullLoading ? null : (
 					<EmptyState
 						title="That service isn't in the catalogue"
 						action={<Button onClick={() => leave({ name: "browse" })}>Browse services</Button>}
@@ -200,7 +209,7 @@ export function ConnectionsPage({
 			/>
 		);
 	} else if (view.name === "key") {
-		body = (
+		body = fullLoading ? null : (
 			<KeyConnectionForm
 				key={view.templateId ?? "custom"}
 				viewer={viewer}

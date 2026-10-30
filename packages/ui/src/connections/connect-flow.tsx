@@ -181,6 +181,13 @@ export function useConnectFlow({
 						setState({ phase: "idle" });
 						return;
 					}
+					// Connected with no sign-in: a server that answered without one.
+					if (start.connected !== undefined) {
+						closePopup();
+						setState({ phase: "connected", connection: start.connected });
+						latest.current.onConnected?.(start.connected);
+						return;
+					}
 					const opened = popup.current !== null && !popup.current.closed;
 					if (opened && popup.current !== null) popup.current.location.href = start.url;
 					setState({ phase: "waiting", start, window: opened ? "open" : "blocked" });

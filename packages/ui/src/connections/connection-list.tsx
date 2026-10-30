@@ -38,6 +38,7 @@ const HEALTH_TONE: Record<ConnectionHealth, BadgeTone> = {
 	needs_reconnect: "approval",
 	error: "error",
 	failing_test: "error",
+	disabled: "neutral",
 };
 
 export type PeopleNames = (userId: string) => string | undefined;
@@ -156,6 +157,8 @@ export function disconnectText(connection: Connection, result: DisconnectResult)
 	const name =
 		accountText(connection) === undefined ? connection.name : `${connection.name} (${accountText(connection)})`;
 	if (result.revoked === true) return `Disconnected ${name}. ${connection.name} revoked the access too.`;
+	if (result.revoked === "unknown")
+		return `Disconnected ${name}. Harbour deleted its credential; to be sure, remove its access in ${connection.name}'s settings too.`;
 	if (result.revoked === "unsupported")
 		return connection.kind === "key"
 			? `Disconnected ${name}. Harbour deleted the key, but it still works at ${connection.name} until you revoke it there.`

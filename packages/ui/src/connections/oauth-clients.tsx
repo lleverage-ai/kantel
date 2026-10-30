@@ -106,7 +106,10 @@ export function OAuthClients({
 						</Button>
 					}
 				>
-					Saved {saved.label ?? saved.clientId}. Its secret ends in {saved.secret.last4} and won't be shown again.
+					Saved {saved.label ?? saved.clientId}.{" "}
+					{saved.secret === undefined
+						? "It has no secret: a public client signs in with PKCE alone."
+						: `Its secret ends in ${saved.secret.last4} and won't be shown again.`}
 				</Notice>
 			)}
 			{adding ? (
@@ -176,8 +179,14 @@ export function OAuthClients({
 													{client.disabled === true ? <Badge>Disabled</Badge> : null}
 												</span>
 												<span className="text-xs text-muted wrap-anywhere">
-													Client ID <code className="hb-mono hb-selectable">{client.clientId}</code>. Secret set, ends
-													in <code className="hb-mono">{client.secret.last4}</code>.
+													Client ID <code className="hb-mono hb-selectable">{client.clientId}</code>.{" "}
+													{client.secret === undefined ? (
+														"Public client, no secret."
+													) : (
+														<>
+															Secret set, ends in <code className="hb-mono">{client.secret.last4}</code>.
+														</>
+													)}
 												</span>
 												<span className="text-xs text-faint">
 													{client.tier === "deployment"
