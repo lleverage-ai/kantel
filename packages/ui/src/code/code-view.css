@@ -57,6 +57,12 @@
 	user-select: text;
 }
 
+/* The browser gives <code> its own monospace; one with other metrics than the gutter's would make every line a
+   little taller than its number. */
+.hb-code-text code {
+	font: inherit;
+}
+
 .hb-code-line {
 	display: inline;
 }

@@ -155,7 +155,8 @@ export function splitHarness(output: string): { body: string; notes: HarnessNote
 		const severity = note[1] === "warning" ? "warn" : (note[1] as HarnessNote["severity"]);
 		notes.push({ severity, message: note[2] ?? "" });
 	}
-	return { body: output.slice(0, match.index), notes };
+	// The harness block follows a blank line; that line isn't the tool's output.
+	return { body: output.slice(0, match.index).replace(/\n+$/, ""), notes };
 }
 
 const EXITED = /^Command exited with code (-?\d+)$/;
@@ -194,13 +195,16 @@ export function commandEnd(
 		case "error": {
 			if (code !== undefined) return { end: { kind: "exited", code }, notes: rest };
 			// A thrown failure (a timeout, an abort, a refusal) is the result's text, and the output may be only that.
+			// The note that says why becomes the end's message and is not repeated as a note.
 			const lastLine = body.trimEnd().split("\n").at(-1) ?? "";
-			const timeout = /timed out/i.test(lastLine)
-				? lastLine
-				: rest.find((note) => /timed out/i.test(note.message))?.message;
-			if (timeout !== undefined) return { end: { kind: "timed-out", message: timeout }, notes: rest };
+			const timeoutNote = rest.find((note) => /timed out/i.test(note.message));
+			const timeout = /timed out/i.test(lastLine) ? lastLine : timeoutNote?.message;
+			if (timeout !== undefined) {
+				return { end: { kind: "timed-out", message: timeout }, notes: rest.filter((note) => note !== timeoutNote) };
+			}
 			const error = rest.find((note) => note.severity === "error");
-			return { end: { kind: "failed", ...(error === undefined ? {} : { message: error.message }) }, notes: rest };
+			if (error === undefined) return { end: { kind: "failed" }, notes: rest };
+			return { end: { kind: "failed", message: error.message }, notes: rest.filter((note) => note !== error) };
 		}
 	}
 }

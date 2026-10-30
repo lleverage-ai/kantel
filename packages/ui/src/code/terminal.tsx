@@ -1,6 +1,6 @@
 import { type CSSProperties, memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CollapseIcon, ExpandIcon } from "../primitives/lucide.tsx";
-import { type AnsiLine, type AnsiStyle, hasAnsi, parseAnsi } from "./ansi.ts";
+import { type AnsiLine, type AnsiStyle, hasAnsi, parseAnsi, stripAnsi } from "./ansi.ts";
 import { codeLines } from "./code-view.tsx";
 import "./code-view.css";
 import "./terminal.css";
@@ -21,7 +21,7 @@ function runClass(style: AnsiStyle): string | undefined {
 	return classes.length === 0 ? undefined : classes.join(" ");
 }
 
-const OutputLine = memo(function OutputLine({ line }: { line: AnsiLine }) {
+const OutputLine = memo(function OutputLine({ line, caret = false }: { line: AnsiLine; caret?: boolean }) {
 	return (
 		<span className="hb-terminal-line">
 			{line.map((run, index) => {
@@ -35,6 +35,7 @@ const OutputLine = memo(function OutputLine({ line }: { line: AnsiLine }) {
 					</span>
 				);
 			})}
+			{caret ? <span className="hb-code-caret hb-terminal-caret" aria-hidden="true" /> : null}
 			{"\n"}
 		</span>
 	);
@@ -86,7 +87,7 @@ export type TerminalProps = {
 };
 
 /**
- * A command as an inline terminal: a dark well with the prompt and the command (highlighted as shell), then what it
+ * A command as an inline terminal: a dark well with the prompt and the command, then what it
  * printed, colours and bold from its ANSI codes honoured, stderr in the error tone when the tool keeps it apart. Long
  * output collapses to its last lines, where a command says how it ended, with "Show all" to read the rest.
  */
@@ -111,6 +112,8 @@ export const Terminal = memo(function Terminal({
 	const errLines = useMemo(() => parseAnsi(stderr), [stderr]);
 	const total = outLines.length + errLines.length;
 	const collapsible = total > collapsedLines;
+	// A running command's caret sits where its next character would: after an unfinished last line, or on a new one.
+	const caretInLine = running && errLines.length === 0 && outLines.length > 0 && !/\n$/.test(stripAnsi(output));
 	// The end is where a command says how it went: a collapsed terminal opens there and follows it while it runs.
 	useLayoutEffect(() => {
 		const element = scroller.current;
@@ -138,7 +141,7 @@ export const Terminal = memo(function Terminal({
 					<pre className="hb-terminal-output hb-selectable">
 						{outLines.map((line, index) => (
 							// biome-ignore lint/suspicious/noArrayIndexKey: output only grows at its end.
-							<OutputLine key={index} line={line} />
+							<OutputLine key={index} line={line} caret={caretInLine && index === outLines.length - 1} />
 						))}
 						{errLines.length > 0 ? (
 							<span className="hb-terminal-stderr">
@@ -149,7 +152,7 @@ export const Terminal = memo(function Terminal({
 								))}
 							</span>
 						) : null}
-						{running ? <span className="hb-code-caret hb-terminal-caret" aria-hidden="true" /> : null}
+						{running && !caretInLine ? <span className="hb-code-caret hb-terminal-caret" aria-hidden="true" /> : null}
 					</pre>
 				</section>
 			) : null}

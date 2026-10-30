@@ -45,6 +45,20 @@ def main() -> int:
 
 const running = (item: ToolItem): ToolItem => ({ ...item, at: Date.now() });
 
+const verbs: Record<string, readonly [string, string]> = {
+	read: ["Reading", "Read"],
+	write: ["Writing", "Wrote"],
+	edit: ["Editing", "Edited"],
+	bash: ["Running", "Ran"],
+};
+
+/** A call with the label a host gives it (the cards make their own; the generic row shows this one). */
+const card = (id: string, name: string, options: Parameters<typeof tool>[3] & { args: Record<string, unknown> }) => {
+	const subject = name === "bash" ? String(options.args.command ?? "").split("\n")[0] : String(options.args.path ?? "");
+	const [ongoing, done] = verbs[name] ?? ["Calling", "Called"];
+	return tool(id, name, `${options.status === "running" ? ongoing : done} ${subject}`, options);
+};
+
 /** Grows `text` by `chars` every `gap` ms, then holds it; restarts when `text` changes. */
 function useTyped(text: string, chars: number, gap: number): string {
 	const [length, setLength] = useState(0);
@@ -65,27 +79,25 @@ function WriteStreaming() {
 	const content = useTyped(script, 9, 30);
 	const done = content.length === script.length;
 	const item: ToolItem = done
-		? tool("w-live", "write", "", {
+		? card("w-live", "write", {
 				args: { path: "notes/release_notes.py", content: script },
 				output: "Successfully wrote to notes/release_notes.py",
 				seconds: 0.1,
 			})
 		: {
-				...running(
-					tool("w-live", "write", "", { status: "running", args: { path: "notes/release_notes.py", content } }),
-				),
+				...running(card("w-live", "write", { status: "running", args: { path: "notes/release_notes.py", content } })),
 				streaming: true,
 			};
 	return <ToolCallChip item={item} />;
 }
 
 const writes: ToolItem[] = [
-	tool("w1", "write", "", {
+	card("w1", "write", {
 		args: { path: "src/billing/retry.ts", content: "export const MAX_ATTEMPTS = 3;\n" },
 		output: "Successfully wrote to src/billing/retry.ts",
 		seconds: 0.1,
 	}),
-	tool("w2", "write", "", {
+	card("w2", "write", {
 		status: "error",
 		args: { path: "/etc/hosts", content: "127.0.0.1 billing.local\n" },
 		output: "EACCES: permission denied, open '/etc/hosts'",
@@ -112,14 +124,14 @@ export const Write: Story = () => (
 );
 
 const reads: ToolItem[] = [
-	tool("r1", "read", "", {
+	card("r1", "read", {
 		args: { path: "data/prs.json", offset: 41, limit: 9 },
 		output:
 			'  {\n    "number": 312,\n    "title": "Console: show the model\'s cost per session",\n    "merged_at": "2026-10-24T16:02:11Z"\n  },\n  {\n    "number": 313,\n    "title": "Sandbox: keep the seed cache warm",\n    "labels": ["feature"],\n\n<harness>\n[info] 188 more lines in file. Use offset=50 to continue.\n</harness>',
 		seconds: 0.2,
 	}),
-	tool("r2", "read", "", { args: { path: "src/billing/charge.ts" }, output: script, seconds: 0.2 }),
-	tool("r3", "read", "", {
+	card("r2", "read", { args: { path: "src/billing/charge.ts" }, output: script, seconds: 0.2 }),
+	card("r3", "read", {
 		status: "error",
 		args: { path: "src/billing/refund.ts" },
 		output: "ENOENT: no such file or directory, open 'src/billing/refund.ts'",
@@ -157,14 +169,14 @@ function EditStreaming() {
 	const typed = useTyped(newText, 6, 40);
 	const done = typed.length === newText.length;
 	const item: ToolItem = done
-		? tool("e-live", "edit", "", {
+		? card("e-live", "edit", {
 				args: edit,
 				output: "Successfully replaced 2 block(s) in notes/release_notes.py.",
 				seconds: 0.2,
 			})
 		: {
 				...running(
-					tool("e-live", "edit", "", {
+					card("e-live", "edit", {
 						status: "running",
 						args: { path: edit.path, edits: [{ oldText: edit.edits[0]?.oldText, newText: typed }] },
 					}),
@@ -182,7 +194,7 @@ export const Edit: Story = () => (
 			</Section>
 			<Section title="Failed">
 				<ToolCallChip
-					item={tool("e2", "edit", "", {
+					item={card("e2", "edit", {
 						status: "error",
 						args: { path: "src/billing/retry.ts", edits: [{ oldText: "attempt()", newText: "attempt(key)" }] },
 						output: "Could not find the exact text in src/billing/retry.ts. The old text must match exactly.",
@@ -197,25 +209,25 @@ export const Edit: Story = () => (
 const pytest = `${ESC}[32m........${ESC}[0m${ESC}[32m [100%]${ESC}[0m\n${ESC}[32m${ESC}[1m8 passed${ESC}[0m${ESC}[32m in 0.41s${ESC}[0m`;
 
 const commands: ToolItem[] = [
-	tool("b1", "bash", "", {
+	card("b1", "bash", {
 		args: { command: "python -m pytest notes -q --color=yes" },
 		output: pytest,
 		seconds: 1.2,
 	}),
-	tool("b2", "bash", "", {
+	card("b2", "bash", {
 		status: "error",
 		args: { command: "python notes/release_notes.py data/prs.json --since 2026-10-23" },
 		output:
 			'Traceback (most recent call last):\n  File "notes/release_notes.py", line 26, in group\n    for label in pr["labels"]:\nKeyError: \'labels\'\n\n<harness>\n[error] Command exited with code 1\n</harness>',
 		seconds: 0.4,
 	}),
-	tool("b3", "bash", "", {
+	card("b3", "bash", {
 		status: "error",
 		args: { command: "pnpm vitest run --watch" },
 		output: " RUN  v4.1.0\n\n<harness>\n[error] Command timed out after 120 seconds\n</harness>",
 		seconds: 120,
 	}),
-	tool("b4", "bash", "", {
+	card("b4", "bash", {
 		args: { command: "for i in 1 2 3; do\n  curl -s https://example.com/health\ndone" },
 		output: "ok\nok\nok",
 		seconds: 0.9,
@@ -240,11 +252,11 @@ function BashStreaming() {
 		return () => clearInterval(timer);
 	}, [typing]);
 	if (pieces > progress.length) {
-		return <ToolCallChip item={tool("b-live", "bash", "", { args: { command }, output: pytest, seconds: 2.1 })} />;
+		return <ToolCallChip item={card("b-live", "bash", { args: { command }, output: pytest, seconds: 2.1 })} />;
 	}
 	const item: ToolItem = {
 		...running(
-			tool("b-live", "bash", "", {
+			card("b-live", "bash", {
 				status: "running",
 				args: { command: typed },
 				...(pieces === 0 ? {} : { output: progress.slice(0, pieces).join("") }),
@@ -263,7 +275,7 @@ export const Mobile: Story = () => (
 		<Column>
 			<ToolCallChip item={writes[0] as ToolItem} />
 			<ToolCallChip item={reads[0] as ToolItem} defaultOpen />
-			<ToolCallChip item={tool("m-edit", "edit", "", { args: edit, output: "Successfully replaced 2 block(s)." })} />
+			<ToolCallChip item={card("m-edit", "edit", { args: edit, output: "Successfully replaced 2 block(s)." })} />
 			<ToolCallChip item={commands[1] as ToolItem} />
 		</Column>
 	</Sheet>
@@ -285,7 +297,7 @@ export const Bash: Story = () => (
 			</Section>
 			<Section title="Interrupted">
 				<ToolCallChip
-					item={tool("b5", "bash", "", {
+					item={card("b5", "bash", {
 						status: "interrupted",
 						args: { command: "pnpm migrate --env staging" },
 						output: "Applying 0042_charges_idempotency_key...",

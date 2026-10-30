@@ -106,7 +106,7 @@ describe("splitHarness and commandEnd", () => {
 	it("takes the harness's notes off a result and turns an exit code into the command's end", () => {
 		const output = "Traceback\nValueError: bad\n\n<harness>\n[error] Command exited with code 2\n</harness>";
 		const { body, notes } = splitHarness(output);
-		expect(body).toBe("Traceback\nValueError: bad\n\n");
+		expect(body).toBe("Traceback\nValueError: bad");
 		expect(notes).toEqual([{ severity: "error", message: "Command exited with code 2" }]);
 		expect(commandEnd("error", body, notes)).toEqual({ end: { kind: "exited", code: 2 }, notes: [] });
 	});
@@ -135,6 +135,20 @@ describe("splitHarness and commandEnd", () => {
 			message: "No such sandbox",
 		});
 		expect(commandEnd("running", "", []).end).toEqual({ kind: "running" });
+	});
+
+	it("says why once: the note that became the reason is not left as a note too", () => {
+		const timedOut = splitHarness(" RUN  v4.1.0\n\n<harness>\n[error] Command timed out after 120 seconds\n</harness>");
+		expect(timedOut.body).toBe(" RUN  v4.1.0");
+		expect(commandEnd("error", timedOut.body, timedOut.notes)).toEqual({
+			end: { kind: "timed-out", message: "Command timed out after 120 seconds" },
+			notes: [],
+		});
+		const failed = [
+			{ severity: "error", message: "No such sandbox" },
+			{ severity: "info", message: "Retry later" },
+		] as const;
+		expect(commandEnd("error", "", failed).notes).toEqual([{ severity: "info", message: "Retry later" }]);
 	});
 
 	it("leaves output without notes alone", () => {
