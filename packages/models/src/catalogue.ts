@@ -259,7 +259,9 @@ function outputFor(
 	const imageApi =
 		override?.imageApi !== undefined && spec.imageApis.includes(override.imageApi)
 			? override.imageApi
-			: defaultImageApi;
+			: output.includes("text")
+				? defaultImageApi
+				: (spec.imageOnlyApi ?? defaultImageApi);
 	return { output, imageApi };
 }
 

@@ -1,12 +1,29 @@
 /**
- * Image generation over the `openai-images` wire API (docs/model-connectors.md, "Image generation"): one request to
- * `POST <API root>/images/generations`, or `/images/edits` as multipart form data when the call sends reference images.
+ * Image generation over the two image APIs (docs/model-connectors.md, "Image generation").
+ *
+ * `openai-images`: one request to `POST <API root>/images/generations`, or `/images/edits` as multipart form data when
+ * the call sends reference images.
  *
  * - **The request.** `model`, `prompt`, `n`, and a size the model takes for the shape asked (`sizeFor`); `quality` only
  *   for `gpt-image-*`; `response_format: "b64_json"` only for `dall-e-*`, whose default is a URL (`gpt-image-*` always
  *   answers base64 and refuses the field). The preset's `imagePayload` adds attribution to a generation's JSON body.
  * - **The answer.** `data[].b64_json` (or `data[].url`, fetched once without the key), `revised_prompt`, and `usage`
  *   (`gpt-image-*`'s token counts). A reported cost is read from `usage.cost` or LiteLLM's `x-litellm-response-cost`.
+ *
+ * `chat-modalities` (OpenRouter, Vercel AI Gateway): one non-streaming `POST <API root>/chat/completions` with
+ * `modalities: ["image", "text"]` (`["image"]` for an image-only model).
+ *
+ * - **The request.** The prompt is the user message; reference images follow it as `image_url` parts (data URLs), the
+ *   order OpenRouter recommends. Neither upstream takes `n` on chat completions, so one request is sent whatever
+ *   `count` says and the call answers with the images the model made (usually one). `quality` isn't sent. Where the
+ *   preset takes `image_config` (OpenRouter), the shape goes as `image_config.aspect_ratio` (1:1, 3:2, 2:3, matching
+ *   gpt-image's sizes) and an exact size as the ratio it reduces to, refused unless OpenRouter lists that ratio. Vercel
+ *   documents only `modalities` there: it is sent no shape, and an exact size is refused. The connector's routing
+ *   compat goes as pi sends it on chat (`provider`, `providerOptions.gateway`), then the preset's `onPayload`.
+ * - **The answer.** `choices[].message.images[].image_url.url`: a base64 data URL, or an https URL fetched once
+ *   without the key. `message.content` is the text beside them. `usage` gives tokens and, where reported, `cost`.
+ *   A 200 with no image is a failure that still carries the tokens and cost the upstream billed.
+ *
  * - **Pricing** (`pricedImages`): the reported cost where the preset reports one, else tokens at the model's rates
  *   when the upstream counted any, else the per-image rate times the images, else 0; a `cost: "none"` preset is $0.
  */
@@ -18,11 +35,12 @@ import {
 	type ModelImage,
 	type ModelImageAspect,
 	type ModelImagesRequest,
+	type ModelModality,
 	type ModelRates,
 	type ModelUsage,
 } from "@harbour/contracts";
 import type { OfferedModel } from "./catalogue.ts";
-import { imagesUrl } from "./presets.ts";
+import { chatCompletionsUrl, imagesUrl } from "./presets.ts";
 
 /** The prompt the console's "Test generate" sends when none is given. */
 export const TEST_IMAGE_PROMPT = "A small red lighthouse on a rocky shore, flat illustration";
@@ -161,7 +179,14 @@ export type ImagesCall =
 			/** The cost the upstream reported, in US dollars. */
 			readonly reportedCost?: number;
 	  }
-	| { readonly ok: false; readonly status: number; readonly errorMessage: string };
+	| {
+			readonly ok: false;
+			readonly status: number;
+			readonly errorMessage: string;
+			/** What the upstream billed for an answer that came back without an image (`chat-modalities`). */
+			readonly tokens?: { readonly input: number; readonly output: number; readonly total: number };
+			readonly reportedCost?: number;
+	  };
 
 export interface OpenAIImagesInput {
 	readonly fetch: typeof fetch;
@@ -285,6 +310,195 @@ export async function openaiImages(input: OpenAIImagesInput): Promise<ImagesCall
 	};
 }
 
+/** The ratios OpenRouter lists for `aspect_ratio`; providers clamp to the subset they take. */
+export const OPENROUTER_ASPECT_RATIOS: readonly string[] = [
+	"1:1",
+	"2:3",
+	"3:2",
+	"3:4",
+	"4:3",
+	"4:5",
+	"5:4",
+	"9:16",
+	"16:9",
+	"9:21",
+	"21:9",
+	"1:2",
+	"2:1",
+	"1:4",
+	"4:1",
+	"1:8",
+	"8:1",
+];
+
+/** A shape's ratio: gpt-image's three sizes (1024x1024, 1536x1024, 1024x1536), so a shape looks alike everywhere. */
+const SHAPE_RATIOS: { readonly [aspect in ModelImageAspect]: string } = {
+	square: "1:1",
+	landscape: "3:2",
+	portrait: "2:3",
+};
+
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+
+/**
+ * The `aspect_ratio` a `chat-modalities` request sends where the upstream takes `image_config` (OpenRouter): an exact
+ * size's reduced ratio, else the shape's; undefined for `auto` or neither. Refuses, as `invalid`, an exact size whose
+ * ratio OpenRouter doesn't list, since chat completions takes a ratio, not pixels.
+ */
+export function aspectRatioFor(request: Pick<ModelImagesRequest, "size" | "aspect">): string | undefined {
+	if (request.size !== undefined) {
+		if (request.size === "auto") return undefined;
+		const [width, height] = request.size.split("x").map(Number) as [number, number];
+		const divisor = gcd(width, height);
+		const ratio = divisor === 0 ? undefined : `${width / divisor}:${height / divisor}`;
+		if (ratio === undefined || !OPENROUTER_ASPECT_RATIOS.includes(ratio)) {
+			throw new HarbourError(
+				"invalid",
+				`This model takes an aspect ratio, not pixels, and ${request.size} is no ratio it lists; ask for a shape`,
+			);
+		}
+		return ratio;
+	}
+	return request.aspect === undefined ? undefined : SHAPE_RATIOS[request.aspect];
+}
+
+export interface ChatModalitiesBodyInput {
+	readonly modelId: string;
+	/** What the model gives back: `["image"]` asks for images only. */
+	readonly output: readonly ModelModality[];
+	readonly request: ModelImagesRequest;
+	/** Whether the upstream takes `image_config` (OpenRouter); Vercel documents only `modalities`. */
+	readonly imageConfig: boolean;
+	/** The model's pi compat, for the connector's routing (`openRouterRouting`, `vercelGatewayRouting`). */
+	readonly compat?: { readonly [key: string]: unknown };
+}
+
+/**
+ * The JSON body of a `chat-modalities` call, before the preset's `onPayload`. Throws `invalid` for a size the upstream
+ * can't be asked for, so a refused request reaches no upstream and records no call.
+ */
+export function chatModalitiesBody(input: ChatModalitiesBodyInput): { readonly [key: string]: unknown } {
+	const { request } = input;
+	if (!input.imageConfig && request.size !== undefined && request.size !== "auto") {
+		throw new HarbourError("invalid", "This connector's chat image API takes no size; ask for a shape");
+	}
+	const aspectRatio = input.imageConfig ? aspectRatioFor(request) : undefined;
+	const references = request.images ?? [];
+	const content =
+		references.length === 0
+			? request.prompt
+			: [
+					{ type: "text", text: request.prompt },
+					...references.map((image) => ({
+						type: "image_url",
+						image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+					})),
+				];
+	const body: { [key: string]: unknown } = {
+		model: input.modelId,
+		messages: [{ role: "user", content }],
+		modalities: input.output.includes("text") ? ["image", "text"] : ["image"],
+		stream: false,
+		...(aspectRatio === undefined ? {} : { image_config: { aspect_ratio: aspectRatio } }),
+	};
+	// The connector's routing, as pi's chat adapter sends it.
+	const openRouterRouting = input.compat?.openRouterRouting;
+	if (isRecord(openRouterRouting) && Object.keys(openRouterRouting).length > 0) body.provider = openRouterRouting;
+	const vercel = input.compat?.vercelGatewayRouting;
+	if (isRecord(vercel) && (vercel.only !== undefined || vercel.order !== undefined)) {
+		body.providerOptions = {
+			gateway: {
+				...(vercel.only === undefined ? {} : { only: vercel.only }),
+				...(vercel.order === undefined ? {} : { order: vercel.order }),
+			},
+		};
+	}
+	return body;
+}
+
+export interface ChatModalitiesInput {
+	readonly fetch: typeof fetch;
+	/** The API root, such as `https://openrouter.ai/api/v1`. */
+	readonly baseUrl: string;
+	/** The body `chatModalitiesBody` built, with the preset's changes. */
+	readonly body: { readonly [key: string]: unknown };
+	/** The key and attribution headers. */
+	readonly headers: { readonly [name: string]: string };
+	readonly signal?: AbortSignal;
+}
+
+const DATA_URL = /^data:([^;,]+)(?:;[^;,]+)*;base64,(.*)$/s;
+
+/** Makes one `chat-modalities` call. Never retries. */
+export async function chatModalitiesImages(input: ChatModalitiesInput): Promise<ImagesCall> {
+	const response = await input.fetch(chatCompletionsUrl(input.baseUrl), {
+		method: "POST",
+		headers: { ...input.headers, "content-type": "application/json" },
+		body: JSON.stringify(input.body),
+		...(input.signal === undefined ? {} : { signal: input.signal }),
+	});
+	if (!response.ok) return { ok: false, status: response.status, errorMessage: await errorText(response) };
+	const parsed: unknown = await response.json().catch(() => undefined);
+	if (!isRecord(parsed)) return { ok: false, status: 502, errorMessage: "The upstream answered without images" };
+	const usage = isRecord(parsed.usage) ? parsed.usage : undefined;
+	const promptTokens = finite(usage?.prompt_tokens);
+	const completionTokens = finite(usage?.completion_tokens);
+	const tokens =
+		promptTokens === undefined && completionTokens === undefined
+			? undefined
+			: {
+					input: promptTokens ?? 0,
+					output: completionTokens ?? 0,
+					total: finite(usage?.total_tokens) ?? (promptTokens ?? 0) + (completionTokens ?? 0),
+				};
+	const reportedCost = finite(usage?.cost);
+	const billed = {
+		...(tokens === undefined ? {} : { tokens }),
+		...(reportedCost === undefined ? {} : { reportedCost }),
+	};
+	// OpenRouter can answer 200 with an error in the body when the provider fails after the request was accepted.
+	if (isRecord(parsed.error)) {
+		const code = typeof parsed.error.code === "number" ? parsed.error.code : 502;
+		const message = typeof parsed.error.message === "string" ? parsed.error.message : "The upstream failed";
+		return { ok: false, status: code >= 400 && code < 600 ? code : 502, errorMessage: message, ...billed };
+	}
+	const images: ModelImage[] = [];
+	const texts: string[] = [];
+	for (const choice of Array.isArray(parsed.choices) ? (parsed.choices as unknown[]) : []) {
+		const message = isRecord(choice) && isRecord(choice.message) ? choice.message : undefined;
+		if (message === undefined) continue;
+		if (typeof message.content === "string" && message.content.trim() !== "") texts.push(message.content.trim());
+		for (const entry of Array.isArray(message.images) ? (message.images as unknown[]) : []) {
+			const imageUrl = isRecord(entry) ? entry.image_url : undefined;
+			const url = typeof imageUrl === "string" ? imageUrl : isRecord(imageUrl) ? imageUrl.url : undefined;
+			if (typeof url !== "string") continue;
+			let data: string | undefined;
+			let declared: string | undefined;
+			const inline = DATA_URL.exec(url);
+			if (inline !== null) {
+				declared = inline[1]?.toLowerCase();
+				const payload = inline[2]?.replace(/\s+/g, "") ?? "";
+				if (payload !== "" && BASE64.test(payload)) data = payload;
+			} else if (/^https:\/\//.test(url)) {
+				const fetched = await input.fetch(url, input.signal === undefined ? {} : { signal: input.signal });
+				if (!fetched.ok) continue;
+				declared = fetched.headers.get("content-type")?.split(";")[0]?.trim();
+				data = bytesToBase64(new Uint8Array(await fetched.arrayBuffer()));
+			}
+			if (data === undefined) continue;
+			const mimeType = sniffImageType(data) ?? declared ?? "image/png";
+			if (!IMAGE_MIME_TYPES.includes(mimeType)) continue;
+			images.push({ mimeType, data });
+		}
+	}
+	const text = texts.length === 0 ? undefined : texts.join("\n\n");
+	if (images.length === 0) {
+		const said = text === undefined ? "" : `: ${text.slice(0, 300)}`;
+		return { ok: false, status: 502, errorMessage: `The upstream answered without images${said}`, ...billed };
+	}
+	return { ok: true, status: response.status, images, ...(text === undefined ? {} : { text }), ...billed };
+}
+
 /** The per-image rate a model's rates carry, if any. */
 export function imageRate(rates: ModelRates | { readonly image?: number }): number | undefined {
 	const rate = (rates as { readonly image?: unknown }).image;
@@ -299,7 +513,7 @@ export function imageRate(rates: ModelRates | { readonly image?: number }): numb
 export function pricedImages(
 	cost: "reported" | "computed" | "none",
 	target: OfferedModel,
-	call: Extract<ImagesCall, { ok: true }>,
+	call: Pick<Extract<ImagesCall, { ok: true }>, "tokens" | "reportedCost"> & { readonly images: readonly unknown[] },
 ): {
 	readonly usage: ModelUsage;
 	readonly costSource: ModelCallRecord["costSource"];

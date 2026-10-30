@@ -59,7 +59,8 @@ the image tokens gpt-image reports (OpenAI, the compatible presets) at the catal
 catalogue's per-image rate times the images (`image:<rate>`, `image:0` without one); `cliproxyapi`'s `cost: "none"` is
 $0. A refused, failed or aborted image call is a row as a chat call's is: `error` or `aborted`, its redacted error, 0
 images, and `none` when it failed before the connector's key was read. OpenRouter's and Vercel's image models make
-images over chat (`chat-modalities`), which the gateway refuses before any upstream call, so they have no rows yet.
+images over chat (`chat-modalities`): their rows take the cost the upstream reports (`usage.cost`), else their tokens at
+the catalogue's rates, and an answer that came back without an image keeps the tokens and cost it was billed.
 
 **Schema changes.** `migrateUsage` numbers its versions in `usage_schema`; each runs once, in one batch with its
 version, on every database the ledger or the SQL sink uses (the stack object's SQLite, D1, Postgres). Version 1 is the
