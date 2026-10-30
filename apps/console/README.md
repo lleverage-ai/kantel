@@ -9,9 +9,10 @@ pnpm --filter @harbour/console dev             # http://127.0.0.1:5173, on that 
 pnpm --filter @harbour/console dev:recorded    # http://127.0.0.1:5173, on recorded sessions, no backend
 ```
 
-`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`) and signs each call in
-as the dev admin with a token from the gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway
-serves the console itself, and Cloudflare Access signs the calls in.
+`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`), WebSocket upgrades
+included (a session's events, a browser's live view), and signs each call in as the dev admin with a token from the
+gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway serves the console itself, and
+Cloudflare Access signs the calls in.
 
 ## Routes
 

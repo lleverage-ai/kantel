@@ -103,6 +103,14 @@ export {
 export { MemoryPage, type MemoryPageProps, type MemoryView } from "./memory/memory-page.tsx";
 export { MemoryProposals, type MemoryProposalsProps } from "./memory/memory-proposals.tsx";
 export { MemoryRecall, type MemoryRecallProps } from "./memory/memory-recall.tsx";
+export {
+	type ImageModelChoice,
+	type ImageTestState,
+	ModelsPage,
+	type ModelsPageAgent,
+	type ModelsPageProps,
+	testKey,
+} from "./models/models-page.tsx";
 export { FilePanel, type FilePanelProps, type FilePanelState, saveFile } from "./presented/file-panel.tsx";
 export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
 // Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
@@ -407,6 +415,7 @@ export {
 	type BrowserCallPage,
 	type BrowserViewSlot,
 	type BrowsingStep,
+	browserEntrySlots,
 	browserPageOf,
 	browserViewSlots,
 	finalAnswerIds,

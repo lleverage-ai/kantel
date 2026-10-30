@@ -7,6 +7,7 @@ import {
 	type Crumb,
 	EmptyState,
 	IconButton,
+	ImageIcon,
 	KeyIcon,
 	LayersIcon,
 	ListIcon,
@@ -31,6 +32,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
+import type { ConsoleModels } from "../api/models-http.ts";
 import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
@@ -38,6 +40,7 @@ import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
 import { useLineage } from "./lineage.ts";
+import { ModelsScreen } from "./models-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
@@ -46,6 +49,7 @@ import {
 	KEYS_PATH,
 	MEMBERS_PATH,
 	memoryPath,
+	modelsPath,
 	navigate,
 	newSessionPath,
 	parseRoute,
@@ -216,13 +220,23 @@ function ProjectNav({
 	);
 }
 
-/** The agent's skills and memory, shown when the console has a seam for them. */
-function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
-	if (!agent) return null;
+/**
+ * The agent's skills and memory, shown when the console has a seam for them, and the open project's Models page when it
+ * has the models seam.
+ */
+function AgentNav({ route, agent, modelsHref }: { route: Route; agent: boolean; modelsHref: string | undefined }) {
+	if (!agent && modelsHref === undefined) return null;
 	return (
 		<SidebarSection label="Agent">
-			<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
-			<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
+			{agent ? (
+				<>
+					<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
+					<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
+				</>
+			) : null}
+			{modelsHref === undefined ? null : (
+				<SidebarItem icon={<ImageIcon />} label="Models" href={modelsHref} selected={route.name === "models"} />
+			)}
 		</SidebarSection>
 	);
 }
@@ -313,6 +327,7 @@ export function App({
 	members,
 	agent,
 	schedules,
+	models,
 	oversightPending = false,
 	onOpen,
 }: {
@@ -334,6 +349,8 @@ export function App({
 	agent?: ConsoleAgent;
 	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
 	schedules?: ConsoleSchedules;
+	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
+	models?: ConsoleModels;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -342,7 +359,11 @@ export function App({
 	const { projects, error: projectsError } = useProjects(client);
 
 	const projectId =
-		route.name === "project" || route.name === "session" || route.name === "files" || route.name === "new-session"
+		route.name === "project" ||
+		route.name === "session" ||
+		route.name === "files" ||
+		route.name === "new-session" ||
+		route.name === "models"
 			? route.projectId
 			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
@@ -584,6 +605,20 @@ export function App({
 				</EmptyState>
 			</div>
 		);
+	} else if (route.name === "models") {
+		main =
+			models === undefined ? (
+				<div className="shell-empty">
+					<EmptyState title="There's nothing here" action={wayBack}>
+						This console can't read the model gateway.
+					</EmptyState>
+				</div>
+			) : (
+				<div className="shell-page">
+					{pageBar}
+					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
+				</div>
+			);
 	} else if (route.name === "new-session") {
 		main = (
 			<NewSessionScreen
@@ -643,6 +678,7 @@ export function App({
 		sessionId !== undefined ||
 		linkedSession !== undefined ||
 		newSession ||
+		route.name === "models" ||
 		missing ||
 		unknownProject ||
 		organisationPage ||
@@ -694,7 +730,11 @@ export function App({
 				}
 				foot={
 					<>
-						<AgentNav route={route} agent={agent !== undefined} />
+						<AgentNav
+							route={route}
+							agent={agent !== undefined}
+							modelsHref={models === undefined || treeProject === undefined ? undefined : modelsPath(treeProject.id)}
+						/>
 						<OrganisationNav
 							route={route}
 							schedules={schedules !== undefined}

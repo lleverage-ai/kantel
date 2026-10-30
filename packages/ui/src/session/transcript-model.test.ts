@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
 import {
 	activeBrowsingRow,
+	browserEntrySlots,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
@@ -310,6 +311,65 @@ describe("browserViewSlots", () => {
 
 	it("has no slots for calls that name no browser", () => {
 		expect(browserViewSlots(groupTranscript(finishedTurn)).size).toBe(0);
+	});
+});
+
+describe("browserEntrySlots", () => {
+	const shot = (data: string) => ({ mimeType: "image/png", data }) as const;
+	const on = (item: ToolItem, browserSessionId: string, images?: ToolItem["images"]): ToolItem => ({
+		...item,
+		browserSessionId,
+		...(images === undefined ? {} : { images }),
+	});
+
+	it("gives each browser one card, on the run that opened it, with its newest page from every run", () => {
+		const last = shot("iana");
+		const items: TranscriptItem[] = [
+			user("u1", "Look it up"),
+			on(
+				tool("x1", "browser_open", "Opening example.com", {
+					output: "URL: https://example.com/\nTitle: Example Domain",
+				}),
+				"bs_1",
+				[shot("example")],
+			),
+			assistant("a1", "Now the next page."),
+			on(
+				tool("x2", "browser_act", "Going to www.iana.org", {
+					output: "URL: https://www.iana.org/help/example-domains\nTitle: Example Domains",
+				}),
+				"bs_1",
+				[last],
+			),
+			user("u2", "Close it."),
+			on(tool("x3", "browser_close", "Closing the browser", { output: "Closed." }), "bs_1"),
+		];
+		const rows = groupTranscript(items);
+		const entries = browserEntrySlots(rows);
+		// One card, on the first browsing row; the run that only closed the browser has none.
+		const browsing = rows.filter((row) => row.kind === "browsing").map((row) => row.id);
+		expect(browsing.length).toBeGreaterThan(1);
+		expect([...entries.keys()]).toEqual([browsing[0]]);
+		const card = entries.get(browsing[0] as string);
+		expect(card?.page).toEqual({ url: "https://www.iana.org/help/example-domains", title: "Example Domains" });
+		expect(card?.screenshot).toBe(last);
+		expect(card?.closed).toBe(true);
+		// Unchanged: the same card comes back, so its row doesn't render again.
+		expect(browserEntrySlots(rows, entries).get(browsing[0] as string)).toBe(card);
+	});
+
+	it("gives a second browser its own card, on the run that opened it", () => {
+		const items: TranscriptItem[] = [
+			on(tool("x1", "browser_open", "Opening example.com"), "bs_1"),
+			user("u1", "Another."),
+			on(tool("x2", "browser_open", "Opening example.org"), "bs_2"),
+			on(tool("x3", "browser_act", "Reading"), "bs_1"),
+		];
+		const entries = browserEntrySlots(groupTranscript(items));
+		expect([...entries].map(([row, slot]) => [row, slot.browserSessionId])).toEqual([
+			["x1", "bs_1"],
+			["x2", "bs_2"],
+		]);
 	});
 });
 

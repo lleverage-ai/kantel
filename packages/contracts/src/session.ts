@@ -54,6 +54,13 @@ export interface AgentProfile {
 	readonly projectId?: ProjectId;
 	readonly name: string;
 	readonly model: ModelChoice;
+	/**
+	 * The model the agent makes images with, through the `generate_image` tool: a route (or `<route>` and a model ID) whose
+	 * model has `image` in its `output`. Independent of `model`, so a session can chat with one connector and draw with
+	 * another. Without it, or when the gateway doesn't list it as an image model, the session has no `generate_image`.
+	 * Its `thinking` is ignored.
+	 */
+	readonly imageModel?: ModelChoice;
 	readonly promptLayers: readonly PromptLayer[];
 	/** Tool and capability names the agent may call, including host tools. */
 	readonly tools: readonly string[];

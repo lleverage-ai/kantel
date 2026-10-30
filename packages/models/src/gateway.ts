@@ -1051,6 +1051,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			status: ModelCallRecord["status"],
 			usage: ModelUsage,
 			costSource: ModelCallRecord["costSource"],
+			error?: string,
 		) => {
 			recorded = true;
 			return record(
@@ -1068,8 +1069,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					usage,
 					costSource,
 				},
-				// Its usage row: the image API is called through the connector's OpenAI-compatible base URL.
-				{ connector, api: "openai-completions", rates: target.model.cost },
+				// An image call is a usage row too, under its image API (not the wire API of the base URL it shares).
+				{
+					connector,
+					api: target.imageApi ?? "openai-images",
+					rates: target.model.cost,
+					...(error === undefined ? {} : { error: redactor.text(error) }),
+				},
 			);
 		};
 		const failedCostSource = spec.cost === "none" ? "none" : "computed";
@@ -1112,7 +1118,12 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 						? undefined
 						: pricedImages(imageCost, target, { ...call, images: [] });
 				const usage = billed?.usage ?? { ...emptyUsage(), images: 0 };
-				await finish(controller.signal.aborted ? "aborted" : "error", usage, billed?.costSource ?? failedCostSource);
+				await finish(
+					controller.signal.aborted ? "aborted" : "error",
+					usage,
+					billed?.costSource ?? failedCostSource,
+					`${call.status}: ${call.errorMessage}`,
+				);
 				throw new HarbourError(
 					call.status === 400 || call.status === 422 ? "invalid" : call.status === 429 ? "exhausted" : "unavailable",
 					redactor.text(`${call.status}: ${call.errorMessage}`),
@@ -1134,7 +1145,14 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		} catch (error) {
 			// An upstream's refusal was recorded with its answer; a key read, a network failure or an abort is recorded here.
 			const aborted = controller.signal.aborted;
-			if (!recorded) await finish(aborted ? "aborted" : "error", { ...emptyUsage(), images: 0 }, failedCostSource);
+			if (!recorded) {
+				await finish(
+					aborted ? "aborted" : "error",
+					{ ...emptyUsage(), images: 0 },
+					failedCostSource,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 			if (isHarbourError(error) && !aborted) throw error;
 			const message = redactor.text(error instanceof Error ? error.message : String(error));
 			throw new HarbourError(aborted ? "aborted" : "unavailable", message);
@@ -1235,7 +1253,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					id: connector.id,
 					owner: connector.owner,
 					preset: connector.preset,
-					routes: routes.filter((route) => route.connectorId === connector.id).map((route) => route.name),
+					routes: routes
+						.filter((route) => route.connectorId === connector.id)
+						.map((route) => ({ name: route.name, modelId: route.modelId })),
 					models,
 				});
 			}

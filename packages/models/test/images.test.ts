@@ -1,4 +1,11 @@
-import { type ConnectorPreset, HarbourError, type JsonValue, type ModelOverride } from "@harbour/contracts";
+import {
+	type ConnectorPreset,
+	HarbourError,
+	type JsonValue,
+	type ModelOverride,
+	type UsageRecord,
+	type UsageWriter,
+} from "@harbour/contracts";
 import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway } from "@harbour/models/gateway";
@@ -36,6 +43,7 @@ async function setup(options: {
 	refresh?: "gateway" | "static";
 	overrides?: { readonly [modelId: string]: ModelOverride };
 	compat?: { readonly [key: string]: JsonValue };
+	usage?: UsageWriter;
 }) {
 	const deps = createDeps();
 	deps.tenancy.bind(actors.human("viewer-a"), ORG, "viewer", PROJECT);
@@ -85,6 +93,7 @@ async function setup(options: {
 		fetch: upstream.fetch,
 		baseUrl: "http://gateway.internal",
 		access: deps.access,
+		...(options.usage === undefined ? {} : { usage: options.usage }),
 	});
 	return { deps, upstream, gateway, connectors };
 }
@@ -268,6 +277,34 @@ describe("images", () => {
 		expect(await code(gateway.images(scopeFor(), { model: "images", prompt: "x" }))).toBe("exhausted");
 		const events = deps.audit.ofType("model.call");
 		expect(events.map((event) => event.data?.status)).toEqual(["error", "error"]);
+	});
+
+	it("writes a usage record per image call, done or refused, under the image API", async () => {
+		const records: UsageRecord[] = [];
+		const { gateway, upstream } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage: { record: async (record) => void records.push(record) },
+		});
+		upstream.nextImages({ usage: { input: 50, output: 4160 } });
+		await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse" });
+		upstream.nextImages({ error: { status: 400, message: `Rejected (key ${KEY})` } });
+		await gateway.images(scopeFor(), { model: "images", prompt: "x" }).catch(() => {});
+		expect(records).toHaveLength(2);
+		expect(records[0]).toMatchObject({
+			api: "openai-images",
+			modelId: "gpt-image-1",
+			provider: "openai",
+			connectorPreset: "openai",
+			status: "done",
+			inputTokens: 50,
+			outputTokens: 4160,
+			costSource: "computed",
+		});
+		expect(records[1]).toMatchObject({ api: "openai-images", status: "error", inputTokens: 0 });
+		expect(records[1]?.error).toContain("400: Rejected");
+		expect(records[1]?.error).not.toContain(KEY);
 	});
 
 	it("rejects a malformed request as invalid", () => {
@@ -544,7 +581,11 @@ describe("the console's connector models and test generate", () => {
 		});
 		const viewer = contextFor(actors.human("viewer-a"), ORG);
 		const [connector] = await gateway.listConnectorModels(viewer, { projectId: PROJECT });
-		expect(connector).toMatchObject({ id: "up", preset: "openai", routes: ["images"] });
+		expect(connector).toMatchObject({
+			id: "up",
+			preset: "openai",
+			routes: [{ name: "images", modelId: "gpt-image-1" }],
+		});
 		expect(connector?.models.find((model) => model.id === "gpt-image-1")).toMatchObject({
 			output: ["image"],
 			imageApi: "openai-images",

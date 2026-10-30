@@ -41,6 +41,7 @@ export type Route =
 	| { readonly name: "audit" }
 	| { readonly name: "keys" }
 	| { readonly name: "members" }
+	| { readonly name: "models"; readonly projectId: string }
 	| { readonly name: "skills"; readonly skillId?: string }
 	| { readonly name: "memory"; readonly conceptId?: string }
 	| { readonly name: "schedules"; readonly scheduleId?: string; readonly creating?: true }
@@ -93,6 +94,7 @@ export function parseRoute(pathname: string): Route {
 		const projectId = parts[1] === undefined ? undefined : segment(parts[1]);
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
 		if (projectId !== undefined && parts[2] === "new" && parts.length === 3) return { name: "new-session", projectId };
+		if (projectId !== undefined && parts[2] === "models" && parts.length === 3) return { name: "models", projectId };
 		const sessionId = parts[3] === undefined ? undefined : segment(parts[3]);
 		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined) {
 			if (parts.length === 4) return { name: "session", projectId, sessionId };
@@ -107,6 +109,8 @@ export function parseRoute(pathname: string): Route {
 
 export const projectPath = (projectId: string): string => `/projects/${encodeURIComponent(projectId)}`;
 export const newSessionPath = (projectId: string): string => `${projectPath(projectId)}/new`;
+/** A project's Models page: its connectors' models, and the agent's image model. */
+export const modelsPath = (projectId: string): string => `${projectPath(projectId)}/models`;
 export const sessionPath = (projectId: string, sessionId: string): string =>
 	`${projectPath(projectId)}/sessions/${encodeURIComponent(sessionId)}`;
 /** A session at one turn: the submission or tool call an audit event names, as the session's `#turn=<id>`. */

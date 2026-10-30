@@ -61,6 +61,7 @@ import {
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
 import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
 import { sessionWorkspaceId } from "./coding-tools.ts";
+import { createConnectorsApi, isConnectorsPath } from "./connectors.ts";
 import {
 	MEASURE_PATH,
 	type MeasureInput,
@@ -305,6 +306,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		authenticate: callContext,
 	});
 
+	// The console's connectors page: what each connector offers, and a test image (`src/connectors.ts`).
+	const connectors = createConnectorsApi({ gateway: stack.modelGateway, authenticate: callContext });
+
 	const workspace = measurementWorkspace(stack);
 	const measure = async (request: Request): Promise<Response> => {
 		if (request.method !== "POST") {
@@ -445,6 +449,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return attachments(request);
+			}
+			if (isConnectorsPath(path)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return connectors(request);
 			}
 			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
 				const refused = await signIn(request);

@@ -88,5 +88,9 @@ The schedules, skills and memory pages (`SchedulesPage`, `SkillsPage` with its `
 the viewer.
 The identity pages are in `src/identity/`: `SignInScreen`, `ApiKeysPage` for a host app's keys, and `MembersPage`, the
 organisation's people with an admin's passkey reset. Each takes the identity client's calls; stories show their states.
+`ModelsPage` (`src/models/`) is a project's models: the agent's image model, picked from the image models the model
+gateway's connectors offer, and each connector's models with what they take and give (Text, Makes images, Reads
+images, the image API) and a Test generate button on an image model. The host makes every call and passes the states
+in; stories show loading, empty, read-only, a test image and a failed test.
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
 [docs/design-loop.md](docs/design-loop.md).

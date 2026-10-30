@@ -118,6 +118,25 @@ describe("session API over HTTP", () => {
 		}
 	});
 
+	it("stores a profile's image model, and refuses a malformed one", async () => {
+		const { request } = setUp();
+		const withImages = { ...profile, imageModel: { route: "images", modelId: "gpt-image-1" } };
+		const stored = await request("PUT", "/profiles/worker", { token: "supervisor", body: withImages });
+		expect(stored.status).toBe(200);
+		const read = await request("GET", "/profiles/worker", { token: "supervisor" });
+		expect(await read.json()).toMatchObject({ imageModel: { route: "images", modelId: "gpt-image-1" } });
+		for (const imageModel of ["images", { route: "" }, { route: "images", modelId: 3 }]) {
+			const refused = await request("PUT", "/profiles/worker", {
+				token: "supervisor",
+				body: { ...profile, imageModel },
+			});
+			expect(refused.status).toBe(400);
+			expect(await refused.json()).toMatchObject({
+				error: { code: "invalid", message: expect.stringContaining("imageModel") },
+			});
+		}
+	});
+
 	it("maps Harbour errors to statuses with their code, and hides any other error", async () => {
 		const { request } = setUp();
 		const missing = await request("GET", "/sessions/no-such-session", { token: "supervisor" });
