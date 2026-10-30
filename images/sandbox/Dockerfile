@@ -67,6 +67,12 @@ RUN apt-get update \
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=fetch /out/gh /out/linear-cli /usr/local/bin/
 COPY --from=fetch /out/pnpm.tgz /tmp/pnpm.tgz
+# Cloudflare's container tier (apps/cloudflare/src/sandbox-object.ts) starts the agent as the entrypoint: it keeps
+# /workspace in step with the workspace and runs commands. The self-hosted tier runs each command with its own `sh -c`
+# and never starts it.
+# (Its directory is made with the right modes below: `COPY --chmod` would give the new /opt/harbour 0644 too, which
+# the sandbox user can't enter.)
+COPY agent/agent.ts /tmp/agent.ts
 # The node image's uid 1000 user becomes `sandbox`, the user the container tier runs commands as, with its home in
 # the workspace so tools that write dotfiles write them where the tier can see them. /home/sandbox is for a tier that
 # keeps caches out of the workspace.
@@ -83,6 +89,9 @@ RUN set -eu; \
 	groupmod -n sandbox node; \
 	mkdir -p /workspace /home/sandbox; \
 	chown 1000:1000 /workspace /home/sandbox; \
+	install -d -m 0755 /opt/harbour; \
+	install -m 0644 /tmp/agent.ts /opt/harbour/agent.ts; \
+	rm -f /tmp/agent.ts; \
 	bun --version; node --version; npm --version; pnpm --version; git --version; gh --version; jq --version; \
 	rg --version; python3 --version; pip --version; linear-cli --version; gcc --version; make --version; \
 	convert -version; pandoc --version; pdftotext -v; sqlite3 --version; fd --version
@@ -93,4 +102,6 @@ ENV HOME=/workspace \
 	PATH=/workspace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER 1000:1000
 WORKDIR /workspace
+# The agent's port, on Cloudflare (local `wrangler dev` maps only exposed ports). The self-hosted tier publishes none.
+EXPOSE 8080
 CMD ["sh"]

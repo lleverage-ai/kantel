@@ -4,6 +4,7 @@ import {
 	browserRequestOf,
 	composerState,
 	createRequestIds,
+	createWarmHint,
 	offersFollowUp,
 	TITLE_MAX,
 	titleFrom,
@@ -111,5 +112,42 @@ describe("request ids", () => {
 		expect(ids.for("steer", "Hi there")).toBe("r3");
 		ids.sent();
 		expect(ids.for("steer", "Hi there")).toBe("r4");
+	});
+});
+
+describe("createWarmHint", () => {
+	it("sends one hint per interval, none while one is on its way, and drops a failed one", async () => {
+		let now = 0;
+		const calls: (() => void)[] = [];
+		const fail: ((reason: unknown) => void)[] = [];
+		const hint = createWarmHint(
+			() =>
+				new Promise<void>((resolve, reject) => {
+					calls.push(resolve);
+					fail.push(reject);
+				}),
+			{ intervalMs: 1_000, now: () => now },
+		);
+		hint();
+		hint();
+		expect(calls).toHaveLength(1);
+		// Past the interval but the first is still on its way: nothing.
+		now = 1_500;
+		hint();
+		expect(calls).toHaveLength(1);
+		fail[0]?.(new Error("offline"));
+		await Promise.resolve();
+		await Promise.resolve();
+		hint();
+		expect(calls).toHaveLength(2);
+		calls[1]?.();
+		await Promise.resolve();
+		await Promise.resolve();
+		now = 2_000;
+		hint();
+		expect(calls).toHaveLength(2);
+		now = 2_500;
+		hint();
+		expect(calls).toHaveLength(3);
 	});
 });

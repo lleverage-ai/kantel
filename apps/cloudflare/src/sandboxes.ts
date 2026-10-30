@@ -8,11 +8,17 @@
  *   `dynamic-worker` runs the same shell in a Dynamic Worker per session (`src/dynamic-worker.ts`), when the Worker
  *   has the `LOADER` binding. Each backend gets its own sandboxes, so the isolate-ready measurement can run on any of
  *   them while sessions use the chosen one.
- * - **The container tier** is not on Cloudflare yet: a command routed to it (`python`, `npm` and the rest of
- *   `DEFAULT_TIER_ROUTES`) is refused `unavailable`.
+ * - **The container tier**, with `containers` (the `HarbourSandbox` objects, `src/sandbox-object.ts`, when the deploy
+ *   runs sandbox containers): one container per session, started by its first command that needs one. A shell command
+ *   goes there when the table says so (`npm`, `python3`, git writes) or when it starts a program the isolate doesn't
+ *   have (`make`, `unzip`, ...; `escalatingRouter`), and its changes are committed after every command, so the file
+ *   tools, which read the workspace itself, see them. Without `containers`, such a command is refused `unavailable`.
  * - **`git`**: the in-process isolate has isomorphic-git's read-only `git` (`@harbour/sandbox/isolate-git`), over the
- *   shallow `.git` a git seed writes (`@harbour/workspace/git-history`), and every command that starts with `git` runs
- *   there: with no container to send the others to, its reads answer and its writes say they need the container tier.
+ *   shallow `.git` a git seed writes (`@harbour/workspace/git-history`). Its reads (`status`, `log`, `show`, ...) run
+ *   there, so they never wait for a container. With containers, git writes go to the container; without, every
+ *   command that starts with `git` runs in the isolate, whose writes say they need the container tier.
+ * - **Warm-up** (`warm`): reads the head's listing for the isolate and, with containers, starts the session's container
+ *   (if it has used one) and re-bases it, so the first command after a pause waits for neither.
  * - **`node`**: with `nodeEngine` (the compiled QuickJS module), the in-process isolate has a `node` program that runs
  *   plain JavaScript in QuickJS (`@harbour/sandbox/isolate-node`), and a command that starts with `node` runs there
  *   instead of being refused. The Worker passes it; the tests may.
@@ -31,9 +37,10 @@ import {
 	type SessionId,
 	type SystemContext,
 	type TierRoute,
+	type WorkspaceId,
 } from "@harbour/contracts";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createIsolateGitCommand } from "@harbour/sandbox/isolate-git";
+import { createInProcessIsolateBackend, escalatingRouter, isolatePrograms } from "@harbour/sandbox/isolate";
+import { createIsolateGitCommand, ISOLATE_GIT_ROUTE } from "@harbour/sandbox/isolate-git";
 import { createIsolateNodeCommand, ISOLATE_NODE_ROUTE } from "@harbour/sandbox/isolate-node";
 import {
 	type ContainerBackend,
@@ -43,6 +50,7 @@ import {
 	type TieredSandboxes,
 } from "@harbour/sandbox/tiered";
 import type { StoredWorkspaces } from "@harbour/workspace/stored";
+import { type ContainerWarmth, createContainerBackend, type SandboxContainers } from "./container-backend.ts";
 
 /** The isolate backends this Worker can run. */
 export const ISOLATE_BACKENDS = ["in-process", "dynamic-worker"] as const;
@@ -68,14 +76,22 @@ export function isolateBackendName(vars: SandboxVars): IsolateBackendName {
 	return value;
 }
 
-const NO_CONTAINERS = "The container tier is not on Cloudflare yet; this command needs it";
+const NO_CONTAINERS =
+	"This command needs the container tier, which this deployment doesn't run (HARBOUR_SANDBOX_CONTAINERS is off)";
 
 /** Every `git` command to the isolate, whose `git` answers reads and refuses writes: there is no container tier. */
 export const CLOUDFLARE_GIT_ROUTE: TierRoute = { tool: "bash", programs: ["git"], tier: "isolate" };
 
-/** The in-process isolate's routes: `git`, and `node` when it has the engine, before the defaults. */
-export function inProcessRoutes(node: boolean): readonly TierRoute[] {
-	return [CLOUDFLARE_GIT_ROUTE, ...(node ? [ISOLATE_NODE_ROUTE] : []), ...DEFAULT_TIER_ROUTES];
+/**
+ * The in-process isolate's routes, before the defaults: `git` (its reads only when there is a container tier for its
+ * writes; all of it otherwise), and `node` when it has the engine.
+ */
+export function inProcessRoutes(node: boolean, containers = false): readonly TierRoute[] {
+	return [
+		containers ? ISOLATE_GIT_ROUTE : CLOUDFLARE_GIT_ROUTE,
+		...(node ? [ISOLATE_NODE_ROUTE] : []),
+		...DEFAULT_TIER_ROUTES,
+	];
 }
 
 /**
@@ -107,6 +123,15 @@ export interface StackSandboxesOptions {
 	readonly extraBackends?: ExtraIsolateBackends;
 	/** The compiled QuickJS module: with it, the in-process isolate runs `node` (see above). */
 	readonly nodeEngine?: NodeEngine;
+	/** The sessions' container objects, when the deploy runs sandbox containers. */
+	readonly containers?: SandboxContainers;
+}
+
+/** What `warm` did, per tier. */
+export interface SandboxWarmth {
+	readonly isolate: "ready";
+	readonly container: ContainerWarmth;
+	readonly timings: Record<string, number>;
 }
 
 /** The compiled QuickJS module (`@jitl/quickjs-wasmfile-release-sync/wasm`), or how to get it. */
@@ -122,18 +147,32 @@ export interface StackSandboxes {
 	releaseSession(ctx: CallContext, sessionId: SessionId, reason?: LeaseEndReason): Promise<void>;
 	/** Sweeps expired leases on every backend. */
 	sweep(ctx: SystemContext): Promise<readonly SandboxLease[]>;
+	/**
+	 * Gets a session's sandboxes ready for its next command (see above). Idempotent and cheap when they are. The caller
+	 * must hold `operator` on the session (checked here); the workspace's own checks apply to its reads.
+	 */
+	warm(
+		ctx: CallContext,
+		input: { readonly sessionId: SessionId; readonly workspaceId: WorkspaceId; readonly force?: boolean },
+	): Promise<SandboxWarmth>;
 }
 
 export function createStackSandboxes(options: StackSandboxesOptions): StackSandboxes {
+	const commands = [
+		createIsolateGitCommand(),
+		...(options.nodeEngine === undefined ? [] : [createIsolateNodeCommand({ wasmModule: options.nodeEngine })]),
+	];
+	const inProcess = createInProcessIsolateBackend(options.workspaces, { commands });
 	const backends: Partial<Record<IsolateBackendName, IsolateBackend>> = {
-		"in-process": createInProcessIsolateBackend(options.workspaces, {
-			commands: [
-				createIsolateGitCommand(),
-				...(options.nodeEngine === undefined ? [] : [createIsolateNodeCommand({ wasmModule: options.nodeEngine })]),
-			],
-		}),
+		"in-process": inProcess,
 		...options.extraBackends?.(options.workspaces),
 	};
+	const container =
+		options.containers === undefined
+			? undefined
+			: createContainerBackend({ workspaces: options.workspaces, containers: options.containers });
+	/** The in-process isolate's table: git (reads, with containers) and `node` (when it has QuickJS) stay in the isolate. */
+	const routes = inProcessRoutes(options.nodeEngine !== undefined, container !== undefined);
 	const all = new Map<IsolateBackendName, TieredSandboxes>();
 	for (const name of ISOLATE_BACKENDS) {
 		const isolate = backends[name];
@@ -143,12 +182,19 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 			createTieredSandboxes({
 				workspaces: options.workspaces,
 				isolate,
-				container: noContainers,
+				container: container ?? noContainers,
 				leases: createMemoryLeaseStore(),
 				clock: options.clock,
 				audit: options.audit,
 				access: options.access,
-				...(name === "in-process" ? { routes: inProcessRoutes(options.nodeEngine !== undefined) } : {}),
+				...(name === "in-process" ? { routes } : {}),
+				// With a container to escalate to, a command the isolate can't run goes there instead of failing.
+				...(container === undefined
+					? {}
+					: {
+							router: escalatingRouter(isolatePrograms(name === "in-process" ? commands : [])),
+							checkpointContainer: true,
+						}),
 			}),
 		);
 	}
@@ -167,6 +213,26 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 			const swept: SandboxLease[] = [];
 			for (const each of all.values()) swept.push(...(await each.sweep(ctx)));
 			return swept;
+		},
+		async warm(ctx, input) {
+			await options.access.require(ctx, {
+				sessionId: input.sessionId,
+				needed: "operator",
+				operation: "sandbox.warm",
+			});
+			const started = performance.now();
+			const head = (await options.workspaces.get(ctx, input.workspaceId)).head;
+			const [, warmed] = await Promise.all([
+				options.backend === "in-process" ? inProcess.warm(ctx, input.workspaceId, head) : Promise.resolve(),
+				container === undefined
+					? Promise.resolve({ state: "unavailable" as const, timings: {} })
+					: container.warm(ctx, input),
+			]);
+			return {
+				isolate: "ready",
+				container: warmed.state,
+				timings: { ...warmed.timings, "warm.total": Math.round(performance.now() - started) },
+			};
 		},
 	};
 }

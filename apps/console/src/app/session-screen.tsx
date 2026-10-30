@@ -7,7 +7,7 @@ import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
 import { SessionClient } from "../state/session-client.ts";
-import { createRequestIds, type SessionActions } from "../ui/actions.ts";
+import { createRequestIds, createWarmHint, type SessionActions } from "../ui/actions.ts";
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
@@ -288,10 +288,18 @@ export function SessionScreen({
 			return workspace.read(file.path, signal);
 		};
 	}, [client, sessionId]);
+	// Typing (or focusing the composer) warms the session's sandbox, so the agent's first command after a pause waits for
+	// no container to start. One hint per session at most every 30 s.
+	const { warm } = client;
+	const onEngage = useMemo(
+		() => (warm === undefined ? undefined : createWarmHint(() => warm(sessionId))),
+		[warm, sessionId],
+	);
 
 	const actions: SessionActions = {
 		readPresented,
 		...(onFork === undefined ? {} : { onFork }),
+		...(onEngage === undefined ? {} : { onEngage }),
 		...(onEdit === undefined ? {} : { onEdit }),
 		control: client.control(sessionId),
 		sending,

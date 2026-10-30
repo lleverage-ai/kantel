@@ -653,6 +653,9 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
+		warm: async (sessionId) => {
+			await call(sessionUrl(sessionId, "/warm"), { method: "POST" });
+		},
 		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
 
 		async browserReplay(sessionId, browserSessionId, signal) {

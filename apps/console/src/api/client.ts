@@ -204,6 +204,11 @@ export interface ConsoleClient {
 	 */
 	readonly fork?: (sessionId: string, itemId: string) => Promise<string>;
 	/**
+	 * Hints that a message is coming (`POST /sessions/{id}/warm`): the session's sandbox gets ready for its next command.
+	 * Idempotent. Undefined when the host doesn't warm.
+	 */
+	readonly warm?: (sessionId: string) => Promise<void>;
+	/**
 	 * Rewinds the session to the person's message `itemId` and sends `text` in its place; what came after it leaves the
 	 * session. The session must be idle. Undefined when the host can't branch a session.
 	 */

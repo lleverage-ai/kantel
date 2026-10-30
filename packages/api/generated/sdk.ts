@@ -713,6 +713,11 @@ export interface SessionSnapshot {
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
 
+export interface SessionWarmth {
+	/** The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace). */
+	readonly container: "started" | "running" | "skipped" | "unavailable";
+}
+
 export interface SkillFile {
 	/** A relative path inside the package, such as `SKILL.md` or `scripts/run.sh`. */
 	readonly path: string;
@@ -1171,6 +1176,8 @@ export interface HarbourClient {
 	abortSession(sessionId: string, body?: AbortSessionBody, options?: CallOptions): Promise<void>;
 	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
 	sendMessage(sessionId: string, body: MessageBody, options?: CallOptions): Promise<Submission>;
+	/** Warm a session's sandbox. A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and cheap to repeat; send it at most every few seconds. Needs the operator role on the session. `POST /sessions/{sessionId}/warm` */
+	warmSession(sessionId: string, options?: CallOptions): Promise<SessionWarmth>;
 	/** Stream a session. The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events. `GET /sessions/{sessionId}/stream` */
 	streamSession(
 		sessionId: string,
@@ -1251,6 +1258,8 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/abort`, body }, callOptions),
 		sendMessage: (sessionId, body, callOptions) =>
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/messages`, body }, callOptions),
+		warmSession: (sessionId, callOptions) =>
+			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/warm` }, callOptions),
 		streamSession: (sessionId, handlers, query, callOptions) =>
 			openStream(
 				options,

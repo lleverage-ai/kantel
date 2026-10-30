@@ -70,6 +70,8 @@ jobs:
       # Optional: Harbour's own browsers. `on` deploys their container app; the provider is `brwsr` unless set to `harbour`.
       HARBOUR_BROWSER_CONTAINERS: ${{ vars.HARBOUR_BROWSER_CONTAINERS }}
       HARBOUR_BROWSER_PROVIDER: ${{ vars.HARBOUR_BROWSER_PROVIDER }}
+      # Optional: the container tier. `on` deploys the sandbox containers' app (images/sandbox) and lets commands escalate.
+      HARBOUR_SANDBOX_CONTAINERS: ${{ vars.HARBOUR_SANDBOX_CONTAINERS }}
       # Optional: the origins (a host app's) that may frame a browser's embed page, besides the console.
       HARBOUR_EMBED_ORIGINS: ${{ vars.HARBOUR_EMBED_ORIGINS }}
     steps:

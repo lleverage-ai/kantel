@@ -63,6 +63,11 @@ export type ComposerProps = {
 	defaultValue?: string;
 	onChange?: (value: string) => void;
 	/**
+	 * Someone is about to write: focus came into the composer or they typed. Fires often; a host that does something
+	 * with it (warming the session's sandbox, say) debounces it.
+	 */
+	onEngage?: () => void;
+	/**
 	 * Sends the draft (trimmed) with its uploaded attachments. Also used to steer when onSteer is not given. The host
 	 * takes the attachments out of the draft (`useComposerAttachments().take()` does).
 	 */
@@ -205,6 +210,7 @@ export function Composer({
 	value,
 	defaultValue,
 	onChange,
+	onEngage,
 	onSend,
 	onSteer,
 	onStop,
@@ -314,8 +320,9 @@ export function Composer({
 		(next: string) => {
 			if (!controlled) setDraft(next);
 			onChange?.(next);
+			if (next !== "") onEngage?.();
 		},
-		[controlled, onChange],
+		[controlled, onChange, onEngage],
 	);
 
 	// Height: CSS sizes the field where it can (field-sizing: content); elsewhere it's measured on every change.
@@ -387,6 +394,7 @@ export function Composer({
 	const onFocus = () => {
 		setFocused(true);
 		dock?.wake();
+		onEngage?.();
 	};
 	const onBlur = (event: FocusEvent<HTMLDivElement>) => {
 		if (root.current?.contains(event.relatedTarget as Node | null)) return;

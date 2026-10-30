@@ -40,13 +40,17 @@
 			// Harbour's own browsers (src/browser-object.ts), one object per browser, used only with
 			// HARBOUR_BROWSER_PROVIDER=harbour. Their container app is added by the deploy when HARBOUR_BROWSER_CONTAINERS is on
 			// (scripts/deploy-config.ts), held to WEUR; without it the objects exist but no browser starts.
-			{ "name": "BROWSERS", "class_name": "HarbourBrowser" }
+			{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
+			// The container tier (src/sandbox-object.ts), one object per session. Its container app is added by the deploy when
+			// HARBOUR_SANDBOX_CONTAINERS is on (scripts/deploy-config.ts); without it commands that need a container are refused.
+			{ "name": "SANDBOXES", "class_name": "HarbourSandbox" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["HarbourStack"] },
 		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] },
-		{ "tag": "v3", "new_sqlite_classes": ["HarbourBrowser"] }
+		{ "tag": "v3", "new_sqlite_classes": ["HarbourBrowser"] },
+		{ "tag": "v4", "new_sqlite_classes": ["HarbourSandbox"] }
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
@@ -87,7 +91,10 @@
 		// Which browser provider the broker uses (src/browser.ts): `brwsr` (brwsr.dev, with HARBOUR_BRWSR_API_KEY) or
 		// `harbour`, Harbour's own browsers (src/browser-object.ts; needs the HARBOUR_BROWSER_VIEW_KEY and
 		// HARBOUR_BROWSER_SEAL_KEY secrets, and the container app, HARBOUR_BROWSER_CONTAINERS=on at deploy).
-		"HARBOUR_BROWSER_PROVIDER": "brwsr"
+		"HARBOUR_BROWSER_PROVIDER": "brwsr",
+		// `on` only with the sandbox containers' app (src/sandbox-object.ts): the deploy sets it with
+		// HARBOUR_SANDBOX_CONTAINERS=on (scripts/deploy-config.ts). Off, a command that needs a container is refused.
+		"HARBOUR_SANDBOX_CONTAINERS": "off"
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.
@@ -108,15 +115,22 @@
 				"bindings": [
 					{ "name": "STACK", "class_name": "HarbourStack" },
 					{ "name": "VAULTS", "class_name": "HarbourVault" },
-					{ "name": "BROWSERS", "class_name": "HarbourBrowser" }
+					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
+					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" }
 				]
 			},
-			// Local only: wrangler dev builds images/browser and runs each browser's container in local Docker.
+			// Local only: wrangler dev builds images/browser and images/sandbox and runs their containers in local Docker.
 			"containers": [
 				{
 					"class_name": "HarbourBrowser",
 					"image": "../../images/browser/Dockerfile",
 					"image_build_context": "../../images/browser",
+					"max_instances": 3
+				},
+				{
+					"class_name": "HarbourSandbox",
+					"image": "../../images/sandbox/Dockerfile",
+					"image_build_context": "../../images/sandbox",
 					"max_instances": 3
 				}
 			],
@@ -138,6 +152,8 @@
 				// Harbour's own browsers in local Docker (src/browser-object.ts), with local-only, public keys for their view
 				// links and sealed blobs. The deployed Worker's are secrets.
 				"HARBOUR_BROWSER_PROVIDER": "harbour",
+				// The container tier in local Docker (src/sandbox-object.ts).
+				"HARBOUR_SANDBOX_CONTAINERS": "on",
 				"HARBOUR_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
 				"HARBOUR_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001"
 			}
