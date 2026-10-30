@@ -373,6 +373,48 @@ export function browserViewSlots(
 	return result;
 }
 
+/**
+ * Each browser's timeline card, by the id of the browsing row it goes in: the first row whose calls name the browser
+ * (where it was opened), with the browser's newest page, screenshot and closed state from every row. A browser has
+ * one card however many runs use it, so a later run that only closes it never shows a card with no page. Pass the
+ * previous result as `previous` to keep the identity of every card that did not change.
+ */
+export function browserEntrySlots(
+	rows: readonly TranscriptRow[],
+	previous?: ReadonlyMap<string, BrowserViewSlot>,
+): ReadonlyMap<string, BrowserViewSlot> {
+	const first = new Map<string, string>();
+	const newest = new Map<string, BrowserViewSlot>();
+	for (const row of rows) {
+		if (row.kind !== "browsing") continue;
+		for (const item of row.items) {
+			if (item.kind !== "tool") continue;
+			const id = item.browserSessionId;
+			if (id === undefined) continue;
+			if (!first.has(id)) first.set(id, row.id);
+			const before = newest.get(id);
+			const screenshot = item.images?.at(-1) ?? before?.screenshot;
+			const page = browserPageOf(item) ?? before?.page;
+			const closed = item.name === "browser_close" && item.status === "done";
+			newest.set(id, {
+				browserSessionId: id,
+				item,
+				...(screenshot === undefined ? {} : { screenshot }),
+				...(page === undefined ? {} : { page }),
+				...(closed ? { closed } : {}),
+			});
+		}
+	}
+	const result = new Map<string, BrowserViewSlot>();
+	for (const [id, rowId] of first) {
+		const slot = newest.get(id);
+		if (slot === undefined || result.has(rowId)) continue;
+		const before = previous?.get(rowId);
+		result.set(rowId, sameSlot(before, slot) ? (before as BrowserViewSlot) : slot);
+	}
+	return result;
+}
+
 /** The session's browsers, for a host that shows the browser in one place (a panel) rather than in the transcript. */
 export type SessionBrowsers = {
 	/** One slot per browser the calls name, in the order the session first used them. */

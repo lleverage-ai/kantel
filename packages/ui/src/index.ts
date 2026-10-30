@@ -407,6 +407,7 @@ export {
 	type BrowserCallPage,
 	type BrowserViewSlot,
 	type BrowsingStep,
+	browserEntrySlots,
 	browserPageOf,
 	browserViewSlots,
 	finalAnswerIds,

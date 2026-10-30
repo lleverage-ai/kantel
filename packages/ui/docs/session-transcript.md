@@ -132,9 +132,10 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   `IconButton`, a `Scrubber` drawn in Harbour's colours over a range input, the time, and a speed button) and the
   helpers `pageLabel`, `pageHost`, `addressParts` and `playerClock`. The window never fetches anything, not even a
   favicon. Not for a browser a person drives: everything in it is watch-only.
-- **Browser in the timeline:** a browsing run (`BrowsingGroup`) in a host with a panel (`onShowBrowser`) carries its
-  browser as a `BrowserEntry` card under its line: the page the run left it on (`browsingPage`: its title and
-  address, from the calls' `URL:` and `Title:` lines), the run's last screenshot as a thumbnail, "Live", "Replay"
+- **Browser in the timeline:** in a host with a panel (`onShowBrowser`), each browser is one `BrowserEntry` card,
+  under the browsing run (`BrowsingGroup`) that opened it (`browserEntrySlots`); later runs on the same browser show
+  none. The card has the browser's newest page (its title and address, from the calls' `URL:` and `Title:` lines),
+  its last screenshot as a thumbnail, "Live", "Replay"
   or "Closed" (the host's `browserStates`, else the calls), and a click that shows it in the panel ("Watch live",
   "Watch the replay"; "Showing" when the panel already does). It never grows while the agent works.
 
